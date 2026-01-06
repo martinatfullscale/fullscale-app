@@ -83,11 +83,11 @@ export default function Landing() {
           className="w-full max-w-4xl mt-16 py-8 border-t border-b border-white/5"
         >
           <p className="text-xs uppercase tracking-widest text-muted-foreground/50 mb-6 font-medium">Backed by Industry Leaders</p>
-          <div className="flex flex-wrap items-center justify-center gap-8 md:gap-12">
-            <img src={logoBlackAmbition} alt="Black Ambition" className="h-10 md:h-16 w-auto grayscale opacity-70 hover:grayscale-0 hover:opacity-100 transition-all duration-300" />
-            <img src={logoMayDavis} alt="May Davis Partners" className="h-10 md:h-16 w-auto grayscale opacity-70 hover:grayscale-0 hover:opacity-100 transition-all duration-300" />
-            <img src={logoElementa} alt="Elementa" className="h-10 md:h-16 w-auto grayscale opacity-70 hover:grayscale-0 hover:opacity-100 transition-all duration-300" />
-            <img src={logoNue} alt="Nue Agency" className="h-10 md:h-16 w-auto grayscale opacity-70 hover:grayscale-0 hover:opacity-100 transition-all duration-300" />
+          <div className="flex flex-row flex-wrap md:flex-nowrap items-center justify-center gap-12">
+            <img src={logoBlackAmbition} alt="Black Ambition" className="h-12 w-auto" />
+            <img src={logoMayDavis} alt="May Davis Partners" className="h-12 w-auto" />
+            <img src={logoElementa} alt="Elementa" className="h-12 w-auto" />
+            <img src={logoNue} alt="Nue Agency" className="h-12 w-auto" />
           </div>
         </motion.div>
 
