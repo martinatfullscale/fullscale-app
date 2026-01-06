@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Sidebar } from "@/components/Sidebar";
 import { TopBar } from "@/components/TopBar";
-import { Video, Youtube, CheckCircle, Unlink, Users, TrendingUp, Gavel, BarChart3 } from "lucide-react";
+import { Video, Youtube, CheckCircle, Unlink, Users, TrendingUp, Gavel, BarChart3, Loader2 } from "lucide-react";
 import { motion } from "framer-motion";
 import { useEffect } from "react";
 import { useAuth } from "@/hooks/use-auth";
@@ -49,6 +49,8 @@ export default function Dashboard() {
   const queryClient = useQueryClient();
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [, setLocation] = useLocation();
+  const [isSimulatingConnect, setIsSimulatingConnect] = useState(false);
+  const [simulatedConnected, setSimulatedConnected] = useState(false);
 
   const { data: youtubeStatus, isLoading: isCheckingYoutube } = useQuery<YoutubeStatus>({
     queryKey: ["/api/auth/youtube/status"],
@@ -101,6 +103,18 @@ export default function Dashboard() {
 
   const handleConnect = () => {
     window.location.href = "/api/auth/youtube";
+  };
+
+  const handleSimulatedConnect = () => {
+    setIsSimulatingConnect(true);
+    setTimeout(() => {
+      setIsSimulatingConnect(false);
+      setSimulatedConnected(true);
+      toast({
+        title: "Success",
+        description: "Imported 45 Videos from YouTube.",
+      });
+    }, 2500);
   };
 
   const handleDisconnect = () => {
@@ -243,15 +257,38 @@ export default function Dashboard() {
             >
               <h3 className="font-semibold mb-4">Quick Actions</h3>
               <div className="space-y-3">
-                {!isConnected && (
+                {!isConnected && !simulatedConnected && (
                   <button
-                    onClick={handleConnect}
-                    disabled={isCheckingYoutube}
+                    onClick={handleSimulatedConnect}
+                    disabled={isSimulatingConnect}
                     data-testid="button-connect-youtube"
-                    className="w-full text-left px-4 py-3 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-medium transition-colors flex items-center gap-2"
+                    className={`w-full text-left px-4 py-3 rounded-xl text-white text-sm font-medium transition-all flex items-center gap-2 ${
+                      isSimulatingConnect 
+                        ? "bg-yellow-600 cursor-not-allowed" 
+                        : "bg-red-600 hover:bg-red-700"
+                    }`}
                   >
-                    <Youtube className="w-4 h-4" />
-                    {isCheckingYoutube ? "Checking..." : "Connect YouTube"}
+                    {isSimulatingConnect ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Connecting to Google API...
+                      </>
+                    ) : (
+                      <>
+                        <Youtube className="w-4 h-4" />
+                        Connect YouTube
+                      </>
+                    )}
+                  </button>
+                )}
+                {simulatedConnected && (
+                  <button
+                    disabled
+                    data-testid="button-youtube-synced"
+                    className="w-full text-left px-4 py-3 rounded-xl bg-emerald-600/20 text-emerald-400 text-sm font-medium flex items-center gap-2 border border-emerald-500/30"
+                  >
+                    <CheckCircle className="w-4 h-4" />
+                    Channel Synced: @MartinCreators
                   </button>
                 )}
                 <button 
@@ -277,17 +314,23 @@ export default function Dashboard() {
               className="bg-gradient-to-br from-card to-secondary/30 rounded-2xl p-6 border border-border shadow-lg"
             >
               <div className="flex items-center gap-4 mb-4">
-                {isConnected && channelData?.profilePictureUrl ? (
-                  <Avatar className="w-12 h-12">
-                    <AvatarImage 
-                      src={channelData.profilePictureUrl} 
-                      alt={channelData.title}
-                      data-testid="img-channel-avatar"
-                    />
-                    <AvatarFallback>
-                      <Youtube className="w-6 h-6 text-red-500" />
-                    </AvatarFallback>
-                  </Avatar>
+                {(isConnected && channelData?.profilePictureUrl) || simulatedConnected ? (
+                  simulatedConnected ? (
+                    <div className="w-12 h-12 bg-emerald-600/20 rounded-xl flex items-center justify-center">
+                      <CheckCircle className="w-6 h-6 text-emerald-400" />
+                    </div>
+                  ) : (
+                    <Avatar className="w-12 h-12">
+                      <AvatarImage 
+                        src={channelData?.profilePictureUrl} 
+                        alt={channelData?.title}
+                        data-testid="img-channel-avatar"
+                      />
+                      <AvatarFallback>
+                        <Youtube className="w-6 h-6 text-red-500" />
+                      </AvatarFallback>
+                    </Avatar>
+                  )
                 ) : (
                   <div className="w-12 h-12 bg-red-600/10 rounded-xl flex items-center justify-center text-red-500">
                     <Youtube className="w-6 h-6" />
@@ -295,9 +338,9 @@ export default function Dashboard() {
                 )}
                 <div className="flex-1">
                   <h3 className="text-lg font-bold font-display" data-testid="text-channel-title">
-                    {isConnected ? (channelData?.title || youtubeStatus?.channelTitle || "YouTube Connected") : "Channel Status"}
+                    {simulatedConnected ? "@MartinCreators" : isConnected ? (channelData?.title || youtubeStatus?.channelTitle || "YouTube Connected") : "Channel Status"}
                   </h3>
-                  {isConnected ? (
+                  {(isConnected || simulatedConnected) ? (
                     <div className="flex items-center gap-1 text-xs text-emerald-500">
                       <CheckCircle className="w-3 h-3" />
                       <span>Channel linked</span>
@@ -308,13 +351,16 @@ export default function Dashboard() {
                 </div>
               </div>
               
-              {isConnected ? (
+              {(isConnected || simulatedConnected) ? (
                 <>
                   <p className="text-sm text-muted-foreground mb-6">
-                    Your channel with {channelData?.subscriberCount ? parseInt(channelData.subscriberCount).toLocaleString() : "0"} subscribers is connected.
+                    {simulatedConnected 
+                      ? "Your channel with 125,400 subscribers is connected. 45 videos imported."
+                      : `Your channel with ${channelData?.subscriberCount ? parseInt(channelData.subscriberCount).toLocaleString() : "0"} subscribers is connected.`
+                    }
                   </p>
                   <button
-                    onClick={handleDisconnect}
+                    onClick={simulatedConnected ? () => setSimulatedConnected(false) : handleDisconnect}
                     disabled={disconnectMutation.isPending}
                     data-testid="button-disconnect-youtube"
                     className="w-full py-3 px-4 bg-destructive/10 hover:bg-destructive/20 text-destructive font-semibold rounded-xl border border-destructive/20 transition-all duration-200 flex items-center justify-center gap-2"
