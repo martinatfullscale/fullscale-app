@@ -2,21 +2,69 @@ import { Sidebar } from "@/components/Sidebar";
 import { TopBar } from "@/components/TopBar";
 import { MetricCard } from "@/components/MetricCard";
 import { MonetizationTable } from "@/components/MonetizationTable";
-import { Video, Layers, Workflow, Youtube } from "lucide-react";
+import { Video, Layers, Workflow, Youtube, CheckCircle, Unlink } from "lucide-react";
 import { motion } from "framer-motion";
-import { useState } from "react";
+import { useEffect } from "react";
 import { useAuth } from "@/hooks/use-auth";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useToast } from "@/hooks/use-toast";
+
+interface YoutubeStatus {
+  connected: boolean;
+  channelId?: string;
+  channelTitle?: string;
+}
 
 export default function Dashboard() {
-  const [isConnecting, setIsConnecting] = useState(false);
   const { user } = useAuth();
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+
+  // Check YouTube connection status
+  const { data: youtubeStatus, isLoading: isCheckingYoutube } = useQuery<YoutubeStatus>({
+    queryKey: ["/api/auth/youtube/status"],
+    queryFn: async () => {
+      const res = await fetch("/api/auth/youtube/status", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch YouTube status");
+      return res.json();
+    },
+    enabled: !!user,
+  });
+
+  // Disconnect mutation
+  const disconnectMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch("/api/auth/youtube", { method: "DELETE", credentials: "include" });
+      if (!res.ok) throw new Error("Failed to disconnect");
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/youtube/status"] });
+      toast({ title: "YouTube Disconnected", description: "Your channel has been unlinked." });
+    },
+  });
+
+  // Handle URL params for success/error messages
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("youtube_connected") === "true") {
+      toast({ title: "YouTube Connected!", description: "Your channel is now linked." });
+      window.history.replaceState({}, "", "/");
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/youtube/status"] });
+    }
+    if (params.get("youtube_error")) {
+      toast({ title: "Connection Failed", description: params.get("youtube_error") || "An error occurred.", variant: "destructive" });
+      window.history.replaceState({}, "", "/");
+    }
+  }, [toast, queryClient]);
 
   const handleConnect = () => {
-    setIsConnecting(true);
-    // Simulate connection flow
-    setTimeout(() => {
-      setIsConnecting(false);
-    }, 2000);
+    // Redirect to YouTube OAuth flow
+    window.location.href = "/api/auth/youtube";
+  };
+
+  const handleDisconnect = () => {
+    disconnectMutation.mutate();
   };
 
   return (
@@ -75,25 +123,61 @@ export default function Dashboard() {
               <div className="w-12 h-12 bg-red-600/10 rounded-xl flex items-center justify-center mb-4 text-red-500">
                 <Youtube className="w-6 h-6" />
               </div>
-              <h3 className="text-lg font-bold font-display mb-2">Connect YouTube</h3>
-              <p className="text-sm text-muted-foreground mb-6">
-                Link your channel to automatically index new content and track monetization status in real-time.
-              </p>
+              <h3 className="text-lg font-bold font-display mb-2">
+                {youtubeStatus?.connected ? "YouTube Connected" : "Connect YouTube"}
+              </h3>
               
-              <button
-                onClick={handleConnect}
-                disabled={isConnecting}
-                className="w-full py-3 px-4 bg-primary hover:bg-primary/90 text-primary-foreground font-semibold rounded-xl shadow-lg shadow-primary/25 transition-all duration-200 hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-70 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-              >
-                {isConnecting ? (
-                  <>
-                    <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    Connecting...
-                  </>
-                ) : (
-                  "Connect Channel"
-                )}
-              </button>
+              {youtubeStatus?.connected ? (
+                <>
+                  <div className="flex items-center gap-2 text-sm text-emerald-500 mb-2">
+                    <CheckCircle className="w-4 h-4" />
+                    <span>Channel linked</span>
+                  </div>
+                  <p className="text-sm text-muted-foreground mb-6">
+                    {youtubeStatus.channelTitle || "Your YouTube channel"} is connected. 
+                    Content will be automatically indexed.
+                  </p>
+                  <button
+                    onClick={handleDisconnect}
+                    disabled={disconnectMutation.isPending}
+                    data-testid="button-disconnect-youtube"
+                    className="w-full py-3 px-4 bg-destructive/10 hover:bg-destructive/20 text-destructive font-semibold rounded-xl border border-destructive/20 transition-all duration-200 flex items-center justify-center gap-2"
+                  >
+                    {disconnectMutation.isPending ? (
+                      <>
+                        <span className="w-4 h-4 border-2 border-destructive/30 border-t-destructive rounded-full animate-spin" />
+                        Disconnecting...
+                      </>
+                    ) : (
+                      <>
+                        <Unlink className="w-4 h-4" />
+                        Disconnect Channel
+                      </>
+                    )}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm text-muted-foreground mb-6">
+                    Link your channel to automatically index new content and track monetization status in real-time.
+                  </p>
+                  <button
+                    onClick={handleConnect}
+                    disabled={isCheckingYoutube}
+                    data-testid="button-connect-youtube"
+                    className="w-full py-3 px-4 bg-primary hover:bg-primary/90 text-primary-foreground font-semibold rounded-xl shadow-lg shadow-primary/25 transition-all duration-200 hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-70 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  >
+                    {isCheckingYoutube ? (
+                      <>
+                        <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                        Checking...
+                      </>
+                    ) : (
+                      "Connect Channel"
+                    )}
+                  </button>
+                </>
+              )}
             </motion.div>
 
             <motion.div 

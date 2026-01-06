@@ -5,6 +5,28 @@ import { z } from "zod";
 // Import Auth Definitions
 export * from "./models/auth";
 
+// YouTube Connections Table - stores OAuth tokens for YouTube API access
+export const youtubeConnections = pgTable("youtube_connections", {
+  id: serial("id").primaryKey(),
+  userId: varchar("user_id").notNull().unique(), // Links to the Replit Auth user
+  accessToken: text("access_token").notNull(),
+  refreshToken: text("refresh_token"),
+  expiresAt: timestamp("expires_at"),
+  channelId: text("channel_id"),
+  channelTitle: text("channel_title"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const insertYoutubeConnectionSchema = createInsertSchema(youtubeConnections).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type YoutubeConnection = typeof youtubeConnections.$inferSelect;
+export type InsertYoutubeConnection = z.infer<typeof insertYoutubeConnectionSchema>;
+
 // Monetization Items Table
 export const monetizationItems = pgTable("monetization_items", {
   id: serial("id").primaryKey(),

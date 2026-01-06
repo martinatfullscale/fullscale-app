@@ -3,7 +3,56 @@ import type { Server } from "http";
 import { storage } from "./storage";
 import { api } from "@shared/routes";
 import { z } from "zod";
-import { setupAuth, registerAuthRoutes } from "./replit_integrations/auth";
+import { setupAuth, registerAuthRoutes, isAuthenticated } from "./replit_integrations/auth";
+
+// YouTube OAuth Configuration
+const YOUTUBE_SCOPES = [
+  "https://www.googleapis.com/auth/youtube.readonly",
+];
+
+function getYoutubeAuthUrl(redirectUri: string): string {
+  const params = new URLSearchParams({
+    client_id: process.env.GOOGLE_CLIENT_ID!,
+    redirect_uri: redirectUri,
+    response_type: "code",
+    scope: YOUTUBE_SCOPES.join(" "),
+    access_type: "offline",
+    prompt: "consent",
+  });
+  return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+}
+
+async function exchangeCodeForTokens(code: string, redirectUri: string) {
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      code,
+      client_id: process.env.GOOGLE_CLIENT_ID!,
+      client_secret: process.env.GOOGLE_CLIENT_SECRET!,
+      redirect_uri: redirectUri,
+      grant_type: "authorization_code",
+    }),
+  });
+  
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error("Token exchange failed:", response.status, errorText);
+    throw new Error(`Token exchange failed: ${response.status}`);
+  }
+  
+  return response.json();
+}
+
+async function getYoutubeChannelInfo(accessToken: string) {
+  const response = await fetch(
+    "https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true",
+    {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    }
+  );
+  return response.json();
+}
 
 export async function registerRoutes(
   httpServer: Server,
@@ -14,7 +63,102 @@ export async function registerRoutes(
   await setupAuth(app);
   registerAuthRoutes(app);
 
+  // ============================================
+  // YouTube OAuth Routes
+  // ============================================
+  
+  // Initiate YouTube OAuth flow
+  app.get("/api/auth/youtube", isAuthenticated, (req: any, res) => {
+    const protocol = req.protocol;
+    const host = req.get("host");
+    const redirectUri = `${protocol}://${host}/api/auth/youtube/callback`;
+    const authUrl = getYoutubeAuthUrl(redirectUri);
+    res.redirect(authUrl);
+  });
+
+  // YouTube OAuth callback
+  app.get("/api/auth/youtube/callback", isAuthenticated, async (req: any, res) => {
+    const { code, error } = req.query;
+    
+    if (error) {
+      console.error("YouTube OAuth error:", error);
+      return res.redirect("/?youtube_error=" + encodeURIComponent(error as string));
+    }
+
+    if (!code) {
+      return res.redirect("/?youtube_error=no_code");
+    }
+
+    try {
+      const protocol = req.protocol;
+      const host = req.get("host");
+      const redirectUri = `${protocol}://${host}/api/auth/youtube/callback`;
+      
+      // Exchange code for tokens
+      let tokens;
+      try {
+        tokens = await exchangeCodeForTokens(code as string, redirectUri);
+      } catch (exchangeErr: any) {
+        console.error("Token exchange failed:", exchangeErr.message);
+        return res.redirect("/?youtube_error=token_exchange_failed");
+      }
+      
+      if (tokens.error) {
+        console.error("Token exchange returned error:", tokens.error, tokens.error_description);
+        return res.redirect("/?youtube_error=" + encodeURIComponent(tokens.error_description || tokens.error));
+      }
+
+      // Get channel info
+      const channelData = await getYoutubeChannelInfo(tokens.access_token);
+      const channel = channelData.items?.[0];
+
+      const userId = req.user.claims.sub;
+      
+      // Save the connection
+      await storage.upsertYoutubeConnection({
+        userId,
+        accessToken: tokens.access_token,
+        refreshToken: tokens.refresh_token || null,
+        expiresAt: tokens.expires_in 
+          ? new Date(Date.now() + tokens.expires_in * 1000) 
+          : null,
+        channelId: channel?.id || null,
+        channelTitle: channel?.snippet?.title || null,
+      });
+
+      res.redirect("/?youtube_connected=true");
+    } catch (err: any) {
+      console.error("YouTube callback error:", err.message || err);
+      res.redirect("/?youtube_error=connection_failed");
+    }
+  });
+
+  // Get current user's YouTube connection status
+  app.get("/api/auth/youtube/status", isAuthenticated, async (req: any, res) => {
+    const userId = req.user.claims.sub;
+    const connection = await storage.getYoutubeConnection(userId);
+    
+    if (connection) {
+      res.json({
+        connected: true,
+        channelId: connection.channelId,
+        channelTitle: connection.channelTitle,
+      });
+    } else {
+      res.json({ connected: false });
+    }
+  });
+
+  // Disconnect YouTube
+  app.delete("/api/auth/youtube", isAuthenticated, async (req: any, res) => {
+    const userId = req.user.claims.sub;
+    await storage.deleteYoutubeConnection(userId);
+    res.json({ success: true });
+  });
+
+  // ============================================
   // Monetization Items API
+  // ============================================
   app.get(api.monetization.list.path, async (req, res) => {
     const items = await storage.getMonetizationItems();
     res.json(items);
