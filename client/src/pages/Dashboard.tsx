@@ -35,6 +35,27 @@ interface YoutubeChannel {
   viewCount?: string;
 }
 
+interface IndexedVideo {
+  id: number;
+  userId: string;
+  youtubeId: string;
+  title: string;
+  description: string | null;
+  viewCount: number;
+  thumbnailUrl: string | null;
+  status: string;
+  priorityScore: number;
+  publishedAt: string | null;
+  category: string | null;
+  isEvergreen: boolean | null;
+  duration: string | null;
+}
+
+interface VideoIndexResponse {
+  videos: IndexedVideo[];
+  total: number;
+}
+
 const demoCampaigns = [
   { brand: "Sony", content: "Vlog #42", status: "Active", amount: "$2,400", statusColor: "bg-emerald-500/20 text-emerald-400" },
   { brand: "Nike", content: "Training Montage", status: "Bidding", amount: "$850", statusColor: "bg-orange-500/20 text-orange-400" },
@@ -111,6 +132,19 @@ export default function Dashboard() {
     },
     enabled: isRealMode && !!youtubeStatus?.connected,
   });
+
+  const { data: videoIndexData, isLoading: isLoadingVideoIndex } = useQuery<VideoIndexResponse>({
+    queryKey: ["/api/video-index"],
+    queryFn: async () => {
+      const res = await fetch("/api/video-index", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch video index");
+      return res.json();
+    },
+    enabled: isRealMode && !!youtubeStatus?.connected,
+    refetchInterval: 5000,
+  });
+
+  const indexedVideos = videoIndexData?.videos || [];
 
   const disconnectMutation = useMutation({
     mutationFn: async () => {
@@ -475,7 +509,7 @@ export default function Dashboard() {
                   <p className="text-sm text-muted-foreground mb-6">
                     {isDemoMode && simulatedConnected 
                       ? "Your channel with 125,400 subscribers is connected. 45 videos imported."
-                      : `Your channel with ${channelData?.subscriberCount ? parseInt(channelData.subscriberCount).toLocaleString() : "0"} subscribers is connected.`
+                      : `Your channel with ${channelData?.subscriberCount ? parseInt(channelData.subscriberCount).toLocaleString() : "0"} subscribers is connected.${indexedVideos.length > 0 ? ` ${indexedVideos.length} videos indexed.` : ""}`
                     }
                   </p>
                   <button
@@ -508,6 +542,95 @@ export default function Dashboard() {
             </motion.div>
           </div>
         </div>
+
+        {/* My Library Section - Shows indexed high-value videos */}
+        {(isRealMode && isConnected) && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.5 }}
+            className="mt-8 bg-white/5 rounded-xl border border-white/5 overflow-hidden"
+          >
+            <div className="px-6 py-4 border-b border-white/5 flex items-center justify-between gap-4">
+              <div>
+                <p className="text-sm font-semibold text-white">My Library</p>
+                <p className="text-xs text-muted-foreground">High-value videos ready for monetization</p>
+              </div>
+              {indexedVideos.length > 0 && (
+                <span className="px-2 py-1 rounded-full bg-emerald-500/20 text-emerald-400 text-xs font-medium">
+                  {indexedVideos.length} videos
+                </span>
+              )}
+            </div>
+            
+            {isLoadingVideoIndex ? (
+              <div className="p-8 flex items-center justify-center">
+                <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+                <span className="ml-2 text-muted-foreground text-sm">Indexing your videos...</span>
+              </div>
+            ) : indexedVideos.length === 0 ? (
+              <div className="p-8 text-center">
+                <Video className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
+                <p className="text-muted-foreground text-sm">
+                  No high-value videos found yet. We're looking for videos with 5,000+ views from the last 2 years.
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
+                {indexedVideos.slice(0, 6).map((video) => (
+                  <div
+                    key={video.id}
+                    className="bg-white/5 rounded-lg overflow-hidden border border-white/10 hover:border-white/20 transition-colors"
+                    data-testid={`card-video-${video.id}`}
+                  >
+                    {video.thumbnailUrl && (
+                      <div className="aspect-video relative">
+                        <img
+                          src={video.thumbnailUrl}
+                          alt={video.title}
+                          className="w-full h-full object-cover"
+                        />
+                        {video.isEvergreen && (
+                          <span className="absolute top-2 left-2 px-2 py-0.5 rounded bg-emerald-500/90 text-white text-xs font-medium">
+                            Evergreen
+                          </span>
+                        )}
+                        <span className="absolute bottom-2 right-2 px-2 py-0.5 rounded bg-black/70 text-white text-xs">
+                          {video.viewCount.toLocaleString()} views
+                        </span>
+                      </div>
+                    )}
+                    <div className="p-3">
+                      <h4 className="text-sm font-medium text-white line-clamp-2 mb-1">{video.title}</h4>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs text-muted-foreground">{video.category || "General"}</span>
+                        <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                          video.status === "Pending Scan" 
+                            ? "bg-yellow-500/20 text-yellow-400" 
+                            : "bg-emerald-500/20 text-emerald-400"
+                        }`}>
+                          {video.status}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            
+            {indexedVideos.length > 6 && (
+              <div className="px-6 py-3 border-t border-white/5 text-center">
+                <button
+                  onClick={() => setLocation("/library")}
+                  className="text-sm text-primary hover:text-primary/80 font-medium"
+                  data-testid="button-view-all-library"
+                >
+                  View all {indexedVideos.length} videos
+                </button>
+              </div>
+            )}
+          </motion.div>
+        )}
       </main>
 
       <UploadModal 

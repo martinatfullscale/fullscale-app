@@ -1,4 +1,4 @@
-import { pgTable, text, serial, timestamp, boolean, varchar } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, timestamp, boolean, varchar, integer, numeric, uniqueIndex } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -59,3 +59,31 @@ export const insertMonetizationItemSchema = createInsertSchema(monetizationItems
 
 export type MonetizationItem = typeof monetizationItems.$inferSelect;
 export type InsertMonetizationItem = z.infer<typeof insertMonetizationItemSchema>;
+
+// Video Index Table - stores indexed high-value videos from YouTube
+export const videoIndex = pgTable("video_index", {
+  id: serial("id").primaryKey(),
+  userId: varchar("user_id").notNull(),
+  youtubeId: varchar("youtube_id").notNull(),
+  title: text("title").notNull(),
+  description: text("description"),
+  viewCount: integer("view_count").notNull().default(0),
+  thumbnailUrl: text("thumbnail_url"),
+  status: varchar("status").notNull().default("Pending Scan"),
+  priorityScore: integer("priority_score").notNull().default(0),
+  publishedAt: timestamp("published_at"),
+  category: varchar("category"),
+  isEvergreen: boolean("is_evergreen").default(false),
+  duration: varchar("duration"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const insertVideoIndexSchema = createInsertSchema(videoIndex).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type VideoIndex = typeof videoIndex.$inferSelect;
+export type InsertVideoIndex = z.infer<typeof insertVideoIndexSchema>;

@@ -1,15 +1,18 @@
 import { db } from "./db";
-import { eq } from "drizzle-orm";
+import { eq, desc, and } from "drizzle-orm";
 import {
   monetizationItems,
   youtubeConnections,
   allowedUsers,
+  videoIndex,
   type MonetizationItem,
   type InsertMonetizationItem,
   type YoutubeConnection,
   type InsertYoutubeConnection,
   type AllowedUser,
   type InsertAllowedUser,
+  type VideoIndex,
+  type InsertVideoIndex,
 } from "@shared/schema";
 import { encrypt, decrypt } from "./encryption";
 
@@ -22,6 +25,10 @@ export interface IStorage {
   isEmailAllowed(email: string): Promise<boolean>;
   addAllowedUser(user: InsertAllowedUser): Promise<AllowedUser>;
   getAllowedUsers(): Promise<AllowedUser[]>;
+  getVideoIndex(userId: string): Promise<VideoIndex[]>;
+  upsertVideoIndex(video: InsertVideoIndex): Promise<VideoIndex>;
+  bulkUpsertVideoIndex(videos: InsertVideoIndex[]): Promise<void>;
+  deleteVideoIndex(userId: string): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -105,6 +112,63 @@ export class DatabaseStorage implements IStorage {
 
   async getAllowedUsers(): Promise<AllowedUser[]> {
     return await db.select().from(allowedUsers);
+  }
+
+  async getVideoIndex(userId: string): Promise<VideoIndex[]> {
+    return await db
+      .select()
+      .from(videoIndex)
+      .where(eq(videoIndex.userId, userId))
+      .orderBy(desc(videoIndex.priorityScore));
+  }
+
+  async upsertVideoIndex(video: InsertVideoIndex): Promise<VideoIndex> {
+    const [existing] = await db
+      .select()
+      .from(videoIndex)
+      .where(and(
+        eq(videoIndex.userId, video.userId),
+        eq(videoIndex.youtubeId, video.youtubeId)
+      ));
+    
+    if (existing) {
+      const [updated] = await db
+        .update(videoIndex)
+        .set({
+          title: video.title,
+          description: video.description,
+          viewCount: video.viewCount,
+          thumbnailUrl: video.thumbnailUrl,
+          status: video.status,
+          priorityScore: video.priorityScore,
+          publishedAt: video.publishedAt,
+          category: video.category,
+          isEvergreen: video.isEvergreen,
+          duration: video.duration,
+          updatedAt: new Date(),
+        })
+        .where(eq(videoIndex.id, existing.id))
+        .returning();
+      return updated;
+    }
+    
+    const [result] = await db
+      .insert(videoIndex)
+      .values(video)
+      .returning();
+    return result;
+  }
+
+  async bulkUpsertVideoIndex(videos: InsertVideoIndex[]): Promise<void> {
+    if (videos.length === 0) return;
+    
+    for (const video of videos) {
+      await this.upsertVideoIndex(video);
+    }
+  }
+
+  async deleteVideoIndex(userId: string): Promise<void> {
+    await db.delete(videoIndex).where(eq(videoIndex.userId, userId));
   }
 }
 

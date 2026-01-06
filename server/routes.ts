@@ -4,6 +4,7 @@ import { storage } from "./storage";
 import { api } from "@shared/routes";
 import { z } from "zod";
 import { setupAuth, registerAuthRoutes, isAuthenticated } from "./replit_integrations/auth";
+import { runIndexerForUser } from "./lib/indexer";
 
 // Google Login OAuth Configuration (for authentication with allowlist)
 const GOOGLE_LOGIN_SCOPES = [
@@ -375,6 +376,17 @@ export async function registerRoutes(
         channelTitle: channel?.snippet?.title || null,
       });
 
+      // Trigger video indexer asynchronously (don't block the redirect)
+      setImmediate(async () => {
+        try {
+          console.log(`[OAuth] Triggering video indexer for user: ${userId}`);
+          const result = await runIndexerForUser(userId);
+          console.log(`[OAuth] Indexer completed: indexed ${result.indexed}, filtered ${result.filtered}`);
+        } catch (indexerError: any) {
+          console.error(`[OAuth] Indexer failed:`, indexerError.message || indexerError);
+        }
+      });
+
       // Redirect to dashboard with success flag
       res.redirect("/dashboard?youtube_connected=true");
     } catch (err: any) {
@@ -403,7 +415,26 @@ export async function registerRoutes(
   app.delete("/api/auth/youtube", isGoogleAuthenticated, async (req: any, res) => {
     const userId = req.googleUser.email;
     await storage.deleteYoutubeConnection(userId);
+    await storage.deleteVideoIndex(userId);
     res.json({ success: true });
+  });
+
+  // Get indexed videos for the user's library
+  app.get("/api/video-index", isGoogleAuthenticated, async (req: any, res) => {
+    const userId = req.googleUser.email;
+    const videos = await storage.getVideoIndex(userId);
+    res.json({ videos, total: videos.length });
+  });
+
+  // Manually trigger re-indexing
+  app.post("/api/video-index/refresh", isGoogleAuthenticated, async (req: any, res) => {
+    const userId = req.googleUser.email;
+    try {
+      const result = await runIndexerForUser(userId);
+      res.json({ success: true, ...result });
+    } catch (error: any) {
+      res.status(500).json({ success: false, error: error.message || "Indexing failed" });
+    }
   });
 
   // Get full YouTube channel data (with profile picture and stats)
