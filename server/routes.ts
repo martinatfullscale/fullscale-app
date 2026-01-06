@@ -151,6 +151,7 @@ export async function registerRoutes(
   // Initiate Google login flow
   app.get("/api/auth/google", (req: any, res) => {
     const baseUrl = process.env.BASE_URL;
+    console.log("[Google OAuth] Initiating login, BASE_URL:", baseUrl);
     if (!baseUrl) {
       console.error("BASE_URL environment variable is not set");
       return res.redirect("/?error=configuration_error");
@@ -158,29 +159,45 @@ export async function registerRoutes(
     const redirectUri = `${baseUrl}/api/auth/callback/google`;
     const state = generateOAuthState();
     (req.session as any).oauthState = state;
-    const authUrl = getGoogleLoginAuthUrl(redirectUri, state);
-    res.redirect(authUrl);
+    console.log("[Google OAuth] Redirect URI:", redirectUri);
+    console.log("[Google OAuth] State generated:", state);
+    
+    // Save session before redirect to ensure state persists
+    req.session.save((err: any) => {
+      if (err) {
+        console.error("[Google OAuth] Session save error:", err);
+        return res.redirect("/?error=session_error");
+      }
+      const authUrl = getGoogleLoginAuthUrl(redirectUri, state);
+      console.log("[Google OAuth] Redirecting to Google...");
+      res.redirect(authUrl);
+    });
   });
 
   // Google login callback with allowlist check
   app.get("/api/auth/callback/google", async (req: any, res) => {
     const { code, error, state } = req.query;
+    console.log("[Google OAuth Callback] Received callback");
+    console.log("[Google OAuth Callback] State from query:", state);
+    console.log("[Google OAuth Callback] Session ID:", req.sessionID);
     
     if (error) {
-      console.error("Google OAuth error:", error);
+      console.error("[Google OAuth Callback] Error:", error);
       return res.redirect("/?error=" + encodeURIComponent(error as string));
     }
 
     if (!code) {
+      console.error("[Google OAuth Callback] No code received");
       return res.redirect("/?error=no_code");
     }
 
     // Verify state to prevent CSRF attacks
     const savedState = req.session?.oauthState;
+    console.log("[Google OAuth Callback] Saved state from session:", savedState);
     delete req.session?.oauthState;
     
     if (!state || state !== savedState) {
-      console.error("OAuth state mismatch - possible CSRF attack");
+      console.error("[Google OAuth Callback] State mismatch - received:", state, "expected:", savedState);
       return res.redirect("/?error=invalid_state");
     }
 

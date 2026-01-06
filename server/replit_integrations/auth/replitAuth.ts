@@ -27,6 +27,22 @@ export function getSession() {
     ttl: sessionTtl,
     tableName: "sessions",
   });
+  
+  // Extract domain from BASE_URL for cookie configuration
+  let cookieDomain: string | undefined;
+  const baseUrl = process.env.BASE_URL;
+  if (baseUrl) {
+    try {
+      const url = new URL(baseUrl);
+      // Use the domain for production (e.g., .gofullscale.co)
+      if (!url.hostname.includes('replit') && !url.hostname.includes('localhost')) {
+        cookieDomain = url.hostname;
+      }
+    } catch (e) {
+      console.error("Failed to parse BASE_URL for cookie domain:", e);
+    }
+  }
+  
   return session({
     secret: process.env.SESSION_SECRET!,
     store: sessionStore,
@@ -35,7 +51,9 @@ export function getSession() {
     cookie: {
       httpOnly: true,
       secure: true,
+      sameSite: 'lax',
       maxAge: sessionTtl,
+      domain: cookieDomain,
     },
   });
 }
