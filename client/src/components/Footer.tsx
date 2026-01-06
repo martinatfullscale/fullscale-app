@@ -94,7 +94,7 @@ export function Footer() {
             </div>
           </div>
 
-          <div>
+          <div className="mt-8">
             <p className="text-sm text-muted-foreground/40">
               &copy; 2025 FullScale Holdings.<br />
               All Rights Reserved.
