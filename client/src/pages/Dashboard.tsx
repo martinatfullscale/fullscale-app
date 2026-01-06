@@ -33,12 +33,18 @@ const demoCampaigns = [
 ];
 
 const chartData = [
-  { month: "Jul", height: "25%" },
-  { month: "Aug", height: "40%" },
-  { month: "Sep", height: "35%" },
-  { month: "Oct", height: "55%" },
-  { month: "Nov", height: "70%" },
-  { month: "Dec", height: "90%" },
+  { month: "Jan", height: "15%", revenue: "$4.2k" },
+  { month: "Feb", height: "22%", revenue: "$5.1k" },
+  { month: "Mar", height: "28%", revenue: "$6.3k" },
+  { month: "Apr", height: "35%", revenue: "$7.8k" },
+  { month: "May", height: "42%", revenue: "$8.9k" },
+  { month: "Jun", height: "48%", revenue: "$9.5k" },
+  { month: "Jul", height: "55%", revenue: "$10.2k" },
+  { month: "Aug", height: "62%", revenue: "$11.1k" },
+  { month: "Sep", height: "70%", revenue: "$12.0k" },
+  { month: "Oct", height: "78%", revenue: "$13.2k" },
+  { month: "Nov", height: "88%", revenue: "$14.1k" },
+  { month: "Dec", height: "100%", revenue: "$14.9k" },
 ];
 
 export default function Dashboard() {
@@ -180,15 +186,21 @@ export default function Dashboard() {
               transition={{ delay: 0.2 }}
               className="bg-white/5 rounded-xl p-6 border border-white/5"
             >
-              <p className="text-sm font-semibold text-white mb-4">Revenue Velocity</p>
-              <div className="flex items-end justify-between gap-3 h-40">
+              <div className="flex items-center justify-between mb-4">
+                <p className="text-sm font-semibold text-white">Revenue Velocity</p>
+                <span className="text-xs text-emerald-400 font-medium">+200% YoY</span>
+              </div>
+              <div className="flex items-end justify-between gap-1 md:gap-2 h-48">
                 {chartData.map((bar) => (
-                  <div key={bar.month} className="flex-1 flex flex-col items-center gap-2">
+                  <div key={bar.month} className="flex-1 flex flex-col items-center gap-2 group relative">
+                    <div className="absolute -top-8 left-1/2 -translate-x-1/2 px-2 py-1 bg-white text-black text-xs font-semibold rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-10 pointer-events-none">
+                      {bar.revenue}
+                    </div>
                     <div 
-                      className="w-full bg-gradient-to-t from-primary/60 to-primary rounded-t-sm transition-all duration-500" 
+                      className="w-full bg-gradient-to-t from-primary/50 via-primary to-red-400 rounded-t-sm transition-all duration-300 group-hover:from-primary/70 group-hover:via-primary group-hover:to-red-300 cursor-pointer" 
                       style={{ height: bar.height }}
                     />
-                    <span className="text-xs text-muted-foreground">{bar.month}</span>
+                    <span className="text-[10px] md:text-xs text-muted-foreground">{bar.month}</span>
                   </div>
                 ))}
               </div>
