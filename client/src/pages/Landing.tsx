@@ -5,6 +5,7 @@ import logoBlackAmbition from "@assets/logo-black-ambition_1767712118620.png";
 import logoMayDavis from "@assets/logo-may-davis_1767712118621.png";
 import logoElementa from "@assets/logo-elementa_1767712118620.png";
 import logoNue from "@assets/logo-nue_1767712118621.png";
+import featureKitchen from "@assets/feature-kitchen_1767713076335.png";
 import { Footer } from "@/components/Footer";
 
 export default function Landing() {
@@ -130,11 +131,14 @@ export default function Landing() {
               </p>
             </div>
             <div className="relative">
-              <div className="aspect-video rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center">
-                <div className="text-center p-8">
-                  <ImageIcon className="w-12 h-12 text-muted-foreground/30 mx-auto mb-4" />
-                  <p className="text-sm text-muted-foreground/50">Before/After Comparison</p>
-                  <p className="text-xs text-muted-foreground/30 mt-1">Upload your image to replace</p>
+              <div className="aspect-video rounded-2xl overflow-hidden">
+                <div className="relative w-full h-full">
+                  <img 
+                    src={featureKitchen} 
+                    alt="Creator filming in kitchen" 
+                    className="w-full h-full object-cover"
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-l from-transparent via-transparent to-background/40" />
                 </div>
               </div>
             </div>
