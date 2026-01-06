@@ -288,11 +288,23 @@ export async function registerRoutes(
   // YouTube OAuth Routes
   // ============================================
   
-  // Middleware to check Google OAuth session
+  // Middleware to check Google OAuth session (returns JSON for API calls)
   const isGoogleAuthenticated = (req: any, res: any, next: any) => {
     const googleUser = req.session?.googleUser;
     if (!googleUser || !googleUser.email) {
       return res.status(401).json({ message: "Unauthorized - Please login with Google" });
+    }
+    req.googleUser = googleUser;
+    next();
+  };
+  
+  // Middleware for OAuth callbacks (redirects instead of JSON for browser flows)
+  const isGoogleAuthenticatedRedirect = (req: any, res: any, next: any) => {
+    const googleUser = req.session?.googleUser;
+    if (!googleUser || !googleUser.email) {
+      // Session lost - redirect to Google login to re-authenticate
+      console.log("YouTube callback: session missing, redirecting to Google login");
+      return res.redirect("/api/auth/google?youtube_pending=true");
     }
     req.googleUser = googleUser;
     next();
@@ -310,24 +322,24 @@ export async function registerRoutes(
     res.redirect(authUrl);
   });
 
-  // YouTube OAuth callback
-  app.get("/api/auth/youtube/callback", isGoogleAuthenticated, async (req: any, res) => {
+  // YouTube OAuth callback - uses redirect middleware for graceful session handling
+  app.get("/api/auth/youtube/callback", isGoogleAuthenticatedRedirect, async (req: any, res) => {
     const { code, error } = req.query;
     
     if (error) {
       console.error("YouTube OAuth error:", error);
-      return res.redirect("/?youtube_error=" + encodeURIComponent(error as string));
+      return res.redirect("/dashboard?youtube_error=" + encodeURIComponent(error as string));
     }
 
     if (!code) {
-      return res.redirect("/?youtube_error=no_code");
+      return res.redirect("/dashboard?youtube_error=no_code");
     }
 
     try {
       const baseUrl = process.env.BASE_URL;
       if (!baseUrl) {
         console.error("BASE_URL environment variable is not set");
-        return res.redirect("/?youtube_error=configuration_error");
+        return res.redirect("/dashboard?youtube_error=configuration_error");
       }
       const redirectUri = `${baseUrl}/api/auth/youtube/callback`;
       
@@ -337,12 +349,12 @@ export async function registerRoutes(
         tokens = await exchangeCodeForTokens(code as string, redirectUri);
       } catch (exchangeErr: any) {
         console.error("Token exchange failed:", exchangeErr.message);
-        return res.redirect("/?youtube_error=token_exchange_failed");
+        return res.redirect("/dashboard?youtube_error=token_exchange_failed");
       }
       
       if (tokens.error) {
         console.error("Token exchange returned error:", tokens.error, tokens.error_description);
-        return res.redirect("/?youtube_error=" + encodeURIComponent(tokens.error_description || tokens.error));
+        return res.redirect("/dashboard?youtube_error=" + encodeURIComponent(tokens.error_description || tokens.error));
       }
 
       // Get channel info
@@ -363,10 +375,11 @@ export async function registerRoutes(
         channelTitle: channel?.snippet?.title || null,
       });
 
-      res.redirect("/?youtube_connected=true");
+      // Redirect to dashboard with success flag
+      res.redirect("/dashboard?youtube_connected=true");
     } catch (err: any) {
       console.error("YouTube callback error:", err.message || err);
-      res.redirect("/?youtube_error=connection_failed");
+      res.redirect("/dashboard?youtube_error=connection_failed");
     }
   });
 

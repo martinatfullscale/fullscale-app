@@ -130,14 +130,17 @@ export default function Dashboard() {
     const params = new URLSearchParams(window.location.search);
     if (params.get("youtube_connected") === "true") {
       toast({ title: "YouTube Connected!", description: "Your channel is now linked." });
-      window.history.replaceState({}, "", "/");
+      // Clean URL while staying on dashboard
+      window.history.replaceState({}, "", "/dashboard");
       queryClient.invalidateQueries({ queryKey: ["/api/auth/youtube/status"] });
       queryClient.invalidateQueries({ queryKey: ["/api/youtube/channel"] });
       queryClient.invalidateQueries({ queryKey: ["/api/youtube/videos"] });
     }
     if (params.get("youtube_error")) {
-      toast({ title: "Connection Failed", description: params.get("youtube_error") || "An error occurred.", variant: "destructive" });
-      window.history.replaceState({}, "", "/");
+      const errorMsg = decodeURIComponent(params.get("youtube_error") || "An error occurred.");
+      toast({ title: "Connection Failed", description: errorMsg, variant: "destructive" });
+      // Clean URL while staying on dashboard
+      window.history.replaceState({}, "", "/dashboard");
     }
   }, [toast, queryClient]);
 
