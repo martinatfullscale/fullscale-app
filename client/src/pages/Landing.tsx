@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Zap, Shield, Video, ImageIcon, X } from "lucide-react";
+import { Zap, Shield, Video, ImageIcon, X, Ban } from "lucide-react";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 import logoBlackAmbition from "@assets/logo-black-ambition_1767712118620.png";
 import logoMayDavis from "@assets/logo-may-davis_1767712118621.png";
@@ -12,13 +12,27 @@ import { Footer } from "@/components/Footer";
 export default function Landing() {
   const [showBetaModal, setShowBetaModal] = useState(false);
   const [showDemoModal, setShowDemoModal] = useState(false);
+  const [accessError, setAccessError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const error = params.get("error");
+    const email = params.get("email");
+    
+    if (error === "access_restricted") {
+      setAccessError(email || "your email");
+      setShowBetaModal(true);
+      window.history.replaceState({}, "", "/");
+    }
+  }, []);
 
   const handleLoginClick = () => {
+    setAccessError(null);
     setShowBetaModal(true);
   };
 
   const handleActualLogin = () => {
-    window.location.href = "/dashboard";
+    window.location.href = "/api/auth/google";
   };
 
   return (
@@ -254,38 +268,66 @@ export default function Landing() {
               onClick={(e) => e.stopPropagation()}
             >
               <button
-                onClick={() => setShowBetaModal(false)}
+                onClick={() => { setShowBetaModal(false); setAccessError(null); }}
                 className="absolute top-4 right-4 text-muted-foreground hover:text-white transition-colors"
                 data-testid="button-modal-close"
               >
                 <X className="w-5 h-5" />
               </button>
 
-              <h2 className="text-2xl font-bold font-display tracking-tight mb-4 uppercase">
-                FullScale is Currently <span className="text-primary">Invite-Only.</span>
-              </h2>
-              
-              <p className="text-muted-foreground leading-relaxed mb-8">
-                We are onboarding a select cohort of founding creators to ensure the highest quality experience. Applications are reviewed daily.
-              </p>
+              {accessError ? (
+                <>
+                  <div className="w-16 h-16 mx-auto mb-6 bg-red-500/20 rounded-full flex items-center justify-center">
+                    <Ban className="w-8 h-8 text-red-400" />
+                  </div>
+                  <h2 className="text-2xl font-bold font-display tracking-tight mb-4 uppercase text-red-400">
+                    Access Restricted
+                  </h2>
+                  <p className="text-muted-foreground leading-relaxed mb-4">
+                    You are not in the Founding Cohort yet.
+                  </p>
+                  <p className="text-sm text-muted-foreground/60 mb-8">
+                    Email: <span className="text-white">{accessError}</span>
+                  </p>
+                  <a
+                    href="https://airtable.com/appF4oLhgbf143xe7/pagil3dstNSBZvLUr/form"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-block w-full px-6 py-3 rounded-xl bg-primary hover:bg-primary/90 text-white font-semibold text-lg transition-colors"
+                    data-testid="button-modal-apply-after-denied"
+                  >
+                    Apply for Access
+                  </a>
+                </>
+              ) : (
+                <>
+                  <h2 className="text-2xl font-bold font-display tracking-tight mb-4 uppercase">
+                    FullScale is Currently <span className="text-primary">Invite-Only.</span>
+                  </h2>
+                  
+                  <p className="text-muted-foreground leading-relaxed mb-8">
+                    We are onboarding a select cohort of founding creators to ensure the highest quality experience. Applications are reviewed daily.
+                  </p>
 
-              <a
-                href="https://airtable.com/appF4oLhgbf143xe7/pagil3dstNSBZvLUr/form"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-block w-full px-6 py-3 rounded-xl bg-primary hover:bg-primary/90 text-white font-semibold text-lg transition-colors"
-                data-testid="button-modal-apply"
-              >
-                Apply for Access
-              </a>
+                  <a
+                    href="https://airtable.com/appF4oLhgbf143xe7/pagil3dstNSBZvLUr/form"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-block w-full px-6 py-3 rounded-xl bg-primary hover:bg-primary/90 text-white font-semibold text-lg transition-colors"
+                    data-testid="button-modal-apply"
+                  >
+                    Apply for Access
+                  </a>
 
-              <button
-                onClick={handleActualLogin}
-                className="mt-6 text-sm text-muted-foreground/60 hover:text-white transition-colors underline underline-offset-4"
-                data-testid="button-modal-partner-signin"
-              >
-                Already a Partner? Sign In
-              </button>
+                  <button
+                    onClick={handleActualLogin}
+                    className="mt-6 text-sm text-muted-foreground/60 hover:text-white transition-colors underline underline-offset-4"
+                    data-testid="button-modal-partner-signin"
+                  >
+                    Already a Partner? Sign In
+                  </button>
+                </>
+              )}
             </motion.div>
           </motion.div>
         )}

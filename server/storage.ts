@@ -3,10 +3,13 @@ import { eq } from "drizzle-orm";
 import {
   monetizationItems,
   youtubeConnections,
+  allowedUsers,
   type MonetizationItem,
   type InsertMonetizationItem,
   type YoutubeConnection,
   type InsertYoutubeConnection,
+  type AllowedUser,
+  type InsertAllowedUser,
 } from "@shared/schema";
 import { encrypt, decrypt } from "./encryption";
 
@@ -16,6 +19,9 @@ export interface IStorage {
   getYoutubeConnection(userId: string): Promise<YoutubeConnection | undefined>;
   upsertYoutubeConnection(connection: InsertYoutubeConnection): Promise<YoutubeConnection>;
   deleteYoutubeConnection(userId: string): Promise<void>;
+  isEmailAllowed(email: string): Promise<boolean>;
+  addAllowedUser(user: InsertAllowedUser): Promise<AllowedUser>;
+  getAllowedUsers(): Promise<AllowedUser[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -78,6 +84,27 @@ export class DatabaseStorage implements IStorage {
 
   async deleteYoutubeConnection(userId: string): Promise<void> {
     await db.delete(youtubeConnections).where(eq(youtubeConnections.userId, userId));
+  }
+
+  async isEmailAllowed(email: string): Promise<boolean> {
+    const normalizedEmail = email.toLowerCase().trim();
+    const [user] = await db
+      .select()
+      .from(allowedUsers)
+      .where(eq(allowedUsers.email, normalizedEmail));
+    return !!user;
+  }
+
+  async addAllowedUser(user: InsertAllowedUser): Promise<AllowedUser> {
+    const [newUser] = await db
+      .insert(allowedUsers)
+      .values({ ...user, email: user.email.toLowerCase().trim() })
+      .returning();
+    return newUser;
+  }
+
+  async getAllowedUsers(): Promise<AllowedUser[]> {
+    return await db.select().from(allowedUsers);
   }
 }
 

@@ -27,6 +27,22 @@ export const insertYoutubeConnectionSchema = createInsertSchema(youtubeConnectio
 export type YoutubeConnection = typeof youtubeConnections.$inferSelect;
 export type InsertYoutubeConnection = z.infer<typeof insertYoutubeConnectionSchema>;
 
+// Allowed Users Table - Email allowlist for founding cohort
+export const allowedUsers = pgTable("allowed_users", {
+  id: serial("id").primaryKey(),
+  email: varchar("email").notNull().unique(),
+  name: varchar("name"),
+  addedAt: timestamp("added_at").defaultNow(),
+});
+
+export const insertAllowedUserSchema = createInsertSchema(allowedUsers).omit({
+  id: true,
+  addedAt: true,
+});
+
+export type AllowedUser = typeof allowedUsers.$inferSelect;
+export type InsertAllowedUser = z.infer<typeof insertAllowedUserSchema>;
+
 // Monetization Items Table
 export const monetizationItems = pgTable("monetization_items", {
   id: serial("id").primaryKey(),
