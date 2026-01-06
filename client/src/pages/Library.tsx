@@ -1,6 +1,6 @@
 import { Sidebar } from "@/components/Sidebar";
 import { TopBar } from "@/components/TopBar";
-import { Upload, Eye, Video } from "lucide-react";
+import { Upload, Eye, CheckCircle, Loader2, AlertTriangle } from "lucide-react";
 import { motion } from "framer-motion";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
@@ -11,44 +11,69 @@ const videoData = [
     views: "1.2M Views", 
     status: "Ready (4 Spots)", 
     statusColor: "bg-emerald-500/20 text-emerald-400",
-    statusDot: "bg-emerald-500"
+    statusDot: "bg-emerald-500",
+    image: "https://images.unsplash.com/photo-1534430480872-3498386e7856?w=800&h=450&fit=crop",
+    aiStatus: "ready",
+    aiText: "4 Scenes Indexed"
   },
   { 
     title: "Coding Tutorial React", 
     views: "450k Views", 
     status: "Scanning (78%)", 
     statusColor: "bg-yellow-500/20 text-yellow-400",
-    statusDot: "bg-yellow-500"
+    statusDot: "bg-yellow-500",
+    image: "https://images.unsplash.com/photo-1461749280684-dccba630e2f6?w=800&h=450&fit=crop",
+    aiStatus: "scanning",
+    aiText: "Processing..."
   },
   { 
     title: "Gaming Highlights", 
     views: "890k Views", 
     status: "Brand Safety Issue", 
     statusColor: "bg-red-500/20 text-red-400",
-    statusDot: "bg-red-500"
+    statusDot: "bg-red-500",
+    image: "https://images.unsplash.com/photo-1542751371-adc38448a05e?w=800&h=450&fit=crop",
+    aiStatus: "issue",
+    aiText: "Brand Safety"
   },
   { 
     title: "Travel Diary: Japan", 
     views: "2.1M Views", 
     status: "Bidding Active ($450)", 
     statusColor: "bg-emerald-500/20 text-emerald-400",
-    statusDot: "bg-emerald-500"
+    statusDot: "bg-emerald-500",
+    image: "https://images.unsplash.com/photo-1493976040374-85c8e12f0c0e?w=800&h=450&fit=crop",
+    aiStatus: "ready",
+    aiText: "6 Scenes Indexed"
   },
   { 
     title: "Tech Review: iPhone", 
     views: "1.5M Views", 
     status: "Ready (2 Spots)", 
     statusColor: "bg-emerald-500/20 text-emerald-400",
-    statusDot: "bg-emerald-500"
+    statusDot: "bg-emerald-500",
+    image: "https://images.unsplash.com/photo-1512941937669-90a1b58e7e9c?w=800&h=450&fit=crop",
+    aiStatus: "ready",
+    aiText: "2 Scenes Indexed"
   },
   { 
     title: "Q&A Special", 
     views: "300k Views", 
     status: "Pending Indexing", 
     statusColor: "bg-gray-500/20 text-gray-400",
-    statusDot: "bg-gray-400"
+    statusDot: "bg-gray-400",
+    image: "https://images.unsplash.com/photo-1478737270239-2f02b77fc618?w=800&h=450&fit=crop",
+    aiStatus: "scanning",
+    aiText: "Processing..."
   },
 ];
+
+function AiOverlayIcon({ status }: { status: string }) {
+  if (status === "ready") return <CheckCircle className="w-3 h-3 text-emerald-400" />;
+  if (status === "scanning") return <Loader2 className="w-3 h-3 text-yellow-400 animate-spin" />;
+  if (status === "issue") return <AlertTriangle className="w-3 h-3 text-red-400" />;
+  return null;
+}
 
 export default function Library() {
   const { user } = useAuth();
@@ -87,11 +112,20 @@ export default function Library() {
           {videoData.map((video, idx) => (
             <div 
               key={idx} 
-              className="bg-white/5 rounded-xl border border-white/5 overflow-hidden group"
+              className="bg-white/5 rounded-xl border border-white/5 overflow-hidden group cursor-pointer"
               data-testid={`card-video-${idx}`}
             >
-              <div className="aspect-video bg-gray-800 flex items-center justify-center relative">
-                <Video className="w-12 h-12 text-gray-600" />
+              <div className="aspect-video relative overflow-hidden">
+                <img 
+                  src={video.image} 
+                  alt={video.title}
+                  className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent" />
+                <div className="absolute bottom-2 left-2 flex items-center gap-1.5 px-2 py-1 rounded-md bg-black/50 backdrop-blur-sm">
+                  <AiOverlayIcon status={video.aiStatus} />
+                  <span className="text-xs text-white/90 font-medium">{video.aiText}</span>
+                </div>
                 <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
                   <Button variant="outline" size="sm" className="gap-2">
                     <Eye className="w-4 h-4" />
