@@ -11,6 +11,7 @@ import NotFound from "@/pages/not-found";
 import Landing from "@/pages/Landing";
 import Dashboard from "@/pages/Dashboard";
 import Library from "@/pages/Library";
+import Opportunities from "@/pages/Opportunities";
 import Privacy from "@/pages/Privacy";
 import Terms from "@/pages/Terms";
 
@@ -47,7 +48,7 @@ function Router() {
       <Route path="/privacy" component={Privacy} />
       <Route path="/terms" component={Terms} />
       <Route path="/library" component={Library} />
-      <Route path="/opportunities" component={Dashboard} />
+      <Route path="/opportunities" component={Opportunities} />
       <Route path="/earnings" component={Dashboard} />
       <Route component={NotFound} />
     </Switch>
