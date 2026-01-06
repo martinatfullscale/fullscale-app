@@ -19,12 +19,21 @@ export default function Landing() {
       <nav className="relative z-10 container mx-auto px-6 h-20 flex items-center justify-between">
         <img src={logoUrl} alt="FullScale" className="h-10 w-auto" data-testid="img-landing-logo" />
         
-        <button 
-          onClick={handleLogin}
-          className="px-5 py-2 rounded-lg font-medium text-sm border border-border bg-white/5 hover:bg-white/10 transition-colors"
-        >
-          Sign In
-        </button>
+        <div className="flex items-center gap-3">
+          <a 
+            href="#cohort"
+            className="px-5 py-2 rounded-lg font-medium text-sm border border-primary text-primary bg-transparent hover:bg-primary/10 transition-colors"
+            data-testid="button-nav-apply"
+          >
+            Apply for Access
+          </a>
+          <button 
+            onClick={handleLogin}
+            className="px-5 py-2 rounded-lg font-medium text-sm border border-border bg-white/5 hover:bg-white/10 transition-colors"
+          >
+            Sign In
+          </button>
+        </div>
       </nav>
 
       <main className="flex-1 relative z-10 container mx-auto px-6 flex flex-col items-center justify-center text-center pb-20">
@@ -130,6 +139,7 @@ export default function Landing() {
       </main>
 
       <motion.section
+        id="cohort"
         initial={{ opacity: 0, y: 40 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.8, delay: 0.6 }}
