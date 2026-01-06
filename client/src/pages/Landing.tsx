@@ -7,7 +7,6 @@ import logoMayDavis from "@assets/logo-may-davis_1767712118621.png";
 import logoElementa from "@assets/logo-elementa_1767712118620.png";
 import logoNue from "@assets/logo-nue_1767712118621.png";
 import featureKitchen from "@assets/feature-kitchen_1767713076335.png";
-import dashboardDemo from "@assets/dashboard-demo_1767715804946.png";
 import { Footer } from "@/components/Footer";
 
 export default function Landing() {
@@ -298,7 +297,7 @@ export default function Landing() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-md p-4 overflow-y-auto"
             onClick={() => setShowDemoModal(false)}
           >
             <motion.div
@@ -306,32 +305,131 @@ export default function Landing() {
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
               transition={{ duration: 0.2 }}
-              className="relative w-full max-w-4xl text-center"
+              className="relative w-full max-w-5xl my-8"
               onClick={(e) => e.stopPropagation()}
             >
               <button
                 onClick={() => setShowDemoModal(false)}
-                className="absolute -top-12 right-0 text-white/60 hover:text-white transition-colors"
+                className="absolute -top-10 right-0 text-white/60 hover:text-white transition-colors z-10"
                 data-testid="button-demo-close"
               >
                 <X className="w-8 h-8" />
               </button>
 
-              <p className="text-sm uppercase tracking-widest text-muted-foreground mb-4 font-medium">
-                The Command Center
-              </p>
+              <div className="relative rounded-2xl border border-white/10 bg-black/60 backdrop-blur-xl p-6 md:p-8 shadow-2xl">
+                <div className="absolute top-4 right-4 px-3 py-1 rounded-full bg-primary/20 border border-primary/40 text-primary text-xs font-bold uppercase tracking-wider">
+                  Simulation Mode
+                </div>
 
-              <div className="rounded-xl border border-white/10 overflow-hidden shadow-2xl">
-                <img 
-                  src={dashboardDemo} 
-                  alt="FullScale Dashboard Preview" 
-                  className="w-full h-auto"
-                />
+                <p className="text-sm uppercase tracking-widest text-muted-foreground mb-6 font-medium">
+                  The Command Center
+                </p>
+
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+                  <div className="bg-white/5 rounded-xl p-4 border border-white/5">
+                    <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Total Revenue</p>
+                    <p className="text-2xl md:text-3xl font-bold text-emerald-400">$14,850</p>
+                    <p className="text-xs text-emerald-400/80 mt-1">+18% this month</p>
+                  </div>
+                  <div className="bg-white/5 rounded-xl p-4 border border-white/5">
+                    <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Active Bids</p>
+                    <p className="text-2xl md:text-3xl font-bold text-white">12</p>
+                    <span className="inline-block mt-1 px-2 py-0.5 rounded-full bg-orange-500/20 text-orange-400 text-xs font-medium">Hot</span>
+                  </div>
+                  <div className="bg-white/5 rounded-xl p-4 border border-white/5">
+                    <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Avg. CPM</p>
+                    <p className="text-2xl md:text-3xl font-bold text-white">$35.00</p>
+                    <p className="text-xs text-muted-foreground/60 mt-1">Industry avg: $22</p>
+                  </div>
+                  <div className="bg-white/5 rounded-xl p-4 border border-white/5">
+                    <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Inventory Index</p>
+                    <p className="text-2xl md:text-3xl font-bold text-white">98%</p>
+                    <p className="text-xs text-muted-foreground/60 mt-1">Scanned</p>
+                  </div>
+                </div>
+
+                <div className="bg-white/5 rounded-xl p-6 border border-white/5 mb-8">
+                  <p className="text-sm font-semibold text-white mb-4">Revenue Velocity</p>
+                  <div className="flex items-end justify-between gap-2 h-32 md:h-40">
+                    <div className="flex-1 flex flex-col items-center gap-1">
+                      <div className="w-full bg-gradient-to-t from-primary/60 to-primary rounded-t-sm" style={{ height: '25%' }}></div>
+                      <span className="text-xs text-muted-foreground">Jul</span>
+                    </div>
+                    <div className="flex-1 flex flex-col items-center gap-1">
+                      <div className="w-full bg-gradient-to-t from-primary/60 to-primary rounded-t-sm" style={{ height: '40%' }}></div>
+                      <span className="text-xs text-muted-foreground">Aug</span>
+                    </div>
+                    <div className="flex-1 flex flex-col items-center gap-1">
+                      <div className="w-full bg-gradient-to-t from-primary/60 to-primary rounded-t-sm" style={{ height: '35%' }}></div>
+                      <span className="text-xs text-muted-foreground">Sep</span>
+                    </div>
+                    <div className="flex-1 flex flex-col items-center gap-1">
+                      <div className="w-full bg-gradient-to-t from-primary/60 to-primary rounded-t-sm" style={{ height: '55%' }}></div>
+                      <span className="text-xs text-muted-foreground">Oct</span>
+                    </div>
+                    <div className="flex-1 flex flex-col items-center gap-1">
+                      <div className="w-full bg-gradient-to-t from-primary/60 to-primary rounded-t-sm" style={{ height: '70%' }}></div>
+                      <span className="text-xs text-muted-foreground">Nov</span>
+                    </div>
+                    <div className="flex-1 flex flex-col items-center gap-1">
+                      <div className="w-full bg-gradient-to-t from-primary/60 to-primary rounded-t-sm" style={{ height: '90%' }}></div>
+                      <span className="text-xs text-muted-foreground">Dec</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-white/5 rounded-xl border border-white/5 overflow-hidden">
+                  <div className="px-6 py-4 border-b border-white/5">
+                    <p className="text-sm font-semibold text-white">Active Brand Campaigns</p>
+                  </div>
+                  <div className="divide-y divide-white/5">
+                    <div className="px-6 py-4 flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex items-center gap-3">
+                        <span className="font-semibold text-white">Sony</span>
+                        <span className="text-muted-foreground text-sm">Vlog #42</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 text-xs font-medium">Active</span>
+                        <span className="font-semibold text-white">$2,400</span>
+                      </div>
+                    </div>
+                    <div className="px-6 py-4 flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex items-center gap-3">
+                        <span className="font-semibold text-white">Nike</span>
+                        <span className="text-muted-foreground text-sm">Training Montage</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="px-2 py-0.5 rounded-full bg-orange-500/20 text-orange-400 text-xs font-medium">Bidding</span>
+                        <span className="font-semibold text-white">$850</span>
+                      </div>
+                    </div>
+                    <div className="px-6 py-4 flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex items-center gap-3">
+                        <span className="font-semibold text-white">Squarespace</span>
+                        <span className="text-muted-foreground text-sm">Tech Review</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-400 text-xs font-medium">Paid</span>
+                        <span className="font-semibold text-white">$1,200</span>
+                      </div>
+                    </div>
+                    <div className="px-6 py-4 flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex items-center gap-3">
+                        <span className="font-semibold text-white">Coca-Cola</span>
+                        <span className="text-muted-foreground text-sm">Summer Vlog</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-400 text-xs font-medium">Pending</span>
+                        <span className="font-semibold text-white">$3,100</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <p className="mt-6 text-center text-muted-foreground text-sm leading-relaxed">
+                  Track inventory, approve placements, and watch revenue grow in real-time.
+                </p>
               </div>
-
-              <p className="mt-6 text-muted-foreground leading-relaxed">
-                Track inventory, approve placements, and watch revenue grow in real-time.
-              </p>
             </motion.div>
           </motion.div>
         )}
