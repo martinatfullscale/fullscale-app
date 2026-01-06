@@ -7,10 +7,12 @@ import logoMayDavis from "@assets/logo-may-davis_1767712118621.png";
 import logoElementa from "@assets/logo-elementa_1767712118620.png";
 import logoNue from "@assets/logo-nue_1767712118621.png";
 import featureKitchen from "@assets/feature-kitchen_1767713076335.png";
+import dashboardDemo from "@assets/dashboard-demo_1767715804946.png";
 import { Footer } from "@/components/Footer";
 
 export default function Landing() {
   const [showBetaModal, setShowBetaModal] = useState(false);
+  const [showDemoModal, setShowDemoModal] = useState(false);
 
   const handleLoginClick = () => {
     setShowBetaModal(true);
@@ -82,7 +84,11 @@ export default function Landing() {
             >
               Start Monetizing Now
             </button>
-            <button className="px-8 py-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white font-semibold text-lg backdrop-blur-sm transition-all duration-300 w-full sm:w-auto">
+            <button 
+              onClick={() => setShowDemoModal(true)}
+              className="px-8 py-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white font-semibold text-lg backdrop-blur-sm transition-all duration-300 w-full sm:w-auto"
+              data-testid="button-view-demo"
+            >
               View Demo
             </button>
           </div>
@@ -281,6 +287,51 @@ export default function Landing() {
               >
                 Already a Partner? Sign In
               </button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showDemoModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+            onClick={() => setShowDemoModal(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              transition={{ duration: 0.2 }}
+              className="relative w-full max-w-4xl text-center"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <button
+                onClick={() => setShowDemoModal(false)}
+                className="absolute -top-12 right-0 text-white/60 hover:text-white transition-colors"
+                data-testid="button-demo-close"
+              >
+                <X className="w-8 h-8" />
+              </button>
+
+              <p className="text-sm uppercase tracking-widest text-muted-foreground mb-4 font-medium">
+                The Command Center
+              </p>
+
+              <div className="rounded-xl border border-white/10 overflow-hidden shadow-2xl">
+                <img 
+                  src={dashboardDemo} 
+                  alt="FullScale Dashboard Preview" 
+                  className="w-full h-auto"
+                />
+              </div>
+
+              <p className="mt-6 text-muted-foreground leading-relaxed">
+                Track inventory, approve placements, and watch revenue grow in real-time.
+              </p>
             </motion.div>
           </motion.div>
         )}
