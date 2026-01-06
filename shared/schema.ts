@@ -87,3 +87,26 @@ export const insertVideoIndexSchema = createInsertSchema(videoIndex).omit({
 
 export type VideoIndex = typeof videoIndex.$inferSelect;
 export type InsertVideoIndex = z.infer<typeof insertVideoIndexSchema>;
+
+// Detected Surfaces Table - stores AI-detected ad placement surfaces in videos
+export const detectedSurfaces = pgTable("detected_surfaces", {
+  id: serial("id").primaryKey(),
+  videoId: integer("video_id").notNull(), // Reference to video_index.id
+  timestamp: numeric("timestamp").notNull(), // Seconds into video where surface was detected
+  surfaceType: varchar("surface_type").notNull(), // Table, Desk, Wall, Monitor, Bottle
+  confidence: numeric("confidence").notNull(), // AI confidence score (0-1)
+  boundingBoxX: numeric("bounding_box_x").notNull(), // X coordinate (0-1 normalized)
+  boundingBoxY: numeric("bounding_box_y").notNull(), // Y coordinate (0-1 normalized)
+  boundingBoxWidth: numeric("bounding_box_width").notNull(), // Width (0-1 normalized)
+  boundingBoxHeight: numeric("bounding_box_height").notNull(), // Height (0-1 normalized)
+  frameUrl: text("frame_url"), // Optional: stored frame image URL
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertDetectedSurfaceSchema = createInsertSchema(detectedSurfaces).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type DetectedSurface = typeof detectedSurfaces.$inferSelect;
+export type InsertDetectedSurface = z.infer<typeof insertDetectedSurfaceSchema>;
