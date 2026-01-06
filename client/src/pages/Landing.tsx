@@ -1,5 +1,6 @@
-import { motion } from "framer-motion";
-import { Zap, Shield, Video, ImageIcon } from "lucide-react";
+import { useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Zap, Shield, Video, ImageIcon, X } from "lucide-react";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 import logoBlackAmbition from "@assets/logo-black-ambition_1767712118620.png";
 import logoMayDavis from "@assets/logo-may-davis_1767712118621.png";
@@ -9,8 +10,14 @@ import featureKitchen from "@assets/feature-kitchen_1767713076335.png";
 import { Footer } from "@/components/Footer";
 
 export default function Landing() {
-  const handleLogin = () => {
-    window.location.href = "/api/login";
+  const [showBetaModal, setShowBetaModal] = useState(false);
+
+  const handleLoginClick = () => {
+    setShowBetaModal(true);
+  };
+
+  const handleActualLogin = () => {
+    window.location.href = "/api/auth/youtube";
   };
 
   return (
@@ -35,8 +42,9 @@ export default function Landing() {
             Apply for Access
           </a>
           <button 
-            onClick={handleLogin}
+            onClick={handleLoginClick}
             className="px-5 py-2 rounded-lg font-medium text-sm border border-border bg-white/5 hover:bg-white/10 transition-colors"
+            data-testid="button-nav-signin"
           >
             Sign In
           </button>
@@ -68,8 +76,9 @@ export default function Landing() {
 
           <div className="flex flex-col sm:flex-row gap-4 items-center justify-center">
             <button 
-              onClick={handleLogin}
+              onClick={handleLoginClick}
               className="px-8 py-4 rounded-xl bg-primary hover:bg-primary/90 text-white font-semibold text-lg shadow-lg shadow-primary/25 hover:shadow-primary/40 hover:-translate-y-1 transition-all duration-300 w-full sm:w-auto"
+              data-testid="button-hero-start"
             >
               Start Monetizing Now
             </button>
@@ -221,6 +230,61 @@ export default function Landing() {
       </motion.section>
 
       <Footer />
+
+      <AnimatePresence>
+        {showBetaModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+            onClick={() => setShowBetaModal(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              transition={{ duration: 0.2 }}
+              className="relative w-full max-w-md bg-card border border-white/10 rounded-2xl p-8 text-center shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <button
+                onClick={() => setShowBetaModal(false)}
+                className="absolute top-4 right-4 text-muted-foreground hover:text-white transition-colors"
+                data-testid="button-modal-close"
+              >
+                <X className="w-5 h-5" />
+              </button>
+
+              <h2 className="text-2xl font-bold font-display tracking-tight mb-4 uppercase">
+                FullScale is Currently <span className="text-primary">Invite-Only.</span>
+              </h2>
+              
+              <p className="text-muted-foreground leading-relaxed mb-8">
+                We are onboarding a select cohort of founding creators to ensure the highest quality experience. Applications are reviewed daily.
+              </p>
+
+              <a
+                href="https://airtable.com/appF4oLhgbf143xe7/pagil3dstNSBZvLUr/form"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-block w-full px-6 py-3 rounded-xl bg-primary hover:bg-primary/90 text-white font-semibold text-lg transition-colors"
+                data-testid="button-modal-apply"
+              >
+                Apply for Access
+              </a>
+
+              <button
+                onClick={handleActualLogin}
+                className="mt-6 text-sm text-muted-foreground/60 hover:text-white transition-colors underline underline-offset-4"
+                data-testid="button-modal-partner-signin"
+              >
+                Already a Partner? Sign In
+              </button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
