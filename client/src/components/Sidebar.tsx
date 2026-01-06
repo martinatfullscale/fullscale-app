@@ -17,10 +17,10 @@ export function Sidebar() {
   return (
     <div className="w-64 h-screen bg-card border-r border-border fixed left-0 top-0 flex flex-col p-6 z-20">
       <div className="flex items-center gap-3 px-2 mb-10">
-        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary to-purple-600 flex items-center justify-center shadow-lg shadow-primary/25">
+        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary to-red-700 flex items-center justify-center shadow-lg shadow-primary/25">
           <span className="text-white font-bold text-lg font-display">F</span>
         </div>
-        <span className="font-display font-bold text-xl tracking-tight text-white">FullScale</span>
+        <span className="font-display font-bold text-2xl tracking-tight text-white">FullScale</span>
       </div>
 
       <nav className="flex-1 space-y-2">

@@ -118,21 +118,21 @@ export default function Dashboard() {
             value={isLoadingStats ? "..." : (isConnected ? videoCount.toLocaleString() : "-")} 
             icon={<Video className="w-5 h-5" />} 
             delay={0}
-            colorClass="bg-blue-500"
+            colorClass="bg-primary"
           />
           <MetricCard 
             title="Total Views" 
             value={isLoadingStats ? "..." : (isConnected ? viewCount.toLocaleString() : "-")} 
             icon={<Layers className="w-5 h-5" />} 
             delay={1}
-            colorClass="bg-purple-500"
+            colorClass="bg-primary"
           />
           <MetricCard 
             title="Subscribers" 
             value={isLoadingStats ? "..." : (isConnected ? subscriberCount.toLocaleString() : "-")} 
             icon={<Users className="w-5 h-5" />} 
             delay={2}
-            colorClass="bg-emerald-500"
+            colorClass="bg-primary"
           />
         </div>
 
@@ -234,13 +234,13 @@ export default function Dashboard() {
             >
               <h3 className="font-semibold mb-4">Quick Actions</h3>
               <div className="space-y-3">
-                <button className="w-full text-left px-4 py-3 rounded-xl bg-secondary/30 hover:bg-secondary/60 text-sm font-medium transition-colors border border-transparent hover:border-border">
+                <button className="w-full text-left px-4 py-3 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium transition-colors">
                   Upload Manual Asset
                 </button>
-                <button className="w-full text-left px-4 py-3 rounded-xl bg-secondary/30 hover:bg-secondary/60 text-sm font-medium transition-colors border border-transparent hover:border-border">
+                <button className="w-full text-left px-4 py-3 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium transition-colors">
                   Configure Webhooks
                 </button>
-                <button className="w-full text-left px-4 py-3 rounded-xl bg-secondary/30 hover:bg-secondary/60 text-sm font-medium transition-colors border border-transparent hover:border-border">
+                <button className="w-full text-left px-4 py-3 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium transition-colors">
                   View API Documentation
                 </button>
               </div>

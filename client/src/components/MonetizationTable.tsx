@@ -44,9 +44,10 @@ export function MonetizationTable({ isConnected }: Props) {
   const getStatusBadge = (status: string) => {
     switch (status.toLowerCase()) {
       case 'monetized':
+      case 'ready':
         return (
           <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">
-            <CheckCircle2 className="w-3.5 h-3.5" /> Monetized
+            <CheckCircle2 className="w-3.5 h-3.5" /> Ready
           </span>
         );
       case 'pending':
@@ -56,9 +57,10 @@ export function MonetizationTable({ isConnected }: Props) {
           </span>
         );
       case 'rejected':
+      case 'error':
         return (
           <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-red-500/10 text-red-500 border border-red-500/20">
-            <XCircle className="w-3.5 h-3.5" /> Rejected
+            <XCircle className="w-3.5 h-3.5" /> Error
           </span>
         );
       default:
