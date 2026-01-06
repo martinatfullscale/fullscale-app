@@ -1,8 +1,6 @@
 import { Sidebar } from "@/components/Sidebar";
 import { TopBar } from "@/components/TopBar";
-import { MetricCard } from "@/components/MetricCard";
-import { MonetizationTable } from "@/components/MonetizationTable";
-import { Video, Layers, Workflow, Youtube, CheckCircle, Unlink, Users } from "lucide-react";
+import { Video, Youtube, CheckCircle, Unlink, Users, TrendingUp, Gavel, BarChart3 } from "lucide-react";
 import { motion } from "framer-motion";
 import { useEffect } from "react";
 import { useAuth } from "@/hooks/use-auth";
@@ -26,6 +24,22 @@ interface YoutubeChannel {
   videoCount?: string;
   viewCount?: string;
 }
+
+const demoCampaigns = [
+  { brand: "Sony", content: "Vlog #42", status: "Active", amount: "$2,400", statusColor: "bg-emerald-500/20 text-emerald-400" },
+  { brand: "Nike", content: "Training Montage", status: "Bidding", amount: "$850", statusColor: "bg-orange-500/20 text-orange-400" },
+  { brand: "Squarespace", content: "Tech Review", status: "Paid", amount: "$1,200", statusColor: "bg-blue-500/20 text-blue-400" },
+  { brand: "Coca-Cola", content: "Summer Vlog", status: "Pending", amount: "$3,100", statusColor: "bg-yellow-500/20 text-yellow-400" },
+];
+
+const chartData = [
+  { month: "Jul", height: "25%" },
+  { month: "Aug", height: "40%" },
+  { month: "Sep", height: "35%" },
+  { month: "Oct", height: "55%" },
+  { month: "Nov", height: "70%" },
+  { month: "Dec", height: "90%" },
+];
 
 export default function Dashboard() {
   const { user } = useAuth();
@@ -90,55 +104,122 @@ export default function Dashboard() {
   };
 
   const videoCount = channelData?.videoCount ? parseInt(channelData.videoCount, 10) : 0;
-  const viewCount = channelData?.viewCount ? parseInt(channelData.viewCount, 10) : 0;
-  const subscriberCount = channelData?.subscriberCount ? parseInt(channelData.subscriberCount, 10) : 0;
   const isConnected = youtubeStatus?.connected || false;
-  const isLoadingStats = isConnected && isLoadingChannel;
+  const hasRealData = isConnected && videoCount > 0;
+  const showDemoMode = !hasRealData;
 
   return (
     <div className="min-h-screen bg-background text-foreground font-sans selection:bg-primary/20">
       <Sidebar />
       <TopBar />
 
-      <main className="ml-64 p-8 max-w-7xl mx-auto">
+      <main className="ml-64 p-8 max-w-7xl mx-auto relative">
+        {showDemoMode && (
+          <div className="absolute top-8 right-8 px-3 py-1 rounded-full bg-primary/20 border border-primary/40 text-primary text-xs font-bold uppercase tracking-wider z-10">
+            Demo Mode
+          </div>
+        )}
+
         <motion.div 
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           className="mb-8"
         >
+          <p className="text-xs uppercase tracking-widest text-muted-foreground mb-2 font-medium">The Command Center</p>
           <h1 className="text-3xl font-bold font-display mb-2" data-testid="text-welcome">
             Welcome back, {user?.firstName || "Creator"}
           </h1>
           <p className="text-muted-foreground">Here's what's happening with your content today.</p>
         </motion.div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-          <MetricCard 
-            title="Total Videos" 
-            value={isLoadingStats ? "..." : (isConnected ? videoCount.toLocaleString() : "-")} 
-            icon={<Video className="w-5 h-5" />} 
-            delay={0}
-            colorClass="bg-primary"
-          />
-          <MetricCard 
-            title="Total Views" 
-            value={isLoadingStats ? "..." : (isConnected ? viewCount.toLocaleString() : "-")} 
-            icon={<Layers className="w-5 h-5" />} 
-            delay={1}
-            colorClass="bg-primary"
-          />
-          <MetricCard 
-            title="Subscribers" 
-            value={isLoadingStats ? "..." : (isConnected ? subscriberCount.toLocaleString() : "-")} 
-            icon={<Users className="w-5 h-5" />} 
-            delay={2}
-            colorClass="bg-primary"
-          />
-        </div>
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.1 }}
+          className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8"
+        >
+          <div className="bg-white/5 rounded-xl p-5 border border-white/5">
+            <div className="flex items-center gap-2 mb-2">
+              <TrendingUp className="w-4 h-4 text-emerald-400" />
+              <p className="text-xs text-muted-foreground uppercase tracking-wider">Total Revenue</p>
+            </div>
+            <p className="text-3xl font-bold text-emerald-400" data-testid="text-revenue">$14,850</p>
+            <p className="text-xs text-emerald-400/80 mt-1">+18% this month</p>
+          </div>
+          <div className="bg-white/5 rounded-xl p-5 border border-white/5">
+            <div className="flex items-center gap-2 mb-2">
+              <Gavel className="w-4 h-4 text-orange-400" />
+              <p className="text-xs text-muted-foreground uppercase tracking-wider">Active Bids</p>
+            </div>
+            <p className="text-3xl font-bold text-white" data-testid="text-bids">12</p>
+            <span className="inline-block mt-1 px-2 py-0.5 rounded-full bg-orange-500/20 text-orange-400 text-xs font-medium">Hot</span>
+          </div>
+          <div className="bg-white/5 rounded-xl p-5 border border-white/5">
+            <div className="flex items-center gap-2 mb-2">
+              <BarChart3 className="w-4 h-4 text-blue-400" />
+              <p className="text-xs text-muted-foreground uppercase tracking-wider">Avg. CPM</p>
+            </div>
+            <p className="text-3xl font-bold text-white" data-testid="text-cpm">$35.00</p>
+            <p className="text-xs text-muted-foreground/60 mt-1">Industry avg: $22</p>
+          </div>
+          <div className="bg-white/5 rounded-xl p-5 border border-white/5">
+            <div className="flex items-center gap-2 mb-2">
+              <Video className="w-4 h-4 text-primary" />
+              <p className="text-xs text-muted-foreground uppercase tracking-wider">Inventory Index</p>
+            </div>
+            <p className="text-3xl font-bold text-white" data-testid="text-inventory">98%</p>
+            <p className="text-xs text-muted-foreground/60 mt-1">Scanned</p>
+          </div>
+        </motion.div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="lg:col-span-2 space-y-8">
-            <MonetizationTable isConnected={isConnected} />
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.2 }}
+              className="bg-white/5 rounded-xl p-6 border border-white/5"
+            >
+              <p className="text-sm font-semibold text-white mb-4">Revenue Velocity</p>
+              <div className="flex items-end justify-between gap-3 h-40">
+                {chartData.map((bar) => (
+                  <div key={bar.month} className="flex-1 flex flex-col items-center gap-2">
+                    <div 
+                      className="w-full bg-gradient-to-t from-primary/60 to-primary rounded-t-sm transition-all duration-500" 
+                      style={{ height: bar.height }}
+                    />
+                    <span className="text-xs text-muted-foreground">{bar.month}</span>
+                  </div>
+                ))}
+              </div>
+            </motion.div>
+
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.3 }}
+              className="bg-white/5 rounded-xl border border-white/5 overflow-hidden"
+            >
+              <div className="px-6 py-4 border-b border-white/5">
+                <p className="text-sm font-semibold text-white">Active Brand Campaigns</p>
+              </div>
+              <div className="divide-y divide-white/5">
+                {demoCampaigns.map((campaign, idx) => (
+                  <div key={idx} className="px-6 py-4 flex flex-wrap items-center justify-between gap-3" data-testid={`row-campaign-${idx}`}>
+                    <div className="flex items-center gap-3">
+                      <span className="font-semibold text-white">{campaign.brand}</span>
+                      <span className="text-muted-foreground text-sm">{campaign.content}</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className={`px-2 py-0.5 rounded-full ${campaign.statusColor} text-xs font-medium`}>
+                        {campaign.status}
+                      </span>
+                      <span className="font-semibold text-white">{campaign.amount}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </motion.div>
           </div>
 
           <div className="space-y-6">
@@ -146,6 +227,37 @@ export default function Dashboard() {
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ delay: 0.3 }}
+              className="bg-card rounded-2xl p-6 border border-border"
+            >
+              <h3 className="font-semibold mb-4">Quick Actions</h3>
+              <div className="space-y-3">
+                {!isConnected && (
+                  <button
+                    onClick={handleConnect}
+                    disabled={isCheckingYoutube}
+                    data-testid="button-connect-youtube"
+                    className="w-full text-left px-4 py-3 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-medium transition-colors flex items-center gap-2"
+                  >
+                    <Youtube className="w-4 h-4" />
+                    {isCheckingYoutube ? "Checking..." : "Connect YouTube"}
+                  </button>
+                )}
+                <button className="w-full text-left px-4 py-3 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium transition-colors">
+                  Upload Manual Asset
+                </button>
+                <button className="w-full text-left px-4 py-3 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium transition-colors">
+                  Configure Webhooks
+                </button>
+                <button className="w-full text-left px-4 py-3 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium transition-colors">
+                  View API Documentation
+                </button>
+              </div>
+            </motion.div>
+
+            <motion.div 
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ delay: 0.4 }}
               className="bg-gradient-to-br from-card to-secondary/30 rounded-2xl p-6 border border-border shadow-lg"
             >
               <div className="flex items-center gap-4 mb-4">
@@ -167,13 +279,15 @@ export default function Dashboard() {
                 )}
                 <div className="flex-1">
                   <h3 className="text-lg font-bold font-display" data-testid="text-channel-title">
-                    {isConnected ? (channelData?.title || youtubeStatus?.channelTitle || "YouTube Connected") : "Connect YouTube"}
+                    {isConnected ? (channelData?.title || youtubeStatus?.channelTitle || "YouTube Connected") : "Channel Status"}
                   </h3>
-                  {isConnected && (
+                  {isConnected ? (
                     <div className="flex items-center gap-1 text-xs text-emerald-500">
                       <CheckCircle className="w-3 h-3" />
                       <span>Channel linked</span>
                     </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">Not connected</p>
                   )}
                 </div>
               </div>
@@ -203,47 +317,10 @@ export default function Dashboard() {
                   </button>
                 </>
               ) : (
-                <>
-                  <p className="text-sm text-muted-foreground mb-6">
-                    Link your channel to automatically index new content and track monetization status in real-time.
-                  </p>
-                  <button
-                    onClick={handleConnect}
-                    disabled={isCheckingYoutube}
-                    data-testid="button-connect-youtube"
-                    className="w-full py-3 px-4 bg-primary hover:bg-primary/90 text-primary-foreground font-semibold rounded-xl shadow-lg shadow-primary/25 transition-all duration-200 hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-70 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                  >
-                    {isCheckingYoutube ? (
-                      <>
-                        <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                        Checking...
-                      </>
-                    ) : (
-                      "Connect Channel"
-                    )}
-                  </button>
-                </>
+                <p className="text-sm text-muted-foreground">
+                  Connect your YouTube channel to replace demo data with your real metrics.
+                </p>
               )}
-            </motion.div>
-
-            <motion.div 
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: 0.4 }}
-              className="bg-card rounded-2xl p-6 border border-border"
-            >
-              <h3 className="font-semibold mb-4">Quick Actions</h3>
-              <div className="space-y-3">
-                <button className="w-full text-left px-4 py-3 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium transition-colors">
-                  Upload Manual Asset
-                </button>
-                <button className="w-full text-left px-4 py-3 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium transition-colors">
-                  Configure Webhooks
-                </button>
-                <button className="w-full text-left px-4 py-3 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium transition-colors">
-                  View API Documentation
-                </button>
-              </div>
             </motion.div>
           </div>
         </div>
