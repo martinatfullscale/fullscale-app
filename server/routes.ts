@@ -260,17 +260,21 @@ export async function registerRoutes(
       
       console.log(`Access granted for: ${userInfo.email}`);
       
+      // Always redirect to production domain to avoid replit.dev session issues
+      const productionDashboardUrl = "https://gofullscale.co/dashboard";
+      
       // Explicitly save session before redirect to ensure it persists
       req.session.save((err: any) => {
         if (err) {
           console.error("Session save error:", err);
-          return res.redirect("/?error=session_error");
+          return res.redirect("https://gofullscale.co/?error=session_error");
         }
-        res.redirect("/dashboard");
+        console.log(`[Google OAuth] Redirecting to: ${productionDashboardUrl}`);
+        res.redirect(productionDashboardUrl);
       });
     } catch (err: any) {
       console.error("Google login callback error:", err.message || err);
-      res.redirect("/?error=login_failed");
+      res.redirect("https://gofullscale.co/?error=login_failed");
     }
   });
 
