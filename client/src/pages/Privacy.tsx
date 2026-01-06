@@ -76,7 +76,7 @@ export default function Privacy() {
 
           <div className="mt-12 p-6 rounded-2xl bg-primary/5 border border-primary/20">
             <p className="text-sm text-muted-foreground leading-relaxed">
-              <strong className="text-white">Questions about your data?</strong> We're committed to transparency. Contact us at privacy@fullscale.com for any inquiries about how we handle your content and personal information.
+              <strong className="text-white">Questions about your data?</strong> We're committed to transparency. Contact us at fullscale_info@gofullscale.co for any inquiries about how we handle your content and personal information.
             </p>
           </div>
         </motion.div>

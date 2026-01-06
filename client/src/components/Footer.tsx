@@ -62,7 +62,7 @@ export function Footer() {
               </li>
               <li>
                 <a 
-                  href="mailto:contact@fullscale.com"
+                  href="mailto:fullscale_info@gofullscale.co"
                   className="text-sm text-muted-foreground/60 hover:text-white transition-colors inline-flex items-center gap-2"
                   data-testid="link-contact"
                 >
