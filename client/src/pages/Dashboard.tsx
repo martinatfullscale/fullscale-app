@@ -190,17 +190,19 @@ export default function Dashboard() {
                 <p className="text-sm font-semibold text-white">Revenue Velocity</p>
                 <span className="text-xs text-emerald-400 font-medium">+200% YoY</span>
               </div>
-              <div className="flex items-end justify-between gap-1 md:gap-2 h-48">
+              <div className="flex items-end gap-1 md:gap-2" style={{ height: '200px' }}>
                 {chartData.map((bar) => (
-                  <div key={bar.month} className="flex-1 flex flex-col items-center gap-2 group relative">
+                  <div key={bar.month} className="flex-1 flex flex-col items-center group relative h-full">
                     <div className="absolute -top-8 left-1/2 -translate-x-1/2 px-2 py-1 bg-white text-black text-xs font-semibold rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-10 pointer-events-none">
                       {bar.revenue}
                     </div>
-                    <div 
-                      className="w-full bg-gradient-to-t from-primary/50 via-primary to-red-400 rounded-t-sm transition-all duration-300 group-hover:from-primary/70 group-hover:via-primary group-hover:to-red-300 cursor-pointer" 
-                      style={{ height: bar.height }}
-                    />
-                    <span className="text-[10px] md:text-xs text-muted-foreground">{bar.month}</span>
+                    <div className="flex-1 w-full flex items-end">
+                      <div 
+                        className="w-full bg-gradient-to-t from-primary/50 via-primary to-red-400 rounded-t-sm transition-all duration-300 group-hover:from-primary/70 group-hover:via-primary group-hover:to-red-300 cursor-pointer min-h-[4px]" 
+                        style={{ height: bar.height }}
+                      />
+                    </div>
+                    <span className="text-[10px] md:text-xs text-muted-foreground mt-2 shrink-0">{bar.month}</span>
                   </div>
                 ))}
               </div>
