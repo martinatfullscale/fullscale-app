@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Sidebar } from "@/components/Sidebar";
 import { TopBar } from "@/components/TopBar";
-import { Video, Youtube, CheckCircle, Unlink, TrendingUp, Gavel, BarChart3, Loader2 } from "lucide-react";
+import { Video, Youtube, CheckCircle, Unlink, TrendingUp, Gavel, BarChart3, Loader2, ToggleLeft, ToggleRight } from "lucide-react";
 import { motion } from "framer-motion";
 import { useAuth } from "@/hooks/use-auth";
 import { useHybridMode } from "@/hooks/use-hybrid-mode";
@@ -10,6 +10,13 @@ import { useToast } from "@/hooks/use-toast";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { UploadModal } from "@/components/UploadModal";
 import { useLocation } from "wouter";
+import { Switch } from "@/components/ui/switch";
+
+const ADMIN_EMAILS = [
+  "martin@gofullscale.co",
+  "martin@whtwrks.com",
+  "martincekechukwu@gmail.com",
+];
 
 interface YoutubeStatus {
   connected: boolean;
@@ -43,6 +50,24 @@ const chartData = [
   { month: "Dec", height: "68%", revenue: "$11.6k" },
 ];
 
+// Simulation mode data for investor pitches
+const simulationStats = {
+  revenue: "$14,850",
+  revenueGrowth: "+18% this month",
+  activeBids: "12",
+  avgCpm: "$35.00",
+  inventoryIndex: "98%",
+};
+
+// Real mode placeholder data (to be replaced with actual API data when available)
+const realModeStats = {
+  revenue: "$0",
+  revenueGrowth: "Connect to track",
+  activeBids: "0",
+  avgCpm: "--",
+  inventoryIndex: "--",
+};
+
 export default function Dashboard() {
   const { user } = useAuth();
   const { mode, isAuthenticated: isGoogleAuthenticated, googleUser } = useHybridMode();
@@ -52,9 +77,20 @@ export default function Dashboard() {
   const [, setLocation] = useLocation();
   const [isSimulatingConnect, setIsSimulatingConnect] = useState(false);
   const [simulatedConnected, setSimulatedConnected] = useState(false);
+  const [simulationModeOverride, setSimulationModeOverride] = useState(false);
 
   const isDemoMode = mode === "demo";
   const isRealMode = mode === "real";
+  
+  // Admin check - only these users can toggle simulation mode
+  const currentUserEmail = googleUser?.email || user?.email || "";
+  const isAdmin = ADMIN_EMAILS.includes(currentUserEmail.toLowerCase());
+  
+  // Simulation mode: admin override forces demo view even when authenticated
+  const showSimulationData = simulationModeOverride;
+  
+  // Choose which stats to display based on simulation mode
+  const displayStats = showSimulationData ? simulationStats : realModeStats;
 
   const { data: youtubeStatus, isLoading: isCheckingYoutube } = useQuery<YoutubeStatus>({
     queryKey: ["/api/auth/youtube/status"],
@@ -145,7 +181,28 @@ export default function Dashboard() {
       <TopBar />
 
       <main className="ml-64 p-8 max-w-7xl mx-auto relative">
-        {showDemoMode && (
+        {/* Admin-only Simulation Toggle */}
+        {isAdmin && (
+          <div className="absolute top-8 right-8 flex items-center gap-3 z-20">
+            <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-card border border-border">
+              <span className="text-xs text-muted-foreground">Real Data</span>
+              <Switch
+                checked={simulationModeOverride}
+                onCheckedChange={setSimulationModeOverride}
+                data-testid="switch-simulation-mode"
+              />
+              <span className="text-xs text-muted-foreground">Pitch Mode</span>
+            </div>
+            {simulationModeOverride && (
+              <div className="px-3 py-1 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-400 text-xs font-bold uppercase tracking-wider">
+                Simulation
+              </div>
+            )}
+          </div>
+        )}
+        
+        {/* Demo Mode badge for non-authenticated users */}
+        {!isAdmin && showDemoMode && (
           <div className="absolute top-8 right-8 px-3 py-1 rounded-full bg-primary/20 border border-primary/40 text-primary text-xs font-bold uppercase tracking-wider z-10">
             Demo Mode
           </div>
@@ -174,91 +231,122 @@ export default function Dashboard() {
               <TrendingUp className="w-4 h-4 text-emerald-400" />
               <p className="text-xs text-muted-foreground uppercase tracking-wider">Total Revenue</p>
             </div>
-            <p className="text-3xl font-bold text-emerald-400" data-testid="text-revenue">$14,850</p>
-            <p className="text-xs text-emerald-400/80 mt-1">+18% this month</p>
+            <p className="text-3xl font-bold text-emerald-400" data-testid="text-revenue">{displayStats.revenue}</p>
+            <p className="text-xs text-emerald-400/80 mt-1">{displayStats.revenueGrowth}</p>
           </div>
           <div className="bg-white/5 rounded-xl p-5 border border-white/5">
             <div className="flex items-center gap-2 mb-2">
               <Gavel className="w-4 h-4 text-orange-400" />
               <p className="text-xs text-muted-foreground uppercase tracking-wider">Active Bids</p>
             </div>
-            <p className="text-3xl font-bold text-white" data-testid="text-bids">12</p>
-            <span className="inline-block mt-1 px-2 py-0.5 rounded-full bg-orange-500/20 text-orange-400 text-xs font-medium">Hot</span>
+            <p className="text-3xl font-bold text-white" data-testid="text-bids">{displayStats.activeBids}</p>
+            {showSimulationData && (
+              <span className="inline-block mt-1 px-2 py-0.5 rounded-full bg-orange-500/20 text-orange-400 text-xs font-medium">Hot</span>
+            )}
           </div>
           <div className="bg-white/5 rounded-xl p-5 border border-white/5">
             <div className="flex items-center gap-2 mb-2">
               <BarChart3 className="w-4 h-4 text-blue-400" />
               <p className="text-xs text-muted-foreground uppercase tracking-wider">Avg. CPM</p>
             </div>
-            <p className="text-3xl font-bold text-white" data-testid="text-cpm">$35.00</p>
-            <p className="text-xs text-muted-foreground/60 mt-1">Industry avg: $22</p>
+            <p className="text-3xl font-bold text-white" data-testid="text-cpm">{displayStats.avgCpm}</p>
+            {showSimulationData && (
+              <p className="text-xs text-muted-foreground/60 mt-1">Industry avg: $22</p>
+            )}
           </div>
           <div className="bg-white/5 rounded-xl p-5 border border-white/5">
             <div className="flex items-center gap-2 mb-2">
               <Video className="w-4 h-4 text-primary" />
               <p className="text-xs text-muted-foreground uppercase tracking-wider">Inventory Index</p>
             </div>
-            <p className="text-3xl font-bold text-white" data-testid="text-inventory">98%</p>
-            <p className="text-xs text-muted-foreground/60 mt-1">Scanned</p>
+            <p className="text-3xl font-bold text-white" data-testid="text-inventory">{displayStats.inventoryIndex}</p>
+            <p className="text-xs text-muted-foreground/60 mt-1">{showSimulationData ? "Scanned" : "Videos indexed"}</p>
           </div>
         </motion.div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="lg:col-span-2 space-y-8">
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.2 }}
-              className="bg-white/5 rounded-xl p-6 border border-white/5"
-            >
-              <div className="flex items-center justify-between mb-4">
-                <p className="text-sm font-semibold text-white">Revenue Velocity</p>
-                <span className="text-xs text-emerald-400 font-medium">Last 5 months</span>
-              </div>
-              <div className="flex items-end gap-1 md:gap-2" style={{ height: '200px' }}>
-                {chartData.map((bar) => (
-                  <div key={bar.month} className="flex-1 flex flex-col items-center group relative h-full">
-                    <div className="absolute -top-8 left-1/2 -translate-x-1/2 px-2 py-1 bg-white text-black text-xs font-semibold rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-10 pointer-events-none">
-                      {bar.revenue}
-                    </div>
-                    <div className="flex-1 w-full flex items-end">
-                      <div 
-                        className="w-full bg-gradient-to-t from-primary/50 via-primary to-red-400 rounded-t-sm transition-all duration-300 group-hover:from-primary/70 group-hover:via-primary group-hover:to-red-300 cursor-pointer min-h-[4px]" 
-                        style={{ height: bar.height }}
-                      />
-                    </div>
-                    <span className="text-[10px] md:text-xs text-muted-foreground mt-2 shrink-0">{bar.month}</span>
+            {showSimulationData ? (
+              <>
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.2 }}
+                  className="bg-white/5 rounded-xl p-6 border border-white/5"
+                >
+                  <div className="flex items-center justify-between mb-4">
+                    <p className="text-sm font-semibold text-white">Revenue Velocity</p>
+                    <span className="text-xs text-emerald-400 font-medium">Last 5 months</span>
                   </div>
-                ))}
-              </div>
-            </motion.div>
+                  <div className="flex items-end gap-1 md:gap-2" style={{ height: '200px' }}>
+                    {chartData.map((bar) => (
+                      <div key={bar.month} className="flex-1 flex flex-col items-center group relative h-full">
+                        <div className="absolute -top-8 left-1/2 -translate-x-1/2 px-2 py-1 bg-white text-black text-xs font-semibold rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-10 pointer-events-none">
+                          {bar.revenue}
+                        </div>
+                        <div className="flex-1 w-full flex items-end">
+                          <div 
+                            className="w-full bg-gradient-to-t from-primary/50 via-primary to-red-400 rounded-t-sm transition-all duration-300 group-hover:from-primary/70 group-hover:via-primary group-hover:to-red-300 cursor-pointer min-h-[4px]" 
+                            style={{ height: bar.height }}
+                          />
+                        </div>
+                        <span className="text-[10px] md:text-xs text-muted-foreground mt-2 shrink-0">{bar.month}</span>
+                      </div>
+                    ))}
+                  </div>
+                </motion.div>
 
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.3 }}
-              className="bg-white/5 rounded-xl border border-white/5 overflow-hidden"
-            >
-              <div className="px-6 py-4 border-b border-white/5">
-                <p className="text-sm font-semibold text-white">Active Brand Campaigns</p>
-              </div>
-              <div className="divide-y divide-white/5">
-                {demoCampaigns.map((campaign, idx) => (
-                  <div key={idx} className="px-6 py-4 flex flex-wrap items-center justify-between gap-3" data-testid={`row-campaign-${idx}`}>
-                    <div className="flex items-center gap-3">
-                      <span className="font-semibold text-white">{campaign.brand}</span>
-                      <span className="text-muted-foreground text-sm">{campaign.content}</span>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <span className={`px-2 py-0.5 rounded-full ${campaign.statusColor} text-xs font-medium`}>
-                        {campaign.status}
-                      </span>
-                      <span className="font-semibold text-white">{campaign.amount}</span>
-                    </div>
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.3 }}
+                  className="bg-white/5 rounded-xl border border-white/5 overflow-hidden"
+                >
+                  <div className="px-6 py-4 border-b border-white/5">
+                    <p className="text-sm font-semibold text-white">Active Brand Campaigns</p>
                   </div>
-                ))}
-              </div>
-            </motion.div>
+                  <div className="divide-y divide-white/5">
+                    {demoCampaigns.map((campaign, idx) => (
+                      <div key={idx} className="px-6 py-4 flex flex-wrap items-center justify-between gap-3" data-testid={`row-campaign-${idx}`}>
+                        <div className="flex items-center gap-3">
+                          <span className="font-semibold text-white">{campaign.brand}</span>
+                          <span className="text-muted-foreground text-sm">{campaign.content}</span>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <span className={`px-2 py-0.5 rounded-full ${campaign.statusColor} text-xs font-medium`}>
+                            {campaign.status}
+                          </span>
+                          <span className="font-semibold text-white">{campaign.amount}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </motion.div>
+              </>
+            ) : (
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.2 }}
+                className="bg-white/5 rounded-xl p-8 border border-white/5 text-center"
+              >
+                <BarChart3 className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
+                <h3 className="text-lg font-semibold text-white mb-2">Revenue Analytics Coming Soon</h3>
+                <p className="text-muted-foreground text-sm mb-4">
+                  Connect your YouTube channel to start tracking monetization opportunities and brand campaigns.
+                </p>
+                {!isConnected && (
+                  <button
+                    onClick={handleConnect}
+                    className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors inline-flex items-center gap-2"
+                    data-testid="button-connect-youtube-chart"
+                  >
+                    <Youtube className="w-4 h-4" />
+                    Connect YouTube
+                  </button>
+                )}
+              </motion.div>
+            )}
           </div>
 
           <div className="space-y-6">
