@@ -2,6 +2,7 @@ import { Link, useLocation } from "wouter";
 import { LayoutDashboard, FolderOpen, Zap, DollarSign, LogOut } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
+import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 
 export function Sidebar() {
   const [location] = useLocation();
@@ -16,12 +17,9 @@ export function Sidebar() {
 
   return (
     <div className="w-64 h-screen bg-card border-r border-border fixed left-0 top-0 flex flex-col p-6 z-20">
-      <div className="flex items-center gap-3 px-2 mb-10">
-        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary to-red-700 flex items-center justify-center shadow-lg shadow-primary/25">
-          <span className="text-white font-bold text-lg font-display">F</span>
-        </div>
-        <span className="font-display font-bold text-2xl tracking-tight text-white">FullScale</span>
-      </div>
+      <Link href="/" className="block px-2 mb-10" data-testid="link-logo-home">
+        <img src={logoUrl} alt="FullScale" className="h-10 w-auto" />
+      </Link>
 
       <nav className="flex-1 space-y-2">
         {links.map((link) => {
