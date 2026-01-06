@@ -26,7 +26,9 @@ export default function Landing() {
         
         <div className="flex items-center gap-3">
           <a 
-            href="#cohort"
+            href="https://airtable.com/appF4oLhgbf143xe7/pagil3dstNSBZvLUr/form"
+            target="_blank"
+            rel="noopener noreferrer"
             className="px-5 py-2 rounded-lg font-medium text-sm border border-primary text-primary bg-transparent hover:bg-primary/10 transition-colors"
             data-testid="button-nav-apply"
           >
@@ -160,9 +162,15 @@ export default function Landing() {
           <p className="text-lg text-muted-foreground max-w-2xl mx-auto mb-8 leading-relaxed">
             Not ready to automate everything? Join our exclusive group of partner creators shaping the future of the platform.
           </p>
-          <button className="px-8 py-4 rounded-xl bg-transparent hover:bg-white/5 border-2 border-primary text-primary font-semibold text-lg transition-all duration-300" data-testid="button-apply-access">
+          <a 
+            href="https://airtable.com/appF4oLhgbf143xe7/pagil3dstNSBZvLUr/form"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="px-8 py-4 rounded-xl bg-transparent hover:bg-white/5 border-2 border-primary text-primary font-semibold text-lg transition-all duration-300 inline-block"
+            data-testid="button-apply-access"
+          >
             Apply for Access
-          </button>
+          </a>
         </div>
       </motion.section>
 

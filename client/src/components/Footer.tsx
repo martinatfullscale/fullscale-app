@@ -37,7 +37,7 @@ export function Footer() {
             <ul className="space-y-3">
               <li>
                 <a 
-                  href="https://instagram.com" 
+                  href="https://www.instagram.com/gofullscale" 
                   target="_blank" 
                   rel="noopener noreferrer"
                   className="text-sm text-muted-foreground/60 hover:text-white transition-colors inline-flex items-center gap-2"
