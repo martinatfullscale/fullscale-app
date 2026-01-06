@@ -51,12 +51,12 @@ export default function Landing() {
           </div>
 
           <h1 className="text-4xl md:text-6xl font-bold font-display tracking-tight mb-6 bg-clip-text text-transparent bg-gradient-to-b from-white to-white/60 uppercase">
-            Democratizing the <br/>
-            <span className="text-primary">Product Placement Economy</span>
+            We Turn Storytelling <br/>
+            <span className="text-primary">Into Revenue</span>
           </h1>
           
           <p className="text-xl text-muted-foreground max-w-2xl mx-auto mb-10 leading-relaxed">
-            The AI-powered marketplace that turns content libraries into recurring, measurable revenue. Connect your channel, index your inventory, and let brands bid on your empty pixels.
+            Earn from existing and new video — powered by AI-driven product placement.
           </p>
 
           <div className="flex flex-col sm:flex-row gap-4 items-center justify-center">
