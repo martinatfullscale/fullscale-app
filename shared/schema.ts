@@ -5,6 +5,9 @@ import { z } from "zod";
 // Import Auth Definitions
 export * from "./models/auth";
 
+// Import Chat Definitions (for Gemini integration)
+export * from "./models/chat";
+
 // YouTube Connections Table - stores OAuth tokens for YouTube API access
 export const youtubeConnections = pgTable("youtube_connections", {
   id: serial("id").primaryKey(),

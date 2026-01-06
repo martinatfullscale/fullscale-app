@@ -5,6 +5,7 @@ import { api } from "@shared/routes";
 import { z } from "zod";
 import { setupAuth, registerAuthRoutes, isAuthenticated } from "./replit_integrations/auth";
 import { runIndexerForUser } from "./lib/indexer";
+import { processVideoScan, scanPendingVideos } from "./lib/scanner";
 
 // Google Login OAuth Configuration (for authentication with allowlist)
 const GOOGLE_LOGIN_SCOPES = [
@@ -435,6 +436,84 @@ export async function registerRoutes(
     } catch (error: any) {
       res.status(500).json({ success: false, error: error.message || "Indexing failed" });
     }
+  });
+
+  // Trigger Cloud Scan for a specific video
+  app.post("/api/video-scan/:id", isGoogleAuthenticated, async (req: any, res) => {
+    const videoId = parseInt(req.params.id);
+    if (isNaN(videoId)) {
+      return res.status(400).json({ error: "Invalid video ID" });
+    }
+
+    const video = await storage.getVideoById(videoId);
+    if (!video) {
+      return res.status(404).json({ error: "Video not found" });
+    }
+
+    if (video.userId !== req.googleUser.email) {
+      return res.status(403).json({ error: "Unauthorized" });
+    }
+
+    setImmediate(async () => {
+      try {
+        await processVideoScan(videoId);
+      } catch (err) {
+        console.error(`[Scanner] Background scan failed for video ${videoId}:`, err);
+      }
+    });
+
+    res.json({ success: true, message: "Scan started", videoId });
+  });
+
+  // Scan all pending videos for the user
+  app.post("/api/video-scan/batch", isGoogleAuthenticated, async (req: any, res) => {
+    const userId = req.googleUser.email;
+    const limit = parseInt(req.query.limit as string) || 5;
+
+    setImmediate(async () => {
+      try {
+        await scanPendingVideos(userId, limit);
+      } catch (err) {
+        console.error(`[Scanner] Batch scan failed for user ${userId}:`, err);
+      }
+    });
+
+    res.json({ success: true, message: "Batch scan started" });
+  });
+
+  // Get detected surfaces for a video (Ad Opportunities)
+  app.get("/api/video/:id/surfaces", isGoogleAuthenticated, async (req: any, res) => {
+    const videoId = parseInt(req.params.id);
+    if (isNaN(videoId)) {
+      return res.status(400).json({ error: "Invalid video ID" });
+    }
+
+    const video = await storage.getVideoById(videoId);
+    if (!video) {
+      return res.status(404).json({ error: "Video not found" });
+    }
+
+    if (video.userId !== req.googleUser.email) {
+      return res.status(403).json({ error: "Unauthorized" });
+    }
+
+    const surfaces = await storage.getDetectedSurfaces(videoId);
+    res.json({ surfaces, count: surfaces.length });
+  });
+
+  // Get videos with their Ad Opportunity counts
+  app.get("/api/video-index/with-opportunities", isGoogleAuthenticated, async (req: any, res) => {
+    const userId = req.googleUser.email;
+    const videos = await storage.getVideoIndex(userId);
+    
+    const videosWithCounts = await Promise.all(
+      videos.map(async (video) => {
+        const count = await storage.getSurfaceCountByVideo(video.id);
+        return { ...video, adOpportunities: count };
+      })
+    );
+
+    res.json({ videos: videosWithCounts, total: videosWithCounts.length });
   });
 
   // Get full YouTube channel data (with profile picture and stats)

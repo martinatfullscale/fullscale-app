@@ -5,6 +5,7 @@ import {
   youtubeConnections,
   allowedUsers,
   videoIndex,
+  detectedSurfaces,
   type MonetizationItem,
   type InsertMonetizationItem,
   type YoutubeConnection,
@@ -13,6 +14,8 @@ import {
   type InsertAllowedUser,
   type VideoIndex,
   type InsertVideoIndex,
+  type DetectedSurface,
+  type InsertDetectedSurface,
 } from "@shared/schema";
 import { encrypt, decrypt } from "./encryption";
 
@@ -29,6 +32,13 @@ export interface IStorage {
   upsertVideoIndex(video: InsertVideoIndex): Promise<VideoIndex>;
   bulkUpsertVideoIndex(videos: InsertVideoIndex[]): Promise<void>;
   deleteVideoIndex(userId: string): Promise<void>;
+  getVideoById(id: number): Promise<VideoIndex | undefined>;
+  getPendingVideos(userId: string, limit?: number): Promise<VideoIndex[]>;
+  updateVideoStatus(videoId: number, status: string): Promise<void>;
+  insertDetectedSurface(surface: InsertDetectedSurface): Promise<DetectedSurface>;
+  getDetectedSurfaces(videoId: number): Promise<DetectedSurface[]>;
+  getSurfaceCountByVideo(videoId: number): Promise<number>;
+  clearDetectedSurfaces(videoId: number): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -169,6 +179,61 @@ export class DatabaseStorage implements IStorage {
 
   async deleteVideoIndex(userId: string): Promise<void> {
     await db.delete(videoIndex).where(eq(videoIndex.userId, userId));
+  }
+
+  async getVideoById(id: number): Promise<VideoIndex | undefined> {
+    const [video] = await db
+      .select()
+      .from(videoIndex)
+      .where(eq(videoIndex.id, id));
+    return video;
+  }
+
+  async getPendingVideos(userId: string, limit: number = 10): Promise<VideoIndex[]> {
+    return await db
+      .select()
+      .from(videoIndex)
+      .where(and(
+        eq(videoIndex.userId, userId),
+        eq(videoIndex.status, "Pending Scan")
+      ))
+      .orderBy(desc(videoIndex.priorityScore))
+      .limit(limit);
+  }
+
+  async updateVideoStatus(videoId: number, status: string): Promise<void> {
+    await db
+      .update(videoIndex)
+      .set({ status, updatedAt: new Date() })
+      .where(eq(videoIndex.id, videoId));
+  }
+
+  async insertDetectedSurface(surface: InsertDetectedSurface): Promise<DetectedSurface> {
+    const [result] = await db
+      .insert(detectedSurfaces)
+      .values(surface)
+      .returning();
+    return result;
+  }
+
+  async getDetectedSurfaces(videoId: number): Promise<DetectedSurface[]> {
+    return await db
+      .select()
+      .from(detectedSurfaces)
+      .where(eq(detectedSurfaces.videoId, videoId))
+      .orderBy(detectedSurfaces.timestamp);
+  }
+
+  async getSurfaceCountByVideo(videoId: number): Promise<number> {
+    const surfaces = await db
+      .select()
+      .from(detectedSurfaces)
+      .where(eq(detectedSurfaces.videoId, videoId));
+    return surfaces.length;
+  }
+
+  async clearDetectedSurfaces(videoId: number): Promise<void> {
+    await db.delete(detectedSurfaces).where(eq(detectedSurfaces.videoId, videoId));
   }
 }
 

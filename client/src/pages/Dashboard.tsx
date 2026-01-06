@@ -49,6 +49,7 @@ interface IndexedVideo {
   category: string | null;
   isEvergreen: boolean | null;
   duration: string | null;
+  adOpportunities?: number;
 }
 
 interface VideoIndexResponse {
@@ -134,9 +135,9 @@ export default function Dashboard() {
   });
 
   const { data: videoIndexData, isLoading: isLoadingVideoIndex } = useQuery<VideoIndexResponse>({
-    queryKey: ["/api/video-index"],
+    queryKey: ["/api/video-index/with-opportunities"],
     queryFn: async () => {
-      const res = await fetch("/api/video-index", { credentials: "include" });
+      const res = await fetch("/api/video-index/with-opportunities", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch video index");
       return res.json();
     },
@@ -145,6 +146,41 @@ export default function Dashboard() {
   });
 
   const indexedVideos = videoIndexData?.videos || [];
+
+  const scanMutation = useMutation({
+    mutationFn: async (videoId: number) => {
+      const res = await fetch(`/api/video-scan/${videoId}`, { 
+        method: "POST", 
+        credentials: "include" 
+      });
+      if (!res.ok) throw new Error("Failed to start scan");
+      return res.json();
+    },
+    onSuccess: (_, videoId) => {
+      toast({ title: "Scan Started", description: "Analyzing video for ad opportunities..." });
+      queryClient.invalidateQueries({ queryKey: ["/api/video-index/with-opportunities"] });
+    },
+    onError: () => {
+      toast({ title: "Scan Failed", description: "Could not start video analysis.", variant: "destructive" });
+    },
+  });
+
+  const batchScanMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch("/api/video-scan/batch", { 
+        method: "POST", 
+        credentials: "include" 
+      });
+      if (!res.ok) throw new Error("Failed to start batch scan");
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Batch Scan Started", description: "Analyzing pending videos for ad opportunities..." });
+    },
+    onError: () => {
+      toast({ title: "Scan Failed", description: "Could not start batch scan.", variant: "destructive" });
+    },
+  });
 
   const disconnectMutation = useMutation({
     mutationFn: async () => {
@@ -551,16 +587,28 @@ export default function Dashboard() {
             transition={{ delay: 0.5 }}
             className="mt-8 bg-white/5 rounded-xl border border-white/5 overflow-hidden"
           >
-            <div className="px-6 py-4 border-b border-white/5 flex items-center justify-between gap-4">
+            <div className="px-6 py-4 border-b border-white/5 flex flex-wrap items-center justify-between gap-4">
               <div>
                 <p className="text-sm font-semibold text-white">My Library</p>
                 <p className="text-xs text-muted-foreground">High-value videos ready for monetization</p>
               </div>
-              {indexedVideos.length > 0 && (
-                <span className="px-2 py-1 rounded-full bg-emerald-500/20 text-emerald-400 text-xs font-medium">
-                  {indexedVideos.length} videos
-                </span>
-              )}
+              <div className="flex items-center gap-3">
+                {indexedVideos.some(v => v.status === "Pending Scan") && (
+                  <button
+                    onClick={() => batchScanMutation.mutate()}
+                    disabled={batchScanMutation.isPending}
+                    className="px-3 py-1 text-xs font-medium bg-primary/20 text-primary rounded-full hover:bg-primary/30 transition-colors"
+                    data-testid="button-scan-all"
+                  >
+                    {batchScanMutation.isPending ? "Scanning..." : "Scan All Pending"}
+                  </button>
+                )}
+                {indexedVideos.length > 0 && (
+                  <span className="px-2 py-1 rounded-full bg-emerald-500/20 text-emerald-400 text-xs font-medium">
+                    {indexedVideos.length} videos
+                  </span>
+                )}
+              </div>
             </div>
             
             {isLoadingVideoIndex ? (
@@ -604,13 +652,31 @@ export default function Dashboard() {
                       <h4 className="text-sm font-medium text-white line-clamp-2 mb-1">{video.title}</h4>
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-xs text-muted-foreground">{video.category || "General"}</span>
-                        <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                          video.status === "Pending Scan" 
-                            ? "bg-yellow-500/20 text-yellow-400" 
-                            : "bg-emerald-500/20 text-emerald-400"
-                        }`}>
-                          {video.status}
-                        </span>
+                        <div className="flex items-center gap-2">
+                          {video.status === "Indexed" && (video.adOpportunities ?? 0) > 0 && (
+                            <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-blue-500/20 text-blue-400" data-testid={`badge-opportunities-${video.id}`}>
+                              {video.adOpportunities} Ad Spots
+                            </span>
+                          )}
+                          {video.status === "Pending Scan" ? (
+                            <button
+                              onClick={() => scanMutation.mutate(video.id)}
+                              disabled={scanMutation.isPending}
+                              className="px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30 transition-colors"
+                              data-testid={`button-scan-${video.id}`}
+                            >
+                              Scan
+                            </button>
+                          ) : (
+                            <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                              video.status === "Scan Failed"
+                                ? "bg-red-500/20 text-red-400"
+                                : "bg-emerald-500/20 text-emerald-400"
+                            }`}>
+                              {video.status}
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
