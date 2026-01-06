@@ -1,5 +1,6 @@
 import { motion } from "framer-motion";
 import { Zap, Shield, Globe } from "lucide-react";
+import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 
 export default function Landing() {
   const handleLogin = () => {
@@ -15,12 +16,7 @@ export default function Landing() {
       </div>
 
       <nav className="relative z-10 container mx-auto px-6 h-20 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
-            <span className="text-white font-bold font-display">F</span>
-          </div>
-          <span className="font-display font-bold text-xl tracking-tight">FullScale</span>
-        </div>
+        <img src={logoUrl} alt="FullScale" className="h-10 w-auto" data-testid="img-landing-logo" />
         
         <button 
           onClick={handleLogin}
@@ -44,13 +40,13 @@ export default function Landing() {
             New Creator Features Available
           </div>
 
-          <h1 className="text-5xl md:text-7xl font-bold font-display tracking-tight mb-6 bg-clip-text text-transparent bg-gradient-to-b from-white to-white/60">
-            Scale Your Content <br/>
-            <span className="text-primary">Without Limits</span>
+          <h1 className="text-4xl md:text-6xl font-bold font-display tracking-tight mb-6 bg-clip-text text-transparent bg-gradient-to-b from-white to-white/60 uppercase">
+            Democratizing the <br/>
+            <span className="text-primary">Product Placement Economy</span>
           </h1>
           
           <p className="text-xl text-muted-foreground max-w-2xl mx-auto mb-10 leading-relaxed">
-            The all-in-one portal for modern creators. Index your scenes, manage monetization, and integrate with your favorite platforms effortlessly.
+            The AI-powered marketplace that turns content libraries into recurring, measurable revenue. Connect your channel, index your inventory, and let brands bid on your empty pixels.
           </p>
 
           <div className="flex flex-col sm:flex-row gap-4 items-center justify-center">
@@ -58,7 +54,7 @@ export default function Landing() {
               onClick={handleLogin}
               className="px-8 py-4 rounded-xl bg-primary hover:bg-primary/90 text-white font-semibold text-lg shadow-lg shadow-primary/25 hover:shadow-primary/40 hover:-translate-y-1 transition-all duration-300 w-full sm:w-auto"
             >
-              Get Started Free
+              Start Monetizing Now
             </button>
             <button className="px-8 py-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white font-semibold text-lg backdrop-blur-sm transition-all duration-300 w-full sm:w-auto">
               View Demo
@@ -74,18 +70,18 @@ export default function Landing() {
         >
           <FeatureCard 
             icon={<Zap className="w-6 h-6 text-yellow-400" />} 
-            title="Instant Indexing" 
-            desc="Automatically detect and catalog scenes from your raw footage." 
+            title="The Remix Engine" 
+            desc="We turn archives into new viral inventory. Our AI identifies high-value moments and inserts products automatically." 
           />
           <FeatureCard 
             icon={<Shield className="w-6 h-6 text-emerald-400" />} 
-            title="Content Safety" 
-            desc="Enterprise-grade protection for your intellectual property." 
+            title="Contextual AI" 
+            desc="Beyond computer vision. We analyze narrative, sentiment, and cultural nuance to ensure brand safety." 
           />
           <FeatureCard 
             icon={<Globe className="w-6 h-6 text-blue-400" />} 
-            title="Global CDN" 
-            desc="Deliver your content to audiences worldwide with zero latency." 
+            title="Passive Income" 
+            desc="Stop fighting for views. Generate recurring revenue from your back-catalog without lifting a finger." 
           />
         </motion.div>
       </main>
