@@ -12,6 +12,7 @@ import Landing from "@/pages/Landing";
 import Dashboard from "@/pages/Dashboard";
 import Library from "@/pages/Library";
 import Opportunities from "@/pages/Opportunities";
+import Settings from "@/pages/Settings";
 import Privacy from "@/pages/Privacy";
 import Terms from "@/pages/Terms";
 
@@ -49,6 +50,7 @@ function Router() {
       <Route path="/terms" component={Terms} />
       <Route path="/library" component={Library} />
       <Route path="/opportunities" component={Opportunities} />
+      <Route path="/settings" component={Settings} />
       <Route path="/earnings" component={Dashboard} />
       <Route component={NotFound} />
     </Switch>

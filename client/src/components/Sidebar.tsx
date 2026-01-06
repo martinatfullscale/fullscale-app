@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, FolderOpen, Zap, DollarSign, LogOut } from "lucide-react";
+import { LayoutDashboard, FolderOpen, Zap, DollarSign, LogOut, Settings } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
@@ -13,6 +13,7 @@ export function Sidebar() {
     { href: "/library", label: "My Library", icon: FolderOpen },
     { href: "/opportunities", label: "Opportunities", icon: Zap },
     { href: "/earnings", label: "Earnings", icon: DollarSign },
+    { href: "/settings", label: "Settings", icon: Settings },
   ];
 
   return (
