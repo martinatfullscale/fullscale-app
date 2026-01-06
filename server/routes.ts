@@ -242,7 +242,15 @@ export async function registerRoutes(
       };
       
       console.log(`Access granted for: ${userInfo.email}`);
-      res.redirect("/dashboard");
+      
+      // Explicitly save session before redirect to ensure it persists
+      req.session.save((err: any) => {
+        if (err) {
+          console.error("Session save error:", err);
+          return res.redirect("/?error=session_error");
+        }
+        res.redirect("/dashboard");
+      });
     } catch (err: any) {
       console.error("Google login callback error:", err.message || err);
       res.redirect("/?error=login_failed");
