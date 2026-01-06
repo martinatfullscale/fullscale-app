@@ -137,21 +137,21 @@ export default function Landing() {
           </h2>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
             <div className="text-center p-6">
-              <span className="text-5xl font-bold text-primary/30 font-display">01</span>
+              <span className="text-5xl font-bold text-red-500 font-display">01</span>
               <h3 className="text-xl font-bold font-display mt-4 mb-3">Connect.</h3>
               <p className="text-muted-foreground leading-relaxed">
                 Link your YouTube channel securely. We index your library in minutes, not weeks.
               </p>
             </div>
             <div className="text-center p-6">
-              <span className="text-5xl font-bold text-primary/30 font-display">02</span>
+              <span className="text-5xl font-bold text-red-500 font-display">02</span>
               <h3 className="text-xl font-bold font-display mt-4 mb-3">Align.</h3>
               <p className="text-muted-foreground leading-relaxed">
                 Our AI identifies brand-safe opportunities that match your specific aesthetic.
               </p>
             </div>
             <div className="text-center p-6">
-              <span className="text-5xl font-bold text-primary/30 font-display">03</span>
+              <span className="text-5xl font-bold text-red-500 font-display">03</span>
               <h3 className="text-xl font-bold font-display mt-4 mb-3">Earn.</h3>
               <p className="text-muted-foreground leading-relaxed">
                 Approve placements and generate recurring revenue from your back-catalog.
