@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import { Zap, Shield, Globe } from "lucide-react";
+import { Zap, Shield, Video, ImageIcon } from "lucide-react";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 
 export default function Landing() {
@@ -62,11 +62,26 @@ export default function Landing() {
           </div>
         </motion.div>
 
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.6, delay: 0.3 }}
+          className="w-full max-w-4xl mt-16 py-8 border-t border-b border-white/5"
+        >
+          <p className="text-xs uppercase tracking-widest text-muted-foreground/50 mb-6 font-medium">Backed by Industry Leaders</p>
+          <div className="flex flex-wrap items-center justify-center gap-8 md:gap-12">
+            <span className="text-lg font-display text-muted-foreground/40 hover:text-muted-foreground/60 transition-colors">Black Ambition</span>
+            <span className="text-lg font-display text-muted-foreground/40 hover:text-muted-foreground/60 transition-colors">May Davis Partners</span>
+            <span className="text-lg font-display text-muted-foreground/40 hover:text-muted-foreground/60 transition-colors">Elementa</span>
+            <span className="text-lg font-display text-muted-foreground/40 hover:text-muted-foreground/60 transition-colors">Nue Agency</span>
+          </div>
+        </motion.div>
+
         <motion.div 
           initial={{ opacity: 0, y: 40 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8, delay: 0.2 }}
-          className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-20 w-full max-w-5xl"
+          transition={{ duration: 0.8, delay: 0.4 }}
+          className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-16 w-full max-w-5xl"
         >
           <FeatureCard 
             icon={<Zap className="w-6 h-6 text-yellow-400" />} 
@@ -79,10 +94,37 @@ export default function Landing() {
             desc="Beyond computer vision. We analyze narrative, sentiment, and cultural nuance to ensure brand safety." 
           />
           <FeatureCard 
-            icon={<Globe className="w-6 h-6 text-blue-400" />} 
-            title="Passive Income" 
-            desc="Stop fighting for views. Generate recurring revenue from your back-catalog without lifting a finger." 
+            icon={<Video className="w-6 h-6 text-blue-400" />} 
+            title="ZERO RESHOOTS" 
+            desc="Stop filming ads. We insert high-value products into your existing content library using post-production AI. You earn without lifting a camera." 
           />
+        </motion.div>
+
+        <motion.div
+          initial={{ opacity: 0, y: 40 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.8, delay: 0.5 }}
+          className="w-full max-w-5xl mt-24 mb-12"
+        >
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
+            <div className="text-left">
+              <h2 className="text-3xl md:text-4xl font-bold font-display tracking-tight mb-6 uppercase">
+                Protect the <span className="text-primary">Vibe.</span>
+              </h2>
+              <p className="text-lg text-muted-foreground leading-relaxed">
+                Your audience trusts you. We help you keep it that way. Our Contextual AI ensures every placement fits the sentiment, lighting, and narrative of your scene. No jarring ads, just seamless integration.
+              </p>
+            </div>
+            <div className="relative">
+              <div className="aspect-video rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center">
+                <div className="text-center p-8">
+                  <ImageIcon className="w-12 h-12 text-muted-foreground/30 mx-auto mb-4" />
+                  <p className="text-sm text-muted-foreground/50">Before/After Comparison</p>
+                  <p className="text-xs text-muted-foreground/30 mt-1">Upload your image to replace</p>
+                </div>
+              </div>
+            </div>
+          </div>
         </motion.div>
       </main>
     </div>
