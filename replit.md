@@ -46,6 +46,9 @@ Preferred communication style: Simple, everyday language.
 - **API Routes Contract**: `shared/routes.ts` defines API contracts with Zod validation
 - **Component Architecture**: Feature components in `client/src/components/`, pages in `client/src/pages/`
 - **Storage Abstraction**: `server/storage.ts` provides database access interface
+- **Hybrid Data Mode**: `client/src/hooks/use-hybrid-mode.ts` detects Google auth and returns `mode: 'demo' | 'real'`
+  - Demo mode: Unauthenticated visitors see simulated data, fake sync animations, hardcoded charts
+  - Real mode: Authenticated users (on allowlist) see live YouTube channel data and actual video library
 
 ## External Dependencies
 
