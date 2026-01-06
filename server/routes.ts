@@ -69,9 +69,12 @@ export async function registerRoutes(
   
   // Initiate YouTube OAuth flow
   app.get("/api/auth/youtube", isAuthenticated, (req: any, res) => {
-    const protocol = req.protocol;
-    const host = req.get("host");
-    const redirectUri = `${protocol}://${host}/api/auth/youtube/callback`;
+    const baseUrl = process.env.BASE_URL;
+    if (!baseUrl) {
+      console.error("BASE_URL environment variable is not set");
+      return res.redirect("/?youtube_error=configuration_error");
+    }
+    const redirectUri = `${baseUrl}/api/auth/youtube/callback`;
     const authUrl = getYoutubeAuthUrl(redirectUri);
     res.redirect(authUrl);
   });
@@ -90,9 +93,12 @@ export async function registerRoutes(
     }
 
     try {
-      const protocol = req.protocol;
-      const host = req.get("host");
-      const redirectUri = `${protocol}://${host}/api/auth/youtube/callback`;
+      const baseUrl = process.env.BASE_URL;
+      if (!baseUrl) {
+        console.error("BASE_URL environment variable is not set");
+        return res.redirect("/?youtube_error=configuration_error");
+      }
+      const redirectUri = `${baseUrl}/api/auth/youtube/callback`;
       
       // Exchange code for tokens
       let tokens;
