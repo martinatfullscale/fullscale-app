@@ -46,12 +46,41 @@ async function exchangeCodeForTokens(code: string, redirectUri: string) {
 
 async function getYoutubeChannelInfo(accessToken: string) {
   const response = await fetch(
-    "https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true",
+    "https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,contentDetails&mine=true",
     {
       headers: { Authorization: `Bearer ${accessToken}` },
     }
   );
   return response.json();
+}
+
+async function getYoutubeVideos(accessToken: string, uploadsPlaylistId: string, maxResults: number = 5) {
+  const response = await fetch(
+    `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${uploadsPlaylistId}&maxResults=${maxResults}`,
+    {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    }
+  );
+  return response.json();
+}
+
+async function refreshAccessToken(refreshToken: string): Promise<{ access_token: string; expires_in: number } | null> {
+  try {
+    const response = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: process.env.GOOGLE_CLIENT_ID!,
+        client_secret: process.env.GOOGLE_CLIENT_SECRET!,
+        refresh_token: refreshToken,
+        grant_type: "refresh_token",
+      }),
+    });
+    if (!response.ok) return null;
+    return response.json();
+  } catch {
+    return null;
+  }
 }
 
 export async function registerRoutes(
@@ -160,6 +189,116 @@ export async function registerRoutes(
     const userId = req.user.claims.sub;
     await storage.deleteYoutubeConnection(userId);
     res.json({ success: true });
+  });
+
+  // Get full YouTube channel data (with profile picture and stats)
+  app.get("/api/youtube/channel", isAuthenticated, async (req: any, res) => {
+    const userId = req.user.claims.sub;
+    const connection = await storage.getYoutubeConnection(userId);
+    
+    if (!connection) {
+      return res.json({ connected: false });
+    }
+
+    try {
+      let accessToken = connection.accessToken;
+      
+      // Check if token is expired and refresh if needed
+      if (connection.expiresAt && new Date(connection.expiresAt) < new Date()) {
+        if (connection.refreshToken) {
+          const refreshed = await refreshAccessToken(connection.refreshToken);
+          if (refreshed) {
+            accessToken = refreshed.access_token;
+            await storage.upsertYoutubeConnection({
+              userId: connection.userId,
+              accessToken: refreshed.access_token,
+              refreshToken: connection.refreshToken,
+              expiresAt: new Date(Date.now() + refreshed.expires_in * 1000),
+              channelId: connection.channelId,
+              channelTitle: connection.channelTitle,
+            });
+          }
+        }
+      }
+
+      const channelData = await getYoutubeChannelInfo(accessToken);
+      const channel = channelData.items?.[0];
+
+      if (!channel) {
+        return res.status(404).json({ error: "Channel not found" });
+      }
+
+      res.json({
+        connected: true,
+        channelId: channel.id,
+        title: channel.snippet.title,
+        description: channel.snippet.description,
+        profilePictureUrl: channel.snippet.thumbnails?.medium?.url || channel.snippet.thumbnails?.default?.url,
+        subscriberCount: channel.statistics?.subscriberCount,
+        videoCount: channel.statistics?.videoCount,
+        viewCount: channel.statistics?.viewCount,
+        uploadsPlaylistId: channel.contentDetails?.relatedPlaylists?.uploads,
+      });
+    } catch (err: any) {
+      console.error("Error fetching YouTube channel:", err);
+      res.status(500).json({ error: "Failed to fetch channel data" });
+    }
+  });
+
+  // Get user's latest YouTube videos
+  app.get("/api/youtube/videos", isAuthenticated, async (req: any, res) => {
+    const userId = req.user.claims.sub;
+    const connection = await storage.getYoutubeConnection(userId);
+    
+    if (!connection) {
+      return res.json({ connected: false, videos: [] });
+    }
+
+    try {
+      let accessToken = connection.accessToken;
+      
+      // Check if token is expired and refresh if needed
+      if (connection.expiresAt && new Date(connection.expiresAt) < new Date()) {
+        if (connection.refreshToken) {
+          const refreshed = await refreshAccessToken(connection.refreshToken);
+          if (refreshed) {
+            accessToken = refreshed.access_token;
+            await storage.upsertYoutubeConnection({
+              userId: connection.userId,
+              accessToken: refreshed.access_token,
+              refreshToken: connection.refreshToken,
+              expiresAt: new Date(Date.now() + refreshed.expires_in * 1000),
+              channelId: connection.channelId,
+              channelTitle: connection.channelTitle,
+            });
+          }
+        }
+      }
+
+      // First get the channel to find the uploads playlist ID
+      const channelData = await getYoutubeChannelInfo(accessToken);
+      const channel = channelData.items?.[0];
+      const uploadsPlaylistId = channel?.contentDetails?.relatedPlaylists?.uploads;
+
+      if (!uploadsPlaylistId) {
+        return res.json({ videos: [] });
+      }
+
+      const videosData = await getYoutubeVideos(accessToken, uploadsPlaylistId, 5);
+      
+      const videos = (videosData.items || []).map((item: any) => ({
+        id: item.contentDetails?.videoId || item.id,
+        title: item.snippet.title,
+        thumbnailUrl: item.snippet.thumbnails?.medium?.url || item.snippet.thumbnails?.default?.url,
+        publishedAt: item.snippet.publishedAt,
+        description: item.snippet.description,
+      }));
+
+      res.json({ connected: true, videos });
+    } catch (err: any) {
+      console.error("Error fetching YouTube videos:", err);
+      res.status(500).json({ error: "Failed to fetch videos" });
+    }
   });
 
   // ============================================

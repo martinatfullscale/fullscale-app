@@ -2,12 +2,13 @@ import { Sidebar } from "@/components/Sidebar";
 import { TopBar } from "@/components/TopBar";
 import { MetricCard } from "@/components/MetricCard";
 import { MonetizationTable } from "@/components/MonetizationTable";
-import { Video, Layers, Workflow, Youtube, CheckCircle, Unlink } from "lucide-react";
+import { Video, Layers, Workflow, Youtube, CheckCircle, Unlink, Users } from "lucide-react";
 import { motion } from "framer-motion";
 import { useEffect } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
+import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 
 interface YoutubeStatus {
   connected: boolean;
@@ -15,12 +16,22 @@ interface YoutubeStatus {
   channelTitle?: string;
 }
 
+interface YoutubeChannel {
+  connected: boolean;
+  channelId?: string;
+  title?: string;
+  description?: string;
+  profilePictureUrl?: string;
+  subscriberCount?: string;
+  videoCount?: string;
+  viewCount?: string;
+}
+
 export default function Dashboard() {
   const { user } = useAuth();
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  // Check YouTube connection status
   const { data: youtubeStatus, isLoading: isCheckingYoutube } = useQuery<YoutubeStatus>({
     queryKey: ["/api/auth/youtube/status"],
     queryFn: async () => {
@@ -31,7 +42,16 @@ export default function Dashboard() {
     enabled: !!user,
   });
 
-  // Disconnect mutation
+  const { data: channelData, isLoading: isLoadingChannel } = useQuery<YoutubeChannel>({
+    queryKey: ["/api/youtube/channel"],
+    queryFn: async () => {
+      const res = await fetch("/api/youtube/channel", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch channel data");
+      return res.json();
+    },
+    enabled: !!user && !!youtubeStatus?.connected,
+  });
+
   const disconnectMutation = useMutation({
     mutationFn: async () => {
       const res = await fetch("/api/auth/youtube", { method: "DELETE", credentials: "include" });
@@ -40,17 +60,20 @@ export default function Dashboard() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/auth/youtube/status"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/youtube/channel"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/youtube/videos"] });
       toast({ title: "YouTube Disconnected", description: "Your channel has been unlinked." });
     },
   });
 
-  // Handle URL params for success/error messages
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get("youtube_connected") === "true") {
       toast({ title: "YouTube Connected!", description: "Your channel is now linked." });
       window.history.replaceState({}, "", "/");
       queryClient.invalidateQueries({ queryKey: ["/api/auth/youtube/status"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/youtube/channel"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/youtube/videos"] });
     }
     if (params.get("youtube_error")) {
       toast({ title: "Connection Failed", description: params.get("youtube_error") || "An error occurred.", variant: "destructive" });
@@ -59,13 +82,18 @@ export default function Dashboard() {
   }, [toast, queryClient]);
 
   const handleConnect = () => {
-    // Redirect to YouTube OAuth flow
     window.location.href = "/api/auth/youtube";
   };
 
   const handleDisconnect = () => {
     disconnectMutation.mutate();
   };
+
+  const videoCount = channelData?.videoCount ? parseInt(channelData.videoCount, 10) : 0;
+  const viewCount = channelData?.viewCount ? parseInt(channelData.viewCount, 10) : 0;
+  const subscriberCount = channelData?.subscriberCount ? parseInt(channelData.subscriberCount, 10) : 0;
+  const isConnected = youtubeStatus?.connected || false;
+  const isLoadingStats = isConnected && isLoadingChannel;
 
   return (
     <div className="min-h-screen bg-background text-foreground font-sans selection:bg-primary/20">
@@ -78,31 +106,31 @@ export default function Dashboard() {
           animate={{ opacity: 1, y: 0 }}
           className="mb-8"
         >
-          <h1 className="text-3xl font-bold font-display mb-2">Welcome back, {user?.firstName || "Creator"}</h1>
+          <h1 className="text-3xl font-bold font-display mb-2" data-testid="text-welcome">
+            Welcome back, {user?.firstName || "Creator"}
+          </h1>
           <p className="text-muted-foreground">Here's what's happening with your content today.</p>
         </motion.div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
           <MetricCard 
-            title="Content Ingested" 
-            value="12.4 hrs" 
-            trend="+12%" 
+            title="Total Videos" 
+            value={isLoadingStats ? "..." : (isConnected ? videoCount.toLocaleString() : "-")} 
             icon={<Video className="w-5 h-5" />} 
             delay={0}
             colorClass="bg-blue-500"
           />
           <MetricCard 
-            title="Scenes Indexed" 
-            value="843" 
-            trend="+5%" 
+            title="Total Views" 
+            value={isLoadingStats ? "..." : (isConnected ? viewCount.toLocaleString() : "-")} 
             icon={<Layers className="w-5 h-5" />} 
             delay={1}
             colorClass="bg-purple-500"
           />
           <MetricCard 
-            title="Active Integrations" 
-            value="3" 
-            icon={<Workflow className="w-5 h-5" />} 
+            title="Subscribers" 
+            value={isLoadingStats ? "..." : (isConnected ? subscriberCount.toLocaleString() : "-")} 
+            icon={<Users className="w-5 h-5" />} 
             delay={2}
             colorClass="bg-emerald-500"
           />
@@ -110,7 +138,7 @@ export default function Dashboard() {
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="lg:col-span-2 space-y-8">
-            <MonetizationTable />
+            <MonetizationTable isConnected={isConnected} />
           </div>
 
           <div className="space-y-6">
@@ -120,22 +148,40 @@ export default function Dashboard() {
               transition={{ delay: 0.3 }}
               className="bg-gradient-to-br from-card to-secondary/30 rounded-2xl p-6 border border-border shadow-lg"
             >
-              <div className="w-12 h-12 bg-red-600/10 rounded-xl flex items-center justify-center mb-4 text-red-500">
-                <Youtube className="w-6 h-6" />
-              </div>
-              <h3 className="text-lg font-bold font-display mb-2">
-                {youtubeStatus?.connected ? "YouTube Connected" : "Connect YouTube"}
-              </h3>
-              
-              {youtubeStatus?.connected ? (
-                <>
-                  <div className="flex items-center gap-2 text-sm text-emerald-500 mb-2">
-                    <CheckCircle className="w-4 h-4" />
-                    <span>Channel linked</span>
+              <div className="flex items-center gap-4 mb-4">
+                {isConnected && channelData?.profilePictureUrl ? (
+                  <Avatar className="w-12 h-12">
+                    <AvatarImage 
+                      src={channelData.profilePictureUrl} 
+                      alt={channelData.title}
+                      data-testid="img-channel-avatar"
+                    />
+                    <AvatarFallback>
+                      <Youtube className="w-6 h-6 text-red-500" />
+                    </AvatarFallback>
+                  </Avatar>
+                ) : (
+                  <div className="w-12 h-12 bg-red-600/10 rounded-xl flex items-center justify-center text-red-500">
+                    <Youtube className="w-6 h-6" />
                   </div>
+                )}
+                <div className="flex-1">
+                  <h3 className="text-lg font-bold font-display" data-testid="text-channel-title">
+                    {isConnected ? (channelData?.title || youtubeStatus?.channelTitle || "YouTube Connected") : "Connect YouTube"}
+                  </h3>
+                  {isConnected && (
+                    <div className="flex items-center gap-1 text-xs text-emerald-500">
+                      <CheckCircle className="w-3 h-3" />
+                      <span>Channel linked</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+              
+              {isConnected ? (
+                <>
                   <p className="text-sm text-muted-foreground mb-6">
-                    {youtubeStatus.channelTitle || "Your YouTube channel"} is connected. 
-                    Content will be automatically indexed.
+                    Your channel with {channelData?.subscriberCount ? parseInt(channelData.subscriberCount).toLocaleString() : "0"} subscribers is connected.
                   </p>
                   <button
                     onClick={handleDisconnect}
