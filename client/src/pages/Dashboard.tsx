@@ -33,18 +33,11 @@ const demoCampaigns = [
 ];
 
 const chartData = [
-  { month: "Jan", height: "15%", revenue: "$4.2k" },
-  { month: "Feb", height: "22%", revenue: "$5.1k" },
-  { month: "Mar", height: "28%", revenue: "$6.3k" },
-  { month: "Apr", height: "35%", revenue: "$7.8k" },
-  { month: "May", height: "42%", revenue: "$8.9k" },
-  { month: "Jun", height: "48%", revenue: "$9.5k" },
-  { month: "Jul", height: "55%", revenue: "$10.2k" },
-  { month: "Aug", height: "62%", revenue: "$11.1k" },
-  { month: "Sep", height: "70%", revenue: "$12.0k" },
-  { month: "Oct", height: "78%", revenue: "$13.2k" },
-  { month: "Nov", height: "88%", revenue: "$14.1k" },
-  { month: "Dec", height: "100%", revenue: "$14.9k" },
+  { month: "Aug", height: "45%", revenue: "$8.2k" },
+  { month: "Sep", height: "72%", revenue: "$12.4k" },
+  { month: "Oct", height: "58%", revenue: "$9.8k" },
+  { month: "Nov", height: "85%", revenue: "$14.1k" },
+  { month: "Dec", height: "68%", revenue: "$11.6k" },
 ];
 
 export default function Dashboard() {
@@ -188,7 +181,7 @@ export default function Dashboard() {
             >
               <div className="flex items-center justify-between mb-4">
                 <p className="text-sm font-semibold text-white">Revenue Velocity</p>
-                <span className="text-xs text-emerald-400 font-medium">+200% YoY</span>
+                <span className="text-xs text-emerald-400 font-medium">Last 5 months</span>
               </div>
               <div className="flex items-end gap-1 md:gap-2" style={{ height: '200px' }}>
                 {chartData.map((bar) => (
