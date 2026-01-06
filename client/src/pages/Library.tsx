@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { Sidebar } from "@/components/Sidebar";
 import { TopBar } from "@/components/TopBar";
-import { Upload, Eye, CheckCircle, Loader2, AlertTriangle, X, Shield, Sun, Tag, Box, DollarSign } from "lucide-react";
+import { Upload, Eye, CheckCircle, Loader2, AlertTriangle, X, Shield, Sun, Tag, Box, DollarSign, Sparkles } from "lucide-react";
 import { motion } from "framer-motion";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
+import { UploadModal } from "@/components/UploadModal";
 
 const videoData = [
   { 
@@ -255,9 +256,29 @@ function AnalysisModal({ video, open, onClose }: { video: VideoType | null; open
   );
 }
 
+const uploadedVideoData: VideoType = {
+  title: "Demo_Upload.mp4",
+  views: "Just Uploaded",
+  status: "Just Scanned",
+  statusColor: "bg-emerald-500/20 text-emerald-400",
+  statusDot: "bg-emerald-500",
+  image: "https://images.unsplash.com/photo-1611162616475-46b635cb6868?w=800&h=450&fit=crop",
+  aiStatus: "ready",
+  aiText: "4 Scenes Indexed",
+  detectedObjects: ["Table", "Wall", "Shelf", "Product Area"],
+  context: "Lifestyle / General",
+  brandSafety: 96,
+  cpm: 34,
+  opportunity: "Perfect for: General Product Placement",
+  surfaceLabel: "Available Surface: Table",
+  boundingBox: { top: "40%", left: "25%", width: "50%", height: "40%" }
+};
+
 export default function Library() {
   const { user } = useAuth();
   const [selectedVideo, setSelectedVideo] = useState<VideoType | null>(null);
+  const [uploadModalOpen, setUploadModalOpen] = useState(false);
+  const [uploadedVideos, setUploadedVideos] = useState<VideoType[]>([]);
 
   return (
     <div className="min-h-screen bg-background text-foreground font-sans selection:bg-primary/20">
@@ -278,7 +299,7 @@ export default function Library() {
               <span className="text-white font-medium">45 Videos Scanned</span> | 128 Ad Opportunities Found
             </p>
           </div>
-          <Button className="gap-2" data-testid="button-upload-asset">
+          <Button className="gap-2" data-testid="button-upload-asset" onClick={() => setUploadModalOpen(true)}>
             <Upload className="w-4 h-4" />
             Upload Manual Asset
           </Button>
@@ -290,6 +311,47 @@ export default function Library() {
           transition={{ delay: 0.1 }}
           className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
         >
+          {uploadedVideos.map((video, idx) => (
+            <div 
+              key={`uploaded-${idx}`} 
+              className="bg-white/5 rounded-xl border border-emerald-500/30 overflow-hidden group cursor-pointer ring-1 ring-emerald-500/20"
+              data-testid={`card-uploaded-${idx}`}
+              onClick={() => setSelectedVideo(video)}
+            >
+              <div className="aspect-video relative overflow-hidden">
+                <img 
+                  src={video.image} 
+                  alt={video.title}
+                  className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent" />
+                <div className="absolute top-2 right-2 flex items-center gap-1.5 px-2 py-1 rounded-md bg-emerald-500/90 backdrop-blur-sm">
+                  <Sparkles className="w-3 h-3 text-white" />
+                  <span className="text-xs text-white font-medium">Just Scanned</span>
+                </div>
+                <div className="absolute bottom-2 left-2 flex items-center gap-1.5 px-2 py-1 rounded-md bg-black/50 backdrop-blur-sm">
+                  <AiOverlayIcon status={video.aiStatus} />
+                  <span className="text-xs text-white/90 font-medium">{video.aiText}</span>
+                </div>
+                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
+                  <Button variant="outline" size="sm" className="gap-2">
+                    <Eye className="w-4 h-4" />
+                    View Analysis
+                  </Button>
+                </div>
+              </div>
+              <div className="p-4">
+                <h3 className="font-semibold text-white mb-1 truncate">{video.title}</h3>
+                <p className="text-sm text-muted-foreground mb-3">{video.views}</p>
+                <div className="flex items-center gap-2">
+                  <span className={`w-2 h-2 rounded-full ${video.statusDot}`}></span>
+                  <span className={`px-2 py-0.5 rounded-full ${video.statusColor} text-xs font-medium`}>
+                    {video.status}
+                  </span>
+                </div>
+              </div>
+            </div>
+          ))}
           {videoData.map((video, idx) => (
             <div 
               key={idx} 
@@ -334,6 +396,14 @@ export default function Library() {
         video={selectedVideo} 
         open={!!selectedVideo} 
         onClose={() => setSelectedVideo(null)} 
+      />
+
+      <UploadModal 
+        open={uploadModalOpen}
+        onClose={() => setUploadModalOpen(false)}
+        onUploadComplete={() => {
+          setUploadedVideos(prev => [uploadedVideoData, ...prev]);
+        }}
       />
     </div>
   );

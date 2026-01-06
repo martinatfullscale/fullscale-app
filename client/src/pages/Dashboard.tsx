@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Sidebar } from "@/components/Sidebar";
 import { TopBar } from "@/components/TopBar";
 import { Video, Youtube, CheckCircle, Unlink, Users, TrendingUp, Gavel, BarChart3 } from "lucide-react";
@@ -7,6 +8,8 @@ import { useAuth } from "@/hooks/use-auth";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
+import { UploadModal } from "@/components/UploadModal";
+import { useLocation } from "wouter";
 
 interface YoutubeStatus {
   connected: boolean;
@@ -44,6 +47,8 @@ export default function Dashboard() {
   const { user } = useAuth();
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const [uploadModalOpen, setUploadModalOpen] = useState(false);
+  const [, setLocation] = useLocation();
 
   const { data: youtubeStatus, isLoading: isCheckingYoutube } = useQuery<YoutubeStatus>({
     queryKey: ["/api/auth/youtube/status"],
@@ -249,7 +254,11 @@ export default function Dashboard() {
                     {isCheckingYoutube ? "Checking..." : "Connect YouTube"}
                   </button>
                 )}
-                <button className="w-full text-left px-4 py-3 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium transition-colors">
+                <button 
+                  onClick={() => setUploadModalOpen(true)}
+                  className="w-full text-left px-4 py-3 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium transition-colors"
+                  data-testid="button-upload-manual-dashboard"
+                >
                   Upload Manual Asset
                 </button>
                 <button className="w-full text-left px-4 py-3 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium transition-colors">
@@ -332,6 +341,18 @@ export default function Dashboard() {
           </div>
         </div>
       </main>
+
+      <UploadModal 
+        open={uploadModalOpen}
+        onClose={() => setUploadModalOpen(false)}
+        onUploadComplete={() => {
+          toast({
+            title: "Upload Complete",
+            description: "Demo_Upload.mp4 has been added to your Library.",
+          });
+          setLocation("/library");
+        }}
+      />
     </div>
   );
 }
