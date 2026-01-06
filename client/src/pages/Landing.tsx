@@ -1,6 +1,10 @@
 import { motion } from "framer-motion";
 import { Zap, Shield, Video, ImageIcon } from "lucide-react";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
+import logoBlackAmbition from "@assets/logo-black-ambition_1767712118620.png";
+import logoMayDavis from "@assets/logo-may-davis_1767712118621.png";
+import logoElementa from "@assets/logo-elementa_1767712118620.png";
+import logoNue from "@assets/logo-nue_1767712118621.png";
 import { Footer } from "@/components/Footer";
 
 export default function Landing() {
@@ -80,10 +84,10 @@ export default function Landing() {
         >
           <p className="text-xs uppercase tracking-widest text-muted-foreground/50 mb-6 font-medium">Backed by Industry Leaders</p>
           <div className="flex flex-wrap items-center justify-center gap-8 md:gap-12">
-            <span className="text-lg font-display text-muted-foreground/40 hover:text-muted-foreground/60 transition-colors">Black Ambition</span>
-            <span className="text-lg font-display text-muted-foreground/40 hover:text-muted-foreground/60 transition-colors">May Davis Partners</span>
-            <span className="text-lg font-display text-muted-foreground/40 hover:text-muted-foreground/60 transition-colors">Elementa</span>
-            <span className="text-lg font-display text-muted-foreground/40 hover:text-muted-foreground/60 transition-colors">Nue Agency</span>
+            <img src={logoBlackAmbition} alt="Black Ambition" className="h-8 w-auto grayscale opacity-70 hover:grayscale-0 hover:opacity-100 transition-all duration-300" />
+            <img src={logoMayDavis} alt="May Davis Partners" className="h-8 w-auto grayscale opacity-70 hover:grayscale-0 hover:opacity-100 transition-all duration-300" />
+            <img src={logoElementa} alt="Elementa" className="h-8 w-auto grayscale opacity-70 hover:grayscale-0 hover:opacity-100 transition-all duration-300" />
+            <img src={logoNue} alt="Nue Agency" className="h-8 w-auto grayscale opacity-70 hover:grayscale-0 hover:opacity-100 transition-all duration-300" />
           </div>
         </motion.div>
 
