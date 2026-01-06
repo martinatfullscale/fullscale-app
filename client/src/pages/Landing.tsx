@@ -120,6 +120,52 @@ export default function Landing() {
         <motion.div
           initial={{ opacity: 0, y: 40 }}
           animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.8, delay: 0.45 }}
+          className="w-full max-w-5xl mt-24"
+        >
+          <h2 className="text-3xl md:text-4xl font-bold font-display tracking-tight mb-12 uppercase text-center">
+            A Simple Path <span className="text-primary">Forward.</span>
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+            <div className="text-center p-6">
+              <span className="text-5xl font-bold text-primary/30 font-display">01</span>
+              <h3 className="text-xl font-bold font-display mt-4 mb-3">Connect.</h3>
+              <p className="text-muted-foreground leading-relaxed">
+                Link your YouTube channel securely. We index your library in minutes, not weeks.
+              </p>
+            </div>
+            <div className="text-center p-6">
+              <span className="text-5xl font-bold text-primary/30 font-display">02</span>
+              <h3 className="text-xl font-bold font-display mt-4 mb-3">Align.</h3>
+              <p className="text-muted-foreground leading-relaxed">
+                Our AI identifies brand-safe opportunities that match your specific aesthetic.
+              </p>
+            </div>
+            <div className="text-center p-6">
+              <span className="text-5xl font-bold text-primary/30 font-display">03</span>
+              <h3 className="text-xl font-bold font-display mt-4 mb-3">Earn.</h3>
+              <p className="text-muted-foreground leading-relaxed">
+                Approve placements and generate recurring revenue from your back-catalog.
+              </p>
+            </div>
+          </div>
+        </motion.div>
+
+        <motion.div
+          initial={{ opacity: 0, y: 40 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.8, delay: 0.48 }}
+          className="w-full max-w-3xl mt-24 text-center"
+        >
+          <blockquote className="text-2xl md:text-3xl italic font-serif text-white/90 leading-relaxed">
+            "FullScale helped us unlock value from content we'd forgotten about. It feels like discovering a whole new revenue stream without changing how we create."
+          </blockquote>
+          <p className="mt-6 text-muted-foreground font-medium">— Early Creator Partner</p>
+        </motion.div>
+
+        <motion.div
+          initial={{ opacity: 0, y: 40 }}
+          animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.8, delay: 0.5 }}
           className="w-full max-w-5xl mt-24 mb-12"
         >
