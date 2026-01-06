@@ -132,6 +132,22 @@ export async function registerRoutes(
   // Google Login OAuth Routes (with Allowlist)
   // ============================================
   
+  // Check Google login status (for hybrid mode)
+  app.get("/api/auth/google/status", (req: any, res) => {
+    const googleUser = req.session?.googleUser;
+    if (googleUser && googleUser.email) {
+      return res.json({
+        authenticated: true,
+        user: {
+          email: googleUser.email,
+          name: googleUser.name || "",
+          picture: googleUser.picture || "",
+        },
+      });
+    }
+    return res.json({ authenticated: false });
+  });
+
   // Initiate Google login flow
   app.get("/api/auth/google", (req: any, res) => {
     const baseUrl = process.env.BASE_URL;
@@ -253,8 +269,18 @@ export async function registerRoutes(
   // YouTube OAuth Routes
   // ============================================
   
+  // Middleware to check Google OAuth session
+  const isGoogleAuthenticated = (req: any, res: any, next: any) => {
+    const googleUser = req.session?.googleUser;
+    if (!googleUser || !googleUser.email) {
+      return res.status(401).json({ message: "Unauthorized - Please login with Google" });
+    }
+    req.googleUser = googleUser;
+    next();
+  };
+  
   // Initiate YouTube OAuth flow
-  app.get("/api/auth/youtube", isAuthenticated, (req: any, res) => {
+  app.get("/api/auth/youtube", isGoogleAuthenticated, (req: any, res) => {
     const baseUrl = process.env.BASE_URL;
     if (!baseUrl) {
       console.error("BASE_URL environment variable is not set");
@@ -266,7 +292,7 @@ export async function registerRoutes(
   });
 
   // YouTube OAuth callback
-  app.get("/api/auth/youtube/callback", isAuthenticated, async (req: any, res) => {
+  app.get("/api/auth/youtube/callback", isGoogleAuthenticated, async (req: any, res) => {
     const { code, error } = req.query;
     
     if (error) {
@@ -304,7 +330,7 @@ export async function registerRoutes(
       const channelData = await getYoutubeChannelInfo(tokens.access_token);
       const channel = channelData.items?.[0];
 
-      const userId = req.user.claims.sub;
+      const userId = req.googleUser.email;
       
       // Save the connection
       await storage.upsertYoutubeConnection({
@@ -326,8 +352,8 @@ export async function registerRoutes(
   });
 
   // Get current user's YouTube connection status
-  app.get("/api/auth/youtube/status", isAuthenticated, async (req: any, res) => {
-    const userId = req.user.claims.sub;
+  app.get("/api/auth/youtube/status", isGoogleAuthenticated, async (req: any, res) => {
+    const userId = req.googleUser.email;
     const connection = await storage.getYoutubeConnection(userId);
     
     if (connection) {
@@ -342,15 +368,15 @@ export async function registerRoutes(
   });
 
   // Disconnect YouTube
-  app.delete("/api/auth/youtube", isAuthenticated, async (req: any, res) => {
-    const userId = req.user.claims.sub;
+  app.delete("/api/auth/youtube", isGoogleAuthenticated, async (req: any, res) => {
+    const userId = req.googleUser.email;
     await storage.deleteYoutubeConnection(userId);
     res.json({ success: true });
   });
 
   // Get full YouTube channel data (with profile picture and stats)
-  app.get("/api/youtube/channel", isAuthenticated, async (req: any, res) => {
-    const userId = req.user.claims.sub;
+  app.get("/api/youtube/channel", isGoogleAuthenticated, async (req: any, res) => {
+    const userId = req.googleUser.email;
     const connection = await storage.getYoutubeConnection(userId);
     
     if (!connection) {
@@ -403,8 +429,8 @@ export async function registerRoutes(
   });
 
   // Get user's latest YouTube videos
-  app.get("/api/youtube/videos", isAuthenticated, async (req: any, res) => {
-    const userId = req.user.claims.sub;
+  app.get("/api/youtube/videos", isGoogleAuthenticated, async (req: any, res) => {
+    const userId = req.googleUser.email;
     const connection = await storage.getYoutubeConnection(userId);
     
     if (!connection) {

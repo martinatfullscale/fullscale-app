@@ -4,10 +4,22 @@ import { TopBar } from "@/components/TopBar";
 import { Upload, Eye, CheckCircle, Loader2, AlertTriangle, X, Shield, Sun, Tag, Box, DollarSign, Sparkles } from "lucide-react";
 import { motion } from "framer-motion";
 import { useAuth } from "@/hooks/use-auth";
+import { useHybridMode } from "@/hooks/use-hybrid-mode";
+import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { UploadModal } from "@/components/UploadModal";
+
+interface YouTubeVideo {
+  id: string;
+  title: string;
+  thumbnailUrl: string;
+  publishedAt: string;
+  viewCount: string;
+  likeCount: string;
+  commentCount: string;
+}
 
 const videoData = [
   { 
@@ -276,9 +288,51 @@ const uploadedVideoData: VideoType = {
 
 export default function Library() {
   const { user } = useAuth();
+  const { mode } = useHybridMode();
   const [selectedVideo, setSelectedVideo] = useState<VideoType | null>(null);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [uploadedVideos, setUploadedVideos] = useState<VideoType[]>([]);
+  
+  const isDemoMode = mode === "demo";
+  const isRealMode = mode === "real";
+
+  interface YouTubeVideosResponse {
+    connected: boolean;
+    videos: YouTubeVideo[];
+  }
+
+  const { data: realVideosData, isLoading: isLoadingVideos } = useQuery<YouTubeVideosResponse>({
+    queryKey: ["/api/youtube/videos"],
+    queryFn: async () => {
+      const res = await fetch("/api/youtube/videos", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch videos");
+      return res.json();
+    },
+    enabled: isRealMode,
+  });
+
+  const realVideos = realVideosData?.videos || [];
+
+  const realVideosFormatted: VideoType[] = (realVideos || []).map((video, idx) => ({
+    title: video.title,
+    views: `${parseInt(video.viewCount || "0").toLocaleString()} Views`,
+    status: idx % 3 === 0 ? "Ready (3 Spots)" : idx % 3 === 1 ? "Scanning (78%)" : "Ready (2 Spots)",
+    statusColor: idx % 3 === 1 ? "bg-yellow-500/20 text-yellow-400" : "bg-emerald-500/20 text-emerald-400",
+    statusDot: idx % 3 === 1 ? "bg-yellow-500" : "bg-emerald-500",
+    image: video.thumbnailUrl || "https://images.unsplash.com/photo-1611162616475-46b635cb6868?w=800&h=450&fit=crop",
+    aiStatus: idx % 3 === 1 ? "scanning" : "ready",
+    aiText: idx % 3 === 1 ? "Processing..." : `${(idx % 4) + 2} Scenes Indexed`,
+    detectedObjects: ["Product Area", "Background", "Visible Surface", "Frame Edge"],
+    context: "YouTube Content",
+    brandSafety: 95 + (idx % 5),
+    cpm: 30 + (idx % 20),
+    opportunity: "Perfect for: Brand Integration",
+    surfaceLabel: "Available Surface: Frame",
+    boundingBox: { top: "40%", left: "25%", width: "50%", height: "40%" }
+  }));
+
+  const displayVideos = isRealMode && realVideos && realVideos.length > 0 ? realVideosFormatted : videoData;
+  const videoCount = isRealMode && realVideos ? realVideos.length : 45;
 
   return (
     <div className="min-h-screen bg-background text-foreground font-sans selection:bg-primary/20">
@@ -296,7 +350,8 @@ export default function Library() {
               Content Library
             </h1>
             <p className="text-muted-foreground">
-              <span className="text-white font-medium">45 Videos Scanned</span> | 128 Ad Opportunities Found
+              <span className="text-white font-medium">{videoCount} Videos Scanned</span> | {Math.round(videoCount * 2.8)} Ad Opportunities Found
+              {isDemoMode && <span className="ml-2 text-xs text-primary">(Demo Mode)</span>}
             </p>
           </div>
           <Button className="gap-2" data-testid="button-upload-asset" onClick={() => setUploadModalOpen(true)}>
@@ -352,7 +407,7 @@ export default function Library() {
               </div>
             </div>
           ))}
-          {videoData.map((video, idx) => (
+          {displayVideos.map((video, idx) => (
             <div 
               key={idx} 
               className="bg-white/5 rounded-xl border border-white/5 overflow-hidden group cursor-pointer"

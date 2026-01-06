@@ -1,10 +1,10 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Sidebar } from "@/components/Sidebar";
 import { TopBar } from "@/components/TopBar";
-import { Video, Youtube, CheckCircle, Unlink, Users, TrendingUp, Gavel, BarChart3, Loader2 } from "lucide-react";
+import { Video, Youtube, CheckCircle, Unlink, TrendingUp, Gavel, BarChart3, Loader2 } from "lucide-react";
 import { motion } from "framer-motion";
-import { useEffect } from "react";
 import { useAuth } from "@/hooks/use-auth";
+import { useHybridMode } from "@/hooks/use-hybrid-mode";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
@@ -45,12 +45,16 @@ const chartData = [
 
 export default function Dashboard() {
   const { user } = useAuth();
+  const { mode, isAuthenticated: isGoogleAuthenticated, googleUser } = useHybridMode();
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [, setLocation] = useLocation();
   const [isSimulatingConnect, setIsSimulatingConnect] = useState(false);
   const [simulatedConnected, setSimulatedConnected] = useState(false);
+
+  const isDemoMode = mode === "demo";
+  const isRealMode = mode === "real";
 
   const { data: youtubeStatus, isLoading: isCheckingYoutube } = useQuery<YoutubeStatus>({
     queryKey: ["/api/auth/youtube/status"],
@@ -59,7 +63,7 @@ export default function Dashboard() {
       if (!res.ok) throw new Error("Failed to fetch YouTube status");
       return res.json();
     },
-    enabled: !!user,
+    enabled: isRealMode,
   });
 
   const { data: channelData, isLoading: isLoadingChannel } = useQuery<YoutubeChannel>({
@@ -69,7 +73,7 @@ export default function Dashboard() {
       if (!res.ok) throw new Error("Failed to fetch channel data");
       return res.json();
     },
-    enabled: !!user && !!youtubeStatus?.connected,
+    enabled: isRealMode && !!youtubeStatus?.connected,
   });
 
   const disconnectMutation = useMutation({
@@ -123,8 +127,12 @@ export default function Dashboard() {
 
   const videoCount = channelData?.videoCount ? parseInt(channelData.videoCount, 10) : 0;
   const isConnected = youtubeStatus?.connected || false;
-  const hasRealData = isConnected && videoCount > 0;
-  const showDemoMode = !hasRealData;
+  const hasRealData = isRealMode && isConnected && videoCount > 0;
+  const showDemoMode = isDemoMode || !hasRealData;
+  
+  const displayName = isRealMode && googleUser?.name 
+    ? googleUser.name.split(" ")[0] 
+    : user?.firstName || "Creator";
 
   return (
     <div className="min-h-screen bg-background text-foreground font-sans selection:bg-primary/20">
@@ -145,7 +153,7 @@ export default function Dashboard() {
         >
           <p className="text-xs uppercase tracking-widest text-muted-foreground mb-2 font-medium">The Command Center</p>
           <h1 className="text-3xl font-bold font-display mb-2" data-testid="text-welcome">
-            Welcome back, {user?.firstName || "Creator"}
+            Welcome back, {displayName}
           </h1>
           <p className="text-muted-foreground">Here's what's happening with your content today.</p>
         </motion.div>
@@ -257,9 +265,9 @@ export default function Dashboard() {
             >
               <h3 className="font-semibold mb-4">Quick Actions</h3>
               <div className="space-y-3">
-                {!isConnected && !simulatedConnected && (
+                {(isDemoMode ? !simulatedConnected : !isConnected) && (
                   <button
-                    onClick={handleSimulatedConnect}
+                    onClick={isDemoMode ? handleSimulatedConnect : handleConnect}
                     disabled={isSimulatingConnect}
                     data-testid="button-connect-youtube"
                     className={`w-full text-left px-4 py-3 rounded-xl text-white text-sm font-medium transition-all flex items-center gap-2 ${
@@ -281,7 +289,7 @@ export default function Dashboard() {
                     )}
                   </button>
                 )}
-                {simulatedConnected && (
+                {(isDemoMode && simulatedConnected) && (
                   <button
                     disabled
                     data-testid="button-youtube-synced"
@@ -289,6 +297,16 @@ export default function Dashboard() {
                   >
                     <CheckCircle className="w-4 h-4" />
                     Channel Synced: @MartinCreators
+                  </button>
+                )}
+                {(isRealMode && isConnected) && (
+                  <button
+                    disabled
+                    data-testid="button-youtube-synced-real"
+                    className="w-full text-left px-4 py-3 rounded-xl bg-emerald-600/20 text-emerald-400 text-sm font-medium flex items-center gap-2 border border-emerald-500/30"
+                  >
+                    <CheckCircle className="w-4 h-4" />
+                    Channel Synced: {channelData?.title || youtubeStatus?.channelTitle || "YouTube"}
                   </button>
                 )}
                 <button 
@@ -314,8 +332,8 @@ export default function Dashboard() {
               className="bg-gradient-to-br from-card to-secondary/30 rounded-2xl p-6 border border-border shadow-lg"
             >
               <div className="flex items-center gap-4 mb-4">
-                {(isConnected && channelData?.profilePictureUrl) || simulatedConnected ? (
-                  simulatedConnected ? (
+                {((isDemoMode && simulatedConnected) || (isRealMode && isConnected && channelData?.profilePictureUrl)) ? (
+                  (isDemoMode && simulatedConnected) ? (
                     <div className="w-12 h-12 bg-emerald-600/20 rounded-xl flex items-center justify-center">
                       <CheckCircle className="w-6 h-6 text-emerald-400" />
                     </div>
@@ -338,9 +356,14 @@ export default function Dashboard() {
                 )}
                 <div className="flex-1">
                   <h3 className="text-lg font-bold font-display" data-testid="text-channel-title">
-                    {simulatedConnected ? "@MartinCreators" : isConnected ? (channelData?.title || youtubeStatus?.channelTitle || "YouTube Connected") : "Channel Status"}
+                    {(isDemoMode && simulatedConnected) 
+                      ? "@MartinCreators" 
+                      : (isRealMode && isConnected) 
+                        ? (channelData?.title || youtubeStatus?.channelTitle || "YouTube Connected") 
+                        : "Channel Status"
+                    }
                   </h3>
-                  {(isConnected || simulatedConnected) ? (
+                  {((isDemoMode && simulatedConnected) || (isRealMode && isConnected)) ? (
                     <div className="flex items-center gap-1 text-xs text-emerald-500">
                       <CheckCircle className="w-3 h-3" />
                       <span>Channel linked</span>
@@ -351,16 +374,16 @@ export default function Dashboard() {
                 </div>
               </div>
               
-              {(isConnected || simulatedConnected) ? (
+              {((isDemoMode && simulatedConnected) || (isRealMode && isConnected)) ? (
                 <>
                   <p className="text-sm text-muted-foreground mb-6">
-                    {simulatedConnected 
+                    {isDemoMode && simulatedConnected 
                       ? "Your channel with 125,400 subscribers is connected. 45 videos imported."
                       : `Your channel with ${channelData?.subscriberCount ? parseInt(channelData.subscriberCount).toLocaleString() : "0"} subscribers is connected.`
                     }
                   </p>
                   <button
-                    onClick={simulatedConnected ? () => setSimulatedConnected(false) : handleDisconnect}
+                    onClick={isDemoMode ? () => setSimulatedConnected(false) : handleDisconnect}
                     disabled={disconnectMutation.isPending}
                     data-testid="button-disconnect-youtube"
                     className="w-full py-3 px-4 bg-destructive/10 hover:bg-destructive/20 text-destructive font-semibold rounded-xl border border-destructive/20 transition-all duration-200 flex items-center justify-center gap-2"
@@ -380,7 +403,10 @@ export default function Dashboard() {
                 </>
               ) : (
                 <p className="text-sm text-muted-foreground">
-                  Connect your YouTube channel to replace demo data with your real metrics.
+                  {isDemoMode 
+                    ? "Connect your YouTube channel to see the demo import flow."
+                    : "Connect your YouTube channel to import your real videos and metrics."
+                  }
                 </p>
               )}
             </motion.div>
