@@ -33,7 +33,10 @@ Preferred communication style: Simple, everyday language.
 - **Migrations**: Drizzle Kit with `db:push` command for schema sync
 
 ### Authentication & Authorization
-- **Primary Auth**: Replit Auth via OpenID Connect
+- **Primary Auth**: Google OAuth 2.0 login with email allowlist gatekeeper
+- **Allowlist System**: `allowed_users` table controls founding cohort access
+- **CSRF Protection**: OAuth state parameter generation and verification
+- **Admin Routes**: Protected with isAdmin middleware (martin@fullscale.io, martin@creators.com)
 - **OAuth Integration**: Google OAuth for YouTube API access
 - **Token Security**: AES-256-GCM encryption for storing OAuth tokens
 - **Session Storage**: PostgreSQL-backed sessions with 7-day TTL
@@ -65,3 +68,4 @@ Preferred communication style: Simple, everyday language.
 - `sessions`: Session storage for authentication
 - `youtube_connections`: Encrypted OAuth tokens and channel info
 - `monetization_items`: Content monetization tracking
+- `allowed_users`: Email allowlist for founding cohort access control
