@@ -18,7 +18,7 @@ export default function Landing() {
   };
 
   const handleActualLogin = () => {
-    window.location.href = "/api/auth/youtube";
+    window.location.href = "/dashboard";
   };
 
   return (
