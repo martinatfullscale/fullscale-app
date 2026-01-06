@@ -84,10 +84,10 @@ export default function Landing() {
         >
           <p className="text-xs uppercase tracking-widest text-muted-foreground/50 mb-6 font-medium">Backed by Industry Leaders</p>
           <div className="flex flex-row flex-wrap md:flex-nowrap items-center justify-center gap-12">
-            <img src={logoBlackAmbition} alt="Black Ambition" className="h-12 w-auto" />
-            <img src={logoMayDavis} alt="May Davis Partners" className="h-12 w-auto" />
-            <img src={logoElementa} alt="Elementa" className="h-12 w-auto" />
-            <img src={logoNue} alt="Nue Agency" className="h-12 w-auto" />
+            <img src={logoBlackAmbition} alt="Black Ambition" className="h-10 w-auto" />
+            <img src={logoMayDavis} alt="May Davis Partners" className="h-16 w-auto" />
+            <img src={logoElementa} alt="Elementa" className="h-16 w-auto" />
+            <img src={logoNue} alt="Nue Agency" className="h-10 w-auto" />
           </div>
         </motion.div>
 
