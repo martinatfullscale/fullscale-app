@@ -36,7 +36,7 @@ Preferred communication style: Simple, everyday language.
 - **Primary Auth**: Google OAuth 2.0 login with email allowlist gatekeeper
 - **Allowlist System**: `allowed_users` table controls founding cohort access
 - **CSRF Protection**: OAuth state parameter generation and verification
-- **Admin Routes**: Protected with isAdmin middleware (martin@fullscale.io, martin@creators.com)
+- **Admin Routes**: Protected with isAdmin middleware (martin@gofullscale.co, martin@whtwrks.com, martincekechukwu@gmail.com)
 - **OAuth Integration**: Google OAuth for YouTube API access
 - **Token Security**: AES-256-GCM encryption for storing OAuth tokens
 - **Session Storage**: PostgreSQL-backed sessions with 7-day TTL

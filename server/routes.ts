@@ -487,7 +487,7 @@ export async function registerRoutes(
   // ============================================
   
   // Admin emails that can manage the allowlist
-  const ADMIN_EMAILS = ["martin@fullscale.io", "martin@creators.com"];
+  const ADMIN_EMAILS = ["martin@gofullscale.co", "martin@whtwrks.com", "martincekechukwu@gmail.com"];
   
   // Middleware to check if user is admin
   const isAdmin = (req: any, res: any, next: any) => {
@@ -555,8 +555,9 @@ async function seedDatabase() {
     console.log("Seeding allowed users...");
     // Add founder emails here
     const founderEmails = [
-      { email: "martin@creators.com", name: "Martin Creators" },
-      { email: "martin@fullscale.io", name: "Martin (Admin)" },
+      { email: "martin@gofullscale.co", name: "Martin (FullScale)" },
+      { email: "martin@whtwrks.com", name: "Martin (WhtWrks)" },
+      { email: "martincekechukwu@gmail.com", name: "Martin (Personal)" },
     ];
     for (const user of founderEmails) {
       try {
