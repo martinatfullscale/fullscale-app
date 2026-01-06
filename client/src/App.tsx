@@ -10,6 +10,8 @@ import { Loader2 } from "lucide-react";
 import NotFound from "@/pages/not-found";
 import Landing from "@/pages/Landing";
 import Dashboard from "@/pages/Dashboard";
+import Privacy from "@/pages/Privacy";
+import Terms from "@/pages/Terms";
 
 function Router() {
   const { user, isLoading } = useAuth();
@@ -31,6 +33,8 @@ function Router() {
     return (
       <Switch>
         <Route path="/" component={Landing} />
+        <Route path="/privacy" component={Privacy} />
+        <Route path="/terms" component={Terms} />
         <Route path="/:rest*" component={Landing} />
       </Switch>
     );
@@ -39,8 +43,8 @@ function Router() {
   return (
     <Switch>
       <Route path="/" component={Dashboard} />
-      {/* For this demo, all sidebar links map to Dashboard for simplicity, 
-          in a real app you'd have specific pages */}
+      <Route path="/privacy" component={Privacy} />
+      <Route path="/terms" component={Terms} />
       <Route path="/library" component={Dashboard} />
       <Route path="/opportunities" component={Dashboard} />
       <Route path="/earnings" component={Dashboard} />

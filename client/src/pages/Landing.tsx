@@ -1,6 +1,7 @@
 import { motion } from "framer-motion";
 import { Zap, Shield, Video, ImageIcon } from "lucide-react";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
+import { Footer } from "@/components/Footer";
 
 export default function Landing() {
   const handleLogin = () => {
@@ -127,6 +128,27 @@ export default function Landing() {
           </div>
         </motion.div>
       </main>
+
+      <motion.section
+        initial={{ opacity: 0, y: 40 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.8, delay: 0.6 }}
+        className="relative z-10 w-full py-20 bg-gradient-to-b from-transparent to-card/30"
+      >
+        <div className="container mx-auto px-6 text-center">
+          <h2 className="text-3xl md:text-4xl font-bold font-display tracking-tight mb-4 uppercase">
+            Join the <span className="text-primary">Founding Cohort.</span>
+          </h2>
+          <p className="text-lg text-muted-foreground max-w-2xl mx-auto mb-8 leading-relaxed">
+            Not ready to automate everything? Join our exclusive group of partner creators shaping the future of the platform.
+          </p>
+          <button className="px-8 py-4 rounded-xl bg-transparent hover:bg-white/5 border-2 border-primary text-primary font-semibold text-lg transition-all duration-300" data-testid="button-apply-access">
+            Apply for Access
+          </button>
+        </div>
+      </motion.section>
+
+      <Footer />
     </div>
   );
 }
