@@ -249,16 +249,6 @@ export async function registerRoutes(
     }
   });
 
-  // Check if current user is logged in via Google
-  app.get("/api/auth/google/status", (req, res) => {
-    const googleUser = (req.session as any)?.googleUser;
-    if (googleUser) {
-      res.json({ loggedIn: true, user: googleUser });
-    } else {
-      res.json({ loggedIn: false });
-    }
-  });
-
   // Logout from Google session
   app.post("/api/auth/google/logout", (req, res) => {
     delete (req.session as any).googleUser;

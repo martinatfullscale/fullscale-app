@@ -106,6 +106,11 @@ export default function Dashboard() {
   }, [toast, queryClient]);
 
   const handleConnect = () => {
+    // If not logged in via Google OAuth, redirect to Google login first
+    if (!isGoogleAuthenticated) {
+      window.location.href = "/api/auth/google";
+      return;
+    }
     window.location.href = "/api/auth/youtube";
   };
 
