@@ -327,8 +327,8 @@ export default function Landing() {
               </div>
 
               <h1 className="text-5xl md:text-7xl font-bold font-display tracking-tight mb-6 text-white uppercase">
-                The Future of <br/>
-                <span className="bg-gradient-to-r from-primary via-emerald-400 to-primary bg-clip-text text-transparent">Generative Advertising</span>
+                We Turn Storytelling <br/>
+                <span className="bg-gradient-to-r from-primary via-emerald-400 to-primary bg-clip-text text-transparent">Into Revenue</span>
               </h1>
               
               <p className="text-xl md:text-2xl text-white/70 max-w-3xl mx-auto mb-10 leading-relaxed">
