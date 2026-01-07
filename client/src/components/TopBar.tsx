@@ -37,10 +37,11 @@ export function TopBar() {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/auth/user-type"] });
+      // Force hard redirect to ensure session/cookie is recognized immediately
       if (data.viewRole === "brand") {
-        setLocation("/marketplace");
+        window.location.href = "/marketplace";
       } else {
-        setLocation("/dashboard");
+        window.location.href = "/dashboard";
       }
     },
   });

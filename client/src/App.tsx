@@ -58,6 +58,13 @@ function Router() {
     if (userTypeData?.userType === "brand" && location === "/") {
       setLocation("/marketplace");
     }
+    // Sidebar guard: redirect if role doesn't match current URL
+    if (userTypeData?.userType === "creator" && location === "/marketplace") {
+      window.location.href = "/dashboard";
+    }
+    if (userTypeData?.userType === "brand" && (location === "/dashboard" || location === "/library" || location === "/opportunities")) {
+      window.location.href = "/marketplace";
+    }
   }, [userTypeData, location, setLocation]);
 
   if (isLoadingReplitAuth || isLoadingGoogleAuth) {

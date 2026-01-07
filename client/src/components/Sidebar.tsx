@@ -30,9 +30,8 @@ export function Sidebar() {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/auth/user-type"] });
-      if (data.redirectTo) {
-        setLocation(data.redirectTo);
-      }
+      // Force hard redirect to ensure session is recognized immediately
+      window.location.href = data.redirectTo || "/marketplace";
     },
   });
 
