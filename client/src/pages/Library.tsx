@@ -1,28 +1,42 @@
 import { useState } from "react";
 import { Sidebar } from "@/components/Sidebar";
 import { TopBar } from "@/components/TopBar";
-import { Upload, Eye, CheckCircle, Loader2, AlertTriangle, X, Shield, Sun, Tag, Box, DollarSign, Sparkles } from "lucide-react";
+import { Upload, Eye, CheckCircle, Loader2, AlertTriangle, X, Shield, Sun, Tag, Box, DollarSign, Sparkles, RefreshCw, Play } from "lucide-react";
 import { motion } from "framer-motion";
 import { useAuth } from "@/hooks/use-auth";
 import { useHybridMode } from "@/hooks/use-hybrid-mode";
 import { usePitchMode } from "@/contexts/pitch-mode-context";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { UploadModal } from "@/components/UploadModal";
 
-interface YouTubeVideo {
-  id: string;
+interface IndexedVideo {
+  id: number;
+  userId: string;
+  youtubeId: string;
   title: string;
-  thumbnailUrl: string;
-  publishedAt: string;
-  viewCount: string;
-  likeCount: string;
-  commentCount: string;
+  description: string | null;
+  viewCount: number;
+  thumbnailUrl: string | null;
+  status: string;
+  priorityScore: number;
+  publishedAt: string | null;
+  category: string | null;
+  isEvergreen: boolean | null;
+  duration: string | null;
+  createdAt: string;
+  updatedAt: string;
+  adOpportunities: number;
 }
 
-const videoData = [
+interface VideoIndexResponse {
+  videos: IndexedVideo[];
+  total: number;
+}
+
+const demoVideoData = [
   { 
     title: "Tech Setup Review", 
     views: "1.5M Views", 
@@ -130,13 +144,94 @@ const videoData = [
 function AiOverlayIcon({ status }: { status: string }) {
   if (status === "ready") return <CheckCircle className="w-3 h-3 text-emerald-400" />;
   if (status === "scanning") return <Loader2 className="w-3 h-3 text-yellow-400 animate-spin" />;
+  if (status === "pending") return <AlertTriangle className="w-3 h-3 text-zinc-400" />;
   if (status === "issue") return <AlertTriangle className="w-3 h-3 text-red-400" />;
   return null;
 }
 
-type VideoType = typeof videoData[0];
+type DemoVideoType = typeof demoVideoData[0];
 
-function AnalysisModal({ video, open, onClose }: { video: VideoType | null; open: boolean; onClose: () => void }) {
+interface DisplayVideo {
+  id?: number;
+  title: string;
+  views: string;
+  status: string;
+  statusColor: string;
+  statusDot: string;
+  image: string;
+  aiStatus: string;
+  aiText: string;
+  detectedObjects: string[];
+  context: string;
+  brandSafety: number;
+  cpm: number;
+  opportunity: string;
+  surfaceLabel: string;
+  boundingBox: { top: string; left: string; width: string; height: string };
+}
+
+function getVideoStatusInfo(video: IndexedVideo): { status: string; statusColor: string; statusDot: string; aiStatus: string; aiText: string } {
+  const dbStatus = video.status?.toLowerCase() || "";
+  
+  if (dbStatus === "scanning" || dbStatus.includes("scanning")) {
+    return {
+      status: "Scanning...",
+      statusColor: "bg-yellow-500/20 text-yellow-400",
+      statusDot: "bg-yellow-500",
+      aiStatus: "scanning",
+      aiText: "Processing..."
+    };
+  }
+  
+  if (video.adOpportunities > 0) {
+    return {
+      status: `Ready (${video.adOpportunities} Spots)`,
+      statusColor: "bg-emerald-500/20 text-emerald-400",
+      statusDot: "bg-emerald-500",
+      aiStatus: "ready",
+      aiText: `${video.adOpportunities} Surfaces Found`
+    };
+  }
+  
+  if (dbStatus === "indexed" || dbStatus === "scan failed") {
+    return {
+      status: dbStatus === "scan failed" ? "Scan Failed" : "No Spots Found",
+      statusColor: "bg-zinc-500/20 text-zinc-400",
+      statusDot: "bg-zinc-500",
+      aiStatus: "ready",
+      aiText: "0 Surfaces Found"
+    };
+  }
+  
+  return {
+    status: "Pending Scan",
+    statusColor: "bg-zinc-500/20 text-zinc-400",
+    statusDot: "bg-zinc-500",
+    aiStatus: "pending",
+    aiText: "Awaiting Scan"
+  };
+}
+
+function formatIndexedVideo(video: IndexedVideo): DisplayVideo {
+  const statusInfo = getVideoStatusInfo(video);
+  
+  return {
+    id: video.id,
+    title: video.title,
+    views: `${video.viewCount.toLocaleString()} Views`,
+    ...statusInfo,
+    image: video.thumbnailUrl || "",
+    detectedObjects: [],
+    context: video.category || "",
+    brandSafety: 0,
+    cpm: 0,
+    opportunity: "",
+    surfaceLabel: "",
+    boundingBox: { top: "0%", left: "0%", width: "0%", height: "0%" }
+  };
+}
+
+function AnalysisModal({ video, open, onClose }: { video: DisplayVideo | null; open: boolean; onClose: () => void }) {
   const { toast } = useToast();
 
   if (!video) return null;
@@ -269,73 +364,141 @@ function AnalysisModal({ video, open, onClose }: { video: VideoType | null; open
   );
 }
 
-const uploadedVideoData: VideoType = {
-  title: "Demo_Upload.mp4",
-  views: "Just Uploaded",
-  status: "Just Scanned",
-  statusColor: "bg-emerald-500/20 text-emerald-400",
-  statusDot: "bg-emerald-500",
-  image: "https://images.unsplash.com/photo-1611162616475-46b635cb6868?w=800&h=450&fit=crop",
-  aiStatus: "ready",
-  aiText: "4 Scenes Indexed",
-  detectedObjects: ["Table", "Wall", "Shelf", "Product Area"],
-  context: "Lifestyle / General",
-  brandSafety: 96,
-  cpm: 34,
-  opportunity: "Perfect for: General Product Placement",
-  surfaceLabel: "Available Surface: Table",
-  boundingBox: { top: "40%", left: "25%", width: "50%", height: "40%" }
-};
+function EmptyLibrary({ onSync, isSyncing }: { onSync: () => void; isSyncing: boolean }) {
+  return (
+    <div className="flex flex-col items-center justify-center py-20 px-8">
+      <div className="w-20 h-20 rounded-full bg-white/5 flex items-center justify-center mb-6">
+        <Play className="w-10 h-10 text-muted-foreground" />
+      </div>
+      <h2 className="text-2xl font-bold text-white mb-2">Your Library is Empty</h2>
+      <p className="text-muted-foreground text-center max-w-md mb-8">
+        Sync your YouTube channel to import your high-value videos and discover monetization opportunities.
+      </p>
+      <Button 
+        size="lg" 
+        className="gap-2" 
+        onClick={onSync}
+        disabled={isSyncing}
+        data-testid="button-sync-channel"
+      >
+        {isSyncing ? (
+          <Loader2 className="w-5 h-5 animate-spin" />
+        ) : (
+          <RefreshCw className="w-5 h-5" />
+        )}
+        {isSyncing ? "Syncing Channel..." : "Sync YouTube Channel"}
+      </Button>
+    </div>
+  );
+}
 
 export default function Library() {
   const { user } = useAuth();
   const { mode } = useHybridMode();
   const { isPitchMode } = usePitchMode();
-  const [selectedVideo, setSelectedVideo] = useState<VideoType | null>(null);
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [selectedVideo, setSelectedVideo] = useState<DisplayVideo | null>(null);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
-  const [uploadedVideos, setUploadedVideos] = useState<VideoType[]>([]);
   
-  // In Pitch Mode, force demo data even if authenticated
-  const isDemoMode = mode === "demo" || isPitchMode;
   const isRealMode = mode === "real" && !isPitchMode;
 
-  interface YouTubeVideosResponse {
-    connected: boolean;
-    videos: YouTubeVideo[];
-  }
-
-  const { data: realVideosData, isLoading: isLoadingVideos } = useQuery<YouTubeVideosResponse>({
-    queryKey: ["/api/youtube/videos"],
+  const { data: videoIndexData, isLoading: isLoadingVideos, isError: isVideosError } = useQuery<VideoIndexResponse>({
+    queryKey: ["/api/video-index/with-opportunities"],
     queryFn: async () => {
-      const res = await fetch("/api/youtube/videos", { credentials: "include" });
+      const res = await fetch("/api/video-index/with-opportunities", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch videos");
       return res.json();
     },
     enabled: isRealMode,
+    retry: 1,
   });
 
-  const realVideos = realVideosData?.videos || [];
+  const syncMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch("/api/video-index/refresh", { 
+        method: "POST",
+        credentials: "include" 
+      });
+      if (!res.ok) throw new Error("Failed to sync channel");
+      return res.json();
+    },
+    onSuccess: (data) => {
+      toast({
+        title: "Channel Synced",
+        description: `Indexed ${data.indexed || 0} high-value videos from your channel.`,
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/video-index/with-opportunities"] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Sync Failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
 
-  const realVideosFormatted: VideoType[] = (realVideos || []).map((video, idx) => ({
-    title: video.title,
-    views: `${parseInt(video.viewCount || "0").toLocaleString()} Views`,
-    status: idx % 3 === 0 ? "Ready (3 Spots)" : idx % 3 === 1 ? "Scanning (78%)" : "Ready (2 Spots)",
-    statusColor: idx % 3 === 1 ? "bg-yellow-500/20 text-yellow-400" : "bg-emerald-500/20 text-emerald-400",
-    statusDot: idx % 3 === 1 ? "bg-yellow-500" : "bg-emerald-500",
-    image: video.thumbnailUrl || "https://images.unsplash.com/photo-1611162616475-46b635cb6868?w=800&h=450&fit=crop",
-    aiStatus: idx % 3 === 1 ? "scanning" : "ready",
-    aiText: idx % 3 === 1 ? "Processing..." : `${(idx % 4) + 2} Scenes Indexed`,
-    detectedObjects: ["Product Area", "Background", "Visible Surface", "Frame Edge"],
-    context: "YouTube Content",
-    brandSafety: 95 + (idx % 5),
-    cpm: 30 + (idx % 20),
-    opportunity: "Perfect for: Brand Integration",
-    surfaceLabel: "Available Surface: Frame",
-    boundingBox: { top: "40%", left: "25%", width: "50%", height: "40%" }
-  }));
+  const scanVideoMutation = useMutation({
+    mutationFn: async (videoId: number) => {
+      const res = await fetch(`/api/video-scan/${videoId}`, { 
+        method: "POST",
+        credentials: "include" 
+      });
+      if (!res.ok) throw new Error("Failed to start scan");
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({
+        title: "Scan Started",
+        description: "AI is analyzing your video for ad placement opportunities.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/video-index/with-opportunities"] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Scan Failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
 
-  const displayVideos = isRealMode && realVideos && realVideos.length > 0 ? realVideosFormatted : videoData;
-  const videoCount = isRealMode && realVideos ? realVideos.length : 45;
+  const batchScanMutation = useMutation({
+    mutationFn: async (limit: number) => {
+      const res = await fetch(`/api/video-scan/batch?limit=${limit}`, { 
+        method: "POST",
+        credentials: "include" 
+      });
+      if (!res.ok) throw new Error("Failed to start batch scan");
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({
+        title: "Batch Scan Started",
+        description: "AI is analyzing your pending videos for ad placement opportunities.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/video-index/with-opportunities"] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Batch Scan Failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const realVideos = videoIndexData?.videos || [];
+  const realVideosFormatted: DisplayVideo[] = realVideos.map(formatIndexedVideo);
+
+  const displayVideos: DisplayVideo[] = isPitchMode ? demoVideoData : realVideosFormatted;
+  const videoCount = isPitchMode ? 45 : realVideos.length;
+  const totalOpportunities = isPitchMode ? 126 : realVideos.reduce((sum, v) => sum + v.adOpportunities, 0);
+
+  const pendingCount = realVideos.filter(v => 
+    v.status?.toLowerCase() === "pending scan" && v.adOpportunities === 0
+  ).length;
 
   return (
     <div className="min-h-screen bg-background text-foreground font-sans selection:bg-primary/20">
@@ -353,102 +516,116 @@ export default function Library() {
               Content Library
             </h1>
             <p className="text-muted-foreground">
-              <span className="text-white font-medium">{videoCount} Videos Scanned</span> | {Math.round(videoCount * 2.8)} Ad Opportunities Found
+              <span className="text-white font-medium">{videoCount} Videos Indexed</span> | {totalOpportunities} Ad Opportunities Found
               {isPitchMode && <span className="ml-2 text-xs text-amber-400">(Pitch Mode)</span>}
-              {isDemoMode && !isPitchMode && <span className="ml-2 text-xs text-primary">(Demo Mode)</span>}
             </p>
           </div>
-          <Button className="gap-2" data-testid="button-upload-asset" onClick={() => setUploadModalOpen(true)}>
-            <Upload className="w-4 h-4" />
-            Upload Manual Asset
-          </Button>
+          <div className="flex items-center gap-3">
+            {isRealMode && realVideos.length > 0 && (
+              <Button 
+                variant="outline" 
+                className="gap-2" 
+                onClick={() => syncMutation.mutate()}
+                disabled={syncMutation.isPending}
+                data-testid="button-refresh-library"
+              >
+                {syncMutation.isPending ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="w-4 h-4" />
+                )}
+                Refresh
+              </Button>
+            )}
+            {isRealMode && pendingCount > 0 && (
+              <Button 
+                variant="outline" 
+                className="gap-2" 
+                onClick={() => batchScanMutation.mutate(10)}
+                disabled={batchScanMutation.isPending}
+                data-testid="button-scan-all-pending"
+              >
+                {batchScanMutation.isPending ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Sparkles className="w-4 h-4" />
+                )}
+                Scan All Pending ({pendingCount})
+              </Button>
+            )}
+            <Button className="gap-2" data-testid="button-upload-asset" onClick={() => setUploadModalOpen(true)}>
+              <Upload className="w-4 h-4" />
+              Upload Manual Asset
+            </Button>
+          </div>
         </motion.div>
 
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-          className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
-        >
-          {uploadedVideos.map((video, idx) => (
-            <div 
-              key={`uploaded-${idx}`} 
-              className="bg-white/5 rounded-xl border border-emerald-500/30 overflow-hidden group cursor-pointer ring-1 ring-emerald-500/20"
-              data-testid={`card-uploaded-${idx}`}
-              onClick={() => setSelectedVideo(video)}
-            >
-              <div className="aspect-video relative overflow-hidden">
-                <img 
-                  src={video.image} 
-                  alt={video.title}
-                  className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-                />
-                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent" />
-                <div className="absolute top-2 right-2 flex items-center gap-1.5 px-2 py-1 rounded-md bg-emerald-500/90 backdrop-blur-sm">
-                  <Sparkles className="w-3 h-3 text-white" />
-                  <span className="text-xs text-white font-medium">Just Scanned</span>
+        {isLoadingVideos ? (
+          <div className="flex items-center justify-center py-20">
+            <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
+          </div>
+        ) : isRealMode && (realVideos.length === 0 || isVideosError) ? (
+          <EmptyLibrary onSync={() => syncMutation.mutate()} isSyncing={syncMutation.isPending} />
+        ) : (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.1 }}
+            className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
+          >
+            {displayVideos.map((video, idx) => (
+              <div 
+                key={video.id || idx} 
+                className="bg-white/5 rounded-xl border border-white/5 overflow-hidden group cursor-pointer"
+                data-testid={`card-video-${video.id || idx}`}
+                onClick={() => setSelectedVideo(video)}
+              >
+                <div className="aspect-video relative overflow-hidden">
+                  <img 
+                    src={video.image} 
+                    alt={video.title}
+                    className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent" />
+                  <div className="absolute bottom-2 left-2 flex items-center gap-1.5 px-2 py-1 rounded-md bg-black/50 backdrop-blur-sm">
+                    <AiOverlayIcon status={video.aiStatus} />
+                    <span className="text-xs text-white/90 font-medium">{video.aiText}</span>
+                  </div>
+                  {isRealMode && video.id && video.aiStatus === "pending" && (
+                    <div 
+                      className="absolute top-2 right-2"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (video.id) scanVideoMutation.mutate(video.id);
+                      }}
+                    >
+                      <Button size="sm" variant="secondary" className="gap-1.5" data-testid={`button-scan-${video.id}`}>
+                        <Play className="w-3 h-3" />
+                        Scan
+                      </Button>
+                    </div>
+                  )}
+                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
+                    <Button variant="outline" size="sm" className="gap-2">
+                      <Eye className="w-4 h-4" />
+                      View Analysis
+                    </Button>
+                  </div>
                 </div>
-                <div className="absolute bottom-2 left-2 flex items-center gap-1.5 px-2 py-1 rounded-md bg-black/50 backdrop-blur-sm">
-                  <AiOverlayIcon status={video.aiStatus} />
-                  <span className="text-xs text-white/90 font-medium">{video.aiText}</span>
-                </div>
-                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
-                  <Button variant="outline" size="sm" className="gap-2">
-                    <Eye className="w-4 h-4" />
-                    View Analysis
-                  </Button>
-                </div>
-              </div>
-              <div className="p-4">
-                <h3 className="font-semibold text-white mb-1 truncate">{video.title}</h3>
-                <p className="text-sm text-muted-foreground mb-3">{video.views}</p>
-                <div className="flex items-center gap-2">
-                  <span className={`w-2 h-2 rounded-full ${video.statusDot}`}></span>
-                  <span className={`px-2 py-0.5 rounded-full ${video.statusColor} text-xs font-medium`}>
-                    {video.status}
-                  </span>
-                </div>
-              </div>
-            </div>
-          ))}
-          {displayVideos.map((video, idx) => (
-            <div 
-              key={idx} 
-              className="bg-white/5 rounded-xl border border-white/5 overflow-hidden group cursor-pointer"
-              data-testid={`card-video-${idx}`}
-              onClick={() => setSelectedVideo(video)}
-            >
-              <div className="aspect-video relative overflow-hidden">
-                <img 
-                  src={video.image} 
-                  alt={video.title}
-                  className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-                />
-                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent" />
-                <div className="absolute bottom-2 left-2 flex items-center gap-1.5 px-2 py-1 rounded-md bg-black/50 backdrop-blur-sm">
-                  <AiOverlayIcon status={video.aiStatus} />
-                  <span className="text-xs text-white/90 font-medium">{video.aiText}</span>
-                </div>
-                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
-                  <Button variant="outline" size="sm" className="gap-2">
-                    <Eye className="w-4 h-4" />
-                    View Analysis
-                  </Button>
+                <div className="p-4">
+                  <h3 className="font-semibold text-white mb-1 truncate">{video.title}</h3>
+                  <p className="text-sm text-muted-foreground mb-3">{video.views}</p>
+                  <div className="flex items-center gap-2">
+                    <span className={`w-2 h-2 rounded-full ${video.statusDot}`}></span>
+                    <span className={`px-2 py-0.5 rounded-full ${video.statusColor} text-xs font-medium`}>
+                      {video.status}
+                    </span>
+                  </div>
                 </div>
               </div>
-              <div className="p-4">
-                <h3 className="font-semibold text-white mb-1 truncate">{video.title}</h3>
-                <p className="text-sm text-muted-foreground mb-3">{video.views}</p>
-                <div className="flex items-center gap-2">
-                  <span className={`w-2 h-2 rounded-full ${video.statusDot}`}></span>
-                  <span className={`px-2 py-0.5 rounded-full ${video.statusColor} text-xs font-medium`}>
-                    {video.status}
-                  </span>
-                </div>
-              </div>
-            </div>
-          ))}
-        </motion.div>
+            ))}
+          </motion.div>
+        )}
       </main>
 
       <AnalysisModal 
@@ -461,7 +638,10 @@ export default function Library() {
         open={uploadModalOpen}
         onClose={() => setUploadModalOpen(false)}
         onUploadComplete={() => {
-          setUploadedVideos(prev => [uploadedVideoData, ...prev]);
+          toast({
+            title: "Upload Complete",
+            description: "Your asset has been uploaded successfully.",
+          });
         }}
       />
     </div>
