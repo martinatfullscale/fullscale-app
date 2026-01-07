@@ -9,8 +9,8 @@ interface IndexerOptions {
 }
 
 const DEFAULT_OPTIONS: IndexerOptions = {
-  minViews: 5000,
-  maxAgeMonths: 24,
+  minViews: 0,
+  maxAgeMonths: 120,
 };
 
 const EVERGREEN_KEYWORDS = [
@@ -234,9 +234,14 @@ export async function runIndexerForUser(
       return { indexed: 0, filtered: 0, error: "Could not find uploads playlist" };
     }
     
-    console.log(`[Indexer] Fetching all playlist items...`);
-    const playlistItems = await getAllPlaylistItems(accessToken, uploadsPlaylistId);
-    console.log(`[Indexer] Found ${playlistItems.length} videos in uploads playlist`);
+    console.log(`[Indexer] Fetching all playlist items from uploads playlist: ${uploadsPlaylistId}`);
+    const allPlaylistItems = await getAllPlaylistItems(accessToken, uploadsPlaylistId);
+    console.log(`[Indexer] YouTube API returned ${allPlaylistItems.length} total videos`);
+    
+    const playlistItems = allPlaylistItems
+      .sort((a, b) => new Date(b.snippet.publishedAt).getTime() - new Date(a.snippet.publishedAt).getTime())
+      .slice(0, 10);
+    console.log(`[Indexer] Processing top ${playlistItems.length} most recent videos for indexing`);
     
     const videoIds = playlistItems.map(item => item.contentDetails.videoId);
     console.log(`[Indexer] Fetching stats for ${videoIds.length} videos...`);
@@ -250,22 +255,25 @@ export async function runIndexerForUser(
     
     for (const item of playlistItems) {
       const videoId = item.contentDetails.videoId;
+      const title = item.snippet.title;
+      const description = item.snippet.description || "";
       const stats = statsMap.get(videoId);
       const publishedAt = new Date(item.snippet.publishedAt);
       const viewCount = parseInt(stats?.statistics?.viewCount || "0", 10);
       
-      if (viewCount < (opts.minViews || 5000)) {
+      console.log(`[Indexer] Video: "${title}" | Views: ${viewCount} | Published: ${publishedAt.toISOString()}`);
+      
+      if (opts.minViews && opts.minViews > 0 && viewCount < opts.minViews) {
+        console.log(`[Indexer]   -> Filtered: views (${viewCount}) below minimum (${opts.minViews})`);
         filteredCount++;
         continue;
       }
       
-      if (publishedAt < cutoffDate) {
+      if (opts.maxAgeMonths && opts.maxAgeMonths < 120 && publishedAt < cutoffDate) {
+        console.log(`[Indexer]   -> Filtered: too old (published before ${cutoffDate.toISOString()})`);
         filteredCount++;
         continue;
       }
-      
-      const title = item.snippet.title;
-      const description = item.snippet.description || "";
       const evergreenStatus = isEvergreen(title, description);
       const category = detectCategory(title, description);
       const priorityScore = calculatePriorityScore(viewCount, publishedAt, evergreenStatus);
@@ -292,10 +300,21 @@ export async function runIndexerForUser(
       });
     }
     
-    console.log(`[Indexer] Indexing ${videosToIndex.length} high-value videos (filtered ${filteredCount})`);
+    console.log(`[Indexer] ===== SUMMARY =====`);
+    console.log(`[Indexer] YouTube API returned: ${allPlaylistItems.length} total videos`);
+    console.log(`[Indexer] Processed (top 10 recent): ${playlistItems.length} videos`);
+    console.log(`[Indexer] Passed filters: ${videosToIndex.length} videos`);
+    console.log(`[Indexer] Filtered out: ${filteredCount} videos`);
     
     if (videosToIndex.length > 0) {
+      console.log(`[Indexer] Writing ${videosToIndex.length} videos to database...`);
+      videosToIndex.forEach((v, i) => {
+        console.log(`[Indexer]   ${i + 1}. "${v.title}" (${v.viewCount} views)`);
+      });
       await storage.bulkUpsertVideoIndex(videosToIndex);
+      console.log(`[Indexer] Database write complete!`);
+    } else {
+      console.log(`[Indexer] WARNING: No videos to write to database!`);
     }
     
     console.log(`[Indexer] Indexing complete for user: ${userId}`);
