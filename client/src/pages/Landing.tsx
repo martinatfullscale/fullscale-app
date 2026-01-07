@@ -1,12 +1,13 @@
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Zap, Shield, Video, ImageIcon, X, Ban } from "lucide-react";
+import { Zap, Shield, Video, ImageIcon, X, Ban, DollarSign, TrendingUp, Users, Sparkles, Play } from "lucide-react";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 import logoBlackAmbition from "@assets/logo-black-ambition_1767712118620.png";
 import logoMayDavis from "@assets/logo-may-davis_1767712118621.png";
 import logoElementa from "@assets/logo-elementa_1767712118620.png";
 import logoNue from "@assets/logo-nue_1767712118621.png";
 import featureKitchen from "@assets/feature-kitchen_1767713076335.png";
+import surfaceEngineImg from "@assets/generated_images/desk_with_ai_tracking_grid.png";
 import { Footer } from "@/components/Footer";
 
 export default function Landing() {
@@ -339,138 +340,208 @@ export default function Landing() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-md p-4 overflow-y-auto"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/95 backdrop-blur-md p-4 overflow-y-auto"
             onClick={() => setShowDemoModal(false)}
           >
             <motion.div
               initial={{ opacity: 0, scale: 0.95, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              transition={{ duration: 0.2 }}
-              className="relative w-full max-w-5xl my-8"
+              transition={{ duration: 0.3 }}
+              className="relative w-full max-w-6xl my-8"
               onClick={(e) => e.stopPropagation()}
             >
               <button
                 onClick={() => setShowDemoModal(false)}
-                className="absolute -top-10 right-0 text-white/60 hover:text-white transition-colors z-10"
+                className="absolute -top-12 right-0 text-white/60 hover:text-white transition-colors z-10"
                 data-testid="button-demo-close"
               >
                 <X className="w-8 h-8" />
               </button>
 
-              <div className="relative rounded-2xl border border-white/10 bg-black/60 backdrop-blur-xl p-6 md:p-8 shadow-2xl">
-                <div className="absolute top-4 right-4 px-3 py-1 rounded-full bg-primary/20 border border-primary/40 text-primary text-xs font-bold uppercase tracking-wider">
-                  Simulation Mode
-                </div>
-
-                <p className="text-sm uppercase tracking-widest text-muted-foreground mb-6 font-medium">
-                  The Command Center
-                </p>
-
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-                  <div className="bg-white/5 rounded-xl p-4 border border-white/5">
-                    <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Total Revenue</p>
-                    <p className="text-2xl md:text-3xl font-bold text-emerald-400">$14,850</p>
-                    <p className="text-xs text-emerald-400/80 mt-1">+18% this month</p>
-                  </div>
-                  <div className="bg-white/5 rounded-xl p-4 border border-white/5">
-                    <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Active Bids</p>
-                    <p className="text-2xl md:text-3xl font-bold text-white">12</p>
-                    <span className="inline-block mt-1 px-2 py-0.5 rounded-full bg-orange-500/20 text-orange-400 text-xs font-medium">Hot</span>
-                  </div>
-                  <div className="bg-white/5 rounded-xl p-4 border border-white/5">
-                    <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Avg. CPM</p>
-                    <p className="text-2xl md:text-3xl font-bold text-white">$35.00</p>
-                    <p className="text-xs text-muted-foreground/60 mt-1">Industry avg: $22</p>
-                  </div>
-                  <div className="bg-white/5 rounded-xl p-4 border border-white/5">
-                    <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Inventory Index</p>
-                    <p className="text-2xl md:text-3xl font-bold text-white">98%</p>
-                    <p className="text-xs text-muted-foreground/60 mt-1">Scanned</p>
-                  </div>
-                </div>
-
-                <div className="bg-white/5 rounded-xl p-6 border border-white/5 mb-8">
-                  <p className="text-sm font-semibold text-white mb-4">Revenue Velocity</p>
-                  <div className="flex items-end justify-between gap-2 h-32 md:h-40">
-                    <div className="flex-1 flex flex-col items-center gap-1">
-                      <div className="w-full bg-gradient-to-t from-primary/60 to-primary rounded-t-sm" style={{ height: '25%' }}></div>
-                      <span className="text-xs text-muted-foreground">Jul</span>
+              <div className="relative rounded-3xl border border-white/10 bg-gradient-to-br from-black/80 via-black/90 to-black/80 backdrop-blur-2xl shadow-2xl overflow-hidden">
+                {/* Ambient glow effects */}
+                <div className="absolute top-0 left-1/4 w-96 h-96 bg-primary/20 rounded-full blur-[120px] pointer-events-none" />
+                <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-emerald-500/10 rounded-full blur-[120px] pointer-events-none" />
+                
+                {/* Header */}
+                <div className="relative px-8 pt-8 pb-6 border-b border-white/5">
+                  <div className="flex flex-wrap items-center justify-between gap-4">
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.3em] text-primary font-bold mb-2">Vision Preview</p>
+                      <h2 className="text-3xl md:text-4xl font-bold font-display tracking-tight">
+                        The Future of <span className="text-primary">Creator Revenue</span>
+                      </h2>
                     </div>
-                    <div className="flex-1 flex flex-col items-center gap-1">
-                      <div className="w-full bg-gradient-to-t from-primary/60 to-primary rounded-t-sm" style={{ height: '40%' }}></div>
-                      <span className="text-xs text-muted-foreground">Aug</span>
-                    </div>
-                    <div className="flex-1 flex flex-col items-center gap-1">
-                      <div className="w-full bg-gradient-to-t from-primary/60 to-primary rounded-t-sm" style={{ height: '35%' }}></div>
-                      <span className="text-xs text-muted-foreground">Sep</span>
-                    </div>
-                    <div className="flex-1 flex flex-col items-center gap-1">
-                      <div className="w-full bg-gradient-to-t from-primary/60 to-primary rounded-t-sm" style={{ height: '55%' }}></div>
-                      <span className="text-xs text-muted-foreground">Oct</span>
-                    </div>
-                    <div className="flex-1 flex flex-col items-center gap-1">
-                      <div className="w-full bg-gradient-to-t from-primary/60 to-primary rounded-t-sm" style={{ height: '70%' }}></div>
-                      <span className="text-xs text-muted-foreground">Nov</span>
-                    </div>
-                    <div className="flex-1 flex flex-col items-center gap-1">
-                      <div className="w-full bg-gradient-to-t from-primary/60 to-primary rounded-t-sm" style={{ height: '90%' }}></div>
-                      <span className="text-xs text-muted-foreground">Dec</span>
+                    <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-emerald-500/10 border border-emerald-500/30">
+                      <span className="relative flex h-2 w-2">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400"></span>
+                      </span>
+                      <span className="text-emerald-400 text-sm font-medium">Platform Live</span>
                     </div>
                   </div>
                 </div>
 
-                <div className="bg-white/5 rounded-xl border border-white/5 overflow-hidden">
-                  <div className="px-6 py-4 border-b border-white/5">
-                    <p className="text-sm font-semibold text-white">Active Brand Campaigns</p>
+                <div className="relative p-8">
+                  {/* Two Column Layout */}
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-10">
+                    {/* Left Column - Founding Creators Gallery */}
+                    <div className="space-y-4">
+                      <div className="flex items-center gap-2 mb-4">
+                        <Users className="w-5 h-5 text-primary" />
+                        <h3 className="text-lg font-bold text-white uppercase tracking-wider">Founding Creators</h3>
+                      </div>
+                      <div className="bg-white/5 rounded-2xl border border-white/5 p-4 max-h-64 overflow-y-auto">
+                        <div className="grid grid-cols-4 gap-2">
+                          {[
+                            { name: "Alex Chen", niche: "Tech", revenue: "$4.2K" },
+                            { name: "Maya Torres", niche: "Lifestyle", revenue: "$3.8K" },
+                            { name: "Jordan Lee", niche: "Fitness", revenue: "$5.1K" },
+                            { name: "Sam Rivera", niche: "Travel", revenue: "$2.9K" },
+                            { name: "Taylor Kim", niche: "Food", revenue: "$3.4K" },
+                            { name: "Drew Morgan", niche: "Gaming", revenue: "$6.2K" },
+                            { name: "Chris Patel", niche: "Music", revenue: "$2.7K" },
+                            { name: "Jamie Brooks", niche: "Beauty", revenue: "$4.5K" },
+                          ].map((creator, i) => (
+                            <div key={i} className="bg-white/5 rounded-xl p-2 text-center hover:bg-white/10 transition-colors">
+                              <div className="w-10 h-10 mx-auto rounded-full bg-gradient-to-br from-primary/40 to-emerald-500/40 flex items-center justify-center text-white text-xs font-bold mb-1">
+                                {creator.name.split(' ').map(n => n[0]).join('')}
+                              </div>
+                              <p className="text-xs font-medium text-white truncate">{creator.name.split(' ')[0]}</p>
+                              <p className="text-xs text-muted-foreground">{creator.niche}</p>
+                              <p className="text-xs text-emerald-400 font-bold">{creator.revenue}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      <p className="text-xs text-muted-foreground text-center">
+                        Join 50+ creators already earning passive income
+                      </p>
+                    </div>
+
+                    {/* Right Column - Key Metrics */}
+                    <div className="space-y-4">
+                      <div className="flex items-center gap-2 mb-4">
+                        <TrendingUp className="w-5 h-5 text-emerald-400" />
+                        <h3 className="text-lg font-bold text-white uppercase tracking-wider">Platform Metrics</h3>
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="bg-gradient-to-br from-primary/20 to-primary/5 rounded-2xl p-5 border border-primary/20">
+                          <p className="text-xs text-primary uppercase tracking-wider mb-2 font-semibold">Total Scene Value</p>
+                          <p className="text-3xl font-bold text-white">$2.4M</p>
+                          <p className="text-xs text-muted-foreground mt-1">Identified opportunities</p>
+                        </div>
+                        <div className="bg-gradient-to-br from-emerald-500/20 to-emerald-500/5 rounded-2xl p-5 border border-emerald-500/20">
+                          <p className="text-xs text-emerald-400 uppercase tracking-wider mb-2 font-semibold">Active Brand Bids</p>
+                          <p className="text-3xl font-bold text-white">847</p>
+                          <p className="text-xs text-muted-foreground mt-1">Across all creators</p>
+                        </div>
+                        <div className="bg-white/5 rounded-2xl p-5 border border-white/5">
+                          <p className="text-xs text-muted-foreground uppercase tracking-wider mb-2 font-semibold">Avg. Placement Value</p>
+                          <p className="text-3xl font-bold text-white">$285</p>
+                          <p className="text-xs text-emerald-400 mt-1">+42% vs. traditional</p>
+                        </div>
+                        <div className="bg-white/5 rounded-2xl p-5 border border-white/5">
+                          <p className="text-xs text-muted-foreground uppercase tracking-wider mb-2 font-semibold">Videos Analyzed</p>
+                          <p className="text-3xl font-bold text-white">12.4K</p>
+                          <p className="text-xs text-muted-foreground mt-1">And growing daily</p>
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                  <div className="divide-y divide-white/5">
-                    <div className="px-6 py-4 flex flex-wrap items-center justify-between gap-3">
-                      <div className="flex items-center gap-3">
-                        <span className="font-semibold text-white">Sony</span>
-                        <span className="text-muted-foreground text-sm">Vlog #42</span>
+
+                  {/* The Surface Engine Section */}
+                  <div className="mb-10">
+                    <div className="flex items-center gap-2 mb-6">
+                      <Sparkles className="w-5 h-5 text-yellow-400" />
+                      <h3 className="text-lg font-bold text-white uppercase tracking-wider">The Surface Engine</h3>
+                      <span className="px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-400 text-xs font-bold">Proprietary AI</span>
+                    </div>
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-center">
+                      <div className="relative rounded-2xl overflow-hidden border border-emerald-500/30 shadow-lg shadow-emerald-500/10">
+                        <img 
+                          src={surfaceEngineImg} 
+                          alt="Surface Engine - Homography Estimation" 
+                          className="w-full h-auto"
+                        />
+                        <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent" />
+                        <div className="absolute bottom-0 left-0 right-0 p-4">
+                          <div className="flex items-center gap-2">
+                            <Play className="w-4 h-4 text-emerald-400" />
+                            <span className="text-emerald-400 text-xs font-semibold uppercase tracking-wider">Live Detection</span>
+                          </div>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-3">
-                        <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 text-xs font-medium">Active</span>
-                        <span className="font-semibold text-white">$2,400</span>
+                      <div className="space-y-4">
+                        <p className="text-lg text-white leading-relaxed">
+                          Our proprietary AI identifies <span className="text-emerald-400 font-semibold">high-value contextual real estate</span> in every frame.
+                        </p>
+                        <div className="space-y-3">
+                          <div className="flex items-start gap-3">
+                            <div className="w-6 h-6 rounded-full bg-emerald-500/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+                              <span className="text-emerald-400 text-xs font-bold">1</span>
+                            </div>
+                            <p className="text-sm text-muted-foreground"><span className="text-white font-medium">Homography Estimation</span> - Precise surface mapping in 3D space</p>
+                          </div>
+                          <div className="flex items-start gap-3">
+                            <div className="w-6 h-6 rounded-full bg-emerald-500/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+                              <span className="text-emerald-400 text-xs font-bold">2</span>
+                            </div>
+                            <p className="text-sm text-muted-foreground"><span className="text-white font-medium">2D Planar Tracking</span> - Frame-by-frame motion analysis</p>
+                          </div>
+                          <div className="flex items-start gap-3">
+                            <div className="w-6 h-6 rounded-full bg-emerald-500/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+                              <span className="text-emerald-400 text-xs font-bold">3</span>
+                            </div>
+                            <p className="text-sm text-muted-foreground"><span className="text-white font-medium">Context Scoring</span> - Brand-safe opportunity ranking</p>
+                          </div>
+                        </div>
                       </div>
                     </div>
-                    <div className="px-6 py-4 flex flex-wrap items-center justify-between gap-3">
-                      <div className="flex items-center gap-3">
-                        <span className="font-semibold text-white">Nike</span>
-                        <span className="text-muted-foreground text-sm">Training Montage</span>
+                  </div>
+
+                  {/* Potential Earnings Calculator */}
+                  <div className="bg-gradient-to-r from-primary/10 via-primary/5 to-emerald-500/10 rounded-2xl border border-primary/20 p-6">
+                    <div className="flex items-center gap-2 mb-4">
+                      <DollarSign className="w-5 h-5 text-primary" />
+                      <h3 className="text-lg font-bold text-white uppercase tracking-wider">Your Potential Earnings</h3>
+                    </div>
+                    <div className="flex flex-col md:flex-row items-center justify-between gap-6">
+                      <div className="flex items-center gap-4">
+                        <div className="w-16 h-16 rounded-2xl bg-primary/20 border border-primary/30 flex items-center justify-center">
+                          <Video className="w-8 h-8 text-primary" />
+                        </div>
+                        <div>
+                          <p className="text-2xl font-bold text-white">Your Library (4 Videos)</p>
+                          <p className="text-muted-foreground">Estimated monthly passive placements</p>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-3">
-                        <span className="px-2 py-0.5 rounded-full bg-orange-500/20 text-orange-400 text-xs font-medium">Bidding</span>
-                        <span className="font-semibold text-white">$850</span>
+                      <div className="text-center md:text-right">
+                        <p className="text-4xl md:text-5xl font-bold bg-gradient-to-r from-emerald-400 to-primary bg-clip-text text-transparent">
+                          $150 - $400<span className="text-lg text-muted-foreground">/mo</span>
+                        </p>
+                        <p className="text-sm text-muted-foreground mt-1">Based on current platform averages</p>
                       </div>
                     </div>
-                    <div className="px-6 py-4 flex flex-wrap items-center justify-between gap-3">
-                      <div className="flex items-center gap-3">
-                        <span className="font-semibold text-white">Squarespace</span>
-                        <span className="text-muted-foreground text-sm">Tech Review</span>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <span className="px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-400 text-xs font-medium">Paid</span>
-                        <span className="font-semibold text-white">$1,200</span>
-                      </div>
-                    </div>
-                    <div className="px-6 py-4 flex flex-wrap items-center justify-between gap-3">
-                      <div className="flex items-center gap-3">
-                        <span className="font-semibold text-white">Coca-Cola</span>
-                        <span className="text-muted-foreground text-sm">Summer Vlog</span>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <span className="px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-400 text-xs font-medium">Pending</span>
-                        <span className="font-semibold text-white">$3,100</span>
-                      </div>
-                    </div>
+                  </div>
+
+                  {/* CTA */}
+                  <div className="mt-8 text-center">
+                    <a
+                      href="https://airtable.com/appF4oLhgbf143xe7/pagil3dstNSBZvLUr/form"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-block px-10 py-4 rounded-xl bg-primary hover:bg-primary/90 text-white font-bold text-lg shadow-lg shadow-primary/30 hover:shadow-primary/50 hover:-translate-y-1 transition-all duration-300"
+                      data-testid="button-demo-apply"
+                    >
+                      Apply for Early Access
+                    </a>
+                    <p className="mt-4 text-sm text-muted-foreground">
+                      Limited spots available in the Founding Cohort
+                    </p>
                   </div>
                 </div>
-
-                <p className="mt-6 text-center text-muted-foreground text-sm leading-relaxed">
-                  Track inventory, approve placements, and watch revenue grow in real-time.
-                </p>
               </div>
             </motion.div>
           </motion.div>
