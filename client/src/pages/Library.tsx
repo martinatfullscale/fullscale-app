@@ -145,6 +145,7 @@ function AiOverlayIcon({ status }: { status: string }) {
   if (status === "ready") return <CheckCircle className="w-3 h-3 text-emerald-400" />;
   if (status === "scanning") return <Loader2 className="w-3 h-3 text-yellow-400 animate-spin" />;
   if (status === "pending") return <AlertTriangle className="w-3 h-3 text-zinc-400" />;
+  if (status === "retry") return <RefreshCw className="w-3 h-3 text-amber-400" />;
   if (status === "issue") return <AlertTriangle className="w-3 h-3 text-red-400" />;
   return null;
 }
@@ -205,13 +206,13 @@ function getVideoStatusInfo(video: IndexedVideo): { status: string; statusColor:
     };
   }
   
-  if (dbStatus === "indexed" || dbStatus === "scan failed") {
+  if (dbStatus === "indexed" || dbStatus === "scan failed" || dbStatus === "ready (0 spots)") {
     return {
-      status: dbStatus === "scan failed" ? "Scan Failed" : "No Spots Found",
-      statusColor: "bg-zinc-500/20 text-zinc-400",
-      statusDot: "bg-zinc-500",
-      aiStatus: "ready",
-      aiText: "0 Surfaces Found"
+      status: "No Surfaces - Retry",
+      statusColor: "bg-amber-500/20 text-amber-400",
+      statusDot: "bg-amber-500",
+      aiStatus: "retry",
+      aiText: "0 Found - Retry"
     };
   }
   
@@ -741,37 +742,55 @@ export default function Library() {
                     <AiOverlayIcon status={video.aiStatus} />
                     <span className="text-xs text-white/90 font-medium">{video.aiText}</span>
                   </div>
-                  {isRealMode && video.id && (video.aiStatus === "pending" || scanningVideoIds.has(video.id)) ? (
-                    <div 
-                      className="absolute top-2 right-2 z-20"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (video.id && !scanningVideoIds.has(video.id)) {
-                          scanVideoMutation.mutate(video.id);
-                        }
-                      }}
-                    >
-                      <Button 
-                        size="sm" 
-                        variant="secondary" 
-                        className="gap-1.5" 
-                        data-testid={`button-scan-${video.id}`}
-                        disabled={scanningVideoIds.has(video.id)}
-                      >
-                        {scanningVideoIds.has(video.id) ? (
-                          <>
-                            <Loader2 className="w-3 h-3 animate-spin" />
-                            Scanning...
-                          </>
-                        ) : (
-                          <>
-                            <Play className="w-3 h-3" />
-                            Scan
-                          </>
-                        )}
-                      </Button>
-                    </div>
-                  ) : (
+                  {isRealMode && video.id && (
+                    <>
+                      {(video.aiStatus === "pending" || video.aiStatus === "retry" || scanningVideoIds.has(video.id)) && (
+                        <div 
+                          className="absolute top-2 right-2 z-20"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (video.id && !scanningVideoIds.has(video.id)) {
+                              scanVideoMutation.mutate(video.id);
+                            }
+                          }}
+                        >
+                          <Button 
+                            size="sm" 
+                            variant={video.aiStatus === "retry" ? "default" : "secondary"} 
+                            className="gap-1.5" 
+                            data-testid={`button-scan-${video.id}`}
+                            disabled={scanningVideoIds.has(video.id)}
+                          >
+                            {scanningVideoIds.has(video.id) ? (
+                              <>
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                                Scanning...
+                              </>
+                            ) : video.aiStatus === "retry" ? (
+                              <>
+                                <RefreshCw className="w-3 h-3" />
+                                Re-Scan
+                              </>
+                            ) : (
+                              <>
+                                <Play className="w-3 h-3" />
+                                Scan
+                              </>
+                            )}
+                          </Button>
+                        </div>
+                      )}
+                      {video.aiStatus === "ready" && (
+                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
+                          <Button variant="outline" size="sm" className="gap-2">
+                            <Eye className="w-4 h-4" />
+                            View Analysis
+                          </Button>
+                        </div>
+                      )}
+                    </>
+                  )}
+                  {!isRealMode && (
                     <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
                       <Button variant="outline" size="sm" className="gap-2">
                         <Eye className="w-4 h-4" />

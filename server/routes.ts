@@ -456,7 +456,8 @@ export async function registerRoutes(
 
     setImmediate(async () => {
       try {
-        await processVideoScan(videoId);
+        // Always force rescan to allow retry on failed/empty scans
+        await processVideoScan(videoId, true);
       } catch (err) {
         console.error(`[Scanner] Background scan failed for video ${videoId}:`, err);
       }
