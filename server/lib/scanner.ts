@@ -14,7 +14,31 @@ const ai = new GoogleGenAI({
   },
 });
 
-const SURFACE_TYPES = ["Table", "Desk", "Wall", "Monitor", "Bottle", "Laptop"] as const;
+// Expanded vocabulary for contextual real estate detection
+const SURFACE_TYPES = [
+  "Table", "Desk", "Wall", "Monitor", "Bottle", "Laptop",
+  "Shelf", "Bookshelf", "Picture Frame", "Desk Lamp", "Chair", "Couch",
+  "Coffee Table", "Whiteboard", "Window", "Door", "Cabinet", "Keyboard", "Mouse"
+] as const;
+
+// Object types that imply underlying surfaces
+const CONTEXTUAL_INFERENCES: Record<string, { implies: string; confidenceBoost: number }> = {
+  "Laptop": { implies: "Desk", confidenceBoost: 0.85 },
+  "Keyboard": { implies: "Desk", confidenceBoost: 0.80 },
+  "Mouse": { implies: "Desk", confidenceBoost: 0.75 },
+  "Desk Lamp": { implies: "Desk", confidenceBoost: 0.70 },
+  "Monitor": { implies: "Desk", confidenceBoost: 0.80 },
+};
+
+// Scene categorization based on detected objects
+const SCENE_PATTERNS: { objects: string[]; scene: string }[] = [
+  { objects: ["Person", "Laptop"], scene: "Workspace/Office" },
+  { objects: ["Person", "Monitor"], scene: "Workspace/Office" },
+  { objects: ["Person", "Desk"], scene: "Workspace/Office" },
+  { objects: ["Couch", "Coffee Table"], scene: "Living Room" },
+  { objects: ["Bookshelf", "Desk"], scene: "Study/Office" },
+  { objects: ["Whiteboard"], scene: "Meeting Room" },
+];
 
 interface DetectedObject {
   surfaceType: string;
@@ -25,6 +49,8 @@ interface DetectedObject {
     width: number;
     height: number;
   };
+  isInferred?: boolean;
+  sceneContext?: string;
 }
 
 interface ScanResult {
@@ -104,22 +130,76 @@ async function extractFrames(videoPath: string, outputDir: string, intervalSecon
   });
 }
 
+function categorizeScene(detectedTypes: string[]): string | undefined {
+  for (const pattern of SCENE_PATTERNS) {
+    const allMatch = pattern.objects.every(obj => 
+      detectedTypes.some(dt => dt.toLowerCase().includes(obj.toLowerCase()) || obj.toLowerCase().includes(dt.toLowerCase()))
+    );
+    if (allMatch) {
+      return pattern.scene;
+    }
+  }
+  return undefined;
+}
+
+function applyContextualInferences(objects: DetectedObject[]): DetectedObject[] {
+  const result = [...objects];
+  const existingTypes = new Set(objects.map(o => o.surfaceType));
+  
+  for (const obj of objects) {
+    const inference = CONTEXTUAL_INFERENCES[obj.surfaceType];
+    if (inference && !existingTypes.has(inference.implies)) {
+      // Infer surface beneath the object (e.g., Laptop implies Desk beneath it)
+      const inferredSurface: DetectedObject = {
+        surfaceType: inference.implies,
+        confidence: inference.confidenceBoost,
+        boundingBox: {
+          x: Math.max(0, obj.boundingBox.x - 0.05),
+          y: obj.boundingBox.y + obj.boundingBox.height * 0.8, // Below the object
+          width: Math.min(1, obj.boundingBox.width + 0.1),
+          height: Math.min(1 - obj.boundingBox.y, 0.2),
+        },
+        isInferred: true,
+      };
+      result.push(inferredSurface);
+      existingTypes.add(inference.implies);
+      console.log(`[Scanner] Inferred ${inference.implies} from ${obj.surfaceType}`);
+    }
+  }
+  
+  return result;
+}
+
 async function analyzeFrame(framePath: string): Promise<DetectedObject[]> {
   try {
     const imageBuffer = fs.readFileSync(framePath);
     const base64Image = imageBuffer.toString("base64");
     
-    const prompt = `Analyze this video frame and detect any of these surfaces that could be used for product placement: ${SURFACE_TYPES.join(", ")}.
+    // Enhanced prompt for contextual real estate detection
+    const prompt = `You are an AI assistant helping identify product placement opportunities in video frames.
 
-For each detected surface, provide:
-1. The surface type (exactly one of: ${SURFACE_TYPES.join(", ")})
-2. Confidence score (0.0 to 1.0)
-3. Bounding box coordinates (normalized 0-1 for x, y, width, height relative to image dimensions)
+Analyze this image and detect ALL visible objects and surfaces that could be used for product placement or brand integration, including:
+- Surfaces: ${SURFACE_TYPES.join(", ")}
+- People: Look for "Person" in the frame (important for scene context)
+
+Be GENEROUS in detection. Even if you're only 50% sure, include it. We want to capture ALL possible placement opportunities.
+
+For EACH detected item, provide:
+1. surfaceType: The object type (use exact names from the list, or "Person" for people)
+2. confidence: Score from 0.0-1.0 (include anything 0.4 or higher)
+3. boundingBox: Normalized coordinates (x, y, width, height) from 0-1
+
+Focus on finding:
+- Laptops on desks (common in office/workspace videos)
+- Monitors/screens
+- Walls and shelves (great for posters/products)
+- Tables and desks
+- Any flat surface where products could be placed
 
 Respond ONLY with a valid JSON array. Example:
-[{"surfaceType": "Desk", "confidence": 0.92, "boundingBox": {"x": 0.1, "y": 0.3, "width": 0.5, "height": 0.4}}]
+[{"surfaceType": "Laptop", "confidence": 0.85, "boundingBox": {"x": 0.3, "y": 0.4, "width": 0.3, "height": 0.2}}, {"surfaceType": "Person", "confidence": 0.95, "boundingBox": {"x": 0.1, "y": 0.1, "width": 0.4, "height": 0.8}}]
 
-If no surfaces are detected, return an empty array: []`;
+If truly nothing is detected, return: []`;
 
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
@@ -159,8 +239,8 @@ If no surfaces are detected, return an empty array: []`;
     // Strip Markdown code fences if present (```json ... ```)
     text = text.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
     
-    // Match JSON array
-    const jsonMatch = text.match(/\[[\s\S]*?\]/);
+    // Match JSON array - use greedy match for nested objects
+    const jsonMatch = text.match(/\[[\s\S]*\]/);
     
     if (!jsonMatch) {
       console.log(`[Scanner] No JSON array found in response: ${text.substring(0, 100)}...`);
@@ -169,11 +249,33 @@ If no surfaces are detected, return an empty array: []`;
 
     try {
       const parsed = JSON.parse(jsonMatch[0]) as DetectedObject[];
-      return parsed.filter(obj => 
-        SURFACE_TYPES.includes(obj.surfaceType as any) &&
-        obj.confidence >= 0.5 &&
+      
+      // Lower threshold to 0.4 for more generous detection
+      const validObjects = parsed.filter(obj => 
+        obj.confidence >= 0.4 &&
         obj.boundingBox
       );
+      
+      // Determine scene context
+      const detectedTypes = validObjects.map(o => o.surfaceType);
+      const sceneContext = categorizeScene(detectedTypes);
+      
+      if (sceneContext) {
+        console.log(`[Scanner] Scene categorized as: ${sceneContext}`);
+        validObjects.forEach(obj => obj.sceneContext = sceneContext);
+      }
+      
+      // Apply contextual inferences (e.g., Laptop implies Desk)
+      const enrichedObjects = applyContextualInferences(validObjects);
+      
+      // Filter to known surface types (exclude Person from storage, but keep for scene detection)
+      const storedObjects = enrichedObjects.filter(obj => 
+        SURFACE_TYPES.includes(obj.surfaceType as any)
+      );
+      
+      console.log(`[Scanner] Detected ${validObjects.length} objects, storing ${storedObjects.length} surfaces`);
+      
+      return storedObjects;
     } catch (parseErr) {
       console.error(`[Scanner] JSON parse error:`, parseErr);
       return [];
