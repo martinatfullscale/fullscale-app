@@ -1,14 +1,14 @@
 import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Zap, Shield, Video, X, Ban, DollarSign, TrendingUp, Users, Sparkles, Cpu, Eye, Timer, Layers, Mail } from "lucide-react";
+import { Zap, Shield, Video, X, Ban, DollarSign, TrendingUp, Users, Sparkles, Cpu, Eye, Timer, Layers, Mail, Menu } from "lucide-react";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 import logoBlackAmbition from "@assets/logo-black-ambition_1767712118620.png";
 import logoMayDavis from "@assets/logo-may-davis_1767712118621.png";
 import logoElementa from "@assets/logo-elementa_1767712118620.png";
 import logoNue from "@assets/logo-nue_1767712118621.png";
 import heroVideo from "@assets/generated_videos/creator_studio_cinematic_loop.mp4";
-import beforeImg from "@assets/generated_images/clean_desk_before_product_placement.png";
-import afterImg from "@assets/generated_images/desk_with_ai-placed_product.png";
+import realityImg from "@assets/generated_images/clean_creator_desk_scene.png";
+import aiAugmentedImg from "@assets/generated_images/desk_with_ai-placed_camera.png";
 import surfaceEngineImg from "@assets/generated_images/desk_with_ai_tracking_grid.png";
 import kitchenFrame from "@assets/generated_images/kitchen_vlog_frame.png";
 import fitnessFrame from "@assets/generated_images/fitness_vlog_frame.png";
@@ -79,18 +79,17 @@ function NeuralGrid() {
 }
 
 function RealitySlider() {
-  const [sliderValue, setSliderValue] = useState([50]);
+  const [sliderValue, setSliderValue] = useState([100]);
 
   return (
     <div className="relative w-full max-w-4xl mx-auto">
       <div className="relative aspect-video rounded-2xl overflow-hidden border border-white/10 shadow-2xl shadow-primary/10">
-        <img src={beforeImg} alt="Original Scene" className="absolute inset-0 w-full h-full object-cover" />
+        <img src={aiAugmentedImg} alt="AI Augmented Scene" className="absolute inset-0 w-full h-full object-cover" data-testid="img-ai-augmented" />
         <div 
           className="absolute inset-0 overflow-hidden"
           style={{ clipPath: `inset(0 ${100 - sliderValue[0]}% 0 0)` }}
         >
-          <img src={afterImg} alt="AI Enhanced Scene" className="absolute inset-0 w-full h-full object-cover" />
-          <div className="absolute inset-0 bg-gradient-to-r from-transparent via-emerald-500/5 to-emerald-500/10" />
+          <img src={realityImg} alt="Reality Scene" className="absolute inset-0 w-full h-full object-cover" data-testid="img-reality" />
         </div>
         <div 
           className="absolute top-0 bottom-0 w-1 bg-gradient-to-b from-primary via-emerald-400 to-primary shadow-lg shadow-primary/50"
@@ -116,9 +115,9 @@ function RealitySlider() {
           className="w-full"
           data-testid="slider-reality-augmented"
         />
-        <div className="flex justify-between mt-2 text-xs text-muted-foreground">
-          <span>Original Scene</span>
+        <div className="flex justify-between gap-4 mt-2 text-xs text-muted-foreground">
           <span>AI Product Placement</span>
+          <span>Original Scene</span>
         </div>
       </div>
     </div>
@@ -233,6 +232,7 @@ function GlassMetricCard({ icon: Icon, label, value, sublabel, color = "primary"
 export default function Landing() {
   const [showBetaModal, setShowBetaModal] = useState(false);
   const [showDemoModal, setShowDemoModal] = useState(false);
+  const [showMobileMenu, setShowMobileMenu] = useState(false);
   const [accessError, setAccessError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -295,29 +295,71 @@ export default function Landing() {
           <img 
             src={logoUrl} 
             alt="FullScale" 
-            className="h-8 md:h-10 w-auto max-w-[100px] xs:max-w-[120px] md:max-w-none" 
+            className="h-8 md:h-10 w-auto" 
             data-testid="img-landing-logo" 
           />
-          <div className="flex items-center gap-2 md:gap-3">
+          
+          {/* Desktop Navigation */}
+          <div className="hidden sm:flex items-center gap-3">
             <a 
               href="https://airtable.com/appF4oLhgbf143xe7/pagil3dstNSBZvLUr/form"
               target="_blank"
               rel="noopener noreferrer"
-              className="px-3 md:px-5 py-2 rounded-lg font-medium text-xs md:text-sm border border-primary text-primary bg-black/20 backdrop-blur-sm hover:bg-primary/10 transition-colors min-h-[44px] flex items-center"
+              className="px-5 py-2 rounded-lg font-medium text-sm border border-primary text-primary bg-black/20 backdrop-blur-sm hover:bg-primary/10 transition-colors min-h-[44px] flex items-center"
               data-testid="button-nav-apply"
             >
-              <span className="hidden sm:inline">Apply for Access</span>
-              <span className="sm:hidden">Apply</span>
+              Apply for Access
             </a>
             <button 
               onClick={handleLoginClick}
-              className="px-3 md:px-5 py-2 rounded-lg font-medium text-xs md:text-sm border border-white/20 bg-white/10 backdrop-blur-sm hover:bg-white/20 transition-colors text-white min-h-[44px] flex items-center"
+              className="px-5 py-2 rounded-lg font-medium text-sm border border-white/20 bg-white/10 backdrop-blur-sm hover:bg-white/20 transition-colors text-white min-h-[44px] flex items-center"
               data-testid="button-nav-signin"
             >
               Sign In
             </button>
           </div>
+
+          {/* Mobile Hamburger Menu */}
+          <button 
+            onClick={() => setShowMobileMenu(!showMobileMenu)}
+            className="sm:hidden p-2 rounded-lg bg-white/10 backdrop-blur-sm border border-white/20 min-h-[44px] min-w-[44px] flex items-center justify-center"
+            data-testid="button-mobile-menu"
+          >
+            {showMobileMenu ? <X className="w-5 h-5 text-white" /> : <Menu className="w-5 h-5 text-white" />}
+          </button>
         </nav>
+
+        {/* Mobile Menu Dropdown */}
+        <AnimatePresence>
+          {showMobileMenu && (
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="absolute top-16 left-0 right-0 z-30 sm:hidden px-4 py-3 bg-black/90 backdrop-blur-xl border-b border-white/10"
+              style={{ marginTop: 'env(safe-area-inset-top)' }}
+            >
+              <div className="flex flex-col gap-2">
+                <a 
+                  href="https://airtable.com/appF4oLhgbf143xe7/pagil3dstNSBZvLUr/form"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-4 py-3 rounded-lg font-medium text-sm border border-primary text-primary bg-black/20 hover:bg-primary/10 transition-colors text-center"
+                  data-testid="button-mobile-apply"
+                >
+                  Apply for Access
+                </a>
+                <button 
+                  onClick={() => { handleLoginClick(); setShowMobileMenu(false); }}
+                  className="px-4 py-3 rounded-lg font-medium text-sm border border-white/20 bg-white/10 hover:bg-white/20 transition-colors text-white text-center"
+                  data-testid="button-mobile-signin"
+                >
+                  Sign In
+                </button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* Hero Content */}
         <div className="absolute inset-0 flex items-center justify-center z-20">
