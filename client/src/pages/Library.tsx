@@ -741,9 +741,9 @@ export default function Library() {
                     <AiOverlayIcon status={video.aiStatus} />
                     <span className="text-xs text-white/90 font-medium">{video.aiText}</span>
                   </div>
-                  {isRealMode && video.id && (video.aiStatus === "pending" || scanningVideoIds.has(video.id)) && (
+                  {isRealMode && video.id && (video.aiStatus === "pending" || scanningVideoIds.has(video.id)) ? (
                     <div 
-                      className="absolute top-2 right-2"
+                      className="absolute top-2 right-2 z-20"
                       onClick={(e) => {
                         e.stopPropagation();
                         if (video.id && !scanningVideoIds.has(video.id)) {
@@ -771,13 +771,14 @@ export default function Library() {
                         )}
                       </Button>
                     </div>
+                  ) : (
+                    <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
+                      <Button variant="outline" size="sm" className="gap-2">
+                        <Eye className="w-4 h-4" />
+                        View Analysis
+                      </Button>
+                    </div>
                   )}
-                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
-                    <Button variant="outline" size="sm" className="gap-2">
-                      <Eye className="w-4 h-4" />
-                      View Analysis
-                    </Button>
-                  </div>
                 </div>
                 <div className="p-4">
                   <h3 className="font-semibold text-white mb-1 truncate">{video.title}</h3>
