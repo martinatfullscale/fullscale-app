@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Zap, Shield, Video, X, Ban, DollarSign, TrendingUp, Users, Sparkles, Cpu, Eye, Timer, Layers, Mail, User, Plus } from "lucide-react";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
@@ -78,16 +78,181 @@ function NeuralGrid() {
   );
 }
 
+function NeuralScanOverlay({ isVisible, onRevealProduct }: { isVisible: boolean; onRevealProduct: (revealed: boolean) => void }) {
+  const [scanProgress, setScanProgress] = useState(0);
+  const [showProductLabel, setShowProductLabel] = useState(false);
+  const productRevealThreshold = 70;
+
+  useEffect(() => {
+    if (!isVisible) {
+      setScanProgress(0);
+      setShowProductLabel(false);
+      onRevealProduct(false);
+      return;
+    }
+
+    const interval = setInterval(() => {
+      setScanProgress(prev => {
+        if (prev >= 100) {
+          setShowProductLabel(false);
+          onRevealProduct(false);
+          return 0;
+        }
+        if (prev >= productRevealThreshold && prev < productRevealThreshold + 2) {
+          setShowProductLabel(true);
+          onRevealProduct(true);
+        }
+        return prev + 2;
+      });
+    }, 50);
+
+    return () => clearInterval(interval);
+  }, [isVisible, onRevealProduct]);
+
+  if (!isVisible) return null;
+
+  return (
+    <div className="absolute inset-0 pointer-events-none z-10">
+      <svg className="absolute inset-0 w-full h-full" preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="scanGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stopColor="transparent" />
+            <stop offset={`${Math.max(0, scanProgress - 15)}%`} stopColor="transparent" />
+            <stop offset={`${scanProgress}%`} stopColor="#10b981" stopOpacity="0.8" />
+            <stop offset={`${Math.min(100, scanProgress + 5)}%`} stopColor="#10b981" stopOpacity="0.1" />
+            <stop offset="100%" stopColor="transparent" />
+          </linearGradient>
+        </defs>
+        
+        {[...Array(8)].map((_, i) => (
+          <line
+            key={`h-${i}`}
+            x1="0%"
+            y1={`${15 + i * 10}%`}
+            x2="100%"
+            y2={`${15 + i * 10}%`}
+            stroke="url(#scanGradient)"
+            strokeWidth="1"
+            opacity="0.6"
+          />
+        ))}
+        
+        {[...Array(12)].map((_, i) => (
+          <line
+            key={`v-${i}`}
+            x1={`${8 + i * 8}%`}
+            y1="15%"
+            x2={`${8 + i * 8}%`}
+            y2="85%"
+            stroke="url(#scanGradient)"
+            strokeWidth="1"
+            opacity="0.6"
+          />
+        ))}
+        
+        <line
+          x1={`${scanProgress}%`}
+          y1="0%"
+          x2={`${scanProgress}%`}
+          y2="100%"
+          stroke="#10b981"
+          strokeWidth="2"
+          opacity="0.9"
+          style={{ filter: 'drop-shadow(0 0 8px #10b981)' }}
+        />
+      </svg>
+
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: scanProgress > 20 ? 1 : 0 }}
+        className="absolute top-[20%] left-[15%] hidden md:block"
+      >
+        <div className="px-2 py-1 rounded bg-black/70 border border-emerald-500/50 backdrop-blur-sm">
+          <span className="text-[10px] font-mono text-emerald-400 animate-pulse">[Surface_ID: Table_01]</span>
+        </div>
+      </motion.div>
+
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: scanProgress > 45 ? 1 : 0 }}
+        className="absolute top-[35%] left-[40%] hidden md:block"
+      >
+        <div className="px-2 py-1 rounded bg-black/70 border border-emerald-500/50 backdrop-blur-sm">
+          <span className="text-[10px] font-mono text-emerald-400 animate-pulse">[Lighting_Fidelity: 99.4%]</span>
+        </div>
+      </motion.div>
+
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: scanProgress > 65 ? 1 : 0 }}
+        className="absolute top-[55%] right-[20%] hidden md:block"
+      >
+        <div className="px-2 py-1 rounded bg-black/70 border border-emerald-500/50 backdrop-blur-sm">
+          <span className="text-[10px] font-mono text-emerald-400 animate-pulse">[Occlusion_Mapping: Active]</span>
+        </div>
+      </motion.div>
+
+      <motion.div
+        initial={{ opacity: 0, scale: 0.8 }}
+        animate={{ opacity: showProductLabel ? 1 : 0, scale: showProductLabel ? 1 : 0.8 }}
+        transition={{ duration: 0.3 }}
+        className="absolute bottom-[25%] right-[25%] hidden md:block"
+      >
+        <div className="px-2 py-1 rounded bg-emerald-500/20 border border-emerald-400 backdrop-blur-sm">
+          <span className="text-[10px] font-mono text-emerald-300 font-semibold">[Product_Materialized]</span>
+        </div>
+      </motion.div>
+
+      <div className="md:hidden absolute bottom-4 left-4 right-4">
+        <div className="h-1 bg-black/50 rounded-full overflow-hidden">
+          <div 
+            className="h-full bg-gradient-to-r from-emerald-500 to-emerald-400 transition-all duration-100"
+            style={{ width: `${scanProgress}%` }}
+          />
+        </div>
+        <p className="text-[10px] font-mono text-emerald-400 text-center mt-1">Neural Scan: {scanProgress}%</p>
+      </div>
+    </div>
+  );
+}
+
 function RealitySlider() {
   const [sliderValue, setSliderValue] = useState([50]);
+  const [productRevealed, setProductRevealed] = useState(false);
+  const showScan = sliderValue[0] > 10 && !productRevealed;
+  const showAiImage = productRevealed;
+
+  const handleRevealProduct = useCallback((revealed: boolean) => {
+    if (revealed) {
+      setProductRevealed(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (sliderValue[0] <= 10) {
+      setProductRevealed(false);
+    }
+  }, [sliderValue]);
 
   return (
     <div className="relative w-full max-w-4xl mx-auto">
       <div className="relative aspect-video rounded-2xl overflow-hidden border border-white/10 shadow-2xl shadow-primary/10">
-        <img src={aiAugmentedImg} alt="AI Augmented Scene" className="absolute inset-0 w-full h-full object-cover" data-testid="img-ai-augmented" />
+        <img src={realityImg} alt="Reality Scene (Empty)" className="absolute inset-0 w-full h-full object-cover" data-testid="img-reality-base" />
+        
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: showAiImage ? 1 : 0 }}
+          transition={{ duration: 0.5 }}
+          className="absolute inset-0"
+        >
+          <img src={aiAugmentedImg} alt="AI Augmented Scene" className="absolute inset-0 w-full h-full object-cover" data-testid="img-ai-augmented" />
+        </motion.div>
+        
+        <NeuralScanOverlay isVisible={showScan} onRevealProduct={handleRevealProduct} />
+        
         <div 
           className="absolute inset-0 overflow-hidden"
-          style={{ clipPath: `inset(0 ${100 - sliderValue[0]}% 0 0)` }}
+          style={{ clipPath: `inset(0 0 0 ${sliderValue[0]}%)` }}
         >
           <img src={realityImg} alt="Reality Scene" className="absolute inset-0 w-full h-full object-cover" data-testid="img-reality" />
         </div>
@@ -102,7 +267,8 @@ function RealitySlider() {
         <div className="absolute top-4 left-4 px-3 py-1.5 rounded-full bg-black/60 backdrop-blur-md border border-white/10 text-xs font-medium text-white/80">
           Reality
         </div>
-        <div className="absolute top-4 right-4 px-3 py-1.5 rounded-full bg-emerald-500/20 backdrop-blur-md border border-emerald-500/30 text-xs font-medium text-emerald-400">
+        <div className="absolute top-4 right-4 px-3 py-1.5 rounded-full bg-emerald-500/20 backdrop-blur-md border border-emerald-500/30 text-xs font-medium text-emerald-400 flex items-center gap-1.5">
+          {showScan && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />}
           AI Augmented
         </div>
       </div>
