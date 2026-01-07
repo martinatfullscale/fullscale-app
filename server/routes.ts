@@ -249,8 +249,18 @@ export async function registerRoutes(
       const isAllowed = await storage.isEmailAllowed(userInfo.email);
       
       if (!isAllowed) {
-        console.log(`Access denied for email: ${userInfo.email}`);
-        return res.redirect("/?error=access_restricted&email=" + encodeURIComponent(userInfo.email));
+        // Auto-add new users with default CREATOR role
+        try {
+          await storage.addAllowedUser({
+            email: userInfo.email,
+            userType: "creator",
+            companyName: null,
+          });
+          console.log(`Auto-enrolled new user as creator: ${userInfo.email}`);
+        } catch (addErr: any) {
+          console.log(`Access denied for email: ${userInfo.email}`);
+          return res.redirect("/?error=access_restricted&email=" + encodeURIComponent(userInfo.email));
+        }
       }
 
       // User is allowed - set session and redirect to dashboard
@@ -648,8 +658,13 @@ export async function registerRoutes(
   const ADMIN_EMAILS = ["martin@gofullscale.co", "martin@whtwrks.com", "martincekechukwu@gmail.com"];
 
   // Get user type (creator or brand) for routing - supports admin role override
-  app.get("/api/auth/user-type", isGoogleAuthenticated, async (req: any, res) => {
-    const email = req.googleUser.email;
+  app.get("/api/auth/user-type", async (req: any, res) => {
+    // Return null for unauthenticated users - no 401 loop
+    if (!req.session?.googleUser) {
+      return res.json({ authenticated: false, userType: null });
+    }
+    
+    const email = req.session.googleUser.email;
     const allowedUser = await storage.getAllowedUser(email);
     const isAdmin = ADMIN_EMAILS.includes(email);
     
@@ -658,6 +673,7 @@ export async function registerRoutes(
     const effectiveRole = viewRole || allowedUser?.userType || "creator";
     
     res.json({
+      authenticated: true,
       email,
       userType: effectiveRole,
       baseUserType: allowedUser?.userType || "creator",

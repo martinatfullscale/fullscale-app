@@ -23,12 +23,13 @@ import Privacy from "@/pages/Privacy";
 import Terms from "@/pages/Terms";
 
 interface UserTypeResponse {
-  email: string;
-  userType: "creator" | "brand";
-  baseUserType: "creator" | "brand";
+  authenticated: boolean;
+  email?: string;
+  userType?: "creator" | "brand" | null;
+  baseUserType?: "creator" | "brand";
   companyName?: string;
-  isAdmin: boolean;
-  canSwitchRoles: boolean;
+  isAdmin?: boolean;
+  canSwitchRoles?: boolean;
 }
 
 function AuthenticatedLayout({ children, userType }: { children: React.ReactNode; userType: "creator" | "brand" }) {
@@ -52,6 +53,9 @@ function Router() {
   const { data: userTypeData, isLoading: isLoadingUserType } = useQuery<UserTypeResponse>({
     queryKey: ["/api/auth/user-type"],
     enabled: isAuthenticated,
+    retry: false,
+    staleTime: 30000,
+    refetchOnWindowFocus: false,
   });
 
   useEffect(() => {
