@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { Sidebar } from "@/components/Sidebar";
 import { TopBar } from "@/components/TopBar";
 import { User, CreditCard, Bell, CheckCircle, ExternalLink, Save } from "lucide-react";
 import { motion } from "framer-motion";
@@ -44,10 +43,9 @@ export default function Settings() {
 
   return (
     <div className="min-h-screen bg-background text-foreground font-sans selection:bg-primary/20">
-      <Sidebar />
       <TopBar />
 
-      <main className="ml-64 p-8 max-w-6xl mx-auto">
+      <main className="p-8 max-w-6xl mx-auto">
         <motion.div 
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}

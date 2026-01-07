@@ -601,16 +601,65 @@ export async function registerRoutes(
     }
   });
 
-  // Get user type (creator or brand) for routing
+  // Admin emails that can switch between roles
+  const ADMIN_EMAILS = ["martin@gofullscale.co", "martin@whtwrks.com", "martincekechukwu@gmail.com"];
+
+  // Get user type (creator or brand) for routing - supports admin role override
   app.get("/api/auth/user-type", isGoogleAuthenticated, async (req: any, res) => {
     const email = req.googleUser.email;
     const allowedUser = await storage.getAllowedUser(email);
+    const isAdmin = ADMIN_EMAILS.includes(email);
+    
+    // Check for session-based role override (admin switching)
+    const viewRole = (req.session as any).viewRole;
+    const effectiveRole = viewRole || allowedUser?.userType || "creator";
     
     res.json({
       email,
-      userType: allowedUser?.userType || "creator",
+      userType: effectiveRole,
+      baseUserType: allowedUser?.userType || "creator",
       companyName: allowedUser?.companyName,
+      isAdmin,
+      canSwitchRoles: isAdmin,
     });
+  });
+
+  // Admin role switching endpoint
+  app.post("/api/auth/switch-role", isGoogleAuthenticated, async (req: any, res) => {
+    const email = req.googleUser.email;
+    const isAdmin = ADMIN_EMAILS.includes(email);
+    
+    if (!isAdmin) {
+      return res.status(403).json({ error: "Only admins can switch roles" });
+    }
+    
+    const { role } = req.body;
+    if (!role || !["creator", "brand"].includes(role)) {
+      return res.status(400).json({ error: "Invalid role. Must be 'creator' or 'brand'" });
+    }
+    
+    // Store role override in session
+    (req.session as any).viewRole = role;
+    
+    req.session.save((err: any) => {
+      if (err) {
+        console.error("Error saving session:", err);
+        return res.status(500).json({ error: "Failed to save role switch" });
+      }
+      
+      res.json({ 
+        success: true, 
+        viewRole: role,
+        redirectTo: role === "brand" ? "/marketplace" : "/"
+      });
+    });
+  });
+
+  // Get brand's campaigns (bids they've placed)
+  app.get("/api/brand/campaigns", isGoogleAuthenticated, async (req: any, res) => {
+    const brandEmail = req.googleUser.email;
+    const campaigns = await storage.getBrandCampaigns(brandEmail);
+    res.json(campaigns);
   });
 
   // Get full YouTube channel data (with profile picture and stats)
@@ -751,10 +800,7 @@ export async function registerRoutes(
   // Allowed Users Management (Admin - Protected)
   // ============================================
   
-  // Admin emails that can manage the allowlist
-  const ADMIN_EMAILS = ["martin@gofullscale.co", "martin@whtwrks.com", "martincekechukwu@gmail.com"];
-  
-  // Middleware to check if user is admin
+  // Middleware to check if user is admin (uses ADMIN_EMAILS defined above)
   const isAdmin = (req: any, res: any, next: any) => {
     const googleUser = req.session?.googleUser;
     if (!googleUser || !ADMIN_EMAILS.includes(googleUser.email?.toLowerCase())) {

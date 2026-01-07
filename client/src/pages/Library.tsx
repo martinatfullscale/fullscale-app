@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { Sidebar } from "@/components/Sidebar";
 import { TopBar } from "@/components/TopBar";
 import { Upload, Eye, CheckCircle, Loader2, AlertTriangle, X, Shield, Sun, Tag, Box, DollarSign, Sparkles, RefreshCw, Play } from "lucide-react";
 import { motion } from "framer-motion";
@@ -672,10 +671,9 @@ export default function Library() {
 
   return (
     <div className="min-h-screen bg-background text-foreground font-sans selection:bg-primary/20">
-      <Sidebar />
       <TopBar />
 
-      <main className="ml-64 p-8 max-w-7xl mx-auto">
+      <main className="p-8 max-w-7xl mx-auto">
         <motion.div 
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}

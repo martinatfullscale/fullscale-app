@@ -7,6 +7,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { useAuth } from "@/hooks/use-auth";
 import { useHybridMode } from "@/hooks/use-hybrid-mode";
 import { PitchModeProvider } from "@/contexts/pitch-mode-context";
+import { Sidebar } from "@/components/Sidebar";
+import { BrandSidebar } from "@/components/BrandSidebar";
 import { Loader2 } from "lucide-react";
 
 import NotFound from "@/pages/not-found";
@@ -15,6 +17,7 @@ import Dashboard from "@/pages/Dashboard";
 import Library from "@/pages/Library";
 import Opportunities from "@/pages/Opportunities";
 import BrandMarketplace from "@/pages/BrandMarketplace";
+import Campaigns from "@/pages/Campaigns";
 import Settings from "@/pages/Settings";
 import Privacy from "@/pages/Privacy";
 import Terms from "@/pages/Terms";
@@ -22,7 +25,21 @@ import Terms from "@/pages/Terms";
 interface UserTypeResponse {
   email: string;
   userType: "creator" | "brand";
+  baseUserType: "creator" | "brand";
   companyName?: string;
+  isAdmin: boolean;
+  canSwitchRoles: boolean;
+}
+
+function AuthenticatedLayout({ children, userType }: { children: React.ReactNode; userType: "creator" | "brand" }) {
+  return (
+    <div className="min-h-screen bg-background">
+      {userType === "brand" ? <BrandSidebar /> : <Sidebar />}
+      <main className="ml-64">
+        {children}
+      </main>
+    </div>
+  );
 }
 
 function Router() {
@@ -30,23 +47,19 @@ function Router() {
   const { isAuthenticated: isGoogleAuthenticated, isLoading: isLoadingGoogleAuth } = useHybridMode();
   const [location, setLocation] = useLocation();
 
-  // User is authenticated if they have EITHER Replit Auth OR Google OAuth session
   const isAuthenticated = !!user || isGoogleAuthenticated;
 
-  // Fetch user type for brand redirect
   const { data: userTypeData, isLoading: isLoadingUserType } = useQuery<UserTypeResponse>({
     queryKey: ["/api/auth/user-type"],
     enabled: isAuthenticated,
   });
 
-  // Redirect brands to marketplace on initial load
   useEffect(() => {
     if (userTypeData?.userType === "brand" && location === "/") {
       setLocation("/marketplace");
     }
   }, [userTypeData, location, setLocation]);
 
-  // Wait for auth systems to load
   if (isLoadingReplitAuth || isLoadingGoogleAuth) {
     return (
       <div className="min-h-screen w-full flex items-center justify-center bg-background">
@@ -55,10 +68,6 @@ function Router() {
     );
   }
 
-  // Simple protection logic
-  // If user is logged in (via either auth method) and on landing page, go to dashboard
-  // If user is NOT logged in and tries to access dashboard, show landing
-  
   if (!isAuthenticated) {
     return (
       <Switch>
@@ -71,7 +80,6 @@ function Router() {
     );
   }
 
-  // Show loading while checking user type for brand redirect
   if (isLoadingUserType && location === "/") {
     return (
       <div className="min-h-screen w-full flex items-center justify-center bg-background">
@@ -80,19 +88,24 @@ function Router() {
     );
   }
 
+  const currentRole = userTypeData?.userType || "creator";
+
   return (
-    <Switch>
-      <Route path="/" component={Dashboard} />
-      <Route path="/dashboard" component={Dashboard} />
-      <Route path="/privacy" component={Privacy} />
-      <Route path="/terms" component={Terms} />
-      <Route path="/library" component={Library} />
-      <Route path="/opportunities" component={Opportunities} />
-      <Route path="/marketplace" component={BrandMarketplace} />
-      <Route path="/settings" component={Settings} />
-      <Route path="/earnings" component={Dashboard} />
-      <Route component={NotFound} />
-    </Switch>
+    <AuthenticatedLayout userType={currentRole}>
+      <Switch>
+        <Route path="/" component={Dashboard} />
+        <Route path="/dashboard" component={Dashboard} />
+        <Route path="/privacy" component={Privacy} />
+        <Route path="/terms" component={Terms} />
+        <Route path="/library" component={Library} />
+        <Route path="/opportunities" component={Opportunities} />
+        <Route path="/marketplace" component={BrandMarketplace} />
+        <Route path="/campaigns" component={Campaigns} />
+        <Route path="/settings" component={Settings} />
+        <Route path="/earnings" component={Dashboard} />
+        <Route component={NotFound} />
+      </Switch>
+    </AuthenticatedLayout>
   );
 }
 

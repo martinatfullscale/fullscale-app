@@ -50,6 +50,7 @@ export interface IStorage {
   getAllVideosWithOpportunities(): Promise<VideoWithOpportunities[]>;
   createBid(bid: InsertMonetizationItem): Promise<MonetizationItem>;
   getActiveBidsForCreator(creatorUserId: string): Promise<MonetizationItem[]>;
+  getBrandCampaigns(brandEmail: string): Promise<MonetizationItem[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -160,6 +161,13 @@ export class DatabaseStorage implements IStorage {
         eq(monetizationItems.creatorUserId, creatorUserId),
         eq(monetizationItems.status, "pending")
       ));
+  }
+
+  async getBrandCampaigns(brandEmail: string): Promise<MonetizationItem[]> {
+    return await db
+      .select()
+      .from(monetizationItems)
+      .where(eq(monetizationItems.brandEmail, brandEmail));
   }
 
   async getVideoIndex(userId: string): Promise<VideoIndex[]> {

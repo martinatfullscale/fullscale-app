@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, FolderOpen, Zap, DollarSign, LogOut, Settings, ArrowLeftRight } from "lucide-react";
+import { Search, Briefcase, LogOut, ArrowLeftRight } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
@@ -15,7 +15,7 @@ interface UserTypeResponse {
   canSwitchRoles: boolean;
 }
 
-export function Sidebar() {
+export function BrandSidebar() {
   const [location, setLocation] = useLocation();
   const { logout } = useAuth();
 
@@ -36,21 +36,18 @@ export function Sidebar() {
     },
   });
 
-  const handleSwitchToBrand = () => {
-    switchRoleMutation.mutate("brand");
+  const handleSwitchToCreator = () => {
+    switchRoleMutation.mutate("creator");
   };
 
   const links = [
-    { href: "/", label: "Dashboard", icon: LayoutDashboard },
-    { href: "/library", label: "My Library", icon: FolderOpen },
-    { href: "/opportunities", label: "Opportunities", icon: Zap },
-    { href: "/earnings", label: "Earnings", icon: DollarSign },
-    { href: "/settings", label: "Settings", icon: Settings },
+    { href: "/marketplace", label: "Discovery", icon: Search },
+    { href: "/campaigns", label: "My Campaigns", icon: Briefcase },
   ];
 
   return (
     <div className="w-64 h-screen bg-card border-r border-border fixed left-0 top-0 flex flex-col p-6 z-20">
-      <Link href="/" className="block px-2 mb-10" data-testid="link-logo-home">
+      <Link href="/marketplace" className="block px-2 mb-10" data-testid="link-logo-marketplace">
         <img src={logoUrl} alt="FullScale" className="h-10 w-auto" />
       </Link>
 
@@ -75,13 +72,13 @@ export function Sidebar() {
       <div className="pt-6 border-t border-border space-y-2">
         {userTypeData?.canSwitchRoles && (
           <button
-            onClick={handleSwitchToBrand}
+            onClick={handleSwitchToCreator}
             disabled={switchRoleMutation.isPending}
             className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-muted-foreground transition-all duration-200 hover:text-primary hover:bg-primary/10"
-            data-testid="button-switch-to-brand"
+            data-testid="button-switch-to-creator"
           >
             <ArrowLeftRight className="w-5 h-5" />
-            {switchRoleMutation.isPending ? "Switching..." : "Switch to Brand View"}
+            {switchRoleMutation.isPending ? "Switching..." : "Switch to Creator View"}
           </button>
         )}
         <button 

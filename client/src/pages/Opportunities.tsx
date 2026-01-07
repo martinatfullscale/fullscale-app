@@ -1,4 +1,3 @@
-import { Sidebar } from "@/components/Sidebar";
 import { TopBar } from "@/components/TopBar";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
@@ -140,10 +139,9 @@ export default function Opportunities() {
 
   return (
     <div className="min-h-screen bg-background text-foreground font-sans selection:bg-primary/20">
-      <Sidebar />
       <TopBar />
 
-      <main className="ml-64 p-8">
+      <main className="p-8">
         <div className="max-w-7xl mx-auto">
           <motion.div 
             initial={{ opacity: 0, y: 10 }}

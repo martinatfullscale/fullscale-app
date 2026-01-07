@@ -1,5 +1,4 @@
 import { useState, useEffect } from "react";
-import { Sidebar } from "@/components/Sidebar";
 import { TopBar } from "@/components/TopBar";
 import { Video, Youtube, CheckCircle, Unlink, TrendingUp, Gavel, BarChart3, Loader2, ToggleLeft, ToggleRight } from "lucide-react";
 import { motion } from "framer-motion";
@@ -274,10 +273,9 @@ export default function Dashboard() {
 
   return (
     <div className="min-h-screen bg-background text-foreground font-sans selection:bg-primary/20">
-      <Sidebar />
       <TopBar />
 
-      <main className="ml-64 p-8 max-w-7xl mx-auto relative">
+      <main className="p-8 max-w-7xl mx-auto relative">
         {/* Super-Admin-only Simulation Toggle */}
         {isSuperAdmin && (
           <div className="absolute top-8 right-8 flex items-center gap-3 z-20">
