@@ -1,6 +1,6 @@
 import { TopBar } from "@/components/TopBar";
 import { motion } from "framer-motion";
-import { Briefcase, Clock, CheckCircle, DollarSign } from "lucide-react";
+import { Briefcase, Clock, CheckCircle, DollarSign, Eye } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,23 +14,27 @@ interface Campaign {
   status: string;
   videoId: number | null;
   creatorUserId: string | null;
+  creatorName: string | null;
   brandEmail: string | null;
   brandName: string | null;
   bidAmount: string | null;
   sceneType: string | null;
   genre: string | null;
+  viewCount: number;
 }
 
 const statusColors: Record<string, string> = {
   pending: "bg-amber-500/20 text-amber-400",
   accepted: "bg-emerald-500/20 text-emerald-400",
+  live: "bg-blue-500/20 text-blue-400",
   rejected: "bg-red-500/20 text-red-400",
   expired: "bg-gray-500/20 text-gray-400",
 };
 
 const statusLabels: Record<string, string> = {
-  pending: "Pending Review",
-  accepted: "Accepted",
+  pending: "Pending",
+  accepted: "Approved",
+  live: "Live",
   rejected: "Declined",
   expired: "Expired",
 };
@@ -45,10 +49,9 @@ export default function Campaigns() {
   const stats = {
     total: campaigns.length,
     pending: campaigns.filter(c => c.status === "pending").length,
-    accepted: campaigns.filter(c => c.status === "accepted").length,
-    totalSpend: campaigns
-      .filter(c => c.status === "accepted")
-      .reduce((sum, c) => sum + parseFloat(c.bidAmount || "0"), 0),
+    accepted: campaigns.filter(c => c.status === "accepted" || c.status === "live").length,
+    totalSpend: campaigns.reduce((sum, c) => sum + parseFloat(c.bidAmount || "0"), 0),
+    estimatedReach: campaigns.reduce((sum, c) => sum + (c.viewCount || 0), 0),
   };
 
   return (
@@ -77,14 +80,14 @@ export default function Campaigns() {
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.05 }}
-            className="grid grid-cols-4 gap-4 mb-8"
+            className="grid grid-cols-5 gap-4 mb-8"
           >
             <Card className="p-5">
               <div className="flex items-center gap-2 mb-2">
                 <Briefcase className="w-4 h-4 text-primary" />
-                <p className="text-xs text-muted-foreground uppercase tracking-wider">Total Bids</p>
+                <p className="text-xs text-muted-foreground uppercase tracking-wider">Total Placements</p>
               </div>
-              <p className="text-3xl font-bold text-white" data-testid="text-total-bids">
+              <p className="text-3xl font-bold text-foreground" data-testid="text-total-bids">
                 {stats.total}
               </p>
             </Card>
@@ -93,16 +96,16 @@ export default function Campaigns() {
                 <Clock className="w-4 h-4 text-amber-400" />
                 <p className="text-xs text-muted-foreground uppercase tracking-wider">Pending</p>
               </div>
-              <p className="text-3xl font-bold text-white" data-testid="text-pending-bids">
+              <p className="text-3xl font-bold text-foreground" data-testid="text-pending-bids">
                 {stats.pending}
               </p>
             </Card>
             <Card className="p-5">
               <div className="flex items-center gap-2 mb-2">
                 <CheckCircle className="w-4 h-4 text-emerald-400" />
-                <p className="text-xs text-muted-foreground uppercase tracking-wider">Accepted</p>
+                <p className="text-xs text-muted-foreground uppercase tracking-wider">Active</p>
               </div>
-              <p className="text-3xl font-bold text-white" data-testid="text-accepted-bids">
+              <p className="text-3xl font-bold text-foreground" data-testid="text-accepted-bids">
                 {stats.accepted}
               </p>
             </Card>
@@ -111,8 +114,21 @@ export default function Campaigns() {
                 <DollarSign className="w-4 h-4 text-green-400" />
                 <p className="text-xs text-muted-foreground uppercase tracking-wider">Total Spend</p>
               </div>
-              <p className="text-3xl font-bold text-white" data-testid="text-total-spend">
+              <p className="text-3xl font-bold text-foreground" data-testid="text-total-spend">
                 ${stats.totalSpend.toLocaleString()}
+              </p>
+            </Card>
+            <Card className="p-5">
+              <div className="flex items-center gap-2 mb-2">
+                <Eye className="w-4 h-4 text-blue-400" />
+                <p className="text-xs text-muted-foreground uppercase tracking-wider">Est. Reach</p>
+              </div>
+              <p className="text-3xl font-bold text-foreground" data-testid="text-estimated-reach">
+                {stats.estimatedReach >= 1000000 
+                  ? `${(stats.estimatedReach / 1000000).toFixed(1)}M`
+                  : stats.estimatedReach >= 1000 
+                    ? `${(stats.estimatedReach / 1000).toFixed(0)}K`
+                    : stats.estimatedReach.toLocaleString()}
               </p>
             </Card>
           </motion.div>
@@ -148,7 +164,7 @@ export default function Campaigns() {
               className="space-y-4"
             >
               {campaigns.map((campaign) => (
-                <Card key={campaign.id} className="p-4 flex items-center gap-4">
+                <Card key={campaign.id} className="p-4 flex items-center gap-4" data-testid={`card-campaign-${campaign.id}`}>
                   <div className="w-24 h-16 rounded-md overflow-hidden bg-muted flex-shrink-0">
                     {campaign.thumbnailUrl ? (
                       <img 
@@ -163,18 +179,29 @@ export default function Campaigns() {
                     )}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <h3 className="font-semibold truncate">{campaign.title}</h3>
-                    <p className="text-sm text-muted-foreground">
-                      Creator: {campaign.creatorUserId || "Unknown"}
+                    <h3 className="font-semibold truncate" data-testid={`text-campaign-title-${campaign.id}`}>{campaign.title}</h3>
+                    <p className="text-sm text-muted-foreground" data-testid={`text-campaign-creator-${campaign.id}`}>
+                      {campaign.creatorName || campaign.creatorUserId || "Pro Creator"}
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
-                    {campaign.sceneType && <Badge variant="outline">{campaign.sceneType}</Badge>}
-                    {campaign.genre && <Badge variant="outline">{campaign.genre}</Badge>}
+                    {campaign.sceneType && (
+                      <Badge variant="outline" data-testid={`badge-surface-${campaign.id}`}>
+                        {campaign.sceneType}
+                      </Badge>
+                    )}
+                    <Badge variant="secondary" className="text-xs" data-testid={`badge-views-${campaign.id}`}>
+                      <Eye className="w-3 h-3 mr-1" />
+                      {campaign.viewCount >= 1000 
+                        ? `${(campaign.viewCount / 1000).toFixed(0)}K` 
+                        : campaign.viewCount} views
+                    </Badge>
                   </div>
-                  <div className="text-right">
-                    <p className="font-bold text-lg">${parseFloat(campaign.bidAmount || "0").toLocaleString()}</p>
-                    <Badge className={statusColors[campaign.status] || statusColors.pending}>
+                  <div className="text-right min-w-[100px]">
+                    <p className="font-bold text-lg" data-testid={`text-campaign-cost-${campaign.id}`}>
+                      ${parseFloat(campaign.bidAmount || "0").toLocaleString()}
+                    </p>
+                    <Badge className={statusColors[campaign.status] || statusColors.pending} data-testid={`badge-status-${campaign.id}`}>
                       {statusLabels[campaign.status] || campaign.status}
                     </Badge>
                   </div>

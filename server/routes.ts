@@ -702,7 +702,32 @@ export async function registerRoutes(
   app.get("/api/brand/campaigns", isGoogleAuthenticated, async (req: any, res) => {
     const brandEmail = req.googleUser.email;
     const campaigns = await storage.getBrandCampaigns(brandEmail);
-    res.json(campaigns);
+    
+    // Enrich campaigns with video data for estimated reach
+    const enrichedCampaigns = await Promise.all(campaigns.map(async (campaign) => {
+      let viewCount = 0;
+      let videoTitle = campaign.title;
+      let thumbnailUrl = campaign.thumbnailUrl;
+      
+      if (campaign.videoId) {
+        const video = await storage.getVideoById(campaign.videoId);
+        if (video) {
+          viewCount = video.viewCount || 0;
+          videoTitle = video.title || campaign.title;
+          thumbnailUrl = video.thumbnailUrl || campaign.thumbnailUrl;
+        }
+      }
+      
+      return {
+        ...campaign,
+        title: videoTitle,
+        thumbnailUrl,
+        viewCount,
+        creatorName: CREATOR_NAMES[campaign.genre || ""] || campaign.genre || "Pro Creator",
+      };
+    }));
+    
+    res.json(enrichedCampaigns);
   });
 
   // Get full YouTube channel data (with profile picture and stats)
