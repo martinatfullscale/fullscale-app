@@ -348,8 +348,8 @@ export default function Landing() {
                   className="px-10 py-5 rounded-xl bg-white/10 hover:bg-white/20 border border-white/20 text-white font-semibold text-lg backdrop-blur-md transition-all duration-300 flex items-center gap-2"
                   data-testid="button-view-demo"
                 >
-                  <Play className="w-5 h-5" />
-                  View Demo
+                  <Eye className="w-5 h-5" />
+                  Take an Interactive Tour
                 </button>
               </div>
             </motion.div>
