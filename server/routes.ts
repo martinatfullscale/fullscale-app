@@ -440,29 +440,43 @@ export async function registerRoutes(
 
   // Trigger Cloud Scan for a specific video
   app.post("/api/video-scan/:id", isGoogleAuthenticated, async (req: any, res) => {
+    console.log(`[BACKEND] ===== SCAN REQUEST RECEIVED =====`);
+    console.log(`[BACKEND] Video ID from URL: ${req.params.id}`);
+    console.log(`[BACKEND] User: ${req.googleUser?.email || 'unknown'}`);
+    
     const videoId = parseInt(req.params.id);
     if (isNaN(videoId)) {
+      console.log(`[BACKEND] ERROR: Invalid video ID`);
       return res.status(400).json({ error: "Invalid video ID" });
     }
 
     const video = await storage.getVideoById(videoId);
     if (!video) {
+      console.log(`[BACKEND] ERROR: Video not found in database`);
       return res.status(404).json({ error: "Video not found" });
     }
 
+    console.log(`[BACKEND] Video found: "${video.title}" (YouTube ID: ${video.youtubeId})`);
+
     if (video.userId !== req.googleUser.email) {
+      console.log(`[BACKEND] ERROR: Unauthorized - video belongs to ${video.userId}`);
       return res.status(403).json({ error: "Unauthorized" });
     }
 
+    console.log(`[BACKEND] Starting background scan process...`);
+    
     setImmediate(async () => {
       try {
+        console.log(`[BACKEND] Background scan starting for video ${videoId}`);
         // Always force rescan to allow retry on failed/empty scans
         await processVideoScan(videoId, true);
+        console.log(`[BACKEND] Background scan completed for video ${videoId}`);
       } catch (err) {
-        console.error(`[Scanner] Background scan failed for video ${videoId}:`, err);
+        console.error(`[BACKEND] Background scan failed for video ${videoId}:`, err);
       }
     });
 
+    console.log(`[BACKEND] Responding with success (scan running in background)`);
     res.json({ success: true, message: "Scan started", videoId });
   });
 

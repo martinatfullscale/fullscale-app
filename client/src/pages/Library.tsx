@@ -527,9 +527,13 @@ export default function Library() {
   
   const scanVideoMutation = useMutation({
     mutationFn: async (videoId: number) => {
+      console.log(`[FRONTEND] ===== SCAN BUTTON CLICKED =====`);
+      console.log(`[FRONTEND] Video ID: ${videoId}`);
+      console.log(`[FRONTEND] Sending POST to /api/video-scan/${videoId}`);
+      
       setScanningVideoIds(prev => new Set(prev).add(videoId));
       
-      // Immediately update UI to show "Scanning..." status
+      // Immediately update UI to show "Scanning..." status and clear any failed state
       queryClient.setQueryData(["/api/video-index/with-opportunities"], (oldData: VideoIndexResponse | undefined) => {
         if (!oldData?.videos) return oldData;
         return {
@@ -540,12 +544,24 @@ export default function Library() {
         };
       });
       
+      console.log(`[FRONTEND] UI updated to Scanning state, making fetch call...`);
+      
       const res = await fetch(`/api/video-scan/${videoId}`, { 
         method: "POST",
         credentials: "include" 
       });
-      if (!res.ok) throw new Error("Failed to start scan");
-      return res.json();
+      
+      console.log(`[FRONTEND] Fetch response status: ${res.status}`);
+      
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error(`[FRONTEND] Fetch failed: ${errorText}`);
+        throw new Error("Failed to start scan");
+      }
+      
+      const data = await res.json();
+      console.log(`[FRONTEND] Success response:`, data);
+      return data;
     },
     onSuccess: (_, videoId) => {
       toast({
@@ -761,8 +777,13 @@ export default function Library() {
                           className="absolute top-2 right-2 z-20"
                           onClick={(e) => {
                             e.stopPropagation();
+                            console.log(`[FRONTEND] Scan button div clicked for video ID: ${video.id}`);
+                            console.log(`[FRONTEND] Is already scanning: ${scanningVideoIds.has(video.id || 0)}`);
                             if (video.id && !scanningVideoIds.has(video.id)) {
+                              console.log(`[FRONTEND] Calling scanVideoMutation.mutate(${video.id})`);
                               scanVideoMutation.mutate(video.id);
+                            } else {
+                              console.log(`[FRONTEND] Mutation NOT called - already scanning or no video ID`);
                             }
                           }}
                         >
