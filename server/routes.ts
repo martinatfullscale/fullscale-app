@@ -601,6 +601,49 @@ export async function registerRoutes(
     }
   });
 
+  // Map category to creator display names for demo
+  const CREATOR_NAMES: Record<string, string> = {
+    "Tech Guru": "TechVision Pro",
+    "Travel Diaries": "WanderlustMedia",
+    "Chef Life": "CulinaryMasters",
+    "Fitness Fusion": "FitLifeStudio",
+    "Artistry": "CreativeCanvas",
+    "Gaming Zone": "GamerzHQ Elite",
+    "Beauty Lab": "GlamourStudio",
+    "DIY Masters": "BuildItBetter",
+    "Music Studio": "SoundWaveHQ",
+    "Coffee Corner": "BaristaCraft",
+  };
+
+  // BRAND MARKETPLACE: Get Ready videos for discovery (brand view)
+  app.get("/api/brand/discovery", isGoogleAuthenticated, async (req: any, res) => {
+    try {
+      const videos = await storage.getReadyVideosForMarketplace();
+      
+      // Transform videos into marketplace opportunities format
+      const opportunities = videos.map((video) => ({
+        id: video.id,
+        videoId: video.id,
+        youtubeId: video.youtubeId,
+        title: video.title,
+        thumbnailUrl: video.thumbnailUrl,
+        creatorName: CREATOR_NAMES[video.category || ""] || video.category || "Pro Creator",
+        viewCount: video.viewCount,
+        sceneValue: Math.round(video.priorityScore * 1.2), // Derive value from priority
+        context: video.contexts?.[0] || video.category || "General",
+        genre: video.category || "Lifestyle",
+        sceneType: video.surfaces?.[0]?.surfaceType || "Desk",
+        surfaces: video.surfaces?.map(s => s.surfaceType) || [],
+        duration: video.duration || "10:00",
+      }));
+      
+      res.json({ opportunities, total: opportunities.length });
+    } catch (err: any) {
+      console.error("Error fetching brand discovery:", err);
+      res.status(500).json({ error: "Failed to fetch discovery" });
+    }
+  });
+
   // Admin emails that can switch between roles
   const ADMIN_EMAILS = ["martin@gofullscale.co", "martin@whtwrks.com", "martincekechukwu@gmail.com"];
 

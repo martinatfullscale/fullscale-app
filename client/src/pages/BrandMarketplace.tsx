@@ -165,6 +165,11 @@ const GENRES = ["All", "Tech", "Gaming", "Lifestyle", "DIY", "Education"];
 const BUDGETS = ["All", "Under $50", "$50-$100", "$100-$200", "Over $200"];
 const SCENE_TYPES = ["All", "Desk", "Wall", "Interior", "Product"];
 
+interface DiscoveryResponse {
+  opportunities: MarketplaceOpportunity[];
+  total: number;
+}
+
 export default function BrandMarketplace() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -175,6 +180,11 @@ export default function BrandMarketplace() {
   const [budgetFilter, setBudgetFilter] = useState("All");
   const [sceneTypeFilter, setSceneTypeFilter] = useState("All");
   const [buyingId, setBuyingId] = useState<number | null>(null);
+
+  // Fetch real opportunities from database
+  const { data: discoveryData } = useQuery<DiscoveryResponse>({
+    queryKey: ["/api/brand/discovery"],
+  });
 
   const buyMutation = useMutation({
     mutationFn: async (opportunity: MarketplaceOpportunity) => {
@@ -208,7 +218,11 @@ export default function BrandMarketplace() {
     },
   });
 
-  const filteredOpportunities = DUMMY_OPPORTUNITIES.filter((opp) => {
+  // Combine database opportunities with dummy data for demo
+  const dbOpportunities = discoveryData?.opportunities || [];
+  const allOpportunities = [...dbOpportunities, ...DUMMY_OPPORTUNITIES];
+
+  const filteredOpportunities = allOpportunities.filter((opp) => {
     const matchesSearch = opp.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
       opp.creatorName.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesGenre = genreFilter === "All" || opp.genre === genreFilter;

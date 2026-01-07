@@ -1,9 +1,56 @@
 import { useAuth } from "@/hooks/use-auth";
-import { Bell, Search } from "lucide-react";
+import { useHybridMode } from "@/hooks/use-hybrid-mode";
+import { Bell, Search, Briefcase, Video, ArrowLeftRight } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Button } from "@/components/ui/button";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { apiRequest } from "@/lib/queryClient";
+import { useLocation } from "wouter";
+
+const SUPER_ADMIN_EMAIL = "martin@gofullscale.co";
+
+interface UserTypeResponse {
+  userType: string;
+  viewRole: string;
+  isAdmin: boolean;
+  canSwitchRoles: boolean;
+}
 
 export function TopBar() {
   const { user } = useAuth();
+  const { googleUser } = useHybridMode();
+  const queryClient = useQueryClient();
+  const [, setLocation] = useLocation();
+
+  const currentUserEmail = googleUser?.email || user?.email || "";
+  const isSuperAdmin = currentUserEmail.toLowerCase() === SUPER_ADMIN_EMAIL;
+
+  const { data: userTypeData } = useQuery<UserTypeResponse>({
+    queryKey: ["/api/auth/user-type"],
+    enabled: !!currentUserEmail,
+  });
+
+  const switchRoleMutation = useMutation({
+    mutationFn: async (role: "creator" | "brand") => {
+      const res = await apiRequest("POST", "/api/auth/switch-role", { role });
+      return res.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/user-type"] });
+      if (data.viewRole === "brand") {
+        setLocation("/marketplace");
+      } else {
+        setLocation("/dashboard");
+      }
+    },
+  });
+
+  const currentRole = userTypeData?.viewRole || "creator";
+
+  const handleSwitch = () => {
+    const newRole = currentRole === "brand" ? "creator" : "brand";
+    switchRoleMutation.mutate(newRole);
+  };
 
   return (
     <header className="h-20 border-b border-border bg-background/80 backdrop-blur-md sticky top-0 z-10 flex items-center justify-between px-8 ml-64">
@@ -19,6 +66,30 @@ export function TopBar() {
       </div>
 
       <div className="flex items-center gap-6">
+        {isSuperAdmin && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleSwitch}
+            disabled={switchRoleMutation.isPending}
+            className="gap-2"
+            data-testid="button-view-switcher"
+          >
+            <ArrowLeftRight className="w-4 h-4" />
+            {currentRole === "brand" ? (
+              <>
+                <Video className="w-4 h-4" />
+                <span>Creator Mode</span>
+              </>
+            ) : (
+              <>
+                <Briefcase className="w-4 h-4" />
+                <span>Brand Mode</span>
+              </>
+            )}
+          </Button>
+        )}
+
         <button className="relative p-2 rounded-full hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors">
           <Bell className="w-5 h-5" />
           <span className="absolute top-2 right-2.5 w-2 h-2 bg-primary rounded-full ring-2 ring-background"></span>
@@ -30,7 +101,7 @@ export function TopBar() {
             <p className="text-xs text-muted-foreground">Pro Plan</p>
           </div>
           <Avatar className="h-10 w-10 border-2 border-border">
-            <AvatarImage src={user?.profileImageUrl} />
+            <AvatarImage src={user?.profileImageUrl ?? undefined} />
             <AvatarFallback className="bg-primary/10 text-primary font-bold">
               {user?.firstName?.[0] || "C"}
             </AvatarFallback>

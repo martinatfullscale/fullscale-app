@@ -48,6 +48,7 @@ export interface IStorage {
   clearDetectedSurfaces(videoId: number): Promise<void>;
   getVideosWithOpportunities(userId: string): Promise<VideoWithOpportunities[]>;
   getAllVideosWithOpportunities(): Promise<VideoWithOpportunities[]>;
+  getReadyVideosForMarketplace(): Promise<VideoWithOpportunities[]>;
   createBid(bid: InsertMonetizationItem): Promise<MonetizationItem>;
   getActiveBidsForCreator(creatorUserId: string): Promise<MonetizationItem[]>;
   getBrandCampaigns(brandEmail: string): Promise<MonetizationItem[]>;
@@ -326,6 +327,29 @@ export class DatabaseStorage implements IStorage {
           contexts,
         });
       }
+    }
+    
+    return results;
+  }
+
+  async getReadyVideosForMarketplace(): Promise<VideoWithOpportunities[]> {
+    const videos = await db
+      .select()
+      .from(videoIndex)
+      .where(eq(videoIndex.status, "Ready"))
+      .orderBy(desc(videoIndex.priorityScore));
+    
+    const results: VideoWithOpportunities[] = [];
+    
+    for (const video of videos) {
+      const surfaces = await this.getDetectedSurfaces(video.id);
+      const contexts = this.deriveContexts(surfaces);
+      results.push({
+        ...video,
+        surfaces,
+        surfaceCount: surfaces.length,
+        contexts,
+      });
     }
     
     return results;
