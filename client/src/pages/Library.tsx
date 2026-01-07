@@ -770,6 +770,11 @@ export default function Library() {
                     <AiOverlayIcon status={video.aiStatus} />
                     <span className="text-xs text-white/90 font-medium">{video.aiText}</span>
                   </div>
+                  {/* TODO: RESUME VISION HANDSHAKE HERE
+                      Deep Vision scanner handshake is currently silent.
+                      YouTube indexing works, but scanVideoForSurfaces needs debugging.
+                      See PROJECT_TODO.md and server/lib/scanner.ts for context.
+                  */}
                   {isRealMode && video.id && (
                     <>
                       {(video.aiStatus === "pending" || video.aiStatus === "retry" || scanningVideoIds.has(video.id)) && (
