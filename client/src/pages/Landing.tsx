@@ -288,21 +288,30 @@ export default function Landing() {
         </div>
 
         {/* Navigation */}
-        <nav className="absolute top-0 left-0 right-0 z-30 container mx-auto px-6 h-20 flex items-center justify-between">
-          <img src={logoUrl} alt="FullScale" className="h-10 w-auto" data-testid="img-landing-logo" />
-          <div className="flex items-center gap-3">
+        <nav 
+          className="absolute top-0 left-0 right-0 z-30 flex items-center justify-between px-4 md:px-6 h-16 md:h-20"
+          style={{ paddingTop: 'env(safe-area-inset-top)' }}
+        >
+          <img 
+            src={logoUrl} 
+            alt="FullScale" 
+            className="h-8 md:h-10 w-auto max-w-[100px] xs:max-w-[120px] md:max-w-none" 
+            data-testid="img-landing-logo" 
+          />
+          <div className="flex items-center gap-2 md:gap-3">
             <a 
               href="https://airtable.com/appF4oLhgbf143xe7/pagil3dstNSBZvLUr/form"
               target="_blank"
               rel="noopener noreferrer"
-              className="px-5 py-2 rounded-lg font-medium text-sm border border-primary text-primary bg-black/20 backdrop-blur-sm hover:bg-primary/10 transition-colors"
+              className="px-3 md:px-5 py-2 rounded-lg font-medium text-xs md:text-sm border border-primary text-primary bg-black/20 backdrop-blur-sm hover:bg-primary/10 transition-colors min-h-[44px] flex items-center"
               data-testid="button-nav-apply"
             >
-              Apply for Access
+              <span className="hidden sm:inline">Apply for Access</span>
+              <span className="sm:hidden">Apply</span>
             </a>
             <button 
               onClick={handleLoginClick}
-              className="px-5 py-2 rounded-lg font-medium text-sm border border-white/20 bg-white/10 backdrop-blur-sm hover:bg-white/20 transition-colors text-white"
+              className="px-3 md:px-5 py-2 rounded-lg font-medium text-xs md:text-sm border border-white/20 bg-white/10 backdrop-blur-sm hover:bg-white/20 transition-colors text-white min-h-[44px] flex items-center"
               data-testid="button-nav-signin"
             >
               Sign In
