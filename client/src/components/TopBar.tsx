@@ -2,6 +2,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { useHybridMode } from "@/hooks/use-hybrid-mode";
 import { Bell, Search, Briefcase, Video, ArrowLeftRight } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
@@ -97,6 +98,15 @@ export function TopBar() {
         </button>
 
         <div className="flex items-center gap-3 pl-6 border-l border-border">
+          <Badge 
+            className={currentRole === "brand" 
+              ? "bg-blue-500 hover:bg-blue-600 text-white border-blue-600" 
+              : "bg-emerald-500 hover:bg-emerald-600 text-white border-emerald-600"
+            }
+            data-testid="badge-current-role"
+          >
+            {currentRole === "brand" ? "Brand" : "Creator"}
+          </Badge>
           <div className="text-right hidden sm:block">
             <p className="text-sm font-medium text-foreground">{user?.firstName || "Creator"} {user?.lastName || ""}</p>
             <p className="text-xs text-muted-foreground">Pro Plan</p>
