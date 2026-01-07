@@ -1,14 +1,14 @@
 import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Zap, Shield, Video, X, Ban, DollarSign, TrendingUp, Users, Sparkles, Cpu, Eye, Timer, Layers, Mail, Menu } from "lucide-react";
+import { Zap, Shield, Video, X, Ban, DollarSign, TrendingUp, Users, Sparkles, Cpu, Eye, Timer, Layers, Mail, Menu, User, Plus } from "lucide-react";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 import logoBlackAmbition from "@assets/logo-black-ambition_1767712118620.png";
 import logoMayDavis from "@assets/logo-may-davis_1767712118621.png";
 import logoElementa from "@assets/logo-elementa_1767712118620.png";
 import logoNue from "@assets/logo-nue_1767712118621.png";
 import heroVideo from "@assets/generated_videos/creator_studio_cinematic_loop.mp4";
-import realityImg from "@assets/generated_images/creator_at_desk_with_empty_space.png";
-import aiAugmentedImg from "@assets/generated_images/creator_at_desk_with_liquid_death_can.png";
+import realityImg from "@assets/generated_images/creator_at_desk_with_empty_spot.png";
+import aiAugmentedImg from "@assets/generated_images/creator_at_desk_with_liquid_death.png";
 import surfaceEngineImg from "@assets/generated_images/desk_with_ai_tracking_grid.png";
 import kitchenFrame from "@assets/generated_images/kitchen_vlog_frame.png";
 import fitnessFrame from "@assets/generated_images/fitness_vlog_frame.png";
@@ -232,7 +232,6 @@ function GlassMetricCard({ icon: Icon, label, value, sublabel, color = "primary"
 export default function Landing() {
   const [showBetaModal, setShowBetaModal] = useState(false);
   const [showDemoModal, setShowDemoModal] = useState(false);
-  const [showMobileMenu, setShowMobileMenu] = useState(false);
   const [accessError, setAccessError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -319,47 +318,28 @@ export default function Landing() {
             </button>
           </div>
 
-          {/* Mobile Hamburger Menu - visible below 600px */}
-          <button 
-            onClick={() => setShowMobileMenu(!showMobileMenu)}
-            className="min-[600px]:hidden p-2 rounded-lg bg-white/10 backdrop-blur-sm border border-white/20 min-h-[44px] min-w-[44px] flex items-center justify-center"
-            data-testid="button-mobile-menu"
-          >
-            {showMobileMenu ? <X className="w-5 h-5 text-white" /> : <Menu className="w-5 h-5 text-white" />}
-          </button>
-        </nav>
-
-        {/* Mobile Menu Dropdown - visible below 600px */}
-        <AnimatePresence>
-          {showMobileMenu && (
-            <motion.div
-              initial={{ opacity: 0, y: -10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              className="absolute top-16 left-0 right-0 z-30 min-[600px]:hidden px-4 py-3 bg-black/90 backdrop-blur-xl border-b border-white/10"
-              style={{ marginTop: 'env(safe-area-inset-top)' }}
+          {/* Mobile Icon Buttons - visible below 600px */}
+          <div className="flex min-[600px]:hidden items-center gap-2">
+            <a 
+              href="https://airtable.com/appF4oLhgbf143xe7/pagil3dstNSBZvLUr/form"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="p-2 rounded-lg border border-primary text-primary bg-black/20 backdrop-blur-sm hover:bg-primary/10 transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center"
+              data-testid="button-mobile-apply"
+              aria-label="Apply for Access"
             >
-              <div className="flex flex-col gap-2">
-                <a 
-                  href="https://airtable.com/appF4oLhgbf143xe7/pagil3dstNSBZvLUr/form"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="px-4 py-3 rounded-lg font-medium text-sm border border-primary text-primary bg-black/20 hover:bg-primary/10 transition-colors text-center"
-                  data-testid="button-mobile-apply"
-                >
-                  Apply for Access
-                </a>
-                <button 
-                  onClick={() => { handleLoginClick(); setShowMobileMenu(false); }}
-                  className="px-4 py-3 rounded-lg font-medium text-sm border border-white/20 bg-white/10 hover:bg-white/20 transition-colors text-white text-center"
-                  data-testid="button-mobile-signin"
-                >
-                  Sign In
-                </button>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+              <Plus className="w-5 h-5" />
+            </a>
+            <button 
+              onClick={handleLoginClick}
+              className="p-2 rounded-lg border border-white/20 bg-white/10 backdrop-blur-sm hover:bg-white/20 transition-colors text-white min-h-[44px] min-w-[44px] flex items-center justify-center"
+              data-testid="button-mobile-signin"
+              aria-label="Sign In"
+            >
+              <User className="w-5 h-5" />
+            </button>
+          </div>
+        </nav>
 
         {/* Hero Content */}
         <div className="absolute inset-0 flex items-center justify-center z-20">
