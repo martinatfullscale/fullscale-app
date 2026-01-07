@@ -193,6 +193,18 @@ function getVideoStatusInfo(video: IndexedVideo): { status: string; statusColor:
     };
   }
   
+  if (dbStatus.startsWith("ready")) {
+    const spotMatch = dbStatus.match(/\((\d+)\s*spots?\)/i);
+    const spots = spotMatch ? parseInt(spotMatch[1]) : 0;
+    return {
+      status: `Ready (${spots} Spots)`,
+      statusColor: spots > 0 ? "bg-emerald-500/20 text-emerald-400" : "bg-zinc-500/20 text-zinc-400",
+      statusDot: spots > 0 ? "bg-emerald-500" : "bg-zinc-500",
+      aiStatus: "ready",
+      aiText: `${spots} Surfaces Found`
+    };
+  }
+  
   if (dbStatus === "indexed" || dbStatus === "scan failed") {
     return {
       status: dbStatus === "scan failed" ? "Scan Failed" : "No Spots Found",

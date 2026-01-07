@@ -14,7 +14,7 @@ const ai = new GoogleGenAI({
   },
 });
 
-const SURFACE_TYPES = ["Table", "Desk", "Wall", "Monitor", "Bottle"] as const;
+const SURFACE_TYPES = ["Table", "Desk", "Wall", "Monitor", "Bottle", "Laptop"] as const;
 
 interface DetectedObject {
   surfaceType: string;
@@ -240,7 +240,8 @@ export async function processVideoScan(videoId: number, forceRescan: boolean = f
       await new Promise(resolve => setTimeout(resolve, 500));
     }
 
-    await storage.updateVideoStatus(videoId, "Indexed");
+    const finalStatus = totalSurfaces > 0 ? `Ready (${totalSurfaces} Spots)` : "Ready (0 Spots)";
+    await storage.updateVideoStatus(videoId, finalStatus);
 
     console.log(`[Scanner] Scan complete for video ${videoId}: ${totalSurfaces} surfaces detected`);
     return { success: true, videoId, surfacesDetected: totalSurfaces };
