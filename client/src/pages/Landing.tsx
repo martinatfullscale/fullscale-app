@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Zap, Shield, Video, X, Ban, DollarSign, TrendingUp, Users, Sparkles, Play, Cpu, Eye, Timer, Layers } from "lucide-react";
+import { Zap, Shield, Video, X, Ban, DollarSign, TrendingUp, Users, Sparkles, Cpu, Eye, Timer, Layers, Mail } from "lucide-react";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 import logoBlackAmbition from "@assets/logo-black-ambition_1767712118620.png";
 import logoMayDavis from "@assets/logo-may-davis_1767712118621.png";
@@ -752,46 +752,26 @@ export default function Landing() {
                       <h3 className="text-lg font-bold text-white uppercase tracking-wider">The Surface Engine</h3>
                       <span className="px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-400 text-xs font-bold">Proprietary AI</span>
                     </div>
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-center">
-                      <div className="relative rounded-2xl overflow-hidden border border-emerald-500/30 shadow-lg shadow-emerald-500/10">
+                    <div className="flex flex-col items-center">
+                      <div className="relative rounded-2xl overflow-hidden border border-emerald-500/30 shadow-lg shadow-emerald-500/10 w-full max-w-4xl">
                         <img 
                           src={surfaceEngineImg} 
                           alt="Surface Engine - Homography Estimation" 
-                          className="w-full h-auto"
+                          className="w-full object-contain"
+                          style={{ maxHeight: '70vh' }}
+                          data-testid="img-surface-engine"
                         />
-                        <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent" />
+                        <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent pointer-events-none" />
                         <div className="absolute bottom-0 left-0 right-0 p-4">
                           <div className="flex items-center gap-2">
-                            <Play className="w-4 h-4 text-emerald-400" />
+                            <Cpu className="w-4 h-4 text-emerald-400" />
                             <span className="text-emerald-400 text-xs font-semibold uppercase tracking-wider">Live Detection</span>
                           </div>
                         </div>
                       </div>
-                      <div className="space-y-4">
-                        <p className="text-lg text-white leading-relaxed">
-                          Our proprietary AI identifies <span className="text-emerald-400 font-semibold">high-value contextual real estate</span> in every frame.
-                        </p>
-                        <div className="space-y-3">
-                          <div className="flex items-start gap-3">
-                            <div className="w-6 h-6 rounded-full bg-emerald-500/20 flex items-center justify-center flex-shrink-0 mt-0.5">
-                              <span className="text-emerald-400 text-xs font-bold">1</span>
-                            </div>
-                            <p className="text-sm text-muted-foreground"><span className="text-white font-medium">Homography Estimation</span> - Precise surface mapping in 3D space</p>
-                          </div>
-                          <div className="flex items-start gap-3">
-                            <div className="w-6 h-6 rounded-full bg-emerald-500/20 flex items-center justify-center flex-shrink-0 mt-0.5">
-                              <span className="text-emerald-400 text-xs font-bold">2</span>
-                            </div>
-                            <p className="text-sm text-muted-foreground"><span className="text-white font-medium">2D Planar Tracking</span> - Frame-by-frame motion analysis</p>
-                          </div>
-                          <div className="flex items-start gap-3">
-                            <div className="w-6 h-6 rounded-full bg-emerald-500/20 flex items-center justify-center flex-shrink-0 mt-0.5">
-                              <span className="text-emerald-400 text-xs font-bold">3</span>
-                            </div>
-                            <p className="text-sm text-muted-foreground"><span className="text-white font-medium">Context Scoring</span> - Brand-safe opportunity ranking</p>
-                          </div>
-                        </div>
-                      </div>
+                      <p className="mt-4 text-center text-muted-foreground text-sm max-w-2xl" data-testid="text-engine-caption">
+                        See how our proprietary engine turns empty pixels into revenue. Join the 6-month product roadmap.
+                      </p>
                     </div>
                   </div>
 
@@ -819,15 +799,18 @@ export default function Landing() {
                     </div>
                   </div>
 
-                  <div className="mt-8 text-center">
+                  <div className="mt-8 bg-gradient-to-br from-white/5 to-transparent rounded-2xl border border-white/10 p-8 text-center">
+                    <h3 className="text-xl font-bold text-white mb-2" data-testid="text-tour-heading">Request a Private Founders Tour</h3>
+                    <p className="text-muted-foreground mb-6 max-w-lg mx-auto">
+                      Get a personalized walkthrough of the platform, see the AI in action, and discuss partnership opportunities directly with our founder.
+                    </p>
                     <a
-                      href="https://airtable.com/appF4oLhgbf143xe7/pagil3dstNSBZvLUr/form"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-block px-10 py-4 rounded-xl bg-primary hover:bg-primary/90 text-white font-bold text-lg shadow-lg shadow-primary/30 hover:shadow-primary/50 hover:-translate-y-1 transition-all duration-300"
-                      data-testid="button-demo-apply"
+                      href="mailto:martin@gofullscale.co?subject=FullScale Demo Request"
+                      className="inline-flex items-center gap-2 px-10 py-4 rounded-xl bg-primary hover:bg-primary/90 text-white font-bold text-lg shadow-lg shadow-primary/30 hover:shadow-primary/50 hover:-translate-y-1 transition-all duration-300"
+                      data-testid="button-email-demo"
                     >
-                      Apply for Early Access
+                      <Mail className="w-5 h-5" />
+                      Email Martin for a Demo
                     </a>
                     <p className="mt-4 text-sm text-muted-foreground">
                       Limited spots available in the Founding Cohort
