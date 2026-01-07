@@ -19,8 +19,9 @@ export function Footer() {
 
   return (
     <footer className="relative z-10 bg-card/50 border-t border-white/5">
-      <div className="container mx-auto px-6 py-12">
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-8">
+      <div className="container mx-auto px-6 py-12 pb-8">
+        {/* Main footer content */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
           <div>
             <img src={logoUrl} alt="FullScale" className="h-8 w-auto mb-4" />
             <p className="text-sm text-muted-foreground/60 leading-relaxed">
@@ -75,31 +76,31 @@ export function Footer() {
 
           <div>
             <h4 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground/80 mb-4">Stay in the Loop</h4>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <input
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="Enter your email"
-                className="flex-1 px-3 py-2 text-sm bg-white/5 border border-white/10 rounded-lg focus:outline-none focus:border-primary/50 text-white placeholder:text-muted-foreground/40"
+                className="flex-1 min-w-0 px-3 py-2 text-sm bg-white/5 border border-white/10 rounded-lg focus:outline-none focus:border-primary/50 text-white placeholder:text-muted-foreground/40"
                 data-testid="input-newsletter-email"
               />
               <button
                 onClick={handleSubscribe}
-                className="px-4 py-2 text-sm font-medium bg-primary hover:bg-primary/90 text-white rounded-lg transition-colors"
+                className="shrink-0 px-4 py-2 text-sm font-medium bg-primary hover:bg-primary/90 text-white rounded-lg transition-colors"
                 data-testid="button-subscribe"
               >
                 Subscribe
               </button>
             </div>
           </div>
+        </div>
 
-          <div className="mt-8">
-            <p className="text-sm text-muted-foreground/40">
-              &copy; 2025 FullScale Holdings.<br />
-              All Rights Reserved.
-            </p>
-          </div>
+        {/* Copyright section - separate row */}
+        <div className="mt-8 pt-6 border-t border-white/5 flex flex-col sm:flex-row justify-between items-center gap-4">
+          <p className="text-sm text-muted-foreground/40 text-center sm:text-left">
+            &copy; 2025 FullScale Holdings. All Rights Reserved.
+          </p>
         </div>
       </div>
     </footer>
