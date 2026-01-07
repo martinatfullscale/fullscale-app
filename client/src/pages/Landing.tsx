@@ -116,8 +116,8 @@ function RealitySlider() {
           data-testid="slider-reality-augmented"
         />
         <div className="flex justify-between gap-4 mt-2 text-xs text-muted-foreground">
+          <span>Reality</span>
           <span>AI Product Placement</span>
-          <span>Original Scene</span>
         </div>
       </div>
     </div>
