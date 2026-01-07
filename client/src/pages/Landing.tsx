@@ -7,8 +7,8 @@ import logoMayDavis from "@assets/logo-may-davis_1767712118621.png";
 import logoElementa from "@assets/logo-elementa_1767712118620.png";
 import logoNue from "@assets/logo-nue_1767712118621.png";
 import heroVideo from "@assets/generated_videos/creator_studio_cinematic_loop.mp4";
-import realityImg from "@assets/generated_images/clean_creator_desk_scene.png";
-import aiAugmentedImg from "@assets/generated_images/desk_with_ai-placed_camera.png";
+import realityImg from "@assets/generated_images/creator_at_desk_with_empty_space.png";
+import aiAugmentedImg from "@assets/generated_images/creator_at_desk_with_liquid_death_can.png";
 import surfaceEngineImg from "@assets/generated_images/desk_with_ai_tracking_grid.png";
 import kitchenFrame from "@assets/generated_images/kitchen_vlog_frame.png";
 import fitnessFrame from "@assets/generated_images/fitness_vlog_frame.png";
@@ -79,7 +79,7 @@ function NeuralGrid() {
 }
 
 function RealitySlider() {
-  const [sliderValue, setSliderValue] = useState([100]);
+  const [sliderValue, setSliderValue] = useState([50]);
 
   return (
     <div className="relative w-full max-w-4xl mx-auto">
@@ -299,8 +299,8 @@ export default function Landing() {
             data-testid="img-landing-logo" 
           />
           
-          {/* Desktop Navigation */}
-          <div className="hidden sm:flex items-center gap-3">
+          {/* Desktop Navigation - visible at 600px and above */}
+          <div className="hidden min-[600px]:flex items-center gap-3">
             <a 
               href="https://airtable.com/appF4oLhgbf143xe7/pagil3dstNSBZvLUr/form"
               target="_blank"
@@ -319,24 +319,24 @@ export default function Landing() {
             </button>
           </div>
 
-          {/* Mobile Hamburger Menu */}
+          {/* Mobile Hamburger Menu - visible below 600px */}
           <button 
             onClick={() => setShowMobileMenu(!showMobileMenu)}
-            className="sm:hidden p-2 rounded-lg bg-white/10 backdrop-blur-sm border border-white/20 min-h-[44px] min-w-[44px] flex items-center justify-center"
+            className="min-[600px]:hidden p-2 rounded-lg bg-white/10 backdrop-blur-sm border border-white/20 min-h-[44px] min-w-[44px] flex items-center justify-center"
             data-testid="button-mobile-menu"
           >
             {showMobileMenu ? <X className="w-5 h-5 text-white" /> : <Menu className="w-5 h-5 text-white" />}
           </button>
         </nav>
 
-        {/* Mobile Menu Dropdown */}
+        {/* Mobile Menu Dropdown - visible below 600px */}
         <AnimatePresence>
           {showMobileMenu && (
             <motion.div
               initial={{ opacity: 0, y: -10 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -10 }}
-              className="absolute top-16 left-0 right-0 z-30 sm:hidden px-4 py-3 bg-black/90 backdrop-blur-xl border-b border-white/10"
+              className="absolute top-16 left-0 right-0 z-30 min-[600px]:hidden px-4 py-3 bg-black/90 backdrop-blur-xl border-b border-white/10"
               style={{ marginTop: 'env(safe-area-inset-top)' }}
             >
               <div className="flex flex-col gap-2">
