@@ -35,6 +35,7 @@ export interface IStorage {
   addAllowedUser(user: InsertAllowedUser): Promise<AllowedUser>;
   getAllowedUsers(): Promise<AllowedUser[]>;
   getAllowedUser(email: string): Promise<AllowedUser | undefined>;
+  updateAllowedUserRole(email: string, userType: string): Promise<void>;
   getVideoIndex(userId: string): Promise<VideoIndex[]>;
   upsertVideoIndex(video: InsertVideoIndex): Promise<VideoIndex>;
   bulkUpsertVideoIndex(videos: InsertVideoIndex[]): Promise<void>;
@@ -144,6 +145,14 @@ export class DatabaseStorage implements IStorage {
       .from(allowedUsers)
       .where(eq(allowedUsers.email, normalizedEmail));
     return user;
+  }
+
+  async updateAllowedUserRole(email: string, userType: string): Promise<void> {
+    const normalizedEmail = email.toLowerCase().trim();
+    await db
+      .update(allowedUsers)
+      .set({ userType })
+      .where(eq(allowedUsers.email, normalizedEmail));
   }
 
   async createBid(bid: InsertMonetizationItem): Promise<MonetizationItem> {

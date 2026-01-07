@@ -249,18 +249,15 @@ export async function registerRoutes(
       const isAllowed = await storage.isEmailAllowed(userInfo.email);
       
       if (!isAllowed) {
-        // Auto-add new users with default CREATOR role
-        try {
-          await storage.addAllowedUser({
-            email: userInfo.email,
-            userType: "creator",
-            companyName: null,
-          });
-          console.log(`Auto-enrolled new user as creator: ${userInfo.email}`);
-        } catch (addErr: any) {
-          console.log(`Access denied for email: ${userInfo.email}`);
-          return res.redirect("/?error=access_restricted&email=" + encodeURIComponent(userInfo.email));
-        }
+        console.log(`Access denied for email: ${userInfo.email}`);
+        return res.redirect("/?error=access_restricted&email=" + encodeURIComponent(userInfo.email));
+      }
+      
+      // If user is on allowlist but has no role, default to creator
+      const allowedUser = await storage.getAllowedUser(userInfo.email);
+      if (allowedUser && !allowedUser.userType) {
+        await storage.updateAllowedUserRole(userInfo.email, "creator");
+        console.log(`Assigned default creator role to: ${userInfo.email}`);
       }
 
       // User is allowed - set session and redirect to dashboard

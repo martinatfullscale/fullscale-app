@@ -2,7 +2,7 @@
 
 ## Overview
 
-FullScale is a content creator dashboard application that helps YouTube creators manage and scale their content. The app provides YouTube channel integration via OAuth, displaying channel statistics, video libraries, and monetization tracking. Built as a full-stack TypeScript application with React frontend and Express backend, using PostgreSQL for data persistence.
+FullScale is a dual-portal content monetization platform with Google OAuth-gated access and YouTube integration. Features role-based views (creator/brand) with View Switcher for admins, a Brand Marketplace where brands purchase ad placements, and Campaign Tracker for monitoring bids. Built as a full-stack TypeScript application with React frontend and Express backend, using PostgreSQL for data persistence. Includes a proprietary AI Insertion Engine scaffold (server/lib/ai/engine/) for Gemini 2.5 Flash-powered product placement detection.
 
 ## User Preferences
 
@@ -34,12 +34,16 @@ Preferred communication style: Simple, everyday language.
 
 ### Authentication & Authorization
 - **Primary Auth**: Google OAuth 2.0 login with email allowlist gatekeeper
-- **Allowlist System**: `allowed_users` table controls founding cohort access
+- **Allowlist System**: `allowed_users` table controls founding cohort access with user_type (creator/brand)
+- **Default Role Assignment**: Users on allowlist without role default to 'creator'
+- **Role-Based Views**: Creators see Dashboard/Library/Opportunities; Brands see Marketplace/Campaigns
+- **View Switcher**: Admins can switch between creator/brand views for testing
 - **CSRF Protection**: OAuth state parameter generation and verification
-- **Admin Routes**: Protected with isAdmin middleware (martin@gofullscale.co, martin@whtwrks.com, martincekechukwu@gmail.com)
+- **Admin Emails**: martin@gofullscale.co, martin@whtwrks.com, martincekechukwu@gmail.com
 - **OAuth Integration**: Google OAuth for YouTube API access
 - **Token Security**: AES-256-GCM encryption for storing OAuth tokens
 - **Session Storage**: PostgreSQL-backed sessions with 7-day TTL
+- **Auth API Fix**: /api/auth/user-type returns {authenticated: false} for unauthenticated users (no 401 loops)
 
 ### Key Design Patterns
 - **Shared Types**: `shared/` directory contains schemas and types used by both client and server
@@ -70,5 +74,13 @@ Preferred communication style: Simple, everyday language.
 - `users`: User accounts from Replit Auth
 - `sessions`: Session storage for authentication
 - `youtube_connections`: Encrypted OAuth tokens and channel info
-- `monetization_items`: Content monetization tracking
-- `allowed_users`: Email allowlist for founding cohort access control
+- `monetization_items`: Content monetization tracking (brand bids on creator content)
+- `allowed_users`: Email allowlist with user_type (creator/brand) for access control
+- `video_index`: Indexed videos with AI analysis status and priority scores
+- `detected_surfaces`: AI-detected placement surfaces in videos
+
+### AI Insertion Engine (server/lib/ai/engine/)
+- **types.ts**: PlacementSurface, InsertionOpportunity, SceneAnalysis types
+- **scene-analyzer.ts**: SceneAnalyzer class for Gemini 2.5 Flash frame analysis
+- **insertion-engine.ts**: Main orchestrator for video analysis pipeline
+- **Status**: Scaffold with TODOs - ready for implementation
