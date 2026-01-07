@@ -848,15 +848,14 @@ export default function Landing() {
               className="relative w-full max-w-6xl my-8"
               onClick={(e) => e.stopPropagation()}
             >
-              <button
-                onClick={() => setShowDemoModal(false)}
-                className="absolute -top-12 right-0 text-white/60 hover:text-white transition-colors z-10"
-                data-testid="button-demo-close"
-              >
-                <X className="w-8 h-8" />
-              </button>
-
               <div className="relative rounded-3xl border border-white/10 bg-gradient-to-br from-black/80 via-black/90 to-black/80 backdrop-blur-2xl shadow-2xl overflow-hidden">
+                <button
+                  onClick={() => setShowDemoModal(false)}
+                  className="absolute top-4 right-4 z-[100] w-10 h-10 flex items-center justify-center rounded-full bg-white/10 backdrop-blur-md border border-white/20 text-white/80 hover:text-white hover:bg-white/20 transition-all duration-200 shadow-lg shadow-black/20"
+                  data-testid="button-demo-close"
+                >
+                  <X className="w-5 h-5" />
+                </button>
                 <div className="absolute top-0 left-1/4 w-96 h-96 bg-primary/20 rounded-full blur-[120px] pointer-events-none" />
                 <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-emerald-500/10 rounded-full blur-[120px] pointer-events-none" />
                 
