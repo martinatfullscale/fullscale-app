@@ -408,8 +408,10 @@ function AnalysisModal({ video, open, onClose }: { video: DisplayVideo | null; o
                           {obj}
                         </span>
                       ))
-                    ) : (
+                    ) : video.aiStatus === "pending" ? (
                       <span className="text-xs text-muted-foreground">No objects detected. Run a scan first.</span>
+                    ) : (
+                      <span className="text-xs text-yellow-400">No surfaces found in this scene. Try a different timestamp or video.</span>
                     )}
                   </div>
                 </div>
@@ -520,8 +522,11 @@ export default function Library() {
     },
   });
 
+  const [scanningVideoIds, setScanningVideoIds] = useState<Set<number>>(new Set());
+  
   const scanVideoMutation = useMutation({
     mutationFn: async (videoId: number) => {
+      setScanningVideoIds(prev => new Set(prev).add(videoId));
       const res = await fetch(`/api/video-scan/${videoId}`, { 
         method: "POST",
         credentials: "include" 
@@ -529,14 +534,69 @@ export default function Library() {
       if (!res.ok) throw new Error("Failed to start scan");
       return res.json();
     },
-    onSuccess: () => {
+    onSuccess: (_, videoId) => {
       toast({
         title: "Scan Started",
-        description: "AI is analyzing your video for ad placement opportunities.",
+        description: "AI is analyzing your video for ad placement opportunities. This may take a minute.",
       });
-      queryClient.invalidateQueries({ queryKey: ["/api/video-index/with-opportunities"] });
+      
+      const pollInterval = setInterval(async () => {
+        try {
+          const res = await fetch("/api/video-index/with-opportunities", { credentials: "include" });
+          if (!res.ok) return;
+          const data = await res.json();
+          
+          queryClient.setQueryData(["/api/video-index/with-opportunities"], data);
+          
+          const video = data.videos?.find((v: IndexedVideo) => v.id === videoId);
+          
+          if (video && !video.status?.toLowerCase().includes("scanning")) {
+            clearInterval(pollInterval);
+            setScanningVideoIds(prev => {
+              const next = new Set(prev);
+              next.delete(videoId);
+              return next;
+            });
+            queryClient.invalidateQueries({ queryKey: ["/api/video-index/with-opportunities"] });
+            
+            if (video.status?.toLowerCase().includes("ready") && video.adOpportunities > 0) {
+              toast({
+                title: "Scan Complete",
+                description: `Found ${video.adOpportunities} ad placement surfaces. Click the video to view details.`,
+              });
+            } else if (video.status?.toLowerCase() === "scan failed") {
+              toast({
+                title: "Scan Failed",
+                description: "Could not analyze this video. Please try again.",
+                variant: "destructive",
+              });
+            } else {
+              toast({
+                title: "No Surfaces Found",
+                description: "No suitable ad placement surfaces were detected in this video. Try a different video with visible desks, tables, or monitors.",
+              });
+            }
+          }
+        } catch (err) {
+          console.error("Poll error:", err);
+        }
+      }, 3000);
+      
+      setTimeout(() => {
+        clearInterval(pollInterval);
+        setScanningVideoIds(prev => {
+          const next = new Set(prev);
+          next.delete(videoId);
+          return next;
+        });
+      }, 120000);
     },
-    onError: (error: Error) => {
+    onError: (error: Error, videoId) => {
+      setScanningVideoIds(prev => {
+        const next = new Set(prev);
+        next.delete(videoId);
+        return next;
+      });
       toast({
         title: "Scan Failed",
         description: error.message,
@@ -659,7 +719,16 @@ export default function Library() {
                 key={video.id || idx} 
                 className="bg-white/5 rounded-xl border border-white/5 overflow-hidden group cursor-pointer"
                 data-testid={`card-video-${video.id || idx}`}
-                onClick={() => setSelectedVideo(video)}
+                onClick={() => {
+                  if (video.id && scanningVideoIds.has(video.id)) {
+                    toast({
+                      title: "Scan In Progress",
+                      description: "Please wait for the AI analysis to complete before viewing results.",
+                    });
+                    return;
+                  }
+                  setSelectedVideo(video);
+                }}
               >
                 <div className="aspect-video relative overflow-hidden">
                   <img 
@@ -672,17 +741,34 @@ export default function Library() {
                     <AiOverlayIcon status={video.aiStatus} />
                     <span className="text-xs text-white/90 font-medium">{video.aiText}</span>
                   </div>
-                  {isRealMode && video.id && video.aiStatus === "pending" && (
+                  {isRealMode && video.id && (video.aiStatus === "pending" || scanningVideoIds.has(video.id)) && (
                     <div 
                       className="absolute top-2 right-2"
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (video.id) scanVideoMutation.mutate(video.id);
+                        if (video.id && !scanningVideoIds.has(video.id)) {
+                          scanVideoMutation.mutate(video.id);
+                        }
                       }}
                     >
-                      <Button size="sm" variant="secondary" className="gap-1.5" data-testid={`button-scan-${video.id}`}>
-                        <Play className="w-3 h-3" />
-                        Scan
+                      <Button 
+                        size="sm" 
+                        variant="secondary" 
+                        className="gap-1.5" 
+                        data-testid={`button-scan-${video.id}`}
+                        disabled={scanningVideoIds.has(video.id)}
+                      >
+                        {scanningVideoIds.has(video.id) ? (
+                          <>
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                            Scanning...
+                          </>
+                        ) : (
+                          <>
+                            <Play className="w-3 h-3" />
+                            Scan
+                          </>
+                        )}
                       </Button>
                     </div>
                   )}
