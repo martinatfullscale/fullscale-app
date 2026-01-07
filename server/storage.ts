@@ -19,6 +19,12 @@ import {
 } from "@shared/schema";
 import { encrypt, decrypt } from "./encryption";
 
+export interface VideoWithOpportunities extends VideoIndex {
+  surfaces: DetectedSurface[];
+  surfaceCount: number;
+  contexts: string[];
+}
+
 export interface IStorage {
   getMonetizationItems(): Promise<MonetizationItem[]>;
   createMonetizationItem(item: InsertMonetizationItem): Promise<MonetizationItem>;
@@ -39,6 +45,8 @@ export interface IStorage {
   getDetectedSurfaces(videoId: number): Promise<DetectedSurface[]>;
   getSurfaceCountByVideo(videoId: number): Promise<number>;
   clearDetectedSurfaces(videoId: number): Promise<void>;
+  getVideosWithOpportunities(userId: string): Promise<VideoWithOpportunities[]>;
+  getAllVideosWithOpportunities(): Promise<VideoWithOpportunities[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -234,6 +242,82 @@ export class DatabaseStorage implements IStorage {
 
   async clearDetectedSurfaces(videoId: number): Promise<void> {
     await db.delete(detectedSurfaces).where(eq(detectedSurfaces.videoId, videoId));
+  }
+
+  async getVideosWithOpportunities(userId: string): Promise<VideoWithOpportunities[]> {
+    const videos = await db
+      .select()
+      .from(videoIndex)
+      .where(eq(videoIndex.userId, userId))
+      .orderBy(desc(videoIndex.priorityScore));
+    
+    const results: VideoWithOpportunities[] = [];
+    
+    for (const video of videos) {
+      const surfaces = await this.getDetectedSurfaces(video.id);
+      if (surfaces.length > 0) {
+        const contexts = this.deriveContexts(surfaces);
+        results.push({
+          ...video,
+          surfaces,
+          surfaceCount: surfaces.length,
+          contexts,
+        });
+      }
+    }
+    
+    return results;
+  }
+
+  async getAllVideosWithOpportunities(): Promise<VideoWithOpportunities[]> {
+    const videos = await db
+      .select()
+      .from(videoIndex)
+      .orderBy(desc(videoIndex.priorityScore));
+    
+    const results: VideoWithOpportunities[] = [];
+    
+    for (const video of videos) {
+      const surfaces = await this.getDetectedSurfaces(video.id);
+      if (surfaces.length > 0) {
+        const contexts = this.deriveContexts(surfaces);
+        results.push({
+          ...video,
+          surfaces,
+          surfaceCount: surfaces.length,
+          contexts,
+        });
+      }
+    }
+    
+    return results;
+  }
+
+  private deriveContexts(surfaces: DetectedSurface[]): string[] {
+    const contexts = new Set<string>();
+    const surfaceTypes = surfaces.map(s => s.surfaceType.toLowerCase());
+    
+    if (surfaceTypes.some(t => ["laptop", "monitor", "desk", "keyboard", "mouse"].includes(t))) {
+      contexts.add("Workspace");
+    }
+    if (surfaceTypes.some(t => ["couch", "coffee table", "shelf", "bookshelf"].includes(t))) {
+      contexts.add("Lifestyle");
+    }
+    if (surfaceTypes.some(t => ["whiteboard", "chair"].includes(t))) {
+      contexts.add("Office");
+    }
+    if (surfaceTypes.some(t => ["wall", "picture frame", "window"].includes(t))) {
+      contexts.add("Interior");
+    }
+    if (surfaceTypes.some(t => ["bottle", "table"].includes(t))) {
+      contexts.add("Product Placement");
+    }
+    
+    if (contexts.size === 0) {
+      contexts.add("General");
+    }
+    
+    return Array.from(contexts);
   }
 }
 

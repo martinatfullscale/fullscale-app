@@ -85,14 +85,11 @@ const simulationStats = {
   inventoryIndex: "98%",
 };
 
-// Real mode placeholder data (to be replaced with actual API data when available)
-const realModeStats = {
-  revenue: "$0",
-  revenueGrowth: "Connect to track",
-  activeBids: "0",
-  avgCpm: "--",
-  inventoryIndex: "--",
-};
+interface MarketplaceStats {
+  videosWithOpportunities: number;
+  totalSurfaces: number;
+  activeBids: number;
+}
 
 export default function Dashboard() {
   const { user } = useAuth();
@@ -119,9 +116,6 @@ export default function Dashboard() {
   
   // Simulation mode: admin override forces demo view even when authenticated
   const showSimulationData = isPitchMode;
-  
-  // Choose which stats to display based on simulation mode
-  const displayStats = showSimulationData ? simulationStats : realModeStats;
 
   const { data: youtubeStatus, isLoading: isCheckingYoutube } = useQuery<YoutubeStatus>({
     queryKey: ["/api/auth/youtube/status"],
@@ -154,7 +148,28 @@ export default function Dashboard() {
     refetchInterval: 5000,
   });
 
+  const { data: marketplaceStats } = useQuery<MarketplaceStats>({
+    queryKey: ["/api/marketplace/stats"],
+    queryFn: async () => {
+      const res = await fetch("/api/marketplace/stats", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch marketplace stats");
+      return res.json();
+    },
+    enabled: isRealMode && !!youtubeStatus?.connected,
+    refetchInterval: 10000,
+  });
+
   const indexedVideos = videoIndexData?.videos || [];
+  
+  const realModeStats = {
+    revenue: "$0",
+    revenueGrowth: "Connect to track",
+    activeBids: String(marketplaceStats?.activeBids || 0),
+    avgCpm: "--",
+    inventoryIndex: indexedVideos.length > 0 ? `${indexedVideos.length}` : "--",
+  };
+  
+  const displayStats = showSimulationData ? simulationStats : realModeStats;
 
   const scanMutation = useMutation({
     mutationFn: async (videoId: number) => {

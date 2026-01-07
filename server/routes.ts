@@ -531,6 +531,30 @@ export async function registerRoutes(
     res.json({ videos: videosWithCounts, total: videosWithCounts.length });
   });
 
+  // MARKETPLACE: Get videos with opportunities (videos that have detected surfaces)
+  app.get("/api/marketplace/opportunities", isGoogleAuthenticated, async (req: any, res) => {
+    const userId = req.googleUser.email;
+    const opportunities = await storage.getVideosWithOpportunities(userId);
+    
+    res.json({ 
+      opportunities, 
+      total: opportunities.length,
+      totalSurfaces: opportunities.reduce((sum, v) => sum + v.surfaceCount, 0)
+    });
+  });
+
+  // MARKETPLACE: Get count of active opportunities (for Dashboard)
+  app.get("/api/marketplace/stats", isGoogleAuthenticated, async (req: any, res) => {
+    const userId = req.googleUser.email;
+    const opportunities = await storage.getVideosWithOpportunities(userId);
+    
+    res.json({ 
+      videosWithOpportunities: opportunities.length,
+      totalSurfaces: opportunities.reduce((sum, v) => sum + v.surfaceCount, 0),
+      activeBids: 3 // Hardcoded for MVP (Sony, Nike, Squarespace)
+    });
+  });
+
   // Get full YouTube channel data (with profile picture and stats)
   app.get("/api/youtube/channel", isGoogleAuthenticated, async (req: any, res) => {
     const userId = req.googleUser.email;
