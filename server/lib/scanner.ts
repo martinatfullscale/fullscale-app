@@ -10,6 +10,13 @@ import type { VideoIndex, InsertDetectedSurface } from "@shared/schema";
 const AI_TIMEOUT_MS = 30000; // 30 second timeout for API calls
 const MAX_IMAGE_DIMENSION = 1024; // Resize frames to max 1024px
 
+// === VERBOSE STARTUP LOGGING ===
+console.log(`[Scanner] ========== SCANNER MODULE LOADED ==========`);
+console.log(`[Scanner] AI_INTEGRATIONS_GEMINI_API_KEY exists: ${!!process.env.AI_INTEGRATIONS_GEMINI_API_KEY}`);
+console.log(`[Scanner] AI_INTEGRATIONS_GEMINI_API_KEY length: ${process.env.AI_INTEGRATIONS_GEMINI_API_KEY?.length || 0}`);
+console.log(`[Scanner] AI_INTEGRATIONS_GEMINI_BASE_URL: ${process.env.AI_INTEGRATIONS_GEMINI_BASE_URL || '(not set)'}`);
+console.log(`[Scanner] =============================================`);
+
 const ai = new GoogleGenAI({
   apiKey: process.env.AI_INTEGRATIONS_GEMINI_API_KEY,
   httpOptions: {
@@ -206,10 +213,16 @@ function applyContextualInferences(objects: DetectedObject[]): DetectedObject[] 
 async function analyzeFrame(framePath: string, retryCount: number = 0): Promise<DetectedObject[]> {
   const MAX_RETRIES = 2;
   
+  console.log(`[Scanner] ===== ANALYZE FRAME START =====`);
+  console.log(`[Scanner] Frame path: ${framePath}`);
+  console.log(`[Scanner] Retry count: ${retryCount}/${MAX_RETRIES}`);
+  
   try {
     // Optimize frame size before sending to API
+    console.log(`[Scanner] Optimizing frame...`);
     const imageBuffer = await optimizeFrame(framePath);
     const base64Image = imageBuffer.toString("base64");
+    console.log(`[Scanner] Frame optimized: ${(imageBuffer.length / 1024).toFixed(1)}KB base64 length: ${base64Image.length}`);
     
     // Enhanced prompt for contextual real estate detection
     const prompt = `You are an AI assistant helping identify product placement opportunities in video frames.
@@ -238,6 +251,10 @@ Respond ONLY with a valid JSON array. Example:
 If truly nothing is detected, return: []`;
 
     // Make API call with timeout
+    console.log(`[Scanner] Calling Gemini API...`);
+    console.log(`[Scanner] Model: gemini-2.5-flash`);
+    console.log(`[Scanner] Base URL: ${process.env.AI_INTEGRATIONS_GEMINI_BASE_URL || '(default)'}`);
+    
     const apiCall = ai.models.generateContent({
       model: "gemini-2.5-flash",
       contents: [
@@ -251,11 +268,17 @@ If truly nothing is detected, return: []`;
       ],
     });
 
+    console.log(`[Scanner] Waiting for API response (timeout: ${AI_TIMEOUT_MS / 1000}s)...`);
+    
     const response = await withTimeout(
       apiCall, 
       AI_TIMEOUT_MS, 
       `AI request timed out after ${AI_TIMEOUT_MS / 1000}s`
     );
+
+    console.log(`[Scanner] API RESPONSE RECEIVED`);
+    console.log(`[Scanner] Response type: ${typeof response}`);
+    console.log(`[Scanner] Response keys: ${Object.keys(response || {}).join(', ')}`);
 
     // The @google/genai SDK returns text as a getter property
     let text = "";
@@ -263,8 +286,10 @@ If truly nothing is detected, return: []`;
       // Try accessing text directly (some versions expose it as a property)
       if (typeof response.text === 'string') {
         text = response.text;
+        console.log(`[Scanner] Text extracted via response.text property`);
       } else if (response.candidates && response.candidates.length > 0) {
         // Fallback: manually extract from candidates
+        console.log(`[Scanner] Extracting text from candidates (count: ${response.candidates.length})`);
         const candidate = response.candidates[0];
         if (candidate.content && candidate.content.parts) {
           text = candidate.content.parts
@@ -272,6 +297,9 @@ If truly nothing is detected, return: []`;
             .map((p: any) => p.text)
             .join("");
         }
+      } else {
+        console.log(`[Scanner] WARNING: No text or candidates in response`);
+        console.log(`[Scanner] Full response: ${JSON.stringify(response).substring(0, 1000)}`);
       }
     } catch (e) {
       console.error(`[Scanner] Error extracting text from response:`, e);
@@ -287,17 +315,21 @@ If truly nothing is detected, return: []`;
     
     if (!jsonMatch) {
       console.log(`[Scanner] No JSON array found in response: ${text.substring(0, 100)}...`);
+      console.log(`[Scanner] GEMINI CONNECTED but returned non-JSON text`);
       return [];
     }
 
     try {
       const parsed = JSON.parse(jsonMatch[0]) as DetectedObject[];
+      console.log(`[Scanner] Parsed ${parsed.length} raw objects from JSON`);
       
       // Lower threshold to 0.4 for more generous detection
       const validObjects = parsed.filter(obj => 
         obj.confidence >= 0.4 &&
         obj.boundingBox
       );
+      
+      console.log(`[Scanner] After confidence filter (>=0.4): ${validObjects.length} objects`);
       
       // Determine scene context
       const detectedTypes = validObjects.map(o => o.surfaceType);
@@ -318,9 +350,15 @@ If truly nothing is detected, return: []`;
       
       console.log(`[Scanner] Detected ${validObjects.length} objects, storing ${storedObjects.length} surfaces`);
       
+      if (storedObjects.length === 0) {
+        console.log(`[Scanner] GEMINI CONNECTED but found 0 surfaces in this frame`);
+      }
+      
+      console.log(`[Scanner] ===== ANALYZE FRAME END (success) =====`);
       return storedObjects;
     } catch (parseErr) {
       console.error(`[Scanner] JSON parse error:`, parseErr);
+      console.log(`[Scanner] Raw JSON that failed to parse: ${jsonMatch[0].substring(0, 500)}`);
       return [];
     }
   } catch (error: any) {
