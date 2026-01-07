@@ -12,6 +12,9 @@ import { UploadModal } from "@/components/UploadModal";
 import { useLocation } from "wouter";
 import { Switch } from "@/components/ui/switch";
 
+// Super admin is the only one who can toggle Demo Mode
+const SUPER_ADMIN_EMAIL = "martin@gofullscale.co";
+
 const ADMIN_EMAILS = [
   "martin@gofullscale.co",
   "martin@whtwrks.com",
@@ -104,9 +107,12 @@ export default function Dashboard() {
   const isDemoMode = mode === "demo";
   const isRealMode = mode === "real";
   
-  // Admin check - only these users can toggle simulation mode
+  // Super admin check - only super admin can toggle simulation mode
   const currentUserEmail = googleUser?.email || user?.email || "";
+  const isSuperAdmin = currentUserEmail.toLowerCase() === SUPER_ADMIN_EMAIL;
   const isAdmin = ADMIN_EMAILS.includes(currentUserEmail.toLowerCase());
+  
+  // Non-super-admins are forced to real mode (simulationModeOverride stays false)
   
   // Simulation mode: admin override forces demo view even when authenticated
   const showSimulationData = simulationModeOverride;
@@ -254,8 +260,8 @@ export default function Dashboard() {
       <TopBar />
 
       <main className="ml-64 p-8 max-w-7xl mx-auto relative">
-        {/* Admin-only Simulation Toggle */}
-        {isAdmin && (
+        {/* Super-Admin-only Simulation Toggle */}
+        {isSuperAdmin && (
           <div className="absolute top-8 right-8 flex items-center gap-3 z-20">
             <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-card border border-border">
               <span className="text-xs text-muted-foreground">Real Data</span>
@@ -275,7 +281,7 @@ export default function Dashboard() {
         )}
         
         {/* Demo Mode badge for non-authenticated users */}
-        {!isAdmin && showDemoMode && (
+        {!isSuperAdmin && showDemoMode && (
           <div className="absolute top-8 right-8 px-3 py-1 rounded-full bg-primary/20 border border-primary/40 text-primary text-xs font-bold uppercase tracking-wider z-10">
             Demo Mode
           </div>
