@@ -528,6 +528,18 @@ export default function Library() {
   const scanVideoMutation = useMutation({
     mutationFn: async (videoId: number) => {
       setScanningVideoIds(prev => new Set(prev).add(videoId));
+      
+      // Immediately update UI to show "Scanning..." status
+      queryClient.setQueryData(["/api/video-index/with-opportunities"], (oldData: VideoIndexResponse | undefined) => {
+        if (!oldData?.videos) return oldData;
+        return {
+          ...oldData,
+          videos: oldData.videos.map((v: IndexedVideo) => 
+            v.id === videoId ? { ...v, status: "Scanning", adOpportunities: 0 } : v
+          )
+        };
+      });
+      
       const res = await fetch(`/api/video-scan/${videoId}`, { 
         method: "POST",
         credentials: "include" 
@@ -538,7 +550,7 @@ export default function Library() {
     onSuccess: (_, videoId) => {
       toast({
         title: "Scan Started",
-        description: "AI is analyzing your video for ad placement opportunities. This may take a minute.",
+        description: "AI is analyzing your video. This may take 1-2 minutes depending on video length.",
       });
       
       const pollInterval = setInterval(async () => {

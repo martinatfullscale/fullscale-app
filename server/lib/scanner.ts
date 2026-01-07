@@ -3,8 +3,12 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import { GoogleGenAI } from "@google/genai";
+import sharp from "sharp";
 import { storage } from "../storage";
 import type { VideoIndex, InsertDetectedSurface } from "@shared/schema";
+
+const AI_TIMEOUT_MS = 30000; // 30 second timeout for API calls
+const MAX_IMAGE_DIMENSION = 1024; // Resize frames to max 1024px
 
 const ai = new GoogleGenAI({
   apiKey: process.env.AI_INTEGRATIONS_GEMINI_API_KEY,
@@ -13,6 +17,35 @@ const ai = new GoogleGenAI({
     baseUrl: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL,
   },
 });
+
+// Helper to add timeout to promises
+function withTimeout<T>(promise: Promise<T>, ms: number, errorMessage: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => 
+      setTimeout(() => reject(new Error(errorMessage)), ms)
+    )
+  ]);
+}
+
+// Resize image to max dimension while preserving aspect ratio
+async function optimizeFrame(framePath: string): Promise<Buffer> {
+  try {
+    const optimized = await sharp(framePath)
+      .resize(MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION, {
+        fit: 'inside',
+        withoutEnlargement: true
+      })
+      .jpeg({ quality: 85 })
+      .toBuffer();
+    
+    console.log(`[Scanner] Optimized frame: ${framePath} -> ${(optimized.length / 1024).toFixed(1)}KB`);
+    return optimized;
+  } catch (err) {
+    console.error(`[Scanner] Frame optimization failed, using original:`, err);
+    return fs.readFileSync(framePath);
+  }
+}
 
 // Expanded vocabulary for contextual real estate detection
 const SURFACE_TYPES = [
@@ -170,9 +203,12 @@ function applyContextualInferences(objects: DetectedObject[]): DetectedObject[] 
   return result;
 }
 
-async function analyzeFrame(framePath: string): Promise<DetectedObject[]> {
+async function analyzeFrame(framePath: string, retryCount: number = 0): Promise<DetectedObject[]> {
+  const MAX_RETRIES = 2;
+  
   try {
-    const imageBuffer = fs.readFileSync(framePath);
+    // Optimize frame size before sending to API
+    const imageBuffer = await optimizeFrame(framePath);
     const base64Image = imageBuffer.toString("base64");
     
     // Enhanced prompt for contextual real estate detection
@@ -201,7 +237,8 @@ Respond ONLY with a valid JSON array. Example:
 
 If truly nothing is detected, return: []`;
 
-    const response = await ai.models.generateContent({
+    // Make API call with timeout
+    const apiCall = ai.models.generateContent({
       model: "gemini-2.5-flash",
       contents: [
         {
@@ -213,6 +250,12 @@ If truly nothing is detected, return: []`;
         },
       ],
     });
+
+    const response = await withTimeout(
+      apiCall, 
+      AI_TIMEOUT_MS, 
+      `AI request timed out after ${AI_TIMEOUT_MS / 1000}s`
+    );
 
     // The @google/genai SDK returns text as a getter property
     let text = "";
@@ -280,8 +323,33 @@ If truly nothing is detected, return: []`;
       console.error(`[Scanner] JSON parse error:`, parseErr);
       return [];
     }
-  } catch (error) {
-    console.error(`[Scanner] Frame analysis error:`, error);
+  } catch (error: any) {
+    // Categorize the error for better debugging
+    const errorMessage = error?.message || String(error);
+    
+    if (errorMessage.includes("timeout") || errorMessage.includes("timed out")) {
+      console.error(`[Scanner] API TIMEOUT: Request took longer than ${AI_TIMEOUT_MS / 1000}s`);
+    } else if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("rate limit")) {
+      console.error(`[Scanner] QUOTA EXCEEDED: API rate limit hit. Wait before retrying.`);
+    } else if (errorMessage.includes("401") || errorMessage.includes("403") || errorMessage.includes("API key")) {
+      console.error(`[Scanner] AUTH ERROR: API key issue - ${errorMessage}`);
+    } else if (errorMessage.includes("500") || errorMessage.includes("503")) {
+      console.error(`[Scanner] SERVER ERROR: AI service temporarily unavailable`);
+    } else {
+      console.error(`[Scanner] Frame analysis error:`, error);
+    }
+    
+    // Retry on transient errors
+    if (retryCount < MAX_RETRIES && (
+      errorMessage.includes("timeout") || 
+      errorMessage.includes("500") || 
+      errorMessage.includes("503")
+    )) {
+      console.log(`[Scanner] Retrying frame analysis (attempt ${retryCount + 2}/${MAX_RETRIES + 1})...`);
+      await new Promise(resolve => setTimeout(resolve, 2000 * (retryCount + 1))); // Exponential backoff
+      return analyzeFrame(framePath, retryCount + 1);
+    }
+    
     return [];
   }
 }
