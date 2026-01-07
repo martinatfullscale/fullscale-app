@@ -1002,12 +1002,12 @@ export default function Landing() {
                       Get a personalized walkthrough of the platform, see the AI in action, and discuss partnership opportunities directly with our founder.
                     </p>
                     <a
-                      href="mailto:martin@gofullscale.co?subject=FullScale Demo Request"
+                      href="mailto:fullscale_info@gofullscale.co?subject=FullScale Demo Request - Founding Cohort"
                       className="inline-flex items-center gap-2 px-10 py-4 rounded-xl bg-primary hover:bg-primary/90 text-white font-bold text-lg shadow-lg shadow-primary/30 hover:shadow-primary/50 hover:-translate-y-1 transition-all duration-300"
                       data-testid="button-email-demo"
                     >
                       <Mail className="w-5 h-5" />
-                      Email Martin for a Demo
+                      Email our team for a demo
                     </a>
                     <p className="mt-4 text-sm text-muted-foreground">
                       Limited spots available in the Founding Cohort
