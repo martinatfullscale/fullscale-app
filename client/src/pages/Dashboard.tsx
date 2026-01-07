@@ -11,6 +11,7 @@ import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { UploadModal } from "@/components/UploadModal";
 import { useLocation } from "wouter";
 import { Switch } from "@/components/ui/switch";
+import { usePitchMode } from "@/contexts/pitch-mode-context";
 
 // Super admin is the only one who can toggle Demo Mode
 const SUPER_ADMIN_EMAIL = "martin@gofullscale.co";
@@ -102,7 +103,9 @@ export default function Dashboard() {
   const [, setLocation] = useLocation();
   const [isSimulatingConnect, setIsSimulatingConnect] = useState(false);
   const [simulatedConnected, setSimulatedConnected] = useState(false);
-  const [simulationModeOverride, setSimulationModeOverride] = useState(false);
+  
+  // Use global pitch mode context for simulation toggle
+  const { isPitchMode, setPitchMode } = usePitchMode();
 
   const isDemoMode = mode === "demo";
   const isRealMode = mode === "real";
@@ -115,7 +118,7 @@ export default function Dashboard() {
   // Non-super-admins are forced to real mode (simulationModeOverride stays false)
   
   // Simulation mode: admin override forces demo view even when authenticated
-  const showSimulationData = simulationModeOverride;
+  const showSimulationData = isPitchMode;
   
   // Choose which stats to display based on simulation mode
   const displayStats = showSimulationData ? simulationStats : realModeStats;
@@ -266,13 +269,13 @@ export default function Dashboard() {
             <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-card border border-border">
               <span className="text-xs text-muted-foreground">Real Data</span>
               <Switch
-                checked={simulationModeOverride}
-                onCheckedChange={setSimulationModeOverride}
+                checked={isPitchMode}
+                onCheckedChange={setPitchMode}
                 data-testid="switch-simulation-mode"
               />
               <span className="text-xs text-muted-foreground">Pitch Mode</span>
             </div>
-            {simulationModeOverride && (
+            {isPitchMode && (
               <div className="px-3 py-1 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-400 text-xs font-bold uppercase tracking-wider">
                 Simulation
               </div>

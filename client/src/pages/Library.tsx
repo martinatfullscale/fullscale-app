@@ -5,6 +5,7 @@ import { Upload, Eye, CheckCircle, Loader2, AlertTriangle, X, Shield, Sun, Tag, 
 import { motion } from "framer-motion";
 import { useAuth } from "@/hooks/use-auth";
 import { useHybridMode } from "@/hooks/use-hybrid-mode";
+import { usePitchMode } from "@/contexts/pitch-mode-context";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
@@ -289,12 +290,14 @@ const uploadedVideoData: VideoType = {
 export default function Library() {
   const { user } = useAuth();
   const { mode } = useHybridMode();
+  const { isPitchMode } = usePitchMode();
   const [selectedVideo, setSelectedVideo] = useState<VideoType | null>(null);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [uploadedVideos, setUploadedVideos] = useState<VideoType[]>([]);
   
-  const isDemoMode = mode === "demo";
-  const isRealMode = mode === "real";
+  // In Pitch Mode, force demo data even if authenticated
+  const isDemoMode = mode === "demo" || isPitchMode;
+  const isRealMode = mode === "real" && !isPitchMode;
 
   interface YouTubeVideosResponse {
     connected: boolean;
@@ -351,7 +354,8 @@ export default function Library() {
             </h1>
             <p className="text-muted-foreground">
               <span className="text-white font-medium">{videoCount} Videos Scanned</span> | {Math.round(videoCount * 2.8)} Ad Opportunities Found
-              {isDemoMode && <span className="ml-2 text-xs text-primary">(Demo Mode)</span>}
+              {isPitchMode && <span className="ml-2 text-xs text-amber-400">(Pitch Mode)</span>}
+              {isDemoMode && !isPitchMode && <span className="ml-2 text-xs text-primary">(Demo Mode)</span>}
             </p>
           </div>
           <Button className="gap-2" data-testid="button-upload-asset" onClick={() => setUploadModalOpen(true)}>
