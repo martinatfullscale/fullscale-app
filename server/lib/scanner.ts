@@ -134,7 +134,27 @@ If no surfaces are detected, return an empty array: []`;
       ],
     });
 
-    let text = response.text || "";
+    // The @google/genai SDK returns text as a getter property
+    let text = "";
+    try {
+      // Try accessing text directly (some versions expose it as a property)
+      if (typeof response.text === 'string') {
+        text = response.text;
+      } else if (response.candidates && response.candidates.length > 0) {
+        // Fallback: manually extract from candidates
+        const candidate = response.candidates[0];
+        if (candidate.content && candidate.content.parts) {
+          text = candidate.content.parts
+            .filter((p: any) => p.text)
+            .map((p: any) => p.text)
+            .join("");
+        }
+      }
+    } catch (e) {
+      console.error(`[Scanner] Error extracting text from response:`, e);
+    }
+    
+    console.log(`[Scanner] Gemini raw response text (first 500 chars): ${text.substring(0, 500)}`);
     
     // Strip Markdown code fences if present (```json ... ```)
     text = text.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
@@ -233,7 +253,8 @@ export async function processVideoScan(videoId: number, forceRescan: boolean = f
           boundingBoxHeight: obj.boundingBox.height.toString(),
         };
 
-        await storage.insertDetectedSurface(surface);
+        const inserted = await storage.insertDetectedSurface(surface);
+        console.log(`[Scanner] Inserted surface: ${obj.surfaceType} at ${timestamp}s with id ${inserted.id}`);
         totalSurfaces++;
       }
 

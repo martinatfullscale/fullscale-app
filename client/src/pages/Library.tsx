@@ -243,10 +243,64 @@ function formatIndexedVideo(video: IndexedVideo): DisplayVideo {
   };
 }
 
+interface DetectedSurface {
+  id: number;
+  videoId: number;
+  timestamp: string;
+  surfaceType: string;
+  confidence: string;
+  boundingBoxX: string;
+  boundingBoxY: string;
+  boundingBoxWidth: string;
+  boundingBoxHeight: string;
+}
+
+const CPM_BY_SURFACE: Record<string, number> = {
+  "Desk": 25,
+  "Table": 22,
+  "Laptop": 30,
+  "Monitor": 28,
+  "Wall": 15,
+  "Bottle": 35,
+};
+
+const BRAND_SAFETY_BY_SURFACE: Record<string, number> = {
+  "Desk": 92,
+  "Table": 88,
+  "Laptop": 95,
+  "Monitor": 90,
+  "Wall": 85,
+  "Bottle": 80,
+};
+
 function AnalysisModal({ video, open, onClose }: { video: DisplayVideo | null; open: boolean; onClose: () => void }) {
   const { toast } = useToast();
+  
+  const { data: surfacesData, isLoading } = useQuery<{ surfaces: DetectedSurface[]; count: number }>({
+    queryKey: ['/api/video', video?.id, 'surfaces'],
+    enabled: open && !!video?.id,
+  });
 
   if (!video) return null;
+
+  const surfaces = surfacesData?.surfaces || [];
+  const detectedTypes = Array.from(new Set(surfaces.map(s => s.surfaceType)));
+  
+  const avgCpm = detectedTypes.length > 0 
+    ? Math.round(detectedTypes.reduce((sum, t) => sum + (CPM_BY_SURFACE[t] || 20), 0) / detectedTypes.length)
+    : 0;
+  
+  const avgBrandSafety = detectedTypes.length > 0
+    ? Math.round(detectedTypes.reduce((sum, t) => sum + (BRAND_SAFETY_BY_SURFACE[t] || 85), 0) / detectedTypes.length)
+    : 0;
+
+  const firstSurface = surfaces[0];
+  const boundingBox = firstSurface ? {
+    top: `${parseFloat(firstSurface.boundingBoxY) * 100}%`,
+    left: `${parseFloat(firstSurface.boundingBoxX) * 100}%`,
+    width: `${parseFloat(firstSurface.boundingBoxWidth) * 100}%`,
+    height: `${parseFloat(firstSurface.boundingBoxHeight) * 100}%`,
+  } : { top: "0%", left: "0%", width: "0%", height: "0%" };
 
   const handleApprove = () => {
     toast({
@@ -256,7 +310,7 @@ function AnalysisModal({ video, open, onClose }: { video: DisplayVideo | null; o
     onClose();
   };
 
-  const safetyColor = video.brandSafety >= 90 ? "text-emerald-400" : video.brandSafety >= 70 ? "text-yellow-400" : "text-red-400";
+  const safetyColor = avgBrandSafety >= 90 ? "text-emerald-400" : avgBrandSafety >= 70 ? "text-yellow-400" : "text-red-400";
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
@@ -268,23 +322,27 @@ function AnalysisModal({ video, open, onClose }: { video: DisplayVideo | null; o
               alt={video.title}
               className="w-full h-full object-cover"
             />
-            <div 
-              className="absolute border-2 border-emerald-400 rounded-sm"
-              style={{
-                top: video.boundingBox.top,
-                left: video.boundingBox.left,
-                width: video.boundingBox.width,
-                height: video.boundingBox.height,
-                boxShadow: '0 0 0 2px rgba(16, 185, 129, 0.2), inset 0 0 20px rgba(16, 185, 129, 0.1)'
-              }}
-            >
-              <div className="absolute -top-6 left-0 bg-emerald-500/90 text-white text-xs font-mono px-2 py-0.5 rounded-sm whitespace-nowrap">
-                {video.surfaceLabel}
+            {firstSurface && (
+              <div 
+                className="absolute border-2 border-emerald-400 rounded-sm"
+                style={{
+                  top: boundingBox.top,
+                  left: boundingBox.left,
+                  width: boundingBox.width,
+                  height: boundingBox.height,
+                  boxShadow: '0 0 0 2px rgba(16, 185, 129, 0.2), inset 0 0 20px rgba(16, 185, 129, 0.1)'
+                }}
+              >
+                <div className="absolute -top-6 left-0 bg-emerald-500/90 text-white text-xs font-mono px-2 py-0.5 rounded-sm whitespace-nowrap">
+                  {firstSurface.surfaceType}
+                </div>
+                <div className="absolute inset-0 bg-emerald-400/5" />
               </div>
-              <div className="absolute inset-0 bg-emerald-400/5" />
-            </div>
+            )}
             <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/90 to-transparent p-4">
-              <p className="text-white/70 text-xs font-mono">frame_04.jpg | 00:02:34</p>
+              <p className="text-white/70 text-xs font-mono">
+                {firstSurface ? `frame @ ${firstSurface.timestamp}s` : "No surfaces detected"}
+              </p>
             </div>
           </div>
 
@@ -292,7 +350,7 @@ function AnalysisModal({ video, open, onClose }: { video: DisplayVideo | null; o
             <div className="flex items-start justify-between gap-4">
               <div>
                 <p className="text-xs text-muted-foreground font-mono uppercase tracking-wider mb-1">AI Vision Analysis</p>
-                <h2 className="text-xl font-bold text-white">Scene Analysis #04</h2>
+                <h2 className="text-xl font-bold text-white">Scene Analysis</h2>
                 <p className="text-sm text-muted-foreground mt-1">{video.title}</p>
               </div>
               <Button 
@@ -305,65 +363,76 @@ function AnalysisModal({ video, open, onClose }: { video: DisplayVideo | null; o
               </Button>
             </div>
 
-            <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="bg-white/5 rounded-lg p-3 border border-white/5">
-                  <div className="flex items-center gap-2 mb-1">
-                    <Shield className="w-4 h-4 text-muted-foreground" />
-                    <span className="text-xs text-muted-foreground font-mono uppercase">Brand Safety</span>
+            {isLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-white/5 rounded-lg p-3 border border-white/5">
+                    <div className="flex items-center gap-2 mb-1">
+                      <Shield className="w-4 h-4 text-muted-foreground" />
+                      <span className="text-xs text-muted-foreground font-mono uppercase">Brand Safety</span>
+                    </div>
+                    <p className={`text-lg font-bold font-mono ${safetyColor}`}>
+                      {avgBrandSafety > 0 ? `${avgBrandSafety}% Safe` : "N/A"}
+                    </p>
                   </div>
-                  <p className={`text-lg font-bold font-mono ${safetyColor}`}>
-                    {video.brandSafety}% Safe
+                  <div className="bg-white/5 rounded-lg p-3 border border-white/5">
+                    <div className="flex items-center gap-2 mb-1">
+                      <Sun className="w-4 h-4 text-muted-foreground" />
+                      <span className="text-xs text-muted-foreground font-mono uppercase">Surfaces</span>
+                    </div>
+                    <p className="text-lg font-bold font-mono text-white">{surfaces.length} Found</p>
+                  </div>
+                </div>
+
+                <div className="bg-white/5 rounded-lg p-3 border border-white/5">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Tag className="w-4 h-4 text-muted-foreground" />
+                    <span className="text-xs text-muted-foreground font-mono uppercase">Context</span>
+                  </div>
+                  <p className="text-white font-mono">{video.context || "Video Content"}</p>
+                </div>
+
+                <div className="bg-white/5 rounded-lg p-3 border border-white/5">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Box className="w-4 h-4 text-muted-foreground" />
+                    <span className="text-xs text-muted-foreground font-mono uppercase">Detected Objects</span>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {detectedTypes.length > 0 ? (
+                      detectedTypes.map((obj, idx) => (
+                        <span key={idx} className="px-2 py-1 bg-white/10 rounded text-xs font-mono text-white/80">
+                          {obj}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="text-xs text-muted-foreground">No objects detected. Run a scan first.</span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="bg-emerald-500/10 rounded-lg p-3 border border-emerald-500/20">
+                  <div className="flex items-center gap-2 mb-1">
+                    <DollarSign className="w-4 h-4 text-emerald-400" />
+                    <span className="text-xs text-emerald-400 font-mono uppercase">Opportunity</span>
+                  </div>
+                  <p className="text-white font-mono text-sm">
+                    {detectedTypes.length > 0 ? `${detectedTypes.join(", ")} placement available` : "Scan video to find opportunities"}
+                  </p>
+                  <p className="text-emerald-400 font-mono text-sm mt-1">
+                    {avgCpm > 0 ? `CPM $${avgCpm}` : "CPM TBD"}
                   </p>
                 </div>
-                <div className="bg-white/5 rounded-lg p-3 border border-white/5">
-                  <div className="flex items-center gap-2 mb-1">
-                    <Sun className="w-4 h-4 text-muted-foreground" />
-                    <span className="text-xs text-muted-foreground font-mono uppercase">Lighting</span>
-                  </div>
-                  <p className="text-lg font-bold font-mono text-white">High</p>
-                </div>
               </div>
-
-              <div className="bg-white/5 rounded-lg p-3 border border-white/5">
-                <div className="flex items-center gap-2 mb-2">
-                  <Tag className="w-4 h-4 text-muted-foreground" />
-                  <span className="text-xs text-muted-foreground font-mono uppercase">Context</span>
-                </div>
-                <p className="text-white font-mono">{video.context}</p>
-              </div>
-
-              <div className="bg-white/5 rounded-lg p-3 border border-white/5">
-                <div className="flex items-center gap-2 mb-2">
-                  <Box className="w-4 h-4 text-muted-foreground" />
-                  <span className="text-xs text-muted-foreground font-mono uppercase">Detected Objects</span>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {video.detectedObjects.map((obj, idx) => (
-                    <span key={idx} className="px-2 py-1 bg-white/10 rounded text-xs font-mono text-white/80">
-                      {obj}
-                    </span>
-                  ))}
-                </div>
-              </div>
-
-              <div className="bg-emerald-500/10 rounded-lg p-3 border border-emerald-500/20">
-                <div className="flex items-center gap-2 mb-1">
-                  <DollarSign className="w-4 h-4 text-emerald-400" />
-                  <span className="text-xs text-emerald-400 font-mono uppercase">Opportunity</span>
-                </div>
-                <p className="text-white font-mono text-sm">
-                  {video.opportunity}
-                </p>
-                <p className="text-emerald-400 font-mono text-sm mt-1">
-                  CPM ${video.cpm}
-                </p>
-              </div>
-            </div>
+            )}
 
             <Button 
               className="w-full gap-2" 
               onClick={handleApprove}
+              disabled={surfaces.length === 0}
               data-testid="button-approve-placement"
             >
               <CheckCircle className="w-4 h-4" />
