@@ -547,11 +547,69 @@ export async function registerRoutes(
   app.get("/api/marketplace/stats", isGoogleAuthenticated, async (req: any, res) => {
     const userId = req.googleUser.email;
     const opportunities = await storage.getVideosWithOpportunities(userId);
+    const activeBids = await storage.getActiveBidsForCreator(userId);
     
     res.json({ 
       videosWithOpportunities: opportunities.length,
       totalSurfaces: opportunities.reduce((sum, v) => sum + v.surfaceCount, 0),
-      activeBids: 3 // Hardcoded for MVP (Sony, Nike, Squarespace)
+      activeBids: activeBids.length
+    });
+  });
+
+  // MARKETPLACE: Brand places a bid on a video surface
+  const marketplaceBuySchema = z.object({
+    videoId: z.number().optional(),
+    title: z.string().min(1),
+    thumbnailUrl: z.string().optional(),
+    bidAmount: z.number().positive(),
+    sceneType: z.string().optional(),
+    genre: z.string().optional(),
+    brandEmail: z.string().email().optional(),
+    brandName: z.string().optional(),
+  });
+
+  app.post("/api/marketplace/buy", isGoogleAuthenticated, async (req: any, res) => {
+    try {
+      const parsed = marketplaceBuySchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: "Invalid request", details: parsed.error.issues });
+      }
+      
+      const { videoId, title, thumbnailUrl, bidAmount, sceneType, genre, brandEmail, brandName } = parsed.data;
+      
+      // Get the video to find the creator
+      const video = videoId ? await storage.getVideoById(videoId) : null;
+      const creatorUserId = video?.userId || "demo-creator";
+      
+      const bid = await storage.createBid({
+        title: title || "Video Ad Placement",
+        thumbnailUrl,
+        status: "pending",
+        videoId,
+        creatorUserId,
+        brandEmail: brandEmail || req.googleUser.email,
+        brandName: brandName || req.googleUser.name,
+        bidAmount: String(bidAmount),
+        sceneType,
+        genre,
+      });
+      
+      res.json({ success: true, bid });
+    } catch (err: any) {
+      console.error("Error creating bid:", err);
+      res.status(500).json({ error: "Failed to create bid" });
+    }
+  });
+
+  // Get user type (creator or brand) for routing
+  app.get("/api/auth/user-type", isGoogleAuthenticated, async (req: any, res) => {
+    const email = req.googleUser.email;
+    const allowedUser = await storage.getAllowedUser(email);
+    
+    res.json({
+      email,
+      userType: allowedUser?.userType || "creator",
+      companyName: allowedUser?.companyName,
     });
   });
 

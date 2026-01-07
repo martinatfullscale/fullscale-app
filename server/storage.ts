@@ -34,6 +34,7 @@ export interface IStorage {
   isEmailAllowed(email: string): Promise<boolean>;
   addAllowedUser(user: InsertAllowedUser): Promise<AllowedUser>;
   getAllowedUsers(): Promise<AllowedUser[]>;
+  getAllowedUser(email: string): Promise<AllowedUser | undefined>;
   getVideoIndex(userId: string): Promise<VideoIndex[]>;
   upsertVideoIndex(video: InsertVideoIndex): Promise<VideoIndex>;
   bulkUpsertVideoIndex(videos: InsertVideoIndex[]): Promise<void>;
@@ -47,6 +48,8 @@ export interface IStorage {
   clearDetectedSurfaces(videoId: number): Promise<void>;
   getVideosWithOpportunities(userId: string): Promise<VideoWithOpportunities[]>;
   getAllVideosWithOpportunities(): Promise<VideoWithOpportunities[]>;
+  createBid(bid: InsertMonetizationItem): Promise<MonetizationItem>;
+  getActiveBidsForCreator(creatorUserId: string): Promise<MonetizationItem[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -130,6 +133,33 @@ export class DatabaseStorage implements IStorage {
 
   async getAllowedUsers(): Promise<AllowedUser[]> {
     return await db.select().from(allowedUsers);
+  }
+
+  async getAllowedUser(email: string): Promise<AllowedUser | undefined> {
+    const normalizedEmail = email.toLowerCase().trim();
+    const [user] = await db
+      .select()
+      .from(allowedUsers)
+      .where(eq(allowedUsers.email, normalizedEmail));
+    return user;
+  }
+
+  async createBid(bid: InsertMonetizationItem): Promise<MonetizationItem> {
+    const [newBid] = await db
+      .insert(monetizationItems)
+      .values(bid)
+      .returning();
+    return newBid;
+  }
+
+  async getActiveBidsForCreator(creatorUserId: string): Promise<MonetizationItem[]> {
+    return await db
+      .select()
+      .from(monetizationItems)
+      .where(and(
+        eq(monetizationItems.creatorUserId, creatorUserId),
+        eq(monetizationItems.status, "pending")
+      ));
   }
 
   async getVideoIndex(userId: string): Promise<VideoIndex[]> {

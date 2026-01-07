@@ -35,6 +35,8 @@ export const allowedUsers = pgTable("allowed_users", {
   id: serial("id").primaryKey(),
   email: varchar("email").notNull().unique(),
   name: varchar("name"),
+  userType: varchar("user_type").notNull().default("creator"), // 'creator' or 'brand'
+  companyName: varchar("company_name"), // For brand users
   addedAt: timestamp("added_at").defaultNow(),
 });
 
@@ -46,13 +48,20 @@ export const insertAllowedUserSchema = createInsertSchema(allowedUsers).omit({
 export type AllowedUser = typeof allowedUsers.$inferSelect;
 export type InsertAllowedUser = z.infer<typeof insertAllowedUserSchema>;
 
-// Monetization Items Table
+// Monetization Items Table - Brand bids on creator video surfaces
 export const monetizationItems = pgTable("monetization_items", {
   id: serial("id").primaryKey(),
   title: text("title").notNull(),
   thumbnailUrl: text("thumbnail_url"),
   date: timestamp("date").defaultNow(),
-  status: text("status").notNull(), // e.g., 'Monetized', 'Pending', 'Rejected'
+  status: text("status").notNull(), // 'pending', 'accepted', 'rejected', 'expired'
+  videoId: integer("video_id"), // Reference to video_index.id
+  creatorUserId: varchar("creator_user_id"), // Creator who owns the video
+  brandEmail: varchar("brand_email"), // Brand who placed the bid
+  brandName: varchar("brand_name"), // Brand company name
+  bidAmount: numeric("bid_amount"), // Bid amount in dollars
+  sceneType: varchar("scene_type"), // e.g., 'Desk', 'Wall', 'Product'
+  genre: varchar("genre"), // e.g., 'Tech', 'Lifestyle', 'Gaming'
 });
 
 export const insertMonetizationItemSchema = createInsertSchema(monetizationItems).omit({ 

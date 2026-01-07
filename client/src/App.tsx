@@ -1,6 +1,7 @@
 import { Switch, Route, useLocation } from "wouter";
+import { useEffect } from "react";
 import { queryClient } from "./lib/queryClient";
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useAuth } from "@/hooks/use-auth";
@@ -13,16 +14,39 @@ import Landing from "@/pages/Landing";
 import Dashboard from "@/pages/Dashboard";
 import Library from "@/pages/Library";
 import Opportunities from "@/pages/Opportunities";
+import BrandMarketplace from "@/pages/BrandMarketplace";
 import Settings from "@/pages/Settings";
 import Privacy from "@/pages/Privacy";
 import Terms from "@/pages/Terms";
+
+interface UserTypeResponse {
+  email: string;
+  userType: "creator" | "brand";
+  companyName?: string;
+}
 
 function Router() {
   const { user, isLoading: isLoadingReplitAuth } = useAuth();
   const { isAuthenticated: isGoogleAuthenticated, isLoading: isLoadingGoogleAuth } = useHybridMode();
   const [location, setLocation] = useLocation();
 
-  // Wait for both auth systems to load
+  // User is authenticated if they have EITHER Replit Auth OR Google OAuth session
+  const isAuthenticated = !!user || isGoogleAuthenticated;
+
+  // Fetch user type for brand redirect
+  const { data: userTypeData, isLoading: isLoadingUserType } = useQuery<UserTypeResponse>({
+    queryKey: ["/api/auth/user-type"],
+    enabled: isAuthenticated,
+  });
+
+  // Redirect brands to marketplace on initial load
+  useEffect(() => {
+    if (userTypeData?.userType === "brand" && location === "/") {
+      setLocation("/marketplace");
+    }
+  }, [userTypeData, location, setLocation]);
+
+  // Wait for auth systems to load
   if (isLoadingReplitAuth || isLoadingGoogleAuth) {
     return (
       <div className="min-h-screen w-full flex items-center justify-center bg-background">
@@ -30,9 +54,6 @@ function Router() {
       </div>
     );
   }
-
-  // User is authenticated if they have EITHER Replit Auth OR Google OAuth session
-  const isAuthenticated = !!user || isGoogleAuthenticated;
 
   // Simple protection logic
   // If user is logged in (via either auth method) and on landing page, go to dashboard
@@ -50,6 +71,15 @@ function Router() {
     );
   }
 
+  // Show loading while checking user type for brand redirect
+  if (isLoadingUserType && location === "/") {
+    return (
+      <div className="min-h-screen w-full flex items-center justify-center bg-background">
+        <Loader2 className="w-10 h-10 text-primary animate-spin" />
+      </div>
+    );
+  }
+
   return (
     <Switch>
       <Route path="/" component={Dashboard} />
@@ -58,6 +88,7 @@ function Router() {
       <Route path="/terms" component={Terms} />
       <Route path="/library" component={Library} />
       <Route path="/opportunities" component={Opportunities} />
+      <Route path="/marketplace" component={BrandMarketplace} />
       <Route path="/settings" component={Settings} />
       <Route path="/earnings" component={Dashboard} />
       <Route component={NotFound} />
