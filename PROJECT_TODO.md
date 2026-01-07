@@ -1,7 +1,7 @@
 # FullScale Project TODO
 
-## Current Focus: Marketplace / Opportunities Hub
-Building the brand-creator matchmaking experience where creators showcase videos with detected ad placement surfaces to brand partners.
+## Current Focus: Brand Marketplace Foundation
+Building the dual-portal experience for creators and brands with the Opportunities Hub.
 
 ---
 
@@ -29,21 +29,41 @@ The Deep Vision scanner (`server/lib/scanner.ts`) is not returning expected surf
 
 ---
 
-## Marketplace MVP (IN PROGRESS)
+## Brand Marketplace MVP (COMPLETED)
 
-### Completed:
+### Dual Portals:
+- [x] Schema updated: `allowed_users.userType` (creator/brand), `allowed_users.companyName`
+- [x] Schema updated: `monetization_items` with videoId, creatorUserId, brandEmail, brandName, bidAmount, sceneType, genre
+- [x] `/api/auth/user-type` endpoint for brand detection
+- [x] Brand redirect logic in App.tsx (brands go to /marketplace on login)
+
+### Brand Marketplace Feed (/marketplace):
+- [x] High-density video grid with Scene Value ($) and Context labels
+- [x] Genre, Budget, Scene Type filter bars
+- [x] 8 dummy opportunities for demo presentation
+- [x] Buy button with Zod-validated POST /api/marketplace/buy
+- [x] Bids create `monetization_items` records with status "pending"
+
+### Creator Dashboard Integration:
+- [x] Active Bids count pulls from `getActiveBidsForCreator()`
+- [x] Real-time stats via `/api/marketplace/stats`
+
+### Next Steps:
+- [ ] Add brand users to `allowed_users` table for testing
+- [ ] Connect marketplace to real scanned surfaces
+- [ ] Creator bid acceptance/rejection workflow
+- [ ] Brand onboarding flow
+
+---
+
+## Opportunities Hub (Creator Side - COMPLETED)
+
 - [x] Backend API: GET /api/marketplace/opportunities
 - [x] Backend API: GET /api/marketplace/stats
 - [x] Storage methods for deriving contexts from surfaces
 - [x] Opportunities page with video grid
 - [x] Brand offers sidebar (Sony, Nike, Squarespace hardcoded)
 - [x] Dashboard Active Bids pulls from marketplace stats
-
-### Next Steps:
-- [ ] Connect opportunities to actual scanned surfaces
-- [ ] Brand partner signup flow
-- [ ] Bid/offer management system
-- [ ] Creator acceptance workflow
 
 ---
 
