@@ -181,26 +181,23 @@ export default function BrandMarketplace() {
   const [sceneTypeFilter, setSceneTypeFilter] = useState("All");
   const [buyingId, setBuyingId] = useState<number | null>(null);
 
-  // Fetch real opportunities from database (requires auth)
-  const { data: discoveryData } = useQuery<DiscoveryResponse>({
-    queryKey: ["/api/brand/discovery"],
-    enabled: !!googleUser,
-  });
+  // Unified query: use auth endpoint when authenticated, demo endpoint otherwise
+  const isAuthenticated = !!googleUser;
+  const endpoint = isAuthenticated ? "/api/brand/discovery" : "/api/demo/brand-discovery";
+  const queryMode = isAuthenticated ? "auth" : "demo";
   
-  // Always fetch demo data as fallback (no auth required)
-  const { data: demoDiscoveryData, error: demoError } = useQuery<DiscoveryResponse>({
-    queryKey: ["/api/demo/brand-discovery"],
+  const { data: discoveryData, isLoading: isLoadingOpportunities } = useQuery<DiscoveryResponse>({
+    queryKey: ["opportunities", queryMode],
     queryFn: async () => {
-      console.log("[BrandMarketplace] Fetching demo data from /api/demo/brand-discovery");
-      const res = await fetch("/api/demo/brand-discovery", { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch demo opportunities");
+      console.log(`[BrandMarketplace] Fetching opportunities from ${endpoint} (mode: ${queryMode})`);
+      const res = await fetch(endpoint, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch opportunities");
       const data = await res.json();
-      console.log("[BrandMarketplace] Demo opportunities fetched:", data.opportunities?.length, "items");
+      console.log(`[BrandMarketplace] Opportunities fetched: ${data.opportunities?.length} items`);
       return data;
     },
-    enabled: true, // Always fetch to ensure data is available
-    staleTime: 0, // Always refetch to get fresh data
     retry: 2,
+    staleTime: 0,
   });
 
   const buyMutation = useMutation({
@@ -235,17 +232,13 @@ export default function BrandMarketplace() {
     },
   });
 
-  // Priority: authenticated data > demo database data (no hardcoded fallback)
-  const authOpportunities = discoveryData?.opportunities || [];
-  const demoOpportunities = demoDiscoveryData?.opportunities || [];
-  const dbOpportunities = authOpportunities.length > 0 ? authOpportunities : demoOpportunities;
-  // Use database data directly - no fallback to hardcoded DUMMY data
-  const allOpportunities = dbOpportunities;
+  // Unified opportunity data - comes from either auth or demo endpoint based on mode
+  const allOpportunities: MarketplaceOpportunity[] = discoveryData?.opportunities || [];
   
   // Debug logging
-  console.log("[BrandMarketplace] authOpportunities:", authOpportunities.length, "demoOpportunities:", demoOpportunities.length, "total:", allOpportunities.length);
+  console.log("[BrandMarketplace] mode:", queryMode, "opportunities.length:", allOpportunities.length, "isLoading:", isLoadingOpportunities);
 
-  const filteredOpportunities = allOpportunities.filter((opp) => {
+  const filteredOpportunities = allOpportunities.filter((opp: MarketplaceOpportunity) => {
     const matchesSearch = opp.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
       opp.creatorName.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesGenre = genreFilter === "All" || opp.genre === genreFilter;

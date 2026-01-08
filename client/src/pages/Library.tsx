@@ -486,31 +486,22 @@ export default function Library() {
   
   const isRealMode = mode === "real" && !isPitchMode;
 
-  const { data: videoIndexData, isLoading: isLoadingVideos, isError: isVideosError } = useQuery<VideoIndexResponse>({
-    queryKey: ["/api/video-index/with-opportunities"],
+  // Unified query: use auth endpoint when authenticated, demo endpoint otherwise
+  const endpoint = isRealMode ? "/api/video-index/with-opportunities" : "/api/demo/videos";
+  const queryMode = isRealMode ? "auth" : "demo";
+  
+  const { data: videoData, isLoading: isLoadingVideos, isError: isVideosError } = useQuery<VideoIndexResponse>({
+    queryKey: ["videos", queryMode],
     queryFn: async () => {
-      const res = await fetch("/api/video-index/with-opportunities", { credentials: "include" });
+      console.log(`[Library] Fetching videos from ${endpoint} (mode: ${queryMode})`);
+      const res = await fetch(endpoint, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch videos");
-      return res.json();
-    },
-    enabled: isRealMode,
-    retry: 1,
-  });
-
-  // Fetch demo videos from database (no auth required) - always enabled as fallback
-  const { data: demoData, isLoading: isLoadingDemoVideos, error: demoError } = useQuery<VideoIndexResponse>({
-    queryKey: ["/api/demo/videos"],
-    queryFn: async () => {
-      console.log("[Library] Fetching demo videos from /api/demo/videos");
-      const res = await fetch("/api/demo/videos", { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch demo videos");
       const data = await res.json();
-      console.log("[Library] Demo videos fetched:", data.videos?.length, "items");
+      console.log(`[Library] Videos fetched: ${data.videos?.length} items`);
       return data;
     },
-    enabled: true, // Always fetch to ensure data is available
     retry: 2,
-    staleTime: 0, // Always refetch to get fresh data
+    staleTime: 0,
   });
 
   const syncMutation = useMutation({
@@ -527,7 +518,7 @@ export default function Library() {
         title: "Channel Synced",
         description: `Indexed ${data.indexed || 0} high-value videos from your channel.`,
       });
-      queryClient.invalidateQueries({ queryKey: ["/api/video-index/with-opportunities"] });
+      queryClient.invalidateQueries({ queryKey: ["videos"] });
     },
     onError: (error: Error) => {
       toast({
@@ -590,7 +581,7 @@ export default function Library() {
           if (!res.ok) return;
           const data = await res.json();
           
-          queryClient.setQueryData(["/api/video-index/with-opportunities"], data);
+          queryClient.setQueryData(["videos", "auth"], data);
           
           const video = data.videos?.find((v: IndexedVideo) => v.id === videoId);
           
@@ -601,7 +592,7 @@ export default function Library() {
               next.delete(videoId);
               return next;
             });
-            queryClient.invalidateQueries({ queryKey: ["/api/video-index/with-opportunities"] });
+            queryClient.invalidateQueries({ queryKey: ["videos"] });
             
             if (video.status?.toLowerCase().includes("ready") && video.adOpportunities > 0) {
               toast({
@@ -663,7 +654,7 @@ export default function Library() {
         title: "Batch Scan Started",
         description: "AI is analyzing your pending videos for ad placement opportunities.",
       });
-      queryClient.invalidateQueries({ queryKey: ["/api/video-index/with-opportunities"] });
+      queryClient.invalidateQueries({ queryKey: ["videos"] });
     },
     onError: (error: Error) => {
       toast({
@@ -674,27 +665,17 @@ export default function Library() {
     },
   });
 
-  const realVideos = videoIndexData?.videos || [];
-  const realVideosFormatted: DisplayVideo[] = realVideos.map(formatIndexedVideo);
-
-  // Database demo videos - always use these in pitch mode or as fallback
-  const demoVideos = demoData?.videos || [];
-  const demoVideosFormatted: DisplayVideo[] = demoVideos.map(formatIndexedVideo);
+  // Unified video data - comes from either auth or demo endpoint based on mode
+  const videos = videoData?.videos || [];
+  const displayVideos: DisplayVideo[] = videos.map(formatIndexedVideo);
   
   // Debug logging
-  console.log("[Library] isRealMode:", isRealMode, "demoVideos.length:", demoVideos.length, "isLoadingDemoVideos:", isLoadingDemoVideos, "demoError:", demoError);
+  console.log("[Library] mode:", queryMode, "videos.length:", videos.length, "isLoading:", isLoadingVideos);
   
-  // Priority: real authenticated data > database demo data > hardcoded fallback
-  // Always use database demo data when available (wait for it to load)
-  const displayVideos: DisplayVideo[] = isRealMode 
-    ? realVideosFormatted
-    : demoVideosFormatted; // No fallback to hardcoded data - database should always have data
-  const videoCount = isRealMode ? realVideos.length : demoVideos.length;
-  const totalOpportunities = isRealMode 
-    ? realVideos.reduce((sum, v) => sum + v.adOpportunities, 0)
-    : demoVideos.reduce((sum, v) => sum + (v.adOpportunities || 0), 0);
+  const videoCount = videos.length;
+  const totalOpportunities = videos.reduce((sum: number, v: IndexedVideo) => sum + (v.adOpportunities || 0), 0);
 
-  const pendingCount = realVideos.filter(v => 
+  const pendingCount = videos.filter((v: IndexedVideo) => 
     v.status?.toLowerCase() === "pending scan" && v.adOpportunities === 0
   ).length;
 
@@ -721,7 +702,7 @@ export default function Library() {
             </p>
           </div>
           <div className="flex items-center gap-3">
-            {isRealMode && realVideos.length > 0 && (
+            {isRealMode && videos.length > 0 && (
               <Button 
                 variant="outline" 
                 className="gap-2" 
@@ -760,11 +741,11 @@ export default function Library() {
           </div>
         </motion.div>
 
-        {(isRealMode && isLoadingVideos) || (!isRealMode && isLoadingDemoVideos) ? (
+        {isLoadingVideos ? (
           <div className="flex items-center justify-center py-20">
             <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
           </div>
-        ) : isRealMode && (realVideos.length === 0 || isVideosError) ? (
+        ) : isRealMode && (videos.length === 0 || isVideosError) ? (
           <EmptyLibrary onSync={() => syncMutation.mutate()} isSyncing={syncMutation.isPending} />
         ) : (
           <motion.div

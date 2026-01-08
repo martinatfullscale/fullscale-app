@@ -2,6 +2,10 @@ import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
+import { db } from "./db";
+import { videoIndex } from "@shared/schema";
+import { seed } from "./db/seed";
+import { sql } from "drizzle-orm";
 
 const app = express();
 const httpServer = createServer(app);
@@ -62,6 +66,21 @@ app.use((req, res, next) => {
 (async () => {
   try {
     log("Starting server initialization...");
+    
+    // Bootstrap: Check if demo data exists, seed if empty
+    try {
+      const result = await db.select({ count: sql<number>`count(*)` }).from(videoIndex);
+      const videoCount = Number(result[0]?.count || 0);
+      log(`Database check: ${videoCount} videos found`);
+      
+      if (videoCount === 0) {
+        log("Database empty - seeding demo data...");
+        await seed();
+        log("Demo data seeded successfully");
+      }
+    } catch (dbError) {
+      log(`Database bootstrap warning: ${dbError}`);
+    }
     
     await registerRoutes(httpServer, app);
     log("Routes registered successfully");

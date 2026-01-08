@@ -69,7 +69,7 @@ const VIDEO_TITLES = [
 
 const SURFACE_TYPES = ["Desk", "Monitor", "Laptop", "Wall", "Shelf", "Table", "Bottle"];
 
-async function seed() {
+export async function seed() {
   console.log("Starting database seed...");
 
   const martinUserId = "martin-demo-user";
@@ -167,9 +167,14 @@ async function seed() {
   console.log(`- Surfaces for ${insertedVideos.filter(v => v.status === "Scan Complete").length} completed scans`);
 }
 
-seed()
-  .then(() => process.exit(0))
-  .catch((err) => {
-    console.error("Seed failed:", err);
-    process.exit(1);
-  });
+// Only run seed directly when executed as a script
+// Check if this file is being run directly (ES module compatible)
+const isDirectRun = import.meta.url === `file://${process.argv[1]}`;
+if (isDirectRun) {
+  seed()
+    .then(() => process.exit(0))
+    .catch((err) => {
+      console.error("Seed failed:", err);
+      process.exit(1);
+    });
+}
