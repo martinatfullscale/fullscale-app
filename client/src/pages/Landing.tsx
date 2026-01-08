@@ -19,13 +19,18 @@ import gamingFrame from "@assets/generated_images/gaming_stream_frame.png";
 import { Footer } from "@/components/Footer";
 import { Slider } from "@/components/ui/slider";
 
-function SurfaceEngineDemo({ isInView }: { isInView: boolean }) {
+function SurfaceEngineDemo({ isInView, aspectRatio = "16:9" }: { isInView: boolean; aspectRatio?: "16:9" | "9:16" }) {
   const [scanPhase, setScanPhase] = useState(0);
   const [confidence, setConfidence] = useState(0);
   const [lightingMatch, setLightingMatch] = useState(0);
   const [trackingLatency, setTrackingLatency] = useState(45);
   const [planeAnchored, setPlaneAnchored] = useState(false);
   const [homographyPoints, setHomographyPoints] = useState<{x: number, y: number}[]>([]);
+  const [detectionMode, setDetectionMode] = useState<'planar' | 'feature-point'>('planar');
+  const [pinnedCoords, setPinnedCoords] = useState<{x: number, y: number}[] | null>(null);
+  const [subPixelActive, setSubPixelActive] = useState(false);
+
+  const isVertical = aspectRatio === "9:16";
 
   useEffect(() => {
     if (!isInView) {
@@ -35,32 +40,57 @@ function SurfaceEngineDemo({ isInView }: { isInView: boolean }) {
       setTrackingLatency(45);
       setPlaneAnchored(false);
       setHomographyPoints([]);
+      setDetectionMode('planar');
+      setPinnedCoords(null);
+      setSubPixelActive(false);
       return;
     }
 
-    const basePoints = [
-      { x: 15, y: 35 }, { x: 85, y: 32 }, { x: 88, y: 72 }, { x: 12, y: 75 }
-    ];
+    // Adjust base points for vertical frames - wider relative detection area
+    const basePoints = isVertical 
+      ? [{ x: 10, y: 45 }, { x: 90, y: 43 }, { x: 92, y: 68 }, { x: 8, y: 70 }]
+      : [{ x: 15, y: 35 }, { x: 85, y: 32 }, { x: 88, y: 72 }, { x: 12, y: 75 }];
 
     const interval = setInterval(() => {
       setScanPhase(prev => {
         const next = prev + 0.8;
         
-        if (next > 20 && next < 45) {
+        // For vertical frames, activate sub-pixel refinement early
+        if (isVertical && next > 15 && !subPixelActive) {
+          setSubPixelActive(true);
+        }
+        
+        // Stability buffer: once pinned, use pinned coordinates
+        if (pinnedCoords) {
+          setHomographyPoints(pinnedCoords);
+        } else if (next > 20 && next < 45) {
+          // Sub-pixel refinement for vertical frames = tighter jitter tolerance
+          const jitterScale = isVertical && subPixelActive ? 0.3 : 1;
           setHomographyPoints(basePoints.map(p => ({
-            x: p.x + (Math.random() - 0.5) * (next < 35 ? 3 : 0.5),
-            y: p.y + (Math.random() - 0.5) * (next < 35 ? 2 : 0.3)
+            x: p.x + (Math.random() - 0.5) * (next < 35 ? 3 * jitterScale : 0.5 * jitterScale),
+            y: p.y + (Math.random() - 0.5) * (next < 35 ? 2 * jitterScale : 0.3 * jitterScale)
           })));
+        }
+        
+        // Feature-point fallback for vertical frames when planar struggles
+        if (isVertical && next > 30 && next < 40 && confidence < 70 && detectionMode === 'planar') {
+          setDetectionMode('feature-point');
         }
         
         if (next >= 45) {
           setPlaneAnchored(true);
+          // Pin coordinates in memory for stability buffer
+          if (!pinnedCoords) {
+            setPinnedCoords(basePoints);
+          }
           setHomographyPoints(basePoints);
         }
         
         if (next > 25) {
-          const targetConfidence = next < 50 ? 60 + Math.random() * 20 : 92 + Math.random() * 6;
-          setConfidence(prev => prev + (targetConfidence - prev) * 0.1);
+          // Faster confidence ramp for feature-point mode
+          const boostMultiplier = detectionMode === 'feature-point' ? 1.3 : 1;
+          const targetConfidence = next < 50 ? (60 + Math.random() * 20) * boostMultiplier : 92 + Math.random() * 6;
+          setConfidence(prev => Math.min(98, prev + (targetConfidence - prev) * 0.1));
         }
         
         if (next > 30) {
@@ -79,7 +109,7 @@ function SurfaceEngineDemo({ isInView }: { isInView: boolean }) {
     }, 50);
 
     return () => clearInterval(interval);
-  }, [isInView, planeAnchored]);
+  }, [isInView, planeAnchored, isVertical, subPixelActive, detectionMode, pinnedCoords, confidence]);
 
   const gridOpacity = confidence >= 85 ? 0.8 : 0.3 + Math.sin(Date.now() / 200) * 0.2;
   const isGridStable = confidence >= 85;
@@ -155,10 +185,23 @@ function SurfaceEngineDemo({ isInView }: { isInView: boolean }) {
         >
           <div className="px-2 py-1 rounded bg-black/80 border border-emerald-500/50 backdrop-blur-sm">
             <span className="text-[9px] font-mono text-emerald-400">
-              {planeAnchored ? "[Plane_Anchored]" : "[Detecting_Plane...]"}
+              {planeAnchored ? "[Surface_Found]" : detectionMode === 'feature-point' ? "[Feature_Fallback...]" : "[Detecting_Plane...]"}
             </span>
           </div>
         </motion.div>
+
+        {/* Sub-pixel refinement indicator for vertical frames */}
+        {isVertical && subPixelActive && !planeAnchored && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="absolute top-10 left-3"
+          >
+            <div className="px-2 py-1 rounded bg-cyan-500/20 border border-cyan-400/50 backdrop-blur-sm">
+              <span className="text-[8px] font-mono text-cyan-300">[SubPx_Refine]</span>
+            </div>
+          </motion.div>
+        )}
 
         <motion.div
           initial={{ opacity: 0 }}
@@ -166,7 +209,7 @@ function SurfaceEngineDemo({ isInView }: { isInView: boolean }) {
           className="absolute top-3 right-3"
         >
           <div className="px-2 py-1 rounded bg-emerald-500/20 border border-emerald-400 backdrop-blur-sm">
-            <span className="text-[9px] font-mono text-emerald-300 font-semibold">[Homography_Locked]</span>
+            <span className="text-[9px] font-mono text-emerald-300 font-semibold">{pinnedCoords ? "[Coords_Pinned]" : "[Homography_Locked]"}</span>
           </div>
         </motion.div>
 
@@ -803,16 +846,16 @@ export default function Landing() {
         </nav>
 
         {/* Hero Content */}
-        <div className="absolute inset-0 flex items-center justify-center z-20">
+        <div className="absolute inset-0 flex items-center justify-center z-20 pt-20 md:pt-0">
           <div className="container mx-auto px-6 text-center">
             <motion.div
               initial={{ opacity: 0, y: 30 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.8 }}
-              className="flex flex-col items-center"
+              className="flex flex-col items-center mt-4 md:mt-0"
             >
-              {/* Status Badge - Positioned above headline with 2rem spacing */}
-              <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-black/40 backdrop-blur-md border border-white/10 text-xs sm:text-sm text-white/80 mb-8">
+              {/* Status Badge - Positioned above headline with 2rem spacing, clear of nav on mobile */}
+              <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-black/40 backdrop-blur-md border border-white/10 text-xs sm:text-sm text-white/80 mb-8 mt-8 md:mt-0">
                 <span className="relative flex h-2 w-2">
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                   <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400"></span>
