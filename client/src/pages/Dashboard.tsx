@@ -84,6 +84,30 @@ const simulationStats = {
   inventoryIndex: "98%",
 };
 
+// Static demo videos for pitch mode - loaded synchronously, no API call needed
+const STATIC_DEMO_VIDEOS: IndexedVideo[] = [
+  { id: 1001, userId: "demo", youtubeId: "demo-1", title: "Desk Setup 2026", description: "The ultimate workspace setup", viewCount: 1250000, thumbnailUrl: "https://images.unsplash.com/photo-1593062096033-9a26b09da705?w=480&h=270&fit=crop", status: "Scan Complete", priorityScore: 95, publishedAt: "2025-12-01", category: "Tech", isEvergreen: true, duration: "12:34", adOpportunities: 8 },
+  { id: 1002, userId: "demo", youtubeId: "demo-2", title: "My Morning Routine", description: "Start your day right", viewCount: 890000, thumbnailUrl: "https://images.unsplash.com/photo-1519389950473-47ba0277781c?w=480&h=270&fit=crop", status: "Scan Complete", priorityScore: 78, publishedAt: "2025-11-15", category: "Lifestyle", isEvergreen: true, duration: "8:45", adOpportunities: 6 },
+  { id: 1003, userId: "demo", youtubeId: "demo-3", title: "Dream Gaming Setup", description: "Ultimate gaming battlestation", viewCount: 2100000, thumbnailUrl: "https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=480&h=270&fit=crop", status: "Scan Complete", priorityScore: 92, publishedAt: "2025-10-20", category: "Gaming", isEvergreen: true, duration: "15:22", adOpportunities: 11 },
+  { id: 1004, userId: "demo", youtubeId: "demo-4", title: "Home Office Makeover", description: "Transform your office on budget", viewCount: 675000, thumbnailUrl: "https://images.unsplash.com/photo-1531297484001-80022131f5a1?w=480&h=270&fit=crop", status: "Scan Complete", priorityScore: 65, publishedAt: "2025-09-10", category: "DIY", isEvergreen: true, duration: "10:15", adOpportunities: 5 },
+  { id: 1005, userId: "demo", youtubeId: "demo-5", title: "Tech Gadgets Unboxing", description: "Latest and greatest gadgets", viewCount: 1450000, thumbnailUrl: "https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=480&h=270&fit=crop", status: "Scanning", priorityScore: 88, publishedAt: "2025-08-25", category: "Tech", isEvergreen: false, duration: "18:30", adOpportunities: 0 },
+  { id: 1006, userId: "demo", youtubeId: "demo-6", title: "Cozy Reading Nook", description: "Perfect reading corner", viewCount: 320000, thumbnailUrl: "https://images.unsplash.com/photo-1593062096033-9a26b09da705?w=480&h=270&fit=crop", status: "Scan Complete", priorityScore: 55, publishedAt: "2025-07-18", category: "Lifestyle", isEvergreen: true, duration: "6:30", adOpportunities: 4 },
+  { id: 1007, userId: "demo", youtubeId: "demo-7", title: "Studio Tour 2026", description: "Complete creative studio tour", viewCount: 540000, thumbnailUrl: "https://images.unsplash.com/photo-1519389950473-47ba0277781c?w=480&h=270&fit=crop", status: "Scan Complete", priorityScore: 72, publishedAt: "2025-06-22", category: "Vlog", isEvergreen: true, duration: "14:17", adOpportunities: 9 },
+  { id: 1008, userId: "demo", youtubeId: "demo-8", title: "Productivity Apps Review", description: "Top productivity apps for 2026", viewCount: 410000, thumbnailUrl: "https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=480&h=270&fit=crop", status: "Scan Complete", priorityScore: 68, publishedAt: "2025-05-30", category: "Productivity", isEvergreen: false, duration: "11:45", adOpportunities: 7 },
+  { id: 1009, userId: "demo", youtubeId: "demo-9", title: "MacBook Pro M5 Review", description: "Is the M5 worth the upgrade?", viewCount: 980000, thumbnailUrl: "https://images.unsplash.com/photo-1531297484001-80022131f5a1?w=480&h=270&fit=crop", status: "Scan Failed", priorityScore: 85, publishedAt: "2025-04-15", category: "Tech", isEvergreen: true, duration: "16:42", adOpportunities: 0 },
+  { id: 1010, userId: "demo", youtubeId: "demo-10", title: "Minimalist Living Room", description: "Transform your living space", viewCount: 275000, thumbnailUrl: "https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=480&h=270&fit=crop", status: "Scan Complete", priorityScore: 52, publishedAt: "2025-03-28", category: "Lifestyle", isEvergreen: true, duration: "9:18", adOpportunities: 3 },
+  { id: 1011, userId: "demo", youtubeId: "demo-11", title: "iPhone 17 First Impressions", description: "First 24 hours with iPhone", viewCount: 1680000, thumbnailUrl: "https://images.unsplash.com/photo-1593062096033-9a26b09da705?w=480&h=270&fit=crop", status: "Scan Complete", priorityScore: 91, publishedAt: "2025-02-20", category: "Tech", isEvergreen: false, duration: "13:55", adOpportunities: 10 },
+  { id: 1012, userId: "demo", youtubeId: "demo-12", title: "Budget Desk Accessories", description: "Best desk accessories under $50", viewCount: 520000, thumbnailUrl: "https://images.unsplash.com/photo-1519389950473-47ba0277781c?w=480&h=270&fit=crop", status: "Scanning", priorityScore: 63, publishedAt: "2025-01-12", category: "Tech", isEvergreen: true, duration: "11:20", adOpportunities: 0 },
+  { id: 1013, userId: "demo", youtubeId: "demo-13", title: "Work From Home Tips", description: "Maximize WFH productivity", viewCount: 445000, thumbnailUrl: "https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=480&h=270&fit=crop", status: "Scan Complete", priorityScore: 70, publishedAt: "2024-12-08", category: "Productivity", isEvergreen: true, duration: "8:33", adOpportunities: 6 },
+  { id: 1014, userId: "demo", youtubeId: "demo-14", title: "Content Creator Setup", description: "Everything to start creating", viewCount: 710000, thumbnailUrl: "https://images.unsplash.com/photo-1531297484001-80022131f5a1?w=480&h=270&fit=crop", status: "Scan Complete", priorityScore: 77, publishedAt: "2024-11-25", category: "Tech", isEvergreen: true, duration: "14:48", adOpportunities: 12 },
+  { id: 1015, userId: "demo", youtubeId: "demo-15", title: "Aesthetic Room Decor", description: "Aesthetic room on a budget", viewCount: 390000, thumbnailUrl: "https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=480&h=270&fit=crop", status: "Scan Complete", priorityScore: 58, publishedAt: "2024-10-18", category: "Lifestyle", isEvergreen: true, duration: "7:22", adOpportunities: 4 },
+  { id: 1016, userId: "demo", youtubeId: "demo-16", title: "Standing Desk Review", description: "Is a standing desk worth it?", viewCount: 285000, thumbnailUrl: "https://images.unsplash.com/photo-1593062096033-9a26b09da705?w=480&h=270&fit=crop", status: "Scan Failed", priorityScore: 54, publishedAt: "2024-09-05", category: "Productivity", isEvergreen: true, duration: "10:05", adOpportunities: 0 },
+  { id: 1017, userId: "demo", youtubeId: "demo-17", title: "Cable Management Guide", description: "Ultimate cable management", viewCount: 620000, thumbnailUrl: "https://images.unsplash.com/photo-1519389950473-47ba0277781c?w=480&h=270&fit=crop", status: "Scan Complete", priorityScore: 74, publishedAt: "2024-08-22", category: "DIY", isEvergreen: true, duration: "12:38", adOpportunities: 5 },
+  { id: 1018, userId: "demo", youtubeId: "demo-18", title: "Mechanical Keyboard Guide", description: "Find your perfect keyboard", viewCount: 830000, thumbnailUrl: "https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=480&h=270&fit=crop", status: "Scanning", priorityScore: 82, publishedAt: "2024-07-15", category: "Tech", isEvergreen: true, duration: "15:10", adOpportunities: 0 },
+  { id: 1019, userId: "demo", youtubeId: "demo-19", title: "Monitor Buying Guide", description: "How to choose the right monitor", viewCount: 490000, thumbnailUrl: "https://images.unsplash.com/photo-1531297484001-80022131f5a1?w=480&h=270&fit=crop", status: "Scan Complete", priorityScore: 67, publishedAt: "2024-06-28", category: "Tech", isEvergreen: true, duration: "13:25", adOpportunities: 8 },
+  { id: 1020, userId: "demo", youtubeId: "demo-20", title: "Day in My Life", description: "Typical day as content creator", viewCount: 560000, thumbnailUrl: "https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=480&h=270&fit=crop", status: "Scan Complete", priorityScore: 61, publishedAt: "2024-05-10", category: "Vlog", isEvergreen: false, duration: "10:50", adOpportunities: 7 },
+];
+
 interface MarketplaceStats {
   videosWithOpportunities: number;
   totalSurfaces: number;
@@ -103,11 +127,21 @@ export default function Dashboard() {
   // Use global pitch mode context for simulation toggle
   const { isPitchMode, setPitchMode } = usePitchMode();
 
-  // Invalidate video cache when pitch mode changes to force refetch
+  // When pitch mode changes, immediately update the video data (no API delay)
   useEffect(() => {
-    console.log(`[Dashboard] isPitchMode changed to: ${isPitchMode}, invalidating cache`);
-    queryClient.invalidateQueries({ queryKey: ["dashboard-videos"] });
-  }, [isPitchMode, queryClient]);
+    console.log(`[Dashboard] isPitchMode changed to: ${isPitchMode}`);
+    if (isPitchMode) {
+      // Immediately set demo videos in cache - no async wait needed
+      queryClient.setQueryData(["dashboard-videos", true, mode], {
+        videos: STATIC_DEMO_VIDEOS,
+        total: STATIC_DEMO_VIDEOS.length
+      });
+      console.log(`[Dashboard] Set ${STATIC_DEMO_VIDEOS.length} demo videos in cache`);
+    } else {
+      // Invalidate cache to refetch real data
+      queryClient.invalidateQueries({ queryKey: ["dashboard-videos"] });
+    }
+  }, [isPitchMode, queryClient, mode]);
 
   const isDemoMode = mode === "demo";
   // PRIORITY: isPitchMode toggle is checked FIRST - overrides authentication state
@@ -148,8 +182,16 @@ export default function Dashboard() {
     queryFn: async ({ queryKey }) => {
       // Extract isPitchMode from queryKey to avoid stale closure
       const [, pitchModeFromKey] = queryKey;
-      const endpoint = pitchModeFromKey ? "/api/demo/videos" : "/api/video-index/with-opportunities";
-      console.log(`[Dashboard] Fetching videos from ${endpoint} (isPitchMode from key: ${pitchModeFromKey})`);
+      
+      // PITCH MODE: Return static demo data immediately (no API call)
+      if (pitchModeFromKey) {
+        console.log(`[Dashboard] Returning ${STATIC_DEMO_VIDEOS.length} static demo videos (pitch mode)`);
+        return { videos: STATIC_DEMO_VIDEOS, total: STATIC_DEMO_VIDEOS.length };
+      }
+      
+      // REAL MODE: Fetch from API
+      const endpoint = "/api/video-index/with-opportunities";
+      console.log(`[Dashboard] Fetching videos from ${endpoint}`);
       const res = await fetch(endpoint, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch video index");
       return res.json();
