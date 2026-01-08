@@ -185,25 +185,22 @@ export default function BrandMarketplace() {
 
   // PRIORITY: isPitchMode toggle is checked FIRST - overrides authentication state
   const isAuthenticated = !!googleUser;
-  const endpoint = isPitchMode ? "/api/demo/brand-discovery" : (isAuthenticated ? "/api/brand/discovery" : "/api/demo/brand-discovery");
-  const queryMode = isPitchMode ? "demo" : (isAuthenticated ? "auth" : "demo");
   
   const { data: discoveryData, isLoading: isLoadingOpportunities } = useQuery<DiscoveryResponse>({
     queryKey: ["opportunities", isPitchMode, isAuthenticated],
     queryFn: async () => {
-      console.log(`[BrandMarketplace] Fetching opportunities from ${endpoint} (mode: ${queryMode})`);
+      // Compute endpoint inside queryFn to avoid stale closure
+      const endpoint = isPitchMode ? "/api/demo/brand-discovery" : (isAuthenticated ? "/api/brand/discovery" : "/api/demo/brand-discovery");
+      const queryMode = isPitchMode ? "demo" : (isAuthenticated ? "auth" : "demo");
+      console.log(`[BrandMarketplace] Fetching opportunities from ${endpoint} (mode: ${queryMode}, isPitchMode: ${isPitchMode})`);
       const res = await fetch(endpoint, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch opportunities");
       const data = await res.json();
       console.log(`[BrandMarketplace] Response structure:`, {
         hasOpportunities: !!data.opportunities,
-        hasData: !!data.data,
         opportunitiesCount: data.opportunities?.length || 0,
-        dataCount: data.data?.length || 0,
         total: data.total,
-        keys: Object.keys(data),
       });
-      console.log(`[BrandMarketplace] First opportunity sample:`, data.opportunities?.[0] || data.data?.[0] || null);
       return data;
     },
     retry: 2,
@@ -246,7 +243,7 @@ export default function BrandMarketplace() {
   const allOpportunities: MarketplaceOpportunity[] = discoveryData?.opportunities || [];
   
   // Debug logging
-  console.log("[BrandMarketplace] mode:", queryMode, "opportunities.length:", allOpportunities.length, "isLoading:", isLoadingOpportunities);
+  console.log("[BrandMarketplace] isPitchMode:", isPitchMode, "opportunities.length:", allOpportunities.length, "isLoading:", isLoadingOpportunities);
 
   const filteredOpportunities = allOpportunities.filter((opp: MarketplaceOpportunity) => {
     const matchesSearch = opp.title.toLowerCase().includes(searchQuery.toLowerCase()) ||

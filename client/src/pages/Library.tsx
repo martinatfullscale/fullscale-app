@@ -489,15 +489,14 @@ export default function Library() {
   
   // PRIORITY: isPitchMode toggle is checked FIRST - overrides authentication state
   const isRealMode = !isPitchMode && mode === "real";
-
-  // Demo endpoint when pitch mode is ON or user not authenticated
-  const endpoint = isPitchMode ? "/api/demo/videos" : (mode === "real" ? "/api/video-index/with-opportunities" : "/api/demo/videos");
-  const queryMode = isPitchMode ? "demo" : (mode === "real" ? "auth" : "demo");
   
   const { data: videoData, isLoading: isLoadingVideos, isError: isVideosError } = useQuery<VideoIndexResponse>({
     queryKey: ["videos", isPitchMode, mode],
     queryFn: async () => {
-      console.log(`[Library] Fetching videos from ${endpoint} (mode: ${queryMode})`);
+      // Compute endpoint inside queryFn to avoid stale closure
+      const endpoint = isPitchMode ? "/api/demo/videos" : (mode === "real" ? "/api/video-index/with-opportunities" : "/api/demo/videos");
+      const queryMode = isPitchMode ? "demo" : (mode === "real" ? "auth" : "demo");
+      console.log(`[Library] Fetching videos from ${endpoint} (mode: ${queryMode}, isPitchMode: ${isPitchMode})`);
       const res = await fetch(endpoint, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch videos");
       const data = await res.json();
@@ -674,7 +673,7 @@ export default function Library() {
   const displayVideos: DisplayVideo[] = videos.map(formatIndexedVideo);
   
   // Debug logging
-  console.log("[Library] mode:", queryMode, "videos.length:", videos.length, "isLoading:", isLoadingVideos);
+  console.log("[Library] isPitchMode:", isPitchMode, "videos.length:", videos.length, "isLoading:", isLoadingVideos);
   
   const videoCount = videos.length;
   const totalOpportunities = videos.reduce((sum: number, v: IndexedVideo) => sum + (v.adOpportunities || 0), 0);
