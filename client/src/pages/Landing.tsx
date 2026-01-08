@@ -779,8 +779,8 @@ export default function Landing() {
             </button>
           </div>
 
-          {/* Mobile Icon Buttons - visible below 600px */}
-          <div className="flex min-[600px]:hidden items-center gap-2">
+          {/* Mobile Icon Buttons - visible below 600px with 1.5rem spacing from logo */}
+          <div className="flex min-[600px]:hidden items-center gap-3 ml-6">
             <a 
               href="https://airtable.com/appF4oLhgbf143xe7/pagil3dstNSBZvLUr/form"
               target="_blank"
@@ -809,8 +809,10 @@ export default function Landing() {
               initial={{ opacity: 0, y: 30 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.8 }}
+              className="flex flex-col items-center"
             >
-              <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-black/40 backdrop-blur-md border border-white/10 text-sm text-white/80 mb-8">
+              {/* Status Badge - Positioned above headline with 2rem spacing */}
+              <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-black/40 backdrop-blur-md border border-white/10 text-xs sm:text-sm text-white/80 mb-8">
                 <span className="relative flex h-2 w-2">
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                   <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400"></span>
@@ -818,7 +820,7 @@ export default function Landing() {
                 3D Scene Reconstruction Active
               </div>
 
-              <h1 className="text-5xl md:text-7xl font-bold font-display tracking-tight mb-6 text-white uppercase">
+              <h1 className="text-4xl sm:text-5xl md:text-7xl font-bold font-display tracking-tight mb-6 text-white uppercase">
                 We Turn Storytelling <br/>
                 <span className="bg-gradient-to-r from-primary via-emerald-400 to-primary bg-clip-text text-transparent">Into Revenue</span>
               </h1>
@@ -848,9 +850,9 @@ export default function Landing() {
           </div>
         </div>
 
-        {/* Scroll Indicator */}
+        {/* Scroll Indicator - Hidden on mobile to avoid overlapping CTA buttons */}
         <motion.div 
-          className="absolute bottom-8 left-1/2 -translate-x-1/2 z-20"
+          className="absolute bottom-[5%] left-1/2 -translate-x-1/2 z-20 hidden md:block"
           animate={{ y: [0, 10, 0] }}
           transition={{ duration: 2, repeat: Infinity }}
         >
