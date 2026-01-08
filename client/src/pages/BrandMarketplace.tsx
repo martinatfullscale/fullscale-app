@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
@@ -182,6 +182,12 @@ export default function BrandMarketplace() {
   const [budgetFilter, setBudgetFilter] = useState("All");
   const [sceneTypeFilter, setSceneTypeFilter] = useState("All");
   const [buyingId, setBuyingId] = useState<number | null>(null);
+
+  // Invalidate opportunities cache when pitch mode changes to force refetch
+  useEffect(() => {
+    console.log(`[BrandMarketplace] isPitchMode changed to: ${isPitchMode}, invalidating cache`);
+    queryClient.invalidateQueries({ queryKey: ["opportunities"] });
+  }, [isPitchMode, queryClient]);
 
   // PRIORITY: isPitchMode toggle is checked FIRST - overrides authentication state
   const isAuthenticated = !!googleUser;

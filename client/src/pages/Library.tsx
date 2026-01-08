@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { TopBar } from "@/components/TopBar";
 import { Upload, Eye, CheckCircle, Loader2, AlertTriangle, X, Shield, Sun, Tag, Box, DollarSign, Sparkles, RefreshCw, Play } from "lucide-react";
 import { motion } from "framer-motion";
@@ -487,6 +487,12 @@ export default function Library() {
   const [selectedVideo, setSelectedVideo] = useState<DisplayVideo | null>(null);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
   
+  // Invalidate video cache when pitch mode changes to force refetch
+  useEffect(() => {
+    console.log(`[Library] isPitchMode changed to: ${isPitchMode}, invalidating cache`);
+    queryClient.invalidateQueries({ queryKey: ["videos"] });
+  }, [isPitchMode, queryClient]);
+
   // PRIORITY: isPitchMode toggle is checked FIRST - overrides authentication state
   const isRealMode = !isPitchMode && mode === "real";
   

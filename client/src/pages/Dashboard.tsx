@@ -103,6 +103,12 @@ export default function Dashboard() {
   // Use global pitch mode context for simulation toggle
   const { isPitchMode, setPitchMode } = usePitchMode();
 
+  // Invalidate video cache when pitch mode changes to force refetch
+  useEffect(() => {
+    console.log(`[Dashboard] isPitchMode changed to: ${isPitchMode}, invalidating cache`);
+    queryClient.invalidateQueries({ queryKey: ["dashboard-videos"] });
+  }, [isPitchMode, queryClient]);
+
   const isDemoMode = mode === "demo";
   // PRIORITY: isPitchMode toggle is checked FIRST - overrides authentication state
   const isRealMode = !isPitchMode && mode === "real";
