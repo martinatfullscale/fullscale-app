@@ -84,11 +84,23 @@ function applyHomographyFallback(isVertical: boolean, sceneContext?: string): De
   return [inferredSurface];
 }
 
+// ============================================================================
+// LOCAL ASSET MAP - Bypass YouTube download for demo videos
+// Maps database YouTube IDs to local video files in public/ folder
+// ============================================================================
+const LOCAL_ASSET_MAP: Record<string, string> = {
+  'yt_techguru_001': './public/many_jobs.mov',         // Vertical Demo (9:16)
+  'yt_beauty_02': './public/hero_video.mp4',           // Horizontal Hero (16:9)
+  'yt_vlog_003': './public/quick_update.mov',          // Quick Update
+  'yt_final_004': './public/fullscale_final4.mov',     // FullScale Final4
+};
+
 // === VERBOSE STARTUP LOGGING ===
 console.log(`[Scanner] ========== SCANNER MODULE LOADED ==========`);
 console.log(`[Scanner] AI_INTEGRATIONS_GEMINI_API_KEY exists: ${!!process.env.AI_INTEGRATIONS_GEMINI_API_KEY}`);
 console.log(`[Scanner] AI_INTEGRATIONS_GEMINI_API_KEY length: ${process.env.AI_INTEGRATIONS_GEMINI_API_KEY?.length || 0}`);
 console.log(`[Scanner] AI_INTEGRATIONS_GEMINI_BASE_URL: ${process.env.AI_INTEGRATIONS_GEMINI_BASE_URL || '(not set)'}`);
+console.log(`[Scanner] LOCAL_ASSET_MAP entries: ${Object.keys(LOCAL_ASSET_MAP).length}`);
 console.log(`[Scanner] =============================================`);
 
 const ai = new GoogleGenAI({
@@ -579,16 +591,35 @@ export async function processVideoScan(videoId: number, forceRescan: boolean = f
   await storage.updateVideoStatus(videoId, "Scanning");
 
   const tempDir = path.join(os.tmpdir(), `scan-${videoId}-${Date.now()}`);
-  const videoPath = path.join(tempDir, "video.mp4");
   const framesDir = path.join(tempDir, "frames");
 
   try {
     fs.mkdirSync(tempDir, { recursive: true });
 
-    const downloaded = await downloadVideo(video.youtubeId, videoPath);
-    if (!downloaded) {
-      await storage.updateVideoStatus(videoId, "Scan Failed");
-      return { success: false, videoId, surfacesDetected: 0, error: "Failed to download video" };
+    // Check LOCAL_ASSET_MAP first - bypass YouTube download for demo videos
+    const localPath = LOCAL_ASSET_MAP[video.youtubeId];
+    let videoPath: string;
+    
+    if (localPath) {
+      const absoluteLocalPath = path.resolve(localPath);
+      if (fs.existsSync(absoluteLocalPath)) {
+        console.log(`[Scanner] *** USING LOCAL MASTER FILE: ${absoluteLocalPath} ***`);
+        console.log(`[Scanner] Bypassing YouTube download for ${video.youtubeId}`);
+        videoPath = absoluteLocalPath;
+      } else {
+        console.error(`[Scanner] Local asset mapped but file not found: ${absoluteLocalPath}`);
+        await storage.updateVideoStatus(videoId, "Scan Failed");
+        return { success: false, videoId, surfacesDetected: 0, error: `Local asset not found: ${localPath}` };
+      }
+    } else {
+      // Fallback to YouTube download (expected to fail for blocked videos)
+      videoPath = path.join(tempDir, "video.mp4");
+      console.log(`[Scanner] No local asset mapped for ${video.youtubeId}, attempting YouTube download...`);
+      const downloaded = await downloadVideo(video.youtubeId, videoPath);
+      if (!downloaded) {
+        await storage.updateVideoStatus(videoId, "Scan Failed");
+        return { success: false, videoId, surfacesDetected: 0, error: "Failed to download video" };
+      }
     }
 
     const frames = await extractFrames(videoPath, framesDir, 10);
