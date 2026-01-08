@@ -19,20 +19,34 @@ import gamingFrame from "@assets/generated_images/gaming_stream_frame.png";
 import { Footer } from "@/components/Footer";
 import { Slider } from "@/components/ui/slider";
 
-// Aspect ratio configuration for FOV compensation
+// Aspect ratio configuration for FOV compensation and tracking thresholds
 const ASPECT_CONFIGS = {
   "16:9": {
     detectionBand: { yMin: 30, yMax: 75 },    // Wide detection area
     horizontalSpread: 1.0,                      // Full horizontal spread
-    perspectiveSkew: 0,                         // No vertical tilt compensation
+    verticalStretch: 1.0,                       // No vertical stretch
+    planeThreshold: 0.8,                        // Standard plane detection threshold
     confidenceBoost: 1.0,                       // Normal confidence ramp
+    persistenceFrames: 4,                       // Standard frame memory
   },
   "9:16": {
-    detectionBand: { yMin: 70, yMax: 100 },   // Narrow-Angle: Bottom 30% of frame
+    detectionBand: { yMin: 70, yMax: 100 },   // Narrow-Angle: Bottom 30% of frame for horizontal planes
     horizontalSpread: 0.7,                      // Reduced horizontal spread (center-biased)
-    perspectiveSkew: 5,                         // Compensate for iPhone vertical FOV tilt
-    confidenceBoost: 1.2,                       // Faster confidence for limited context
+    verticalStretch: 1.2,                       // 1.2x vertical stretch for iPhone lens distortion compensation
+    planeThreshold: 0.6,                        // Lower threshold (0.6 vs 0.8) for narrow FOV data
+    confidenceBoost: 1.3,                       // Faster confidence for limited context
+    persistenceFrames: 15,                      // Frame-to-Frame Memory: 15 frames during camera shake
   }
+};
+
+// Static fallback anchor at center-bottom of frame (Force Success State)
+const STATIC_ANCHOR_POINTS = {
+  "16:9": [
+    { x: 20, y: 55 }, { x: 80, y: 55 }, { x: 82, y: 85 }, { x: 18, y: 85 }
+  ],
+  "9:16": [
+    { x: 25, y: 72 }, { x: 75, y: 72 }, { x: 78, y: 95 }, { x: 22, y: 95 }
+  ]
 };
 
 function SurfaceEngineDemo({ isInView, aspectRatio = "16:9" }: { isInView: boolean; aspectRatio?: "16:9" | "9:16" }) {
@@ -42,15 +56,16 @@ function SurfaceEngineDemo({ isInView, aspectRatio = "16:9" }: { isInView: boole
   const [trackingLatency, setTrackingLatency] = useState(45);
   const [planeAnchored, setPlaneAnchored] = useState(false);
   const [homographyPoints, setHomographyPoints] = useState<{x: number, y: number}[]>([]);
-  const [detectionMode, setDetectionMode] = useState<'planar' | 'feature-point'>('planar');
+  const [detectionMode, setDetectionMode] = useState<'planar' | 'feature-point' | 'static-anchor'>('planar');
   const [pinnedCoords, setPinnedCoords] = useState<{x: number, y: number}[] | null>(null);
   const [subPixelActive, setSubPixelActive] = useState(false);
   const [lostSurfaceFrames, setLostSurfaceFrames] = useState(0);
   const [lastStableCoords, setLastStableCoords] = useState<{x: number, y: number}[] | null>(null);
+  const [surfaceFound, setSurfaceFound] = useState(false);
 
   const isVertical = aspectRatio === "9:16";
   const config = ASPECT_CONFIGS[aspectRatio];
-  const LATENCY_BUFFER_FRAMES = 4; // ~0.02ms at 50ms interval = persist for 4 frames during pan
+  const staticAnchor = STATIC_ANCHOR_POINTS[aspectRatio];
 
   useEffect(() => {
     if (!isInView) {
@@ -65,6 +80,7 @@ function SurfaceEngineDemo({ isInView, aspectRatio = "16:9" }: { isInView: boole
       setSubPixelActive(false);
       setLostSurfaceFrames(0);
       setLastStableCoords(null);
+      setSurfaceFound(false);
       return;
     }
 
@@ -72,18 +88,18 @@ function SurfaceEngineDemo({ isInView, aspectRatio = "16:9" }: { isInView: boole
     const { yMin, yMax } = config.detectionBand;
     const bandHeight = yMax - yMin;
     
-    // Vertical FOV Compensation: Apply horizontal spread compression toward center
+    // Vertical FOV Compensation: Apply 1.2x vertical stretch for iPhone lens distortion
     const hSpread = config.horizontalSpread;
+    const vStretch = config.verticalStretch;
     const centerX = 50;
-    const skew = config.perspectiveSkew;
     
-    // Generate base points within the detection band with FOV compensation
+    // Generate base points with vertical stretch compensation applied
     const basePoints = isVertical 
       ? [
-          { x: centerX - 40 * hSpread, y: yMin + bandHeight * 0.1 + skew },
-          { x: centerX + 40 * hSpread, y: yMin + bandHeight * 0.05 + skew },
-          { x: centerX + 42 * hSpread, y: yMin + bandHeight * 0.85 },
-          { x: centerX - 42 * hSpread, y: yMin + bandHeight * 0.9 }
+          { x: centerX - 35 * hSpread, y: (yMin + bandHeight * 0.05) * vStretch / 1.2 + 58 },
+          { x: centerX + 35 * hSpread, y: (yMin + bandHeight * 0.02) * vStretch / 1.2 + 58 },
+          { x: centerX + 38 * hSpread, y: (yMin + bandHeight * 0.75) * vStretch / 1.2 + 15 },
+          { x: centerX - 38 * hSpread, y: (yMin + bandHeight * 0.8) * vStretch / 1.2 + 15 }
         ]
       : [
           { x: 15, y: 35 }, { x: 85, y: 32 }, { x: 88, y: 72 }, { x: 12, y: 75 }
@@ -98,63 +114,76 @@ function SurfaceEngineDemo({ isInView, aspectRatio = "16:9" }: { isInView: boole
           setSubPixelActive(true);
         }
         
-        // Persistence: If we have pinned coords, use them (with latency buffer for pans)
+        // Frame-to-Frame Memory: If we have pinned coords, lock the grid
         if (pinnedCoords) {
-          // Save as last stable for persistence during tracking loss
           if (!lastStableCoords) {
             setLastStableCoords(pinnedCoords);
           }
           setHomographyPoints(pinnedCoords);
-          setLostSurfaceFrames(0); // Reset lost frame counter
+          setLostSurfaceFrames(0);
+          setSurfaceFound(true);
         } else if (next > 20 && next < 45) {
-          // Sub-pixel refinement for vertical frames = tighter jitter tolerance
-          const jitterScale = isVertical && subPixelActive ? 0.3 : 1;
+          // Sub-pixel refinement with lower plane threshold for vertical
+          const jitterScale = isVertical && subPixelActive ? 0.25 : 1;
           
-          // Apply FOV-compensated jitter within detection band
-          const jitteredPoints = basePoints.map(p => ({
-            x: p.x + (Math.random() - 0.5) * (next < 35 ? 3 * jitterScale : 0.5 * jitterScale),
-            y: Math.max(yMin, Math.min(yMax, p.y + (Math.random() - 0.5) * (next < 35 ? 2 * jitterScale : 0.3 * jitterScale)))
-          }));
+          // Check against lower threshold (0.6 for 9:16)
+          const currentThreshold = (next / 100) + Math.random() * 0.2;
+          const meetsThreshold = currentThreshold >= config.planeThreshold;
           
-          setHomographyPoints(jitteredPoints);
-        } else if (lastStableCoords && lostSurfaceFrames < LATENCY_BUFFER_FRAMES) {
-          // Persistence: Use 0.02ms tracking latency to "remember" desk position
+          if (meetsThreshold || next > 35) {
+            const jitteredPoints = basePoints.map(p => ({
+              x: p.x + (Math.random() - 0.5) * (next < 35 ? 2 * jitterScale : 0.3 * jitterScale),
+              y: Math.max(yMin, Math.min(yMax, p.y + (Math.random() - 0.5) * (next < 35 ? 1.5 * jitterScale : 0.2 * jitterScale)))
+            }));
+            setHomographyPoints(jitteredPoints);
+          }
+        } else if (lastStableCoords && lostSurfaceFrames < config.persistenceFrames) {
+          // Persistence: Lock grid to last known coords for 15 frames (9:16) during camera shake
           setHomographyPoints(lastStableCoords);
           setLostSurfaceFrames(prev => prev + 1);
+          setSurfaceFound(true);
+        } else if (isVertical && !pinnedCoords && next > 40) {
+          // Force Success State: If plane detection struggles, use static anchor
+          // Never show "Scan Failed" - default to center-bottom anchor
+          setDetectionMode('static-anchor');
+          setHomographyPoints(staticAnchor);
+          setSurfaceFound(true);
         }
         
         // Feature-point fallback for vertical frames when planar struggles
-        if (isVertical && next > 30 && next < 40 && confidence < 70 && detectionMode === 'planar') {
+        if (isVertical && next > 30 && next < 40 && confidence < 60 && detectionMode === 'planar') {
           setDetectionMode('feature-point');
         }
         
-        if (next >= 45) {
+        if (next >= 42) {
           setPlaneAnchored(true);
-          // Pin coordinates in memory for stability buffer
+          setSurfaceFound(true);
           if (!pinnedCoords) {
-            setPinnedCoords(basePoints);
-            setLastStableCoords(basePoints);
+            // Use detected points or fallback to static anchor (never fail)
+            const pointsToPin = homographyPoints.length === 4 ? homographyPoints : staticAnchor;
+            setPinnedCoords(pointsToPin);
+            setLastStableCoords(pointsToPin);
+            setHomographyPoints(pointsToPin);
           }
-          setHomographyPoints(basePoints);
         }
         
         if (next > 25) {
-          // Faster confidence ramp for feature-point mode and vertical frames
-          const boostMultiplier = (detectionMode === 'feature-point' ? 1.3 : 1) * config.confidenceBoost;
-          const targetConfidence = next < 50 ? (60 + Math.random() * 20) * boostMultiplier : 92 + Math.random() * 6;
-          setConfidence(prev => Math.min(98, prev + (targetConfidence - prev) * 0.1));
+          // Faster confidence with lower threshold boost for vertical
+          const boostMultiplier = (detectionMode === 'feature-point' ? 1.4 : detectionMode === 'static-anchor' ? 1.5 : 1) * config.confidenceBoost;
+          const targetConfidence = next < 50 ? (65 + Math.random() * 20) * boostMultiplier : 94 + Math.random() * 4;
+          setConfidence(prev => Math.min(98, prev + (targetConfidence - prev) * 0.12));
         }
         
         if (next > 30) {
-          const targetLighting = next < 55 ? 75 + Math.random() * 10 : 96 + Math.random() * 3;
-          setLightingMatch(prev => prev + (targetLighting - prev) * 0.08);
+          const targetLighting = next < 55 ? 78 + Math.random() * 10 : 96 + Math.random() * 3;
+          setLightingMatch(prev => prev + (targetLighting - prev) * 0.1);
         }
         
         if (next > 35) {
-          // Faster latency convergence when persistence is active
-          const latencyTarget = planeAnchored ? 8 + Math.random() * 4 : 25 + Math.random() * 15;
-          const persistenceBonus = lastStableCoords ? 0.8 : 1;
-          setTrackingLatency(prev => prev + (latencyTarget * persistenceBonus - prev) * 0.15);
+          // Fast latency convergence - always show good tracking
+          const latencyTarget = planeAnchored ? 6 + Math.random() * 3 : 18 + Math.random() * 10;
+          const persistenceBonus = lastStableCoords ? 0.7 : 1;
+          setTrackingLatency(prev => prev + (latencyTarget * persistenceBonus - prev) * 0.18);
         }
         
         if (next >= 100) return 0;
@@ -163,10 +192,12 @@ function SurfaceEngineDemo({ isInView, aspectRatio = "16:9" }: { isInView: boole
     }, 50);
 
     return () => clearInterval(interval);
-  }, [isInView, planeAnchored, isVertical, subPixelActive, detectionMode, pinnedCoords, confidence, config, lastStableCoords, lostSurfaceFrames]);
+  }, [isInView, planeAnchored, isVertical, subPixelActive, detectionMode, pinnedCoords, confidence, config, lastStableCoords, lostSurfaceFrames, staticAnchor, homographyPoints]);
 
-  const gridOpacity = confidence >= 85 ? 0.8 : 0.3 + Math.sin(Date.now() / 200) * 0.2;
-  const isGridStable = confidence >= 85;
+  // Lower threshold for grid stability (0.6 for 9:16 vs 0.8 for 16:9)
+  const stabilityThreshold = config.planeThreshold * 100;
+  const gridOpacity = confidence >= stabilityThreshold ? 0.85 : 0.35 + Math.sin(Date.now() / 200) * 0.15;
+  const isGridStable = confidence >= stabilityThreshold || surfaceFound;
 
   return (
     <div className="space-y-4">
@@ -239,7 +270,14 @@ function SurfaceEngineDemo({ isInView, aspectRatio = "16:9" }: { isInView: boole
         >
           <div className="px-2 py-1 rounded bg-black/80 border border-emerald-500/50 backdrop-blur-sm">
             <span className="text-[9px] font-mono text-emerald-400">
-              {planeAnchored ? "[Surface_Found]" : detectionMode === 'feature-point' ? "[Feature_Fallback...]" : "[Detecting_Plane...]"}
+              {/* Force Success State: Never show "Scan Failed" - always show positive status */}
+              {surfaceFound || planeAnchored 
+                ? "[Surface_Found]" 
+                : detectionMode === 'static-anchor' 
+                  ? "[Static_Anchor]" 
+                  : detectionMode === 'feature-point' 
+                    ? "[Feature_Lock...]" 
+                    : "[Scanning...]"}
             </span>
           </div>
         </motion.div>
@@ -252,18 +290,20 @@ function SurfaceEngineDemo({ isInView, aspectRatio = "16:9" }: { isInView: boole
             className="absolute top-10 left-3"
           >
             <div className="px-2 py-1 rounded bg-cyan-500/20 border border-cyan-400/50 backdrop-blur-sm">
-              <span className="text-[8px] font-mono text-cyan-300">[SubPx_Refine]</span>
+              <span className="text-[8px] font-mono text-cyan-300">[1.2x_V_Stretch]</span>
             </div>
           </motion.div>
         )}
 
         <motion.div
           initial={{ opacity: 0 }}
-          animate={{ opacity: planeAnchored ? 1 : 0 }}
+          animate={{ opacity: planeAnchored || surfaceFound ? 1 : 0 }}
           className="absolute top-3 right-3"
         >
           <div className="px-2 py-1 rounded bg-emerald-500/20 border border-emerald-400 backdrop-blur-sm">
-            <span className="text-[9px] font-mono text-emerald-300 font-semibold">{pinnedCoords ? "[Coords_Pinned]" : "[Homography_Locked]"}</span>
+            <span className="text-[9px] font-mono text-emerald-300 font-semibold">
+              {pinnedCoords ? "[Grid_Locked]" : lostSurfaceFrames > 0 ? `[Memory_${config.persistenceFrames - lostSurfaceFrames}f]` : "[Tracking]"}
+            </span>
           </div>
         </motion.div>
 
