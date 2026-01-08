@@ -20,54 +20,60 @@ import { Footer } from "@/components/Footer";
 import { Slider } from "@/components/ui/slider";
 
 // ============================================================================
-// SURFACE ENGINE DEMO - HARDCODED SUCCESS FOR FOUNDING COHORT LAUNCH
-// Goal: 100% success rate - never show "Scan Failed" or "No Surfaces - Retry"
+// SURFACE ENGINE DEMO - 100% MOCKED SUCCESS FOR FOUNDING COHORT LAUNCH
+// Goal: ZERO failures - never show "Scan Failed", "No Surfaces", or error toasts
+// Hard-coded bypass: All videos (including "many_jobs" 9:16) force success
 // ============================================================================
 
-// Pre-defined grid coordinates with narrow FOV recalibration for 9:16 vertical
-// - 9:16 prioritizes bottom 35% of frame for horizontal plane triangulation
-// - Ignores high-contrast noise in top half (background elements)
+// Static grid coordinates - no real-time tracking, no depth data needed
+// All grid positions are pre-defined and ALWAYS render successfully
 const HARDCODED_GRID_COORDS = {
   "16:9": [
+    // Standard horizontal video - desk/table area in lower half
     { x: 18, y: 52 }, { x: 82, y: 52 }, { x: 85, y: 82 }, { x: 15, y: 82 }
   ],
   "9:16": [
-    // "Many Jobs" vertical video - pinned to bottom 35% (y: 65-95%)
-    // Horizontal anchor at center-bottom for narrow FOV success override
-    { x: 15, y: 65 }, { x: 85, y: 65 }, { x: 88, y: 95 }, { x: 12, y: 95 }
+    // "Many Jobs" vertical video - HARD-CODED BYPASS for narrow FOV
+    // Fixed coords at bottom 25% (y: 75-97%) with 1000px perspective simulation
+    // Ignores real-time tracking events completely
+    { x: 10, y: 75 }, { x: 90, y: 75 }, { x: 92, y: 97 }, { x: 8, y: 97 }
   ]
 };
 
-// Force success timeout - bypass real-time calculation after 1.2s max
-// Injects pre-defined horizontal anchor to force "Surface Found" success state
-const FORCE_SUCCESS_TIMEOUT_MS = 800; // Aggressive timeout for demo reliability
+// SUCCESS OVERRIDE CONFIG - bypasses all real-time calculations
+const FORCE_SUCCESS_TIMEOUT_MS = 600; // Force success after 600ms (aggressive)
+const MANY_JOBS_INSTANT_SUCCESS = true; // Flag to skip timer entirely for 9:16
 
-// Temporal buffer for grid pinning - prevents floating/disappearing on camera pan
-const GRID_STABILITY_THRESHOLD = 0.85; // 85% confidence locks grid permanently
+// Error suppression - these toasts/messages are NEVER shown in demo mode
+const DISABLED_ERROR_MESSAGES = ["Scan Failed", "No Surfaces", "Retry", "Error"];
 
-function SurfaceEngineDemo({ isInView, aspectRatio = "16:9" }: { isInView: boolean; aspectRatio?: "16:9" | "9:16" }) {
+// Temporal buffer prevents grid from floating/disappearing on any interaction
+const GRID_PERMANENTLY_LOCKED = true; // Once rendered, never hides
+
+function SurfaceEngineDemo({ isInView, aspectRatio = "16:9", videoSrc = "" }: { isInView: boolean; aspectRatio?: "16:9" | "9:16"; videoSrc?: string }) {
   const [scanPhase, setScanPhase] = useState(0);
   const [confidence, setConfidence] = useState(0);
   const [lightingMatch, setLightingMatch] = useState(0);
   const [trackingLatency, setTrackingLatency] = useState(12);
   const [surfaceFound, setSurfaceFound] = useState(false);
   const [gridLocked, setGridLocked] = useState(false);
-  const [gridPermanentlyPinned, setGridPermanentlyPinned] = useState(false); // Temporal buffer
+  const [gridPermanentlyPinned, setGridPermanentlyPinned] = useState(false);
   const [statusMessage, setStatusMessage] = useState<'scanning' | 'syncing' | 'found' | 'locked'>('scanning');
   const forceSuccessTriggered = useRef(false);
   const scanStartTime = useRef<number | null>(null);
 
   const isVertical = aspectRatio === "9:16";
+  const isManyJobsVideo = videoSrc.includes('many_jobs') || isVertical;
   const hardcodedGrid = HARDCODED_GRID_COORDS[aspectRatio];
 
   // ============================================================================
-  // ZERO-FAILURE DEMO LOGIC - Forces success for 100% reliability
-  // 9:16 "Many Jobs" video: Narrow FOV recalibration with bottom-35% priority
+  // 100% MOCKED SUCCESS - No real tracking, no failures, no error toasts
+  // Hard-coded bypass for "many_jobs" and all 9:16 vertical videos
   // ============================================================================
   useEffect(() => {
     if (!isInView) {
-      // Only reset if not permanently pinned (temporal buffer protection)
-      if (!gridPermanentlyPinned) {
+      // Reset state when hidden (but grid coords are permanently locked once set)
+      if (!GRID_PERMANENTLY_LOCKED || !gridPermanentlyPinned) {
         setScanPhase(0);
         setConfidence(0);
         setLightingMatch(0);
@@ -81,7 +87,25 @@ function SurfaceEngineDemo({ isInView, aspectRatio = "16:9" }: { isInView: boole
       return;
     }
 
-    // Start timer for forced success (1.2s max, but we use 800ms for snappiness)
+    // INSTANT SUCCESS for "many_jobs" video or 9:16 aspect ratio
+    // Skip timer entirely - immediately show success state
+    if ((MANY_JOBS_INSTANT_SUCCESS && isManyJobsVideo) && !forceSuccessTriggered.current) {
+      forceSuccessTriggered.current = true;
+      // Small delay for visual effect, then instant lock
+      setTimeout(() => {
+        setScanPhase(100);
+        setSurfaceFound(true);
+        setGridLocked(true);
+        setGridPermanentlyPinned(true);
+        setStatusMessage('locked');
+        setConfidence(98);
+        setLightingMatch(99);
+        setTrackingLatency(0.02);
+      }, 300); // 300ms for visual animation
+      return;
+    }
+
+    // Start timer for forced success
     if (!scanStartTime.current) {
       scanStartTime.current = Date.now();
     }
@@ -90,62 +114,62 @@ function SurfaceEngineDemo({ isInView, aspectRatio = "16:9" }: { isInView: boole
       const elapsed = Date.now() - (scanStartTime.current || Date.now());
       
       setScanPhase(prev => {
-        // For 9:16 vertical: Faster success override (narrow FOV compensation)
-        const speedMultiplier = isVertical ? 2.0 : 1.5;
+        // Speed multiplier: 9:16 is 2.5x faster, 16:9 is 1.5x
+        const speedMultiplier = isVertical ? 2.5 : 1.5;
         const next = prev + speedMultiplier;
         
-        // SUCCESS OVERRIDE: Force "Surface Found" after timeout
-        // Bypasses real-time calculation, injects pre-defined horizontal anchor
+        // FORCE SUCCESS after timeout - bypasses ALL real-time calculations
+        // Injects static grid, sets all metrics to success values
         if (elapsed >= FORCE_SUCCESS_TIMEOUT_MS && !forceSuccessTriggered.current) {
           forceSuccessTriggered.current = true;
           setSurfaceFound(true);
           setGridLocked(true);
-          setGridPermanentlyPinned(true); // Temporal buffer: lock grid coords
+          setGridPermanentlyPinned(true);
           setStatusMessage('locked');
           setConfidence(98);
           setLightingMatch(99);
-          setTrackingLatency(0.02); // 0.02ms latency - metric integrity
-          return 100; // Jump to complete
+          setTrackingLatency(0.02);
+          return 100;
         }
         
-        // Scanning phase (0-25%): "Syncing Lighting..." - never show failure
-        if (next < 25) {
+        // Scanning phase (0-20%): "Syncing Lighting..."
+        if (next < 20) {
           setStatusMessage('syncing');
-          setConfidence(prev => Math.min(50, prev + 3));
-          setLightingMatch(prev => Math.min(70, prev + 4));
+          setConfidence(prev => Math.min(55, prev + 4));
+          setLightingMatch(prev => Math.min(75, prev + 5));
         }
-        // Surface detection phase (25-60%): "Surface Found"
-        else if (next < 60) {
+        // Surface detection phase (20-50%): "Surface Found"
+        else if (next < 50) {
           setStatusMessage('found');
           setSurfaceFound(true);
-          setConfidence(prev => Math.min(90, prev + 2));
-          setLightingMatch(prev => Math.min(95, prev + 1.5));
-          setTrackingLatency(prev => Math.max(0.02, prev - 2));
+          setConfidence(prev => Math.min(92, prev + 2.5));
+          setLightingMatch(prev => Math.min(96, prev + 2));
+          setTrackingLatency(prev => Math.max(0.02, prev - 3));
         }
-        // Grid locked phase (60-100%): "Coords Pinned" with full metrics
+        // Grid locked phase (50-100%): "Coords Pinned" - full green metrics
         else {
           setStatusMessage('locked');
           setGridLocked(true);
           setGridPermanentlyPinned(true);
-          setConfidence(prev => Math.min(98, prev + 0.8));
-          setLightingMatch(prev => Math.min(99, prev + 0.4));
+          setConfidence(prev => Math.min(98, prev + 1));
+          setLightingMatch(prev => Math.min(99, prev + 0.5));
           setTrackingLatency(0.02);
         }
         
-        if (next >= 100) return 100; // Stay at 100, never reset
+        if (next >= 100) return 100;
         return next;
       });
-    }, 40);
+    }, 35); // Faster interval for snappier animation
 
     return () => clearInterval(interval);
-  }, [isInView, isVertical, gridPermanentlyPinned]);
+  }, [isInView, isVertical, isManyJobsVideo, gridPermanentlyPinned]);
 
-  // Always use hardcoded grid coordinates - temporal buffer keeps them pinned
+  // ALWAYS use hardcoded grid - no real tracking data needed
   const displayPoints = hardcodedGrid;
   
-  // Grid stability with temporal buffer - once locked, stays visible
-  const isGridStable = scanPhase > 20 || surfaceFound || gridPermanentlyPinned;
-  const gridOpacity = isGridStable ? 0.95 : 0.4 + Math.sin(Date.now() / 200) * 0.2;
+  // Grid is ALWAYS stable after initial render - never shows failure
+  const isGridStable = scanPhase > 15 || surfaceFound || gridPermanentlyPinned || GRID_PERMANENTLY_LOCKED;
+  const gridOpacity = isGridStable ? 0.95 : 0.5;
 
   return (
     <div className="space-y-4">
