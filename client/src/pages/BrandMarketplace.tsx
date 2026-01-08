@@ -193,7 +193,15 @@ export default function BrandMarketplace() {
       const res = await fetch(endpoint, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch opportunities");
       const data = await res.json();
-      console.log(`[BrandMarketplace] Opportunities fetched: ${data.opportunities?.length} items`);
+      console.log(`[BrandMarketplace] Response structure:`, {
+        hasOpportunities: !!data.opportunities,
+        hasData: !!data.data,
+        opportunitiesCount: data.opportunities?.length || 0,
+        dataCount: data.data?.length || 0,
+        total: data.total,
+        keys: Object.keys(data),
+      });
+      console.log(`[BrandMarketplace] First opportunity sample:`, data.opportunities?.[0] || data.data?.[0] || null);
       return data;
     },
     retry: 2,

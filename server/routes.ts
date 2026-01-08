@@ -434,16 +434,54 @@ export async function registerRoutes(
     res.json({ videos, total: videos.length });
   });
 
+  // Hardcoded fallback videos for demo mode (never returns empty)
+  // All videos point to local hero_video.mp4 for playable content
+  const FALLBACK_DEMO_VIDEOS = [
+    { id: 1001, userId: "demo-creator", youtubeId: "demo-fallback-1", title: "Desk Setup 2026", description: "The ultimate workspace setup for productivity.", viewCount: 1250000, thumbnailUrl: "https://images.unsplash.com/photo-1593062096033-9a26b09da705?w=480&h=270&fit=crop", videoUrl: "/hero_video.mp4", status: "Scan Complete", priorityScore: 95, publishedAt: "2025-12-01T10:00:00Z", category: "Tech", isEvergreen: true, duration: "12:34", adOpportunities: 4, surfaceCount: 4 },
+    { id: 1002, userId: "demo-creator", youtubeId: "demo-fallback-2", title: "My Morning Routine", description: "Start your day right with this productive morning routine.", viewCount: 890000, thumbnailUrl: "https://images.unsplash.com/photo-1519389950473-47ba0277781c?w=480&h=270&fit=crop", videoUrl: "/hero_video.mp4", status: "Scan Complete", priorityScore: 78, publishedAt: "2025-11-15T08:00:00Z", category: "Lifestyle", isEvergreen: true, duration: "8:45", adOpportunities: 3, surfaceCount: 3 },
+    { id: 1003, userId: "demo-creator", youtubeId: "demo-fallback-3", title: "Dream Gaming Setup", description: "Building the ultimate gaming battlestation.", viewCount: 2100000, thumbnailUrl: "https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=480&h=270&fit=crop", videoUrl: "/hero_video.mp4", status: "Scan Complete", priorityScore: 92, publishedAt: "2025-10-20T15:00:00Z", category: "Gaming", isEvergreen: true, duration: "15:22", adOpportunities: 5, surfaceCount: 5 },
+    { id: 1004, userId: "demo-creator", youtubeId: "demo-fallback-4", title: "Home Office Makeover", description: "Transform your home office on a budget.", viewCount: 675000, thumbnailUrl: "https://images.unsplash.com/photo-1531297484001-80022131f5a1?w=480&h=270&fit=crop", videoUrl: "/hero_video.mp4", status: "Scan Complete", priorityScore: 65, publishedAt: "2025-09-10T12:00:00Z", category: "DIY", isEvergreen: true, duration: "10:15", adOpportunities: 3, surfaceCount: 3 },
+    { id: 1005, userId: "demo-creator", youtubeId: "demo-fallback-5", title: "Tech Gadgets Unboxing", description: "Unboxing the latest and greatest tech gadgets.", viewCount: 1450000, thumbnailUrl: "https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=480&h=270&fit=crop", videoUrl: "/hero_video.mp4", status: "Scan Complete", priorityScore: 88, publishedAt: "2025-08-25T14:00:00Z", category: "Tech", isEvergreen: false, duration: "18:30", adOpportunities: 4, surfaceCount: 4 },
+    { id: 1006, userId: "demo-creator", youtubeId: "demo-fallback-6", title: "Cozy Reading Nook", description: "Creating the perfect reading corner.", viewCount: 320000, thumbnailUrl: "https://images.unsplash.com/photo-1593062096033-9a26b09da705?w=480&h=270&fit=crop", videoUrl: "/hero_video.mp4", status: "Scan Complete", priorityScore: 55, publishedAt: "2025-07-18T09:00:00Z", category: "Lifestyle", isEvergreen: true, duration: "6:30", adOpportunities: 2, surfaceCount: 2 },
+    { id: 1007, userId: "demo-creator", youtubeId: "demo-fallback-7", title: "Studio Tour 2026", description: "A complete tour of my creative studio.", viewCount: 540000, thumbnailUrl: "https://images.unsplash.com/photo-1519389950473-47ba0277781c?w=480&h=270&fit=crop", videoUrl: "/hero_video.mp4", status: "Scan Complete", priorityScore: 72, publishedAt: "2025-06-22T11:00:00Z", category: "Vlog", isEvergreen: true, duration: "14:17", adOpportunities: 4, surfaceCount: 4 },
+    { id: 1008, userId: "demo-creator", youtubeId: "demo-fallback-8", title: "Productivity Apps Review", description: "My top productivity apps for 2026.", viewCount: 410000, thumbnailUrl: "https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=480&h=270&fit=crop", videoUrl: "/hero_video.mp4", status: "Scan Complete", priorityScore: 68, publishedAt: "2025-05-30T16:00:00Z", category: "Productivity", isEvergreen: false, duration: "11:45", adOpportunities: 3, surfaceCount: 3 },
+    { id: 1009, userId: "demo-creator", youtubeId: "demo-fallback-9", title: "MacBook Pro M5 Review", description: "Is the M5 worth the upgrade?", viewCount: 980000, thumbnailUrl: "https://images.unsplash.com/photo-1531297484001-80022131f5a1?w=480&h=270&fit=crop", videoUrl: "/hero_video.mp4", status: "Scan Complete", priorityScore: 85, publishedAt: "2025-04-15T10:00:00Z", category: "Tech", isEvergreen: true, duration: "16:42", adOpportunities: 4, surfaceCount: 4 },
+    { id: 1010, userId: "demo-creator", youtubeId: "demo-fallback-10", title: "Minimalist Living Room", description: "How I transformed my living space.", viewCount: 275000, thumbnailUrl: "https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=480&h=270&fit=crop", videoUrl: "/hero_video.mp4", status: "Scan Complete", priorityScore: 52, publishedAt: "2025-03-28T13:00:00Z", category: "Lifestyle", isEvergreen: true, duration: "9:18", adOpportunities: 2, surfaceCount: 2 },
+    { id: 1011, userId: "demo-creator", youtubeId: "demo-fallback-11", title: "iPhone 17 First Impressions", description: "My first 24 hours with the new iPhone.", viewCount: 1680000, thumbnailUrl: "https://images.unsplash.com/photo-1593062096033-9a26b09da705?w=480&h=270&fit=crop", videoUrl: "/hero_video.mp4", status: "Scan Complete", priorityScore: 91, publishedAt: "2025-02-20T08:00:00Z", category: "Tech", isEvergreen: false, duration: "13:55", adOpportunities: 4, surfaceCount: 4 },
+    { id: 1012, userId: "demo-creator", youtubeId: "demo-fallback-12", title: "Budget Desk Accessories", description: "The best desk accessories under $50.", viewCount: 520000, thumbnailUrl: "https://images.unsplash.com/photo-1519389950473-47ba0277781c?w=480&h=270&fit=crop", videoUrl: "/hero_video.mp4", status: "Scan Complete", priorityScore: 63, publishedAt: "2025-01-12T14:00:00Z", category: "Tech", isEvergreen: true, duration: "11:20", adOpportunities: 3, surfaceCount: 3 },
+    { id: 1013, userId: "demo-creator", youtubeId: "demo-fallback-13", title: "Work From Home Tips", description: "Maximize your productivity working from home.", viewCount: 445000, thumbnailUrl: "https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=480&h=270&fit=crop", videoUrl: "/hero_video.mp4", status: "Scan Complete", priorityScore: 70, publishedAt: "2024-12-08T10:00:00Z", category: "Productivity", isEvergreen: true, duration: "8:33", adOpportunities: 3, surfaceCount: 3 },
+    { id: 1014, userId: "demo-creator", youtubeId: "demo-fallback-14", title: "Content Creator Setup", description: "Everything you need to start creating.", viewCount: 710000, thumbnailUrl: "https://images.unsplash.com/photo-1531297484001-80022131f5a1?w=480&h=270&fit=crop", videoUrl: "/hero_video.mp4", status: "Scan Complete", priorityScore: 77, publishedAt: "2024-11-25T15:00:00Z", category: "Tech", isEvergreen: true, duration: "14:48", adOpportunities: 5, surfaceCount: 5 },
+    { id: 1015, userId: "demo-creator", youtubeId: "demo-fallback-15", title: "Aesthetic Room Decor", description: "Creating an aesthetic room on a budget.", viewCount: 390000, thumbnailUrl: "https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=480&h=270&fit=crop", videoUrl: "/hero_video.mp4", status: "Scan Complete", priorityScore: 58, publishedAt: "2024-10-18T09:00:00Z", category: "Lifestyle", isEvergreen: true, duration: "7:22", adOpportunities: 2, surfaceCount: 2 },
+    { id: 1016, userId: "demo-creator", youtubeId: "demo-fallback-16", title: "Standing Desk Review", description: "Is a standing desk worth it?", viewCount: 285000, thumbnailUrl: "https://images.unsplash.com/photo-1593062096033-9a26b09da705?w=480&h=270&fit=crop", videoUrl: "/hero_video.mp4", status: "Scan Complete", priorityScore: 54, publishedAt: "2024-09-05T11:00:00Z", category: "Productivity", isEvergreen: true, duration: "10:05", adOpportunities: 3, surfaceCount: 3 },
+    { id: 1017, userId: "demo-creator", youtubeId: "demo-fallback-17", title: "Cable Management Guide", description: "The ultimate guide to cable management.", viewCount: 620000, thumbnailUrl: "https://images.unsplash.com/photo-1519389950473-47ba0277781c?w=480&h=270&fit=crop", videoUrl: "/hero_video.mp4", status: "Scan Complete", priorityScore: 74, publishedAt: "2024-08-22T13:00:00Z", category: "DIY", isEvergreen: true, duration: "12:38", adOpportunities: 3, surfaceCount: 3 },
+    { id: 1018, userId: "demo-creator", youtubeId: "demo-fallback-18", title: "Mechanical Keyboard Guide", description: "Finding your perfect mechanical keyboard.", viewCount: 830000, thumbnailUrl: "https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=480&h=270&fit=crop", videoUrl: "/hero_video.mp4", status: "Scan Complete", priorityScore: 82, publishedAt: "2024-07-15T10:00:00Z", category: "Tech", isEvergreen: true, duration: "15:10", adOpportunities: 4, surfaceCount: 4 },
+    { id: 1019, userId: "demo-creator", youtubeId: "demo-fallback-19", title: "Monitor Buying Guide", description: "How to choose the right monitor.", viewCount: 490000, thumbnailUrl: "https://images.unsplash.com/photo-1531297484001-80022131f5a1?w=480&h=270&fit=crop", videoUrl: "/hero_video.mp4", status: "Scan Complete", priorityScore: 67, publishedAt: "2024-06-28T14:00:00Z", category: "Tech", isEvergreen: true, duration: "13:25", adOpportunities: 3, surfaceCount: 3 },
+    { id: 1020, userId: "demo-creator", youtubeId: "demo-fallback-20", title: "Day in My Life", description: "A typical day as a content creator.", viewCount: 560000, thumbnailUrl: "https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=480&h=270&fit=crop", videoUrl: "/hero_video.mp4", status: "Scan Complete", priorityScore: 61, publishedAt: "2024-05-10T08:00:00Z", category: "Vlog", isEvergreen: false, duration: "10:50", adOpportunities: 4, surfaceCount: 4 },
+  ];
+
   // Public demo endpoint - returns ALL videos for pitch/demo mode (no auth required)
   app.get("/api/demo/videos", async (req, res) => {
-    const videos = await storage.getAllVideos();
-    const videosWithCounts = await Promise.all(
-      videos.map(async (video) => {
-        const count = await storage.getSurfaceCountByVideo(video.id);
-        return { ...video, adOpportunities: count };
-      })
-    );
-    res.json({ videos: videosWithCounts, total: videosWithCounts.length });
+    try {
+      const videos = await storage.getAllVideos();
+      const videosWithCounts = await Promise.all(
+        videos.map(async (video) => {
+          const count = await storage.getSurfaceCountByVideo(video.id);
+          return { ...video, adOpportunities: count };
+        })
+      );
+      
+      // FALLBACK: If fewer than 5 videos in DB, return hardcoded fallback
+      if (videosWithCounts.length < 5) {
+        console.log(`[DEMO] DB has ${videosWithCounts.length} videos, returning fallback data`);
+        res.json({ videos: FALLBACK_DEMO_VIDEOS, total: FALLBACK_DEMO_VIDEOS.length });
+        return;
+      }
+      
+      res.json({ videos: videosWithCounts, total: videosWithCounts.length });
+    } catch (err) {
+      console.error("Error fetching demo videos, returning fallback:", err);
+      res.json({ videos: FALLBACK_DEMO_VIDEOS, total: FALLBACK_DEMO_VIDEOS.length });
+    }
   });
 
   // Manually trigger re-indexing
@@ -634,6 +672,30 @@ export async function registerRoutes(
     "Coffee Corner": "BaristaCraft",
   };
 
+  // Hardcoded fallback campaigns for demo mode (never returns empty)
+  const FALLBACK_DEMO_CAMPAIGNS = [
+    { id: 2001, videoId: 1001, youtubeId: "demo-fallback-1", title: "Tech Review Series", thumbnailUrl: "https://images.unsplash.com/photo-1593062096033-9a26b09da705?w=480&h=270&fit=crop", creatorName: "TechVision", viewCount: 1250000, sceneValue: 85, context: "Tech", genre: "Tech", sceneType: "Desk", surfaces: ["Monitor", "Desk", "Wall"], surfaceCount: 3, duration: "12:34", brand: "Sony", budget: 5000, status: "Active", category: "Tech" },
+    { id: 2002, videoId: 1002, youtubeId: "demo-fallback-2", title: "Morning Routine Vlog", thumbnailUrl: "https://images.unsplash.com/photo-1519389950473-47ba0277781c?w=480&h=270&fit=crop", creatorName: "LifestyleMax", viewCount: 890000, sceneValue: 65, context: "Lifestyle", genre: "Lifestyle", sceneType: "Interior", surfaces: ["Table", "Shelf", "Counter"], surfaceCount: 3, duration: "8:45", brand: "Nespresso", budget: 3500, status: "Active", category: "Lifestyle" },
+    { id: 2003, videoId: 1003, youtubeId: "demo-fallback-3", title: "Gaming Setup Showcase", thumbnailUrl: "https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=480&h=270&fit=crop", creatorName: "GamerzHQ", viewCount: 2100000, sceneValue: 120, context: "Gaming", genre: "Gaming", sceneType: "Desk", surfaces: ["Monitor", "Desk", "RGB Wall"], surfaceCount: 3, duration: "15:22", brand: "Razer", budget: 8000, status: "Active", category: "Gaming" },
+    { id: 2004, videoId: 1004, youtubeId: "demo-fallback-4", title: "Home Office Tour", thumbnailUrl: "https://images.unsplash.com/photo-1531297484001-80022131f5a1?w=480&h=270&fit=crop", creatorName: "DIYCreative", viewCount: 675000, sceneValue: 55, context: "Office", genre: "DIY", sceneType: "Wall", surfaces: ["Wall", "Desk", "Bookshelf"], surfaceCount: 3, duration: "10:15", brand: "IKEA", budget: 2500, status: "Active", category: "DIY" },
+    { id: 2005, videoId: 1005, youtubeId: "demo-fallback-5", title: "Tech Unboxing Session", thumbnailUrl: "https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=480&h=270&fit=crop", creatorName: "UnboxDaily", viewCount: 1450000, sceneValue: 95, context: "Product", genre: "Tech", sceneType: "Product", surfaces: ["Table", "Product", "Hands"], surfaceCount: 3, duration: "18:30", brand: "Samsung", budget: 6000, status: "Active", category: "Tech" },
+    { id: 2006, videoId: 1006, youtubeId: "demo-fallback-6", title: "Cozy Reading Corner", thumbnailUrl: "https://images.unsplash.com/photo-1593062096033-9a26b09da705?w=480&h=270&fit=crop", creatorName: "BookishVibes", viewCount: 320000, sceneValue: 45, context: "Lifestyle", genre: "Books", sceneType: "Interior", surfaces: ["Bookshelf", "Chair", "Lamp"], surfaceCount: 3, duration: "6:30", brand: "Amazon Kindle", budget: 2000, status: "Active", category: "Lifestyle" },
+    { id: 2007, videoId: 1007, youtubeId: "demo-fallback-7", title: "Creative Studio Setup", thumbnailUrl: "https://images.unsplash.com/photo-1519389950473-47ba0277781c?w=480&h=270&fit=crop", creatorName: "StudioCraft", viewCount: 540000, sceneValue: 72, context: "Creative", genre: "Vlog", sceneType: "Desk", surfaces: ["Monitor", "Camera", "Lighting"], surfaceCount: 3, duration: "14:17", brand: "Adobe", budget: 4500, status: "Active", category: "Creative" },
+    { id: 2008, videoId: 1008, youtubeId: "demo-fallback-8", title: "Productivity App Showcase", thumbnailUrl: "https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=480&h=270&fit=crop", creatorName: "ProductivityPro", viewCount: 410000, sceneValue: 68, context: "Productivity", genre: "Productivity", sceneType: "Screen", surfaces: ["Monitor", "Phone", "Tablet"], surfaceCount: 3, duration: "11:45", brand: "Notion", budget: 3000, status: "Active", category: "Productivity" },
+    { id: 2009, videoId: 1009, youtubeId: "demo-fallback-9", title: "MacBook Deep Dive", thumbnailUrl: "https://images.unsplash.com/photo-1531297484001-80022131f5a1?w=480&h=270&fit=crop", creatorName: "TechInsider", viewCount: 980000, sceneValue: 85, context: "Tech", genre: "Tech", sceneType: "Product", surfaces: ["Laptop", "Desk", "Accessories"], surfaceCount: 3, duration: "16:42", brand: "Apple", budget: 7500, status: "Active", category: "Tech" },
+    { id: 2010, videoId: 1010, youtubeId: "demo-fallback-10", title: "Minimalist Home Tour", thumbnailUrl: "https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=480&h=270&fit=crop", creatorName: "MinimalVibes", viewCount: 275000, sceneValue: 52, context: "Lifestyle", genre: "Lifestyle", sceneType: "Interior", surfaces: ["Wall", "Furniture", "Decor"], surfaceCount: 3, duration: "9:18", brand: "West Elm", budget: 2200, status: "Active", category: "Lifestyle" },
+    { id: 2011, videoId: 1011, youtubeId: "demo-fallback-11", title: "iPhone Review Special", thumbnailUrl: "https://images.unsplash.com/photo-1593062096033-9a26b09da705?w=480&h=270&fit=crop", creatorName: "PhoneGeek", viewCount: 1680000, sceneValue: 91, context: "Tech", genre: "Tech", sceneType: "Product", surfaces: ["Phone", "Table", "Accessories"], surfaceCount: 3, duration: "13:55", brand: "Apple", budget: 8500, status: "Active", category: "Tech" },
+    { id: 2012, videoId: 1012, youtubeId: "demo-fallback-12", title: "Budget Tech Accessories", thumbnailUrl: "https://images.unsplash.com/photo-1519389950473-47ba0277781c?w=480&h=270&fit=crop", creatorName: "BudgetTech", viewCount: 520000, sceneValue: 63, context: "Tech", genre: "Tech", sceneType: "Product", surfaces: ["Desk", "Products", "Table"], surfaceCount: 3, duration: "11:20", brand: "Anker", budget: 2800, status: "Active", category: "Tech" },
+    { id: 2013, videoId: 1013, youtubeId: "demo-fallback-13", title: "WFH Productivity Guide", thumbnailUrl: "https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=480&h=270&fit=crop", creatorName: "RemoteWorker", viewCount: 445000, sceneValue: 70, context: "Productivity", genre: "Productivity", sceneType: "Desk", surfaces: ["Monitor", "Desk", "Chair"], surfaceCount: 3, duration: "8:33", brand: "Herman Miller", budget: 4000, status: "Active", category: "Productivity" },
+    { id: 2014, videoId: 1014, youtubeId: "demo-fallback-14", title: "Creator Starter Kit", thumbnailUrl: "https://images.unsplash.com/photo-1531297484001-80022131f5a1?w=480&h=270&fit=crop", creatorName: "ContentPro", viewCount: 710000, sceneValue: 77, context: "Creative", genre: "Tech", sceneType: "Desk", surfaces: ["Camera", "Mic", "Lighting"], surfaceCount: 3, duration: "14:48", brand: "Rode", budget: 5500, status: "Active", category: "Creative" },
+    { id: 2015, videoId: 1015, youtubeId: "demo-fallback-15", title: "Aesthetic Room Makeover", thumbnailUrl: "https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=480&h=270&fit=crop", creatorName: "AestheticLife", viewCount: 390000, sceneValue: 58, context: "Lifestyle", genre: "Lifestyle", sceneType: "Interior", surfaces: ["Wall", "Furniture", "Decor"], surfaceCount: 3, duration: "7:22", brand: "Anthropologie", budget: 2400, status: "Active", category: "Lifestyle" },
+    { id: 2016, videoId: 1016, youtubeId: "demo-fallback-16", title: "Standing Desk Experience", thumbnailUrl: "https://images.unsplash.com/photo-1593062096033-9a26b09da705?w=480&h=270&fit=crop", creatorName: "HealthyWork", viewCount: 285000, sceneValue: 54, context: "Productivity", genre: "Productivity", sceneType: "Desk", surfaces: ["Desk", "Monitor", "Chair"], surfaceCount: 3, duration: "10:05", brand: "Uplift", budget: 3200, status: "Active", category: "Productivity" },
+    { id: 2017, videoId: 1017, youtubeId: "demo-fallback-17", title: "Ultimate Cable Setup", thumbnailUrl: "https://images.unsplash.com/photo-1519389950473-47ba0277781c?w=480&h=270&fit=crop", creatorName: "CleanDesk", viewCount: 620000, sceneValue: 74, context: "DIY", genre: "DIY", sceneType: "Desk", surfaces: ["Cables", "Desk", "Organizers"], surfaceCount: 3, duration: "12:38", brand: "Cable Matters", budget: 1800, status: "Active", category: "DIY" },
+    { id: 2018, videoId: 1018, youtubeId: "demo-fallback-18", title: "Keyboard Enthusiast Guide", thumbnailUrl: "https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=480&h=270&fit=crop", creatorName: "KeyboardNerd", viewCount: 830000, sceneValue: 82, context: "Tech", genre: "Tech", sceneType: "Product", surfaces: ["Keyboard", "Desk", "Accessories"], surfaceCount: 3, duration: "15:10", brand: "Keychron", budget: 4200, status: "Active", category: "Tech" },
+    { id: 2019, videoId: 1019, youtubeId: "demo-fallback-19", title: "Monitor Selection Guide", thumbnailUrl: "https://images.unsplash.com/photo-1531297484001-80022131f5a1?w=480&h=270&fit=crop", creatorName: "DisplayPro", viewCount: 490000, sceneValue: 67, context: "Tech", genre: "Tech", sceneType: "Product", surfaces: ["Monitor", "Desk", "Stand"], surfaceCount: 3, duration: "13:25", brand: "LG", budget: 5000, status: "Active", category: "Tech" },
+    { id: 2020, videoId: 1020, youtubeId: "demo-fallback-20", title: "Creator Day Documentary", thumbnailUrl: "https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=480&h=270&fit=crop", creatorName: "VlogMaster", viewCount: 560000, sceneValue: 61, context: "Vlog", genre: "Vlog", sceneType: "Various", surfaces: ["Studio", "Street", "Home"], surfaceCount: 3, duration: "10:50", brand: "GoPro", budget: 3800, status: "Active", category: "Vlog" },
+  ];
+
   // Public demo endpoint for brand marketplace discovery (no auth required)
   app.get("/api/demo/brand-discovery", async (req, res) => {
     try {
@@ -656,10 +718,17 @@ export async function registerRoutes(
         duration: video.duration || "Unknown",
       }));
       
+      // FALLBACK: If empty, return hardcoded fallback campaigns
+      if (opportunities.length === 0) {
+        console.log(`[DEMO] DB has 0 opportunities, returning fallback campaigns`);
+        res.json({ opportunities: FALLBACK_DEMO_CAMPAIGNS, total: FALLBACK_DEMO_CAMPAIGNS.length });
+        return;
+      }
+      
       res.json({ opportunities, total: opportunities.length });
     } catch (err) {
-      console.error("Error fetching demo brand discovery:", err);
-      res.status(500).json({ error: "Failed to fetch discovery" });
+      console.error("Error fetching demo brand discovery, returning fallback:", err);
+      res.json({ opportunities: FALLBACK_DEMO_CAMPAIGNS, total: FALLBACK_DEMO_CAMPAIGNS.length });
     }
   });
 
