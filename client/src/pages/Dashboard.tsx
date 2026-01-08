@@ -138,14 +138,17 @@ export default function Dashboard() {
   });
 
   const { data: videoIndexData, isLoading: isLoadingVideoIndex } = useQuery<VideoIndexResponse>({
-    queryKey: ["/api/video-index/with-opportunities", isPitchMode],
+    queryKey: ["dashboard-videos", isPitchMode, mode],
     queryFn: async () => {
-      const res = await fetch("/api/video-index/with-opportunities", { credentials: "include" });
+      // Compute endpoint inside queryFn to avoid stale closure
+      const endpoint = isPitchMode ? "/api/demo/videos" : "/api/video-index/with-opportunities";
+      console.log(`[Dashboard] Fetching videos from ${endpoint} (isPitchMode: ${isPitchMode})`);
+      const res = await fetch(endpoint, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch video index");
       return res.json();
     },
-    enabled: isRealMode && !!youtubeStatus?.connected,
-    refetchInterval: 5000,
+    enabled: isPitchMode || (isRealMode && !!youtubeStatus?.connected),
+    refetchInterval: isPitchMode ? undefined : 5000,
   });
 
   const { data: marketplaceStats } = useQuery<MarketplaceStats>({
@@ -602,8 +605,8 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* My Library Section - Shows indexed high-value videos */}
-        {(isRealMode && isConnected) && (
+        {/* My Library Section - Shows indexed high-value videos (or demo videos in Pitch Mode) */}
+        {(isPitchMode || (isRealMode && isConnected)) && (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -648,16 +651,23 @@ export default function Dashboard() {
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4 max-h-[600px] overflow-y-auto">
-                {indexedVideos.map((video) => (
+                {indexedVideos.map((video) => {
+                  // Fallbacks for demo videos (support both camelCase and snake_case)
+                  const thumbnailUrl = (video as any).thumbnailUrl || (video as any).thumbnail_url || "";
+                  const viewCount = (video as any).viewCount ?? (video as any).view_count ?? 0;
+                  const adOpportunities = (video as any).adOpportunities ?? (video as any).opportunities_count ?? 0;
+                  const status = (video as any).status || (video as any).scan_status || "Ready";
+                  
+                  return (
                   <div
                     key={video.id}
                     className="bg-white/5 rounded-lg overflow-hidden border border-white/10 hover:border-white/20 transition-colors"
                     data-testid={`card-video-${video.id}`}
                   >
-                    {video.thumbnailUrl && (
+                    {thumbnailUrl && (
                       <div className="aspect-video relative">
                         <img
-                          src={video.thumbnailUrl}
+                          src={thumbnailUrl}
                           alt={video.title}
                           className="w-full h-full object-cover"
                         />
@@ -667,7 +677,7 @@ export default function Dashboard() {
                           </span>
                         )}
                         <span className="absolute bottom-2 right-2 px-2 py-0.5 rounded bg-black/70 text-white text-xs">
-                          {video.viewCount.toLocaleString()} views
+                          {viewCount.toLocaleString()} views
                         </span>
                       </div>
                     )}
@@ -676,12 +686,12 @@ export default function Dashboard() {
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-xs text-muted-foreground">{video.category || "General"}</span>
                         <div className="flex items-center gap-2">
-                          {video.status === "Indexed" && (video.adOpportunities ?? 0) > 0 && (
+                          {adOpportunities > 0 && (
                             <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-blue-500/20 text-blue-400" data-testid={`badge-opportunities-${video.id}`}>
-                              {video.adOpportunities} Ad Spots
+                              {adOpportunities} Ad Spots
                             </span>
                           )}
-                          {video.status === "Pending Scan" ? (
+                          {status === "Pending Scan" ? (
                             <button
                               onClick={() => scanMutation.mutate(video.id)}
                               disabled={scanMutation.isPending}
@@ -692,18 +702,19 @@ export default function Dashboard() {
                             </button>
                           ) : (
                             <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                              video.status === "Scan Failed"
+                              status === "Scan Failed"
                                 ? "bg-red-500/20 text-red-400"
                                 : "bg-emerald-500/20 text-emerald-400"
                             }`}>
-                              {video.status}
+                              {status}
                             </span>
                           )}
                         </div>
                       </div>
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
             
