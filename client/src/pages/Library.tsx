@@ -760,7 +760,7 @@ export default function Library() {
           </div>
         </motion.div>
 
-        {(isLoadingVideos || (!isRealMode && isLoadingDemoVideos)) ? (
+        {(isRealMode && isLoadingVideos) || (!isRealMode && isLoadingDemoVideos) ? (
           <div className="flex items-center justify-center py-20">
             <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
           </div>
