@@ -171,9 +171,10 @@ interface DisplayVideo {
 }
 
 function getVideoStatusInfo(video: IndexedVideo): { status: string; statusColor: string; statusDot: string; aiStatus: string; aiText: string } {
-  const dbStatus = video.status?.toLowerCase() || "";
+  const dbStatus = ((video as any).status || (video as any).scan_status || "")?.toLowerCase() || "";
+  const adOpportunities = (video as any).adOpportunities ?? (video as any).opportunities_count ?? 0;
   
-  if (dbStatus === "scanning" || dbStatus.includes("scanning")) {
+  if (dbStatus === "scanning" || dbStatus.includes("scanning") || dbStatus === "pending") {
     return {
       status: "Scanning...",
       statusColor: "bg-yellow-500/20 text-yellow-400",
@@ -183,13 +184,13 @@ function getVideoStatusInfo(video: IndexedVideo): { status: string; statusColor:
     };
   }
   
-  if (video.adOpportunities > 0) {
+  if (adOpportunities > 0) {
     return {
-      status: `Ready (${video.adOpportunities} Spots)`,
+      status: `Ready (${adOpportunities} Spots)`,
       statusColor: "bg-emerald-500/20 text-emerald-400",
       statusDot: "bg-emerald-500",
       aiStatus: "ready",
-      aiText: `${video.adOpportunities} Surfaces Found`
+      aiText: `${adOpportunities} Surfaces Found`
     };
   }
   
@@ -226,13 +227,15 @@ function getVideoStatusInfo(video: IndexedVideo): { status: string; statusColor:
 
 function formatIndexedVideo(video: IndexedVideo): DisplayVideo {
   const statusInfo = getVideoStatusInfo(video);
+  const viewCount = (video as any).viewCount ?? (video as any).view_count ?? 0;
+  const thumbnailUrl = (video as any).thumbnailUrl || (video as any).thumbnail_url || "";
   
   return {
     id: video.id,
     title: video.title,
-    views: `${video.viewCount.toLocaleString()} Views`,
+    views: `${viewCount.toLocaleString()} Views`,
     ...statusInfo,
-    image: video.thumbnailUrl || "",
+    image: thumbnailUrl,
     detectedObjects: [],
     context: video.category || "",
     brandSafety: 0,

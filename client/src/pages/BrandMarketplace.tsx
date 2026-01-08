@@ -362,7 +362,7 @@ export default function BrandMarketplace() {
                 <Card className="group overflow-visible hover-elevate cursor-pointer" data-testid={`card-opportunity-${opportunity.id}`}>
                   <div className="aspect-video relative overflow-hidden rounded-t-md">
                     <img
-                      src={opportunity.thumbnailUrl}
+                      src={(opportunity as any).thumbnailUrl || (opportunity as any).thumbnail_url || `https://picsum.photos/seed/${opportunity.id}/640/360`}
                       alt={opportunity.title}
                       className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                       onError={(e) => {
@@ -381,7 +381,7 @@ export default function BrandMarketplace() {
                     <div className="absolute top-2 right-2">
                       <Badge variant="secondary" className="gap-1">
                         <Eye className="w-3 h-3" />
-                        {formatViewCount(opportunity.viewCount)}
+                        {formatViewCount((opportunity as any).viewCount || (opportunity as any).view_count || 0)}
                       </Badge>
                     </div>
                     
@@ -401,7 +401,7 @@ export default function BrandMarketplace() {
                     </h3>
                     
                     <div className="flex items-center justify-between gap-2 mb-3">
-                      <span className="text-xs text-muted-foreground">by {opportunity.creatorName}</span>
+                      <span className="text-xs text-muted-foreground">by {(opportunity as any).creatorName || (opportunity as any).creator_name || "Creator"}</span>
                       <Badge variant="outline" className="text-xs">
                         {opportunity.genre}
                       </Badge>
