@@ -232,16 +232,38 @@ async function downloadVideo(youtubeId: string, outputPath: string): Promise<boo
 
 async function extractFrames(videoPath: string, outputDir: string, intervalSeconds: number = 10): Promise<string[]> {
   return new Promise((resolve, reject) => {
-    console.log(`[Scanner] Extracting frames every ${intervalSeconds}s...`);
+    // Use ABSOLUTE paths for ffmpeg to avoid container/cwd issues
+    const absoluteVideoPath = path.resolve(videoPath);
+    const absoluteOutputDir = path.resolve(outputDir);
+    const outputPattern = path.join(absoluteOutputDir, "frame_%04d.jpg");
     
-    fs.mkdirSync(outputDir, { recursive: true });
+    console.log(`[Scanner] ===== FFMPEG EXTRACTION START =====`);
+    console.log(`[Scanner] FFMPEG Input (absolute): ${absoluteVideoPath}`);
+    console.log(`[Scanner] FFMPEG Output dir: ${absoluteOutputDir}`);
+    console.log(`[Scanner] FFMPEG Output pattern: ${outputPattern}`);
+    console.log(`[Scanner] Interval: ${intervalSeconds}s`);
     
-    const process = spawn("ffmpeg", [
-      "-i", videoPath,
+    // Verify input file exists before calling ffmpeg
+    if (!fs.existsSync(absoluteVideoPath)) {
+      console.error(`[Scanner] FFMPEG ERROR: Input file does not exist: ${absoluteVideoPath}`);
+      reject(new Error(`Input video not found: ${absoluteVideoPath}`));
+      return;
+    }
+    
+    const fileStats = fs.statSync(absoluteVideoPath);
+    console.log(`[Scanner] FFMPEG Input file size: ${(fileStats.size / 1024 / 1024).toFixed(2)} MB`);
+    
+    fs.mkdirSync(absoluteOutputDir, { recursive: true });
+    
+    const ffmpegArgs = [
+      "-i", absoluteVideoPath,
       "-vf", `fps=1/${intervalSeconds}`,
       "-q:v", "2",
-      path.join(outputDir, "frame_%04d.jpg"),
-    ]);
+      outputPattern,
+    ];
+    console.log(`[Scanner] FFMPEG Command: ffmpeg ${ffmpegArgs.join(' ')}`);
+    
+    const process = spawn("ffmpeg", ffmpegArgs);
 
     let stderr = "";
     process.stderr.on("data", (data) => {
@@ -249,20 +271,29 @@ async function extractFrames(videoPath: string, outputDir: string, intervalSecon
     });
 
     process.on("close", (code) => {
+      console.log(`[Scanner] FFMPEG Exit code: ${code}`);
+      
       if (code !== 0) {
-        console.error(`[Scanner] ffmpeg failed: ${stderr}`);
-        reject(new Error("Frame extraction failed"));
+        console.error(`[Scanner] FFMPEG FAILED with code ${code}`);
+        console.error(`[Scanner] FFMPEG stderr (last 1000 chars): ${stderr.slice(-1000)}`);
+        reject(new Error(`Frame extraction failed with code ${code}: ${stderr.slice(-500)}`));
       } else {
-        const frames = fs.readdirSync(outputDir)
+        const frames = fs.readdirSync(absoluteOutputDir)
           .filter(f => f.endsWith(".jpg"))
           .sort()
-          .map(f => path.join(outputDir, f));
-        console.log(`[Scanner] Extracted ${frames.length} frames`);
+          .map(f => path.join(absoluteOutputDir, f));
+        console.log(`[Scanner] FFMPEG SUCCESS: Extracted ${frames.length} frames`);
+        if (frames.length > 0) {
+          console.log(`[Scanner] First frame: ${frames[0]}`);
+          console.log(`[Scanner] Last frame: ${frames[frames.length - 1]}`);
+        }
+        console.log(`[Scanner] ===== FFMPEG EXTRACTION END =====`);
         resolve(frames);
       }
     });
 
     process.on("error", (err) => {
+      console.error(`[Scanner] FFMPEG SPAWN ERROR: ${err.message}`);
       reject(err);
     });
   });
@@ -332,33 +363,28 @@ async function analyzeFrame(framePath: string, retryCount: number = 0, isVertica
     // Get vertical video prompt modifier if applicable
     const verticalModifier = getVerticalVideoPromptModifier(isVertical);
     
-    // Enhanced prompt for contextual real estate detection
-    const prompt = `You are an AI assistant helping identify product placement opportunities in video frames.
+    // SIMPLIFIED PROMPT - Focus on flat surfaces for virtual object placement
+    const prompt = `Identify large flat surfaces (desks, tables, floors, walls, shelves) suitable for placing virtual objects.
 ${verticalModifier}
 
-Analyze this image and detect ALL visible objects and surfaces that could be used for product placement or brand integration, including:
-- Surfaces: ${SURFACE_TYPES.join(", ")}
-- People: Look for "Person" in the frame (important for scene context)
+Return coordinates for flat surfaces in the frame, prioritizing the LOWER 50% where desks and tables are typically located.
 
-Be GENEROUS in detection. Even if you're only ${Math.round(confidenceThreshold * 100)}% sure, include it. We want to capture ALL possible placement opportunities.
+CRITICAL: Return ONLY a JSON array. No markdown, no explanation.
 
-For EACH detected item, provide:
-1. surfaceType: The object type (use exact names from the list, or "Person" for people)
-2. confidence: Score from 0.0-1.0 (include anything ${confidenceThreshold} or higher)
-3. boundingBox: Normalized coordinates (x, y, width, height) from 0-1
+For each surface found:
+- surfaceType: One of: Desk, Table, Wall, Shelf, Floor, Monitor, Laptop
+- confidence: 0.0-1.0 (include surfaces ${confidenceThreshold}+ confidence)
+- boundingBox: {x, y, width, height} normalized 0-1
 
-Focus on finding:
-- Laptops on desks (common in office/workspace videos)
-- Monitors/screens
-- Walls and shelves (great for posters/products)
-- Tables and desks
-- Any flat surface where products could be placed
-${isVertical ? '- Desk edges and table surfaces in the BOTTOM HALF of the frame' : ''}
+Example response:
+[{"surfaceType": "Desk", "confidence": 0.92, "boundingBox": {"x": 0.1, "y": 0.5, "width": 0.8, "height": 0.45}}]
 
-Respond ONLY with a valid JSON array. Example:
-[{"surfaceType": "Laptop", "confidence": 0.85, "boundingBox": {"x": 0.3, "y": 0.4, "width": 0.3, "height": 0.2}}, {"surfaceType": "Person", "confidence": 0.95, "boundingBox": {"x": 0.1, "y": 0.1, "width": 0.4, "height": 0.8}}]
-
-If truly nothing is detected, return: []`;
+If no surfaces visible, return exactly: []`;
+    
+    // Log the full prompt being sent
+    console.log(`[Scanner] ===== GEMINI PROMPT =====`);
+    console.log(prompt);
+    console.log(`[Scanner] ===== END PROMPT =====`);
 
     // Make API call with timeout
     console.log(`[Scanner] Calling Gemini API...`);
@@ -386,7 +412,7 @@ If truly nothing is detected, return: []`;
       `AI request timed out after ${AI_TIMEOUT_MS / 1000}s`
     );
 
-    console.log(`[Scanner] API RESPONSE RECEIVED`);
+    console.log(`[Scanner] ===== GEMINI RAW RESPONSE =====`);
     console.log(`[Scanner] Response type: ${typeof response}`);
     console.log(`[Scanner] Response keys: ${Object.keys(response || {}).join(', ')}`);
 
@@ -401,6 +427,7 @@ If truly nothing is detected, return: []`;
         // Fallback: manually extract from candidates
         console.log(`[Scanner] Extracting text from candidates (count: ${response.candidates.length})`);
         const candidate = response.candidates[0];
+        console.log(`[Scanner] Candidate finishReason: ${candidate.finishReason || 'unknown'}`);
         if (candidate.content && candidate.content.parts) {
           text = candidate.content.parts
             .filter((p: any) => p.text)
@@ -409,13 +436,15 @@ If truly nothing is detected, return: []`;
         }
       } else {
         console.log(`[Scanner] WARNING: No text or candidates in response`);
-        console.log(`[Scanner] Full response: ${JSON.stringify(response).substring(0, 1000)}`);
+        console.log(`[Scanner] Full response JSON: ${JSON.stringify(response).substring(0, 2000)}`);
       }
     } catch (e) {
       console.error(`[Scanner] Error extracting text from response:`, e);
     }
     
-    console.log(`[Scanner] Gemini raw response text (first 500 chars): ${text.substring(0, 500)}`);
+    // Log the FULL raw response for debugging
+    console.log(`[Scanner] GEMINI RAW TEXT (full): ${text}`);
+    console.log(`[Scanner] ===== END GEMINI RAW RESPONSE =====`);
     
     // Strip Markdown code fences if present (```json ... ```)
     text = text.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
@@ -480,6 +509,12 @@ If truly nothing is detected, return: []`;
   } catch (error: any) {
     // Categorize the error for better debugging
     const errorMessage = error?.message || String(error);
+    const errorStatus = error?.status || error?.statusCode || 'unknown';
+    
+    console.log(`[Scanner] ===== GEMINI API ERROR =====`);
+    console.log(`[Scanner] Error status: ${errorStatus}`);
+    console.log(`[Scanner] Error message: ${errorMessage}`);
+    console.log(`[Scanner] Full error: ${JSON.stringify(error, null, 2).substring(0, 1000)}`);
     
     if (errorMessage.includes("timeout") || errorMessage.includes("timed out")) {
       console.error(`[Scanner] API TIMEOUT: Request took longer than ${AI_TIMEOUT_MS / 1000}s`);
@@ -487,11 +522,16 @@ If truly nothing is detected, return: []`;
       console.error(`[Scanner] QUOTA EXCEEDED: API rate limit hit. Wait before retrying.`);
     } else if (errorMessage.includes("401") || errorMessage.includes("403") || errorMessage.includes("API key")) {
       console.error(`[Scanner] AUTH ERROR: API key issue - ${errorMessage}`);
+    } else if (errorMessage.includes("400")) {
+      console.error(`[Scanner] BAD REQUEST (400): Invalid request format or parameters`);
+      console.error(`[Scanner] This may indicate an issue with the image data or prompt format`);
     } else if (errorMessage.includes("500") || errorMessage.includes("503")) {
-      console.error(`[Scanner] SERVER ERROR: AI service temporarily unavailable`);
+      console.error(`[Scanner] SERVER ERROR (5xx): AI service temporarily unavailable`);
     } else {
-      console.error(`[Scanner] Frame analysis error:`, error);
+      console.error(`[Scanner] UNKNOWN ERROR: ${error}`);
     }
+    
+    console.log(`[Scanner] ===== END GEMINI API ERROR =====`);
     
     // Retry on transient errors
     if (retryCount < MAX_RETRIES && (
@@ -504,6 +544,8 @@ If truly nothing is detected, return: []`;
       return analyzeFrame(framePath, retryCount + 1, isVertical);
     }
     
+    // Return empty array but log that we're doing so due to error
+    console.log(`[Scanner] Returning empty surfaces due to error (not retrying)`);
     return [];
   }
 }
@@ -591,7 +633,10 @@ export async function processVideoScan(videoId: number, forceRescan: boolean = f
         };
 
         const inserted = await storage.insertDetectedSurface(surface);
-        console.log(`[Scanner] Inserted surface: ${obj.surfaceType} at ${timestamp}s with id ${inserted.id}`);
+        
+        // SUCCESS LOG - This is what the user wants to see!
+        console.log(`[Scanner] *** SURFACE FOUND: { type: "${obj.surfaceType}", x: ${obj.boundingBox.x.toFixed(2)}, y: ${obj.boundingBox.y.toFixed(2)}, width: ${obj.boundingBox.width.toFixed(2)}, height: ${obj.boundingBox.height.toFixed(2)}, confidence: ${obj.confidence.toFixed(2)} } ***`);
+        console.log(`[Scanner] Inserted to DB with id ${inserted.id}`);
         totalSurfaces++;
       }
 
