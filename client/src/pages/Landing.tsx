@@ -873,8 +873,8 @@ export default function Landing() {
           </div>
         </nav>
 
-        {/* Hero Content */}
-        <div className="absolute inset-0 flex items-center justify-center z-20 pt-20 md:pt-0">
+        {/* Hero Content - increased mobile padding for header clearance */}
+        <div className="absolute inset-0 flex items-center justify-center z-20 pt-28 max-[480px]:pt-[100px] md:pt-0">
           <div className="container mx-auto px-6 text-center">
             <motion.div
               initial={{ opacity: 0, y: 30 }}
@@ -891,7 +891,7 @@ export default function Landing() {
                 3D Scene Reconstruction Active
               </div>
 
-              <h1 className="text-4xl sm:text-5xl md:text-7xl font-bold font-display tracking-tight mb-6 text-white uppercase max-w-[90%] mx-auto">
+              <h1 className="text-4xl sm:text-5xl md:text-7xl font-bold font-display tracking-tight mb-6 text-white uppercase max-w-[90%] mx-auto mt-8 md:mt-0">
                 We Turn Storytelling <br/>
                 <span className="bg-gradient-to-r from-primary via-emerald-400 to-primary bg-clip-text text-transparent">Into Revenue</span>
               </h1>
@@ -918,8 +918,8 @@ export default function Landing() {
                 </button>
               </div>
 
-              {/* Mobile Metric Cards - stacked below buttons on mobile only */}
-              <div className="lg:hidden flex flex-col gap-3 mt-8 w-full max-w-xs mx-auto">
+              {/* Mobile Metric Cards - stacked below buttons on mobile only, full width */}
+              <div className="lg:hidden flex flex-col gap-3 mt-8 w-full px-4">
                 <GlassMetricCard icon={Eye} label="Lighting" value="98%" sublabel="Match" color="emerald" testId="metric-lighting-mobile" />
                 <GlassMetricCard icon={Timer} label="Latency" value="0.02ms" sublabel="Tracking" color="primary" testId="metric-latency-mobile" />
                 <GlassMetricCard icon={Cpu} label="Inpainting" value="Active" sublabel="AI" color="yellow" testId="metric-inpainting-mobile" />
