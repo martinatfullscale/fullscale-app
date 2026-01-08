@@ -19,6 +19,195 @@ import gamingFrame from "@assets/generated_images/gaming_stream_frame.png";
 import { Footer } from "@/components/Footer";
 import { Slider } from "@/components/ui/slider";
 
+function SurfaceEngineDemo({ isInView }: { isInView: boolean }) {
+  const [scanPhase, setScanPhase] = useState(0);
+  const [confidence, setConfidence] = useState(0);
+  const [lightingMatch, setLightingMatch] = useState(0);
+  const [trackingLatency, setTrackingLatency] = useState(45);
+  const [planeAnchored, setPlaneAnchored] = useState(false);
+  const [homographyPoints, setHomographyPoints] = useState<{x: number, y: number}[]>([]);
+
+  useEffect(() => {
+    if (!isInView) {
+      setScanPhase(0);
+      setConfidence(0);
+      setLightingMatch(0);
+      setTrackingLatency(45);
+      setPlaneAnchored(false);
+      setHomographyPoints([]);
+      return;
+    }
+
+    const basePoints = [
+      { x: 15, y: 35 }, { x: 85, y: 32 }, { x: 88, y: 72 }, { x: 12, y: 75 }
+    ];
+
+    const interval = setInterval(() => {
+      setScanPhase(prev => {
+        const next = prev + 0.8;
+        
+        if (next > 20 && next < 45) {
+          setHomographyPoints(basePoints.map(p => ({
+            x: p.x + (Math.random() - 0.5) * (next < 35 ? 3 : 0.5),
+            y: p.y + (Math.random() - 0.5) * (next < 35 ? 2 : 0.3)
+          })));
+        }
+        
+        if (next >= 45) {
+          setPlaneAnchored(true);
+          setHomographyPoints(basePoints);
+        }
+        
+        if (next > 25) {
+          const targetConfidence = next < 50 ? 60 + Math.random() * 20 : 92 + Math.random() * 6;
+          setConfidence(prev => prev + (targetConfidence - prev) * 0.1);
+        }
+        
+        if (next > 30) {
+          const targetLighting = next < 55 ? 75 + Math.random() * 10 : 96 + Math.random() * 3;
+          setLightingMatch(prev => prev + (targetLighting - prev) * 0.08);
+        }
+        
+        if (next > 35) {
+          const targetLatency = planeAnchored ? 8 + Math.random() * 4 : 25 + Math.random() * 15;
+          setTrackingLatency(prev => prev + (targetLatency - prev) * 0.15);
+        }
+        
+        if (next >= 100) return 0;
+        return next;
+      });
+    }, 50);
+
+    return () => clearInterval(interval);
+  }, [isInView, planeAnchored]);
+
+  const gridOpacity = confidence >= 85 ? 0.8 : 0.3 + Math.sin(Date.now() / 200) * 0.2;
+  const isGridStable = confidence >= 85;
+
+  return (
+    <div className="space-y-4">
+      <div className="relative aspect-video rounded-2xl overflow-hidden border border-emerald-500/30 bg-black">
+        <img src={realityImg} alt="Scene" className="absolute inset-0 w-full h-full object-cover" />
+        
+        <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 100 100" preserveAspectRatio="none">
+          <defs>
+            <linearGradient id="homographyGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="#10b981" stopOpacity={isGridStable ? "0.9" : "0.5"} />
+              <stop offset="100%" stopColor="#22d3ee" stopOpacity={isGridStable ? "0.7" : "0.3"} />
+            </linearGradient>
+          </defs>
+          
+          {homographyPoints.length === 4 && (
+            <>
+              <motion.polygon
+                points={homographyPoints.map(p => `${p.x},${p.y}`).join(' ')}
+                fill="none"
+                stroke="url(#homographyGradient)"
+                strokeWidth={isGridStable ? "0.4" : "0.3"}
+                animate={{ opacity: gridOpacity }}
+                transition={{ duration: 0.1 }}
+                style={{ filter: isGridStable ? 'drop-shadow(0 0 4px #10b981)' : 'none' }}
+              />
+              
+              {[...Array(5)].map((_, i) => {
+                const t = (i + 1) / 6;
+                const x1 = homographyPoints[0].x + (homographyPoints[1].x - homographyPoints[0].x) * t;
+                const y1 = homographyPoints[0].y + (homographyPoints[1].y - homographyPoints[0].y) * t;
+                const x2 = homographyPoints[3].x + (homographyPoints[2].x - homographyPoints[3].x) * t;
+                const y2 = homographyPoints[3].y + (homographyPoints[2].y - homographyPoints[3].y) * t;
+                return (
+                  <motion.line key={`v-${i}`} x1={x1} y1={y1} x2={x2} y2={y2}
+                    stroke="url(#homographyGradient)" strokeWidth="0.2"
+                    animate={{ opacity: gridOpacity * 0.6 }}
+                  />
+                );
+              })}
+              {[...Array(4)].map((_, i) => {
+                const t = (i + 1) / 5;
+                const x1 = homographyPoints[0].x + (homographyPoints[3].x - homographyPoints[0].x) * t;
+                const y1 = homographyPoints[0].y + (homographyPoints[3].y - homographyPoints[0].y) * t;
+                const x2 = homographyPoints[1].x + (homographyPoints[2].x - homographyPoints[1].x) * t;
+                const y2 = homographyPoints[1].y + (homographyPoints[2].y - homographyPoints[1].y) * t;
+                return (
+                  <motion.line key={`h-${i}`} x1={x1} y1={y1} x2={x2} y2={y2}
+                    stroke="url(#homographyGradient)" strokeWidth="0.2"
+                    animate={{ opacity: gridOpacity * 0.6 }}
+                  />
+                );
+              })}
+              
+              {homographyPoints.map((p, i) => (
+                <motion.circle key={i} cx={p.x} cy={p.y} r={isGridStable ? "1.2" : "0.8"}
+                  fill={isGridStable ? "#10b981" : "#22d3ee"}
+                  animate={{ opacity: isGridStable ? 1 : 0.6, scale: isGridStable ? 1 : [1, 1.3, 1] }}
+                  transition={{ duration: 0.5, repeat: isGridStable ? 0 : Infinity }}
+                  style={{ filter: 'drop-shadow(0 0 3px #10b981)' }}
+                />
+              ))}
+            </>
+          )}
+        </svg>
+
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: scanPhase > 20 ? 1 : 0 }}
+          className="absolute top-3 left-3"
+        >
+          <div className="px-2 py-1 rounded bg-black/80 border border-emerald-500/50 backdrop-blur-sm">
+            <span className="text-[9px] font-mono text-emerald-400">
+              {planeAnchored ? "[Plane_Anchored]" : "[Detecting_Plane...]"}
+            </span>
+          </div>
+        </motion.div>
+
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: planeAnchored ? 1 : 0 }}
+          className="absolute top-3 right-3"
+        >
+          <div className="px-2 py-1 rounded bg-emerald-500/20 border border-emerald-400 backdrop-blur-sm">
+            <span className="text-[9px] font-mono text-emerald-300 font-semibold">[Homography_Locked]</span>
+          </div>
+        </motion.div>
+
+        <div className="absolute bottom-3 left-3 right-3">
+          <div className="flex items-center justify-between text-[9px] font-mono text-emerald-400 mb-1">
+            <span>Plane Detection</span>
+            <span>{Math.round(scanPhase)}%</span>
+          </div>
+          <div className="h-1 bg-black/50 rounded-full overflow-hidden">
+            <div className="h-full bg-gradient-to-r from-emerald-500 to-cyan-400 transition-all duration-75" style={{ width: `${scanPhase}%` }} />
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-3">
+        <div className={`rounded-xl p-3 border transition-all duration-300 ${confidence >= 85 ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-white/5 border-white/10'}`}>
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Confidence</p>
+          <p className={`text-xl font-bold font-mono ${confidence >= 85 ? 'text-emerald-400' : 'text-yellow-400'}`}>
+            {confidence.toFixed(1)}%
+          </p>
+          <p className="text-[9px] text-muted-foreground mt-0.5">{confidence >= 85 ? 'Stable' : 'Calibrating'}</p>
+        </div>
+        <div className={`rounded-xl p-3 border transition-all duration-300 ${lightingMatch >= 90 ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-white/5 border-white/10'}`}>
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Lighting Match</p>
+          <p className={`text-xl font-bold font-mono ${lightingMatch >= 90 ? 'text-emerald-400' : 'text-yellow-400'}`}>
+            {lightingMatch.toFixed(1)}%
+          </p>
+          <p className="text-[9px] text-muted-foreground mt-0.5">{lightingMatch >= 90 ? 'Matched' : 'Analyzing'}</p>
+        </div>
+        <div className={`rounded-xl p-3 border transition-all duration-300 ${trackingLatency <= 12 ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-white/5 border-white/10'}`}>
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Track Latency</p>
+          <p className={`text-xl font-bold font-mono ${trackingLatency <= 12 ? 'text-emerald-400' : 'text-yellow-400'}`}>
+            {trackingLatency.toFixed(0)}ms
+          </p>
+          <p className="text-[9px] text-muted-foreground mt-0.5">{trackingLatency <= 12 ? 'Real-time' : 'Optimizing'}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ModalNeuralScan({ isInView }: { isInView: boolean }) {
   const [scanProgress, setScanProgress] = useState(0);
   const [showProduct, setShowProduct] = useState(false);
@@ -1057,25 +1246,10 @@ export default function Landing() {
                       <h3 className="text-lg font-bold text-white uppercase tracking-wider">The Surface Engine</h3>
                       <span className="px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-400 text-xs font-bold">Proprietary AI</span>
                     </div>
-                    <div className="flex flex-col items-center">
-                      <div className="relative rounded-2xl overflow-hidden border border-emerald-500/30 shadow-lg shadow-emerald-500/10 w-full max-w-4xl">
-                        <img 
-                          src={surfaceEngineImg} 
-                          alt="Surface Engine - Homography Estimation" 
-                          className="w-full object-contain"
-                          style={{ maxHeight: '70vh' }}
-                          data-testid="img-surface-engine"
-                        />
-                        <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent pointer-events-none" />
-                        <div className="absolute bottom-0 left-0 right-0 p-4">
-                          <div className="flex items-center gap-2">
-                            <Cpu className="w-4 h-4 text-emerald-400" />
-                            <span className="text-emerald-400 text-xs font-semibold uppercase tracking-wider">Live Detection</span>
-                          </div>
-                        </div>
-                      </div>
-                      <p className="mt-4 text-center text-muted-foreground text-sm max-w-2xl" data-testid="text-engine-caption">
-                        See how our proprietary engine turns empty pixels into revenue. Join the 6-month product roadmap.
+                    <div className="w-full max-w-4xl mx-auto">
+                      <SurfaceEngineDemo isInView={showDemoModal} />
+                      <p className="mt-4 text-center text-muted-foreground text-sm" data-testid="text-engine-caption">
+                        Homography estimation locks onto horizontal planes. Confidence thresholds ensure stable, jitter-free placement grids.
                       </p>
                     </div>
                   </div>
