@@ -138,17 +138,19 @@ export default function Dashboard() {
   });
 
   const { data: videoIndexData, isLoading: isLoadingVideoIndex } = useQuery<VideoIndexResponse>({
-    queryKey: ["dashboard-videos", isPitchMode, mode],
-    queryFn: async () => {
-      // Compute endpoint inside queryFn to avoid stale closure
-      const endpoint = isPitchMode ? "/api/demo/videos" : "/api/video-index/with-opportunities";
-      console.log(`[Dashboard] Fetching videos from ${endpoint} (isPitchMode: ${isPitchMode})`);
+    queryKey: ["dashboard-videos", isPitchMode, mode] as const,
+    queryFn: async ({ queryKey }) => {
+      // Extract isPitchMode from queryKey to avoid stale closure
+      const [, pitchModeFromKey] = queryKey;
+      const endpoint = pitchModeFromKey ? "/api/demo/videos" : "/api/video-index/with-opportunities";
+      console.log(`[Dashboard] Fetching videos from ${endpoint} (isPitchMode from key: ${pitchModeFromKey})`);
       const res = await fetch(endpoint, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch video index");
       return res.json();
     },
     enabled: isPitchMode || (isRealMode && !!youtubeStatus?.connected),
     refetchInterval: isPitchMode ? undefined : 5000,
+    staleTime: 0,
   });
 
   const { data: marketplaceStats } = useQuery<MarketplaceStats>({

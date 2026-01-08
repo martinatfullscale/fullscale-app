@@ -187,20 +187,16 @@ export default function BrandMarketplace() {
   const isAuthenticated = !!googleUser;
   
   const { data: discoveryData, isLoading: isLoadingOpportunities } = useQuery<DiscoveryResponse>({
-    queryKey: ["opportunities", isPitchMode, isAuthenticated],
-    queryFn: async () => {
-      // Compute endpoint inside queryFn to avoid stale closure
-      const endpoint = isPitchMode ? "/api/demo/brand-discovery" : (isAuthenticated ? "/api/brand/discovery" : "/api/demo/brand-discovery");
-      const queryMode = isPitchMode ? "demo" : (isAuthenticated ? "auth" : "demo");
-      console.log(`[BrandMarketplace] Fetching opportunities from ${endpoint} (mode: ${queryMode}, isPitchMode: ${isPitchMode})`);
+    queryKey: ["opportunities", isPitchMode, isAuthenticated] as const,
+    queryFn: async ({ queryKey }) => {
+      // Extract isPitchMode and isAuthenticated from queryKey to avoid stale closure
+      const [, pitchModeFromKey, authFromKey] = queryKey;
+      const endpoint = pitchModeFromKey ? "/api/demo/brand-discovery" : (authFromKey ? "/api/brand/discovery" : "/api/demo/brand-discovery");
+      console.log(`[BrandMarketplace] Fetching opportunities from ${endpoint} (isPitchMode from key: ${pitchModeFromKey})`);
       const res = await fetch(endpoint, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch opportunities");
       const data = await res.json();
-      console.log(`[BrandMarketplace] Response structure:`, {
-        hasOpportunities: !!data.opportunities,
-        opportunitiesCount: data.opportunities?.length || 0,
-        total: data.total,
-      });
+      console.log(`[BrandMarketplace] Response: ${data.opportunities?.length || 0} opportunities`);
       return data;
     },
     retry: 2,

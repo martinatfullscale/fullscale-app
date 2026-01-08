@@ -491,12 +491,12 @@ export default function Library() {
   const isRealMode = !isPitchMode && mode === "real";
   
   const { data: videoData, isLoading: isLoadingVideos, isError: isVideosError } = useQuery<VideoIndexResponse>({
-    queryKey: ["videos", isPitchMode, mode],
-    queryFn: async () => {
-      // Compute endpoint inside queryFn to avoid stale closure
-      const endpoint = isPitchMode ? "/api/demo/videos" : (mode === "real" ? "/api/video-index/with-opportunities" : "/api/demo/videos");
-      const queryMode = isPitchMode ? "demo" : (mode === "real" ? "auth" : "demo");
-      console.log(`[Library] Fetching videos from ${endpoint} (mode: ${queryMode}, isPitchMode: ${isPitchMode})`);
+    queryKey: ["videos", isPitchMode, mode] as const,
+    queryFn: async ({ queryKey }) => {
+      // Extract isPitchMode and mode from queryKey to avoid stale closure
+      const [, pitchModeFromKey, modeFromKey] = queryKey;
+      const endpoint = pitchModeFromKey ? "/api/demo/videos" : (modeFromKey === "real" ? "/api/video-index/with-opportunities" : "/api/demo/videos");
+      console.log(`[Library] Fetching videos from ${endpoint} (isPitchMode from key: ${pitchModeFromKey})`);
       const res = await fetch(endpoint, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch videos");
       const data = await res.json();
