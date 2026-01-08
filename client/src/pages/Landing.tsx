@@ -891,7 +891,7 @@ export default function Landing() {
                 3D Scene Reconstruction Active
               </div>
 
-              <h1 className="text-4xl sm:text-5xl md:text-7xl font-bold font-display tracking-tight mb-6 text-white uppercase">
+              <h1 className="text-4xl sm:text-5xl md:text-7xl font-bold font-display tracking-tight mb-6 text-white uppercase max-w-[90%] mx-auto">
                 We Turn Storytelling <br/>
                 <span className="bg-gradient-to-r from-primary via-emerald-400 to-primary bg-clip-text text-transparent">Into Revenue</span>
               </h1>
@@ -917,6 +917,13 @@ export default function Landing() {
                   Take an Interactive Tour
                 </button>
               </div>
+
+              {/* Mobile Metric Cards - stacked below buttons on mobile only */}
+              <div className="lg:hidden flex flex-col gap-3 mt-8 w-full max-w-xs mx-auto">
+                <GlassMetricCard icon={Eye} label="Lighting" value="98%" sublabel="Match" color="emerald" testId="metric-lighting-mobile" />
+                <GlassMetricCard icon={Timer} label="Latency" value="0.02ms" sublabel="Tracking" color="primary" testId="metric-latency-mobile" />
+                <GlassMetricCard icon={Cpu} label="Inpainting" value="Active" sublabel="AI" color="yellow" testId="metric-inpainting-mobile" />
+              </div>
             </motion.div>
           </div>
         </div>
@@ -932,15 +939,6 @@ export default function Landing() {
           </div>
         </motion.div>
       </section>
-
-      {/* Mobile Floating Metrics - responsive: stack on mobile, 3 cols on sm+ */}
-      <div className="lg:hidden container mx-auto px-6 py-8 relative z-20 mt-8">
-        <div className="grid grid-cols-1 min-[480px]:grid-cols-3 gap-3">
-          <GlassMetricCard icon={Eye} label="Lighting" value="98%" sublabel="Match" color="emerald" testId="metric-lighting-mobile" />
-          <GlassMetricCard icon={Timer} label="Latency" value="0.02ms" sublabel="Tracking" color="primary" testId="metric-latency-mobile" />
-          <GlassMetricCard icon={Cpu} label="Inpainting" value="Active" sublabel="AI" color="yellow" testId="metric-inpainting-mobile" />
-        </div>
-      </div>
 
       {/* Reality vs Augmented Section */}
       <section className="py-24 relative overflow-hidden">
@@ -1010,7 +1008,7 @@ export default function Landing() {
           initial={{ opacity: 0, y: 40 }}
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true }}
-          className="grid grid-cols-1 md:grid-cols-3 gap-6 w-full max-w-5xl mx-auto"
+          className="grid grid-cols-1 lg:grid-cols-3 gap-6 w-full max-w-5xl mx-auto"
         >
           <FeatureCard 
             icon={<Zap className="w-6 h-6 text-yellow-400" />} 
@@ -1041,7 +1039,7 @@ export default function Landing() {
           <h2 className="text-3xl md:text-4xl font-bold font-display tracking-tight mb-12 uppercase text-center">
             A Simple Path <span className="text-primary">Forward.</span>
           </h2>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
             <div className="text-center p-6">
               <span className="text-5xl font-bold text-primary font-display">01</span>
               <h3 className="text-xl font-bold font-display mt-4 mb-3">Connect.</h3>
