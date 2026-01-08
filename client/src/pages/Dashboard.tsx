@@ -172,6 +172,9 @@ export default function Dashboard() {
 
   const indexedVideos = videoIndexData?.videos || [];
   
+  // DEBUG: Log video data state
+  console.log(`[Dashboard RENDER] isPitchMode: ${isPitchMode}, indexedVideos.length: ${indexedVideos.length}, videoIndexData:`, videoIndexData);
+  
   const realModeStats = {
     revenue: "$0",
     revenueGrowth: "Connect to track",
