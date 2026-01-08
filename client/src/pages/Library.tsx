@@ -497,10 +497,10 @@ export default function Library() {
     retry: 1,
   });
 
-  // Fetch demo videos for pitch mode (no auth required)
+  // Fetch demo videos from database (no auth required) - always enabled as fallback
   const { data: demoData, isLoading: isLoadingDemoVideos } = useQuery<VideoIndexResponse>({
     queryKey: ["/api/demo/videos"],
-    enabled: isPitchMode,
+    enabled: true, // Always fetch to ensure data is available
     retry: 1,
   });
 
@@ -668,18 +668,18 @@ export default function Library() {
   const realVideos = videoIndexData?.videos || [];
   const realVideosFormatted: DisplayVideo[] = realVideos.map(formatIndexedVideo);
 
-  // In pitch mode, use database demo videos; otherwise use real authenticated data
+  // Database demo videos - always use these in pitch mode or as fallback
   const demoVideos = demoData?.videos || [];
   const demoVideosFormatted: DisplayVideo[] = demoVideos.map(formatIndexedVideo);
   
-  // Fall back to hardcoded demo data only if database is empty
-  const displayVideos: DisplayVideo[] = isPitchMode 
-    ? (demoVideosFormatted.length > 0 ? demoVideosFormatted : demoVideoData)
-    : realVideosFormatted;
-  const videoCount = isPitchMode ? (demoVideos.length || 45) : realVideos.length;
-  const totalOpportunities = isPitchMode 
-    ? demoVideos.reduce((sum, v) => sum + (v.adOpportunities || 0), 0) || 126
-    : realVideos.reduce((sum, v) => sum + v.adOpportunities, 0);
+  // Priority: real authenticated data > database demo data > hardcoded fallback
+  const displayVideos: DisplayVideo[] = isRealMode 
+    ? realVideosFormatted
+    : (demoVideosFormatted.length > 0 ? demoVideosFormatted : demoVideoData);
+  const videoCount = isRealMode ? realVideos.length : (demoVideos.length || 6);
+  const totalOpportunities = isRealMode 
+    ? realVideos.reduce((sum, v) => sum + v.adOpportunities, 0)
+    : demoVideos.reduce((sum, v) => sum + (v.adOpportunities || 0), 0) || 0;
 
   const pendingCount = realVideos.filter(v => 
     v.status?.toLowerCase() === "pending scan" && v.adOpportunities === 0

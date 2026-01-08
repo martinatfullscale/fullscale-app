@@ -181,15 +181,16 @@ export default function BrandMarketplace() {
   const [sceneTypeFilter, setSceneTypeFilter] = useState("All");
   const [buyingId, setBuyingId] = useState<number | null>(null);
 
-  // Fetch real opportunities from database - use demo endpoint for unauthenticated users
+  // Fetch real opportunities from database (requires auth)
   const { data: discoveryData } = useQuery<DiscoveryResponse>({
     queryKey: ["/api/brand/discovery"],
+    enabled: !!googleUser,
   });
   
-  // Also fetch demo data for unauthenticated users
+  // Always fetch demo data as fallback (no auth required)
   const { data: demoDiscoveryData } = useQuery<DiscoveryResponse>({
     queryKey: ["/api/demo/brand-discovery"],
-    enabled: !googleUser,
+    enabled: true, // Always fetch to ensure data is available
   });
 
   const buyMutation = useMutation({
@@ -224,9 +225,11 @@ export default function BrandMarketplace() {
     },
   });
 
-  // Combine database opportunities with dummy data for demo
-  const dbOpportunities = discoveryData?.opportunities || demoDiscoveryData?.opportunities || [];
-  // Only use dummy data if no database records exist
+  // Priority: authenticated data > demo database data > hardcoded fallback
+  const authOpportunities = discoveryData?.opportunities || [];
+  const demoOpportunities = demoDiscoveryData?.opportunities || [];
+  const dbOpportunities = authOpportunities.length > 0 ? authOpportunities : demoOpportunities;
+  // Only use hardcoded dummy data if no database records exist at all
   const allOpportunities = dbOpportunities.length > 0 ? dbOpportunities : DUMMY_OPPORTUNITIES;
 
   const filteredOpportunities = allOpportunities.filter((opp) => {

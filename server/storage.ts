@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { eq, desc, and } from "drizzle-orm";
+import { eq, desc, and, or, sql } from "drizzle-orm";
 import {
   monetizationItems,
   youtubeConnections,
@@ -350,10 +350,17 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getReadyVideosForMarketplace(): Promise<VideoWithOpportunities[]> {
+    // Include videos with "Ready" or "Scan Complete" status
     const videos = await db
       .select()
       .from(videoIndex)
-      .where(eq(videoIndex.status, "Ready"))
+      .where(
+        or(
+          eq(videoIndex.status, "Ready"),
+          eq(videoIndex.status, "Scan Complete"),
+          sql`${videoIndex.status} LIKE 'Ready%'`
+        )
+      )
       .orderBy(desc(videoIndex.priorityScore));
     
     const results: VideoWithOpportunities[] = [];
