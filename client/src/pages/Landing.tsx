@@ -745,7 +745,7 @@ function GlassMetricCard({ icon: Icon, label, value, sublabel, color = "primary"
       whileInView={{ opacity: 1, y: 0 }}
       viewport={{ once: true }}
       transition={{ duration: 0.5 }}
-      className={`relative p-3 md:p-4 rounded-xl md:rounded-2xl backdrop-blur-xl border ${colorClasses[color]} shadow-lg`}
+      className={`relative p-2 md:p-4 rounded-xl md:rounded-2xl backdrop-blur-xl border ${colorClasses[color]} shadow-lg max-[480px]:h-[70px] max-[480px]:flex max-[480px]:items-center`}
       data-testid={testId}
     >
       <div className="absolute inset-0 rounded-xl md:rounded-2xl bg-gradient-to-br from-white/5 to-transparent pointer-events-none" />
@@ -882,8 +882,8 @@ export default function Landing() {
               transition={{ duration: 0.8 }}
               className="flex flex-col items-center mt-4 md:mt-0"
             >
-              {/* Status Badge - Positioned above headline with 2rem spacing, clear of nav on mobile */}
-              <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-black/40 backdrop-blur-md border border-white/10 text-xs sm:text-sm text-white/80 mb-8 mt-8 md:mt-0">
+              {/* Status Badge - Compact on mobile */}
+              <div className="inline-flex items-center gap-2 px-3 py-1.5 md:px-4 md:py-2 rounded-full bg-black/40 backdrop-blur-md border border-white/10 text-[10px] sm:text-sm text-white/80 mb-4 md:mb-8 mt-4 md:mt-0">
                 <span className="relative flex h-2 w-2">
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                   <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400"></span>
@@ -891,35 +891,35 @@ export default function Landing() {
                 3D Scene Reconstruction Active
               </div>
 
-              <h1 className="text-4xl sm:text-5xl md:text-7xl font-bold font-display tracking-tight mb-6 text-white uppercase max-w-[90%] mx-auto mt-8 md:mt-0">
+              <h1 className="text-3xl sm:text-5xl md:text-7xl font-bold font-display tracking-tight mb-4 md:mb-6 text-white uppercase max-w-[90%] mx-auto mt-4 md:mt-0">
                 We Turn Storytelling <br/>
                 <span className="bg-gradient-to-r from-primary via-emerald-400 to-primary bg-clip-text text-transparent">Into Revenue</span>
               </h1>
               
-              <p className="text-xl md:text-2xl text-white/70 max-w-3xl mx-auto mb-10 leading-relaxed">
+              <p className="text-base md:text-2xl text-white/70 max-w-3xl mx-auto mb-6 md:mb-10 leading-relaxed max-[480px]:hidden">
                 AI-powered product placement that dreams products into your existing content with perfect lighting, occlusion, and tracking.
               </p>
 
-              <div className="flex flex-col sm:flex-row gap-4 items-center justify-center">
+              <div className="flex flex-col sm:flex-row gap-3 md:gap-4 items-center justify-center">
                 <button 
                   onClick={handleLoginClick}
-                  className="px-10 py-5 rounded-xl bg-primary hover:bg-primary/90 text-white font-semibold text-lg shadow-2xl shadow-primary/30 hover:shadow-primary/50 hover:-translate-y-1 transition-all duration-300"
+                  className="px-6 py-3 md:px-10 md:py-5 rounded-xl bg-primary hover:bg-primary/90 text-white font-semibold text-sm md:text-lg shadow-2xl shadow-primary/30 hover:shadow-primary/50 hover:-translate-y-1 transition-all duration-300"
                   data-testid="button-hero-start"
                 >
                   Start Monetizing Now
                 </button>
                 <button 
                   onClick={() => setShowDemoModal(true)}
-                  className="px-10 py-5 rounded-xl bg-white/10 hover:bg-white/20 border border-white/20 text-white font-semibold text-lg backdrop-blur-md transition-all duration-300 flex items-center gap-2"
+                  className="px-6 py-3 md:px-10 md:py-5 rounded-xl bg-white/10 hover:bg-white/20 border border-white/20 text-white font-semibold text-sm md:text-lg backdrop-blur-md transition-all duration-300 flex items-center gap-2"
                   data-testid="button-view-demo"
                 >
-                  <Eye className="w-5 h-5" />
-                  Take an Interactive Tour
+                  <Eye className="w-4 h-4 md:w-5 md:h-5" />
+                  Interactive Tour
                 </button>
               </div>
 
-              {/* Mobile Metric Cards - stacked below buttons on mobile only, full width */}
-              <div className="lg:hidden flex flex-col gap-3 mt-8 w-full px-4">
+              {/* Mobile Metric Cards - compact stacked layout on mobile only */}
+              <div className="lg:hidden flex flex-col gap-2 mt-6 w-full px-4">
                 <GlassMetricCard icon={Eye} label="Lighting" value="98%" sublabel="Match" color="emerald" testId="metric-lighting-mobile" />
                 <GlassMetricCard icon={Timer} label="Latency" value="0.02ms" sublabel="Tracking" color="primary" testId="metric-latency-mobile" />
                 <GlassMetricCard icon={Cpu} label="Inpainting" value="Active" sublabel="AI" color="yellow" testId="metric-inpainting-mobile" />
