@@ -497,6 +497,13 @@ export default function Library() {
     retry: 1,
   });
 
+  // Fetch demo videos for pitch mode (no auth required)
+  const { data: demoData, isLoading: isLoadingDemoVideos } = useQuery<VideoIndexResponse>({
+    queryKey: ["/api/demo/videos"],
+    enabled: isPitchMode,
+    retry: 1,
+  });
+
   const syncMutation = useMutation({
     mutationFn: async () => {
       const res = await fetch("/api/video-index/refresh", { 
@@ -661,9 +668,18 @@ export default function Library() {
   const realVideos = videoIndexData?.videos || [];
   const realVideosFormatted: DisplayVideo[] = realVideos.map(formatIndexedVideo);
 
-  const displayVideos: DisplayVideo[] = isPitchMode ? demoVideoData : realVideosFormatted;
-  const videoCount = isPitchMode ? 45 : realVideos.length;
-  const totalOpportunities = isPitchMode ? 126 : realVideos.reduce((sum, v) => sum + v.adOpportunities, 0);
+  // In pitch mode, use database demo videos; otherwise use real authenticated data
+  const demoVideos = demoData?.videos || [];
+  const demoVideosFormatted: DisplayVideo[] = demoVideos.map(formatIndexedVideo);
+  
+  // Fall back to hardcoded demo data only if database is empty
+  const displayVideos: DisplayVideo[] = isPitchMode 
+    ? (demoVideosFormatted.length > 0 ? demoVideosFormatted : demoVideoData)
+    : realVideosFormatted;
+  const videoCount = isPitchMode ? (demoVideos.length || 45) : realVideos.length;
+  const totalOpportunities = isPitchMode 
+    ? demoVideos.reduce((sum, v) => sum + (v.adOpportunities || 0), 0) || 126
+    : realVideos.reduce((sum, v) => sum + v.adOpportunities, 0);
 
   const pendingCount = realVideos.filter(v => 
     v.status?.toLowerCase() === "pending scan" && v.adOpportunities === 0

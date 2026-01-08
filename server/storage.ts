@@ -37,6 +37,7 @@ export interface IStorage {
   getAllowedUser(email: string): Promise<AllowedUser | undefined>;
   updateAllowedUserRole(email: string, userType: string): Promise<void>;
   getVideoIndex(userId: string): Promise<VideoIndex[]>;
+  getAllVideos(): Promise<VideoIndex[]>;
   upsertVideoIndex(video: InsertVideoIndex): Promise<VideoIndex>;
   bulkUpsertVideoIndex(videos: InsertVideoIndex[]): Promise<void>;
   deleteVideoIndex(userId: string): Promise<void>;
@@ -186,6 +187,13 @@ export class DatabaseStorage implements IStorage {
       .from(videoIndex)
       .where(eq(videoIndex.userId, userId))
       .orderBy(desc(videoIndex.priorityScore));
+  }
+
+  async getAllVideos(): Promise<VideoIndex[]> {
+    return await db
+      .select()
+      .from(videoIndex)
+      .orderBy(desc(videoIndex.createdAt));
   }
 
   async upsertVideoIndex(video: InsertVideoIndex): Promise<VideoIndex> {

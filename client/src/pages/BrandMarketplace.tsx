@@ -181,9 +181,15 @@ export default function BrandMarketplace() {
   const [sceneTypeFilter, setSceneTypeFilter] = useState("All");
   const [buyingId, setBuyingId] = useState<number | null>(null);
 
-  // Fetch real opportunities from database
+  // Fetch real opportunities from database - use demo endpoint for unauthenticated users
   const { data: discoveryData } = useQuery<DiscoveryResponse>({
     queryKey: ["/api/brand/discovery"],
+  });
+  
+  // Also fetch demo data for unauthenticated users
+  const { data: demoDiscoveryData } = useQuery<DiscoveryResponse>({
+    queryKey: ["/api/demo/brand-discovery"],
+    enabled: !googleUser,
   });
 
   const buyMutation = useMutation({
@@ -219,8 +225,9 @@ export default function BrandMarketplace() {
   });
 
   // Combine database opportunities with dummy data for demo
-  const dbOpportunities = discoveryData?.opportunities || [];
-  const allOpportunities = [...dbOpportunities, ...DUMMY_OPPORTUNITIES];
+  const dbOpportunities = discoveryData?.opportunities || demoDiscoveryData?.opportunities || [];
+  // Only use dummy data if no database records exist
+  const allOpportunities = dbOpportunities.length > 0 ? dbOpportunities : DUMMY_OPPORTUNITIES;
 
   const filteredOpportunities = allOpportunities.filter((opp) => {
     const matchesSearch = opp.title.toLowerCase().includes(searchQuery.toLowerCase()) ||

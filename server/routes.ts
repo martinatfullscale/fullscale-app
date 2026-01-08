@@ -434,6 +434,18 @@ export async function registerRoutes(
     res.json({ videos, total: videos.length });
   });
 
+  // Public demo endpoint - returns ALL videos for pitch/demo mode (no auth required)
+  app.get("/api/demo/videos", async (req, res) => {
+    const videos = await storage.getAllVideos();
+    const videosWithCounts = await Promise.all(
+      videos.map(async (video) => {
+        const count = await storage.getSurfaceCountByVideo(video.id);
+        return { ...video, adOpportunities: count };
+      })
+    );
+    res.json({ videos: videosWithCounts, total: videosWithCounts.length });
+  });
+
   // Manually trigger re-indexing
   app.post("/api/video-index/refresh", isGoogleAuthenticated, async (req: any, res) => {
     const userId = req.googleUser.email;
@@ -621,6 +633,35 @@ export async function registerRoutes(
     "Music Studio": "SoundWaveHQ",
     "Coffee Corner": "BaristaCraft",
   };
+
+  // Public demo endpoint for brand marketplace discovery (no auth required)
+  app.get("/api/demo/brand-discovery", async (req, res) => {
+    try {
+      const videos = await storage.getReadyVideosForMarketplace();
+      
+      const opportunities = videos.map((video) => ({
+        id: video.id,
+        videoId: video.id,
+        youtubeId: video.youtubeId,
+        title: video.title,
+        thumbnailUrl: video.thumbnailUrl,
+        creatorName: video.userId?.split("@")[0] || "Creator",
+        viewCount: video.viewCount,
+        sceneValue: Math.floor(50 + (video.priorityScore || 0) * 1.5),
+        context: video.category || "General",
+        genre: video.category || "General",
+        sceneType: video.category || "General",
+        surfaces: video.surfaces?.map((s: any) => s.surfaceType) || [],
+        surfaceCount: video.surfaceCount,
+        duration: video.duration || "Unknown",
+      }));
+      
+      res.json({ opportunities, total: opportunities.length });
+    } catch (err) {
+      console.error("Error fetching demo brand discovery:", err);
+      res.status(500).json({ error: "Failed to fetch discovery" });
+    }
+  });
 
   // BRAND MARKETPLACE: Get Ready videos for discovery (brand view)
   app.get("/api/brand/discovery", isGoogleAuthenticated, async (req: any, res) => {
