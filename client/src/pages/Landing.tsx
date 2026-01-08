@@ -19,185 +19,116 @@ import gamingFrame from "@assets/generated_images/gaming_stream_frame.png";
 import { Footer } from "@/components/Footer";
 import { Slider } from "@/components/ui/slider";
 
-// Aspect ratio configuration for FOV compensation and tracking thresholds
-const ASPECT_CONFIGS = {
-  "16:9": {
-    detectionBand: { yMin: 30, yMax: 75 },    // Wide detection area
-    horizontalSpread: 1.0,                      // Full horizontal spread
-    verticalStretch: 1.0,                       // No vertical stretch
-    planeThreshold: 0.8,                        // Standard plane detection threshold
-    confidenceBoost: 1.0,                       // Normal confidence ramp
-    persistenceFrames: 4,                       // Standard frame memory
-  },
-  "9:16": {
-    detectionBand: { yMin: 70, yMax: 100 },   // Narrow-Angle: Bottom 30% of frame for horizontal planes
-    horizontalSpread: 0.7,                      // Reduced horizontal spread (center-biased)
-    verticalStretch: 1.2,                       // 1.2x vertical stretch for iPhone lens distortion compensation
-    planeThreshold: 0.6,                        // Lower threshold (0.6 vs 0.8) for narrow FOV data
-    confidenceBoost: 1.3,                       // Faster confidence for limited context
-    persistenceFrames: 15,                      // Frame-to-Frame Memory: 15 frames during camera shake
-  }
-};
+// ============================================================================
+// SURFACE ENGINE DEMO - HARDCODED SUCCESS FOR FOUNDING COHORT LAUNCH
+// Goal: 100% success rate - never show "Scan Failed"
+// ============================================================================
 
-// Static fallback anchor at center-bottom of frame (Force Success State)
-const STATIC_ANCHOR_POINTS = {
+// Pre-defined grid coordinates for "Many Jobs" 9:16 video (center-bottom desk area)
+const HARDCODED_GRID_COORDS = {
   "16:9": [
-    { x: 20, y: 55 }, { x: 80, y: 55 }, { x: 82, y: 85 }, { x: 18, y: 85 }
+    { x: 18, y: 52 }, { x: 82, y: 52 }, { x: 85, y: 82 }, { x: 15, y: 82 }
   ],
   "9:16": [
-    { x: 25, y: 72 }, { x: 75, y: 72 }, { x: 78, y: 95 }, { x: 22, y: 95 }
+    // Pinned to lower-center of frame for vertical video (desk area)
+    { x: 22, y: 68 }, { x: 78, y: 68 }, { x: 80, y: 92 }, { x: 20, y: 92 }
   ]
 };
+
+// Force success timeout (500ms) - if scan takes longer, immediately return success
+const FORCE_SUCCESS_TIMEOUT_MS = 500;
 
 function SurfaceEngineDemo({ isInView, aspectRatio = "16:9" }: { isInView: boolean; aspectRatio?: "16:9" | "9:16" }) {
   const [scanPhase, setScanPhase] = useState(0);
   const [confidence, setConfidence] = useState(0);
   const [lightingMatch, setLightingMatch] = useState(0);
-  const [trackingLatency, setTrackingLatency] = useState(45);
-  const [planeAnchored, setPlaneAnchored] = useState(false);
-  const [homographyPoints, setHomographyPoints] = useState<{x: number, y: number}[]>([]);
-  const [detectionMode, setDetectionMode] = useState<'planar' | 'feature-point' | 'static-anchor'>('planar');
-  const [pinnedCoords, setPinnedCoords] = useState<{x: number, y: number}[] | null>(null);
-  const [subPixelActive, setSubPixelActive] = useState(false);
-  const [lostSurfaceFrames, setLostSurfaceFrames] = useState(0);
-  const [lastStableCoords, setLastStableCoords] = useState<{x: number, y: number}[] | null>(null);
+  const [trackingLatency, setTrackingLatency] = useState(12);
   const [surfaceFound, setSurfaceFound] = useState(false);
+  const [gridLocked, setGridLocked] = useState(false);
+  const [statusMessage, setStatusMessage] = useState<'scanning' | 'syncing' | 'found' | 'locked'>('scanning');
+  const forceSuccessTriggered = useRef(false);
+  const scanStartTime = useRef<number | null>(null);
 
   const isVertical = aspectRatio === "9:16";
-  const config = ASPECT_CONFIGS[aspectRatio];
-  const staticAnchor = STATIC_ANCHOR_POINTS[aspectRatio];
+  const hardcodedGrid = HARDCODED_GRID_COORDS[aspectRatio];
 
+  // ============================================================================
+  // HARDCODED SUCCESS LOGIC - 500ms timeout forces "Surface Found"
+  // ============================================================================
   useEffect(() => {
     if (!isInView) {
       setScanPhase(0);
       setConfidence(0);
       setLightingMatch(0);
-      setTrackingLatency(45);
-      setPlaneAnchored(false);
-      setHomographyPoints([]);
-      setDetectionMode('planar');
-      setPinnedCoords(null);
-      setSubPixelActive(false);
-      setLostSurfaceFrames(0);
-      setLastStableCoords(null);
+      setTrackingLatency(12);
       setSurfaceFound(false);
+      setGridLocked(false);
+      setStatusMessage('scanning');
+      forceSuccessTriggered.current = false;
+      scanStartTime.current = null;
       return;
     }
 
-    // Narrow-Angle Calibration: Focus on detection band (bottom 30% for vertical)
-    const { yMin, yMax } = config.detectionBand;
-    const bandHeight = yMax - yMin;
-    
-    // Vertical FOV Compensation: Apply 1.2x vertical stretch for iPhone lens distortion
-    const hSpread = config.horizontalSpread;
-    const vStretch = config.verticalStretch;
-    const centerX = 50;
-    
-    // Generate base points with vertical stretch compensation applied
-    const basePoints = isVertical 
-      ? [
-          { x: centerX - 35 * hSpread, y: (yMin + bandHeight * 0.05) * vStretch / 1.2 + 58 },
-          { x: centerX + 35 * hSpread, y: (yMin + bandHeight * 0.02) * vStretch / 1.2 + 58 },
-          { x: centerX + 38 * hSpread, y: (yMin + bandHeight * 0.75) * vStretch / 1.2 + 15 },
-          { x: centerX - 38 * hSpread, y: (yMin + bandHeight * 0.8) * vStretch / 1.2 + 15 }
-        ]
-      : [
-          { x: 15, y: 35 }, { x: 85, y: 32 }, { x: 88, y: 72 }, { x: 12, y: 75 }
-        ];
+    // Start timer for 500ms force success
+    if (!scanStartTime.current) {
+      scanStartTime.current = Date.now();
+    }
 
     const interval = setInterval(() => {
+      const elapsed = Date.now() - (scanStartTime.current || Date.now());
+      
       setScanPhase(prev => {
-        const next = prev + 0.8;
+        const next = prev + 1.5; // Faster scan animation
         
-        // For vertical frames, activate sub-pixel refinement early
-        if (isVertical && next > 15 && !subPixelActive) {
-          setSubPixelActive(true);
-        }
-        
-        // Frame-to-Frame Memory: If we have pinned coords, lock the grid
-        if (pinnedCoords) {
-          if (!lastStableCoords) {
-            setLastStableCoords(pinnedCoords);
-          }
-          setHomographyPoints(pinnedCoords);
-          setLostSurfaceFrames(0);
+        // Force success after 500ms timeout - skip live scan, pin hardcoded grid
+        if (elapsed >= FORCE_SUCCESS_TIMEOUT_MS && !forceSuccessTriggered.current) {
+          forceSuccessTriggered.current = true;
           setSurfaceFound(true);
-        } else if (next > 20 && next < 45) {
-          // Sub-pixel refinement with lower plane threshold for vertical
-          const jitterScale = isVertical && subPixelActive ? 0.25 : 1;
-          
-          // Check against lower threshold (0.6 for 9:16)
-          const currentThreshold = (next / 100) + Math.random() * 0.2;
-          const meetsThreshold = currentThreshold >= config.planeThreshold;
-          
-          if (meetsThreshold || next > 35) {
-            const jitteredPoints = basePoints.map(p => ({
-              x: p.x + (Math.random() - 0.5) * (next < 35 ? 2 * jitterScale : 0.3 * jitterScale),
-              y: Math.max(yMin, Math.min(yMax, p.y + (Math.random() - 0.5) * (next < 35 ? 1.5 * jitterScale : 0.2 * jitterScale)))
-            }));
-            setHomographyPoints(jitteredPoints);
-          }
-        } else if (lastStableCoords && lostSurfaceFrames < config.persistenceFrames) {
-          // Persistence: Lock grid to last known coords for 15 frames (9:16) during camera shake
-          setHomographyPoints(lastStableCoords);
-          setLostSurfaceFrames(prev => prev + 1);
+          setGridLocked(true);
+          setStatusMessage('found');
+          setConfidence(96);
+          setLightingMatch(98);
+          setTrackingLatency(0.02); // 0.02ms latency as promised
+          return 100; // Jump to complete
+        }
+        
+        // Scanning phase (0-30%): Show "Syncing Lighting..." instead of any failure
+        if (next < 30) {
+          setStatusMessage('syncing');
+          setConfidence(prev => Math.min(40, prev + 2));
+          setLightingMatch(prev => Math.min(60, prev + 3));
+        }
+        // Surface detection phase (30-70%)
+        else if (next < 70) {
+          setStatusMessage('found');
           setSurfaceFound(true);
-        } else if (isVertical && !pinnedCoords && next > 40) {
-          // Force Success State: If plane detection struggles, use static anchor
-          // Never show "Scan Failed" - default to center-bottom anchor
-          setDetectionMode('static-anchor');
-          setHomographyPoints(staticAnchor);
-          setSurfaceFound(true);
+          setConfidence(prev => Math.min(85, prev + 1.5));
+          setLightingMatch(prev => Math.min(90, prev + 1.2));
+          setTrackingLatency(prev => Math.max(0.02, prev - 1));
+        }
+        // Grid locked phase (70-100%)
+        else {
+          setStatusMessage('locked');
+          setGridLocked(true);
+          setConfidence(prev => Math.min(98, prev + 0.5));
+          setLightingMatch(prev => Math.min(99, prev + 0.3));
+          setTrackingLatency(0.02);
         }
         
-        // Feature-point fallback for vertical frames when planar struggles
-        if (isVertical && next > 30 && next < 40 && confidence < 60 && detectionMode === 'planar') {
-          setDetectionMode('feature-point');
-        }
-        
-        if (next >= 42) {
-          setPlaneAnchored(true);
-          setSurfaceFound(true);
-          if (!pinnedCoords) {
-            // Use detected points or fallback to static anchor (never fail)
-            const pointsToPin = homographyPoints.length === 4 ? homographyPoints : staticAnchor;
-            setPinnedCoords(pointsToPin);
-            setLastStableCoords(pointsToPin);
-            setHomographyPoints(pointsToPin);
-          }
-        }
-        
-        if (next > 25) {
-          // Faster confidence with lower threshold boost for vertical
-          const boostMultiplier = (detectionMode === 'feature-point' ? 1.4 : detectionMode === 'static-anchor' ? 1.5 : 1) * config.confidenceBoost;
-          const targetConfidence = next < 50 ? (65 + Math.random() * 20) * boostMultiplier : 94 + Math.random() * 4;
-          setConfidence(prev => Math.min(98, prev + (targetConfidence - prev) * 0.12));
-        }
-        
-        if (next > 30) {
-          const targetLighting = next < 55 ? 78 + Math.random() * 10 : 96 + Math.random() * 3;
-          setLightingMatch(prev => prev + (targetLighting - prev) * 0.1);
-        }
-        
-        if (next > 35) {
-          // Fast latency convergence - always show good tracking
-          const latencyTarget = planeAnchored ? 6 + Math.random() * 3 : 18 + Math.random() * 10;
-          const persistenceBonus = lastStableCoords ? 0.7 : 1;
-          setTrackingLatency(prev => prev + (latencyTarget * persistenceBonus - prev) * 0.18);
-        }
-        
-        if (next >= 100) return 0;
+        if (next >= 100) return 100; // Stay at 100, don't reset
         return next;
       });
-    }, 50);
+    }, 40);
 
     return () => clearInterval(interval);
-  }, [isInView, planeAnchored, isVertical, subPixelActive, detectionMode, pinnedCoords, confidence, config, lastStableCoords, lostSurfaceFrames, staticAnchor, homographyPoints]);
+  }, [isInView]);
 
-  // Lower threshold for grid stability (0.6 for 9:16 vs 0.8 for 16:9)
-  const stabilityThreshold = config.planeThreshold * 100;
-  const gridOpacity = confidence >= stabilityThreshold ? 0.85 : 0.35 + Math.sin(Date.now() / 200) * 0.15;
-  const isGridStable = confidence >= stabilityThreshold || surfaceFound;
+  // Always use hardcoded grid coordinates - no live detection needed
+  const displayPoints = hardcodedGrid;
+  
+  // Grid always stable after initial scan (never show failure state)
+  const isGridStable = scanPhase > 25 || surfaceFound;
+  const gridOpacity = isGridStable ? 0.9 : 0.4 + Math.sin(Date.now() / 200) * 0.2;
 
   return (
     <div className="space-y-4">
@@ -212,10 +143,11 @@ function SurfaceEngineDemo({ isInView, aspectRatio = "16:9" }: { isInView: boole
             </linearGradient>
           </defs>
           
-          {homographyPoints.length === 4 && (
+          {/* Always render grid with hardcoded coordinates - never fails */}
+          {scanPhase > 15 && (
             <>
               <motion.polygon
-                points={homographyPoints.map(p => `${p.x},${p.y}`).join(' ')}
+                points={displayPoints.map(p => `${p.x},${p.y}`).join(' ')}
                 fill="none"
                 stroke="url(#homographyGradient)"
                 strokeWidth={isGridStable ? "0.4" : "0.3"}
@@ -226,10 +158,10 @@ function SurfaceEngineDemo({ isInView, aspectRatio = "16:9" }: { isInView: boole
               
               {[...Array(5)].map((_, i) => {
                 const t = (i + 1) / 6;
-                const x1 = homographyPoints[0].x + (homographyPoints[1].x - homographyPoints[0].x) * t;
-                const y1 = homographyPoints[0].y + (homographyPoints[1].y - homographyPoints[0].y) * t;
-                const x2 = homographyPoints[3].x + (homographyPoints[2].x - homographyPoints[3].x) * t;
-                const y2 = homographyPoints[3].y + (homographyPoints[2].y - homographyPoints[3].y) * t;
+                const x1 = displayPoints[0].x + (displayPoints[1].x - displayPoints[0].x) * t;
+                const y1 = displayPoints[0].y + (displayPoints[1].y - displayPoints[0].y) * t;
+                const x2 = displayPoints[3].x + (displayPoints[2].x - displayPoints[3].x) * t;
+                const y2 = displayPoints[3].y + (displayPoints[2].y - displayPoints[3].y) * t;
                 return (
                   <motion.line key={`v-${i}`} x1={x1} y1={y1} x2={x2} y2={y2}
                     stroke="url(#homographyGradient)" strokeWidth="0.2"
@@ -239,10 +171,10 @@ function SurfaceEngineDemo({ isInView, aspectRatio = "16:9" }: { isInView: boole
               })}
               {[...Array(4)].map((_, i) => {
                 const t = (i + 1) / 5;
-                const x1 = homographyPoints[0].x + (homographyPoints[3].x - homographyPoints[0].x) * t;
-                const y1 = homographyPoints[0].y + (homographyPoints[3].y - homographyPoints[0].y) * t;
-                const x2 = homographyPoints[1].x + (homographyPoints[2].x - homographyPoints[1].x) * t;
-                const y2 = homographyPoints[1].y + (homographyPoints[2].y - homographyPoints[1].y) * t;
+                const x1 = displayPoints[0].x + (displayPoints[3].x - displayPoints[0].x) * t;
+                const y1 = displayPoints[0].y + (displayPoints[3].y - displayPoints[0].y) * t;
+                const x2 = displayPoints[1].x + (displayPoints[2].x - displayPoints[1].x) * t;
+                const y2 = displayPoints[1].y + (displayPoints[2].y - displayPoints[1].y) * t;
                 return (
                   <motion.line key={`h-${i}`} x1={x1} y1={y1} x2={x2} y2={y2}
                     stroke="url(#homographyGradient)" strokeWidth="0.2"
@@ -251,7 +183,7 @@ function SurfaceEngineDemo({ isInView, aspectRatio = "16:9" }: { isInView: boole
                 );
               })}
               
-              {homographyPoints.map((p, i) => (
+              {displayPoints.map((p, i) => (
                 <motion.circle key={i} cx={p.x} cy={p.y} r={isGridStable ? "1.2" : "0.8"}
                   fill={isGridStable ? "#10b981" : "#22d3ee"}
                   animate={{ opacity: isGridStable ? 1 : 0.6, scale: isGridStable ? 1 : [1, 1.3, 1] }}
@@ -263,46 +195,47 @@ function SurfaceEngineDemo({ isInView, aspectRatio = "16:9" }: { isInView: boole
           )}
         </svg>
 
+        {/* Status indicator - never shows "Scan Failed", only positive states */}
         <motion.div
           initial={{ opacity: 0 }}
-          animate={{ opacity: scanPhase > 20 ? 1 : 0 }}
+          animate={{ opacity: scanPhase > 10 ? 1 : 0 }}
           className="absolute top-3 left-3"
         >
           <div className="px-2 py-1 rounded bg-black/80 border border-emerald-500/50 backdrop-blur-sm">
             <span className="text-[9px] font-mono text-emerald-400">
-              {/* Force Success State: Never show "Scan Failed" - always show positive status */}
-              {surfaceFound || planeAnchored 
-                ? "[Surface_Found]" 
-                : detectionMode === 'static-anchor' 
-                  ? "[Static_Anchor]" 
-                  : detectionMode === 'feature-point' 
-                    ? "[Feature_Lock...]" 
+              {statusMessage === 'locked' || gridLocked
+                ? "[Grid_Locked]" 
+                : statusMessage === 'found' || surfaceFound
+                  ? "[Surface_Found]"
+                  : statusMessage === 'syncing'
+                    ? "[Syncing_Lighting...]"
                     : "[Scanning...]"}
             </span>
           </div>
         </motion.div>
 
-        {/* Sub-pixel refinement indicator for vertical frames */}
-        {isVertical && subPixelActive && !planeAnchored && (
+        {/* 3D Scene Reconstruction badge - always green when active */}
+        {scanPhase > 20 && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             className="absolute top-10 left-3"
           >
-            <div className="px-2 py-1 rounded bg-cyan-500/20 border border-cyan-400/50 backdrop-blur-sm">
-              <span className="text-[8px] font-mono text-cyan-300">[1.2x_V_Stretch]</span>
+            <div className="px-2 py-1 rounded bg-emerald-500/20 border border-emerald-400/50 backdrop-blur-sm">
+              <span className="text-[8px] font-mono text-emerald-300">[3D_Scene_Active]</span>
             </div>
           </motion.div>
         )}
 
+        {/* Grid locked indicator - always shows success */}
         <motion.div
           initial={{ opacity: 0 }}
-          animate={{ opacity: planeAnchored || surfaceFound ? 1 : 0 }}
+          animate={{ opacity: surfaceFound || scanPhase > 40 ? 1 : 0 }}
           className="absolute top-3 right-3"
         >
           <div className="px-2 py-1 rounded bg-emerald-500/20 border border-emerald-400 backdrop-blur-sm">
             <span className="text-[9px] font-mono text-emerald-300 font-semibold">
-              {pinnedCoords ? "[Grid_Locked]" : lostSurfaceFrames > 0 ? `[Memory_${config.persistenceFrames - lostSurfaceFrames}f]` : "[Tracking]"}
+              {gridLocked ? "[Coords_Pinned]" : "[Tracking]"}
             </span>
           </div>
         </motion.div>
@@ -318,27 +251,28 @@ function SurfaceEngineDemo({ isInView, aspectRatio = "16:9" }: { isInView: boole
         </div>
       </div>
 
+      {/* Stats cards - always show green success state for professional Kling AI aesthetic */}
       <div className="grid grid-cols-3 gap-3">
-        <div className={`rounded-xl p-3 border transition-all duration-300 ${confidence >= 85 ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-white/5 border-white/10'}`}>
+        <div className={`rounded-xl p-3 border transition-all duration-300 ${scanPhase > 30 ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-white/5 border-white/10'}`}>
           <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Confidence</p>
-          <p className={`text-xl font-bold font-mono ${confidence >= 85 ? 'text-emerald-400' : 'text-yellow-400'}`}>
+          <p className={`text-xl font-bold font-mono ${scanPhase > 30 ? 'text-emerald-400' : 'text-yellow-400'}`}>
             {confidence.toFixed(1)}%
           </p>
-          <p className="text-[9px] text-muted-foreground mt-0.5">{confidence >= 85 ? 'Stable' : 'Calibrating'}</p>
+          <p className="text-[9px] text-muted-foreground mt-0.5">{scanPhase > 50 ? 'Stable' : 'Calibrating'}</p>
         </div>
-        <div className={`rounded-xl p-3 border transition-all duration-300 ${lightingMatch >= 90 ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-white/5 border-white/10'}`}>
+        <div className={`rounded-xl p-3 border transition-all duration-300 ${scanPhase > 40 ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-white/5 border-white/10'}`}>
           <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Lighting Match</p>
-          <p className={`text-xl font-bold font-mono ${lightingMatch >= 90 ? 'text-emerald-400' : 'text-yellow-400'}`}>
+          <p className={`text-xl font-bold font-mono ${scanPhase > 40 ? 'text-emerald-400' : 'text-yellow-400'}`}>
             {lightingMatch.toFixed(1)}%
           </p>
-          <p className="text-[9px] text-muted-foreground mt-0.5">{lightingMatch >= 90 ? 'Matched' : 'Analyzing'}</p>
+          <p className="text-[9px] text-muted-foreground mt-0.5">{scanPhase > 60 ? 'Matched' : 'Syncing'}</p>
         </div>
-        <div className={`rounded-xl p-3 border transition-all duration-300 ${trackingLatency <= 12 ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-white/5 border-white/10'}`}>
+        <div className={`rounded-xl p-3 border transition-all duration-300 ${scanPhase > 50 ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-white/5 border-white/10'}`}>
           <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Track Latency</p>
-          <p className={`text-xl font-bold font-mono ${trackingLatency <= 12 ? 'text-emerald-400' : 'text-yellow-400'}`}>
-            {trackingLatency.toFixed(0)}ms
+          <p className={`text-xl font-bold font-mono ${scanPhase > 50 ? 'text-emerald-400' : 'text-yellow-400'}`}>
+            {gridLocked ? '0.02ms' : `${trackingLatency.toFixed(0)}ms`}
           </p>
-          <p className="text-[9px] text-muted-foreground mt-0.5">{trackingLatency <= 12 ? 'Real-time' : 'Optimizing'}</p>
+          <p className="text-[9px] text-muted-foreground mt-0.5">{scanPhase > 70 ? 'Real-time' : 'Optimizing'}</p>
         </div>
       </div>
     </div>
