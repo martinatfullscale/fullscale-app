@@ -797,7 +797,7 @@ export default function Landing() {
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col relative">
       {/* Cinematic Hero Section */}
-      <section className="relative min-h-[600px] md:min-h-[700px] lg:h-screen overflow-hidden">
+      <section className="relative min-h-[500px] md:min-h-[700px] lg:h-screen overflow-hidden pb-8 md:pb-0">
         <video
           ref={videoRef}
           src={heroVideo}
@@ -940,8 +940,8 @@ export default function Landing() {
         </motion.div>
       </section>
 
-      {/* Reality vs Augmented Section */}
-      <section className="py-24 relative overflow-hidden">
+      {/* Reality vs Augmented Section - compact on mobile */}
+      <section className="py-10 md:py-24 relative overflow-hidden">
         <div className="absolute top-1/2 left-0 w-[600px] h-[600px] bg-primary/10 rounded-full blur-[200px] -translate-y-1/2 pointer-events-none" />
         <div className="absolute top-1/2 right-0 w-[600px] h-[600px] bg-emerald-500/10 rounded-full blur-[200px] -translate-y-1/2 pointer-events-none" />
         
@@ -950,12 +950,12 @@ export default function Landing() {
             initial={{ opacity: 0, y: 20 }}
             whileInView={{ opacity: 1, y: 0 }}
             viewport={{ once: true }}
-            className="text-center mb-12"
+            className="text-center mb-6 md:mb-12"
           >
-            <h2 className="text-3xl md:text-5xl font-bold font-display tracking-tight mb-4 uppercase">
+            <h2 className="text-2xl md:text-5xl font-bold font-display tracking-tight mb-2 md:mb-4 uppercase">
               Reality vs <span className="text-emerald-400">Augmented</span>
             </h2>
-            <p className="text-muted-foreground text-lg max-w-2xl mx-auto">
+            <p className="text-muted-foreground text-sm md:text-lg max-w-2xl mx-auto max-[480px]:hidden">
               Watch our AI dream products onto surfaces with perfect occlusion and lighting. Drag the slider to see the transformation.
             </p>
           </motion.div>
@@ -964,19 +964,19 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* Opportunity Feed Marquee */}
-      <section className="py-16 bg-gradient-to-b from-transparent via-card/30 to-transparent">
-        <div className="container mx-auto px-6 mb-8">
+      {/* Opportunity Feed Marquee - compact on mobile */}
+      <section className="py-8 md:py-16 bg-gradient-to-b from-transparent via-card/30 to-transparent">
+        <div className="container mx-auto px-6 mb-4 md:mb-8">
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             whileInView={{ opacity: 1, y: 0 }}
             viewport={{ once: true }}
             className="text-center"
           >
-            <h2 className="text-3xl md:text-4xl font-bold font-display tracking-tight mb-4 uppercase">
+            <h2 className="text-2xl md:text-4xl font-bold font-display tracking-tight mb-2 md:mb-4 uppercase">
               Live <span className="text-primary">Opportunity Feed</span>
             </h2>
-            <p className="text-muted-foreground text-lg max-w-2xl mx-auto">
+            <p className="text-muted-foreground text-sm md:text-lg max-w-2xl mx-auto max-[480px]:hidden">
               Real-time inventory index. Every frame scanned. Every surface monetizable.
             </p>
           </motion.div>
@@ -984,26 +984,26 @@ export default function Landing() {
         <OpportunityFeed />
       </section>
 
-      {/* Partners Section */}
-      <section className="py-16 container mx-auto px-6">
+      {/* Partners Section - compact on mobile */}
+      <section className="py-6 md:py-16 container mx-auto px-6">
         <motion.div
           initial={{ opacity: 0 }}
           whileInView={{ opacity: 1 }}
           viewport={{ once: true }}
-          className="w-full max-w-4xl mx-auto py-8 border-t border-b border-white/5"
+          className="w-full max-w-4xl mx-auto py-4 md:py-8 border-t border-b border-white/5"
         >
-          <p className="text-xs uppercase tracking-widest text-muted-foreground/50 mb-6 font-medium text-center">Backed by Industry Leaders</p>
-          <div className="flex flex-row flex-wrap md:flex-nowrap items-center justify-center gap-12">
-            <img src={logoBlackAmbition} alt="Black Ambition" className="h-10 w-auto opacity-60 hover:opacity-100 transition-opacity" />
-            <img src={logoMayDavis} alt="May Davis Partners" className="h-16 w-auto opacity-60 hover:opacity-100 transition-opacity" />
-            <img src={logoElementa} alt="Elementa" className="h-16 w-auto opacity-60 hover:opacity-100 transition-opacity" />
-            <img src={logoNue} alt="Nue Agency" className="h-10 w-auto opacity-60 hover:opacity-100 transition-opacity" />
+          <p className="text-[10px] md:text-xs uppercase tracking-widest text-muted-foreground/50 mb-3 md:mb-6 font-medium text-center">Backed by Industry Leaders</p>
+          <div className="flex flex-row flex-wrap md:flex-nowrap items-center justify-center gap-6 md:gap-12">
+            <img src={logoBlackAmbition} alt="Black Ambition" className="h-6 md:h-10 w-auto opacity-60 hover:opacity-100 transition-opacity" />
+            <img src={logoMayDavis} alt="May Davis Partners" className="h-10 md:h-16 w-auto opacity-60 hover:opacity-100 transition-opacity" />
+            <img src={logoElementa} alt="Elementa" className="h-10 md:h-16 w-auto opacity-60 hover:opacity-100 transition-opacity" />
+            <img src={logoNue} alt="Nue Agency" className="h-6 md:h-10 w-auto opacity-60 hover:opacity-100 transition-opacity" />
           </div>
         </motion.div>
       </section>
 
-      {/* Features Section */}
-      <section className="py-24 container mx-auto px-6">
+      {/* Features Section - compact on mobile */}
+      <section className="py-10 md:py-24 container mx-auto px-6">
         <motion.div
           initial={{ opacity: 0, y: 40 }}
           whileInView={{ opacity: 1, y: 0 }}
@@ -1028,8 +1028,8 @@ export default function Landing() {
         </motion.div>
       </section>
 
-      {/* How It Works Section */}
-      <section className="py-24 container mx-auto px-6">
+      {/* How It Works Section - compact on mobile */}
+      <section className="py-10 md:py-24 container mx-auto px-6">
         <motion.div
           initial={{ opacity: 0, y: 40 }}
           whileInView={{ opacity: 1, y: 0 }}
@@ -1066,7 +1066,7 @@ export default function Landing() {
       </section>
 
       {/* Testimonial */}
-      <section className="py-24 container mx-auto px-6">
+      <section className="py-10 md:py-24 container mx-auto px-6">
         <motion.div
           initial={{ opacity: 0, y: 40 }}
           whileInView={{ opacity: 1, y: 0 }}
@@ -1083,7 +1083,7 @@ export default function Landing() {
       {/* Founding Cohort CTA */}
       <section
         id="cohort"
-        className="relative w-full py-20 bg-gradient-to-b from-transparent to-card/30"
+        className="relative w-full py-10 md:py-20 bg-gradient-to-b from-transparent to-card/30"
       >
         <div className="container mx-auto px-6 text-center">
           <motion.div
