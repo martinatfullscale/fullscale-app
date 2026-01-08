@@ -19,6 +19,106 @@ import gamingFrame from "@assets/generated_images/gaming_stream_frame.png";
 import { Footer } from "@/components/Footer";
 import { Slider } from "@/components/ui/slider";
 
+function ModalNeuralScan({ isInView }: { isInView: boolean }) {
+  const [scanProgress, setScanProgress] = useState(0);
+  const [showProduct, setShowProduct] = useState(false);
+
+  useEffect(() => {
+    if (!isInView) {
+      setScanProgress(0);
+      setShowProduct(false);
+      return;
+    }
+
+    const interval = setInterval(() => {
+      setScanProgress(prev => {
+        if (prev >= 100) {
+          return 0;
+        }
+        if (prev >= 70 && prev < 72) {
+          setShowProduct(true);
+        }
+        return prev + 1.5;
+      });
+    }, 40);
+
+    return () => clearInterval(interval);
+  }, [isInView]);
+
+  return (
+    <div className="relative aspect-video rounded-2xl overflow-hidden border border-emerald-500/30">
+      <img src={realityImg} alt="Reality Scene" className="absolute inset-0 w-full h-full object-cover" />
+      
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: showProduct ? 1 : 0 }}
+        transition={{ duration: 0.4 }}
+        className="absolute inset-0"
+      >
+        <img src={aiAugmentedImg} alt="AI Augmented" className="absolute inset-0 w-full h-full object-cover" />
+      </motion.div>
+
+      <svg className="absolute inset-0 w-full h-full pointer-events-none" preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="modalScanGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stopColor="transparent" />
+            <stop offset={`${Math.max(0, scanProgress - 10)}%`} stopColor="transparent" />
+            <stop offset={`${scanProgress}%`} stopColor="#10b981" stopOpacity="0.8" />
+            <stop offset={`${Math.min(100, scanProgress + 3)}%`} stopColor="#10b981" stopOpacity="0.1" />
+            <stop offset="100%" stopColor="transparent" />
+          </linearGradient>
+        </defs>
+        
+        {[...Array(6)].map((_, i) => (
+          <line key={`h-${i}`} x1="0%" y1={`${20 + i * 12}%`} x2="100%" y2={`${20 + i * 12}%`} stroke="url(#modalScanGradient)" strokeWidth="1" opacity="0.5" />
+        ))}
+        {[...Array(10)].map((_, i) => (
+          <line key={`v-${i}`} x1={`${10 + i * 9}%`} y1="20%" x2={`${10 + i * 9}%`} y2="80%" stroke="url(#modalScanGradient)" strokeWidth="1" opacity="0.5" />
+        ))}
+        
+        <line x1={`${scanProgress}%`} y1="0%" x2={`${scanProgress}%`} y2="100%" stroke="#10b981" strokeWidth="2" opacity="0.9" style={{ filter: 'drop-shadow(0 0 6px #10b981)' }} />
+      </svg>
+
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: scanProgress > 30 ? 1 : 0 }}
+        className="absolute top-[25%] left-[20%]"
+      >
+        <div className="px-2 py-1 rounded bg-black/70 border border-emerald-500/50 backdrop-blur-sm">
+          <span className="text-[9px] font-mono text-emerald-400">[Surface_ID: Counter_01]</span>
+        </div>
+      </motion.div>
+
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: scanProgress > 55 ? 1 : 0 }}
+        className="absolute top-[40%] left-[45%]"
+      >
+        <div className="px-2 py-1 rounded bg-black/70 border border-emerald-500/50 backdrop-blur-sm">
+          <span className="text-[9px] font-mono text-emerald-400">[Lighting: 99.4%]</span>
+        </div>
+      </motion.div>
+
+      <motion.div
+        initial={{ opacity: 0, scale: 0.8 }}
+        animate={{ opacity: showProduct ? 1 : 0, scale: showProduct ? 1 : 0.8 }}
+        className="absolute bottom-[20%] right-[25%]"
+      >
+        <div className="px-2 py-1 rounded bg-emerald-500/20 border border-emerald-400 backdrop-blur-sm">
+          <span className="text-[9px] font-mono text-emerald-300 font-semibold">[Product_Placed]</span>
+        </div>
+      </motion.div>
+
+      <div className="absolute bottom-3 left-3 right-3">
+        <div className="h-1 bg-black/50 rounded-full overflow-hidden">
+          <div className="h-full bg-gradient-to-r from-emerald-500 to-emerald-400 transition-all duration-75" style={{ width: `${scanProgress}%` }} />
+        </div>
+        <p className="text-[9px] font-mono text-emerald-400 text-center mt-1">Surface Engine: {Math.round(scanProgress)}%</p>
+      </div>
+    </div>
+  );
+}
+
 function NeuralGrid() {
   return (
     <div className="absolute inset-0 overflow-hidden pointer-events-none z-10">
