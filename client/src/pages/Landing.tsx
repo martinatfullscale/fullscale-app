@@ -251,8 +251,8 @@ function SurfaceEngineDemo({ isInView, aspectRatio = "16:9" }: { isInView: boole
         </div>
       </div>
 
-      {/* Stats cards - always show green success state for professional Kling AI aesthetic */}
-      <div className="grid grid-cols-3 gap-3">
+      {/* Stats cards - responsive grid: stack on mobile, 2 cols on sm, 3 cols on md+ */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 mt-4">
         <div className={`rounded-xl p-3 border transition-all duration-300 ${scanPhase > 30 ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-white/5 border-white/10'}`}>
           <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Confidence</p>
           <p className={`text-xl font-bold font-mono ${scanPhase > 30 ? 'text-emerald-400' : 'text-yellow-400'}`}>
@@ -933,9 +933,9 @@ export default function Landing() {
         </motion.div>
       </section>
 
-      {/* Mobile Floating Metrics */}
-      <div className="lg:hidden container mx-auto px-6 py-6 relative z-20">
-        <div className="grid grid-cols-3 gap-2">
+      {/* Mobile Floating Metrics - responsive: stack on mobile, 3 cols on sm+ */}
+      <div className="lg:hidden container mx-auto px-6 py-8 relative z-20 mt-8">
+        <div className="grid grid-cols-1 min-[480px]:grid-cols-3 gap-3">
           <GlassMetricCard icon={Eye} label="Lighting" value="98%" sublabel="Match" color="emerald" testId="metric-lighting-mobile" />
           <GlassMetricCard icon={Timer} label="Latency" value="0.02ms" sublabel="Tracking" color="primary" testId="metric-latency-mobile" />
           <GlassMetricCard icon={Cpu} label="Inpainting" value="Active" sublabel="AI" color="yellow" testId="metric-inpainting-mobile" />
