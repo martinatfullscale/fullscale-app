@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { useHybridMode } from "@/hooks/use-hybrid-mode";
+import { usePitchMode } from "@/contexts/pitch-mode-context";
 import { apiRequest } from "@/lib/queryClient";
 
 interface MarketplaceOpportunity {
@@ -173,7 +174,8 @@ interface DiscoveryResponse {
 export default function BrandMarketplace() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const { googleUser } = useHybridMode();
+  const { googleUser, mode } = useHybridMode();
+  const { isPitchMode } = usePitchMode();
   
   const [searchQuery, setSearchQuery] = useState("");
   const [genreFilter, setGenreFilter] = useState("All");
@@ -181,13 +183,13 @@ export default function BrandMarketplace() {
   const [sceneTypeFilter, setSceneTypeFilter] = useState("All");
   const [buyingId, setBuyingId] = useState<number | null>(null);
 
-  // Unified query: use auth endpoint when authenticated, demo endpoint otherwise
+  // PRIORITY: isPitchMode toggle is checked FIRST - overrides authentication state
   const isAuthenticated = !!googleUser;
-  const endpoint = isAuthenticated ? "/api/brand/discovery" : "/api/demo/brand-discovery";
-  const queryMode = isAuthenticated ? "auth" : "demo";
+  const endpoint = isPitchMode ? "/api/demo/brand-discovery" : (isAuthenticated ? "/api/brand/discovery" : "/api/demo/brand-discovery");
+  const queryMode = isPitchMode ? "demo" : (isAuthenticated ? "auth" : "demo");
   
   const { data: discoveryData, isLoading: isLoadingOpportunities } = useQuery<DiscoveryResponse>({
-    queryKey: ["opportunities", queryMode],
+    queryKey: ["opportunities", isPitchMode, isAuthenticated],
     queryFn: async () => {
       console.log(`[BrandMarketplace] Fetching opportunities from ${endpoint} (mode: ${queryMode})`);
       const res = await fetch(endpoint, { credentials: "include" });

@@ -487,14 +487,15 @@ export default function Library() {
   const [selectedVideo, setSelectedVideo] = useState<DisplayVideo | null>(null);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
   
-  const isRealMode = mode === "real" && !isPitchMode;
+  // PRIORITY: isPitchMode toggle is checked FIRST - overrides authentication state
+  const isRealMode = !isPitchMode && mode === "real";
 
-  // Unified query: use auth endpoint when authenticated, demo endpoint otherwise
-  const endpoint = isRealMode ? "/api/video-index/with-opportunities" : "/api/demo/videos";
-  const queryMode = isRealMode ? "auth" : "demo";
+  // Demo endpoint when pitch mode is ON or user not authenticated
+  const endpoint = isPitchMode ? "/api/demo/videos" : (mode === "real" ? "/api/video-index/with-opportunities" : "/api/demo/videos");
+  const queryMode = isPitchMode ? "demo" : (mode === "real" ? "auth" : "demo");
   
   const { data: videoData, isLoading: isLoadingVideos, isError: isVideosError } = useQuery<VideoIndexResponse>({
-    queryKey: ["videos", queryMode],
+    queryKey: ["videos", isPitchMode, mode],
     queryFn: async () => {
       console.log(`[Library] Fetching videos from ${endpoint} (mode: ${queryMode})`);
       const res = await fetch(endpoint, { credentials: "include" });

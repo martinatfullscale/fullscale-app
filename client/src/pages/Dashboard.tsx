@@ -104,7 +104,8 @@ export default function Dashboard() {
   const { isPitchMode, setPitchMode } = usePitchMode();
 
   const isDemoMode = mode === "demo";
-  const isRealMode = mode === "real";
+  // PRIORITY: isPitchMode toggle is checked FIRST - overrides authentication state
+  const isRealMode = !isPitchMode && mode === "real";
   
   // Super admin check - only super admin can toggle simulation mode
   const currentUserEmail = googleUser?.email || user?.email || "";
@@ -117,7 +118,7 @@ export default function Dashboard() {
   const showSimulationData = isPitchMode;
 
   const { data: youtubeStatus, isLoading: isCheckingYoutube } = useQuery<YoutubeStatus>({
-    queryKey: ["/api/auth/youtube/status"],
+    queryKey: ["/api/auth/youtube/status", isPitchMode],
     queryFn: async () => {
       const res = await fetch("/api/auth/youtube/status", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch YouTube status");
@@ -127,7 +128,7 @@ export default function Dashboard() {
   });
 
   const { data: channelData, isLoading: isLoadingChannel } = useQuery<YoutubeChannel>({
-    queryKey: ["/api/youtube/channel"],
+    queryKey: ["/api/youtube/channel", isPitchMode],
     queryFn: async () => {
       const res = await fetch("/api/youtube/channel", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch channel data");
@@ -137,7 +138,7 @@ export default function Dashboard() {
   });
 
   const { data: videoIndexData, isLoading: isLoadingVideoIndex } = useQuery<VideoIndexResponse>({
-    queryKey: ["/api/video-index/with-opportunities"],
+    queryKey: ["/api/video-index/with-opportunities", isPitchMode],
     queryFn: async () => {
       const res = await fetch("/api/video-index/with-opportunities", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch video index");
@@ -148,7 +149,7 @@ export default function Dashboard() {
   });
 
   const { data: marketplaceStats } = useQuery<MarketplaceStats>({
-    queryKey: ["/api/marketplace/stats"],
+    queryKey: ["/api/marketplace/stats", isPitchMode],
     queryFn: async () => {
       const res = await fetch("/api/marketplace/stats", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch marketplace stats");
