@@ -984,14 +984,14 @@ export default function Landing() {
         <OpportunityFeed />
       </section>
 
-      {/* Partners Section - Infinite Marquee with Glassmorphism */}
+      {/* Partners Section - Seamless Infinite Marquee with Glassmorphism */}
       <section className="py-4 md:py-12 overflow-hidden max-[480px]:max-h-[100px]">
         <p className="text-[10px] md:text-xs uppercase tracking-widest text-muted-foreground/50 mb-3 md:mb-6 font-medium text-center">Backed by Industry Leaders</p>
         <div className="relative w-full overflow-hidden">
-          <div className="flex animate-partner-marquee hover:[animation-play-state:paused]">
-            {[...Array(2)].map((_, setIndex) => (
-              <div key={setIndex} className="flex items-center gap-8 md:gap-16 px-4 shrink-0">
-                <div className="p-3 md:p-4 rounded-xl backdrop-blur-md bg-white/5 border border-white/10 hover:bg-white/10 hover:scale-105 hover:shadow-lg hover:shadow-white/5 transition-all duration-300">
+          <div className="flex w-max animate-partner-marquee hover:[animation-play-state:paused]">
+            {[...Array(4)].map((_, setIndex) => (
+              <div key={setIndex} className="flex items-center shrink-0" style={{ gap: '4rem' }}>
+                <div className="p-3 md:p-4 rounded-xl backdrop-blur-md bg-white/5 border border-white/10 hover:bg-white/10 hover:scale-105 hover:shadow-lg hover:shadow-white/5 transition-all duration-300 ml-16">
                   <img src={logoBlackAmbition} alt="Black Ambition" className="h-6 md:h-10 w-auto opacity-70 hover:opacity-100 transition-opacity" />
                 </div>
                 <div className="p-3 md:p-4 rounded-xl backdrop-blur-md bg-white/5 border border-white/10 hover:bg-white/10 hover:scale-105 hover:shadow-lg hover:shadow-white/5 transition-all duration-300">
@@ -1010,10 +1010,10 @@ export default function Landing() {
         <style>{`
           @keyframes partner-marquee {
             0% { transform: translateX(0); }
-            100% { transform: translateX(-50%); }
+            100% { transform: translateX(-25%); }
           }
           .animate-partner-marquee {
-            animation: partner-marquee 20s linear infinite;
+            animation: partner-marquee 25s linear infinite;
           }
         `}</style>
       </section>
