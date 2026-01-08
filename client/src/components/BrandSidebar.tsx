@@ -46,8 +46,8 @@ export function BrandSidebar() {
 
   return (
     <div className="w-64 h-screen bg-card border-r border-border fixed left-0 top-0 flex flex-col p-6 z-20">
-      <Link href="/marketplace" className="block px-2 mb-10" data-testid="link-logo-marketplace">
-        <img src={logoUrl} alt="FullScale" className="h-10 w-auto" />
+      <Link href="/home" className="block px-2 mb-10 cursor-pointer" data-testid="link-logo-home">
+        <img src={logoUrl} alt="FullScale" className="h-10 w-auto cursor-pointer" />
       </Link>
 
       <nav className="flex-1 space-y-2">

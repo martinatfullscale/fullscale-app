@@ -102,21 +102,28 @@ function Router() {
   const currentRole = userTypeData?.userType || "creator";
 
   return (
-    <AuthenticatedLayout userType={currentRole}>
-      <Switch>
-        <Route path="/" component={Dashboard} />
-        <Route path="/dashboard" component={Dashboard} />
-        <Route path="/privacy" component={Privacy} />
-        <Route path="/terms" component={Terms} />
-        <Route path="/library" component={Library} />
-        <Route path="/opportunities" component={Opportunities} />
-        <Route path="/marketplace" component={BrandMarketplace} />
-        <Route path="/campaigns" component={Campaigns} />
-        <Route path="/settings" component={Settings} />
-        <Route path="/earnings" component={Dashboard} />
-        <Route component={NotFound} />
-      </Switch>
-    </AuthenticatedLayout>
+    <Switch>
+      <Route path="/home" component={Landing} />
+      <Route>
+        {() => (
+          <AuthenticatedLayout userType={currentRole}>
+            <Switch>
+              <Route path="/" component={Dashboard} />
+              <Route path="/dashboard" component={Dashboard} />
+              <Route path="/privacy" component={Privacy} />
+              <Route path="/terms" component={Terms} />
+              <Route path="/library" component={Library} />
+              <Route path="/opportunities" component={Opportunities} />
+              <Route path="/marketplace" component={BrandMarketplace} />
+              <Route path="/campaigns" component={Campaigns} />
+              <Route path="/settings" component={Settings} />
+              <Route path="/earnings" component={Dashboard} />
+              <Route component={NotFound} />
+            </Switch>
+          </AuthenticatedLayout>
+        )}
+      </Route>
+    </Switch>
   );
 }
 
