@@ -498,10 +498,19 @@ export default function Library() {
   });
 
   // Fetch demo videos from database (no auth required) - always enabled as fallback
-  const { data: demoData, isLoading: isLoadingDemoVideos } = useQuery<VideoIndexResponse>({
+  const { data: demoData, isLoading: isLoadingDemoVideos, error: demoError } = useQuery<VideoIndexResponse>({
     queryKey: ["/api/demo/videos"],
+    queryFn: async () => {
+      console.log("[Library] Fetching demo videos from /api/demo/videos");
+      const res = await fetch("/api/demo/videos", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch demo videos");
+      const data = await res.json();
+      console.log("[Library] Demo videos fetched:", data.videos?.length, "items");
+      return data;
+    },
     enabled: true, // Always fetch to ensure data is available
-    retry: 1,
+    retry: 2,
+    staleTime: 0, // Always refetch to get fresh data
   });
 
   const syncMutation = useMutation({
@@ -673,7 +682,7 @@ export default function Library() {
   const demoVideosFormatted: DisplayVideo[] = demoVideos.map(formatIndexedVideo);
   
   // Debug logging
-  console.log("[Library] isRealMode:", isRealMode, "demoVideos.length:", demoVideos.length, "isLoadingDemoVideos:", isLoadingDemoVideos);
+  console.log("[Library] isRealMode:", isRealMode, "demoVideos.length:", demoVideos.length, "isLoadingDemoVideos:", isLoadingDemoVideos, "demoError:", demoError);
   
   // Priority: real authenticated data > database demo data > hardcoded fallback
   // Always use database demo data when available (wait for it to load)

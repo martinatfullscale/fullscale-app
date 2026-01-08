@@ -188,9 +188,19 @@ export default function BrandMarketplace() {
   });
   
   // Always fetch demo data as fallback (no auth required)
-  const { data: demoDiscoveryData } = useQuery<DiscoveryResponse>({
+  const { data: demoDiscoveryData, error: demoError } = useQuery<DiscoveryResponse>({
     queryKey: ["/api/demo/brand-discovery"],
+    queryFn: async () => {
+      console.log("[BrandMarketplace] Fetching demo data from /api/demo/brand-discovery");
+      const res = await fetch("/api/demo/brand-discovery", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch demo opportunities");
+      const data = await res.json();
+      console.log("[BrandMarketplace] Demo opportunities fetched:", data.opportunities?.length, "items");
+      return data;
+    },
     enabled: true, // Always fetch to ensure data is available
+    staleTime: 0, // Always refetch to get fresh data
+    retry: 2,
   });
 
   const buyMutation = useMutation({
