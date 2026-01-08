@@ -19,6 +19,22 @@ import gamingFrame from "@assets/generated_images/gaming_stream_frame.png";
 import { Footer } from "@/components/Footer";
 import { Slider } from "@/components/ui/slider";
 
+// Aspect ratio configuration for FOV compensation
+const ASPECT_CONFIGS = {
+  "16:9": {
+    detectionBand: { yMin: 30, yMax: 75 },    // Wide detection area
+    horizontalSpread: 1.0,                      // Full horizontal spread
+    perspectiveSkew: 0,                         // No vertical tilt compensation
+    confidenceBoost: 1.0,                       // Normal confidence ramp
+  },
+  "9:16": {
+    detectionBand: { yMin: 70, yMax: 100 },   // Narrow-Angle: Bottom 30% of frame
+    horizontalSpread: 0.7,                      // Reduced horizontal spread (center-biased)
+    perspectiveSkew: 5,                         // Compensate for iPhone vertical FOV tilt
+    confidenceBoost: 1.2,                       // Faster confidence for limited context
+  }
+};
+
 function SurfaceEngineDemo({ isInView, aspectRatio = "16:9" }: { isInView: boolean; aspectRatio?: "16:9" | "9:16" }) {
   const [scanPhase, setScanPhase] = useState(0);
   const [confidence, setConfidence] = useState(0);
@@ -29,8 +45,12 @@ function SurfaceEngineDemo({ isInView, aspectRatio = "16:9" }: { isInView: boole
   const [detectionMode, setDetectionMode] = useState<'planar' | 'feature-point'>('planar');
   const [pinnedCoords, setPinnedCoords] = useState<{x: number, y: number}[] | null>(null);
   const [subPixelActive, setSubPixelActive] = useState(false);
+  const [lostSurfaceFrames, setLostSurfaceFrames] = useState(0);
+  const [lastStableCoords, setLastStableCoords] = useState<{x: number, y: number}[] | null>(null);
 
   const isVertical = aspectRatio === "9:16";
+  const config = ASPECT_CONFIGS[aspectRatio];
+  const LATENCY_BUFFER_FRAMES = 4; // ~0.02ms at 50ms interval = persist for 4 frames during pan
 
   useEffect(() => {
     if (!isInView) {
@@ -43,13 +63,31 @@ function SurfaceEngineDemo({ isInView, aspectRatio = "16:9" }: { isInView: boole
       setDetectionMode('planar');
       setPinnedCoords(null);
       setSubPixelActive(false);
+      setLostSurfaceFrames(0);
+      setLastStableCoords(null);
       return;
     }
 
-    // Adjust base points for vertical frames - wider relative detection area
+    // Narrow-Angle Calibration: Focus on detection band (bottom 30% for vertical)
+    const { yMin, yMax } = config.detectionBand;
+    const bandHeight = yMax - yMin;
+    
+    // Vertical FOV Compensation: Apply horizontal spread compression toward center
+    const hSpread = config.horizontalSpread;
+    const centerX = 50;
+    const skew = config.perspectiveSkew;
+    
+    // Generate base points within the detection band with FOV compensation
     const basePoints = isVertical 
-      ? [{ x: 10, y: 45 }, { x: 90, y: 43 }, { x: 92, y: 68 }, { x: 8, y: 70 }]
-      : [{ x: 15, y: 35 }, { x: 85, y: 32 }, { x: 88, y: 72 }, { x: 12, y: 75 }];
+      ? [
+          { x: centerX - 40 * hSpread, y: yMin + bandHeight * 0.1 + skew },
+          { x: centerX + 40 * hSpread, y: yMin + bandHeight * 0.05 + skew },
+          { x: centerX + 42 * hSpread, y: yMin + bandHeight * 0.85 },
+          { x: centerX - 42 * hSpread, y: yMin + bandHeight * 0.9 }
+        ]
+      : [
+          { x: 15, y: 35 }, { x: 85, y: 32 }, { x: 88, y: 72 }, { x: 12, y: 75 }
+        ];
 
     const interval = setInterval(() => {
       setScanPhase(prev => {
@@ -60,16 +98,29 @@ function SurfaceEngineDemo({ isInView, aspectRatio = "16:9" }: { isInView: boole
           setSubPixelActive(true);
         }
         
-        // Stability buffer: once pinned, use pinned coordinates
+        // Persistence: If we have pinned coords, use them (with latency buffer for pans)
         if (pinnedCoords) {
+          // Save as last stable for persistence during tracking loss
+          if (!lastStableCoords) {
+            setLastStableCoords(pinnedCoords);
+          }
           setHomographyPoints(pinnedCoords);
+          setLostSurfaceFrames(0); // Reset lost frame counter
         } else if (next > 20 && next < 45) {
           // Sub-pixel refinement for vertical frames = tighter jitter tolerance
           const jitterScale = isVertical && subPixelActive ? 0.3 : 1;
-          setHomographyPoints(basePoints.map(p => ({
+          
+          // Apply FOV-compensated jitter within detection band
+          const jitteredPoints = basePoints.map(p => ({
             x: p.x + (Math.random() - 0.5) * (next < 35 ? 3 * jitterScale : 0.5 * jitterScale),
-            y: p.y + (Math.random() - 0.5) * (next < 35 ? 2 * jitterScale : 0.3 * jitterScale)
-          })));
+            y: Math.max(yMin, Math.min(yMax, p.y + (Math.random() - 0.5) * (next < 35 ? 2 * jitterScale : 0.3 * jitterScale)))
+          }));
+          
+          setHomographyPoints(jitteredPoints);
+        } else if (lastStableCoords && lostSurfaceFrames < LATENCY_BUFFER_FRAMES) {
+          // Persistence: Use 0.02ms tracking latency to "remember" desk position
+          setHomographyPoints(lastStableCoords);
+          setLostSurfaceFrames(prev => prev + 1);
         }
         
         // Feature-point fallback for vertical frames when planar struggles
@@ -82,13 +133,14 @@ function SurfaceEngineDemo({ isInView, aspectRatio = "16:9" }: { isInView: boole
           // Pin coordinates in memory for stability buffer
           if (!pinnedCoords) {
             setPinnedCoords(basePoints);
+            setLastStableCoords(basePoints);
           }
           setHomographyPoints(basePoints);
         }
         
         if (next > 25) {
-          // Faster confidence ramp for feature-point mode
-          const boostMultiplier = detectionMode === 'feature-point' ? 1.3 : 1;
+          // Faster confidence ramp for feature-point mode and vertical frames
+          const boostMultiplier = (detectionMode === 'feature-point' ? 1.3 : 1) * config.confidenceBoost;
           const targetConfidence = next < 50 ? (60 + Math.random() * 20) * boostMultiplier : 92 + Math.random() * 6;
           setConfidence(prev => Math.min(98, prev + (targetConfidence - prev) * 0.1));
         }
@@ -99,8 +151,10 @@ function SurfaceEngineDemo({ isInView, aspectRatio = "16:9" }: { isInView: boole
         }
         
         if (next > 35) {
-          const targetLatency = planeAnchored ? 8 + Math.random() * 4 : 25 + Math.random() * 15;
-          setTrackingLatency(prev => prev + (targetLatency - prev) * 0.15);
+          // Faster latency convergence when persistence is active
+          const latencyTarget = planeAnchored ? 8 + Math.random() * 4 : 25 + Math.random() * 15;
+          const persistenceBonus = lastStableCoords ? 0.8 : 1;
+          setTrackingLatency(prev => prev + (latencyTarget * persistenceBonus - prev) * 0.15);
         }
         
         if (next >= 100) return 0;
@@ -109,7 +163,7 @@ function SurfaceEngineDemo({ isInView, aspectRatio = "16:9" }: { isInView: boole
     }, 50);
 
     return () => clearInterval(interval);
-  }, [isInView, planeAnchored, isVertical, subPixelActive, detectionMode, pinnedCoords, confidence]);
+  }, [isInView, planeAnchored, isVertical, subPixelActive, detectionMode, pinnedCoords, confidence, config, lastStableCoords, lostSurfaceFrames]);
 
   const gridOpacity = confidence >= 85 ? 0.8 : 0.3 + Math.sin(Date.now() / 200) * 0.2;
   const isGridStable = confidence >= 85;
