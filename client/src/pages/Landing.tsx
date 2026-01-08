@@ -745,7 +745,7 @@ function GlassMetricCard({ icon: Icon, label, value, sublabel, color = "primary"
       whileInView={{ opacity: 1, y: 0 }}
       viewport={{ once: true }}
       transition={{ duration: 0.5 }}
-      className={`relative p-2 md:p-4 rounded-xl md:rounded-2xl backdrop-blur-xl border ${colorClasses[color]} shadow-lg max-[480px]:h-[70px] max-[480px]:flex max-[480px]:items-center`}
+      className={`relative p-1.5 md:p-4 rounded-lg md:rounded-2xl backdrop-blur-xl border ${colorClasses[color]} shadow-lg max-[480px]:h-[55px] max-[480px]:flex max-[480px]:items-center`}
       data-testid={testId}
     >
       <div className="absolute inset-0 rounded-xl md:rounded-2xl bg-gradient-to-br from-white/5 to-transparent pointer-events-none" />
@@ -874,7 +874,7 @@ export default function Landing() {
         </nav>
 
         {/* Hero Content - increased mobile padding for header clearance */}
-        <div className="absolute inset-0 flex items-center justify-center z-20 pt-28 max-[480px]:pt-[100px] md:pt-0">
+        <div className="absolute inset-0 flex items-center justify-center z-20 pt-28 max-[480px]:pt-[110px] md:pt-0">
           <div className="container mx-auto px-6 text-center">
             <motion.div
               initial={{ opacity: 0, y: 30 }}
@@ -918,8 +918,8 @@ export default function Landing() {
                 </button>
               </div>
 
-              {/* Mobile Metric Cards - compact stacked layout on mobile only */}
-              <div className="lg:hidden flex flex-col gap-2 mt-6 w-full px-4">
+              {/* Mobile Metric Cards - ultra-compact stacked layout on mobile only */}
+              <div className="lg:hidden flex flex-col gap-1 mt-4 w-full px-4">
                 <GlassMetricCard icon={Eye} label="Lighting" value="98%" sublabel="Match" color="emerald" testId="metric-lighting-mobile" />
                 <GlassMetricCard icon={Timer} label="Latency" value="0.02ms" sublabel="Tracking" color="primary" testId="metric-latency-mobile" />
                 <GlassMetricCard icon={Cpu} label="Inpainting" value="Active" sublabel="AI" color="yellow" testId="metric-inpainting-mobile" />
@@ -984,22 +984,38 @@ export default function Landing() {
         <OpportunityFeed />
       </section>
 
-      {/* Partners Section - compact on mobile */}
-      <section className="py-6 md:py-16 container mx-auto px-6">
-        <motion.div
-          initial={{ opacity: 0 }}
-          whileInView={{ opacity: 1 }}
-          viewport={{ once: true }}
-          className="w-full max-w-4xl mx-auto py-4 md:py-8 border-t border-b border-white/5"
-        >
-          <p className="text-[10px] md:text-xs uppercase tracking-widest text-muted-foreground/50 mb-3 md:mb-6 font-medium text-center">Backed by Industry Leaders</p>
-          <div className="flex flex-row flex-wrap md:flex-nowrap items-center justify-center gap-6 md:gap-12">
-            <img src={logoBlackAmbition} alt="Black Ambition" className="h-6 md:h-10 w-auto opacity-60 hover:opacity-100 transition-opacity" />
-            <img src={logoMayDavis} alt="May Davis Partners" className="h-10 md:h-16 w-auto opacity-60 hover:opacity-100 transition-opacity" />
-            <img src={logoElementa} alt="Elementa" className="h-10 md:h-16 w-auto opacity-60 hover:opacity-100 transition-opacity" />
-            <img src={logoNue} alt="Nue Agency" className="h-6 md:h-10 w-auto opacity-60 hover:opacity-100 transition-opacity" />
+      {/* Partners Section - Infinite Marquee with Glassmorphism */}
+      <section className="py-4 md:py-12 overflow-hidden max-[480px]:max-h-[100px]">
+        <p className="text-[10px] md:text-xs uppercase tracking-widest text-muted-foreground/50 mb-3 md:mb-6 font-medium text-center">Backed by Industry Leaders</p>
+        <div className="relative w-full overflow-hidden">
+          <div className="flex animate-partner-marquee hover:[animation-play-state:paused]">
+            {[...Array(2)].map((_, setIndex) => (
+              <div key={setIndex} className="flex items-center gap-8 md:gap-16 px-4 shrink-0">
+                <div className="p-3 md:p-4 rounded-xl backdrop-blur-md bg-white/5 border border-white/10 hover:bg-white/10 hover:scale-105 hover:shadow-lg hover:shadow-white/5 transition-all duration-300">
+                  <img src={logoBlackAmbition} alt="Black Ambition" className="h-6 md:h-10 w-auto opacity-70 hover:opacity-100 transition-opacity" />
+                </div>
+                <div className="p-3 md:p-4 rounded-xl backdrop-blur-md bg-white/5 border border-white/10 hover:bg-white/10 hover:scale-105 hover:shadow-lg hover:shadow-white/5 transition-all duration-300">
+                  <img src={logoMayDavis} alt="May Davis Partners" className="h-8 md:h-12 w-auto opacity-70 hover:opacity-100 transition-opacity" />
+                </div>
+                <div className="p-3 md:p-4 rounded-xl backdrop-blur-md bg-white/5 border border-white/10 hover:bg-white/10 hover:scale-105 hover:shadow-lg hover:shadow-white/5 transition-all duration-300">
+                  <img src={logoElementa} alt="Elementa" className="h-8 md:h-12 w-auto opacity-70 hover:opacity-100 transition-opacity" />
+                </div>
+                <div className="p-3 md:p-4 rounded-xl backdrop-blur-md bg-white/5 border border-white/10 hover:bg-white/10 hover:scale-105 hover:shadow-lg hover:shadow-white/5 transition-all duration-300">
+                  <img src={logoNue} alt="Nue Agency" className="h-6 md:h-10 w-auto opacity-70 hover:opacity-100 transition-opacity" />
+                </div>
+              </div>
+            ))}
           </div>
-        </motion.div>
+        </div>
+        <style>{`
+          @keyframes partner-marquee {
+            0% { transform: translateX(0); }
+            100% { transform: translateX(-50%); }
+          }
+          .animate-partner-marquee {
+            animation: partner-marquee 20s linear infinite;
+          }
+        `}</style>
       </section>
 
       {/* Features Section - compact on mobile */}
