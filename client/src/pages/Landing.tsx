@@ -81,13 +81,20 @@ function NeuralGrid() {
 function NeuralScanOverlay({ isVisible, onRevealProduct }: { isVisible: boolean; onRevealProduct: (revealed: boolean) => void }) {
   const [scanProgress, setScanProgress] = useState(0);
   const [showProductLabel, setShowProductLabel] = useState(false);
+  const [shouldReveal, setShouldReveal] = useState(false);
   const productRevealThreshold = 70;
+
+  useEffect(() => {
+    if (shouldReveal) {
+      onRevealProduct(true);
+    }
+  }, [shouldReveal, onRevealProduct]);
 
   useEffect(() => {
     if (!isVisible) {
       setScanProgress(0);
       setShowProductLabel(false);
-      onRevealProduct(false);
+      setShouldReveal(false);
       return;
     }
 
@@ -95,19 +102,18 @@ function NeuralScanOverlay({ isVisible, onRevealProduct }: { isVisible: boolean;
       setScanProgress(prev => {
         if (prev >= 100) {
           setShowProductLabel(false);
-          onRevealProduct(false);
           return 0;
         }
         if (prev >= productRevealThreshold && prev < productRevealThreshold + 2) {
           setShowProductLabel(true);
-          onRevealProduct(true);
+          setShouldReveal(true);
         }
         return prev + 2;
       });
     }, 50);
 
     return () => clearInterval(interval);
-  }, [isVisible, onRevealProduct]);
+  }, [isVisible]);
 
   if (!isVisible) return null;
 
@@ -837,25 +843,28 @@ export default function Landing() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/95 backdrop-blur-md p-4 overflow-y-auto"
+            className="fixed inset-0 z-50 bg-black/95 backdrop-blur-md overflow-y-auto"
             onClick={() => setShowDemoModal(false)}
           >
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              transition={{ duration: 0.3 }}
-              className="relative w-full max-w-6xl my-8"
-              onClick={(e) => e.stopPropagation()}
+            <button
+              onClick={() => setShowDemoModal(false)}
+              className="fixed top-6 right-6 z-[200] w-12 h-12 flex items-center justify-center rounded-full bg-white/10 backdrop-blur-xl border border-white/30 text-white hover:text-white hover:bg-white/30 transition-all duration-200 shadow-xl shadow-black/40"
+              style={{ boxShadow: '0 0 20px rgba(16, 185, 129, 0.3), 0 4px 20px rgba(0,0,0,0.5)' }}
+              data-testid="button-demo-close"
             >
-              <div className="relative rounded-3xl border border-white/10 bg-gradient-to-br from-black/80 via-black/90 to-black/80 backdrop-blur-2xl shadow-2xl overflow-hidden">
-                <button
-                  onClick={() => setShowDemoModal(false)}
-                  className="absolute top-4 right-4 z-[100] w-10 h-10 flex items-center justify-center rounded-full bg-white/10 backdrop-blur-md border border-white/20 text-white/80 hover:text-white hover:bg-white/20 transition-all duration-200 shadow-lg shadow-black/20"
-                  data-testid="button-demo-close"
-                >
-                  <X className="w-5 h-5" />
-                </button>
+              <X className="w-6 h-6" />
+            </button>
+            
+            <div className="min-h-full flex items-start justify-center p-4 pt-8 pb-16">
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 20 }}
+                transition={{ duration: 0.3 }}
+                className="relative w-full max-w-6xl"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="relative rounded-3xl border border-white/10 bg-gradient-to-br from-black/80 via-black/90 to-black/80 backdrop-blur-2xl shadow-2xl overflow-hidden">
                 <div className="absolute top-0 left-1/4 w-96 h-96 bg-primary/20 rounded-full blur-[120px] pointer-events-none" />
                 <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-emerald-500/10 rounded-full blur-[120px] pointer-events-none" />
                 
@@ -1015,6 +1024,7 @@ export default function Landing() {
                 </div>
               </div>
             </motion.div>
+            </div>
           </motion.div>
         )}
       </AnimatePresence>
