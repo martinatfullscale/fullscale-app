@@ -18,7 +18,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { SiSony, SiNike, SiSquarespace } from "react-icons/si";
+import type { MonetizationItem } from "@shared/schema";
 
 interface VideoOpportunity {
   id: number;
@@ -36,301 +36,44 @@ interface MarketplaceResponse {
   totalSurfaces: number;
 }
 
-// Brand color styles for non-icon brands
-const brandColors: Record<string, string> = {
-  "LensEdit": "bg-violet-500",
-  "StreamFlow": "bg-cyan-500",
-  "PixelPerfect": "bg-pink-500",
-  "WealthStack": "bg-emerald-600",
-  "CoinBase Pro": "bg-blue-600",
-  "Ledgerly": "bg-teal-500",
-  "HydraFlask": "bg-sky-400",
-  "Lumina Desk": "bg-amber-400",
-  "Urban Wear": "bg-zinc-600",
-  "CoffeeClub": "bg-orange-700",
-  "CloudScale": "bg-indigo-500",
-  "DevOps Now": "bg-rose-500",
-  "TeamSync": "bg-purple-500",
-  "TechFlow": "bg-green-500",
-  "DataVault": "bg-slate-500",
-  "CreatorOS": "bg-fuchsia-500",
-  "BrandBoost": "bg-yellow-500",
-};
+// Brand color styles - generate from brand name hash
+const BRAND_COLORS = [
+  "bg-violet-500", "bg-cyan-500", "bg-pink-500", "bg-emerald-600",
+  "bg-blue-600", "bg-teal-500", "bg-sky-400", "bg-amber-400",
+  "bg-indigo-500", "bg-rose-500", "bg-purple-500", "bg-green-500",
+  "bg-slate-500", "bg-fuchsia-500", "bg-yellow-500", "bg-orange-500"
+];
 
-interface BrandOffer {
-  brand: string;
-  icon?: React.ComponentType<{ className?: string }>;
-  brandColor?: string;
-  campaign: string;
-  targetSurfaces: string[];
-  bidAmount: string;
-  status: string;
-  statusColor: string;
-  description: string;
-  category: string;
+function getBrandColor(brandName: string): string {
+  let hash = 0;
+  for (let i = 0; i < brandName.length; i++) {
+    hash = brandName.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return BRAND_COLORS[Math.abs(hash) % BRAND_COLORS.length];
 }
 
-const brandOffers: BrandOffer[] = [
-  // Original brands with icons
-  {
-    brand: "Sony",
-    icon: SiSony,
-    campaign: "Alpha Creator Series",
-    targetSurfaces: ["Desk", "Monitor", "Laptop"],
-    bidAmount: "$12,500",
-    status: "Active",
-    statusColor: "bg-emerald-500/20 text-emerald-400",
-    description: "Looking for tech workspace setups for camera placement",
-    category: "Tech"
-  },
-  {
-    brand: "Nike",
-    icon: SiNike,
-    campaign: "Just Do It 2025",
-    targetSurfaces: ["Wall", "Shelf", "Table"],
-    bidAmount: "$18,000",
-    status: "Urgent",
-    statusColor: "bg-red-500/20 text-red-400",
-    description: "Lifestyle content with visible shoe displays or athletic gear",
-    category: "Lifestyle"
-  },
-  {
-    brand: "Squarespace",
-    icon: SiSquarespace,
-    campaign: "Build Your Presence",
-    targetSurfaces: ["Monitor", "Laptop", "Desk"],
-    bidAmount: "$8,500",
-    status: "Recruiting",
-    statusColor: "bg-blue-500/20 text-blue-400",
-    description: "Tech tutorials showing website creation workflows",
-    category: "SaaS"
-  },
-  // Creator Tools Category
-  {
-    brand: "LensEdit",
-    brandColor: brandColors["LensEdit"],
-    campaign: "Launch Partnership",
-    targetSurfaces: ["Monitor", "Desk", "Laptop"],
-    bidAmount: "$15,000",
-    status: "Active",
-    statusColor: "bg-emerald-500/20 text-emerald-400",
-    description: "Partner with us to demo our new AI-powered video editing suite",
-    category: "Creator Tools"
-  },
-  {
-    brand: "LensEdit",
-    brandColor: brandColors["LensEdit"],
-    campaign: "Tutorial Series",
-    targetSurfaces: ["Monitor", "Laptop"],
-    bidAmount: "$7,500",
-    status: "Recruiting",
-    statusColor: "bg-blue-500/20 text-blue-400",
-    description: "Create educational content showcasing color grading workflows",
-    category: "Creator Tools"
-  },
-  {
-    brand: "StreamFlow",
-    brandColor: brandColors["StreamFlow"],
-    campaign: "Launch Partnership",
-    targetSurfaces: ["Desk", "Monitor", "Wall"],
-    bidAmount: "$22,000",
-    status: "Urgent",
-    statusColor: "bg-red-500/20 text-red-400",
-    description: "Looking for streamers to showcase our new multi-platform dashboard",
-    category: "Creator Tools"
-  },
-  {
-    brand: "PixelPerfect",
-    brandColor: brandColors["PixelPerfect"],
-    campaign: "Tutorial Series",
-    targetSurfaces: ["Laptop", "Desk"],
-    bidAmount: "$9,200",
-    status: "Active",
-    statusColor: "bg-emerald-500/20 text-emerald-400",
-    description: "Designers wanted to feature our vector illustration toolkit",
-    category: "Creator Tools"
-  },
-  // Fintech Category
-  {
-    brand: "WealthStack",
-    brandColor: brandColors["WealthStack"],
-    campaign: "Q1 User Acquisition",
-    targetSurfaces: ["Monitor", "Desk", "Laptop"],
-    bidAmount: "$25,000",
-    status: "Active",
-    statusColor: "bg-emerald-500/20 text-emerald-400",
-    description: "Finance creators to demo our portfolio tracking dashboard",
-    category: "Fintech"
-  },
-  {
-    brand: "CoinBase Pro",
-    brandColor: brandColors["CoinBase Pro"],
-    campaign: "Q1 User Acquisition",
-    targetSurfaces: ["Monitor", "Laptop", "Desk"],
-    bidAmount: "$20,000",
-    status: "Recruiting",
-    statusColor: "bg-blue-500/20 text-blue-400",
-    description: "Crypto educators for advanced trading features walkthrough",
-    category: "Fintech"
-  },
-  {
-    brand: "Ledgerly",
-    brandColor: brandColors["Ledgerly"],
-    campaign: "Q1 User Acquisition",
-    targetSurfaces: ["Desk", "Laptop"],
-    bidAmount: "$11,500",
-    status: "Active",
-    statusColor: "bg-emerald-500/20 text-emerald-400",
-    description: "Small business creators to showcase invoicing automation",
-    category: "Fintech"
-  },
-  // DTC/Lifestyle Category
-  {
-    brand: "HydraFlask",
-    brandColor: brandColors["HydraFlask"],
-    campaign: "Product Placement",
-    targetSurfaces: ["Desk", "Table", "Shelf"],
-    bidAmount: "$6,500",
-    status: "Active",
-    statusColor: "bg-emerald-500/20 text-emerald-400",
-    description: "Visible desk placement of our smart hydration bottle",
-    category: "DTC"
-  },
-  {
-    brand: "HydraFlask",
-    brandColor: brandColors["HydraFlask"],
-    campaign: "Unboxing",
-    targetSurfaces: ["Table", "Desk"],
-    bidAmount: "$5,000",
-    status: "Recruiting",
-    statusColor: "bg-blue-500/20 text-blue-400",
-    description: "Authentic unboxing and first impressions content",
-    category: "DTC"
-  },
-  {
-    brand: "Lumina Desk",
-    brandColor: brandColors["Lumina Desk"],
-    campaign: "Product Placement",
-    targetSurfaces: ["Desk", "Wall", "Monitor"],
-    bidAmount: "$14,000",
-    status: "Urgent",
-    statusColor: "bg-red-500/20 text-red-400",
-    description: "Showcase our LED smart desk in your workspace setup tours",
-    category: "DTC"
-  },
-  {
-    brand: "Urban Wear",
-    brandColor: brandColors["Urban Wear"],
-    campaign: "Product Placement",
-    targetSurfaces: ["Wall", "Shelf", "Table"],
-    bidAmount: "$8,000",
-    status: "Active",
-    statusColor: "bg-emerald-500/20 text-emerald-400",
-    description: "Fashion and lifestyle creators for streetwear visibility",
-    category: "Lifestyle"
-  },
-  {
-    brand: "CoffeeClub",
-    brandColor: brandColors["CoffeeClub"],
-    campaign: "Product Placement",
-    targetSurfaces: ["Desk", "Table"],
-    bidAmount: "$5,500",
-    status: "Recruiting",
-    statusColor: "bg-blue-500/20 text-blue-400",
-    description: "Morning routine content featuring our artisan coffee subscription",
-    category: "DTC"
-  },
-  {
-    brand: "CoffeeClub",
-    brandColor: brandColors["CoffeeClub"],
-    campaign: "Unboxing",
-    targetSurfaces: ["Table", "Desk"],
-    bidAmount: "$4,200",
-    status: "Active",
-    statusColor: "bg-emerald-500/20 text-emerald-400",
-    description: "Unbox our monthly coffee discovery box on camera",
-    category: "DTC"
-  },
-  // SaaS/B2B Category
-  {
-    brand: "CloudScale",
-    brandColor: brandColors["CloudScale"],
-    campaign: "Developer Showcase",
-    targetSurfaces: ["Monitor", "Laptop", "Desk"],
-    bidAmount: "$18,500",
-    status: "Active",
-    statusColor: "bg-emerald-500/20 text-emerald-400",
-    description: "Tech creators to demo our serverless deployment platform",
-    category: "SaaS"
-  },
-  {
-    brand: "DevOps Now",
-    brandColor: brandColors["DevOps Now"],
-    campaign: "Tutorial Series",
-    targetSurfaces: ["Monitor", "Laptop"],
-    bidAmount: "$12,000",
-    status: "Recruiting",
-    statusColor: "bg-blue-500/20 text-blue-400",
-    description: "DevOps educators for CI/CD pipeline tutorials",
-    category: "SaaS"
-  },
-  {
-    brand: "TeamSync",
-    brandColor: brandColors["TeamSync"],
-    campaign: "Productivity Showcase",
-    targetSurfaces: ["Monitor", "Desk", "Laptop"],
-    bidAmount: "$9,800",
-    status: "Urgent",
-    statusColor: "bg-red-500/20 text-red-400",
-    description: "Remote work creators to feature our team collaboration suite",
-    category: "SaaS"
-  },
-  // Additional high-value campaigns
-  {
-    brand: "TechFlow",
-    brandColor: brandColors["TechFlow"],
-    campaign: "AI Workflow Demo",
-    targetSurfaces: ["Monitor", "Desk", "Laptop"],
-    bidAmount: "$21,000",
-    status: "Active",
-    statusColor: "bg-emerald-500/20 text-emerald-400",
-    description: "Looking for tech creators to demo our new AI workflow features",
-    category: "SaaS"
-  },
-  {
-    brand: "DataVault",
-    brandColor: brandColors["DataVault"],
-    campaign: "Security Showcase",
-    targetSurfaces: ["Monitor", "Laptop"],
-    bidAmount: "$16,500",
-    status: "Recruiting",
-    statusColor: "bg-blue-500/20 text-blue-400",
-    description: "Tech security educators for data protection tutorials",
-    category: "SaaS"
-  },
-  {
-    brand: "CreatorOS",
-    brandColor: brandColors["CreatorOS"],
-    campaign: "Creator Economy",
-    targetSurfaces: ["Desk", "Monitor", "Laptop"],
-    bidAmount: "$13,000",
-    status: "Active",
-    statusColor: "bg-emerald-500/20 text-emerald-400",
-    description: "Full-time creators to showcase our monetization dashboard",
-    category: "Creator Tools"
-  },
-  {
-    brand: "BrandBoost",
-    brandColor: brandColors["BrandBoost"],
-    campaign: "Influencer Partnership",
-    targetSurfaces: ["Monitor", "Desk"],
-    bidAmount: "$19,500",
-    status: "Urgent",
-    statusColor: "bg-red-500/20 text-red-400",
-    description: "Marketing creators to feature our brand deal management platform",
-    category: "Creator Tools"
-  },
-];
+function getStatusStyle(status: string): { statusColor: string; displayStatus: string } {
+  const normalized = status.toLowerCase();
+  if (normalized === "active") {
+    return { statusColor: "bg-emerald-500/20 text-emerald-400", displayStatus: "Active" };
+  } else if (normalized === "recruiting") {
+    return { statusColor: "bg-blue-500/20 text-blue-400", displayStatus: "Recruiting" };
+  } else if (normalized === "urgent") {
+    return { statusColor: "bg-red-500/20 text-red-400", displayStatus: "Urgent" };
+  }
+  return { statusColor: "bg-gray-500/20 text-gray-400", displayStatus: status };
+}
+
+function getCategoryFromGenre(genre: string | null): string {
+  if (!genre) return "General";
+  const normalized = genre.toLowerCase();
+  if (normalized.includes("tech") || normalized.includes("saas")) return "Tech/SaaS";
+  if (normalized.includes("finance")) return "Finance";
+  if (normalized.includes("lifestyle")) return "Lifestyle";
+  if (normalized.includes("productivity")) return "Productivity";
+  return genre;
+}
+
 
 const demoOpportunities: VideoOpportunity[] = [
   {
@@ -395,6 +138,25 @@ export default function Opportunities() {
   const { data, isLoading } = useQuery<MarketplaceResponse>({
     queryKey: ["/api/marketplace/opportunities"],
     enabled: isRealMode,
+  });
+
+  const { data: dbCampaigns, isLoading: campaignsLoading } = useQuery<MonetizationItem[]>({
+    queryKey: ["/api/monetization/items"],
+  });
+
+  const brandOffers = (dbCampaigns || []).map((item) => {
+    const { statusColor, displayStatus } = getStatusStyle(item.status);
+    return {
+      brand: item.brandName || "Unknown Brand",
+      brandColor: getBrandColor(item.brandName || "Unknown"),
+      campaign: item.title,
+      targetSurfaces: item.sceneType ? [item.sceneType] : ["Various"],
+      bidAmount: item.bidAmount ? `$${Number(item.bidAmount).toLocaleString()}` : "$0",
+      status: displayStatus,
+      statusColor,
+      description: `${item.brandName} is looking for creators in the ${item.genre || "general"} space`,
+      category: getCategoryFromGenre(item.genre || null),
+    };
   });
 
   const opportunities = isRealMode ? (data?.opportunities || []) : demoOpportunities;
@@ -561,11 +323,7 @@ export default function Opportunities() {
                     <div className="flex items-start justify-between gap-3 mb-3">
                       <div className="flex items-center gap-3">
                         <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${offer.brandColor || 'bg-white/10'}`}>
-                          {offer.icon ? (
-                            <offer.icon className="w-5 h-5 text-white" />
-                          ) : (
-                            <span className="text-white font-bold text-sm">{offer.brand.charAt(0)}</span>
-                          )}
+                          <span className="text-white font-bold text-sm">{offer.brand.charAt(0)}</span>
                         </div>
                         <div>
                           <h3 className="font-semibold text-white">{offer.brand}</h3>
