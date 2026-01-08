@@ -225,12 +225,15 @@ export default function BrandMarketplace() {
     },
   });
 
-  // Priority: authenticated data > demo database data > hardcoded fallback
+  // Priority: authenticated data > demo database data (no hardcoded fallback)
   const authOpportunities = discoveryData?.opportunities || [];
   const demoOpportunities = demoDiscoveryData?.opportunities || [];
   const dbOpportunities = authOpportunities.length > 0 ? authOpportunities : demoOpportunities;
-  // Only use hardcoded dummy data if no database records exist at all
-  const allOpportunities = dbOpportunities.length > 0 ? dbOpportunities : DUMMY_OPPORTUNITIES;
+  // Use database data directly - no fallback to hardcoded DUMMY data
+  const allOpportunities = dbOpportunities;
+  
+  // Debug logging
+  console.log("[BrandMarketplace] authOpportunities:", authOpportunities.length, "demoOpportunities:", demoOpportunities.length, "total:", allOpportunities.length);
 
   const filteredOpportunities = allOpportunities.filter((opp) => {
     const matchesSearch = opp.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -276,6 +279,9 @@ export default function BrandMarketplace() {
               <Badge variant="outline" className="gap-1">
                 <Sparkles className="w-3 h-3" />
                 {filteredOpportunities.length} Opportunities
+              </Badge>
+              <Badge className="bg-blue-500/20 text-blue-400" data-testid="badge-showing-count">
+                Showing {allOpportunities.length} items
               </Badge>
             </div>
           </div>

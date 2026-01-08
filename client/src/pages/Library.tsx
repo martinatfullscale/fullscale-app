@@ -672,14 +672,18 @@ export default function Library() {
   const demoVideos = demoData?.videos || [];
   const demoVideosFormatted: DisplayVideo[] = demoVideos.map(formatIndexedVideo);
   
+  // Debug logging
+  console.log("[Library] isRealMode:", isRealMode, "demoVideos.length:", demoVideos.length, "isLoadingDemoVideos:", isLoadingDemoVideos);
+  
   // Priority: real authenticated data > database demo data > hardcoded fallback
+  // Always use database demo data when available (wait for it to load)
   const displayVideos: DisplayVideo[] = isRealMode 
     ? realVideosFormatted
-    : (demoVideosFormatted.length > 0 ? demoVideosFormatted : demoVideoData);
-  const videoCount = isRealMode ? realVideos.length : (demoVideos.length || 6);
+    : demoVideosFormatted; // No fallback to hardcoded data - database should always have data
+  const videoCount = isRealMode ? realVideos.length : demoVideos.length;
   const totalOpportunities = isRealMode 
     ? realVideos.reduce((sum, v) => sum + v.adOpportunities, 0)
-    : demoVideos.reduce((sum, v) => sum + (v.adOpportunities || 0), 0) || 0;
+    : demoVideos.reduce((sum, v) => sum + (v.adOpportunities || 0), 0);
 
   const pendingCount = realVideos.filter(v => 
     v.status?.toLowerCase() === "pending scan" && v.adOpportunities === 0
@@ -702,6 +706,9 @@ export default function Library() {
             <p className="text-muted-foreground">
               <span className="text-white font-medium">{videoCount} Videos Indexed</span> | {totalOpportunities} Ad Opportunities Found
               {isPitchMode && <span className="ml-2 text-xs text-amber-400">(Pitch Mode)</span>}
+              <span className="ml-2 px-2 py-0.5 rounded bg-blue-500/20 text-blue-400 text-xs font-medium" data-testid="badge-showing-count">
+                Showing {displayVideos.length} items
+              </span>
             </p>
           </div>
           <div className="flex items-center gap-3">
@@ -744,7 +751,7 @@ export default function Library() {
           </div>
         </motion.div>
 
-        {isLoadingVideos ? (
+        {(isLoadingVideos || (!isRealMode && isLoadingDemoVideos)) ? (
           <div className="flex items-center justify-center py-20">
             <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
           </div>
