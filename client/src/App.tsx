@@ -10,6 +10,9 @@ import { PitchModeProvider } from "@/contexts/pitch-mode-context";
 import { Sidebar } from "@/components/Sidebar";
 import { BrandSidebar } from "@/components/BrandSidebar";
 import { Loader2 } from "lucide-react";
+import ReactGA from "react-ga4";
+
+ReactGA.initialize(import.meta.env.VITE_GOOGLE_ANALYTICS_ID || "G-DEMO12345");
 
 import NotFound from "@/pages/not-found";
 import Landing from "@/pages/Landing";
@@ -49,6 +52,10 @@ function Router() {
   const [location, setLocation] = useLocation();
 
   const isAuthenticated = !!user || isGoogleAuthenticated;
+
+  useEffect(() => {
+    ReactGA.send({ hitType: "pageview", page: location });
+  }, [location]);
 
   const { data: userTypeData, isLoading: isLoadingUserType } = useQuery<UserTypeResponse>({
     queryKey: ["/api/auth/user-type"],
