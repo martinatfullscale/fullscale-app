@@ -83,9 +83,14 @@ export default function BrandMarketplace() {
   const { isPitchMode, setPitchMode } = usePitchMode();
   const { user } = useAuth();
   
-  // Super admin check for pitch mode toggle
-  const currentUserEmail = googleUser?.email || user?.email || "";
-  const isSuperAdmin = currentUserEmail.toLowerCase() === SUPER_ADMIN_EMAIL;
+  // Check for admin access - show pitch toggle if user has any admin/switch capabilities
+  const { data: userTypeData } = useQuery<{ isAdmin: boolean; canSwitchRoles: boolean; email: string }>({
+    queryKey: ["/api/auth/user-type"],
+  });
+  
+  // Super admin check for pitch mode toggle - use multiple sources
+  const currentUserEmail = googleUser?.email || user?.email || userTypeData?.email || "";
+  const isSuperAdmin = currentUserEmail.toLowerCase() === SUPER_ADMIN_EMAIL || userTypeData?.isAdmin || userTypeData?.canSwitchRoles;
   
   const [searchQuery, setSearchQuery] = useState("");
   const [genreFilter, setGenreFilter] = useState("All");
