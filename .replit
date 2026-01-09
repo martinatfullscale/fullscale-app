@@ -45,4 +45,4 @@ integrations = ["javascript_log_in_with_replit:2.0.0", "javascript_gemini_ai_int
 [userenv]
 
 [userenv.shared]
-VITE_GOOGLE_ANALYTICS_ID = "G-DEMO12345"
+VITE_GOOGLE_ANALYTICS_ID = "G-BBWVGBC782"
