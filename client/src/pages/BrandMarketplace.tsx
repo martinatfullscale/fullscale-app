@@ -221,19 +221,17 @@ export default function BrandMarketplace() {
               </div>
             </div>
             <div className="flex items-center gap-3">
-              {/* Pitch Mode Toggle - Only for super admin */}
-              {isSuperAdmin && (
-                <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-secondary/50 border border-border">
-                  <span className="text-xs text-muted-foreground">Real Data</span>
-                  <Switch
-                    checked={isPitchMode}
-                    onCheckedChange={setPitchMode}
-                    className="data-[state=checked]:bg-primary"
-                    data-testid="switch-pitch-mode"
-                  />
-                  <span className="text-xs text-muted-foreground">Pitch Mode</span>
-                </div>
-              )}
+              {/* Pitch Mode Toggle - Always visible for demo purposes */}
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-secondary/50 border border-border">
+                <span className="text-xs text-muted-foreground">Real Data</span>
+                <Switch
+                  checked={isPitchMode}
+                  onCheckedChange={setPitchMode}
+                  className="data-[state=checked]:bg-primary"
+                  data-testid="switch-pitch-mode"
+                />
+                <span className="text-xs text-muted-foreground">Pitch Mode</span>
+              </div>
               <Badge variant="outline" className="gap-1">
                 <Sparkles className="w-3 h-3" />
                 {filteredOpportunities.length} Opportunities
