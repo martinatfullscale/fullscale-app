@@ -39,127 +39,28 @@ interface MarketplaceOpportunity {
   duration: string;
 }
 
-const DUMMY_OPPORTUNITIES: MarketplaceOpportunity[] = [
-  {
-    id: 1,
-    videoId: 101,
-    youtubeId: "demo1",
-    title: "Ultimate Desk Setup Tour 2025",
-    thumbnailUrl: "https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg",
-    creatorName: "TechVision",
-    viewCount: 1250000,
-    sceneValue: 85,
-    context: "Workspace",
-    genre: "Tech",
-    sceneType: "Desk",
-    surfaces: ["Monitor", "Desk", "Wall"],
-    duration: "12:34",
-  },
-  {
-    id: 2,
-    videoId: 102,
-    youtubeId: "demo2",
-    title: "Morning Routine That Changed My Life",
-    thumbnailUrl: "https://i.ytimg.com/vi/jNQXAC9IVRw/maxresdefault.jpg",
-    creatorName: "LifestyleMax",
-    viewCount: 890000,
-    sceneValue: 65,
-    context: "Lifestyle",
-    genre: "Lifestyle",
-    sceneType: "Interior",
-    surfaces: ["Table", "Shelf", "Counter"],
-    duration: "8:45",
-  },
-  {
-    id: 3,
-    videoId: 103,
-    youtubeId: "demo3",
-    title: "Building My Dream Gaming Setup",
-    thumbnailUrl: "https://i.ytimg.com/vi/9bZkp7q19f0/maxresdefault.jpg",
-    creatorName: "GamerzHQ",
-    viewCount: 2100000,
-    sceneValue: 120,
-    context: "Gaming",
-    genre: "Gaming",
-    sceneType: "Desk",
-    surfaces: ["Monitor", "Desk", "RGB Wall"],
-    duration: "15:22",
-  },
-  {
-    id: 4,
-    videoId: 104,
-    youtubeId: "demo4",
-    title: "Home Office Makeover on a Budget",
-    thumbnailUrl: "https://i.ytimg.com/vi/kJQP7kiw5Fk/maxresdefault.jpg",
-    creatorName: "DIYCreative",
-    viewCount: 675000,
-    sceneValue: 55,
-    context: "Office",
-    genre: "DIY",
-    sceneType: "Wall",
-    surfaces: ["Wall", "Desk", "Bookshelf"],
-    duration: "10:15",
-  },
-  {
-    id: 5,
-    videoId: 105,
-    youtubeId: "demo5",
-    title: "Unboxing the Latest Tech Gadgets",
-    thumbnailUrl: "https://i.ytimg.com/vi/RgKAFK5djSk/maxresdefault.jpg",
-    creatorName: "UnboxDaily",
-    viewCount: 1450000,
-    sceneValue: 95,
-    context: "Product",
-    genre: "Tech",
-    sceneType: "Product",
-    surfaces: ["Table", "Product", "Hands"],
-    duration: "18:30",
-  },
-  {
-    id: 6,
-    videoId: 106,
-    youtubeId: "demo6",
-    title: "Cozy Reading Nook Setup",
-    thumbnailUrl: "https://i.ytimg.com/vi/fJ9rUzIMcZQ/maxresdefault.jpg",
-    creatorName: "BookishVibes",
-    viewCount: 320000,
-    sceneValue: 45,
-    context: "Interior",
-    genre: "Lifestyle",
-    sceneType: "Interior",
-    surfaces: ["Chair", "Bookshelf", "Lamp"],
-    duration: "7:20",
-  },
-  {
-    id: 7,
-    videoId: 107,
-    youtubeId: "demo7",
-    title: "Pro Streaming Setup Breakdown",
-    thumbnailUrl: "https://i.ytimg.com/vi/CevxZvSJLk8/maxresdefault.jpg",
-    creatorName: "StreamerPro",
-    viewCount: 980000,
-    sceneValue: 110,
-    context: "Workspace",
-    genre: "Gaming",
-    sceneType: "Desk",
-    surfaces: ["Monitor", "Microphone", "Camera"],
-    duration: "14:55",
-  },
-  {
-    id: 8,
-    videoId: 108,
-    youtubeId: "demo8",
-    title: "Minimalist Apartment Tour",
-    thumbnailUrl: "https://i.ytimg.com/vi/OPf0YbXqDm0/maxresdefault.jpg",
-    creatorName: "MinimalLiving",
-    viewCount: 540000,
-    sceneValue: 70,
-    context: "Interior",
-    genre: "Lifestyle",
-    sceneType: "Interior",
-    surfaces: ["Wall", "Furniture", "Decor"],
-    duration: "11:40",
-  },
+// Static demo opportunities for pitch mode - 20 items, loaded synchronously
+const STATIC_DEMO_OPPORTUNITIES: MarketplaceOpportunity[] = [
+  { id: 1, videoId: 101, youtubeId: "demo1", title: "Ultimate Desk Setup Tour 2025", thumbnailUrl: "https://images.unsplash.com/photo-1593062096033-9a26b09da705?w=480&h=270&fit=crop", creatorName: "TechVision", viewCount: 1250000, sceneValue: 85, context: "Workspace", genre: "Tech", sceneType: "Desk", surfaces: ["Monitor", "Desk", "Wall"], duration: "12:34" },
+  { id: 2, videoId: 102, youtubeId: "demo2", title: "Morning Routine That Changed My Life", thumbnailUrl: "https://images.unsplash.com/photo-1519389950473-47ba0277781c?w=480&h=270&fit=crop", creatorName: "LifestyleMax", viewCount: 890000, sceneValue: 65, context: "Lifestyle", genre: "Lifestyle", sceneType: "Interior", surfaces: ["Table", "Shelf", "Counter"], duration: "8:45" },
+  { id: 3, videoId: 103, youtubeId: "demo3", title: "Building My Dream Gaming Setup", thumbnailUrl: "https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=480&h=270&fit=crop", creatorName: "GamerzHQ", viewCount: 2100000, sceneValue: 120, context: "Gaming", genre: "Gaming", sceneType: "Desk", surfaces: ["Monitor", "Desk", "RGB Wall"], duration: "15:22" },
+  { id: 4, videoId: 104, youtubeId: "demo4", title: "Home Office Makeover on a Budget", thumbnailUrl: "https://images.unsplash.com/photo-1531297484001-80022131f5a1?w=480&h=270&fit=crop", creatorName: "DIYCreative", viewCount: 675000, sceneValue: 55, context: "Office", genre: "DIY", sceneType: "Wall", surfaces: ["Wall", "Desk", "Bookshelf"], duration: "10:15" },
+  { id: 5, videoId: 105, youtubeId: "demo5", title: "Unboxing the Latest Tech Gadgets", thumbnailUrl: "https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=480&h=270&fit=crop", creatorName: "UnboxDaily", viewCount: 1450000, sceneValue: 95, context: "Product", genre: "Tech", sceneType: "Product", surfaces: ["Table", "Product", "Hands"], duration: "18:30" },
+  { id: 6, videoId: 106, youtubeId: "demo6", title: "Cozy Reading Nook Setup", thumbnailUrl: "https://images.unsplash.com/photo-1593062096033-9a26b09da705?w=480&h=270&fit=crop", creatorName: "BookishVibes", viewCount: 320000, sceneValue: 45, context: "Interior", genre: "Lifestyle", sceneType: "Interior", surfaces: ["Chair", "Bookshelf", "Lamp"], duration: "7:20" },
+  { id: 7, videoId: 107, youtubeId: "demo7", title: "Pro Streaming Setup Breakdown", thumbnailUrl: "https://images.unsplash.com/photo-1519389950473-47ba0277781c?w=480&h=270&fit=crop", creatorName: "StreamerPro", viewCount: 980000, sceneValue: 110, context: "Workspace", genre: "Gaming", sceneType: "Desk", surfaces: ["Monitor", "Microphone", "Camera"], duration: "14:55" },
+  { id: 8, videoId: 108, youtubeId: "demo8", title: "Minimalist Apartment Tour", thumbnailUrl: "https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=480&h=270&fit=crop", creatorName: "MinimalLiving", viewCount: 540000, sceneValue: 70, context: "Interior", genre: "Lifestyle", sceneType: "Interior", surfaces: ["Wall", "Furniture", "Decor"], duration: "11:40" },
+  { id: 9, videoId: 109, youtubeId: "demo9", title: "MacBook Pro M5 Full Review", thumbnailUrl: "https://images.unsplash.com/photo-1531297484001-80022131f5a1?w=480&h=270&fit=crop", creatorName: "TechReviews", viewCount: 1850000, sceneValue: 150, context: "Product", genre: "Tech", sceneType: "Product", surfaces: ["Laptop", "Desk", "Screen"], duration: "22:15" },
+  { id: 10, videoId: 110, youtubeId: "demo10", title: "Studio Lighting Guide for Creators", thumbnailUrl: "https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=480&h=270&fit=crop", creatorName: "CreatorAcademy", viewCount: 445000, sceneValue: 75, context: "Education", genre: "Education", sceneType: "Interior", surfaces: ["Lights", "Wall", "Equipment"], duration: "16:30" },
+  { id: 11, videoId: 111, youtubeId: "demo11", title: "iPhone 17 vs Samsung Galaxy S26", thumbnailUrl: "https://images.unsplash.com/photo-1593062096033-9a26b09da705?w=480&h=270&fit=crop", creatorName: "PhoneArena", viewCount: 2300000, sceneValue: 180, context: "Comparison", genre: "Tech", sceneType: "Product", surfaces: ["Phones", "Table", "Hands"], duration: "25:40" },
+  { id: 12, videoId: 112, youtubeId: "demo12", title: "Budget Gaming PC Build 2026", thumbnailUrl: "https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=480&h=270&fit=crop", creatorName: "PCBuilder", viewCount: 1120000, sceneValue: 135, context: "Build", genre: "Gaming", sceneType: "Desk", surfaces: ["Components", "Desk", "Tools"], duration: "28:55" },
+  { id: 13, videoId: 113, youtubeId: "demo13", title: "Work From Home Productivity Tips", thumbnailUrl: "https://images.unsplash.com/photo-1519389950473-47ba0277781c?w=480&h=270&fit=crop", creatorName: "ProductivityPro", viewCount: 678000, sceneValue: 60, context: "Workspace", genre: "Education", sceneType: "Desk", surfaces: ["Monitor", "Desk", "Accessories"], duration: "14:20" },
+  { id: 14, videoId: 114, youtubeId: "demo14", title: "DIY Smart Home Setup Under $500", thumbnailUrl: "https://images.unsplash.com/photo-1531297484001-80022131f5a1?w=480&h=270&fit=crop", creatorName: "SmartHomeDIY", viewCount: 890000, sceneValue: 95, context: "Smart Home", genre: "DIY", sceneType: "Interior", surfaces: ["Devices", "Wall", "Hub"], duration: "19:45" },
+  { id: 15, videoId: 115, youtubeId: "demo15", title: "Aesthetic Room Makeover 2026", thumbnailUrl: "https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=480&h=270&fit=crop", creatorName: "RoomInspo", viewCount: 1560000, sceneValue: 125, context: "Interior", genre: "Lifestyle", sceneType: "Interior", surfaces: ["Furniture", "Decor", "Lighting"], duration: "17:30" },
+  { id: 16, videoId: 116, youtubeId: "demo16", title: "Mechanical Keyboard Sound Test", thumbnailUrl: "https://images.unsplash.com/photo-1593062096033-9a26b09da705?w=480&h=270&fit=crop", creatorName: "KeyboardEnthusiast", viewCount: 720000, sceneValue: 80, context: "ASMR", genre: "Tech", sceneType: "Product", surfaces: ["Keyboard", "Desk", "Switches"], duration: "12:10" },
+  { id: 17, videoId: 117, youtubeId: "demo17", title: "Cable Management Masterclass", thumbnailUrl: "https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=480&h=270&fit=crop", creatorName: "CleanSetup", viewCount: 456000, sceneValue: 55, context: "Tutorial", genre: "DIY", sceneType: "Desk", surfaces: ["Cables", "Desk", "Accessories"], duration: "11:25" },
+  { id: 18, videoId: 118, youtubeId: "demo18", title: "Best Monitors for Content Creation", thumbnailUrl: "https://images.unsplash.com/photo-1519389950473-47ba0277781c?w=480&h=270&fit=crop", creatorName: "DisplayMasters", viewCount: 934000, sceneValue: 110, context: "Comparison", genre: "Tech", sceneType: "Product", surfaces: ["Monitors", "Desk", "Wall"], duration: "21:50" },
+  { id: 19, videoId: 119, youtubeId: "demo19", title: "Day in the Life: Content Creator", thumbnailUrl: "https://images.unsplash.com/photo-1531297484001-80022131f5a1?w=480&h=270&fit=crop", creatorName: "CreatorLife", viewCount: 1340000, sceneValue: 90, context: "Vlog", genre: "Lifestyle", sceneType: "Interior", surfaces: ["Camera", "Room", "Equipment"], duration: "15:40" },
+  { id: 20, videoId: 120, youtubeId: "demo20", title: "Ultimate Webcam Comparison 2026", thumbnailUrl: "https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=480&h=270&fit=crop", creatorName: "WebcamReview", viewCount: 567000, sceneValue: 70, context: "Comparison", genre: "Tech", sceneType: "Product", surfaces: ["Webcams", "Desk", "Screen"], duration: "18:20" },
 ];
 
 const GENRES = ["All", "Tech", "Gaming", "Lifestyle", "DIY", "Education"];
@@ -183,22 +84,40 @@ export default function BrandMarketplace() {
   const [sceneTypeFilter, setSceneTypeFilter] = useState("All");
   const [buyingId, setBuyingId] = useState<number | null>(null);
 
-  // Invalidate opportunities cache when pitch mode changes to force refetch
-  useEffect(() => {
-    console.log(`[BrandMarketplace] isPitchMode changed to: ${isPitchMode}, invalidating cache`);
-    queryClient.invalidateQueries({ queryKey: ["opportunities"] });
-  }, [isPitchMode, queryClient]);
-
   // PRIORITY: isPitchMode toggle is checked FIRST - overrides authentication state
   const isAuthenticated = !!googleUser;
+
+  // When pitch mode changes, immediately update the data (no API delay)
+  useEffect(() => {
+    console.log(`[BrandMarketplace] isPitchMode changed to: ${isPitchMode}`);
+    if (isPitchMode) {
+      // Immediately set demo opportunities in cache - no async wait needed
+      queryClient.setQueryData(["opportunities", true, isAuthenticated], {
+        opportunities: STATIC_DEMO_OPPORTUNITIES,
+        total: STATIC_DEMO_OPPORTUNITIES.length
+      });
+      console.log(`[BrandMarketplace] Set ${STATIC_DEMO_OPPORTUNITIES.length} demo opportunities in cache`);
+    } else {
+      // Invalidate cache to refetch real data
+      queryClient.invalidateQueries({ queryKey: ["opportunities"] });
+    }
+  }, [isPitchMode, queryClient, isAuthenticated]);
   
   const { data: discoveryData, isLoading: isLoadingOpportunities } = useQuery<DiscoveryResponse>({
     queryKey: ["opportunities", isPitchMode, isAuthenticated] as const,
     queryFn: async ({ queryKey }) => {
-      // Extract isPitchMode and isAuthenticated from queryKey to avoid stale closure
+      // Extract isPitchMode from queryKey to avoid stale closure
       const [, pitchModeFromKey, authFromKey] = queryKey;
-      const endpoint = pitchModeFromKey ? "/api/demo/brand-discovery" : (authFromKey ? "/api/brand/discovery" : "/api/demo/brand-discovery");
-      console.log(`[BrandMarketplace] Fetching opportunities from ${endpoint} (isPitchMode from key: ${pitchModeFromKey})`);
+      
+      // PITCH MODE: Return static demo data immediately (no API call)
+      if (pitchModeFromKey) {
+        console.log(`[BrandMarketplace] Returning ${STATIC_DEMO_OPPORTUNITIES.length} static demo opportunities (pitch mode)`);
+        return { opportunities: STATIC_DEMO_OPPORTUNITIES, total: STATIC_DEMO_OPPORTUNITIES.length };
+      }
+      
+      // REAL MODE: Fetch from API
+      const endpoint = authFromKey ? "/api/brand/discovery" : "/api/demo/brand-discovery";
+      console.log(`[BrandMarketplace] Fetching opportunities from ${endpoint}`);
       const res = await fetch(endpoint, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch opportunities");
       const data = await res.json();
