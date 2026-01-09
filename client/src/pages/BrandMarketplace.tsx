@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -21,6 +22,9 @@ import { useToast } from "@/hooks/use-toast";
 import { useHybridMode } from "@/hooks/use-hybrid-mode";
 import { usePitchMode } from "@/contexts/pitch-mode-context";
 import { apiRequest } from "@/lib/queryClient";
+import { useAuth } from "@/hooks/use-auth";
+
+const SUPER_ADMIN_EMAIL = "martin@gofullscale.co";
 
 interface MarketplaceOpportunity {
   id: number;
@@ -76,7 +80,12 @@ export default function BrandMarketplace() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const { googleUser, mode } = useHybridMode();
-  const { isPitchMode } = usePitchMode();
+  const { isPitchMode, setPitchMode } = usePitchMode();
+  const { user } = useAuth();
+  
+  // Super admin check for pitch mode toggle
+  const currentUserEmail = googleUser?.email || user?.email || "";
+  const isSuperAdmin = currentUserEmail.toLowerCase() === SUPER_ADMIN_EMAIL;
   
   const [searchQuery, setSearchQuery] = useState("");
   const [genreFilter, setGenreFilter] = useState("All");
@@ -206,7 +215,20 @@ export default function BrandMarketplace() {
                 <p className="text-xs text-muted-foreground">Discover premium ad placement opportunities</p>
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-3">
+              {/* Pitch Mode Toggle - Only for super admin */}
+              {isSuperAdmin && (
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-secondary/50 border border-border">
+                  <span className="text-xs text-muted-foreground">Real Data</span>
+                  <Switch
+                    checked={isPitchMode}
+                    onCheckedChange={setPitchMode}
+                    className="data-[state=checked]:bg-primary"
+                    data-testid="switch-pitch-mode"
+                  />
+                  <span className="text-xs text-muted-foreground">Pitch Mode</span>
+                </div>
+              )}
               <Badge variant="outline" className="gap-1">
                 <Sparkles className="w-3 h-3" />
                 {filteredOpportunities.length} Opportunities
