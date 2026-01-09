@@ -103,10 +103,10 @@ export default function BrandMarketplace() {
 
   // When pitch mode changes, immediately update the data (no API delay)
   useEffect(() => {
-    console.log(`[BrandMarketplace] isPitchMode changed to: ${isPitchMode}`);
-    if (isPitchMode) {
+    console.log(`[BrandMarketplace] isPitchMode changed to: ${isPitchMode}, user?.id: ${user?.id}`);
+    if (isPitchMode || !user?.id) {
       // Immediately set demo opportunities in cache - no async wait needed
-      queryClient.setQueryData(["opportunities", true, isAuthenticated], {
+      queryClient.setQueryData(["opportunities", isPitchMode, user?.id], {
         opportunities: STATIC_DEMO_OPPORTUNITIES,
         total: STATIC_DEMO_OPPORTUNITIES.length
       });
@@ -115,22 +115,23 @@ export default function BrandMarketplace() {
       // Invalidate cache to refetch real data
       queryClient.invalidateQueries({ queryKey: ["opportunities"] });
     }
-  }, [isPitchMode, queryClient, isAuthenticated]);
+  }, [isPitchMode, queryClient, user?.id]);
   
   const { data: discoveryData, isLoading: isLoadingOpportunities } = useQuery<DiscoveryResponse>({
-    queryKey: ["opportunities", isPitchMode, isAuthenticated] as const,
+    queryKey: ["opportunities", isPitchMode, user?.id] as const,
     queryFn: async ({ queryKey }) => {
-      // Extract isPitchMode from queryKey to avoid stale closure
-      const [, pitchModeFromKey, authFromKey] = queryKey;
+      // Extract values from queryKey to avoid stale closure
+      const [, pitchModeFromKey, userIdFromKey] = queryKey;
       
-      // PITCH MODE: Return static demo data immediately (no API call)
-      if (pitchModeFromKey) {
-        console.log(`[BrandMarketplace] Returning ${STATIC_DEMO_OPPORTUNITIES.length} static demo opportunities (pitch mode)`);
+      // PITCH MODE or NOT LOGGED IN: Return demo data
+      // If Pitch Mode is ON, OR if there is no logged-in user, use the DEMO endpoint
+      if (pitchModeFromKey || !userIdFromKey) {
+        console.log(`[BrandMarketplace] Returning ${STATIC_DEMO_OPPORTUNITIES.length} static demo opportunities (pitchMode=${pitchModeFromKey}, userId=${userIdFromKey})`);
         return { opportunities: STATIC_DEMO_OPPORTUNITIES, total: STATIC_DEMO_OPPORTUNITIES.length };
       }
       
-      // REAL MODE: Fetch from API
-      const endpoint = authFromKey ? "/api/brand/discovery" : "/api/demo/brand-discovery";
+      // REAL MODE: User is logged in and pitch mode is OFF - fetch from real API
+      const endpoint = "/api/brand/discovery";
       console.log(`[BrandMarketplace] Fetching opportunities from ${endpoint}`);
       const res = await fetch(endpoint, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch opportunities");
