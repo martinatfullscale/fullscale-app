@@ -72,7 +72,7 @@ export const insertMonetizationItemSchema = createInsertSchema(monetizationItems
 export type MonetizationItem = typeof monetizationItems.$inferSelect;
 export type InsertMonetizationItem = z.infer<typeof insertMonetizationItemSchema>;
 
-// Video Index Table - stores indexed high-value videos from YouTube
+// Video Index Table - stores indexed high-value videos from YouTube, Instagram, etc.
 export const videoIndex = pgTable("video_index", {
   id: serial("id").primaryKey(),
   userId: varchar("user_id").notNull(),
@@ -87,6 +87,7 @@ export const videoIndex = pgTable("video_index", {
   category: varchar("category"),
   isEvergreen: boolean("is_evergreen").default(false),
   duration: varchar("duration"),
+  platform: varchar("platform").notNull().default("youtube"), // 'youtube', 'instagram', 'facebook'
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });

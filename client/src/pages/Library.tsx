@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { TopBar } from "@/components/TopBar";
 import { Upload, Eye, CheckCircle, Loader2, AlertTriangle, X, Shield, Sun, Tag, Box, DollarSign, Sparkles, RefreshCw, Play } from "lucide-react";
+import { SiInstagram, SiYoutube } from "react-icons/si";
 import { motion } from "framer-motion";
 import { useAuth } from "@/hooks/use-auth";
 import { useHybridMode } from "@/hooks/use-hybrid-mode";
@@ -10,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { UploadModal } from "@/components/UploadModal";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 interface IndexedVideo {
   id: number;
@@ -25,10 +27,14 @@ interface IndexedVideo {
   category: string | null;
   isEvergreen: boolean | null;
   duration: string | null;
+  platform?: string;
+  brandName?: string;
   createdAt: string;
   updatedAt: string;
   adOpportunities: number;
 }
+
+type PlatformFilter = "all" | "youtube" | "instagram";
 
 interface VideoIndexResponse {
   videos: IndexedVideo[];
@@ -168,6 +174,8 @@ interface DisplayVideo {
   opportunity: string;
   surfaceLabel: string;
   boundingBox: { top: string; left: string; width: string; height: string };
+  platform: string;
+  brandName?: string;
 }
 
 function getVideoStatusInfo(video: IndexedVideo): { status: string; statusColor: string; statusDot: string; aiStatus: string; aiText: string } {
@@ -229,6 +237,8 @@ function formatIndexedVideo(video: IndexedVideo): DisplayVideo {
   const statusInfo = getVideoStatusInfo(video);
   const viewCount = (video as any).viewCount ?? (video as any).view_count ?? 0;
   const thumbnailUrl = (video as any).thumbnailUrl || (video as any).thumbnail_url || "";
+  const platform = (video as any).platform || "youtube";
+  const brandName = (video as any).brandName || (video as any).brand_name || "";
   
   return {
     id: video.id,
@@ -242,7 +252,9 @@ function formatIndexedVideo(video: IndexedVideo): DisplayVideo {
     cpm: 0,
     opportunity: "",
     surfaceLabel: "",
-    boundingBox: { top: "0%", left: "0%", width: "0%", height: "0%" }
+    boundingBox: { top: "0%", left: "0%", width: "0%", height: "0%" },
+    platform,
+    brandName,
   };
 }
 
@@ -486,6 +498,7 @@ export default function Library() {
   const queryClient = useQueryClient();
   const [selectedVideo, setSelectedVideo] = useState<DisplayVideo | null>(null);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
+  const [platformFilter, setPlatformFilter] = useState<PlatformFilter>("all");
   
   // Invalidate video cache when pitch mode changes to force refetch
   useEffect(() => {
@@ -678,8 +691,18 @@ export default function Library() {
   const videos = videoData?.videos || [];
   const displayVideos: DisplayVideo[] = videos.map(formatIndexedVideo);
   
+  // Filter videos by platform
+  const filteredDisplayVideos = displayVideos.filter((video) => {
+    if (platformFilter === "all") return true;
+    return video.platform === platformFilter;
+  });
+  
+  // Platform counts for tabs
+  const youtubeCount = displayVideos.filter(v => v.platform === "youtube").length;
+  const instagramCount = displayVideos.filter(v => v.platform === "instagram").length;
+  
   // Debug logging
-  console.log("[Library] isPitchMode:", isPitchMode, "videos.length:", videos.length, "isLoading:", isLoadingVideos);
+  console.log("[Library] isPitchMode:", isPitchMode, "videos.length:", videos.length, "isLoading:", isLoadingVideos, "platformFilter:", platformFilter);
   
   const videoCount = videos.length;
   const totalOpportunities = videos.reduce((sum: number, v: IndexedVideo) => sum + (v.adOpportunities || 0), 0);
@@ -706,7 +729,7 @@ export default function Library() {
               <span className="text-white font-medium">{videoCount} Videos Indexed</span> | {totalOpportunities} Ad Opportunities Found
               {isPitchMode && <span className="ml-2 text-xs text-amber-400">(Pitch Mode)</span>}
               <span className="ml-2 px-2 py-0.5 rounded bg-blue-500/20 text-blue-400 text-xs font-medium" data-testid="badge-showing-count">
-                Showing {displayVideos.length} items
+                Showing {filteredDisplayVideos.length} items
               </span>
             </p>
           </div>
@@ -750,6 +773,23 @@ export default function Library() {
           </div>
         </motion.div>
 
+        {/* Platform Filter Tabs */}
+        <Tabs value={platformFilter} onValueChange={(v) => setPlatformFilter(v as PlatformFilter)} className="mb-6">
+          <TabsList className="bg-white/5 border border-white/10">
+            <TabsTrigger value="all" className="gap-2 data-[state=active]:bg-primary/20" data-testid="tab-all">
+              All ({displayVideos.length})
+            </TabsTrigger>
+            <TabsTrigger value="youtube" className="gap-2 data-[state=active]:bg-red-500/20" data-testid="tab-youtube">
+              <SiYoutube className="w-4 h-4 text-red-500" />
+              YouTube ({youtubeCount})
+            </TabsTrigger>
+            <TabsTrigger value="instagram" className="gap-2 data-[state=active]:bg-pink-500/20" data-testid="tab-instagram">
+              <SiInstagram className="w-4 h-4 text-pink-500" />
+              Instagram ({instagramCount})
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
+
         {isLoadingVideos ? (
           <div className="flex items-center justify-center py-20">
             <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
@@ -761,12 +801,14 @@ export default function Library() {
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.1 }}
-            className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
+            className={platformFilter === "instagram" 
+              ? "grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4" 
+              : "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"}
           >
-            {displayVideos.map((video, idx) => (
+            {filteredDisplayVideos.map((video, idx) => (
               <div 
                 key={video.id || idx} 
-                className="bg-white/5 rounded-xl border border-white/5 overflow-hidden group cursor-pointer"
+                className="bg-white/5 rounded-xl border border-white/5 overflow-hidden group cursor-pointer relative"
                 data-testid={`card-video-${video.id || idx}`}
                 onClick={() => {
                   if (video.id && scanningVideoIds.has(video.id)) {
@@ -779,7 +821,21 @@ export default function Library() {
                   setSelectedVideo(video);
                 }}
               >
-                <div className="aspect-video relative overflow-hidden">
+                {/* Platform icon overlay for All view */}
+                {platformFilter === "all" && (
+                  <div className="absolute top-2 right-2 z-10">
+                    {video.platform === "instagram" ? (
+                      <div className="w-6 h-6 rounded-full bg-gradient-to-br from-purple-500 via-pink-500 to-orange-500 flex items-center justify-center">
+                        <SiInstagram className="w-3.5 h-3.5 text-white" />
+                      </div>
+                    ) : (
+                      <div className="w-6 h-6 rounded-full bg-red-600 flex items-center justify-center">
+                        <SiYoutube className="w-3.5 h-3.5 text-white" />
+                      </div>
+                    )}
+                  </div>
+                )}
+                <div className={video.platform === "instagram" ? "aspect-[9/16] relative overflow-hidden" : "aspect-video relative overflow-hidden"}>
                   <img 
                     src={video.image} 
                     alt={video.title}
