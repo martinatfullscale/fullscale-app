@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Zap, Shield, Video, X, Ban, DollarSign, TrendingUp, Users, Sparkles, Cpu, Eye, Timer, Layers, Mail, User, Plus } from "lucide-react";
+import { Zap, Shield, Video, X, Ban, DollarSign, TrendingUp, Users, Sparkles, Cpu, Eye, Timer, Layers, Mail, User, Plus, Globe } from "lucide-react";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 import logoBlackAmbition from "@assets/logo-black-ambition_1767712118620.png";
 import logoMayDavis from "@assets/logo-may-davis_1767712118621.png";
@@ -1218,7 +1218,7 @@ export default function Landing() {
               </h1>
               
               <p className="text-base md:text-2xl text-white/70 max-w-3xl mx-auto mb-6 md:mb-10 leading-relaxed max-[480px]:hidden">
-                AI-powered product placement that dreams products into your existing content with perfect lighting, occlusion, and tracking.
+                AI-powered product placement that dreams products into your existing content with perfect lighting, occlusion, and tracking—scaling your reach for a global economy.
               </p>
 
               <div className="flex flex-col sm:flex-row gap-3 md:gap-4 items-center justify-center">
@@ -1295,7 +1295,7 @@ export default function Landing() {
             className="text-center"
           >
             <h2 className="text-2xl md:text-4xl font-bold font-display tracking-tight mb-2 md:mb-4 uppercase">
-              Live <span className="text-primary">Opportunity Feed</span>
+              Live <span className="text-primary">Global Opportunity Feed</span>
             </h2>
             <p className="text-muted-foreground text-sm md:text-lg max-w-2xl mx-auto max-[480px]:hidden">
               Real-time inventory index. Every frame scanned. Every surface monetizable.
@@ -1345,7 +1345,7 @@ export default function Landing() {
           initial={{ opacity: 0, y: 40 }}
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true }}
-          className="grid grid-cols-1 lg:grid-cols-3 gap-6 w-full max-w-5xl mx-auto"
+          className="grid grid-cols-1 lg:grid-cols-4 gap-6 w-full max-w-6xl mx-auto"
         >
           <FeatureCard 
             icon={<Zap className="w-6 h-6 text-yellow-400" />} 
@@ -1361,6 +1361,11 @@ export default function Landing() {
             icon={<Video className="w-6 h-6 text-blue-400" />} 
             title="ZERO RESHOOTS" 
             desc="Stop filming ads. We insert high-value products into your existing content library using post-production AI." 
+          />
+          <FeatureCard 
+            icon={<Globe className="w-6 h-6 text-primary" />} 
+            title="Context-Aware Reach" 
+            desc="Instantly adapt campaigns for international audiences in US, MENA, and APAC markets." 
           />
         </motion.div>
       </section>
@@ -1381,7 +1386,7 @@ export default function Landing() {
               <span className="text-5xl font-bold text-primary font-display">01</span>
               <h3 className="text-xl font-bold font-display mt-4 mb-3">Connect.</h3>
               <p className="text-muted-foreground leading-relaxed">
-                Link your YouTube channel securely. We index your library in minutes, not weeks.
+                Seamlessly integrate with YouTube, Instagram, Facebook, and TikTok. We index your library in minutes, not weeks.
               </p>
             </div>
             <div className="text-center p-6">
