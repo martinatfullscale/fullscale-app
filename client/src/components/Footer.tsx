@@ -100,7 +100,7 @@ export function Footer() {
         {/* Copyright section - separate row */}
         <div className="mt-8 pt-6 border-t border-white/5 flex flex-col sm:flex-row justify-between items-center gap-4">
           <p className="text-sm text-muted-foreground/40 text-center sm:text-left">
-            &copy; 2025 FullScale Holdings. All Rights Reserved.
+            &copy; 2024 FullScale Creator Portal. All Rights Reserved.
           </p>
         </div>
       </div>
