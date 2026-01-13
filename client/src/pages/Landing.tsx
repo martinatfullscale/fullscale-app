@@ -1151,7 +1151,7 @@ export default function Landing() {
               className="h-8 md:h-10 w-auto" 
               data-testid="img-landing-logo" 
             />
-            <span className="sr-only">FullScale Creator Portal</span>
+            <span className="text-white font-semibold text-sm md:text-base hidden sm:inline">FullScale Creator Portal</span>
           </div>
           
           {/* Desktop Navigation - visible at 600px and above */}
