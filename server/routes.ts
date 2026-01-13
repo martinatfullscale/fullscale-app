@@ -7,6 +7,16 @@ import { setupAuth, registerAuthRoutes, isAuthenticated } from "./replit_integra
 import { runIndexerForUser } from "./lib/indexer";
 import { processVideoScan, scanPendingVideos } from "./lib/scanner";
 
+// VIP Founding Members - bypass allowlist check automatically
+const FOUNDING_MEMBERS = [
+  'martin@ekechukwu.com',
+  'martin@gofullscale.co',
+  'martin@whtwrks.com',
+  'martincekechukwu@gmail.com',
+  'simmone@capitalizevc.com',
+  'simmoneaseymour@gmail.com'
+];
+
 // Google Login OAuth Configuration (for authentication with allowlist)
 const GOOGLE_LOGIN_SCOPES = [
   "openid",
@@ -245,12 +255,24 @@ export async function registerRoutes(
         return res.redirect("/?error=failed_to_get_user_info");
       }
 
+      // Check if user is a VIP Founding Member (bypass allowlist)
+      const normalizedEmail = userInfo.email.toLowerCase().trim();
+      const isFoundingMember = FOUNDING_MEMBERS.some(
+        (email) => email.toLowerCase() === normalizedEmail
+      );
+      
       // Check if user is in allowlist
       const isAllowed = await storage.isEmailAllowed(userInfo.email);
       
-      if (!isAllowed) {
+      if (!isAllowed && !isFoundingMember) {
         console.log(`Access denied for email: ${userInfo.email}`);
         return res.redirect("/?error=access_restricted&email=" + encodeURIComponent(userInfo.email));
+      }
+      
+      // If founding member is not in allowlist, auto-add them
+      if (isFoundingMember && !isAllowed) {
+        await storage.addAllowedUser({ email: userInfo.email, userType: "creator" });
+        console.log(`Auto-added founding member to allowlist: ${userInfo.email}`);
       }
       
       // If user is on allowlist but has no role, default to creator
@@ -258,6 +280,10 @@ export async function registerRoutes(
       if (allowedUser && !allowedUser.userType) {
         await storage.updateAllowedUserRole(userInfo.email, "creator");
         console.log(`Assigned default creator role to: ${userInfo.email}`);
+      }
+      
+      if (isFoundingMember) {
+        console.log(`Founding member access granted: ${userInfo.email}`);
       }
 
       // User is allowed - set session and redirect to dashboard
