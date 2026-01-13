@@ -35,9 +35,9 @@ export function Footer() {
             <h4 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground/80 mb-4">Legal</h4>
             <ul className="space-y-3">
               <li>
-                <Link href="/privacy" className="text-sm text-muted-foreground/60 hover:text-white transition-colors" data-testid="link-privacy">
+                <a href="/privacy" className="text-sm text-muted-foreground/60 hover:text-white transition-colors" data-testid="link-privacy">
                   Privacy Policy
-                </Link>
+                </a>
               </li>
               <li>
                 <Link href="/terms" className="text-sm text-muted-foreground/60 hover:text-white transition-colors" data-testid="link-terms">
@@ -100,7 +100,7 @@ export function Footer() {
         {/* Copyright section - separate row */}
         <div className="mt-8 pt-6 border-t border-white/5 flex flex-col sm:flex-row justify-between items-center gap-4">
           <p className="text-sm text-muted-foreground/40 text-center sm:text-left">
-            &copy; 2024 FullScale Creator Portal. All Rights Reserved.
+            &copy; 2025 FullScale Creator Portal. All Rights Reserved.
           </p>
         </div>
       </div>
