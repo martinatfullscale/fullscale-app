@@ -1144,14 +1144,14 @@ export default function Landing() {
           className="absolute top-0 left-0 right-0 z-30 flex items-center justify-between px-4 md:px-6 h-16 md:h-20"
           style={{ paddingTop: 'env(safe-area-inset-top)' }}
         >
-          <div className="flex items-center gap-2">
+          <div className="flex items-center">
             <img 
               src={logoUrl} 
               alt="FullScale Creator Portal" 
               className="h-8 md:h-10 w-auto" 
               data-testid="img-landing-logo" 
             />
-            <span className="text-white font-semibold text-sm md:text-base hidden sm:inline">FullScale Creator Portal</span>
+            <span className="ml-3 pl-3 border-l border-white/20 text-[10px] font-medium tracking-[0.2em] uppercase text-white/50 hidden sm:inline">FullScale Creator Portal</span>
           </div>
           
           {/* Desktop Navigation - visible at 600px and above */}
