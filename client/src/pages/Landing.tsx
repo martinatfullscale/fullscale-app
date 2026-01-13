@@ -1144,12 +1144,15 @@ export default function Landing() {
           className="absolute top-0 left-0 right-0 z-30 flex items-center justify-between px-4 md:px-6 h-16 md:h-20"
           style={{ paddingTop: 'env(safe-area-inset-top)' }}
         >
-          <img 
-            src={logoUrl} 
-            alt="FullScale" 
-            className="h-8 md:h-10 w-auto" 
-            data-testid="img-landing-logo" 
-          />
+          <div className="flex items-center gap-2">
+            <img 
+              src={logoUrl} 
+              alt="FullScale Creator Portal" 
+              className="h-8 md:h-10 w-auto" 
+              data-testid="img-landing-logo" 
+            />
+            <span className="sr-only">FullScale Creator Portal</span>
+          </div>
           
           {/* Desktop Navigation - visible at 600px and above */}
           <div className="hidden min-[600px]:flex items-center gap-3">
@@ -1449,6 +1452,18 @@ export default function Landing() {
               Apply for Access
             </a>
           </motion.div>
+        </div>
+      </section>
+
+      {/* App Name & Legal Links for Google Verification - Bot-crawlable section */}
+      <section className="py-6 bg-background border-t border-white/5">
+        <div className="container mx-auto px-6 text-center">
+          <p className="text-lg font-semibold text-white mb-2">FullScale Creator Portal</p>
+          <div className="flex items-center justify-center gap-4 text-sm text-muted-foreground">
+            <a href="/privacy" className="hover:text-white transition-colors underline">Privacy Policy</a>
+            <span>|</span>
+            <a href="/terms" className="hover:text-white transition-colors underline">Terms of Service</a>
+          </div>
         </div>
       </section>
 
