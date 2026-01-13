@@ -412,7 +412,7 @@ export default function Dashboard() {
               <p className="text-xs text-muted-foreground uppercase tracking-wider">Global Reach</p>
             </div>
             <p className="text-3xl font-bold text-white" data-testid="text-inventory">{displayStats.globalReach}</p>
-            <p className="text-xs text-muted-foreground/60 mt-1">{showSimulationData ? "US, MENA, APAC" : "Regions indexed"}</p>
+            <p className="text-xs text-muted-foreground/60 mt-1">{showSimulationData ? "Active in US, MENA, APAC" : "Regions indexed"}</p>
           </div>
         </motion.div>
 

@@ -811,16 +811,16 @@ export default function Library() {
           </Tabs>
           
           {/* Visual-only Region Filter for pitch mode */}
-          <Select defaultValue="global">
+          <Select defaultValue="all">
             <SelectTrigger className="w-[160px] bg-white/5 border-white/10" data-testid="select-region">
               <Globe className="w-4 h-4 mr-2 text-primary" />
               <SelectValue placeholder="Region" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="global">Global</SelectItem>
+              <SelectItem value="all">All</SelectItem>
               <SelectItem value="north-america">North America</SelectItem>
               <SelectItem value="mena">MENA</SelectItem>
-              <SelectItem value="asia">Asia</SelectItem>
+              <SelectItem value="europe">Europe</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -956,10 +956,10 @@ export default function Library() {
                     <span className={`px-2 py-0.5 rounded-full ${video.statusColor} text-xs font-medium`}>
                       {video.status}
                     </span>
-                    {/* Global reach badge */}
+                    {/* Global reach badge - shows MENA for Dubai/Saudi content */}
                     <span className="px-2 py-0.5 rounded-full bg-primary/20 text-primary text-xs font-medium flex items-center gap-1">
                       <Globe className="w-3 h-3" />
-                      Intl
+                      {video.title.toLowerCase().includes('dubai') || video.title.toLowerCase().includes('saudi') ? 'MENA' : 'Global'}
                     </span>
                   </div>
                   {/* Sentiment and Cultural Context badges */}
