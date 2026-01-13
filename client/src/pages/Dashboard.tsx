@@ -81,7 +81,7 @@ const simulationStats = {
   revenueGrowth: "+18% this month",
   activeBids: "12",
   avgCpm: "$35.00",
-  inventoryIndex: "98%",
+  globalReach: "12 Markets",
 };
 
 // Static demo videos for pitch mode - loaded synchronously, no API call needed
@@ -222,7 +222,7 @@ export default function Dashboard() {
     revenueGrowth: "Connect to track",
     activeBids: String(marketplaceStats?.activeBids || 0),
     avgCpm: "--",
-    inventoryIndex: indexedVideos.length > 0 ? `${indexedVideos.length}` : "--",
+    globalReach: indexedVideos.length > 0 ? `${indexedVideos.length} Markets` : "--",
   };
   
   const displayStats = showSimulationData ? simulationStats : realModeStats;
@@ -409,10 +409,10 @@ export default function Dashboard() {
           <div className="bg-white/5 rounded-xl p-5 border border-white/5">
             <div className="flex items-center gap-2 mb-2">
               <Video className="w-4 h-4 text-primary" />
-              <p className="text-xs text-muted-foreground uppercase tracking-wider">Inventory Index</p>
+              <p className="text-xs text-muted-foreground uppercase tracking-wider">Global Reach</p>
             </div>
-            <p className="text-3xl font-bold text-white" data-testid="text-inventory">{displayStats.inventoryIndex}</p>
-            <p className="text-xs text-muted-foreground/60 mt-1">{showSimulationData ? "Scanned" : "Videos indexed"}</p>
+            <p className="text-3xl font-bold text-white" data-testid="text-inventory">{displayStats.globalReach}</p>
+            <p className="text-xs text-muted-foreground/60 mt-1">{showSimulationData ? "US, MENA, APAC" : "Regions indexed"}</p>
           </div>
         </motion.div>
 

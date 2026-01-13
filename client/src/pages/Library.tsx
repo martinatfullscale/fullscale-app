@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { TopBar } from "@/components/TopBar";
-import { Upload, Eye, CheckCircle, Loader2, AlertTriangle, X, Shield, Sun, Tag, Box, DollarSign, Sparkles, RefreshCw, Play } from "lucide-react";
+import { Upload, Eye, CheckCircle, Loader2, AlertTriangle, X, Shield, Sun, Tag, Box, DollarSign, Sparkles, RefreshCw, Play, Globe } from "lucide-react";
 import { SiInstagram, SiYoutube } from "react-icons/si";
 import { motion } from "framer-motion";
 import { useAuth } from "@/hooks/use-auth";
@@ -12,6 +12,7 @@ import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { UploadModal } from "@/components/UploadModal";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 interface IndexedVideo {
   id: number;
@@ -791,22 +792,38 @@ export default function Library() {
           </div>
         </motion.div>
 
-        {/* Platform Filter Tabs */}
-        <Tabs value={platformFilter} onValueChange={(v) => setPlatformFilter(v as PlatformFilter)} className="mb-6">
-          <TabsList className="bg-white/5 border border-white/10">
-            <TabsTrigger value="all" className="gap-2 data-[state=active]:bg-primary/20" data-testid="tab-all">
-              All ({displayVideos.length})
-            </TabsTrigger>
-            <TabsTrigger value="youtube" className="gap-2 data-[state=active]:bg-red-500/20" data-testid="tab-youtube">
-              <SiYoutube className="w-4 h-4 text-red-500" />
-              YouTube ({youtubeCount})
-            </TabsTrigger>
-            <TabsTrigger value="instagram" className="gap-2 data-[state=active]:bg-pink-500/20" data-testid="tab-instagram">
-              <SiInstagram className="w-4 h-4 text-pink-500" />
-              Instagram ({instagramCount})
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
+        {/* Platform Filter Tabs with Region Dropdown */}
+        <div className="flex items-center gap-4 mb-6 flex-wrap">
+          <Tabs value={platformFilter} onValueChange={(v) => setPlatformFilter(v as PlatformFilter)}>
+            <TabsList className="bg-white/5 border border-white/10">
+              <TabsTrigger value="all" className="gap-2 data-[state=active]:bg-primary/20" data-testid="tab-all">
+                All ({displayVideos.length})
+              </TabsTrigger>
+              <TabsTrigger value="youtube" className="gap-2 data-[state=active]:bg-red-500/20" data-testid="tab-youtube">
+                <SiYoutube className="w-4 h-4 text-red-500" />
+                YouTube ({youtubeCount})
+              </TabsTrigger>
+              <TabsTrigger value="instagram" className="gap-2 data-[state=active]:bg-pink-500/20" data-testid="tab-instagram">
+                <SiInstagram className="w-4 h-4 text-pink-500" />
+                Instagram ({instagramCount})
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
+          
+          {/* Visual-only Region Filter for pitch mode */}
+          <Select defaultValue="global">
+            <SelectTrigger className="w-[160px] bg-white/5 border-white/10" data-testid="select-region">
+              <Globe className="w-4 h-4 mr-2 text-primary" />
+              <SelectValue placeholder="Region" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="global">Global</SelectItem>
+              <SelectItem value="north-america">North America</SelectItem>
+              <SelectItem value="mena">MENA</SelectItem>
+              <SelectItem value="asia">Asia</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
 
         {isLoadingVideos ? (
           <div className="flex items-center justify-center py-20">
@@ -938,6 +955,11 @@ export default function Library() {
                     <span className={`w-2 h-2 rounded-full ${video.statusDot}`}></span>
                     <span className={`px-2 py-0.5 rounded-full ${video.statusColor} text-xs font-medium`}>
                       {video.status}
+                    </span>
+                    {/* Global reach badge */}
+                    <span className="px-2 py-0.5 rounded-full bg-primary/20 text-primary text-xs font-medium flex items-center gap-1">
+                      <Globe className="w-3 h-3" />
+                      Intl
                     </span>
                   </div>
                   {/* Sentiment and Cultural Context badges */}
