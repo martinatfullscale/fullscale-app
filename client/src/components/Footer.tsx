@@ -23,7 +23,8 @@ export function Footer() {
         {/* Main footer content */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
           <div>
-            <img src={logoUrl} alt="FullScale" className="h-8 w-auto mb-4" />
+            <img src={logoUrl} alt="FullScale Creator Portal" className="h-8 w-auto mb-4" />
+            <p className="text-xs text-primary/80 font-medium uppercase tracking-wider mb-2">Creator Portal</p>
             <p className="text-sm text-muted-foreground/60 leading-relaxed">
               224 W 35th St Ste 500 #450,<br />
               New York, NY 10001
