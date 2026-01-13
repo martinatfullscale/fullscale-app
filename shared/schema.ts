@@ -88,6 +88,8 @@ export const videoIndex = pgTable("video_index", {
   isEvergreen: boolean("is_evergreen").default(false),
   duration: varchar("duration"),
   platform: varchar("platform").notNull().default("youtube"), // 'youtube', 'instagram', 'facebook'
+  sentiment: varchar("sentiment").default("Neutral"), // 'Uplifting', 'Serious', 'Chaotic', 'Educational', etc.
+  culturalContext: varchar("cultural_context").default("General"), // 'American Tech Office', 'Japanese Tea Room', etc.
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });

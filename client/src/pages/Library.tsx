@@ -57,7 +57,9 @@ const demoVideoData = [
     cpm: 48,
     opportunity: "Perfect for: Peripheral Placement or Drinkware",
     surfaceLabel: "Available Surface: Desk Mat",
-    boundingBox: { top: "55%", left: "50%", width: "40%", height: "35%" }
+    boundingBox: { top: "55%", left: "50%", width: "40%", height: "35%" },
+    sentiment: "Educational",
+    culturalContext: "Western Home Office"
   },
   { 
     title: "Cooking Vlog", 
@@ -74,7 +76,9 @@ const demoVideoData = [
     cpm: 42,
     opportunity: "Perfect for: Kitchen Gadgets or Food Products",
     surfaceLabel: "Available Surface: Counter",
-    boundingBox: { top: "60%", left: "20%", width: "45%", height: "30%" }
+    boundingBox: { top: "60%", left: "20%", width: "45%", height: "30%" },
+    sentiment: "Uplifting",
+    culturalContext: "American Kitchen"
   },
   { 
     title: "Podcast Episode #42", 
@@ -91,7 +95,9 @@ const demoVideoData = [
     cpm: 38,
     opportunity: "Perfect for: Audio Equipment or Beverages",
     surfaceLabel: "Available Surface: Table",
-    boundingBox: { top: "50%", left: "30%", width: "40%", height: "35%" }
+    boundingBox: { top: "50%", left: "30%", width: "40%", height: "35%" },
+    sentiment: "Serious",
+    culturalContext: "Podcast Studio"
   },
   { 
     title: "Home Workout", 
@@ -108,7 +114,9 @@ const demoVideoData = [
     cpm: 52,
     opportunity: "Perfect for: Fitness Equipment or Apparel",
     surfaceLabel: "Available Surface: Floor/Wall",
-    boundingBox: { top: "30%", left: "60%", width: "35%", height: "50%" }
+    boundingBox: { top: "30%", left: "60%", width: "35%", height: "50%" },
+    sentiment: "Uplifting",
+    culturalContext: "Home Gym"
   },
   { 
     title: "Remote Work Vlog", 
@@ -125,7 +133,9 @@ const demoVideoData = [
     cpm: 36,
     opportunity: "Perfect for: Laptop Accessories or Coffee Brands",
     surfaceLabel: "Available Surface: Table",
-    boundingBox: { top: "45%", left: "25%", width: "50%", height: "40%" }
+    boundingBox: { top: "45%", left: "25%", width: "50%", height: "40%" },
+    sentiment: "Educational",
+    culturalContext: "Urban Cafe"
   },
   { 
     title: "DIY Workshop", 
@@ -142,7 +152,9 @@ const demoVideoData = [
     cpm: 32,
     opportunity: "Perfect for: Tool Brands or Hardware",
     surfaceLabel: "Available Surface: Workbench",
-    boundingBox: { top: "40%", left: "15%", width: "45%", height: "45%" }
+    boundingBox: { top: "40%", left: "15%", width: "45%", height: "45%" },
+    sentiment: "Educational",
+    culturalContext: "American Garage Workshop"
   },
 ];
 
@@ -176,6 +188,8 @@ interface DisplayVideo {
   boundingBox: { top: string; left: string; width: string; height: string };
   platform: string;
   brandName?: string;
+  sentiment?: string;
+  culturalContext?: string;
 }
 
 function getVideoStatusInfo(video: IndexedVideo): { status: string; statusColor: string; statusDot: string; aiStatus: string; aiText: string } {
@@ -239,6 +253,8 @@ function formatIndexedVideo(video: IndexedVideo): DisplayVideo {
   const thumbnailUrl = (video as any).thumbnailUrl || (video as any).thumbnail_url || "";
   const platform = (video as any).platform || "youtube";
   const brandName = (video as any).brandName || (video as any).brand_name || "";
+  const sentiment = (video as any).sentiment || (video as any).sentiment || "";
+  const culturalContext = (video as any).culturalContext || (video as any).cultural_context || "";
   
   return {
     id: video.id,
@@ -255,6 +271,8 @@ function formatIndexedVideo(video: IndexedVideo): DisplayVideo {
     boundingBox: { top: "0%", left: "0%", width: "0%", height: "0%" },
     platform,
     brandName,
+    sentiment,
+    culturalContext,
   };
 }
 
@@ -915,13 +933,40 @@ export default function Library() {
                 </div>
                 <div className="p-4">
                   <h3 className="font-semibold text-white mb-1 truncate">{video.title}</h3>
-                  <p className="text-sm text-muted-foreground mb-3">{video.views}</p>
-                  <div className="flex items-center gap-2">
+                  <p className="text-sm text-muted-foreground mb-2">{video.views}</p>
+                  <div className="flex items-center gap-2 flex-wrap mb-2">
                     <span className={`w-2 h-2 rounded-full ${video.statusDot}`}></span>
                     <span className={`px-2 py-0.5 rounded-full ${video.statusColor} text-xs font-medium`}>
                       {video.status}
                     </span>
                   </div>
+                  {/* Sentiment and Cultural Context badges */}
+                  {(video.sentiment || video.culturalContext) && (
+                    <div className="flex flex-col gap-1.5 text-xs">
+                      {video.sentiment && video.sentiment !== "Neutral" && (
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-muted-foreground">Sentiment:</span>
+                          <span className={`px-2 py-0.5 rounded-full font-medium ${
+                            video.sentiment === "Educational" ? "bg-blue-500/20 text-blue-400" :
+                            video.sentiment === "Uplifting" ? "bg-green-500/20 text-green-400" :
+                            video.sentiment === "Serious" ? "bg-orange-500/20 text-orange-400" :
+                            video.sentiment === "Chaotic" ? "bg-red-500/20 text-red-400" :
+                            "bg-zinc-500/20 text-zinc-400"
+                          }`}>
+                            {video.sentiment}
+                          </span>
+                        </div>
+                      )}
+                      {video.culturalContext && video.culturalContext !== "General" && (
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-muted-foreground">Context:</span>
+                          <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-400 font-medium truncate max-w-[180px]">
+                            {video.culturalContext}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             ))}

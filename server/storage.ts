@@ -44,6 +44,7 @@ export interface IStorage {
   getVideoById(id: number): Promise<VideoIndex | undefined>;
   getPendingVideos(userId: string, limit?: number): Promise<VideoIndex[]>;
   updateVideoStatus(videoId: number, status: string): Promise<void>;
+  updateVideoMetadata(videoId: number, metadata: { sentiment?: string; culturalContext?: string }): Promise<void>;
   insertDetectedSurface(surface: InsertDetectedSurface): Promise<DetectedSurface>;
   getDetectedSurfaces(videoId: number): Promise<DetectedSurface[]>;
   getSurfaceCountByVideo(videoId: number): Promise<number>;
@@ -269,6 +270,13 @@ export class DatabaseStorage implements IStorage {
     await db
       .update(videoIndex)
       .set({ status, updatedAt: new Date() })
+      .where(eq(videoIndex.id, videoId));
+  }
+
+  async updateVideoMetadata(videoId: number, metadata: { sentiment?: string; culturalContext?: string }): Promise<void> {
+    await db
+      .update(videoIndex)
+      .set({ ...metadata, updatedAt: new Date() })
       .where(eq(videoIndex.id, videoId));
   }
 

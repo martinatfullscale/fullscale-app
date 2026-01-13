@@ -203,6 +203,14 @@ interface DetectedObject {
   sceneContext?: string;
 }
 
+// Enhanced analysis result with sentiment and cultural context
+interface FrameAnalysisResult {
+  surfaces: DetectedObject[];
+  sentiment: string;
+  culturalContext: string;
+  brandSafetyScore: number;
+}
+
 interface ScanResult {
   success: boolean;
   videoId: number;
@@ -351,7 +359,7 @@ function applyContextualInferences(objects: DetectedObject[]): DetectedObject[] 
   return result;
 }
 
-async function analyzeFrame(framePath: string, retryCount: number = 0, isVertical: boolean = false, platform: string = 'youtube'): Promise<DetectedObject[]> {
+async function analyzeFrame(framePath: string, retryCount: number = 0, isVertical: boolean = false, platform: string = 'youtube'): Promise<FrameAnalysisResult> {
   const MAX_RETRIES = 2;
   
   console.log(`[Scanner] ===== ANALYZE FRAME START =====`);
@@ -365,6 +373,14 @@ async function analyzeFrame(framePath: string, retryCount: number = 0, isVertica
     ? VERTICAL_VIDEO_CONFIG.confidenceThresholdVertical 
     : VERTICAL_VIDEO_CONFIG.confidenceThresholdHorizontal;
   
+  // Default result for errors
+  const defaultResult: FrameAnalysisResult = {
+    surfaces: [],
+    sentiment: 'Neutral',
+    culturalContext: 'General',
+    brandSafetyScore: 70
+  };
+  
   try {
     // Optimize frame size before sending to API
     // For vertical videos, this also applies ROI cropping to focus on bottom half
@@ -376,24 +392,32 @@ async function analyzeFrame(framePath: string, retryCount: number = 0, isVertica
     // Get vertical video prompt modifier if applicable
     const verticalModifier = getVerticalVideoPromptModifier(isVertical);
     
-    // Platform-aware prompt for surface detection
+    // UPGRADED PROMPT: Sentiment, Cultural Context, and Brand Safety Analysis
     const platformLabel = platform === 'instagram' ? 'Instagram Reel' : 'YouTube video';
-    const prompt = `Analyze this ${platformLabel} frame. Identify large flat surfaces (desks, tables, floors, walls, shelves) suitable for placing virtual objects.
+    const prompt = `Analyze this ${platformLabel} frame for brand safety and ad placement opportunities.
 ${verticalModifier}
 
-Return coordinates for flat surfaces in the frame, prioritizing the LOWER 50% where desks and tables are typically located.
+Return a JSON object with the following structure:
+{
+  "surfaces": [list of physical objects suitable for virtual product placement],
+  "sentiment": "dominant mood (e.g., 'Uplifting', 'Serious', 'Chaotic', 'Educational', 'Neutral')",
+  "cultural_context": "cultural setting or region (e.g., 'Western Home Office', 'Japanese Tea Room', 'Brazilian Street Festival', 'American Tech Setup', 'Generic Global')",
+  "brand_safety_score": 0-100 (100 = completely safe, 0 = unsafe)
+}
 
-CRITICAL: Return ONLY a JSON array. No markdown, no explanation.
-
-For each surface found:
+For each surface in the surfaces array:
 - surfaceType: One of: Desk, Table, Wall, Shelf, Floor, Monitor, Laptop
 - confidence: 0.0-1.0 (include surfaces ${confidenceThreshold}+ confidence)
 - boundingBox: {x, y, width, height} normalized 0-1
 
-Example response:
-[{"surfaceType": "Desk", "confidence": 0.92, "boundingBox": {"x": 0.1, "y": 0.5, "width": 0.8, "height": 0.45}}]
+Look for visual cues to determine cultural context: power outlet types, architecture style, clothing, signage, or decor.
 
-If no surfaces visible, return exactly: []`;
+CRITICAL: Return ONLY a valid JSON object. No markdown, no explanation.
+
+Example response:
+{"surfaces": [{"surfaceType": "Desk", "confidence": 0.92, "boundingBox": {"x": 0.1, "y": 0.5, "width": 0.8, "height": 0.45}}], "sentiment": "Educational", "cultural_context": "Western Home Office", "brand_safety_score": 95}
+
+If no surfaces visible, return: {"surfaces": [], "sentiment": "Neutral", "cultural_context": "General", "brand_safety_score": 70}`;
     
     // Log the full prompt being sent
     console.log(`[Scanner] ===== GEMINI PROMPT =====`);
@@ -463,21 +487,52 @@ If no surfaces visible, return exactly: []`;
     // Strip Markdown code fences if present (```json ... ```)
     text = text.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
     
-    // Match JSON array - use greedy match for nested objects
-    const jsonMatch = text.match(/\[[\s\S]*\]/);
+    // Try to match JSON object first (new format), then fall back to array (legacy format)
+    const jsonObjectMatch = text.match(/\{[\s\S]*\}/);
+    const jsonArrayMatch = text.match(/\[[\s\S]*\]/);
     
-    if (!jsonMatch) {
-      console.log(`[Scanner] No JSON array found in response: ${text.substring(0, 100)}...`);
+    if (!jsonObjectMatch && !jsonArrayMatch) {
+      console.log(`[Scanner] No JSON found in response: ${text.substring(0, 100)}...`);
       console.log(`[Scanner] GEMINI CONNECTED but returned non-JSON text`);
-      return [];
+      return defaultResult;
     }
 
     try {
-      const parsed = JSON.parse(jsonMatch[0]) as DetectedObject[];
-      console.log(`[Scanner] Parsed ${parsed.length} raw objects from JSON`);
+      let surfaces: DetectedObject[] = [];
+      let sentiment = 'Neutral';
+      let culturalContext = 'General';
+      let brandSafetyScore = 70;
+      
+      // Parse the new object format with surfaces, sentiment, cultural_context, brand_safety_score
+      if (jsonObjectMatch) {
+        const parsed = JSON.parse(jsonObjectMatch[0]);
+        console.log(`[Scanner] Parsed enhanced response object`);
+        
+        // Extract sentiment and cultural context
+        sentiment = parsed.sentiment || 'Neutral';
+        culturalContext = parsed.cultural_context || parsed.culturalContext || 'General';
+        brandSafetyScore = parsed.brand_safety_score || parsed.brandSafetyScore || 70;
+        
+        console.log(`[Scanner] Sentiment: ${sentiment}`);
+        console.log(`[Scanner] Cultural Context: ${culturalContext}`);
+        console.log(`[Scanner] Brand Safety Score: ${brandSafetyScore}`);
+        
+        // Extract surfaces array
+        if (parsed.surfaces && Array.isArray(parsed.surfaces)) {
+          surfaces = parsed.surfaces;
+        } else if (Array.isArray(parsed)) {
+          // Fallback for legacy array response
+          surfaces = parsed;
+        }
+      } else if (jsonArrayMatch) {
+        // Legacy array format
+        surfaces = JSON.parse(jsonArrayMatch[0]) as DetectedObject[];
+      }
+      
+      console.log(`[Scanner] Parsed ${surfaces.length} raw surfaces from JSON`);
       
       // Use dynamic threshold based on aspect ratio (vertical gets lower threshold)
-      const validObjects = parsed.filter(obj => 
+      const validObjects = surfaces.filter(obj => 
         obj.confidence >= confidenceThreshold &&
         obj.boundingBox
       );
@@ -509,16 +564,26 @@ If no surfaces visible, return exactly: []`;
         const fallbackSurfaces = applyHomographyFallback(isVertical, sceneContext);
         if (fallbackSurfaces.length > 0) {
           console.log(`[Scanner] Homography fallback added ${fallbackSurfaces.length} inferred surfaces`);
-          return fallbackSurfaces;
+          return {
+            surfaces: fallbackSurfaces,
+            sentiment,
+            culturalContext,
+            brandSafetyScore
+          };
         }
       }
       
       console.log(`[Scanner] ===== ANALYZE FRAME END (success) =====`);
-      return storedObjects;
+      return {
+        surfaces: storedObjects,
+        sentiment,
+        culturalContext,
+        brandSafetyScore
+      };
     } catch (parseErr) {
       console.error(`[Scanner] JSON parse error:`, parseErr);
-      console.log(`[Scanner] Raw JSON that failed to parse: ${jsonMatch[0].substring(0, 500)}`);
-      return [];
+      console.log(`[Scanner] Raw JSON that failed to parse: ${text.substring(0, 500)}`);
+      return defaultResult;
     }
   } catch (error: any) {
     // Categorize the error for better debugging
@@ -558,9 +623,9 @@ If no surfaces visible, return exactly: []`;
       return analyzeFrame(framePath, retryCount + 1, isVertical, platform);
     }
     
-    // Return empty array but log that we're doing so due to error
-    console.log(`[Scanner] Returning empty surfaces due to error (not retrying)`);
-    return [];
+    // Return default result but log that we're doing so due to error
+    console.log(`[Scanner] Returning default result due to error (not retrying)`);
+    return defaultResult;
   }
 }
 
@@ -613,16 +678,25 @@ export async function processVideoScan(videoId: number, forceRescan: boolean = f
     let videoPath: string;
     
     if (localPath) {
-      const absoluteLocalPath = path.resolve(localPath);
-      if (fs.existsSync(absoluteLocalPath)) {
-        console.log(`[Scanner] *** USING LOCAL MASTER FILE: ${absoluteLocalPath} ***`);
-        console.log(`[Scanner] Bypassing YouTube download for ${video.youtubeId}`);
-        videoPath = absoluteLocalPath;
-      } else {
-        console.error(`[Scanner] Local asset mapped but file not found: ${absoluteLocalPath}`);
+      // FIXED: Use process.cwd() to get proper absolute path from project root
+      const absoluteLocalPath = path.resolve(process.cwd(), localPath);
+      console.log(`[Scanner] Resolving local path: ${localPath}`);
+      console.log(`[Scanner] Working directory: ${process.cwd()}`);
+      console.log(`[Scanner] Absolute path: ${absoluteLocalPath}`);
+      
+      // Existence check with detailed error
+      if (!fs.existsSync(absoluteLocalPath)) {
+        console.error(`[Scanner] ERROR: Local file not found at: ${absoluteLocalPath}`);
+        console.error(`[Scanner] Directory contents of ./public/:`, fs.readdirSync(path.resolve(process.cwd(), './public')).join(', '));
         await storage.updateVideoStatus(videoId, "Scan Failed");
-        return { success: false, videoId, surfacesDetected: 0, error: `Local asset not found: ${localPath}` };
+        return { success: false, videoId, surfacesDetected: 0, error: `Local file not found at: ${absoluteLocalPath}` };
       }
+      
+      const fileStats = fs.statSync(absoluteLocalPath);
+      console.log(`[Scanner] *** USING LOCAL MASTER FILE: ${absoluteLocalPath} ***`);
+      console.log(`[Scanner] File size: ${(fileStats.size / 1024 / 1024).toFixed(2)} MB`);
+      console.log(`[Scanner] Bypassing YouTube download for ${video.youtubeId}`);
+      videoPath = absoluteLocalPath;
     } else {
       // Fallback to YouTube download (expected to fail for blocked videos)
       videoPath = path.join(tempDir, "video.mp4");
@@ -663,9 +737,19 @@ export async function processVideoScan(videoId: number, forceRescan: boolean = f
 
       console.log(`[Scanner] Analyzing frame ${i + 1}/${frames.length} at ${timestamp}s`);
       
-      const detectedObjects = await analyzeFrame(framePath, 0, isVertical, videoPlatform);
+      const analysisResult = await analyzeFrame(framePath, 0, isVertical, videoPlatform);
+      
+      // Log sentiment and cultural context from first frame
+      if (i === 0) {
+        console.log(`[Scanner] *** VIDEO ANALYSIS: Sentiment="${analysisResult.sentiment}", Context="${analysisResult.culturalContext}", Safety=${analysisResult.brandSafetyScore} ***`);
+        // Update video with sentiment and cultural context
+        await storage.updateVideoMetadata(videoId, {
+          sentiment: analysisResult.sentiment,
+          culturalContext: analysisResult.culturalContext
+        });
+      }
 
-      for (const obj of detectedObjects) {
+      for (const obj of analysisResult.surfaces) {
         const surface: InsertDetectedSurface = {
           videoId,
           timestamp: timestamp.toString(),
