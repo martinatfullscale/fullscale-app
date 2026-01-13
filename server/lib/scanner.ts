@@ -351,13 +351,14 @@ function applyContextualInferences(objects: DetectedObject[]): DetectedObject[] 
   return result;
 }
 
-async function analyzeFrame(framePath: string, retryCount: number = 0, isVertical: boolean = false): Promise<DetectedObject[]> {
+async function analyzeFrame(framePath: string, retryCount: number = 0, isVertical: boolean = false, platform: string = 'youtube'): Promise<DetectedObject[]> {
   const MAX_RETRIES = 2;
   
   console.log(`[Scanner] ===== ANALYZE FRAME START =====`);
   console.log(`[Scanner] Frame path: ${framePath}`);
   console.log(`[Scanner] Retry count: ${retryCount}/${MAX_RETRIES}`);
   console.log(`[Scanner] Vertical video mode: ${isVertical}`);
+  console.log(`[Scanner] Platform: ${platform}`);
   
   // Get appropriate confidence threshold based on aspect ratio
   const confidenceThreshold = isVertical 
@@ -375,8 +376,9 @@ async function analyzeFrame(framePath: string, retryCount: number = 0, isVertica
     // Get vertical video prompt modifier if applicable
     const verticalModifier = getVerticalVideoPromptModifier(isVertical);
     
-    // SIMPLIFIED PROMPT - Focus on flat surfaces for virtual object placement
-    const prompt = `Identify large flat surfaces (desks, tables, floors, walls, shelves) suitable for placing virtual objects.
+    // Platform-aware prompt for surface detection
+    const platformLabel = platform === 'instagram' ? 'Instagram Reel' : 'YouTube video';
+    const prompt = `Analyze this ${platformLabel} frame. Identify large flat surfaces (desks, tables, floors, walls, shelves) suitable for placing virtual objects.
 ${verticalModifier}
 
 Return coordinates for flat surfaces in the frame, prioritizing the LOWER 50% where desks and tables are typically located.
@@ -553,7 +555,7 @@ If no surfaces visible, return exactly: []`;
     )) {
       console.log(`[Scanner] Retrying frame analysis (attempt ${retryCount + 2}/${MAX_RETRIES + 1})...`);
       await new Promise(resolve => setTimeout(resolve, 2000 * (retryCount + 1))); // Exponential backoff
-      return analyzeFrame(framePath, retryCount + 1, isVertical);
+      return analyzeFrame(framePath, retryCount + 1, isVertical, platform);
     }
     
     // Return empty array but log that we're doing so due to error
@@ -596,8 +598,18 @@ export async function processVideoScan(videoId: number, forceRescan: boolean = f
   try {
     fs.mkdirSync(tempDir, { recursive: true });
 
-    // Check LOCAL_ASSET_MAP first - bypass YouTube download for demo videos
-    const localPath = LOCAL_ASSET_MAP[video.youtubeId];
+    // PLATFORM CHECK: If it's an Instagram Reel, ALWAYS use the vertical hero proxy
+    // This runs BEFORE any YouTube download attempts
+    let localPath: string | undefined;
+    
+    if ((video as any).platform === 'instagram') {
+      console.log('[Scanner] Instagram Reel detected. Using local simulation file.');
+      localPath = './public/hero_video.mp4'; // Reuse the existing file for all Instagram content
+    } else {
+      // Check LOCAL_ASSET_MAP for YouTube demo videos
+      localPath = LOCAL_ASSET_MAP[video.youtubeId];
+    }
+    
     let videoPath: string;
     
     if (localPath) {
@@ -630,7 +642,9 @@ export async function processVideoScan(videoId: number, forceRescan: boolean = f
 
     // Detect if this is a vertical video from the first frame
     const { isVertical } = await getFrameAspectRatio(frames[0]);
+    const videoPlatform = (video as any).platform || 'youtube';
     console.log(`[Scanner] Video aspect: ${isVertical ? 'VERTICAL (9:16)' : 'HORIZONTAL (16:9)'}`);
+    console.log(`[Scanner] Platform: ${videoPlatform}`);
     
     if (isVertical) {
       console.log(`[Scanner] Applying vertical video solver:`);
@@ -649,7 +663,7 @@ export async function processVideoScan(videoId: number, forceRescan: boolean = f
 
       console.log(`[Scanner] Analyzing frame ${i + 1}/${frames.length} at ${timestamp}s`);
       
-      const detectedObjects = await analyzeFrame(framePath, 0, isVertical);
+      const detectedObjects = await analyzeFrame(framePath, 0, isVertical, videoPlatform);
 
       for (const obj of detectedObjects) {
         const surface: InsertDetectedSurface = {
