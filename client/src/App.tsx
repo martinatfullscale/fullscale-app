@@ -16,6 +16,7 @@ ReactGA.initialize(import.meta.env.VITE_GOOGLE_ANALYTICS_ID || "G-DEMO12345");
 
 import NotFound from "@/pages/not-found";
 import Landing from "@/pages/Landing";
+import AuthPage from "@/pages/AuthPage";
 import Dashboard from "@/pages/Dashboard";
 import Library from "@/pages/Library";
 import Opportunities from "@/pages/Opportunities";
@@ -90,6 +91,9 @@ function Router() {
     return (
       <Switch>
         <Route path="/" component={Landing} />
+        <Route path="/auth" component={AuthPage} />
+        <Route path="/login" component={AuthPage} />
+        <Route path="/signup" component={AuthPage} />
         <Route path="/privacy" component={Privacy} />
         <Route path="/terms" component={Terms} />
         <Route path="/dashboard" component={Landing} />

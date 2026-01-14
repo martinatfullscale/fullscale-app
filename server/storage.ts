@@ -17,6 +17,7 @@ import {
   type DetectedSurface,
   type InsertDetectedSurface,
 } from "@shared/schema";
+import { users, type User, type UpsertUser } from "@shared/models/auth";
 import { encrypt, decrypt } from "./encryption";
 
 export interface VideoWithOpportunities extends VideoIndex {
@@ -26,6 +27,13 @@ export interface VideoWithOpportunities extends VideoIndex {
 }
 
 export interface IStorage {
+  // User authentication methods
+  getUserByEmail(email: string): Promise<User | undefined>;
+  getUserById(id: string): Promise<User | undefined>;
+  createUser(user: UpsertUser): Promise<User>;
+  upsertUserByEmail(user: UpsertUser): Promise<User>;
+  
+  // Original methods
   getMonetizationItems(): Promise<MonetizationItem[]>;
   createMonetizationItem(item: InsertMonetizationItem): Promise<MonetizationItem>;
   getYoutubeConnection(userId: string): Promise<YoutubeConnection | undefined>;
@@ -58,6 +66,50 @@ export interface IStorage {
 }
 
 export class DatabaseStorage implements IStorage {
+  // User authentication methods
+  async getUserByEmail(email: string): Promise<User | undefined> {
+    const normalizedEmail = email.toLowerCase().trim();
+    const [user] = await db.select().from(users).where(eq(users.email, normalizedEmail));
+    return user;
+  }
+
+  async getUserById(id: string): Promise<User | undefined> {
+    const [user] = await db.select().from(users).where(eq(users.id, id));
+    return user;
+  }
+
+  async createUser(userData: UpsertUser): Promise<User> {
+    const [user] = await db
+      .insert(users)
+      .values({
+        ...userData,
+        email: userData.email?.toLowerCase().trim(),
+      })
+      .returning();
+    return user;
+  }
+
+  async upsertUserByEmail(userData: UpsertUser): Promise<User> {
+    const normalizedEmail = userData.email?.toLowerCase().trim();
+    const [user] = await db
+      .insert(users)
+      .values({
+        ...userData,
+        email: normalizedEmail,
+      })
+      .onConflictDoUpdate({
+        target: users.email,
+        set: {
+          firstName: userData.firstName,
+          lastName: userData.lastName,
+          profileImageUrl: userData.profileImageUrl,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+    return user;
+  }
+
   async getMonetizationItems(): Promise<MonetizationItem[]> {
     return await db.select().from(monetizationItems);
   }

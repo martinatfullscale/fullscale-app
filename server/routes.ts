@@ -6,6 +6,7 @@ import { z } from "zod";
 import { setupAuth, registerAuthRoutes, isAuthenticated } from "./replit_integrations/auth";
 import { runIndexerForUser } from "./lib/indexer";
 import { processVideoScan, scanPendingVideos } from "./lib/scanner";
+import { hashPassword, verifyPassword } from "./lib/password";
 
 // VIP Founding Members - bypass allowlist check automatically
 const FOUNDING_MEMBERS = [
@@ -255,24 +256,34 @@ export async function registerRoutes(
         return res.redirect("/?error=failed_to_get_user_info");
       }
 
-      // Check if user is a VIP Founding Member (bypass allowlist)
+      // PUBLIC SIGN UP: Auto-create and approve all Google users
       const normalizedEmail = userInfo.email.toLowerCase().trim();
       const isFoundingMember = FOUNDING_MEMBERS.some(
         (email) => email.toLowerCase() === normalizedEmail
       );
       
-      // Check if user is in allowlist
-      const isAllowed = await storage.isEmailAllowed(userInfo.email);
+      // Check if user exists in users table
+      let existingUser = await storage.getUserByEmail(userInfo.email);
       
-      if (!isAllowed && !isFoundingMember) {
-        console.log(`Access denied for email: ${userInfo.email}`);
-        return res.redirect("/?error=access_restricted&email=" + encodeURIComponent(userInfo.email));
+      // Auto-create user if they don't exist (PUBLIC SIGN UP)
+      if (!existingUser) {
+        const nameParts = (userInfo.name || "").split(" ");
+        existingUser = await storage.createUser({
+          email: normalizedEmail,
+          firstName: nameParts[0] || null,
+          lastName: nameParts.slice(1).join(" ") || null,
+          profileImageUrl: userInfo.picture || null,
+          isApproved: true,
+          authProvider: "google",
+        });
+        console.log(`Auto-created new Google user: ${userInfo.email}`);
       }
       
-      // If founding member is not in allowlist, auto-add them
-      if (isFoundingMember && !isAllowed) {
-        await storage.addAllowedUser({ email: userInfo.email, userType: "creator" });
-        console.log(`Auto-added founding member to allowlist: ${userInfo.email}`);
+      // Auto-add to allowlist if not already there
+      const isAllowed = await storage.isEmailAllowed(userInfo.email);
+      if (!isAllowed) {
+        await storage.addAllowedUser({ email: normalizedEmail, userType: "creator" });
+        console.log(`Auto-added user to allowlist: ${userInfo.email}`);
       }
       
       // If user is on allowlist but has no role, default to creator
@@ -317,6 +328,107 @@ export async function registerRoutes(
   app.post("/api/auth/google/logout", (req, res) => {
     delete (req.session as any).googleUser;
     res.json({ success: true });
+  });
+
+  // ============================================
+  // Email/Password Auth Routes (Public Sign Up)
+  // ============================================
+
+  // Register new user with email/password
+  app.post("/api/auth/register", async (req, res) => {
+    try {
+      const { email, password, firstName, lastName } = req.body;
+
+      if (!email || !password) {
+        return res.status(400).json({ message: "Email and password are required" });
+      }
+
+      if (password.length < 6) {
+        return res.status(400).json({ message: "Password must be at least 6 characters" });
+      }
+
+      // Check if user already exists
+      const existingUser = await storage.getUserByEmail(email);
+      if (existingUser) {
+        return res.status(400).json({ message: "User already exists with this email" });
+      }
+
+      // Hash password and create user
+      const hashedPassword = await hashPassword(password);
+      const user = await storage.createUser({
+        email: email.toLowerCase().trim(),
+        password: hashedPassword,
+        firstName: firstName || null,
+        lastName: lastName || null,
+        isApproved: true,
+        authProvider: "email",
+      });
+
+      // Auto-add to allowlist for seamless dashboard access
+      const isAllowed = await storage.isEmailAllowed(email);
+      if (!isAllowed) {
+        await storage.addAllowedUser({ email: email.toLowerCase().trim(), userType: "creator" });
+      }
+
+      // Set session
+      (req.session as any).googleUser = {
+        email: user.email,
+        name: `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.email,
+        picture: user.profileImageUrl || "",
+      };
+
+      req.session.save((err: any) => {
+        if (err) {
+          console.error("Session save error:", err);
+          return res.status(500).json({ message: "Session error" });
+        }
+        res.json({ success: true, user: { email: user.email, name: user.firstName } });
+      });
+    } catch (err: any) {
+      console.error("Registration error:", err);
+      res.status(500).json({ message: "Registration failed" });
+    }
+  });
+
+  // Login with email/password
+  app.post("/api/auth/login", async (req, res) => {
+    try {
+      const { email, password } = req.body;
+
+      if (!email || !password) {
+        return res.status(400).json({ message: "Email and password are required" });
+      }
+
+      // Find user
+      const user = await storage.getUserByEmail(email);
+      if (!user || !user.password) {
+        return res.status(401).json({ message: "Invalid email or password" });
+      }
+
+      // Verify password
+      const isValid = await verifyPassword(password, user.password);
+      if (!isValid) {
+        return res.status(401).json({ message: "Invalid email or password" });
+      }
+
+      // Set session
+      (req.session as any).googleUser = {
+        email: user.email,
+        name: `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.email,
+        picture: user.profileImageUrl || "",
+      };
+
+      req.session.save((err: any) => {
+        if (err) {
+          console.error("Session save error:", err);
+          return res.status(500).json({ message: "Session error" });
+        }
+        res.json({ success: true, user: { email: user.email, name: user.firstName } });
+      });
+    } catch (err: any) {
+      console.error("Login error:", err);
+      res.status(500).json({ message: "Login failed" });
+    }
   });
 
   // ============================================
