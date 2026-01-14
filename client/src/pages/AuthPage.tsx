@@ -8,7 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { Loader2, Mail, Lock, User } from "lucide-react";
 import { SiGoogle } from "react-icons/si";
-import logoUrl from "@assets/fullscale-logo.png";
+import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 
 export default function AuthPage() {
   const [, setLocation] = useLocation();

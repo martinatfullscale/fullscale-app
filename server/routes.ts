@@ -302,6 +302,7 @@ export async function registerRoutes(
         email: userInfo.email,
         name: userInfo.name,
         picture: userInfo.picture,
+        authProvider: "google",
       };
       
       console.log(`Access granted for: ${userInfo.email}`);
@@ -334,18 +335,28 @@ export async function registerRoutes(
   // Email/Password Auth Routes (Public Sign Up)
   // ============================================
 
+  // Zod schemas for auth validation
+  const registerSchema = z.object({
+    email: z.string().email("Invalid email format"),
+    password: z.string().min(6, "Password must be at least 6 characters"),
+    firstName: z.string().optional(),
+    lastName: z.string().optional(),
+  });
+
+  const loginSchema = z.object({
+    email: z.string().email("Invalid email format"),
+    password: z.string().min(1, "Password is required"),
+  });
+
   // Register new user with email/password
   app.post("/api/auth/register", async (req, res) => {
     try {
-      const { email, password, firstName, lastName } = req.body;
-
-      if (!email || !password) {
-        return res.status(400).json({ message: "Email and password are required" });
+      const parsed = registerSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message || "Invalid input" });
       }
-
-      if (password.length < 6) {
-        return res.status(400).json({ message: "Password must be at least 6 characters" });
-      }
+      
+      const { email, password, firstName, lastName } = parsed.data;
 
       // Check if user already exists
       const existingUser = await storage.getUserByEmail(email);
@@ -370,11 +381,12 @@ export async function registerRoutes(
         await storage.addAllowedUser({ email: email.toLowerCase().trim(), userType: "creator" });
       }
 
-      // Set session
+      // Set session with provider distinction
       (req.session as any).googleUser = {
         email: user.email,
         name: `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.email,
         picture: user.profileImageUrl || "",
+        authProvider: "email",
       };
 
       req.session.save((err: any) => {
@@ -393,11 +405,12 @@ export async function registerRoutes(
   // Login with email/password
   app.post("/api/auth/login", async (req, res) => {
     try {
-      const { email, password } = req.body;
-
-      if (!email || !password) {
-        return res.status(400).json({ message: "Email and password are required" });
+      const parsed = loginSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message || "Invalid input" });
       }
+      
+      const { email, password } = parsed.data;
 
       // Find user
       const user = await storage.getUserByEmail(email);
@@ -411,11 +424,12 @@ export async function registerRoutes(
         return res.status(401).json({ message: "Invalid email or password" });
       }
 
-      // Set session
+      // Set session with provider distinction
       (req.session as any).googleUser = {
         email: user.email,
         name: `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.email,
         picture: user.profileImageUrl || "",
+        authProvider: "email",
       };
 
       req.session.save((err: any) => {
