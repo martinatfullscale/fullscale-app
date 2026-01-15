@@ -145,6 +145,10 @@ export async function registerRoutes(
   // Google Login OAuth Routes (with Allowlist)
   // ============================================
   
+  // Helper to check if email is a VIP/Founding member (uses FOUNDING_MEMBERS from top of file)
+  const isVipEmail = (email: string) => 
+    FOUNDING_MEMBERS.some(vip => vip.toLowerCase() === email.toLowerCase().trim());
+
   // Check Google login status (for hybrid mode)
   app.get("/api/auth/google/status", (req: any, res) => {
     const googleUser = req.session?.googleUser;
@@ -256,34 +260,40 @@ export async function registerRoutes(
         return res.redirect("/?error=failed_to_get_user_info");
       }
 
-      // PUBLIC SIGN UP: Auto-create and approve all Google users
+      // Check VIP status using unified helper
       const normalizedEmail = userInfo.email.toLowerCase().trim();
-      const isFoundingMember = FOUNDING_MEMBERS.some(
-        (email) => email.toLowerCase() === normalizedEmail
-      );
+      const isVip = isVipEmail(normalizedEmail);
       
       // Check if user exists in users table
       let existingUser = await storage.getUserByEmail(userInfo.email);
+      let userIsApproved = false;
       
       // Auto-create user if they don't exist (PUBLIC SIGN UP)
       if (!existingUser) {
         const nameParts = (userInfo.name || "").split(" ");
+        // Only VIPs/Founding members are auto-approved
+        userIsApproved = isVip;
         existingUser = await storage.createUser({
           email: normalizedEmail,
           firstName: nameParts[0] || null,
           lastName: nameParts.slice(1).join(" ") || null,
           profileImageUrl: userInfo.picture || null,
-          isApproved: true,
+          isApproved: userIsApproved,
           authProvider: "google",
         });
-        console.log(`Auto-created new Google user: ${userInfo.email}`);
+        console.log(`Auto-created new Google user: ${userInfo.email}, VIP: ${isVip}, approved: ${userIsApproved}`);
+      } else {
+        // Existing user - use their current approval status
+        userIsApproved = existingUser.isApproved ?? false;
       }
       
-      // Auto-add to allowlist if not already there
-      const isAllowed = await storage.isEmailAllowed(userInfo.email);
-      if (!isAllowed) {
-        await storage.addAllowedUser({ email: normalizedEmail, userType: "creator" });
-        console.log(`Auto-added user to allowlist: ${userInfo.email}`);
+      // Only add VIPs to allowlist
+      if (isVip) {
+        const isAllowed = await storage.isEmailAllowed(userInfo.email);
+        if (!isAllowed) {
+          await storage.addAllowedUser({ email: normalizedEmail, userType: "creator" });
+          console.log(`Auto-added VIP to allowlist: ${userInfo.email}`);
+        }
       }
       
       // If user is on allowlist but has no role, default to creator
@@ -293,22 +303,25 @@ export async function registerRoutes(
         console.log(`Assigned default creator role to: ${userInfo.email}`);
       }
       
-      if (isFoundingMember) {
-        console.log(`Founding member access granted: ${userInfo.email}`);
+      if (isVip) {
+        console.log(`VIP/Founding member access granted: ${userInfo.email}`);
       }
 
-      // User is allowed - set session and redirect to dashboard
+      // Set session with approval status
       (req.session as any).googleUser = {
         email: userInfo.email,
         name: userInfo.name,
         picture: userInfo.picture,
         authProvider: "google",
+        isApproved: userIsApproved,
       };
       
-      console.log(`Access granted for: ${userInfo.email}`);
+      console.log(`Access set for: ${userInfo.email}, approved: ${userIsApproved}`);
       
-      // Always redirect to production domain to avoid replit.dev session issues
-      const productionDashboardUrl = "https://gofullscale.co/dashboard";
+      // Redirect based on approval status
+      const productionDashboardUrl = userIsApproved 
+        ? "https://gofullscale.co/dashboard" 
+        : "https://gofullscale.co/waitlist";
       
       // Explicitly save session before redirect to ensure it persists
       req.session.save((err: any) => {
@@ -329,6 +342,18 @@ export async function registerRoutes(
   app.post("/api/auth/google/logout", (req, res) => {
     delete (req.session as any).googleUser;
     res.json({ success: true });
+  });
+
+  // Unified logout endpoint (works for both Google and email auth)
+  app.post("/api/auth/logout", (req, res) => {
+    req.session.destroy((err) => {
+      if (err) {
+        console.error("Logout error:", err);
+        return res.status(500).json({ success: false, message: "Logout failed" });
+      }
+      res.clearCookie("connect.sid");
+      res.json({ success: true });
+    });
   });
 
   // ============================================
@@ -357,36 +382,62 @@ export async function registerRoutes(
       }
       
       const { email, password, firstName, lastName } = parsed.data;
+      const normalizedEmail = email.toLowerCase().trim();
 
       // Check if user already exists
-      const existingUser = await storage.getUserByEmail(email);
+      const existingUser = await storage.getUserByEmail(normalizedEmail);
       if (existingUser) {
         return res.status(400).json({ message: "User already exists with this email" });
       }
 
+      // VIP users are auto-approved, others go to waitlist
+      const isVip = isVipEmail(normalizedEmail);
+
       // Hash password and create user
       const hashedPassword = await hashPassword(password);
       const user = await storage.createUser({
-        email: email.toLowerCase().trim(),
+        email: normalizedEmail,
         password: hashedPassword,
         firstName: firstName || null,
         lastName: lastName || null,
-        isApproved: true,
+        isApproved: isVip, // Only VIPs are auto-approved
         authProvider: "email",
       });
 
-      // Auto-add to allowlist for seamless dashboard access
-      const isAllowed = await storage.isEmailAllowed(email);
-      if (!isAllowed) {
-        await storage.addAllowedUser({ email: email.toLowerCase().trim(), userType: "creator" });
+      console.log(`User registered: ${normalizedEmail}, VIP: ${isVip}, approved: ${isVip}`);
+
+      // For VIP users, set session and allow dashboard access
+      if (isVip) {
+        // Auto-add VIPs to allowlist
+        const isAllowed = await storage.isEmailAllowed(normalizedEmail);
+        if (!isAllowed) {
+          await storage.addAllowedUser({ email: normalizedEmail, userType: "creator" });
+        }
+
+        (req.session as any).googleUser = {
+          email: user.email,
+          name: `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.email,
+          picture: user.profileImageUrl || "",
+          authProvider: "email",
+          isApproved: true,
+        };
+
+        return req.session.save((err: any) => {
+          if (err) {
+            console.error("Session save error:", err);
+            return res.status(500).json({ message: "Session error" });
+          }
+          res.json({ success: true, status: "approved", user: { email: user.email, name: user.firstName } });
+        });
       }
 
-      // Set session with provider distinction
+      // For non-VIP users, set session but mark as pending (for waitlist page)
       (req.session as any).googleUser = {
         email: user.email,
         name: `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.email,
         picture: user.profileImageUrl || "",
         authProvider: "email",
+        isApproved: false,
       };
 
       req.session.save((err: any) => {
@@ -394,7 +445,7 @@ export async function registerRoutes(
           console.error("Session save error:", err);
           return res.status(500).json({ message: "Session error" });
         }
-        res.json({ success: true, user: { email: user.email, name: user.firstName } });
+        res.json({ success: true, status: "pending", user: { email: user.email, name: user.firstName } });
       });
     } catch (err: any) {
       console.error("Registration error:", err);
@@ -411,9 +462,10 @@ export async function registerRoutes(
       }
       
       const { email, password } = parsed.data;
+      const normalizedEmail = email.toLowerCase().trim();
 
       // Find user
-      const user = await storage.getUserByEmail(email);
+      const user = await storage.getUserByEmail(normalizedEmail);
       if (!user || !user.password) {
         return res.status(401).json({ message: "Invalid email or password" });
       }
@@ -424,12 +476,13 @@ export async function registerRoutes(
         return res.status(401).json({ message: "Invalid email or password" });
       }
 
-      // Set session with provider distinction
+      // Set session with approval status
       (req.session as any).googleUser = {
         email: user.email,
         name: `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.email,
         picture: user.profileImageUrl || "",
         authProvider: "email",
+        isApproved: user.isApproved ?? false,
       };
 
       req.session.save((err: any) => {
@@ -437,12 +490,38 @@ export async function registerRoutes(
           console.error("Session save error:", err);
           return res.status(500).json({ message: "Session error" });
         }
-        res.json({ success: true, user: { email: user.email, name: user.firstName } });
+        res.json({ 
+          success: true, 
+          status: user.isApproved ? "approved" : "pending",
+          user: { email: user.email, name: user.firstName } 
+        });
       });
     } catch (err: any) {
       console.error("Login error:", err);
       res.status(500).json({ message: "Login failed" });
     }
+  });
+
+  // Get auth status (for frontend to check approval)
+  app.get("/api/auth/status", async (req, res) => {
+    const googleUser = (req.session as any)?.googleUser;
+    
+    if (!googleUser || !googleUser.email) {
+      return res.json({ authenticated: false });
+    }
+
+    // Fetch latest approval status from database
+    const user = await storage.getUserByEmail(googleUser.email);
+    const isApproved = user?.isApproved ?? googleUser.isApproved ?? false;
+
+    res.json({
+      authenticated: true,
+      email: googleUser.email,
+      name: googleUser.name,
+      picture: googleUser.picture,
+      authProvider: googleUser.authProvider,
+      isApproved,
+    });
   });
 
   // ============================================

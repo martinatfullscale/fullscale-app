@@ -17,6 +17,7 @@ ReactGA.initialize(import.meta.env.VITE_GOOGLE_ANALYTICS_ID || "G-DEMO12345");
 import NotFound from "@/pages/not-found";
 import Landing from "@/pages/Landing";
 import AuthPage from "@/pages/AuthPage";
+import WaitlistPage from "@/pages/WaitlistPage";
 import Dashboard from "@/pages/Dashboard";
 import Library from "@/pages/Library";
 import Opportunities from "@/pages/Opportunities";
@@ -25,6 +26,12 @@ import Campaigns from "@/pages/Campaigns";
 import Settings from "@/pages/Settings";
 import Privacy from "@/pages/Privacy";
 import Terms from "@/pages/Terms";
+
+interface AuthStatusResponse {
+  authenticated: boolean;
+  email?: string;
+  isApproved?: boolean;
+}
 
 interface UserTypeResponse {
   authenticated: boolean;
@@ -58,15 +65,45 @@ function Router() {
     ReactGA.send({ hitType: "pageview", page: location });
   }, [location]);
 
+  // Check approval status for waitlist gating
+  const { data: authStatus, isLoading: isLoadingAuthStatus } = useQuery<AuthStatusResponse>({
+    queryKey: ["/api/auth/status"],
+    enabled: isAuthenticated,
+    retry: false,
+    staleTime: 10000,
+    refetchOnWindowFocus: true,
+  });
+
   const { data: userTypeData, isLoading: isLoadingUserType } = useQuery<UserTypeResponse>({
     queryKey: ["/api/auth/user-type"],
-    enabled: isAuthenticated,
+    enabled: isAuthenticated && authStatus?.isApproved === true,
     retry: false,
     staleTime: 30000,
     refetchOnWindowFocus: false,
   });
 
+  // Protected routes that require approval
+  const protectedRoutes = ["/dashboard", "/library", "/opportunities", "/marketplace", "/campaigns", "/settings", "/earnings", "/upload"];
+  const isProtectedRoute = protectedRoutes.some(route => location === route || location === "/");
+
+  // Redirect based on approval status
   useEffect(() => {
+    if (isAuthenticated && authStatus && !isLoadingAuthStatus) {
+      // Redirect unapproved users to waitlist
+      if (!authStatus.isApproved && isProtectedRoute && location !== "/waitlist") {
+        setLocation("/waitlist");
+      }
+      // Redirect approved users away from waitlist
+      if (authStatus.isApproved && location === "/waitlist") {
+        setLocation("/dashboard");
+      }
+    }
+  }, [authStatus, isAuthenticated, isLoadingAuthStatus, location, isProtectedRoute, setLocation]);
+
+  useEffect(() => {
+    // Only do role-based redirects if user is approved
+    if (!authStatus?.isApproved || !userTypeData) return;
+    
     if (userTypeData?.userType === "brand" && location === "/") {
       setLocation("/marketplace");
     }
@@ -77,7 +114,7 @@ function Router() {
     if (userTypeData?.userType === "brand" && (location === "/dashboard" || location === "/library" || location === "/opportunities")) {
       window.location.href = "/marketplace";
     }
-  }, [userTypeData, location, setLocation]);
+  }, [authStatus, userTypeData, location, setLocation]);
 
   if (isLoadingReplitAuth || isLoadingGoogleAuth) {
     return (
@@ -96,8 +133,31 @@ function Router() {
         <Route path="/signup" component={AuthPage} />
         <Route path="/privacy" component={Privacy} />
         <Route path="/terms" component={Terms} />
+        <Route path="/waitlist" component={WaitlistPage} />
         <Route path="/dashboard" component={Landing} />
         <Route path="/:rest*" component={Landing} />
+      </Switch>
+    );
+  }
+
+  // Show loading while checking approval status
+  if (isLoadingAuthStatus) {
+    return (
+      <div className="min-h-screen w-full flex items-center justify-center bg-background">
+        <Loader2 className="w-10 h-10 text-primary animate-spin" />
+      </div>
+    );
+  }
+
+  // User is authenticated but not approved - show waitlist
+  if (authStatus && !authStatus.isApproved) {
+    // Redirect to waitlist if not already there (effect handles this)
+    return (
+      <Switch>
+        <Route path="/waitlist" component={WaitlistPage} />
+        <Route path="/privacy" component={Privacy} />
+        <Route path="/terms" component={Terms} />
+        <Route component={WaitlistPage} />
       </Switch>
     );
   }

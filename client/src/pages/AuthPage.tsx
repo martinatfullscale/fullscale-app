@@ -53,14 +53,24 @@ export default function AuthPage() {
         return;
       }
 
-      toast({
-        title: "Welcome back!",
-        description: "Redirecting to dashboard...",
-      });
-
-      setTimeout(() => {
-        setLocation("/dashboard");
-      }, 500);
+      // Check if user is approved or pending
+      if (data.status === "pending") {
+        toast({
+          title: "Welcome!",
+          description: "Your application is being reviewed...",
+        });
+        setTimeout(() => {
+          setLocation("/waitlist");
+        }, 500);
+      } else {
+        toast({
+          title: "Welcome back!",
+          description: "Redirecting to dashboard...",
+        });
+        setTimeout(() => {
+          setLocation("/dashboard");
+        }, 500);
+      }
     } catch (error) {
       toast({
         title: "Error",
@@ -118,14 +128,24 @@ export default function AuthPage() {
         return;
       }
 
-      toast({
-        title: "Account created!",
-        description: "Welcome to FullScale. Redirecting to dashboard...",
-      });
-
-      setTimeout(() => {
-        setLocation("/dashboard");
-      }, 500);
+      // Check if user is approved or pending waitlist
+      if (data.status === "pending") {
+        toast({
+          title: "Application Submitted!",
+          description: "You've been added to the waitlist.",
+        });
+        setTimeout(() => {
+          setLocation("/waitlist");
+        }, 500);
+      } else {
+        toast({
+          title: "Account created!",
+          description: "Welcome to FullScale. Redirecting to dashboard...",
+        });
+        setTimeout(() => {
+          setLocation("/dashboard");
+        }, 500);
+      }
     } catch (error) {
       toast({
         title: "Error",
