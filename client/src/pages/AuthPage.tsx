@@ -6,7 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, Mail, Lock, User } from "lucide-react";
+import { Loader2, Mail, Lock, User, X } from "lucide-react";
 import { SiGoogle } from "react-icons/si";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 
@@ -171,7 +171,16 @@ export default function AuthPage() {
   };
 
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center p-4">
+    <div className="min-h-screen bg-background flex items-center justify-center p-4 relative">
+      <a
+        href="/"
+        className="absolute top-4 right-4 p-2 rounded-full bg-white/10 hover:bg-white/20 transition-colors text-muted-foreground hover:text-white"
+        data-testid="button-auth-close"
+        aria-label="Close"
+      >
+        <X className="w-5 h-5" />
+      </a>
+      
       <div className="w-full max-w-md">
         <div className="flex flex-col items-center mb-8">
           <img src={logoUrl} alt="FullScale Creator Portal" className="h-12 w-auto mb-4" />
