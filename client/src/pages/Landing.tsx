@@ -1157,9 +1157,7 @@ export default function Landing() {
           {/* Desktop Navigation - visible at 600px and above */}
           <div className="hidden min-[600px]:flex items-center gap-3">
             <a 
-              href="https://airtable.com/appF4oLhgbf143xe7/pagil3dstNSBZvLUr/form"
-              target="_blank"
-              rel="noopener noreferrer"
+              href="/auth?mode=signup"
               className="px-5 py-2 rounded-lg font-medium text-sm border border-primary text-primary bg-black/20 backdrop-blur-sm hover:bg-primary/10 transition-colors min-h-[44px] flex items-center"
               data-testid="button-nav-apply"
             >
@@ -1177,9 +1175,7 @@ export default function Landing() {
           {/* Mobile Icon Buttons - visible below 600px with 1.5rem spacing from logo */}
           <div className="flex min-[600px]:hidden items-center gap-3 ml-6">
             <a 
-              href="https://airtable.com/appF4oLhgbf143xe7/pagil3dstNSBZvLUr/form"
-              target="_blank"
-              rel="noopener noreferrer"
+              href="/auth?mode=signup"
               className="p-2 rounded-lg border border-primary text-primary bg-black/20 backdrop-blur-sm hover:bg-primary/10 transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center"
               data-testid="button-mobile-apply"
               aria-label="Apply for Access"
@@ -1225,13 +1221,13 @@ export default function Landing() {
               </p>
 
               <div className="flex flex-col sm:flex-row gap-3 md:gap-4 items-center justify-center">
-                <button 
-                  onClick={handleLoginClick}
+                <a 
+                  href="/auth?mode=signup"
                   className="px-6 py-3 md:px-10 md:py-5 rounded-xl bg-primary hover:bg-primary/90 text-white font-semibold text-sm md:text-lg shadow-2xl shadow-primary/30 hover:shadow-primary/50 hover:-translate-y-1 transition-all duration-300"
                   data-testid="button-hero-start"
                 >
                   Start Monetizing Now
-                </button>
+                </a>
                 <button 
                   onClick={() => setShowDemoModal(true)}
                   className="px-6 py-3 md:px-10 md:py-5 rounded-xl bg-white/10 hover:bg-white/20 border border-white/20 text-white font-semibold text-sm md:text-lg backdrop-blur-md transition-all duration-300 flex items-center gap-2"
@@ -1443,9 +1439,7 @@ export default function Landing() {
               Not ready to automate everything? Join our exclusive group of partner creators shaping the future of the platform.
             </p>
             <a 
-              href="https://airtable.com/appF4oLhgbf143xe7/pagil3dstNSBZvLUr/form"
-              target="_blank"
-              rel="noopener noreferrer"
+              href="/auth?mode=signup"
               className="px-8 py-4 rounded-xl bg-transparent hover:bg-white/5 border-2 border-primary text-primary font-semibold text-lg transition-all duration-300 inline-block"
               data-testid="button-apply-access"
             >
@@ -1510,9 +1504,7 @@ export default function Landing() {
                     Email: <span className="text-white">{accessError}</span>
                   </p>
                   <a
-                    href="https://airtable.com/appF4oLhgbf143xe7/pagil3dstNSBZvLUr/form"
-                    target="_blank"
-                    rel="noopener noreferrer"
+                    href="/auth?mode=signup"
                     className="inline-block w-full px-6 py-3 rounded-xl bg-primary hover:bg-primary/90 text-white font-semibold text-lg transition-colors"
                     data-testid="button-modal-apply-after-denied"
                   >
@@ -1530,9 +1522,7 @@ export default function Landing() {
                   </p>
 
                   <a
-                    href="https://airtable.com/appF4oLhgbf143xe7/pagil3dstNSBZvLUr/form"
-                    target="_blank"
-                    rel="noopener noreferrer"
+                    href="/auth?mode=signup"
                     className="inline-block w-full px-6 py-3 rounded-xl bg-primary hover:bg-primary/90 text-white font-semibold text-lg transition-colors"
                     data-testid="button-modal-apply"
                   >

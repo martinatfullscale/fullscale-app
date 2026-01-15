@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,7 +14,11 @@ export default function AuthPage() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState("login");
+  
+  // Check URL for mode parameter to auto-switch tabs
+  const urlParams = new URLSearchParams(window.location.search);
+  const initialMode = urlParams.get("mode") === "signup" ? "register" : "login";
+  const [activeTab, setActiveTab] = useState(initialMode);
 
   // Login form state
   const [loginEmail, setLoginEmail] = useState("");
