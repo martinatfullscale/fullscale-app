@@ -530,7 +530,7 @@ export async function registerRoutes(
       return res.json({ authenticated: false });
     }
 
-    // Fetch latest approval status from database
+    // Fetch latest user data from database
     const user = await storage.getUserByEmail(googleUser.email);
     const isApproved = user?.isApproved ?? googleUser.isApproved ?? false;
 
@@ -538,6 +538,8 @@ export async function registerRoutes(
       authenticated: true,
       email: googleUser.email,
       name: googleUser.name,
+      firstName: user?.firstName || null,
+      lastName: user?.lastName || null,
       picture: googleUser.picture,
       authProvider: googleUser.authProvider,
       isApproved,
