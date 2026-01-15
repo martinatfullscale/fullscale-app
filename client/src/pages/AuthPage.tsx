@@ -85,6 +85,15 @@ export default function AuthPage() {
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     
+    if (!firstName.trim() || !lastName.trim()) {
+      toast({
+        title: "Name required",
+        description: "Please enter your first and last name.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     if (registerPassword !== confirmPassword) {
       toast({
         title: "Passwords don't match",
@@ -232,6 +241,7 @@ export default function AuthPage() {
                           value={firstName}
                           onChange={(e) => setFirstName(e.target.value)}
                           className="pl-10"
+                          required
                           data-testid="input-first-name"
                         />
                       </div>
@@ -243,6 +253,7 @@ export default function AuthPage() {
                         placeholder="Doe"
                         value={lastName}
                         onChange={(e) => setLastName(e.target.value)}
+                        required
                         data-testid="input-last-name"
                       />
                     </div>
