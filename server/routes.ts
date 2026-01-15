@@ -7,6 +7,7 @@ import { setupAuth, registerAuthRoutes, isAuthenticated } from "./replit_integra
 import { runIndexerForUser } from "./lib/indexer";
 import { processVideoScan, scanPendingVideos } from "./lib/scanner";
 import { hashPassword, verifyPassword } from "./lib/password";
+import { addSignupToAirtable } from "./lib/airtable";
 
 // VIP Founding Members - bypass allowlist check automatically
 const FOUNDING_MEMBERS = [
@@ -282,6 +283,16 @@ export async function registerRoutes(
           authProvider: "google",
         });
         console.log(`Auto-created new Google user: ${userInfo.email}, VIP: ${isVip}, approved: ${userIsApproved}`);
+        
+        // Sync new Google signup to Airtable
+        const nameParts2 = (userInfo.name || "").split(" ");
+        addSignupToAirtable({
+          email: normalizedEmail,
+          firstName: nameParts2[0] || null,
+          lastName: nameParts2.slice(1).join(" ") || null,
+          authProvider: "google",
+          isApproved: userIsApproved,
+        }).catch(err => console.error("[Airtable] Sync failed:", err));
       } else {
         // Existing user - use their current approval status
         userIsApproved = existingUser.isApproved ?? false;
@@ -405,6 +416,15 @@ export async function registerRoutes(
       });
 
       console.log(`User registered: ${normalizedEmail}, VIP: ${isVip}, approved: ${isVip}`);
+
+      // Sync to Airtable (async, don't block registration)
+      addSignupToAirtable({
+        email: normalizedEmail,
+        firstName: firstName || null,
+        lastName: lastName || null,
+        authProvider: "email",
+        isApproved: isVip,
+      }).catch(err => console.error("[Airtable] Sync failed:", err));
 
       // For VIP users, set session and allow dashboard access
       if (isVip) {
