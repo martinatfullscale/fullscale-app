@@ -8,12 +8,27 @@ const LOCAL_VIDEO_FILES = [
   "/fullscale_final4.mov",
 ];
 
-const THUMBNAIL_COLORS = [
-  "https://images.unsplash.com/photo-1593062096033-9a26b09da705?w=480&h=270&fit=crop",
-  "https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=480&h=270&fit=crop",
-  "https://images.unsplash.com/photo-1531297484001-80022131f5a1?w=480&h=270&fit=crop",
-  "https://images.unsplash.com/photo-1519389950473-47ba0277781c?w=480&h=270&fit=crop",
-  "https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=480&h=270&fit=crop",
+const THUMBNAIL_IMAGES = [
+  "https://images.unsplash.com/photo-1618221195710-dd6b41faaea6?w=480&h=270&fit=crop",
+  "https://images.unsplash.com/photo-1512941937669-90a1b58e7e9c?w=480&h=270&fit=crop",
+  "https://images.unsplash.com/photo-1556909114-f6e7ad7d3136?w=480&h=270&fit=crop",
+  "https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?w=480&h=270&fit=crop",
+  "https://images.unsplash.com/photo-1586023492125-27b2c045efd7?w=480&h=270&fit=crop",
+  "https://images.unsplash.com/photo-1616588589676-62b3bd4ff6d2?w=480&h=270&fit=crop",
+  "https://images.unsplash.com/photo-1593642632559-0c6d3fc62b89?w=480&h=270&fit=crop",
+  "https://images.unsplash.com/photo-1603481588273-2f908a9a7a1b?w=480&h=270&fit=crop",
+  "https://images.unsplash.com/photo-1600585154340-be6161a56a0c?w=480&h=270&fit=crop",
+  "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=480&h=270&fit=crop",
+  "https://images.unsplash.com/photo-1593642702821-c8da6771f0c6?w=480&h=270&fit=crop",
+  "https://images.unsplash.com/photo-1502672260266-1c1ef2d93688?w=480&h=270&fit=crop",
+  "https://images.unsplash.com/photo-1616594039964-ae9021a400a0?w=480&h=270&fit=crop",
+  "https://images.unsplash.com/photo-1496181133206-80ce9b88a853?w=480&h=270&fit=crop",
+  "https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=480&h=270&fit=crop",
+  "https://images.unsplash.com/photo-1524758631624-e2822e304c36?w=480&h=270&fit=crop",
+  "https://images.unsplash.com/photo-1595225476474-87563907a212?w=480&h=270&fit=crop",
+  "https://images.unsplash.com/photo-1585771724684-38269d6639fd?w=480&h=270&fit=crop",
+  "https://images.unsplash.com/photo-1527443224154-c4a3942d3acf?w=480&h=270&fit=crop",
+  "https://images.unsplash.com/photo-1600494603989-9650cf6ddd3d?w=480&h=270&fit=crop",
 ];
 
 const BRAND_CAMPAIGNS = [
@@ -87,7 +102,7 @@ export async function seed() {
   for (const campaign of BRAND_CAMPAIGNS) {
     await db.insert(monetizationItems).values({
       title: `${campaign.brandName} - ${campaign.category} Campaign`,
-      thumbnailUrl: THUMBNAIL_COLORS[Math.floor(Math.random() * THUMBNAIL_COLORS.length)],
+      thumbnailUrl: THUMBNAIL_IMAGES[Math.floor(Math.random() * THUMBNAIL_IMAGES.length)],
       status: campaign.status.toLowerCase(),
       creatorUserId: martinUserId,
       brandEmail: campaign.brandEmail,
@@ -128,7 +143,7 @@ export async function seed() {
       title: VIDEO_TITLES[i],
       description: `A great video about ${VIDEO_TITLES[i].toLowerCase()}. Perfect for brand integrations.`,
       viewCount,
-      thumbnailUrl: THUMBNAIL_COLORS[i % THUMBNAIL_COLORS.length],
+      thumbnailUrl: THUMBNAIL_IMAGES[i % THUMBNAIL_IMAGES.length],
       status: scanStatus,
       priorityScore: Math.floor(Math.random() * 100),
       publishedAt,
