@@ -5,6 +5,18 @@
 FullScale is a dual-portal content monetization platform with Google OAuth-gated access and YouTube integration. Features role-based views (creator/brand) with View Switcher for admins, a Brand Marketplace where brands purchase ad placements, and Campaign Tracker for monitoring bids. Built as a full-stack TypeScript application with React frontend and Express backend, using PostgreSQL for data persistence. Includes real-time AI object detection using TensorFlow.js COCO-SSD for product placement surface analysis.
 
 ## Recent Changes (January 2026)
+- **Multi-Platform Auth Foundation**: Added Passport.js strategies for Twitch and Facebook OAuth
+  - New columns in users table: twitch_id, facebook_id, instagram_id
+  - Auth routes: /auth/twitch, /auth/twitch/callback, /auth/facebook, /auth/facebook/callback
+  - server/lib/platformAuth.ts handles setup with graceful degradation if credentials missing
+  - Settings page buttons for Twitch/Facebook now use real OAuth routes
+  - Requires env vars: TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET, FACEBOOK_APP_ID, FACEBOOK_APP_SECRET
+- **YouTube Download Bypass Attempt**: Scanner now uses @distube/ytdl-core with iOS mobile user agent spoofing
+  - Falls back to yt-dlp with iOS player client if ytdl-core fails
+  - /api/proxy-video route streams YouTube videos with auth, rate limiting (5/min), and 100MB size limit
+  - NOTE: User agent spoofing may violate YouTube TOS - prefer direct video uploads for production
+- **Direct Video Upload**: Users can upload videos directly to bypass YouTube download restrictions
+  - File paths stored in description field and recovered by scanner after restart
 - Video scanning pipeline fully functional: ffmpeg frame extraction → Gemini 2.5 Flash analysis → surface detection → database storage
 - LOCAL_ASSET_MAP in scanner.ts maps demo video IDs to local files for testing without YouTube download
 - Test video (ID 52) successfully scanned with AI-detected placement surface (Desk) for martin@gofullscale.co
