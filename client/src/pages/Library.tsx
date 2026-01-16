@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { TopBar } from "@/components/TopBar";
 import { Upload, Eye, CheckCircle, Loader2, AlertTriangle, X, Shield, Sun, Tag, Box, DollarSign, Sparkles, RefreshCw, Play, Globe } from "lucide-react";
-import { SiInstagram, SiYoutube } from "react-icons/si";
+import { SiInstagram, SiYoutube, SiTwitch, SiFacebook } from "react-icons/si";
 import { motion } from "framer-motion";
 import { useAuth } from "@/hooks/use-auth";
 import { useHybridMode } from "@/hooks/use-hybrid-mode";
@@ -36,7 +36,7 @@ interface IndexedVideo {
   adOpportunities: number;
 }
 
-type PlatformFilter = "all" | "youtube" | "instagram";
+type PlatformFilter = "all" | "youtube" | "instagram" | "twitch" | "facebook";
 
 interface VideoIndexResponse {
   videos: IndexedVideo[];
@@ -736,6 +736,8 @@ export default function Library() {
   // Platform counts for tabs
   const youtubeCount = displayVideos.filter(v => v.platform === "youtube").length;
   const instagramCount = displayVideos.filter(v => v.platform === "instagram").length;
+  const twitchCount = displayVideos.filter(v => v.platform === "twitch").length;
+  const facebookCount = displayVideos.filter(v => v.platform === "facebook").length;
   
   // Debug logging
   console.log("[Library] isPitchMode:", isPitchMode, "videos.length:", videos.length, "isLoading:", isLoadingVideos, "platformFilter:", platformFilter);
@@ -824,6 +826,14 @@ export default function Library() {
                 <SiInstagram className="w-4 h-4 text-pink-500" />
                 Instagram ({instagramCount})
               </TabsTrigger>
+              <TabsTrigger value="twitch" className="gap-2 data-[state=active]:bg-purple-500/20" data-testid="tab-twitch">
+                <SiTwitch className="w-4 h-4 text-purple-500" />
+                Twitch ({twitchCount})
+              </TabsTrigger>
+              <TabsTrigger value="facebook" className="gap-2 data-[state=active]:bg-blue-500/20" data-testid="tab-facebook">
+                <SiFacebook className="w-4 h-4 text-blue-500" />
+                Facebook ({facebookCount})
+              </TabsTrigger>
             </TabsList>
           </Tabs>
           
@@ -879,6 +889,14 @@ export default function Library() {
                     {video.platform === "instagram" ? (
                       <div className="w-6 h-6 rounded-full bg-gradient-to-br from-purple-500 via-pink-500 to-orange-500 flex items-center justify-center">
                         <SiInstagram className="w-3.5 h-3.5 text-white" />
+                      </div>
+                    ) : video.platform === "twitch" ? (
+                      <div className="w-6 h-6 rounded-full bg-purple-600 flex items-center justify-center">
+                        <SiTwitch className="w-3.5 h-3.5 text-white" />
+                      </div>
+                    ) : video.platform === "facebook" ? (
+                      <div className="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center">
+                        <SiFacebook className="w-3.5 h-3.5 text-white" />
                       </div>
                     ) : (
                       <div className="w-6 h-6 rounded-full bg-red-600 flex items-center justify-center">

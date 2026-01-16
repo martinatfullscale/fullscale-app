@@ -4,8 +4,9 @@ import { motion, AnimatePresence } from "framer-motion";
 import { 
   Search, Filter, DollarSign, Tag, Play, 
   ShoppingCart, TrendingUp, Eye, Clock,
-  Briefcase, Palette, Monitor, Sparkles, X
+  Briefcase, Palette, Monitor, Sparkles, X, Globe
 } from "lucide-react";
+import { SiYoutube, SiTwitch, SiFacebook } from "react-icons/si";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -41,31 +42,35 @@ interface MarketplaceOpportunity {
   sceneType: string;
   surfaces: string[];
   duration: string;
+  platform?: string;
+  platforms?: string[];
 }
 
 // Static demo opportunities for pitch mode - 20 items with unique creator space images
 const STATIC_DEMO_OPPORTUNITIES: MarketplaceOpportunity[] = [
-  { id: 1, videoId: 101, youtubeId: "demo1", title: "Ultimate Desk Setup Tour 2026", thumbnailUrl: "https://images.unsplash.com/photo-1618221195710-dd6b41faaea6?w=640&h=360&fit=crop", creatorName: "TechVision", viewCount: 1250000, sceneValue: 85, context: "Workspace", genre: "Tech", sceneType: "Desk", surfaces: ["Monitor", "Desk", "Wall"], duration: "12:34" },
-  { id: 2, videoId: 102, youtubeId: "demo2", title: "Morning Kitchen Routine", thumbnailUrl: "https://images.unsplash.com/photo-1556909114-f6e7ad7d3136?w=640&h=360&fit=crop", creatorName: "LifestyleMax", viewCount: 890000, sceneValue: 65, context: "Kitchen", genre: "Lifestyle", sceneType: "Interior", surfaces: ["Counter", "Shelf", "Appliances"], duration: "8:45" },
-  { id: 3, videoId: 103, youtubeId: "demo3", title: "Pro Podcast Studio Setup", thumbnailUrl: "https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?w=640&h=360&fit=crop", creatorName: "AudioPro", viewCount: 2100000, sceneValue: 120, context: "Studio", genre: "Tech", sceneType: "Desk", surfaces: ["Microphone", "Wall", "Monitor"], duration: "15:22" },
-  { id: 4, videoId: 104, youtubeId: "demo4", title: "Living Room Coffee Table Styling", thumbnailUrl: "https://images.unsplash.com/photo-1586023492125-27b2c045efd7?w=640&h=360&fit=crop", creatorName: "InteriorDesign", viewCount: 675000, sceneValue: 55, context: "Living Room", genre: "Lifestyle", sceneType: "Interior", surfaces: ["Coffee Table", "Sofa", "Decor"], duration: "10:15" },
-  { id: 5, videoId: 105, youtubeId: "demo5", title: "Ultimate Gaming Battlestation", thumbnailUrl: "https://images.unsplash.com/photo-1616588589676-62b3bd4ff6d2?w=640&h=360&fit=crop", creatorName: "GamerzHQ", viewCount: 1450000, sceneValue: 95, context: "Gaming", genre: "Gaming", sceneType: "Desk", surfaces: ["Monitor", "Keyboard", "RGB Wall"], duration: "18:30" },
-  { id: 6, videoId: 106, youtubeId: "demo6", title: "Home Office Transformation", thumbnailUrl: "https://images.unsplash.com/photo-1593642632559-0c6d3fc62b89?w=640&h=360&fit=crop", creatorName: "WFHPro", viewCount: 320000, sceneValue: 45, context: "Office", genre: "DIY", sceneType: "Wall", surfaces: ["Desk", "Bookshelf", "Wall Art"], duration: "7:20" },
-  { id: 7, videoId: 107, youtubeId: "demo7", title: "Streaming Setup Breakdown", thumbnailUrl: "https://images.unsplash.com/photo-1603481588273-2f908a9a7a1b?w=640&h=360&fit=crop", creatorName: "StreamerPro", viewCount: 980000, sceneValue: 110, context: "Streaming", genre: "Gaming", sceneType: "Desk", surfaces: ["Camera", "Microphone", "Lights"], duration: "14:55" },
-  { id: 8, videoId: 108, youtubeId: "demo8", title: "Modern Kitchen Island Tour", thumbnailUrl: "https://images.unsplash.com/photo-1600585154340-be6161a56a0c?w=640&h=360&fit=crop", creatorName: "HomeCooking", viewCount: 540000, sceneValue: 70, context: "Kitchen", genre: "Lifestyle", sceneType: "Interior", surfaces: ["Island", "Stools", "Appliances"], duration: "11:40" },
-  { id: 9, videoId: 109, youtubeId: "demo9", title: "Cozy Reading Corner Setup", thumbnailUrl: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=640&h=360&fit=crop", creatorName: "BookishVibes", viewCount: 1850000, sceneValue: 150, context: "Living Room", genre: "Lifestyle", sceneType: "Interior", surfaces: ["Chair", "Bookshelf", "Lamp"], duration: "22:15" },
-  { id: 10, videoId: 110, youtubeId: "demo10", title: "Clean Workspace Essentials", thumbnailUrl: "https://images.unsplash.com/photo-1593642702821-c8da6771f0c6?w=640&h=360&fit=crop", creatorName: "MinimalDesk", viewCount: 445000, sceneValue: 75, context: "Workspace", genre: "Tech", sceneType: "Desk", surfaces: ["Monitor", "Desk", "Accessories"], duration: "16:30" },
-  { id: 11, videoId: 111, youtubeId: "demo11", title: "Studio Apartment Full Tour", thumbnailUrl: "https://images.unsplash.com/photo-1502672260266-1c1ef2d93688?w=640&h=360&fit=crop", creatorName: "ApartmentLife", viewCount: 2300000, sceneValue: 180, context: "Apartment", genre: "Lifestyle", sceneType: "Interior", surfaces: ["Living Area", "Bedroom", "Kitchen"], duration: "25:40" },
-  { id: 12, videoId: 112, youtubeId: "demo12", title: "Aesthetic Bedroom Makeover", thumbnailUrl: "https://images.unsplash.com/photo-1616594039964-ae9021a400a0?w=640&h=360&fit=crop", creatorName: "RoomInspo", viewCount: 1120000, sceneValue: 135, context: "Bedroom", genre: "Lifestyle", sceneType: "Interior", surfaces: ["Bed", "Nightstand", "Wall"], duration: "28:55" },
-  { id: 13, videoId: 113, youtubeId: "demo13", title: "Productivity Desk Setup", thumbnailUrl: "https://images.unsplash.com/photo-1496181133206-80ce9b88a853?w=640&h=360&fit=crop", creatorName: "ProductivityPro", viewCount: 678000, sceneValue: 60, context: "Workspace", genre: "Education", sceneType: "Desk", surfaces: ["Laptop", "Desk", "Accessories"], duration: "14:20" },
-  { id: 14, videoId: 114, youtubeId: "demo14", title: "Smart Home Control Center", thumbnailUrl: "https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=640&h=360&fit=crop", creatorName: "SmartHomeDIY", viewCount: 890000, sceneValue: 95, context: "Smart Home", genre: "DIY", sceneType: "Interior", surfaces: ["Hub", "Wall", "Devices"], duration: "19:45" },
-  { id: 15, videoId: 115, youtubeId: "demo15", title: "Influencer Content Studio", thumbnailUrl: "https://images.unsplash.com/photo-1524758631624-e2822e304c36?w=640&h=360&fit=crop", creatorName: "ContentCreator", viewCount: 1560000, sceneValue: 125, context: "Studio", genre: "Lifestyle", sceneType: "Interior", surfaces: ["Ring Light", "Camera", "Backdrop"], duration: "17:30" },
-  { id: 16, videoId: 116, youtubeId: "demo16", title: "Mechanical Keyboard Showcase", thumbnailUrl: "https://images.unsplash.com/photo-1595225476474-87563907a212?w=640&h=360&fit=crop", creatorName: "KeyboardEnthusiast", viewCount: 720000, sceneValue: 80, context: "Product", genre: "Tech", sceneType: "Product", surfaces: ["Keyboard", "Desk Mat", "Switches"], duration: "12:10" },
-  { id: 17, videoId: 117, youtubeId: "demo17", title: "Cable Management Tips", thumbnailUrl: "https://images.unsplash.com/photo-1585771724684-38269d6639fd?w=640&h=360&fit=crop", creatorName: "CleanSetup", viewCount: 456000, sceneValue: 55, context: "Tutorial", genre: "DIY", sceneType: "Desk", surfaces: ["Cables", "Desk", "Accessories"], duration: "11:25" },
-  { id: 18, videoId: 118, youtubeId: "demo18", title: "4K Monitor Comparison", thumbnailUrl: "https://images.unsplash.com/photo-1527443224154-c4a3942d3acf?w=640&h=360&fit=crop", creatorName: "DisplayMasters", viewCount: 934000, sceneValue: 110, context: "Comparison", genre: "Tech", sceneType: "Product", surfaces: ["Monitors", "Desk", "Wall"], duration: "21:50" },
-  { id: 19, videoId: 119, youtubeId: "demo19", title: "Day in My Creative Life", thumbnailUrl: "https://images.unsplash.com/photo-1600494603989-9650cf6ddd3d?w=640&h=360&fit=crop", creatorName: "CreatorLife", viewCount: 1340000, sceneValue: 90, context: "Vlog", genre: "Lifestyle", sceneType: "Interior", surfaces: ["Camera", "Room", "Equipment"], duration: "15:40" },
-  { id: 20, videoId: 120, youtubeId: "demo20", title: "Webcam Setup for Streamers", thumbnailUrl: "https://images.unsplash.com/photo-1587825140708-dfaf72ae4b04?w=640&h=360&fit=crop", creatorName: "WebcamReview", viewCount: 567000, sceneValue: 70, context: "Comparison", genre: "Tech", sceneType: "Product", surfaces: ["Webcams", "Desk", "Screen"], duration: "18:20" },
+  { id: 1, videoId: 101, youtubeId: "demo1", title: "Ultimate Desk Setup Tour 2026", thumbnailUrl: "https://images.unsplash.com/photo-1618221195710-dd6b41faaea6?w=640&h=360&fit=crop", creatorName: "TechVision", viewCount: 1250000, sceneValue: 85, context: "Workspace", genre: "Tech", sceneType: "Desk", surfaces: ["Monitor", "Desk", "Wall"], duration: "12:34", platform: "youtube", platforms: ["youtube"] },
+  { id: 2, videoId: 102, youtubeId: "demo2", title: "Morning Kitchen Routine", thumbnailUrl: "https://images.unsplash.com/photo-1556909114-f6e7ad7d3136?w=640&h=360&fit=crop", creatorName: "LifestyleMax", viewCount: 890000, sceneValue: 65, context: "Kitchen", genre: "Lifestyle", sceneType: "Interior", surfaces: ["Counter", "Shelf", "Appliances"], duration: "8:45", platform: "youtube", platforms: ["youtube", "facebook"] },
+  { id: 3, videoId: 103, youtubeId: "demo3", title: "Pro Podcast Studio Setup", thumbnailUrl: "https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?w=640&h=360&fit=crop", creatorName: "AudioPro", viewCount: 2100000, sceneValue: 120, context: "Studio", genre: "Tech", sceneType: "Desk", surfaces: ["Microphone", "Wall", "Monitor"], duration: "15:22", platform: "youtube", platforms: ["youtube", "twitch"] },
+  { id: 4, videoId: 104, youtubeId: "demo4", title: "Living Room Coffee Table Styling", thumbnailUrl: "https://images.unsplash.com/photo-1586023492125-27b2c045efd7?w=640&h=360&fit=crop", creatorName: "InteriorDesign", viewCount: 675000, sceneValue: 55, context: "Living Room", genre: "Lifestyle", sceneType: "Interior", surfaces: ["Coffee Table", "Sofa", "Decor"], duration: "10:15", platform: "facebook", platforms: ["facebook"] },
+  { id: 5, videoId: 105, youtubeId: "demo5", title: "Ultimate Gaming Battlestation", thumbnailUrl: "https://images.unsplash.com/photo-1616588589676-62b3bd4ff6d2?w=640&h=360&fit=crop", creatorName: "GamerzHQ", viewCount: 1450000, sceneValue: 95, context: "Gaming", genre: "Gaming", sceneType: "Desk", surfaces: ["Monitor", "Keyboard", "RGB Wall"], duration: "18:30", platform: "twitch", platforms: ["twitch", "youtube"] },
+  { id: 6, videoId: 106, youtubeId: "demo6", title: "Home Office Transformation", thumbnailUrl: "https://images.unsplash.com/photo-1593642632559-0c6d3fc62b89?w=640&h=360&fit=crop", creatorName: "WFHPro", viewCount: 320000, sceneValue: 45, context: "Office", genre: "DIY", sceneType: "Wall", surfaces: ["Desk", "Bookshelf", "Wall Art"], duration: "7:20", platform: "youtube", platforms: ["youtube"] },
+  { id: 7, videoId: 107, youtubeId: "demo7", title: "Twitch Stream VOD - 3 Hours", thumbnailUrl: "https://images.unsplash.com/photo-1603481588273-2f908a9a7a1b?w=640&h=360&fit=crop", creatorName: "StreamerPro", viewCount: 980000, sceneValue: 110, context: "Streaming", genre: "Gaming", sceneType: "Desk", surfaces: ["Camera", "Microphone", "Lights"], duration: "3:14:55", platform: "twitch", platforms: ["twitch"] },
+  { id: 8, videoId: 108, youtubeId: "demo8", title: "Modern Kitchen Island Tour", thumbnailUrl: "https://images.unsplash.com/photo-1600585154340-be6161a56a0c?w=640&h=360&fit=crop", creatorName: "HomeCooking", viewCount: 540000, sceneValue: 70, context: "Kitchen", genre: "Lifestyle", sceneType: "Interior", surfaces: ["Island", "Stools", "Appliances"], duration: "11:40", platform: "youtube", platforms: ["youtube"] },
+  { id: 9, videoId: 109, youtubeId: "demo9", title: "Cozy Reading Corner Setup", thumbnailUrl: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=640&h=360&fit=crop", creatorName: "BookishVibes", viewCount: 1850000, sceneValue: 150, context: "Living Room", genre: "Lifestyle", sceneType: "Interior", surfaces: ["Chair", "Bookshelf", "Lamp"], duration: "22:15", platform: "youtube", platforms: ["youtube", "facebook"] },
+  { id: 10, videoId: 110, youtubeId: "demo10", title: "Clean Workspace Essentials", thumbnailUrl: "https://images.unsplash.com/photo-1593642702821-c8da6771f0c6?w=640&h=360&fit=crop", creatorName: "MinimalDesk", viewCount: 445000, sceneValue: 75, context: "Workspace", genre: "Tech", sceneType: "Desk", surfaces: ["Monitor", "Desk", "Accessories"], duration: "16:30", platform: "youtube", platforms: ["youtube"] },
+  { id: 11, videoId: 111, youtubeId: "demo11", title: "Facebook Live Replay - Home Tour", thumbnailUrl: "https://images.unsplash.com/photo-1502672260266-1c1ef2d93688?w=640&h=360&fit=crop", creatorName: "ApartmentLife", viewCount: 2300000, sceneValue: 180, context: "Apartment", genre: "Lifestyle", sceneType: "Interior", surfaces: ["Living Area", "Bedroom", "Kitchen"], duration: "1:25:40", platform: "facebook", platforms: ["facebook"] },
+  { id: 12, videoId: 112, youtubeId: "demo12", title: "Aesthetic Bedroom Makeover", thumbnailUrl: "https://images.unsplash.com/photo-1616594039964-ae9021a400a0?w=640&h=360&fit=crop", creatorName: "RoomInspo", viewCount: 1120000, sceneValue: 135, context: "Bedroom", genre: "Lifestyle", sceneType: "Interior", surfaces: ["Bed", "Nightstand", "Wall"], duration: "28:55", platform: "youtube", platforms: ["youtube"] },
+  { id: 13, videoId: 113, youtubeId: "demo13", title: "Productivity Desk Setup", thumbnailUrl: "https://images.unsplash.com/photo-1496181133206-80ce9b88a853?w=640&h=360&fit=crop", creatorName: "ProductivityPro", viewCount: 678000, sceneValue: 60, context: "Workspace", genre: "Education", sceneType: "Desk", surfaces: ["Laptop", "Desk", "Accessories"], duration: "14:20", platform: "youtube", platforms: ["youtube"] },
+  { id: 14, videoId: 114, youtubeId: "demo14", title: "Smart Home Control Center", thumbnailUrl: "https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=640&h=360&fit=crop", creatorName: "SmartHomeDIY", viewCount: 890000, sceneValue: 95, context: "Smart Home", genre: "DIY", sceneType: "Interior", surfaces: ["Hub", "Wall", "Devices"], duration: "19:45", platform: "facebook", platforms: ["facebook", "youtube"] },
+  { id: 15, videoId: 115, youtubeId: "demo15", title: "Influencer Content Studio", thumbnailUrl: "https://images.unsplash.com/photo-1524758631624-e2822e304c36?w=640&h=360&fit=crop", creatorName: "ContentCreator", viewCount: 1560000, sceneValue: 125, context: "Studio", genre: "Lifestyle", sceneType: "Interior", surfaces: ["Ring Light", "Camera", "Backdrop"], duration: "17:30", platform: "youtube", platforms: ["youtube", "twitch", "facebook"] },
+  { id: 16, videoId: 116, youtubeId: "demo16", title: "Mechanical Keyboard Showcase", thumbnailUrl: "https://images.unsplash.com/photo-1595225476474-87563907a212?w=640&h=360&fit=crop", creatorName: "KeyboardEnthusiast", viewCount: 720000, sceneValue: 80, context: "Product", genre: "Tech", sceneType: "Product", surfaces: ["Keyboard", "Desk Mat", "Switches"], duration: "12:10", platform: "youtube", platforms: ["youtube"] },
+  { id: 17, videoId: 117, youtubeId: "demo17", title: "Twitch IRL Stream - Gaming Cafe", thumbnailUrl: "https://images.unsplash.com/photo-1585771724684-38269d6639fd?w=640&h=360&fit=crop", creatorName: "CleanSetup", viewCount: 456000, sceneValue: 55, context: "IRL Stream", genre: "Gaming", sceneType: "Interior", surfaces: ["Gaming Setup", "Desk", "Accessories"], duration: "2:11:25", platform: "twitch", platforms: ["twitch"] },
+  { id: 18, videoId: 118, youtubeId: "demo18", title: "4K Monitor Comparison", thumbnailUrl: "https://images.unsplash.com/photo-1527443224154-c4a3942d3acf?w=640&h=360&fit=crop", creatorName: "DisplayMasters", viewCount: 934000, sceneValue: 110, context: "Comparison", genre: "Tech", sceneType: "Product", surfaces: ["Monitors", "Desk", "Wall"], duration: "21:50", platform: "youtube", platforms: ["youtube", "twitch"] },
+  { id: 19, videoId: 119, youtubeId: "demo19", title: "Day in My Creative Life", thumbnailUrl: "https://images.unsplash.com/photo-1600494603989-9650cf6ddd3d?w=640&h=360&fit=crop", creatorName: "CreatorLife", viewCount: 1340000, sceneValue: 90, context: "Vlog", genre: "Lifestyle", sceneType: "Interior", surfaces: ["Camera", "Room", "Equipment"], duration: "15:40", platform: "youtube", platforms: ["youtube"] },
+  { id: 20, videoId: 120, youtubeId: "demo20", title: "Webcam Setup for Streamers", thumbnailUrl: "https://images.unsplash.com/photo-1587825140708-dfaf72ae4b04?w=640&h=360&fit=crop", creatorName: "WebcamReview", viewCount: 567000, sceneValue: 70, context: "Comparison", genre: "Tech", sceneType: "Product", surfaces: ["Webcams", "Desk", "Screen"], duration: "18:20", platform: "youtube", platforms: ["youtube", "twitch"] },
 ];
+
+const PLATFORMS = ["All", "YouTube", "Twitch", "Facebook"];
 
 const GENRES = ["All", "Tech", "Gaming", "Lifestyle", "DIY", "Education"];
 const BUDGETS = ["All", "Under $50", "$50-$100", "$100-$200", "Over $200"];
@@ -127,6 +132,7 @@ export default function BrandMarketplace() {
   const [genreFilter, setGenreFilter] = useState("All");
   const [budgetFilter, setBudgetFilter] = useState("All");
   const [sceneTypeFilter, setSceneTypeFilter] = useState("All");
+  const [platformFilter, setPlatformFilter] = useState("All");
   const [buyingId, setBuyingId] = useState<number | null>(null);
   const [showCategories, setShowCategories] = useState(true);
   const [activeTab, setActiveTab] = useState<"categories" | "opportunities">("categories");
@@ -248,13 +254,21 @@ export default function BrandMarketplace() {
       opp.genre === categoryToGenreMap[selectedCategory] ||
       opp.context.toLowerCase().includes(selectedCategory.toLowerCase());
     
+    // Platform filter - check both primary platform and platforms array
+    let matchesPlatform = true;
+    if (platformFilter !== "All") {
+      const filterValue = platformFilter.toLowerCase();
+      matchesPlatform = opp.platform === filterValue || 
+        (opp.platforms && opp.platforms.includes(filterValue));
+    }
+    
     let matchesBudget = true;
     if (budgetFilter === "Under $50") matchesBudget = opp.sceneValue < 50;
     else if (budgetFilter === "$50-$100") matchesBudget = opp.sceneValue >= 50 && opp.sceneValue <= 100;
     else if (budgetFilter === "$100-$200") matchesBudget = opp.sceneValue > 100 && opp.sceneValue <= 200;
     else if (budgetFilter === "Over $200") matchesBudget = opp.sceneValue > 200;
     
-    return matchesSearch && matchesGenre && matchesBudget && matchesSceneType && matchesCategory;
+    return matchesSearch && matchesGenre && matchesBudget && matchesSceneType && matchesCategory && matchesPlatform;
   });
 
   const formatViewCount = (count: number) => {
@@ -387,6 +401,18 @@ export default function BrandMarketplace() {
                 ))}
               </SelectContent>
             </Select>
+            
+            <Select value={platformFilter} onValueChange={setPlatformFilter}>
+              <SelectTrigger className="w-[140px]" data-testid="select-platform">
+                <Globe className="w-4 h-4 mr-2" />
+                <SelectValue placeholder="Platform" />
+              </SelectTrigger>
+              <SelectContent>
+                {PLATFORMS.map((platform) => (
+                  <SelectItem key={platform} value={platform}>{platform}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
         </div>
       </div>
@@ -474,7 +500,22 @@ export default function BrandMarketplace() {
                       </Badge>
                     </div>
                     
-                    <div className="absolute top-2 right-2">
+                    <div className="absolute top-2 right-2 flex items-center gap-1">
+                      {/* Platform icons with exact brand colors */}
+                      {(opportunity.platforms || [opportunity.platform]).filter(Boolean).map((p) => (
+                        <div 
+                          key={p} 
+                          className={`w-5 h-5 rounded-full flex items-center justify-center ${
+                            p === 'twitch' ? 'bg-[#9146FF]' : 
+                            p === 'facebook' ? 'bg-[#1877F2]' : 
+                            'bg-[#FF0000]'
+                          }`}
+                        >
+                          {p === 'twitch' ? <SiTwitch className="w-2.5 h-2.5 text-white" /> :
+                           p === 'facebook' ? <SiFacebook className="w-2.5 h-2.5 text-white" /> :
+                           <SiYoutube className="w-2.5 h-2.5 text-white" />}
+                        </div>
+                      ))}
                       <Badge variant="secondary" className="gap-1">
                         <Eye className="w-3 h-3" />
                         {formatViewCount((opportunity as any).viewCount || (opportunity as any).view_count || 0)}

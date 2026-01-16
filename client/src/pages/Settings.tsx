@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { TopBar } from "@/components/TopBar";
 import { User, CreditCard, Bell, CheckCircle, ExternalLink, Save, Link2, Loader2 } from "lucide-react";
-import { SiInstagram, SiFacebook, SiX, SiTiktok, SiYoutube } from "react-icons/si";
+import { SiInstagram, SiFacebook, SiX, SiTiktok, SiYoutube, SiTwitch } from "react-icons/si";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -32,8 +32,9 @@ interface SocialConnection {
 }
 
 const initialSocialConnections: SocialConnection[] = [
-  { id: "instagram", name: "Instagram", icon: SiInstagram, color: "#E4405F", bgColor: "bg-gradient-to-br from-[#833AB4] via-[#E4405F] to-[#FCAF45]", status: "disconnected", followers: "125K", handle: "@creator.ig" },
-  { id: "facebook", name: "Facebook / Meta", icon: SiFacebook, color: "#1877F2", bgColor: "bg-[#1877F2]", status: "disconnected", followers: "89K", handle: "Creator Page" },
+  { id: "instagram", name: "Instagram Professional", icon: SiInstagram, color: "#E4405F", bgColor: "bg-gradient-to-br from-[#833AB4] via-[#E4405F] to-[#FCAF45]", status: "disconnected", followers: "125K", handle: "@creator.ig" },
+  { id: "facebook", name: "Facebook Page", icon: SiFacebook, color: "#1877F2", bgColor: "bg-[#1877F2]", status: "disconnected", followers: "89K", handle: "Justin's Page" },
+  { id: "twitch", name: "Twitch Channel", icon: SiTwitch, color: "#9146FF", bgColor: "bg-[#9146FF]", status: "disconnected", followers: "156K", handle: "NinjaMode" },
   { id: "x", name: "X (Twitter)", icon: SiX, color: "#000000", bgColor: "bg-black", status: "disconnected", followers: "45K", handle: "@creator_x" },
   { id: "tiktok", name: "TikTok", icon: SiTiktok, color: "#000000", bgColor: "bg-gradient-to-br from-[#00F2EA] to-[#FF0050]", status: "disconnected", followers: "2.1M", handle: "@creator.tiktok" },
   { id: "youtube", name: "YouTube", icon: SiYoutube, color: "#FF0000", bgColor: "bg-[#FF0000]", status: "connected", followers: "850K", handle: "Creator Channel" },
@@ -264,6 +265,34 @@ export default function Settings() {
                     Brands prefer creators with diverse audiences.
                   </p>
                 </div>
+                
+                {/* Linked Accounts Card */}
+                {socialConnections.filter(c => c.status === "connected").length > 0 && (
+                  <div className="mt-6 bg-black/30 rounded-xl border border-white/5 p-6">
+                    <h3 className="text-lg font-semibold text-white mb-4">Linked Accounts</h3>
+                    <div className="space-y-3">
+                      {socialConnections.filter(c => c.status === "connected").map((connection) => (
+                        <div
+                          key={connection.id}
+                          className="flex items-center gap-3 p-3 rounded-lg bg-white/5 border border-white/5"
+                          data-testid={`linked-${connection.id}`}
+                        >
+                          <div className={`w-8 h-8 ${connection.bgColor} rounded-lg flex items-center justify-center`}>
+                            <connection.icon className="w-4 h-4 text-white" />
+                          </div>
+                          <div className="flex-1">
+                            <p className="text-sm font-medium text-white">{connection.name}</p>
+                            <p className="text-xs text-muted-foreground">{connection.handle}</p>
+                          </div>
+                          <div className="text-right">
+                            <p className="text-sm font-medium text-emerald-400">{connection.followers}</p>
+                            <p className="text-xs text-muted-foreground">followers</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </motion.div>
             )}
 

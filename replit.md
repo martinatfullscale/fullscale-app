@@ -6,9 +6,14 @@ FullScale is a dual-portal content monetization platform with Google OAuth-gated
 
 ## Recent Changes (January 2026)
 - Added TensorFlow.js COCO-SSD integration for real-time object detection in SceneAnalysisModal
-- Added Social Integrations tab in Settings with simulated connect/disconnect for IG, Meta, X, TikTok, YouTube
-- Brand Marketplace has 20 industry categories with tabbed interface and genre/budget/scene filters
-- 12 unique demo videos with distinct Unsplash creator space images (no duplicates)
+- Added Social Integrations tab in Settings with simulated connect/disconnect for IG, Meta, X, TikTok, YouTube, Twitch
+- Brand Marketplace has 20 industry categories with tabbed interface and genre/budget/scene/platform filters
+- Multi-platform support: YouTube (red), Twitch (purple #9146FF), Facebook (blue #1877F2) platform badges on video cards
+- Platform filter dropdown in Brand Marketplace for filtering by YouTube/Twitch/Facebook
+- Linked Accounts card in Settings showing connected social profiles with follower counts
+- Demo videos expanded: 20 YouTube, 15 Instagram, 4 Twitch VODs, 4 Facebook videos in server/routes.ts
+- Settings connections renamed to be more specific (e.g., "Instagram Professional", "Facebook Page", "Twitch Channel")
+- Session timeout set to 2 hours for security (confirmed by user)
 
 ## User Preferences
 
@@ -48,7 +53,7 @@ Preferred communication style: Simple, everyday language.
 - **Admin Emails**: martin@gofullscale.co, martin@whtwrks.com, martincekechukwu@gmail.com
 - **OAuth Integration**: Google OAuth for YouTube API access
 - **Token Security**: AES-256-GCM encryption for storing OAuth tokens
-- **Session Storage**: PostgreSQL-backed sessions with 7-day TTL
+- **Session Storage**: PostgreSQL-backed sessions with 2-hour TTL
 - **Auth API Fix**: /api/auth/user-type returns {authenticated: false} for unauthenticated users (no 401 loops)
 
 ### Key Design Patterns
