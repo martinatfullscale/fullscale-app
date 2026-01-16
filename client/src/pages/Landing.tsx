@@ -1161,7 +1161,7 @@ export default function Landing() {
               className="px-5 py-2 rounded-lg font-medium text-sm border border-primary text-primary bg-black/20 backdrop-blur-sm hover:bg-primary/10 transition-colors min-h-[44px] flex items-center"
               data-testid="button-nav-apply"
             >
-              Apply for Access
+              Sign Up for Access
             </a>
             <button 
               onClick={handleLoginClick}
@@ -1178,7 +1178,7 @@ export default function Landing() {
               href="/auth?mode=signup"
               className="p-2 rounded-lg border border-primary text-primary bg-black/20 backdrop-blur-sm hover:bg-primary/10 transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center"
               data-testid="button-mobile-apply"
-              aria-label="Apply for Access"
+              aria-label="Sign Up for Access"
             >
               <Plus className="w-5 h-5" />
             </a>
@@ -1443,7 +1443,7 @@ export default function Landing() {
               className="px-8 py-4 rounded-xl bg-transparent hover:bg-white/5 border-2 border-primary text-primary font-semibold text-lg transition-all duration-300 inline-block"
               data-testid="button-apply-access"
             >
-              Apply for Access
+              Sign Up for Access
             </a>
           </motion.div>
         </div>
@@ -1508,7 +1508,7 @@ export default function Landing() {
                     className="inline-block w-full px-6 py-3 rounded-xl bg-primary hover:bg-primary/90 text-white font-semibold text-lg transition-colors"
                     data-testid="button-modal-apply-after-denied"
                   >
-                    Apply for Access
+                    Sign Up for Access
                   </a>
                 </>
               ) : (
@@ -1526,7 +1526,7 @@ export default function Landing() {
                     className="inline-block w-full px-6 py-3 rounded-xl bg-primary hover:bg-primary/90 text-white font-semibold text-lg transition-colors"
                     data-testid="button-modal-apply"
                   >
-                    Apply for Access
+                    Sign Up for Access
                   </a>
 
                   <button
