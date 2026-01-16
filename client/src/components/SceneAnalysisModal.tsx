@@ -1,8 +1,10 @@
-import { useState } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, ChevronLeft, ChevronRight, Target, Clock, Eye, Sparkles } from "lucide-react";
+import { X, ChevronLeft, ChevronRight, Target, Clock, Eye, Sparkles, Scan, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import * as tf from "@tensorflow/tfjs";
+import * as cocoSsd from "@tensorflow-models/coco-ssd";
 
 export interface Scene {
   id: string;
@@ -22,14 +24,181 @@ export interface VideoWithScenes {
   scenes: Scene[];
 }
 
+interface DetectedObject {
+  class: string;
+  score: number;
+  bbox: [number, number, number, number];
+}
+
 interface SceneAnalysisModalProps {
   video: VideoWithScenes | null;
   open: boolean;
   onClose: () => void;
 }
 
+const PLACEMENT_SURFACES = [
+  "laptop", "tv", "monitor", "cell phone", "keyboard", "mouse", "remote",
+  "book", "bottle", "cup", "bowl", "dining table", "desk", "chair", "couch",
+  "bed", "potted plant", "vase", "clock", "refrigerator", "microwave",
+  "oven", "toaster", "sink", "backpack", "handbag", "suitcase", "umbrella"
+];
+
 export function SceneAnalysisModal({ video, open, onClose }: SceneAnalysisModalProps) {
   const [currentSceneIndex, setCurrentSceneIndex] = useState(0);
+  const [model, setModel] = useState<cocoSsd.ObjectDetection | null>(null);
+  const [isLoadingModel, setIsLoadingModel] = useState(false);
+  const [isScanning, setIsScanning] = useState(false);
+  const [detections, setDetections] = useState<DetectedObject[]>([]);
+  const [hasScanned, setHasScanned] = useState(false);
+  const [modelError, setModelError] = useState<string | null>(null);
+  
+  const imageRef = useRef<HTMLImageElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    if (open && !model && !isLoadingModel) {
+      loadModel();
+    }
+  }, [open]);
+
+  useEffect(() => {
+    setDetections([]);
+    setHasScanned(false);
+    clearCanvas();
+  }, [currentSceneIndex]);
+
+  const loadModel = async () => {
+    setIsLoadingModel(true);
+    setModelError(null);
+    try {
+      await tf.ready();
+      const loadedModel = await cocoSsd.load({
+        base: "lite_mobilenet_v2"
+      });
+      setModel(loadedModel);
+      console.log("[AI] COCO-SSD model loaded successfully");
+    } catch (error) {
+      console.error("[AI] Failed to load model:", error);
+      setModelError("Failed to load AI model. Please try again.");
+    } finally {
+      setIsLoadingModel(false);
+    }
+  };
+
+  const clearCanvas = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+  };
+
+  const runDetection = useCallback(async () => {
+    if (!model || !imageRef.current) {
+      console.log("[AI] Model or image not ready");
+      return;
+    }
+
+    setIsScanning(true);
+    clearCanvas();
+
+    try {
+      const img = imageRef.current;
+      
+      await new Promise<void>((resolve) => {
+        if (img.complete) {
+          resolve();
+        } else {
+          img.onload = () => resolve();
+        }
+      });
+
+      const predictions = await model.detect(img);
+      console.log("[AI] Detections:", predictions);
+
+      const detected: DetectedObject[] = predictions.map((pred) => ({
+        class: pred.class,
+        score: pred.score,
+        bbox: pred.bbox as [number, number, number, number]
+      }));
+
+      setDetections(detected);
+      setHasScanned(true);
+
+      drawBoundingBoxes(detected, img);
+    } catch (error) {
+      console.error("[AI] Detection failed:", error);
+    } finally {
+      setIsScanning(false);
+    }
+  }, [model]);
+
+  const drawBoundingBoxes = (objects: DetectedObject[], img: HTMLImageElement) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const displayWidth = img.clientWidth;
+    const displayHeight = img.clientHeight;
+    const naturalWidth = img.naturalWidth;
+    const naturalHeight = img.naturalHeight;
+
+    canvas.width = displayWidth;
+    canvas.height = displayHeight;
+
+    const scaleX = displayWidth / naturalWidth;
+    const scaleY = displayHeight / naturalHeight;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const colors = [
+      "#10B981", "#3B82F6", "#8B5CF6", "#F59E0B", "#EF4444",
+      "#06B6D4", "#EC4899", "#84CC16", "#F97316", "#6366F1"
+    ];
+
+    objects.forEach((obj, index) => {
+      const [x, y, width, height] = obj.bbox;
+      const scaledX = x * scaleX;
+      const scaledY = y * scaleY;
+      const scaledWidth = width * scaleX;
+      const scaledHeight = height * scaleY;
+
+      const color = colors[index % colors.length];
+      const confidencePercent = Math.round(obj.score * 100);
+
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 3;
+      ctx.strokeRect(scaledX, scaledY, scaledWidth, scaledHeight);
+
+      ctx.fillStyle = color;
+      ctx.globalAlpha = 0.2;
+      ctx.fillRect(scaledX, scaledY, scaledWidth, scaledHeight);
+      ctx.globalAlpha = 1.0;
+
+      const label = `${obj.class} ${confidencePercent}%`;
+      ctx.font = "bold 14px Inter, sans-serif";
+      const textMetrics = ctx.measureText(label);
+      const textHeight = 20;
+      const padding = 6;
+
+      const labelX = scaledX;
+      const labelY = scaledY > textHeight + padding ? scaledY - 4 : scaledY + scaledHeight + textHeight + padding;
+
+      ctx.fillStyle = color;
+      ctx.fillRect(
+        labelX,
+        labelY - textHeight,
+        textMetrics.width + padding * 2,
+        textHeight + 4
+      );
+
+      ctx.fillStyle = "#FFFFFF";
+      ctx.fillText(label, labelX + padding, labelY - 4);
+    });
+  };
 
   if (!video || !open) return null;
 
@@ -47,6 +216,21 @@ export function SceneAnalysisModal({ video, open, onClose }: SceneAnalysisModalP
   const goToScene = (index: number) => {
     setCurrentSceneIndex(index);
   };
+
+  const placementSurfaces = detections.filter((d) => 
+    PLACEMENT_SURFACES.includes(d.class.toLowerCase())
+  );
+  
+  const displaySurfaces = hasScanned 
+    ? detections.map((d) => `${d.class} (${Math.round(d.score * 100)}%)`)
+    : currentScene.surfaceTypes;
+
+  const displayCount = hasScanned ? detections.length : currentScene.surfaces;
+  const displayConfidence = hasScanned 
+    ? detections.length > 0 
+      ? Math.round(detections.reduce((sum, d) => sum + d.score, 0) / detections.length * 100)
+      : 0
+    : currentScene.confidence;
 
   return (
     <AnimatePresence>
@@ -79,13 +263,21 @@ export function SceneAnalysisModal({ video, open, onClose }: SceneAnalysisModalP
               <div className="flex-1 relative">
                 <div className="aspect-video relative overflow-hidden bg-black">
                   <img
+                    ref={imageRef}
                     src={currentScene.imageUrl}
                     alt={`Scene at ${currentScene.timestamp}`}
                     className="w-full h-full object-cover"
+                    crossOrigin="anonymous"
                     data-testid="img-scene-main"
                   />
                   
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent" />
+                  <canvas
+                    ref={canvasRef}
+                    className="absolute inset-0 w-full h-full pointer-events-none"
+                    data-testid="canvas-detections"
+                  />
+                  
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent pointer-events-none" />
                   
                   <div className="absolute bottom-4 left-4 flex items-center gap-2">
                     <Badge className="bg-primary/90 text-white">
@@ -94,8 +286,13 @@ export function SceneAnalysisModal({ video, open, onClose }: SceneAnalysisModalP
                     </Badge>
                     <Badge className="bg-emerald-500/90 text-white">
                       <Target className="w-3 h-3 mr-1" />
-                      {currentScene.surfaces} Surfaces
+                      {displayCount} {hasScanned ? "Detected" : "Surfaces"}
                     </Badge>
+                    {hasScanned && (
+                      <Badge className="bg-blue-500/90 text-white">
+                        AI Scanned
+                      </Badge>
+                    )}
                   </div>
 
                   <Button
@@ -153,21 +350,51 @@ export function SceneAnalysisModal({ video, open, onClose }: SceneAnalysisModalP
                 <h3 className="text-lg font-bold text-white mb-1 line-clamp-2" data-testid="text-video-title">
                   {video.title}
                 </h3>
-                <p className="text-sm text-muted-foreground mb-6">
+                <p className="text-sm text-muted-foreground mb-4">
                   {video.viewCount.toLocaleString()} views
                 </p>
+
+                <Button
+                  onClick={runDetection}
+                  disabled={isLoadingModel || isScanning || !model}
+                  className="w-full mb-4 gap-2"
+                  data-testid="button-scan-analysis"
+                >
+                  {isLoadingModel ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Loading AI Model...
+                    </>
+                  ) : isScanning ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Scanning...
+                    </>
+                  ) : (
+                    <>
+                      <Scan className="w-4 h-4" />
+                      {hasScanned ? "Re-Scan Scene" : "Scan Analysis"}
+                    </>
+                  )}
+                </Button>
+
+                {modelError && (
+                  <p className="text-xs text-red-400 mb-4 text-center">{modelError}</p>
+                )}
 
                 <div className="space-y-4">
                   <div className="p-4 rounded-xl bg-white/5 border border-white/10">
                     <div className="flex items-center gap-2 mb-2">
                       <Target className="w-4 h-4 text-primary" />
-                      <span className="text-sm font-medium text-white">Surfaces Found</span>
+                      <span className="text-sm font-medium text-white">
+                        {hasScanned ? "Objects Detected" : "Surfaces Found"}
+                      </span>
                     </div>
                     <p className="text-2xl font-bold text-primary mb-2" data-testid="text-surfaces-count">
-                      {currentScene.surfaces}
+                      {displayCount}
                     </p>
-                    <div className="flex flex-wrap gap-1">
-                      {currentScene.surfaceTypes.map((surface, idx) => (
+                    <div className="flex flex-wrap gap-1 max-h-32 overflow-y-auto">
+                      {displaySurfaces.map((surface, idx) => (
                         <Badge 
                           key={idx} 
                           variant="secondary" 
@@ -179,6 +406,26 @@ export function SceneAnalysisModal({ video, open, onClose }: SceneAnalysisModalP
                       ))}
                     </div>
                   </div>
+
+                  {hasScanned && placementSurfaces.length > 0 && (
+                    <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30">
+                      <div className="flex items-center gap-2 mb-2">
+                        <Sparkles className="w-4 h-4 text-emerald-400" />
+                        <span className="text-sm font-medium text-white">Potential Placements</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        {placementSurfaces.map((surface, idx) => (
+                          <Badge 
+                            key={idx} 
+                            className="bg-emerald-500/20 text-emerald-300 border-emerald-500/30 text-xs"
+                            data-testid={`badge-placement-${idx}`}
+                          >
+                            {surface.class}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                   <div className="p-4 rounded-xl bg-white/5 border border-white/10">
                     <div className="flex items-center gap-2 mb-2">
@@ -193,17 +440,19 @@ export function SceneAnalysisModal({ video, open, onClose }: SceneAnalysisModalP
                   <div className="p-4 rounded-xl bg-white/5 border border-white/10">
                     <div className="flex items-center gap-2 mb-2">
                       <Eye className="w-4 h-4 text-blue-400" />
-                      <span className="text-sm font-medium text-white">AI Confidence</span>
+                      <span className="text-sm font-medium text-white">
+                        {hasScanned ? "AI Detection Confidence" : "AI Confidence"}
+                      </span>
                     </div>
                     <div className="flex items-center gap-2">
                       <div className="flex-1 h-2 bg-white/10 rounded-full overflow-hidden">
                         <div 
-                          className="h-full bg-gradient-to-r from-blue-500 to-emerald-500 rounded-full"
-                          style={{ width: `${currentScene.confidence}%` }}
+                          className="h-full bg-gradient-to-r from-blue-500 to-emerald-500 rounded-full transition-all duration-500"
+                          style={{ width: `${displayConfidence}%` }}
                         />
                       </div>
                       <span className="text-sm font-medium text-white" data-testid="text-confidence">
-                        {currentScene.confidence}%
+                        {displayConfidence}%
                       </span>
                     </div>
                   </div>
