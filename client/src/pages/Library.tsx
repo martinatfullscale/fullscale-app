@@ -545,8 +545,11 @@ export default function Library() {
   // PRIORITY: isPitchMode toggle is checked FIRST - overrides authentication state
   const isRealMode = !isPitchMode && mode === "real";
   
+  // Version key to force refetch when demo data changes - increment when adding new videos
+  const DEMO_DATA_VERSION = 2;
+  
   const { data: videoData, isLoading: isLoadingVideos, isError: isVideosError } = useQuery<VideoIndexResponse>({
-    queryKey: ["videos", isPitchMode, mode] as const,
+    queryKey: ["videos", isPitchMode, mode, DEMO_DATA_VERSION] as const,
     queryFn: async ({ queryKey }) => {
       // Extract isPitchMode and mode from queryKey to avoid stale closure
       const [, pitchModeFromKey, modeFromKey] = queryKey;
