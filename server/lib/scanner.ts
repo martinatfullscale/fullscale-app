@@ -90,14 +90,20 @@ function applyHomographyFallback(isVertical: boolean, sceneContext?: string): De
 
 // ============================================================================
 // LOCAL ASSET MAP - Bypass YouTube download for demo videos
-// Maps database YouTube IDs to local video files in public/ folder
+// Maps database YouTube IDs to local video files in public/ or attached_assets/ folder
 // ============================================================================
 const LOCAL_ASSET_MAP: Record<string, string> = {
+  // Public folder demos
   'yt_techguru_001': './public/many_jobs.mov',         // Vertical Demo (9:16)
   'yt_beauty_02': './public/hero_video.mp4',           // Horizontal Hero (16:9)
   'yt_vlog_003': './public/quick_update.mov',          // Quick Update
   'yt_final_004': './public/fullscale_final4.mov',     // FullScale Final4
   'test-video-1': './public/hero_video.mp4',           // Test video for martin@gofullscale.co
+  // User uploaded videos in attached_assets
+  'user-quick-update': './attached_assets/Quick_Update_1767906117156.mov',
+  'user-many-jobs': './attached_assets/Many_Jobs_1767904823555.mov',
+  'user-hero-video': './attached_assets/hero_video_1767897215595.mp4',
+  'user-fullscale-final': './attached_assets/FullScale_Final4_1767897231210.mov',
 };
 
 // Add a new entry to LOCAL_ASSET_MAP dynamically (for uploaded videos)

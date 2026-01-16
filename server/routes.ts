@@ -853,6 +853,38 @@ export async function registerRoutes(
     res.json({ success: true, message: "Batch scan started" });
   });
 
+  // Admin scan endpoint - for testing uploaded videos without auth
+  // Only works for videos owned by admin emails (uses ADMIN_EMAILS defined below)
+  const adminEmails = ['martin@gofullscale.co', 'martin@whtwrks.com', 'martincekechukwu@gmail.com'];
+  app.post("/api/admin-scan/:id", async (req, res) => {
+    const videoId = parseInt(req.params.id);
+    if (isNaN(videoId)) {
+      return res.status(400).json({ error: "Invalid video ID" });
+    }
+
+    const video = await storage.getVideoById(videoId);
+    if (!video) {
+      return res.status(404).json({ error: "Video not found" });
+    }
+
+    // Only allow scanning videos owned by admin
+    if (!adminEmails.includes(video.userId)) {
+      return res.status(403).json({ error: "Admin scan only for admin-owned videos" });
+    }
+
+    console.log(`[ADMIN SCAN] Starting scan for video ${videoId}: "${video.title}"`);
+    
+    // Run scan synchronously so we can return results
+    try {
+      const result = await processVideoScan(videoId, true);
+      console.log(`[ADMIN SCAN] Scan complete for ${videoId}:`, result);
+      res.json({ success: true, result });
+    } catch (err: any) {
+      console.error(`[ADMIN SCAN] Scan failed for ${videoId}:`, err);
+      res.status(500).json({ error: err.message || "Scan failed" });
+    }
+  });
+
   // Direct video upload endpoint - bypass YouTube download
   app.post("/api/upload", isGoogleAuthenticated, uploadMiddleware.single("video"), async (req: any, res) => {
     console.log(`[UPLOAD] ===== VIDEO UPLOAD RECEIVED =====`);
