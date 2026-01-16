@@ -96,6 +96,13 @@ const LOCAL_ASSET_MAP: Record<string, string> = {
   'test-video-1': './public/hero_video.mp4',           // Test video for martin@gofullscale.co
 };
 
+// Add a new entry to LOCAL_ASSET_MAP dynamically (for uploaded videos)
+export function addToLocalAssetMap(videoId: string, filePath: string) {
+  LOCAL_ASSET_MAP[videoId] = filePath;
+  console.log(`[Scanner] Added to LOCAL_ASSET_MAP: ${videoId} -> ${filePath}`);
+  console.log(`[Scanner] LOCAL_ASSET_MAP now has ${Object.keys(LOCAL_ASSET_MAP).length} entries`);
+}
+
 // === VERBOSE STARTUP LOGGING ===
 console.log(`[Scanner] ========== SCANNER MODULE LOADED ==========`);
 console.log(`[Scanner] AI_INTEGRATIONS_GEMINI_API_KEY exists: ${!!process.env.AI_INTEGRATIONS_GEMINI_API_KEY}`);

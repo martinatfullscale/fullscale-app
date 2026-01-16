@@ -5,9 +5,42 @@ import { api } from "@shared/routes";
 import { z } from "zod";
 import { setupAuth, registerAuthRoutes, isAuthenticated } from "./replit_integrations/auth";
 import { runIndexerForUser } from "./lib/indexer";
-import { processVideoScan, scanPendingVideos } from "./lib/scanner";
+import { processVideoScan, scanPendingVideos, addToLocalAssetMap } from "./lib/scanner";
 import { hashPassword, verifyPassword } from "./lib/password";
 import { addSignupToAirtable } from "./lib/airtable";
+import multer from "multer";
+import path from "path";
+import fs from "fs";
+
+// Configure multer for video uploads
+const uploadStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const uploadDir = path.join(process.cwd(), "public", "uploads");
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    const ext = path.extname(file.originalname);
+    cb(null, `video-${uniqueSuffix}${ext}`);
+  },
+});
+
+const uploadMiddleware = multer({
+  storage: uploadStorage,
+  limits: { fileSize: 500 * 1024 * 1024 }, // 500MB max
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = [".mp4", ".mov", ".webm", ".avi"];
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (allowedTypes.includes(ext)) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only video files (mp4, mov, webm, avi) are allowed"));
+    }
+  },
+});
 
 // VIP Founding Members - bypass allowlist check automatically
 const FOUNDING_MEMBERS = [
@@ -813,6 +846,76 @@ export async function registerRoutes(
     });
 
     res.json({ success: true, message: "Batch scan started" });
+  });
+
+  // Direct video upload endpoint - bypass YouTube download
+  app.post("/api/upload", isGoogleAuthenticated, uploadMiddleware.single("video"), async (req: any, res) => {
+    console.log(`[UPLOAD] ===== VIDEO UPLOAD RECEIVED =====`);
+    console.log(`[UPLOAD] User: ${req.googleUser?.email}`);
+    
+    if (!req.file) {
+      console.log(`[UPLOAD] ERROR: No file received`);
+      return res.status(400).json({ error: "No video file uploaded" });
+    }
+
+    const userId = req.googleUser.email;
+    const file = req.file;
+    const title = req.body.title || file.originalname.replace(/\.[^/.]+$/, "");
+    
+    console.log(`[UPLOAD] File: ${file.originalname} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
+    console.log(`[UPLOAD] Saved as: ${file.filename}`);
+    console.log(`[UPLOAD] Title: ${title}`);
+
+    try {
+      // Generate a unique video ID for LOCAL_ASSET_MAP
+      const uploadVideoId = `upload-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+      const filePath = `./public/uploads/${file.filename}`;
+      const videoUrl = `/uploads/${file.filename}`;
+
+      // Add to LOCAL_ASSET_MAP so scanner can find it
+      addToLocalAssetMap(uploadVideoId, filePath);
+
+      // Insert into video_index table
+      const video = await storage.insertVideo({
+        userId,
+        youtubeId: uploadVideoId,
+        title,
+        description: `Uploaded video: ${file.originalname}`,
+        thumbnailUrl: "/uploads/default-thumbnail.png",
+        videoUrl,
+        viewCount: 0,
+        publishedAt: new Date().toISOString(),
+        status: "Pending Scan",
+        priorityScore: 80,
+        platform: "fullscale",
+        category: "Uploaded",
+        isEvergreen: true,
+        duration: "0:00",
+      });
+
+      console.log(`[UPLOAD] Video inserted with ID: ${video.id}`);
+      console.log(`[UPLOAD] Ready for scanning`);
+
+      res.json({ 
+        success: true, 
+        video: {
+          id: video.id,
+          title: video.title,
+          youtubeId: uploadVideoId,
+          videoUrl,
+          status: video.status,
+          platform: "fullscale"
+        },
+        message: "Video uploaded successfully. Click 'Scan' to analyze for ad placements."
+      });
+    } catch (error: any) {
+      console.error(`[UPLOAD] Database error:`, error);
+      // Clean up uploaded file on error
+      try {
+        fs.unlinkSync(path.join(process.cwd(), "public", "uploads", file.filename));
+      } catch {}
+      res.status(500).json({ error: "Failed to save video record" });
+    }
   });
 
   // Get detected surfaces for a video (Ad Opportunities)
