@@ -814,7 +814,7 @@ export default function Library() {
         {/* Platform Filter Tabs with Region Dropdown */}
         <div className="flex items-center gap-4 mb-6 flex-wrap">
           <Tabs value={platformFilter} onValueChange={(v) => setPlatformFilter(v as PlatformFilter)}>
-            <TabsList className="bg-white/5 border border-white/10">
+            <TabsList className="bg-white/5 border border-white/10 flex-wrap h-auto gap-1">
               <TabsTrigger value="all" className="gap-2 data-[state=active]:bg-primary/20" data-testid="tab-all">
                 All ({displayVideos.length})
               </TabsTrigger>
