@@ -93,6 +93,7 @@ const LOCAL_ASSET_MAP: Record<string, string> = {
   'yt_beauty_02': './public/hero_video.mp4',           // Horizontal Hero (16:9)
   'yt_vlog_003': './public/quick_update.mov',          // Quick Update
   'yt_final_004': './public/fullscale_final4.mov',     // FullScale Final4
+  'test-video-1': './public/hero_video.mp4',           // Test video for martin@gofullscale.co
 };
 
 // === VERBOSE STARTUP LOGGING ===
