@@ -47,6 +47,7 @@ export interface IStorage {
   getVideoIndex(userId: string): Promise<VideoIndex[]>;
   getAllVideos(): Promise<VideoIndex[]>;
   upsertVideoIndex(video: InsertVideoIndex): Promise<VideoIndex>;
+  insertVideo(video: InsertVideoIndex): Promise<VideoIndex>;
   bulkUpsertVideoIndex(videos: InsertVideoIndex[]): Promise<void>;
   deleteVideoIndex(userId: string): Promise<void>;
   getVideoById(id: number): Promise<VideoIndex | undefined>;
@@ -247,6 +248,14 @@ export class DatabaseStorage implements IStorage {
       .select()
       .from(videoIndex)
       .orderBy(desc(videoIndex.createdAt));
+  }
+
+  async insertVideo(video: InsertVideoIndex): Promise<VideoIndex> {
+    const [result] = await db
+      .insert(videoIndex)
+      .values(video)
+      .returning();
+    return result;
   }
 
   async upsertVideoIndex(video: InsertVideoIndex): Promise<VideoIndex> {

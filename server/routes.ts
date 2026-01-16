@@ -876,15 +876,15 @@ export async function registerRoutes(
       addToLocalAssetMap(uploadVideoId, filePath);
 
       // Insert into video_index table
+      // Note: videoUrl is stored via LOCAL_ASSET_MAP, not in the DB schema
       const video = await storage.insertVideo({
         userId,
         youtubeId: uploadVideoId,
         title,
-        description: `Uploaded video: ${file.originalname}`,
+        description: `Uploaded video: ${file.originalname} | File: ${videoUrl}`,
         thumbnailUrl: "/uploads/default-thumbnail.png",
-        videoUrl,
         viewCount: 0,
-        publishedAt: new Date().toISOString(),
+        publishedAt: new Date(),
         status: "Pending Scan",
         priorityScore: 80,
         platform: "fullscale",
