@@ -72,7 +72,7 @@ const STATIC_DEMO_OPPORTUNITIES: MarketplaceOpportunity[] = [
 
 const PLATFORMS = ["All", "YouTube", "Twitch", "Facebook"];
 
-const GENRES = ["All", "Tech", "Gaming", "Lifestyle", "DIY", "Education"];
+const GENRES = ["All", "Tech", "Gaming", "Lifestyle", "DIY", "Education", "Entertainment", "Fashion", "Beauty", "Fitness", "Food", "Travel", "Vlog", "Productivity", "Finance", "Sports", "Music", "Art", "Science", "Health"];
 const BUDGETS = ["All", "Under $50", "$50-$100", "$100-$200", "Over $200"];
 const SCENE_TYPES = ["All", "Desk", "Wall", "Interior", "Product"];
 
@@ -259,7 +259,7 @@ export default function BrandMarketplace() {
     if (platformFilter !== "All") {
       const filterValue = platformFilter.toLowerCase();
       matchesPlatform = opp.platform === filterValue || 
-        (opp.platforms && opp.platforms.includes(filterValue));
+        (opp.platforms?.includes(filterValue) ?? false);
     }
     
     let matchesBudget = true;
