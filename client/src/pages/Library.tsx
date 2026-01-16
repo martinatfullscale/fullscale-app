@@ -13,6 +13,7 @@ import { useToast } from "@/hooks/use-toast";
 import { UploadModal } from "@/components/UploadModal";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { SceneAnalysisModal, DEMO_VIDEO_SCENES, VideoWithScenes } from "@/components/SceneAnalysisModal";
 
 interface IndexedVideo {
   id: number;
@@ -518,6 +519,22 @@ export default function Library() {
   const [selectedVideo, setSelectedVideo] = useState<DisplayVideo | null>(null);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [platformFilter, setPlatformFilter] = useState<PlatformFilter>("all");
+  const [sceneModalOpen, setSceneModalOpen] = useState(false);
+  const [sceneVideo, setSceneVideo] = useState<VideoWithScenes | null>(null);
+  
+  const handleVideoClick = (video: DisplayVideo) => {
+    const videoId = video.id || 1001;
+    const scenes = DEMO_VIDEO_SCENES[videoId] || DEMO_VIDEO_SCENES[1001];
+    const viewCount = parseInt(video.views.replace(/[^0-9]/g, '')) || 0;
+    setSceneVideo({
+      id: videoId,
+      title: video.title,
+      duration: "10:00",
+      viewCount: viewCount,
+      scenes: scenes,
+    });
+    setSceneModalOpen(true);
+  };
   
   // Invalidate video cache when pitch mode changes to force refetch
   useEffect(() => {
@@ -853,7 +870,7 @@ export default function Library() {
                     });
                     return;
                   }
-                  setSelectedVideo(video);
+                  handleVideoClick(video);
                 }}
               >
                 {/* Platform icon overlay for All view */}
@@ -996,10 +1013,13 @@ export default function Library() {
         )}
       </main>
 
-      <AnalysisModal 
-        video={selectedVideo} 
-        open={!!selectedVideo} 
-        onClose={() => setSelectedVideo(null)} 
+      <SceneAnalysisModal
+        video={sceneVideo}
+        open={sceneModalOpen}
+        onClose={() => {
+          setSceneModalOpen(false);
+          setSceneVideo(null);
+        }}
       />
 
       <UploadModal 
