@@ -8,9 +8,11 @@ import { runIndexerForUser } from "./lib/indexer";
 import { processVideoScan, scanPendingVideos, addToLocalAssetMap } from "./lib/scanner";
 import { hashPassword, verifyPassword } from "./lib/password";
 import { addSignupToAirtable } from "./lib/airtable";
+import { setupPlatformAuth } from "./lib/platformAuth";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
+import ytdl from "@distube/ytdl-core";
 
 // Configure multer for video uploads
 const uploadStorage = multer.diskStorage({
@@ -174,6 +176,9 @@ export async function registerRoutes(
   // Setup Replit Auth (MUST be before other routes if you want to protect them globaly, but usually fine here)
   await setupAuth(app);
   registerAuthRoutes(app);
+  
+  // Setup multi-platform auth (Twitch, Facebook)
+  setupPlatformAuth(app);
 
   // ============================================
   // Google Login OAuth Routes (with Allowlist)
@@ -951,6 +956,95 @@ export async function registerRoutes(
     );
 
     res.json({ videos: videosWithCounts, total: videosWithCounts.length });
+  });
+
+  // YouTube Video Proxy - Experimental feature for scanning YouTube videos
+  // NOTE: This uses mobile user agent spoofing which may violate YouTube TOS.
+  // For production, prefer user-uploaded videos which bypass these restrictions.
+  // This is a development/testing tool only.
+  const IOS_USER_AGENT = "com.google.ios.youtube/19.09.3 (iPhone14,3; U; CPU iOS 17_2_1 like Mac OS X)";
+  const proxyRateLimit = new Map<string, { count: number; resetTime: number }>();
+  const PROXY_RATE_LIMIT = 5; // 5 requests per minute per user
+  const PROXY_MAX_SIZE_MB = 100; // Max 100MB per video
+  
+  app.get("/api/proxy-video", isGoogleAuthenticated, async (req: any, res) => {
+    const userId = req.googleUser?.email || "anonymous";
+    const videoUrl = req.query.url as string;
+    
+    // Rate limiting per authenticated user
+    const now = Date.now();
+    const userLimit = proxyRateLimit.get(userId);
+    if (userLimit) {
+      if (now < userLimit.resetTime) {
+        if (userLimit.count >= PROXY_RATE_LIMIT) {
+          return res.status(429).json({ error: "Rate limit exceeded. Try again in 1 minute." });
+        }
+        userLimit.count++;
+      } else {
+        proxyRateLimit.set(userId, { count: 1, resetTime: now + 60000 });
+      }
+    } else {
+      proxyRateLimit.set(userId, { count: 1, resetTime: now + 60000 });
+    }
+    
+    if (!videoUrl) {
+      return res.status(400).json({ error: "Missing url parameter" });
+    }
+
+    const youtubeIdMatch = videoUrl.match(/(?:v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+    if (!youtubeIdMatch) {
+      return res.status(400).json({ error: "Invalid YouTube URL" });
+    }
+    
+    const youtubeId = youtubeIdMatch[1];
+    console.log(`[Proxy] User ${userId} streaming video ${youtubeId}`);
+    
+    try {
+      const info = await ytdl.getInfo(`https://www.youtube.com/watch?v=${youtubeId}`, {
+        requestOptions: {
+          headers: { "User-Agent": IOS_USER_AGENT },
+        },
+      });
+      
+      const format = ytdl.chooseFormat(info.formats, { 
+        quality: "highest",
+        filter: (f) => !!(f.container === "mp4" && f.hasVideo && f.height && f.height <= 720)
+      });
+      
+      if (!format) {
+        return res.status(404).json({ error: "No suitable format found" });
+      }
+      
+      // Check size limit
+      const sizeInMB = format.contentLength ? parseInt(format.contentLength) / (1024 * 1024) : 0;
+      if (sizeInMB > PROXY_MAX_SIZE_MB) {
+        return res.status(413).json({ error: `Video too large (${sizeInMB.toFixed(0)}MB > ${PROXY_MAX_SIZE_MB}MB limit)` });
+      }
+      
+      res.setHeader("Content-Type", format.mimeType || "video/mp4");
+      if (format.contentLength) {
+        res.setHeader("Content-Length", format.contentLength);
+      }
+      
+      const videoStream = ytdl(`https://www.youtube.com/watch?v=${youtubeId}`, {
+        format,
+        requestOptions: {
+          headers: { "User-Agent": IOS_USER_AGENT },
+        },
+      });
+      
+      videoStream.on("error", (err) => {
+        console.error(`[Proxy] Stream error:`, err.message);
+        if (!res.headersSent) {
+          res.status(500).json({ error: "Failed to stream video" });
+        }
+      });
+      
+      videoStream.pipe(res);
+    } catch (err: any) {
+      console.error(`[Proxy] Failed to get video info:`, err.message);
+      res.status(500).json({ error: "Failed to proxy video", details: err.message });
+    }
   });
 
   // MARKETPLACE: Get videos with opportunities (videos that have detected surfaces)

@@ -24,6 +24,10 @@ export const users = pgTable("users", {
   profileImageUrl: varchar("profile_image_url"),
   isApproved: boolean("is_approved").default(false), // Waitlist by default, admin approves
   authProvider: varchar("auth_provider").default("email"), // 'email' or 'google'
+  // Multi-platform OAuth IDs
+  twitchId: varchar("twitch_id"),
+  facebookId: varchar("facebook_id"),
+  instagramId: varchar("instagram_id"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });

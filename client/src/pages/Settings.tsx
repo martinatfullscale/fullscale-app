@@ -72,6 +72,17 @@ export default function Settings() {
       return;
     }
 
+    // Real OAuth flows for Twitch and Facebook
+    if (id === "twitch") {
+      window.location.href = "/auth/twitch";
+      return;
+    }
+    if (id === "facebook" || id === "instagram") {
+      window.location.href = "/auth/facebook";
+      return;
+    }
+
+    // Simulated connection for other platforms (TikTok, X, YouTube)
     setSocialConnections((prev) =>
       prev.map((c) => (c.id === id ? { ...c, status: "connecting" as const } : c))
     );

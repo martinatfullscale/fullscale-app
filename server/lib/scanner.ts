@@ -6,6 +6,10 @@ import { GoogleGenAI } from "@google/genai";
 import sharp from "sharp";
 import { storage } from "../storage";
 import type { VideoIndex, InsertDetectedSurface } from "@shared/schema";
+import ytdl from "@distube/ytdl-core";
+
+const IOS_USER_AGENT = "com.google.ios.youtube/19.09.3 (iPhone14,3; U; CPU iOS 17_2_1 like Mac OS X)";
+const ANDROID_USER_AGENT = "com.google.android.youtube/19.09.3 (Linux; U; Android 14; SM-G998B) gzip";
 
 const AI_TIMEOUT_MS = 30000; // 30 second timeout for API calls
 const MAX_IMAGE_DIMENSION = 1024; // Resize frames to max 1024px
@@ -226,13 +230,80 @@ interface ScanResult {
   error?: string;
 }
 
-async function downloadVideo(youtubeId: string, outputPath: string): Promise<boolean> {
+async function downloadVideoWithYtdl(youtubeId: string, outputPath: string): Promise<boolean> {
+  console.log(`[Scanner] Attempting @distube/ytdl-core download with mobile user agent...`);
+  const url = `https://www.youtube.com/watch?v=${youtubeId}`;
+  
+  try {
+    const agent = ytdl.createAgent();
+    const info = await ytdl.getInfo(url, {
+      requestOptions: {
+        headers: {
+          "User-Agent": IOS_USER_AGENT,
+        },
+      },
+    });
+    
+    console.log(`[Scanner] Video info retrieved: ${info.videoDetails.title}`);
+    
+    const format = ytdl.chooseFormat(info.formats, { 
+      quality: "highest",
+      filter: (format) => !!(format.container === "mp4" && format.hasVideo && format.height && format.height <= 720)
+    });
+    
+    if (!format) {
+      console.warn(`[Scanner] No suitable format found, trying any video format...`);
+      const anyFormat = ytdl.chooseFormat(info.formats, { quality: "lowest" });
+      if (!anyFormat) {
+        console.error(`[Scanner] No downloadable format found`);
+        return false;
+      }
+    }
+    
+    return new Promise((resolve, reject) => {
+      const writeStream = fs.createWriteStream(outputPath);
+      const videoStream = ytdl(url, {
+        format,
+        requestOptions: {
+          headers: {
+            "User-Agent": IOS_USER_AGENT,
+          },
+        },
+      });
+      
+      videoStream.pipe(writeStream);
+      
+      videoStream.on("error", (err) => {
+        console.error(`[Scanner] ytdl stream error:`, err.message);
+        writeStream.close();
+        resolve(false);
+      });
+      
+      writeStream.on("finish", () => {
+        console.log(`[Scanner] ytdl download complete: ${outputPath}`);
+        resolve(true);
+      });
+      
+      writeStream.on("error", (err) => {
+        console.error(`[Scanner] Write stream error:`, err.message);
+        resolve(false);
+      });
+    });
+  } catch (err: any) {
+    console.error(`[Scanner] ytdl-core failed:`, err.message);
+    return false;
+  }
+}
+
+async function downloadVideoWithYtDlp(youtubeId: string, outputPath: string): Promise<boolean> {
   return new Promise((resolve) => {
-    console.log(`[Scanner] Downloading video ${youtubeId}...`);
+    console.log(`[Scanner] Fallback: Using yt-dlp with mobile user agent...`);
     const process = spawn("yt-dlp", [
       "-f", "best[height<=720]",
       "-o", outputPath,
       "--no-playlist",
+      "--user-agent", IOS_USER_AGENT,
+      "--extractor-args", "youtube:player_client=ios",
       `https://www.youtube.com/watch?v=${youtubeId}`,
     ]);
 
@@ -246,7 +317,7 @@ async function downloadVideo(youtubeId: string, outputPath: string): Promise<boo
         console.error(`[Scanner] yt-dlp failed: ${stderr}`);
         resolve(false);
       } else {
-        console.log(`[Scanner] Download complete: ${outputPath}`);
+        console.log(`[Scanner] yt-dlp download complete: ${outputPath}`);
         resolve(true);
       }
     });
@@ -256,6 +327,18 @@ async function downloadVideo(youtubeId: string, outputPath: string): Promise<boo
       resolve(false);
     });
   });
+}
+
+async function downloadVideo(youtubeId: string, outputPath: string): Promise<boolean> {
+  console.log(`[Scanner] Downloading video ${youtubeId} with mobile bypass...`);
+  
+  const ytdlSuccess = await downloadVideoWithYtdl(youtubeId, outputPath);
+  if (ytdlSuccess) {
+    return true;
+  }
+  
+  console.log(`[Scanner] ytdl-core failed, trying yt-dlp fallback...`);
+  return downloadVideoWithYtDlp(youtubeId, outputPath);
 }
 
 async function extractFrames(videoPath: string, outputDir: string, intervalSeconds: number = 10): Promise<string[]> {
