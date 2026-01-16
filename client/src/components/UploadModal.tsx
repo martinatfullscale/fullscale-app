@@ -106,7 +106,7 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
           ]);
           setState("complete");
           
-          queryClient.invalidateQueries({ queryKey: ["/api/video-index/with-opportunities"] });
+          queryClient.invalidateQueries({ queryKey: ["videos"] });
           
           setTimeout(() => {
             onUploadComplete?.();
@@ -268,12 +268,12 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
             </div>
 
             {state === "uploading" && (
-              <div className="mb-4">
+              <div className="mb-4" data-testid="upload-progress-container">
                 <div className="flex justify-between text-sm text-muted-foreground mb-2">
-                  <span>Uploading {selectedFile?.name}</span>
-                  <span>{uploadProgress}%</span>
+                  <span data-testid="text-upload-filename">Uploading {selectedFile?.name}</span>
+                  <span data-testid="text-upload-percent">{uploadProgress}%</span>
                 </div>
-                <Progress value={uploadProgress} className="h-2" />
+                <Progress value={uploadProgress} className="h-2" data-testid="progress-upload" />
               </div>
             )}
 
@@ -312,12 +312,12 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
             </div>
 
             {state === "complete" && (
-              <div className="mt-4 p-3 bg-emerald-500/10 rounded-lg border border-emerald-500/20 flex items-center gap-3">
+              <div className="mt-4 p-3 bg-emerald-500/10 rounded-lg border border-emerald-500/20 flex items-center gap-3" data-testid="upload-complete-container">
                 <div className="w-8 h-8 rounded-full bg-emerald-500/20 flex items-center justify-center">
                   <CheckCircle2 className="w-4 h-4 text-emerald-400" />
                 </div>
                 <div>
-                  <p className="text-sm text-emerald-400 font-medium">{title || selectedFile?.name} added to Library</p>
+                  <p className="text-sm text-emerald-400 font-medium" data-testid="text-upload-success">{title || selectedFile?.name} added to Library</p>
                   <p className="text-xs text-emerald-400/60">Click "Scan" on the video to detect ad placements</p>
                 </div>
               </div>

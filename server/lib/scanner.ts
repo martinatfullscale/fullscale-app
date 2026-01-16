@@ -681,6 +681,18 @@ export async function processVideoScan(videoId: number, forceRescan: boolean = f
     } else {
       // Check LOCAL_ASSET_MAP for YouTube demo videos
       localPath = LOCAL_ASSET_MAP[video.youtubeId];
+      
+      // If not in LOCAL_ASSET_MAP, check if this is an uploaded video
+      // Uploaded videos store their file path in the description field
+      if (!localPath && video.youtubeId.startsWith('upload-')) {
+        const fileMatch = video.description?.match(/File: (\/uploads\/[^\s|]+)/);
+        if (fileMatch) {
+          localPath = `./public${fileMatch[1]}`;
+          console.log(`[Scanner] Recovered upload path from description: ${localPath}`);
+          // Re-add to LOCAL_ASSET_MAP for this session
+          addToLocalAssetMap(video.youtubeId, localPath);
+        }
+      }
     }
     
     let videoPath: string;
