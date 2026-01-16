@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { TopBar } from "@/components/TopBar";
-import { User, CreditCard, Bell, CheckCircle, ExternalLink, Save } from "lucide-react";
+import { User, CreditCard, Bell, CheckCircle, ExternalLink, Save, Link2, Loader2 } from "lucide-react";
+import { SiInstagram, SiFacebook, SiX, SiTiktok, SiYoutube } from "react-icons/si";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,17 +11,38 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useToast } from "@/hooks/use-toast";
 import { Badge } from "@/components/ui/badge";
 
-type TabType = "profile" | "payouts" | "notifications";
+type TabType = "profile" | "payouts" | "notifications" | "integrations";
 
 const tabs = [
   { id: "profile" as const, label: "General Profile", icon: User },
+  { id: "integrations" as const, label: "Social Integrations", icon: Link2 },
   { id: "payouts" as const, label: "Payouts & Billing", icon: CreditCard },
   { id: "notifications" as const, label: "Notification Preferences", icon: Bell },
+];
+
+interface SocialConnection {
+  id: string;
+  name: string;
+  icon: typeof SiInstagram;
+  color: string;
+  bgColor: string;
+  status: "disconnected" | "connecting" | "connected";
+  followers?: string;
+  handle?: string;
+}
+
+const initialSocialConnections: SocialConnection[] = [
+  { id: "instagram", name: "Instagram", icon: SiInstagram, color: "#E4405F", bgColor: "bg-gradient-to-br from-[#833AB4] via-[#E4405F] to-[#FCAF45]", status: "disconnected", followers: "125K", handle: "@creator.ig" },
+  { id: "facebook", name: "Facebook / Meta", icon: SiFacebook, color: "#1877F2", bgColor: "bg-[#1877F2]", status: "disconnected", followers: "89K", handle: "Creator Page" },
+  { id: "x", name: "X (Twitter)", icon: SiX, color: "#000000", bgColor: "bg-black", status: "disconnected", followers: "45K", handle: "@creator_x" },
+  { id: "tiktok", name: "TikTok", icon: SiTiktok, color: "#000000", bgColor: "bg-gradient-to-br from-[#00F2EA] to-[#FF0050]", status: "disconnected", followers: "2.1M", handle: "@creator.tiktok" },
+  { id: "youtube", name: "YouTube", icon: SiYoutube, color: "#FF0000", bgColor: "bg-[#FF0000]", status: "connected", followers: "850K", handle: "Creator Channel" },
 ];
 
 export default function Settings() {
   const { toast } = useToast();
   const [activeTab, setActiveTab] = useState<TabType>("profile");
+  const [socialConnections, setSocialConnections] = useState<SocialConnection[]>(initialSocialConnections);
   
   const [profile, setProfile] = useState({
     fullName: "Martin Creators",
@@ -33,6 +55,36 @@ export default function Settings() {
     videoAnalysisComplete: true,
     weeklyRevenueReport: false,
   });
+
+  const handleConnectSocial = (id: string) => {
+    const connection = socialConnections.find((c) => c.id === id);
+    if (!connection) return;
+
+    if (connection.status === "connected") {
+      setSocialConnections((prev) =>
+        prev.map((c) => (c.id === id ? { ...c, status: "disconnected" as const } : c))
+      );
+      toast({
+        title: `${connection.name} Disconnected`,
+        description: `Your ${connection.name} account has been disconnected.`,
+      });
+      return;
+    }
+
+    setSocialConnections((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, status: "connecting" as const } : c))
+    );
+
+    setTimeout(() => {
+      setSocialConnections((prev) =>
+        prev.map((c) => (c.id === id ? { ...c, status: "connected" as const } : c))
+      );
+      toast({
+        title: `${connection.name} Connected`,
+        description: `Successfully connected your ${connection.name} account!`,
+      });
+    }, 1500);
+  };
 
   const handleSave = () => {
     toast({
@@ -138,6 +190,79 @@ export default function Settings() {
                       data-testid="input-email"
                     />
                   </div>
+                </div>
+              </motion.div>
+            )}
+
+            {activeTab === "integrations" && (
+              <motion.div
+                initial={{ opacity: 0, x: 10 }}
+                animate={{ opacity: 1, x: 0 }}
+                className="bg-white/5 rounded-xl border border-white/5 p-6"
+              >
+                <h2 className="text-xl font-semibold text-white mb-2">Social Integrations</h2>
+                <p className="text-muted-foreground text-sm mb-6">Connect your social accounts to unlock multi-platform monetization</p>
+                
+                <div className="space-y-4">
+                  {socialConnections.map((connection) => (
+                    <div
+                      key={connection.id}
+                      className="bg-black/30 rounded-lg p-4 border border-white/5 flex flex-wrap items-center justify-between gap-4"
+                      data-testid={`connection-${connection.id}`}
+                    >
+                      <div className="flex items-center gap-4">
+                        <div className={`w-12 h-12 ${connection.bgColor} rounded-xl flex items-center justify-center`}>
+                          <connection.icon className="w-6 h-6 text-white" />
+                        </div>
+                        <div>
+                          <p className="text-white font-medium">{connection.name}</p>
+                          {connection.status === "connected" ? (
+                            <p className="text-sm text-muted-foreground">
+                              {connection.handle} • {connection.followers} followers
+                            </p>
+                          ) : (
+                            <p className="text-sm text-muted-foreground">Not connected</p>
+                          )}
+                        </div>
+                      </div>
+                      
+                      <Button
+                        variant={connection.status === "connected" ? "outline" : "default"}
+                        onClick={() => handleConnectSocial(connection.id)}
+                        disabled={connection.status === "connecting"}
+                        className={`min-w-[120px] gap-2 ${
+                          connection.status === "connected"
+                            ? "border-emerald-500/30 text-emerald-400"
+                            : ""
+                        }`}
+                        data-testid={`button-connect-${connection.id}`}
+                      >
+                        {connection.status === "connecting" ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Connecting...
+                          </>
+                        ) : connection.status === "connected" ? (
+                          <>
+                            <CheckCircle className="w-4 h-4" />
+                            Connected
+                          </>
+                        ) : (
+                          <>
+                            <Link2 className="w-4 h-4" />
+                            Connect
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+                
+                <div className="mt-6 p-4 rounded-lg bg-primary/10 border border-primary/20">
+                  <p className="text-sm text-primary">
+                    Connecting multiple platforms increases your earning potential by 40% on average.
+                    Brands prefer creators with diverse audiences.
+                  </p>
                 </div>
               </motion.div>
             )}

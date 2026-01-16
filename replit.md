@@ -2,7 +2,13 @@
 
 ## Overview
 
-FullScale is a dual-portal content monetization platform with Google OAuth-gated access and YouTube integration. Features role-based views (creator/brand) with View Switcher for admins, a Brand Marketplace where brands purchase ad placements, and Campaign Tracker for monitoring bids. Built as a full-stack TypeScript application with React frontend and Express backend, using PostgreSQL for data persistence. Includes a proprietary AI Insertion Engine scaffold (server/lib/ai/engine/) for Gemini 2.5 Flash-powered product placement detection.
+FullScale is a dual-portal content monetization platform with Google OAuth-gated access and YouTube integration. Features role-based views (creator/brand) with View Switcher for admins, a Brand Marketplace where brands purchase ad placements, and Campaign Tracker for monitoring bids. Built as a full-stack TypeScript application with React frontend and Express backend, using PostgreSQL for data persistence. Includes real-time AI object detection using TensorFlow.js COCO-SSD for product placement surface analysis.
+
+## Recent Changes (January 2026)
+- Added TensorFlow.js COCO-SSD integration for real-time object detection in SceneAnalysisModal
+- Added Social Integrations tab in Settings with simulated connect/disconnect for IG, Meta, X, TikTok, YouTube
+- Brand Marketplace has 20 industry categories with tabbed interface and genre/budget/scene filters
+- 12 unique demo videos with distinct Unsplash creator space images (no duplicates)
 
 ## User Preferences
 

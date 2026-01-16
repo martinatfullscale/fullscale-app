@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { 
   Search, Filter, DollarSign, Tag, Play, 
   ShoppingCart, TrendingUp, Eye, Clock,
-  Briefcase, Palette, Monitor, Sparkles
+  Briefcase, Palette, Monitor, Sparkles, X
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -130,6 +130,7 @@ export default function BrandMarketplace() {
   const [buyingId, setBuyingId] = useState<number | null>(null);
   const [showCategories, setShowCategories] = useState(true);
   const [activeTab, setActiveTab] = useState<"categories" | "opportunities">("categories");
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
 
   // PRIORITY: isPitchMode toggle is checked FIRST - overrides authentication state
   const isAuthenticated = !!googleUser;
@@ -214,11 +215,38 @@ export default function BrandMarketplace() {
   // Debug logging
   console.log("[BrandMarketplace] isPitchMode:", isPitchMode, "opportunities.length:", allOpportunities.length, "isLoading:", isLoadingOpportunities);
 
+  const categoryToGenreMap: Record<string, string> = {
+    "tech": "Tech",
+    "gaming": "Gaming",
+    "lifestyle": "Lifestyle",
+    "education": "Education",
+    "software": "Tech",
+    "streaming": "Gaming",
+    "fitness": "Lifestyle",
+    "beauty": "Lifestyle",
+    "fashion": "Lifestyle",
+    "food": "Lifestyle",
+    "beverage": "Lifestyle",
+    "snack": "Lifestyle",
+    "health": "Lifestyle",
+    "home-improvement": "DIY",
+    "automotive": "Tech",
+    "pet": "Lifestyle",
+    "travel": "Lifestyle",
+    "finance": "Education",
+    "luxury": "Lifestyle",
+    "crypto": "Tech",
+  };
+
   const filteredOpportunities = allOpportunities.filter((opp: MarketplaceOpportunity) => {
     const matchesSearch = opp.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
       opp.creatorName.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesGenre = genreFilter === "All" || opp.genre === genreFilter;
     const matchesSceneType = sceneTypeFilter === "All" || opp.sceneType === sceneTypeFilter;
+    
+    const matchesCategory = !selectedCategory || 
+      opp.genre === categoryToGenreMap[selectedCategory] ||
+      opp.context.toLowerCase().includes(selectedCategory.toLowerCase());
     
     let matchesBudget = true;
     if (budgetFilter === "Under $50") matchesBudget = opp.sceneValue < 50;
@@ -226,7 +254,7 @@ export default function BrandMarketplace() {
     else if (budgetFilter === "$100-$200") matchesBudget = opp.sceneValue > 100 && opp.sceneValue <= 200;
     else if (budgetFilter === "Over $200") matchesBudget = opp.sceneValue > 200;
     
-    return matchesSearch && matchesGenre && matchesBudget && matchesSceneType;
+    return matchesSearch && matchesGenre && matchesBudget && matchesSceneType && matchesCategory;
   });
 
   const formatViewCount = (count: number) => {
@@ -299,6 +327,17 @@ export default function BrandMarketplace() {
             >
               Video Opportunities ({allOpportunities.length})
             </button>
+            
+            {selectedCategory && (
+              <Badge 
+                className="bg-primary/20 text-primary gap-1 cursor-pointer"
+                onClick={() => setSelectedCategory(null)}
+                data-testid="badge-selected-category"
+              >
+                {BRAND_CATEGORIES.find(c => c.id === selectedCategory)?.name || selectedCategory}
+                <X className="w-3 h-3" />
+              </Badge>
+            )}
           </div>
           
           <div className="flex flex-wrap items-center gap-3">
@@ -374,7 +413,10 @@ export default function BrandMarketplace() {
                 >
                   <Card 
                     className="group overflow-hidden cursor-pointer hover-elevate"
-                    onClick={() => setActiveTab("opportunities")}
+                    onClick={() => {
+                      setSelectedCategory(category.id);
+                      setActiveTab("opportunities");
+                    }}
                     data-testid={`card-category-${category.id}`}
                   >
                     <div className="aspect-[16/10] relative overflow-hidden">
