@@ -5,6 +5,9 @@
 FullScale is a dual-portal content monetization platform with Google OAuth-gated access and YouTube integration. Features role-based views (creator/brand) with View Switcher for admins, a Brand Marketplace where brands purchase ad placements, and Campaign Tracker for monitoring bids. Built as a full-stack TypeScript application with React frontend and Express backend, using PostgreSQL for data persistence. Includes real-time AI object detection using TensorFlow.js COCO-SSD for product placement surface analysis.
 
 ## Recent Changes (January 2026)
+- Video scanning pipeline fully functional: ffmpeg frame extraction → Gemini 2.5 Flash analysis → surface detection → database storage
+- LOCAL_ASSET_MAP in scanner.ts maps demo video IDs to local files for testing without YouTube download
+- Test video (ID 52) successfully scanned with AI-detected placement surface (Desk) for martin@gofullscale.co
 - Added TensorFlow.js COCO-SSD integration for real-time object detection in SceneAnalysisModal
 - Added Social Integrations tab in Settings with simulated connect/disconnect for IG, Meta, X, TikTok, YouTube, Twitch
 - Brand Marketplace has 20 industry categories with tabbed interface and genre/budget/scene/platform filters
