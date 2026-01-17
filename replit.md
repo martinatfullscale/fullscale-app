@@ -19,7 +19,8 @@ FullScale is a dual-portal content monetization platform with Google OAuth-gated
   - /api/proxy-video route streams YouTube videos with auth, rate limiting (5/min), 100MB limit
   - NOTE: User agent spoofing may violate YouTube TOS - prefer direct video uploads for production
 - **Direct Video Upload**: Users can upload videos directly to bypass YouTube download restrictions
-  - File paths stored in description field and recovered by scanner after restart
+  - File paths now stored in `file_path` database column (persistent across server restarts)
+  - Scanner priority: DB filePath → LOCAL_ASSET_MAP → legacy description fallback
 - Video scanning pipeline fully functional: ffmpeg frame extraction → Gemini 2.5 Flash analysis → surface detection → database storage
 - LOCAL_ASSET_MAP in scanner.ts maps demo video IDs to local files for testing without YouTube download
 - Test video (ID 52) successfully scanned with AI-detected placement surface (Desk) for martin@gofullscale.co
