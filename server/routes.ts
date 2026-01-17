@@ -178,7 +178,7 @@ export async function registerRoutes(
   registerAuthRoutes(app);
   
   // Setup multi-platform auth (Twitch, Facebook)
-  setupPlatformAuth(app);
+  await setupPlatformAuth(app);
 
   // ============================================
   // Google Login OAuth Routes (with Allowlist)
@@ -994,7 +994,7 @@ export async function registerRoutes(
   // NOTE: This uses mobile user agent spoofing which may violate YouTube TOS.
   // For production, prefer user-uploaded videos which bypass these restrictions.
   // This is a development/testing tool only.
-  const IOS_USER_AGENT = "com.google.ios.youtube/19.09.3 (iPhone14,3; U; CPU iOS 17_2_1 like Mac OS X)";
+  const MOBILE_SAFARI_USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1";
   const proxyRateLimit = new Map<string, { count: number; resetTime: number }>();
   const PROXY_RATE_LIMIT = 5; // 5 requests per minute per user
   const PROXY_MAX_SIZE_MB = 100; // Max 100MB per video
@@ -1034,7 +1034,7 @@ export async function registerRoutes(
     try {
       const info = await ytdl.getInfo(`https://www.youtube.com/watch?v=${youtubeId}`, {
         requestOptions: {
-          headers: { "User-Agent": IOS_USER_AGENT },
+          headers: { "User-Agent": MOBILE_SAFARI_USER_AGENT },
         },
       });
       
@@ -1061,7 +1061,7 @@ export async function registerRoutes(
       const videoStream = ytdl(`https://www.youtube.com/watch?v=${youtubeId}`, {
         format,
         requestOptions: {
-          headers: { "User-Agent": IOS_USER_AGENT },
+          headers: { "User-Agent": MOBILE_SAFARI_USER_AGENT },
         },
       });
       

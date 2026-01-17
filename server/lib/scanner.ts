@@ -8,7 +8,7 @@ import { storage } from "../storage";
 import type { VideoIndex, InsertDetectedSurface } from "@shared/schema";
 import ytdl from "@distube/ytdl-core";
 
-const IOS_USER_AGENT = "com.google.ios.youtube/19.09.3 (iPhone14,3; U; CPU iOS 17_2_1 like Mac OS X)";
+const MOBILE_SAFARI_USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1";
 const ANDROID_USER_AGENT = "com.google.android.youtube/19.09.3 (Linux; U; Android 14; SM-G998B) gzip";
 
 const AI_TIMEOUT_MS = 30000; // 30 second timeout for API calls
@@ -245,7 +245,7 @@ async function downloadVideoWithYtdl(youtubeId: string, outputPath: string): Pro
     const info = await ytdl.getInfo(url, {
       requestOptions: {
         headers: {
-          "User-Agent": IOS_USER_AGENT,
+          "User-Agent": MOBILE_SAFARI_USER_AGENT,
         },
       },
     });
@@ -272,7 +272,7 @@ async function downloadVideoWithYtdl(youtubeId: string, outputPath: string): Pro
         format,
         requestOptions: {
           headers: {
-            "User-Agent": IOS_USER_AGENT,
+            "User-Agent": MOBILE_SAFARI_USER_AGENT,
           },
         },
       });
@@ -308,7 +308,7 @@ async function downloadVideoWithYtDlp(youtubeId: string, outputPath: string): Pr
       "-f", "best[height<=720]",
       "-o", outputPath,
       "--no-playlist",
-      "--user-agent", IOS_USER_AGENT,
+      "--user-agent", MOBILE_SAFARI_USER_AGENT,
       "--extractor-args", "youtube:player_client=ios",
       `https://www.youtube.com/watch?v=${youtubeId}`,
     ]);
