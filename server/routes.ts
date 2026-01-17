@@ -912,13 +912,12 @@ export async function registerRoutes(
       // Add to LOCAL_ASSET_MAP so scanner can find it
       addToLocalAssetMap(uploadVideoId, filePath);
 
-      // Insert into video_index table
-      // Note: videoUrl is stored via LOCAL_ASSET_MAP, not in the DB schema
+      // Insert into video_index table with persistent file path
       const video = await storage.insertVideo({
         userId,
         youtubeId: uploadVideoId,
         title,
-        description: `Uploaded video: ${file.originalname} | File: ${videoUrl}`,
+        description: `Uploaded video: ${file.originalname}`,
         thumbnailUrl: "/uploads/default-thumbnail.png",
         viewCount: 0,
         publishedAt: new Date(),
@@ -928,6 +927,7 @@ export async function registerRoutes(
         category: "Uploaded",
         isEvergreen: true,
         duration: "0:00",
+        filePath, // Store file path in DB for persistence across server restarts
       });
 
       console.log(`[UPLOAD] Video inserted with ID: ${video.id}`);

@@ -768,17 +768,26 @@ export async function processVideoScan(videoId: number, forceRescan: boolean = f
       console.log('[Scanner] Instagram Reel detected. Using local simulation file.');
       localPath = './public/hero_video.mp4'; // Reuse the existing file for all Instagram content
     } else {
-      // Check LOCAL_ASSET_MAP for YouTube demo videos
-      localPath = LOCAL_ASSET_MAP[video.youtubeId];
+      // PRIORITY 1: Check database filePath column (persistent across restarts)
+      if ((video as any).filePath) {
+        localPath = (video as any).filePath;
+        console.log(`[Scanner] Using DB file_path: ${localPath}`);
+      }
       
-      // If not in LOCAL_ASSET_MAP, check if this is an uploaded video
-      // Uploaded videos store their file path in the description field
+      // PRIORITY 2: Check LOCAL_ASSET_MAP for demo videos
+      if (!localPath) {
+        localPath = LOCAL_ASSET_MAP[video.youtubeId];
+        if (localPath) {
+          console.log(`[Scanner] Using LOCAL_ASSET_MAP: ${localPath}`);
+        }
+      }
+      
+      // PRIORITY 3: Legacy fallback - check description field for older uploads
       if (!localPath && video.youtubeId.startsWith('upload-')) {
         const fileMatch = video.description?.match(/File: (\/uploads\/[^\s|]+)/);
         if (fileMatch) {
           localPath = `./public${fileMatch[1]}`;
           console.log(`[Scanner] Recovered upload path from description: ${localPath}`);
-          // Re-add to LOCAL_ASSET_MAP for this session
           addToLocalAssetMap(video.youtubeId, localPath);
         }
       }

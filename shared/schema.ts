@@ -90,6 +90,7 @@ export const videoIndex = pgTable("video_index", {
   platform: varchar("platform").notNull().default("youtube"), // 'youtube', 'instagram', 'facebook'
   sentiment: varchar("sentiment").default("Neutral"), // 'Uplifting', 'Serious', 'Chaotic', 'Educational', etc.
   culturalContext: varchar("cultural_context").default("General"), // 'American Tech Office', 'Japanese Tea Room', etc.
+  filePath: text("file_path"), // Persistent file path for uploaded videos (survives server restart)
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
