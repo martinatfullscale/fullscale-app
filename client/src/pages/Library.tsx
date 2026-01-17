@@ -522,10 +522,64 @@ export default function Library() {
   const [sceneModalOpen, setSceneModalOpen] = useState(false);
   const [sceneVideo, setSceneVideo] = useState<VideoWithScenes | null>(null);
   
-  const handleVideoClick = (video: DisplayVideo) => {
+  const handleVideoClick = async (video: DisplayVideo) => {
     const videoId = video.id || 1001;
-    const scenes = DEMO_VIDEO_SCENES[videoId] || DEMO_VIDEO_SCENES[1001];
     const viewCount = parseInt(video.views.replace(/[^0-9]/g, '')) || 0;
+    
+    // In real mode, fetch actual detected surfaces from the database
+    if (isRealMode && videoId >= 50) {
+      try {
+        const res = await fetch(`/api/video/${videoId}/surfaces`, { credentials: "include" });
+        if (res.ok) {
+          const data = await res.json();
+          // Convert detected_surfaces to Scene format
+          const surfaces = data.surfaces || [];
+          const uniqueTimestamps = Array.from(new Set(surfaces.map((s: any) => s.timestamp || 0))) as number[];
+          
+          const scenes = uniqueTimestamps.map((ts: number, idx: number) => {
+            const surfacesAtTime = surfaces.filter((s: any) => (s.timestamp || 0) === ts);
+            const surfaceTypes = Array.from(new Set(surfacesAtTime.map((s: any) => s.surfaceType || s.surface_type))) as string[];
+            const avgConfidence = surfacesAtTime.reduce((sum: number, s: any) => sum + (s.confidence || 0.5), 0) / surfacesAtTime.length;
+            
+            return {
+              id: `scene-${videoId}-${idx}`,
+              timestamp: `${Math.floor(Number(ts) / 60)}:${String(Math.floor(Number(ts) % 60)).padStart(2, '0')}`,
+              imageUrl: surfacesAtTime[0]?.frameUrl || surfacesAtTime[0]?.frame_url || `https://images.unsplash.com/photo-1593642632559-0c6d3fc62b89?w=800&h=450&fit=crop`,
+              surfaces: surfacesAtTime.length,
+              surfaceTypes: surfaceTypes as string[],
+              context: surfaceTypes.length > 0 ? `${surfaceTypes[0]} area` : "Workspace",
+              confidence: avgConfidence,
+            };
+          });
+          
+          // If no surfaces, create a placeholder scene
+          const finalScenes = scenes.length > 0 ? scenes : [{
+            id: `scene-${videoId}-0`,
+            timestamp: "0:00",
+            imageUrl: `https://images.unsplash.com/photo-1593642632559-0c6d3fc62b89?w=800&h=450&fit=crop`,
+            surfaces: 0,
+            surfaceTypes: [],
+            context: "No surfaces detected yet",
+            confidence: 0,
+          }];
+          
+          setSceneVideo({
+            id: videoId,
+            title: video.title,
+            duration: "10:00",
+            viewCount: viewCount,
+            scenes: finalScenes,
+          });
+          setSceneModalOpen(true);
+          return;
+        }
+      } catch (err) {
+        console.error("[Library] Failed to fetch real surfaces:", err);
+      }
+    }
+    
+    // Fallback to demo scenes
+    const scenes = DEMO_VIDEO_SCENES[videoId] || DEMO_VIDEO_SCENES[1001];
     setSceneVideo({
       id: videoId,
       title: video.title,
