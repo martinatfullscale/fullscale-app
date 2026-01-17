@@ -5,15 +5,18 @@
 FullScale is a dual-portal content monetization platform with Google OAuth-gated access and YouTube integration. Features role-based views (creator/brand) with View Switcher for admins, a Brand Marketplace where brands purchase ad placements, and Campaign Tracker for monitoring bids. Built as a full-stack TypeScript application with React frontend and Express backend, using PostgreSQL for data persistence. Includes real-time AI object detection using TensorFlow.js COCO-SSD for product placement surface analysis.
 
 ## Recent Changes (January 2026)
-- **Multi-Platform Auth Foundation**: Added Passport.js strategies for Twitch and Facebook OAuth
+- **Multi-Platform Auth Complete**: Passport.js strategies for Twitch and Facebook OAuth now support standalone login/signup AND account linking
   - New columns in users table: twitch_id, facebook_id, instagram_id
   - Auth routes: /auth/twitch, /auth/twitch/callback, /auth/facebook, /auth/facebook/callback
-  - server/lib/platformAuth.ts handles setup with graceful degradation if credentials missing
-  - Settings page buttons for Twitch/Facebook now use real OAuth routes
+  - Flow: Check if user exists by platform ID → check by email → create new user
+  - Status endpoint: /api/platform-auth/status shows configured/connected state
+  - server/lib/platformAuth.ts uses async dynamic imports for ES modules
+  - Settings page buttons wire to real OAuth routes (Facebook popup works when credentials set)
   - Requires env vars: TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET, FACEBOOK_APP_ID, FACEBOOK_APP_SECRET
-- **YouTube Download Bypass Attempt**: Scanner now uses @distube/ytdl-core with iOS mobile user agent spoofing
-  - Falls back to yt-dlp with iOS player client if ytdl-core fails
-  - /api/proxy-video route streams YouTube videos with auth, rate limiting (5/min), and 100MB size limit
+- **YouTube Download Bypass**: Scanner and proxy use Safari mobile user agent spoofing
+  - User-Agent: `Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15...Safari/604.1`
+  - @distube/ytdl-core with mobile Safari UA, falls back to yt-dlp
+  - /api/proxy-video route streams YouTube videos with auth, rate limiting (5/min), 100MB limit
   - NOTE: User agent spoofing may violate YouTube TOS - prefer direct video uploads for production
 - **Direct Video Upload**: Users can upload videos directly to bypass YouTube download restrictions
   - File paths stored in description field and recovered by scanner after restart
