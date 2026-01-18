@@ -28,10 +28,6 @@ export function getSession() {
     tableName: "sessions",
   });
   
-  // Don't set a fixed cookie domain - let the browser handle it based on the current request
-  // This ensures cookies work correctly whether accessing via custom domain or Replit dev URL
-  // The cookie will be scoped to the exact domain the user is accessing
-  
   return session({
     secret: process.env.SESSION_SECRET!,
     store: sessionStore,
@@ -42,7 +38,7 @@ export function getSession() {
       secure: true,
       sameSite: 'lax',
       maxAge: sessionTtl,
-      // No domain set - cookie will be scoped to the exact request hostname
+      // Let browser handle domain scoping based on request
     },
   });
 }

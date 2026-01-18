@@ -370,16 +370,19 @@ export async function setupPlatformAuth(app: Express) {
   app.get("/auth/facebook/callback", (req: any, res, next) => {
     console.log("[PlatformAuth] ========== FACEBOOK CALLBACK RECEIVED ==========");
     console.log("[PlatformAuth] Query params:", JSON.stringify(req.query));
-    console.log("[PlatformAuth] Session ID:", req.sessionID);
+    console.log("[PlatformAuth] Session ID before auth:", req.sessionID);
     
     if (!FACEBOOK_APP_ID) {
       console.error("[PlatformAuth] Facebook auth not configured");
       return res.status(503).json({ error: "Facebook auth not configured" });
     }
     
-    passport.authenticate("facebook", (err: any, user: any, info: any) => {
-      console.log("[PlatformAuth] Passport authenticate callback triggered");
-      
+    // Use simpler passport.authenticate with options (like Twitch)
+    // The strategy already sets req.session.userId in the verify callback
+    passport.authenticate("facebook", {
+      failureRedirect: "/?error=facebook_auth_failed",
+      keepSessionInfo: true, // Preserve session data across login
+    }, (err: any, user: any, info: any) => {
       if (err) {
         console.error("[PlatformAuth] Facebook callback ERROR:", err.message || err);
         return res.redirect("/?error=facebook_auth_failed&reason=passport_error");
@@ -394,20 +397,20 @@ export async function setupPlatformAuth(app: Express) {
       console.log("[PlatformAuth] Facebook Auth SUCCESS!");
       console.log("[PlatformAuth] User ID:", user.id);
       console.log("[PlatformAuth] User email:", user.email);
-      console.log("[PlatformAuth] Facebook ID:", user.facebookId);
-      console.log("[PlatformAuth] Facebook Page:", user.facebookPageName);
       
-      // Store user ID in session
-      req.session.userId = user.id;
-      req.session.facebookConnected = true;
-      
-      req.logIn(user, (loginErr: any) => {
+      // Use req.login with keepSessionInfo to preserve session data
+      req.login(user, { keepSessionInfo: true }, (loginErr: any) => {
         if (loginErr) {
-          console.error("[PlatformAuth] req.logIn ERROR:", loginErr.message || loginErr);
+          console.error("[PlatformAuth] req.login ERROR:", loginErr.message || loginErr);
           return res.redirect("/?error=facebook_auth_failed&reason=login_error");
         }
         
-        console.log("[PlatformAuth] req.logIn completed successfully");
+        // Ensure userId is set AFTER login (in case session was regenerated)
+        req.session.userId = user.id;
+        req.session.facebookConnected = true;
+        
+        console.log("[PlatformAuth] Session ID after login:", req.sessionID);
+        console.log("[PlatformAuth] Session userId set to:", req.session.userId);
         
         // Save session explicitly before redirect
         req.session.save((saveErr: any) => {
