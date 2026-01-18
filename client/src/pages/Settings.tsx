@@ -31,12 +31,24 @@ interface SocialConnection {
   handle?: string;
 }
 
+interface PlatformAuthStatus {
+  twitch: { configured: boolean; connected: boolean };
+  facebook: { configured: boolean; connected: boolean; pageName?: string; followers?: number };
+  instagram: { configured: boolean; connected: boolean; handle?: string; followers?: number };
+}
+
+function formatFollowers(count: number): string {
+  if (count >= 1000000) return `${(count / 1000000).toFixed(1)}M`;
+  if (count >= 1000) return `${(count / 1000).toFixed(0)}K`;
+  return count.toString();
+}
+
 const initialSocialConnections: SocialConnection[] = [
-  { id: "instagram", name: "Instagram Professional", icon: SiInstagram, color: "#E4405F", bgColor: "bg-gradient-to-br from-[#833AB4] via-[#E4405F] to-[#FCAF45]", status: "disconnected", followers: "125K", handle: "@creator.ig" },
-  { id: "facebook", name: "Facebook Page", icon: SiFacebook, color: "#1877F2", bgColor: "bg-[#1877F2]", status: "disconnected", followers: "89K", handle: "Justin's Page" },
-  { id: "twitch", name: "Twitch Channel", icon: SiTwitch, color: "#9146FF", bgColor: "bg-[#9146FF]", status: "disconnected", followers: "156K", handle: "NinjaMode" },
-  { id: "x", name: "X (Twitter)", icon: SiX, color: "#000000", bgColor: "bg-black", status: "disconnected", followers: "45K", handle: "@creator_x" },
-  { id: "tiktok", name: "TikTok", icon: SiTiktok, color: "#000000", bgColor: "bg-gradient-to-br from-[#00F2EA] to-[#FF0050]", status: "disconnected", followers: "2.1M", handle: "@creator.tiktok" },
+  { id: "instagram", name: "Instagram Professional", icon: SiInstagram, color: "#E4405F", bgColor: "bg-gradient-to-br from-[#833AB4] via-[#E4405F] to-[#FCAF45]", status: "disconnected" },
+  { id: "facebook", name: "Facebook Page", icon: SiFacebook, color: "#1877F2", bgColor: "bg-[#1877F2]", status: "disconnected" },
+  { id: "twitch", name: "Twitch Channel", icon: SiTwitch, color: "#9146FF", bgColor: "bg-[#9146FF]", status: "disconnected" },
+  { id: "x", name: "X (Twitter)", icon: SiX, color: "#000000", bgColor: "bg-black", status: "disconnected" },
+  { id: "tiktok", name: "TikTok", icon: SiTiktok, color: "#000000", bgColor: "bg-gradient-to-br from-[#00F2EA] to-[#FF0050]", status: "disconnected" },
   { id: "youtube", name: "YouTube", icon: SiYoutube, color: "#FF0000", bgColor: "bg-[#FF0000]", status: "connected", followers: "850K", handle: "Creator Channel" },
 ];
 
@@ -44,6 +56,7 @@ export default function Settings() {
   const { toast } = useToast();
   const [activeTab, setActiveTab] = useState<TabType>("profile");
   const [socialConnections, setSocialConnections] = useState<SocialConnection[]>(initialSocialConnections);
+  const [isLoadingStatus, setIsLoadingStatus] = useState(true);
   
   const [profile, setProfile] = useState({
     fullName: "Martin Creators",
@@ -56,6 +69,50 @@ export default function Settings() {
     videoAnalysisComplete: true,
     weeklyRevenueReport: false,
   });
+
+  // Fetch real platform connection status on mount
+  useEffect(() => {
+    async function fetchPlatformStatus() {
+      try {
+        const response = await fetch("/api/platform-auth/status");
+        if (response.ok) {
+          const data: PlatformAuthStatus = await response.json();
+          
+          setSocialConnections(prev => prev.map(conn => {
+            if (conn.id === "facebook" && data.facebook.connected) {
+              return {
+                ...conn,
+                status: "connected" as const,
+                handle: data.facebook.pageName || "Facebook Page",
+                followers: data.facebook.followers ? formatFollowers(data.facebook.followers) : undefined,
+              };
+            }
+            if (conn.id === "instagram" && data.instagram.connected) {
+              return {
+                ...conn,
+                status: "connected" as const,
+                handle: data.instagram.handle || "@instagram",
+                followers: data.instagram.followers ? formatFollowers(data.instagram.followers) : undefined,
+              };
+            }
+            if (conn.id === "twitch" && data.twitch.connected) {
+              return {
+                ...conn,
+                status: "connected" as const,
+              };
+            }
+            return conn;
+          }));
+        }
+      } catch (error) {
+        console.error("Failed to fetch platform status:", error);
+      } finally {
+        setIsLoadingStatus(false);
+      }
+    }
+    
+    fetchPlatformStatus();
+  }, []);
 
   const handleConnectSocial = (id: string) => {
     const connection = socialConnections.find((c) => c.id === id);

@@ -108,6 +108,18 @@ interface MarketplaceStats {
   activeBids: number;
 }
 
+interface PlatformAuthStatus {
+  twitch: { configured: boolean; connected: boolean };
+  facebook: { configured: boolean; connected: boolean; pageName?: string; followers?: number };
+  instagram: { configured: boolean; connected: boolean; handle?: string; followers?: number };
+}
+
+function formatReach(count: number): string {
+  if (count >= 1000000) return `${(count / 1000000).toFixed(1)}M`;
+  if (count >= 1000) return `${(count / 1000).toFixed(0)}K`;
+  return count.toString();
+}
+
 export default function Dashboard() {
   const { user } = useAuth();
   const { mode, isAuthenticated: isGoogleAuthenticated, googleUser } = useHybridMode();
@@ -220,17 +232,59 @@ export default function Dashboard() {
     refetchInterval: 10000,
   });
 
+  // Fetch social platform stats for Total Reach calculation
+  const { data: platformStats } = useQuery<PlatformAuthStatus>({
+    queryKey: ["/api/platform-auth/status"],
+    queryFn: async () => {
+      const res = await fetch("/api/platform-auth/status", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch platform status");
+      return res.json();
+    },
+    refetchOnMount: true,
+  });
+
   const indexedVideos = videoIndexData?.videos || [];
   
   // DEBUG: Log video data state
   console.log(`[Dashboard RENDER] isPitchMode: ${isPitchMode}, indexedVideos.length: ${indexedVideos.length}, videoIndexData:`, videoIndexData);
+  
+  // Calculate Total Reach from connected social platforms
+  const calculateTotalReach = (): string => {
+    let totalFollowers = 0;
+    
+    // Add YouTube subscribers if connected
+    if (channelData?.subscriberCount) {
+      totalFollowers += parseInt(channelData.subscriberCount, 10) || 0;
+    }
+    
+    // Add Facebook followers if connected
+    if (platformStats?.facebook?.followers) {
+      totalFollowers += platformStats.facebook.followers;
+    }
+    
+    // Add Instagram followers if connected
+    if (platformStats?.instagram?.followers) {
+      totalFollowers += platformStats.instagram.followers;
+    }
+    
+    if (totalFollowers > 0) {
+      return formatReach(totalFollowers);
+    }
+    
+    // Fallback to video count as markets
+    if (indexedVideos.length > 0) {
+      return `${indexedVideos.length} Videos`;
+    }
+    
+    return "--";
+  };
   
   const realModeStats = {
     revenue: "$0",
     revenueGrowth: "Connect to track",
     activeBids: String(marketplaceStats?.activeBids || 0),
     avgCpm: "--",
-    globalReach: indexedVideos.length > 0 ? `${indexedVideos.length} Markets` : "--",
+    globalReach: calculateTotalReach(),
   };
   
   const displayStats = showSimulationData ? simulationStats : realModeStats;
@@ -417,10 +471,16 @@ export default function Dashboard() {
           <div className="bg-white/5 rounded-xl p-5 border border-white/5">
             <div className="flex items-center gap-2 mb-2">
               <Video className="w-4 h-4 text-primary" />
-              <p className="text-xs text-muted-foreground uppercase tracking-wider">Global Reach</p>
+              <p className="text-xs text-muted-foreground uppercase tracking-wider">Total Reach</p>
             </div>
             <p className="text-3xl font-bold text-white" data-testid="text-inventory">{displayStats.globalReach}</p>
-            <p className="text-xs text-muted-foreground/60 mt-1">{showSimulationData ? "Active in US, MENA, APAC" : "Regions indexed"}</p>
+            <p className="text-xs text-muted-foreground/60 mt-1">
+              {showSimulationData 
+                ? "Active in US, MENA, APAC" 
+                : (platformStats?.facebook?.connected || platformStats?.instagram?.connected 
+                    ? "Combined social followers" 
+                    : "Connect accounts to track")}
+            </p>
           </div>
         </motion.div>
 

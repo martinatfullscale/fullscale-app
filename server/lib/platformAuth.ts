@@ -3,6 +3,7 @@ import type { Express } from "express";
 import { db } from "../db";
 import { users } from "@shared/schema";
 import { eq } from "drizzle-orm";
+import { encrypt } from "../encryption";
 
 interface TwitchProfile {
   id: string;
@@ -17,6 +18,66 @@ interface FacebookProfile {
   displayName: string;
   emails?: Array<{ value: string }>;
   photos?: Array<{ value: string }>;
+}
+
+interface FacebookPageData {
+  pageId: string;
+  pageName: string;
+  followers: number;
+  accessToken: string;
+  instagramBusinessId?: string;
+  instagramHandle?: string;
+  instagramFollowers?: number;
+}
+
+async function fetchFacebookPageData(userAccessToken: string): Promise<FacebookPageData | null> {
+  try {
+    // Fetch Pages the user manages with fan_count (followers) and Instagram Business Account
+    const pagesUrl = `https://graph.facebook.com/v18.0/me/accounts?fields=id,name,fan_count,access_token,instagram_business_account&access_token=${userAccessToken}`;
+    const pagesResponse = await fetch(pagesUrl);
+    const pagesData = await pagesResponse.json();
+    
+    // Log only non-sensitive page info (exclude access tokens)
+    console.log("[Graph API] Pages found:", pagesData.data?.length || 0);
+    
+    if (!pagesData.data || pagesData.data.length === 0) {
+      console.log("[Graph API] No Pages found for this user");
+      return null;
+    }
+    
+    // Use the first Page (most common case is one Page per creator)
+    const page = pagesData.data[0];
+    const result: FacebookPageData = {
+      pageId: page.id,
+      pageName: page.name,
+      followers: page.fan_count || 0,
+      accessToken: page.access_token,
+    };
+    
+    // If Instagram Business Account is connected, fetch its data
+    if (page.instagram_business_account?.id) {
+      const igId = page.instagram_business_account.id;
+      const igUrl = `https://graph.facebook.com/v18.0/${igId}?fields=username,followers_count&access_token=${page.access_token}`;
+      const igResponse = await fetch(igUrl);
+      const igData = await igResponse.json();
+      
+      // Log only non-sensitive Instagram info
+      console.log("[Graph API] Instagram username found:", igData.username || "none");
+      
+      if (igData.username) {
+        result.instagramBusinessId = igId;
+        result.instagramHandle = `@${igData.username}`;
+        result.instagramFollowers = igData.followers_count || 0;
+      }
+    }
+    
+    // Log summary without sensitive data
+    console.log(`[Graph API] Page: ${result.pageName}, Followers: ${result.followers}, Instagram: ${result.instagramHandle || "not linked"}`);
+    return result;
+  } catch (error) {
+    console.error("[Graph API] Error fetching page data:", error);
+    return null;
+  }
 }
 
 export async function setupPlatformAuth(app: Express) {
@@ -149,15 +210,56 @@ export async function setupPlatformAuth(app: Express) {
               const existingLoggedInUser = req.user?.claims?.sub || req.session?.userId;
               const fbEmail = profile.emails?.[0]?.value;
               
+              // Fetch real Page data from Graph API
+              console.log(`[PlatformAuth] Fetching Graph API data for ${profile.displayName}...`);
+              const pageData = await fetchFacebookPageData(accessToken);
+              
+              // Build update object with Page data
+              const socialDataUpdate: Record<string, any> = {
+                facebookId: profile.id,
+              };
+              
+              if (pageData) {
+                socialDataUpdate.facebookPageId = pageData.pageId;
+                socialDataUpdate.facebookPageName = pageData.pageName;
+                socialDataUpdate.facebookFollowers = pageData.followers;
+                socialDataUpdate.facebookAccessToken = encrypt(pageData.accessToken);
+                
+                if (pageData.instagramBusinessId) {
+                  socialDataUpdate.instagramBusinessId = pageData.instagramBusinessId;
+                  socialDataUpdate.instagramHandle = pageData.instagramHandle;
+                  socialDataUpdate.instagramFollowers = pageData.instagramFollowers;
+                  socialDataUpdate.instagramId = pageData.instagramBusinessId;
+                }
+                
+                console.log(`[PlatformAuth] Page data: ${pageData.pageName} - ${pageData.followers} followers`);
+                if (pageData.instagramHandle) {
+                  console.log(`[PlatformAuth] Instagram: ${pageData.instagramHandle} - ${pageData.instagramFollowers} followers`);
+                }
+              } else {
+                console.log(`[PlatformAuth] No Page data found (user may not manage a Page)`);
+              }
+              
               // Check if user with this Facebook ID already exists
               let existingUser = await db.query.users.findFirst({
                 where: eq(users.facebookId, profile.id),
               });
 
               if (existingUser) {
-                console.log(`[PlatformAuth] Facebook login: Found existing user ${existingUser.id}`);
+                // Update existing user with latest Page data
+                await db
+                  .update(users)
+                  .set(socialDataUpdate)
+                  .where(eq(users.id, existingUser.id));
+                  
+                console.log(`[PlatformAuth] Facebook login: Updated user ${existingUser.id} with Page data`);
                 req.session.userId = existingUser.id;
-                req.session.facebookProfile = { id: profile.id, displayName: profile.displayName };
+                req.session.facebookProfile = { 
+                  id: profile.id, 
+                  displayName: profile.displayName,
+                  pageName: pageData?.pageName,
+                  followers: pageData?.followers
+                };
                 return done(null, existingUser);
               }
 
@@ -165,12 +267,15 @@ export async function setupPlatformAuth(app: Express) {
               if (existingLoggedInUser) {
                 await db
                   .update(users)
-                  .set({ 
-                    facebookId: profile.id,
-                    instagramId: profile.id 
-                  })
+                  .set(socialDataUpdate)
                   .where(eq(users.id, existingLoggedInUser));
                 console.log(`[PlatformAuth] Linked Facebook account ${profile.displayName} to user ${existingLoggedInUser}`);
+                req.session.facebookProfile = { 
+                  id: profile.id, 
+                  displayName: profile.displayName,
+                  pageName: pageData?.pageName,
+                  followers: pageData?.followers
+                };
                 return done(null, req.user);
               }
 
@@ -182,13 +287,16 @@ export async function setupPlatformAuth(app: Express) {
                 if (existingUser) {
                   await db
                     .update(users)
-                    .set({ 
-                      facebookId: profile.id,
-                      instagramId: profile.id 
-                    })
+                    .set(socialDataUpdate)
                     .where(eq(users.id, fbEmail));
                   console.log(`[PlatformAuth] Linked Facebook to existing email account ${fbEmail}`);
                   req.session.userId = existingUser.id;
+                  req.session.facebookProfile = { 
+                    id: profile.id, 
+                    displayName: profile.displayName,
+                    pageName: pageData?.pageName,
+                    followers: pageData?.followers
+                  };
                   return done(null, existingUser);
                 }
               }
@@ -199,15 +307,20 @@ export async function setupPlatformAuth(app: Express) {
               const [newUser] = await db.insert(users).values({
                 id: newUserId,
                 facebookId: profile.id,
-                instagramId: profile.id,
                 firstName: nameParts[0] || "",
                 lastName: nameParts.slice(1).join(" ") || "",
                 profileImageUrl: profile.photos?.[0]?.value,
+                ...socialDataUpdate,
               }).returning();
 
               console.log(`[PlatformAuth] Created new user from Facebook: ${newUserId}`);
               req.session.userId = newUser.id;
-              req.session.facebookProfile = { id: profile.id, displayName: profile.displayName };
+              req.session.facebookProfile = { 
+                id: profile.id, 
+                displayName: profile.displayName,
+                pageName: pageData?.pageName,
+                followers: pageData?.followers
+              };
               done(null, newUser);
             } catch (error) {
               console.error("[PlatformAuth] Facebook auth error:", error);
@@ -245,7 +358,10 @@ export async function setupPlatformAuth(app: Express) {
     if (!FACEBOOK_APP_ID) {
       return res.status(503).json({ error: "Facebook auth not configured" });
     }
-    passport.authenticate("facebook", { scope: ["email", "public_profile"] })(req, res, next);
+    // Request expanded scopes for creator data access
+    passport.authenticate("facebook", { 
+      scope: ["email", "public_profile", "pages_show_list", "pages_read_engagement"] 
+    })(req, res, next);
   });
 
   app.get("/auth/facebook/callback", (req, res, next) => {
@@ -263,6 +379,8 @@ export async function setupPlatformAuth(app: Express) {
     const userId = req.session?.userId || req.user?.claims?.sub;
     let twitchConnected = false;
     let facebookConnected = false;
+    let facebookData: { pageName?: string; followers?: number } = {};
+    let instagramData: { handle?: string; followers?: number } = {};
 
     if (userId) {
       const user = await db.query.users.findFirst({
@@ -271,6 +389,22 @@ export async function setupPlatformAuth(app: Express) {
       if (user) {
         twitchConnected = !!user.twitchId;
         facebookConnected = !!user.facebookId;
+        
+        // Include real Page data if available
+        if (user.facebookPageName) {
+          facebookData = {
+            pageName: user.facebookPageName,
+            followers: user.facebookFollowers || 0,
+          };
+        }
+        
+        // Include Instagram data if available
+        if (user.instagramHandle) {
+          instagramData = {
+            handle: user.instagramHandle,
+            followers: user.instagramFollowers || 0,
+          };
+        }
       }
     }
 
@@ -282,6 +416,12 @@ export async function setupPlatformAuth(app: Express) {
       facebook: {
         configured: !!FACEBOOK_APP_ID,
         connected: facebookConnected,
+        ...facebookData,
+      },
+      instagram: {
+        configured: !!FACEBOOK_APP_ID, // Instagram uses Facebook auth
+        connected: !!instagramData.handle,
+        ...instagramData,
       },
     });
   });

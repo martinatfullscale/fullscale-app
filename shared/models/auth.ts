@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { boolean, index, jsonb, pgTable, timestamp, varchar } from "drizzle-orm/pg-core";
+import { boolean, index, integer, jsonb, pgTable, text, timestamp, varchar } from "drizzle-orm/pg-core";
 
 // Session storage table.
 // (IMPORTANT) This table is mandatory for Replit Auth, don't drop it.
@@ -28,6 +28,15 @@ export const users = pgTable("users", {
   twitchId: varchar("twitch_id"),
   facebookId: varchar("facebook_id"),
   instagramId: varchar("instagram_id"),
+  // Facebook Page data (from Graph API)
+  facebookPageId: varchar("facebook_page_id"),
+  facebookPageName: varchar("facebook_page_name"),
+  facebookFollowers: integer("facebook_followers"),
+  facebookAccessToken: text("facebook_access_token"), // Page access token for future API calls
+  // Instagram Business Account data (linked via Facebook)
+  instagramBusinessId: varchar("instagram_business_id"),
+  instagramHandle: varchar("instagram_handle"),
+  instagramFollowers: integer("instagram_followers"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
