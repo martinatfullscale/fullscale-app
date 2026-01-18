@@ -236,6 +236,23 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getVideoIndex(userId: string): Promise<VideoIndex[]> {
+    // First, try to get user by ID to also check by email
+    const user = await this.getUserById(userId);
+    const userEmail = user?.email;
+    
+    // Query videos matching either the user ID or the user's email
+    // This handles legacy videos stored with email as userId
+    if (userEmail && userEmail !== userId) {
+      return await db
+        .select()
+        .from(videoIndex)
+        .where(or(
+          eq(videoIndex.userId, userId),
+          eq(videoIndex.userId, userEmail)
+        ))
+        .orderBy(desc(videoIndex.priorityScore));
+    }
+    
     return await db
       .select()
       .from(videoIndex)
@@ -370,11 +387,28 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getVideosWithOpportunities(userId: string): Promise<VideoWithOpportunities[]> {
-    const videos = await db
-      .select()
-      .from(videoIndex)
-      .where(eq(videoIndex.userId, userId))
-      .orderBy(desc(videoIndex.priorityScore));
+    // First, try to get user by ID to also check by email
+    const user = await this.getUserById(userId);
+    const userEmail = user?.email;
+    
+    // Query videos matching either the user ID or the user's email
+    let videos;
+    if (userEmail && userEmail !== userId) {
+      videos = await db
+        .select()
+        .from(videoIndex)
+        .where(or(
+          eq(videoIndex.userId, userId),
+          eq(videoIndex.userId, userEmail)
+        ))
+        .orderBy(desc(videoIndex.priorityScore));
+    } else {
+      videos = await db
+        .select()
+        .from(videoIndex)
+        .where(eq(videoIndex.userId, userId))
+        .orderBy(desc(videoIndex.priorityScore));
+    }
     
     const results: VideoWithOpportunities[] = [];
     

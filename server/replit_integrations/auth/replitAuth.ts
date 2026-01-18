@@ -28,20 +28,9 @@ export function getSession() {
     tableName: "sessions",
   });
   
-  // Extract domain from BASE_URL for cookie configuration
-  let cookieDomain: string | undefined;
-  const baseUrl = process.env.BASE_URL;
-  if (baseUrl) {
-    try {
-      const url = new URL(baseUrl);
-      // Use the domain for production (e.g., .gofullscale.co)
-      if (!url.hostname.includes('replit') && !url.hostname.includes('localhost')) {
-        cookieDomain = url.hostname;
-      }
-    } catch (e) {
-      console.error("Failed to parse BASE_URL for cookie domain:", e);
-    }
-  }
+  // Don't set a fixed cookie domain - let the browser handle it based on the current request
+  // This ensures cookies work correctly whether accessing via custom domain or Replit dev URL
+  // The cookie will be scoped to the exact domain the user is accessing
   
   return session({
     secret: process.env.SESSION_SECRET!,
@@ -53,7 +42,7 @@ export function getSession() {
       secure: true,
       sameSite: 'lax',
       maxAge: sessionTtl,
-      domain: cookieDomain,
+      // No domain set - cookie will be scoped to the exact request hostname
     },
   });
 }
