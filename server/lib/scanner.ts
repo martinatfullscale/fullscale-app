@@ -760,36 +760,48 @@ export async function processVideoScan(videoId: number, forceRescan: boolean = f
   try {
     fs.mkdirSync(tempDir, { recursive: true });
 
-    // PLATFORM CHECK: If it's an Instagram Reel, ALWAYS use the vertical hero proxy
-    // This runs BEFORE any YouTube download attempts
+    // ========================================================================
+    // LOCAL FILES FIRST: Always check local storage before any remote download
+    // Priority: DB filePath → LOCAL_ASSET_MAP → Legacy description → Platform source
+    // ========================================================================
     let localPath: string | undefined;
+    const platform = (video as any).platform || 'youtube';
     
-    if ((video as any).platform === 'instagram') {
-      console.log('[Scanner] Instagram Reel detected. Using local simulation file.');
-      localPath = './public/hero_video.mp4'; // Reuse the existing file for all Instagram content
-    } else {
-      // PRIORITY 1: Check database filePath column (persistent across restarts)
-      if ((video as any).filePath) {
-        localPath = (video as any).filePath;
-        console.log(`[Scanner] Using DB file_path: ${localPath}`);
+    console.log(`[Scanner] Platform: ${platform}, checking local files first...`);
+    
+    // PRIORITY 1: Check database filePath column (persistent across restarts)
+    // This is the primary source for user-uploaded videos
+    if ((video as any).filePath) {
+      localPath = (video as any).filePath;
+      console.log(`[Scanner] PRIORITY 1 - Using DB file_path: ${localPath}`);
+    }
+    
+    // PRIORITY 2: Check LOCAL_ASSET_MAP for demo videos and mapped assets
+    if (!localPath) {
+      localPath = LOCAL_ASSET_MAP[video.youtubeId];
+      if (localPath) {
+        console.log(`[Scanner] PRIORITY 2 - Using LOCAL_ASSET_MAP: ${localPath}`);
       }
-      
-      // PRIORITY 2: Check LOCAL_ASSET_MAP for demo videos
-      if (!localPath) {
-        localPath = LOCAL_ASSET_MAP[video.youtubeId];
-        if (localPath) {
-          console.log(`[Scanner] Using LOCAL_ASSET_MAP: ${localPath}`);
-        }
+    }
+    
+    // PRIORITY 3: Legacy fallback - check description field for older uploads
+    if (!localPath && video.youtubeId.startsWith('upload-')) {
+      const fileMatch = video.description?.match(/File: (\/uploads\/[^\s|]+)/);
+      if (fileMatch) {
+        localPath = `./public${fileMatch[1]}`;
+        console.log(`[Scanner] PRIORITY 3 - Recovered upload path from description: ${localPath}`);
+        addToLocalAssetMap(video.youtubeId, localPath);
       }
-      
-      // PRIORITY 3: Legacy fallback - check description field for older uploads
-      if (!localPath && video.youtubeId.startsWith('upload-')) {
-        const fileMatch = video.description?.match(/File: (\/uploads\/[^\s|]+)/);
-        if (fileMatch) {
-          localPath = `./public${fileMatch[1]}`;
-          console.log(`[Scanner] Recovered upload path from description: ${localPath}`);
-          addToLocalAssetMap(video.youtubeId, localPath);
-        }
+    }
+    
+    // PRIORITY 4: Platform-specific fallbacks for imported content without local files
+    if (!localPath) {
+      if (platform === 'instagram') {
+        console.log('[Scanner] Instagram content without local file - using demo placeholder');
+        localPath = './public/hero_video.mp4';
+      } else if (platform === 'facebook') {
+        console.log('[Scanner] Facebook content without local file - using demo placeholder');
+        localPath = './public/hero_video.mp4';
       }
     }
     
@@ -816,13 +828,26 @@ export async function processVideoScan(videoId: number, forceRescan: boolean = f
       console.log(`[Scanner] Bypassing YouTube download for ${video.youtubeId}`);
       videoPath = absoluteLocalPath;
     } else {
-      // Fallback to YouTube download (expected to fail for blocked videos)
+      // No local file found - only attempt YouTube download for actual YouTube content
+      if (platform !== 'youtube') {
+        console.log(`[Scanner] No local file for ${platform} content (ID: ${video.youtubeId})`);
+        console.log(`[Scanner] Non-YouTube content requires a local file to scan.`);
+        await storage.updateVideoStatus(videoId, "Scan Failed");
+        return { 
+          success: false, 
+          videoId, 
+          surfacesDetected: 0, 
+          error: `No local file found for ${platform} content. Upload the video file to scan.` 
+        };
+      }
+      
+      // Only for YouTube: attempt download as last resort
       videoPath = path.join(tempDir, "video.mp4");
-      console.log(`[Scanner] No local asset mapped for ${video.youtubeId}, attempting YouTube download...`);
+      console.log(`[Scanner] No local asset mapped for YouTube video ${video.youtubeId}, attempting download...`);
       const downloaded = await downloadVideo(video.youtubeId, videoPath);
       if (!downloaded) {
         await storage.updateVideoStatus(videoId, "Scan Failed");
-        return { success: false, videoId, surfacesDetected: 0, error: "Failed to download video" };
+        return { success: false, videoId, surfacesDetected: 0, error: "Failed to download video from YouTube" };
       }
     }
 
