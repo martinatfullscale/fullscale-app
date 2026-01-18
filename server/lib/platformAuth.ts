@@ -367,28 +367,59 @@ export async function setupPlatformAuth(app: Express) {
     })(req, res, next);
   });
 
-  app.get("/auth/facebook/callback", (req, res, next) => {
-    console.log("[PlatformAuth] Facebook callback received");
-    console.log("[PlatformAuth] Query params:", req.query);
+  app.get("/auth/facebook/callback", (req: any, res, next) => {
+    console.log("[PlatformAuth] ========== FACEBOOK CALLBACK RECEIVED ==========");
+    console.log("[PlatformAuth] Query params:", JSON.stringify(req.query));
+    console.log("[PlatformAuth] Session ID:", req.sessionID);
+    
     if (!FACEBOOK_APP_ID) {
+      console.error("[PlatformAuth] Facebook auth not configured");
       return res.status(503).json({ error: "Facebook auth not configured" });
     }
+    
     passport.authenticate("facebook", (err: any, user: any, info: any) => {
+      console.log("[PlatformAuth] Passport authenticate callback triggered");
+      
       if (err) {
-        console.error("[PlatformAuth] Facebook callback error:", err);
-        return res.redirect("/?error=facebook_auth_failed");
+        console.error("[PlatformAuth] Facebook callback ERROR:", err.message || err);
+        return res.redirect("/?error=facebook_auth_failed&reason=passport_error");
       }
+      
       if (!user) {
-        console.error("[PlatformAuth] Facebook callback - no user returned:", info);
-        return res.redirect("/?error=facebook_auth_failed");
+        console.error("[PlatformAuth] Facebook callback - NO USER returned");
+        console.error("[PlatformAuth] Info:", JSON.stringify(info));
+        return res.redirect("/?error=facebook_auth_failed&reason=no_user");
       }
-      console.log("[PlatformAuth] Facebook login successful for user:", user.id || user.email);
+      
+      console.log("[PlatformAuth] Facebook Auth SUCCESS!");
+      console.log("[PlatformAuth] User ID:", user.id);
+      console.log("[PlatformAuth] User email:", user.email);
+      console.log("[PlatformAuth] Facebook ID:", user.facebookId);
+      console.log("[PlatformAuth] Facebook Page:", user.facebookPageName);
+      
+      // Store user ID in session
+      req.session.userId = user.id;
+      req.session.facebookConnected = true;
+      
       req.logIn(user, (loginErr: any) => {
         if (loginErr) {
-          console.error("[PlatformAuth] Facebook login error:", loginErr);
-          return res.redirect("/?error=facebook_auth_failed");
+          console.error("[PlatformAuth] req.logIn ERROR:", loginErr.message || loginErr);
+          return res.redirect("/?error=facebook_auth_failed&reason=login_error");
         }
-        return res.redirect("/dashboard");
+        
+        console.log("[PlatformAuth] req.logIn completed successfully");
+        
+        // Save session explicitly before redirect
+        req.session.save((saveErr: any) => {
+          if (saveErr) {
+            console.error("[PlatformAuth] Session save ERROR:", saveErr.message || saveErr);
+            return res.redirect("/?error=facebook_auth_failed&reason=session_error");
+          }
+          
+          console.log("[PlatformAuth] Session saved, redirecting to /dashboard");
+          console.log("[PlatformAuth] ========== END FACEBOOK CALLBACK ==========");
+          return res.redirect("/dashboard");
+        });
       });
     })(req, res, next);
   });
