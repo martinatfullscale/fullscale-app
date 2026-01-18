@@ -5,6 +5,14 @@
 FullScale is a dual-portal content monetization platform with Google OAuth-gated access and YouTube integration. Features role-based views (creator/brand) with View Switcher for admins, a Brand Marketplace where brands purchase ad placements, and Campaign Tracker for monitoring bids. Built as a full-stack TypeScript application with React frontend and Express backend, using PostgreSQL for data persistence. Includes real-time AI object detection using TensorFlow.js COCO-SSD for product placement surface analysis.
 
 ## Recent Changes (January 2026)
+- **Facebook Graph API Integration**: Real creator data fetched from Facebook Pages and Instagram Business Accounts
+  - Scopes: email, public_profile, pages_show_list, pages_read_engagement
+  - Graph API fetches: Page name, Page ID, follower count (fan_count), Instagram Business Account
+  - Instagram data: username (@handle) and followers_count from linked business accounts
+  - New database columns: facebook_page_id, facebook_page_name, facebook_followers, facebook_access_token (encrypted), instagram_business_id, instagram_handle, instagram_followers
+  - Security: Page access tokens encrypted with AES-256-GCM before storage; sensitive API logging sanitized
+  - Dashboard Total Reach now calculates from YouTube subscribers + Facebook followers + Instagram followers
+  - Settings page displays real Facebook Page and Instagram profile with follower counts
 - **Multi-Platform Auth Complete**: Passport.js strategies for Twitch and Facebook OAuth now support standalone login/signup AND account linking
   - New columns in users table: twitch_id, facebook_id, instagram_id
   - Auth routes: /auth/twitch, /auth/twitch/callback, /auth/facebook, /auth/facebook/callback
