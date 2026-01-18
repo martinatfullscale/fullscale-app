@@ -361,9 +361,9 @@ export async function setupPlatformAuth(app: Express) {
       console.error("[PlatformAuth] Facebook auth not configured - missing FACEBOOK_APP_ID");
       return res.status(503).json({ error: "Facebook auth not configured" });
     }
-    // Request scopes for creator data access (email requires app review, so we skip it)
+    // Request scopes for creator data access
     passport.authenticate("facebook", { 
-      scope: ["public_profile", "pages_show_list", "pages_read_engagement"] 
+      scope: ["email", "public_profile", "pages_show_list", "pages_read_engagement"] 
     })(req, res, next);
   });
 
