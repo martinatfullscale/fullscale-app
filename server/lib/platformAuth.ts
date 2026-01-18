@@ -282,13 +282,13 @@ export async function setupPlatformAuth(app: Express) {
               // Check if user exists by email (to link accounts)
               if (fbEmail) {
                 existingUser = await db.query.users.findFirst({
-                  where: eq(users.id, fbEmail),
+                  where: eq(users.email, fbEmail),
                 });
                 if (existingUser) {
                   await db
                     .update(users)
                     .set(socialDataUpdate)
-                    .where(eq(users.id, fbEmail));
+                    .where(eq(users.id, existingUser.id));
                   console.log(`[PlatformAuth] Linked Facebook to existing email account ${fbEmail}`);
                   req.session.userId = existingUser.id;
                   req.session.facebookProfile = { 
@@ -355,7 +355,10 @@ export async function setupPlatformAuth(app: Express) {
 
   // Facebook auth routes - works for both login and account linking
   app.get("/auth/facebook", (req, res, next) => {
+    console.log("[PlatformAuth] Starting Facebook OAuth flow...");
+    console.log("[PlatformAuth] Callback URL will be:", `${BASE_URL}/auth/facebook/callback`);
     if (!FACEBOOK_APP_ID) {
+      console.error("[PlatformAuth] Facebook auth not configured - missing FACEBOOK_APP_ID");
       return res.status(503).json({ error: "Facebook auth not configured" });
     }
     // Request expanded scopes for creator data access
@@ -365,46 +368,76 @@ export async function setupPlatformAuth(app: Express) {
   });
 
   app.get("/auth/facebook/callback", (req, res, next) => {
+    console.log("[PlatformAuth] Facebook callback received");
+    console.log("[PlatformAuth] Query params:", req.query);
     if (!FACEBOOK_APP_ID) {
       return res.status(503).json({ error: "Facebook auth not configured" });
     }
-    passport.authenticate("facebook", {
-      successRedirect: "/dashboard",
-      failureRedirect: "/?error=facebook_auth_failed",
+    passport.authenticate("facebook", (err: any, user: any, info: any) => {
+      if (err) {
+        console.error("[PlatformAuth] Facebook callback error:", err);
+        return res.redirect("/?error=facebook_auth_failed");
+      }
+      if (!user) {
+        console.error("[PlatformAuth] Facebook callback - no user returned:", info);
+        return res.redirect("/?error=facebook_auth_failed");
+      }
+      console.log("[PlatformAuth] Facebook login successful for user:", user.id || user.email);
+      req.logIn(user, (loginErr: any) => {
+        if (loginErr) {
+          console.error("[PlatformAuth] Facebook login error:", loginErr);
+          return res.redirect("/?error=facebook_auth_failed");
+        }
+        return res.redirect("/dashboard");
+      });
     })(req, res, next);
   });
 
   // Status endpoint to check which platforms are configured/connected
   app.get("/api/platform-auth/status", async (req: any, res) => {
-    const userId = req.session?.userId || req.user?.claims?.sub;
+    // Support multiple auth methods
+    const googleUser = req.session?.googleUser;
+    const replitUser = req.user?.claims;
+    const adminEmail = process.env.NODE_ENV !== 'production' ? (req.query.admin_email || req.headers['x-admin-email']) : null;
+    
+    let userId = req.session?.userId || replitUser?.sub;
+    let userEmail = googleUser?.email || replitUser?.email || adminEmail;
+    
     let twitchConnected = false;
     let facebookConnected = false;
     let facebookData: { pageName?: string; followers?: number } = {};
     let instagramData: { handle?: string; followers?: number } = {};
 
+    // Try to find user by email if no userId
+    let user = null;
     if (userId) {
-      const user = await db.query.users.findFirst({
+      user = await db.query.users.findFirst({
         where: eq(users.id, userId),
       });
-      if (user) {
-        twitchConnected = !!user.twitchId;
-        facebookConnected = !!user.facebookId;
-        
-        // Include real Page data if available
-        if (user.facebookPageName) {
-          facebookData = {
-            pageName: user.facebookPageName,
-            followers: user.facebookFollowers || 0,
-          };
-        }
-        
-        // Include Instagram data if available
-        if (user.instagramHandle) {
-          instagramData = {
-            handle: user.instagramHandle,
-            followers: user.instagramFollowers || 0,
-          };
-        }
+    } else if (userEmail) {
+      user = await db.query.users.findFirst({
+        where: eq(users.email, userEmail),
+      });
+    }
+    
+    if (user) {
+      twitchConnected = !!user.twitchId;
+      facebookConnected = !!user.facebookId;
+      
+      // Include real Page data if available
+      if (user.facebookPageName) {
+        facebookData = {
+          pageName: user.facebookPageName,
+          followers: user.facebookFollowers || 0,
+        };
+      }
+      
+      // Include Instagram data if available
+      if (user.instagramHandle) {
+        instagramData = {
+          handle: user.instagramHandle,
+          followers: user.instagramFollowers || 0,
+        };
       }
     }
 
