@@ -522,6 +522,11 @@ export default function Library() {
   const [sceneModalOpen, setSceneModalOpen] = useState(false);
   const [sceneVideo, setSceneVideo] = useState<VideoWithScenes | null>(null);
   
+  // Admin emails for flexible auth fallback
+  const ADMIN_EMAILS = ['martin@gofullscale.co', 'martin@whtwrks.com', 'martincekechukwu@gmail.com'];
+  const userEmail = user?.email || '';
+  const isAdminUser = ADMIN_EMAILS.includes(userEmail);
+  
   const handleVideoClick = async (video: DisplayVideo) => {
     const videoId = video.id || 1001;
     const viewCount = parseInt(video.views.replace(/[^0-9]/g, '')) || 0;
@@ -529,7 +534,11 @@ export default function Library() {
     // In real mode, fetch actual detected surfaces from the database
     if (isRealMode && videoId >= 50) {
       try {
-        const res = await fetch(`/api/video/${videoId}/surfaces`, { credentials: "include" });
+        // Pass admin_email for flexible auth if user is admin
+        const url = isAdminUser 
+          ? `/api/video/${videoId}/surfaces?admin_email=${encodeURIComponent(userEmail)}`
+          : `/api/video/${videoId}/surfaces`;
+        const res = await fetch(url, { credentials: "include" });
         if (res.ok) {
           const data = await res.json();
           // Convert detected_surfaces to Scene format
@@ -603,11 +612,15 @@ export default function Library() {
   const DEMO_DATA_VERSION = 2;
   
   const { data: videoData, isLoading: isLoadingVideos, isError: isVideosError } = useQuery<VideoIndexResponse>({
-    queryKey: ["videos", isPitchMode, mode, DEMO_DATA_VERSION] as const,
+    queryKey: ["videos", isPitchMode, mode, DEMO_DATA_VERSION, isAdminUser, userEmail] as const,
     queryFn: async ({ queryKey }) => {
       // Extract isPitchMode and mode from queryKey to avoid stale closure
-      const [, pitchModeFromKey, modeFromKey] = queryKey;
-      const endpoint = pitchModeFromKey ? "/api/demo/videos" : (modeFromKey === "real" ? "/api/video-index/with-opportunities" : "/api/demo/videos");
+      const [, pitchModeFromKey, modeFromKey, , isAdmin, email] = queryKey;
+      let endpoint = pitchModeFromKey ? "/api/demo/videos" : (modeFromKey === "real" ? "/api/video-index/with-opportunities" : "/api/demo/videos");
+      // Add admin_email param for flexible auth
+      if (!pitchModeFromKey && modeFromKey === "real" && isAdmin && email) {
+        endpoint += `?admin_email=${encodeURIComponent(email as string)}`;
+      }
       console.log(`[Library] Fetching videos from ${endpoint} (isPitchMode from key: ${pitchModeFromKey})`);
       const res = await fetch(endpoint, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch videos");
@@ -650,7 +663,11 @@ export default function Library() {
     mutationFn: async (videoId: number) => {
       console.log(`[FRONTEND] ===== SCAN BUTTON CLICKED =====`);
       console.log(`[FRONTEND] Video ID: ${videoId}`);
-      console.log(`[FRONTEND] Sending POST to /api/video-scan/${videoId}`);
+      // Pass admin_email for flexible auth if user is admin
+      const scanUrl = isAdminUser 
+        ? `/api/video-scan/${videoId}?admin_email=${encodeURIComponent(userEmail)}`
+        : `/api/video-scan/${videoId}`;
+      console.log(`[FRONTEND] Sending POST to ${scanUrl}`);
       
       setScanningVideoIds(prev => new Set(prev).add(videoId));
       
@@ -667,7 +684,7 @@ export default function Library() {
       
       console.log(`[FRONTEND] UI updated to Scanning state, making fetch call...`);
       
-      const res = await fetch(`/api/video-scan/${videoId}`, { 
+      const res = await fetch(scanUrl, { 
         method: "POST",
         credentials: "include" 
       });
@@ -692,7 +709,10 @@ export default function Library() {
       
       const pollInterval = setInterval(async () => {
         try {
-          const res = await fetch("/api/video-index/with-opportunities", { credentials: "include" });
+          const pollUrl = isAdminUser 
+            ? `/api/video-index/with-opportunities?admin_email=${encodeURIComponent(userEmail)}`
+            : `/api/video-index/with-opportunities`;
+          const res = await fetch(pollUrl, { credentials: "include" });
           if (!res.ok) return;
           const data = await res.json();
           
@@ -757,7 +777,10 @@ export default function Library() {
 
   const batchScanMutation = useMutation({
     mutationFn: async (limit: number) => {
-      const res = await fetch(`/api/video-scan/batch?limit=${limit}`, { 
+      const batchUrl = isAdminUser 
+        ? `/api/video-scan/batch?limit=${limit}&admin_email=${encodeURIComponent(userEmail)}`
+        : `/api/video-scan/batch?limit=${limit}`;
+      const res = await fetch(batchUrl, { 
         method: "POST",
         credentials: "include" 
       });

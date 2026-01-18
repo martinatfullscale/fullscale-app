@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { TopBar } from "@/components/TopBar";
-import { Video, Youtube, CheckCircle, Unlink, TrendingUp, Gavel, BarChart3, Loader2, ToggleLeft, ToggleRight } from "lucide-react";
+import { Video, Youtube, CheckCircle, Unlink, TrendingUp, Gavel, BarChart3, Loader2, ToggleLeft, ToggleRight, Link2 } from "lucide-react";
+import { SiFacebook, SiInstagram } from "react-icons/si";
 import { motion } from "framer-motion";
 import { useAuth } from "@/hooks/use-auth";
 import { useHybridMode } from "@/hooks/use-hybrid-mode";
@@ -634,6 +635,37 @@ export default function Dashboard() {
                 </button>
                 <button className="w-full text-left px-4 py-3 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium transition-colors">
                   View API Documentation
+                </button>
+              </div>
+            </motion.div>
+
+            {/* Social Connect Shortcuts */}
+            <motion.div 
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ delay: 0.35 }}
+              className="bg-card rounded-2xl p-6 border border-border"
+            >
+              <div className="flex items-center gap-2 mb-4">
+                <Link2 className="w-4 h-4 text-primary" />
+                <h3 className="font-semibold">Connect Platforms</h3>
+              </div>
+              <div className="space-y-3">
+                <button
+                  onClick={() => window.location.href = "/auth/facebook"}
+                  data-testid="button-connect-facebook"
+                  className="w-full text-left px-4 py-3 rounded-xl bg-[#1877F2] hover:bg-[#1877F2]/90 text-white text-sm font-medium transition-colors flex items-center gap-2"
+                >
+                  <SiFacebook className="w-4 h-4" />
+                  Connect Facebook & Instagram
+                </button>
+                <button
+                  onClick={() => setLocation("/settings")}
+                  data-testid="button-manage-connections"
+                  className="w-full text-left px-4 py-3 rounded-xl bg-white/5 hover:bg-white/10 text-muted-foreground text-sm font-medium transition-colors flex items-center gap-2"
+                >
+                  <Link2 className="w-4 h-4" />
+                  Manage All Connections
                 </button>
               </div>
             </motion.div>

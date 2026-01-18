@@ -72,6 +72,11 @@ Preferred communication style: Simple, everyday language.
 
 ### Authentication & Authorization
 - **Primary Auth**: Google OAuth 2.0 login with email allowlist gatekeeper
+- **Secondary Auth**: Replit OIDC Auth via Passport.js
+- **Flexible Auth Middleware**: `isFlexibleAuthenticated` in routes.ts supports both Google OAuth and Replit OIDC
+  - Checks `req.session.googleUser` for Google OAuth sessions
+  - Checks `req.isAuthenticated()` + `req.user.claims` for Replit OIDC sessions
+  - DEV ONLY: admin_email query param fallback for testing (disabled in production)
 - **Allowlist System**: `allowed_users` table controls founding cohort access with user_type (creator/brand)
 - **Default Role Assignment**: Users on allowlist without role default to 'creator'
 - **Role-Based Views**: Creators see Dashboard/Library/Opportunities; Brands see Marketplace/Campaigns

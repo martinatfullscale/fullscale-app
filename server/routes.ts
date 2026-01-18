@@ -598,6 +598,46 @@ export async function registerRoutes(
     next();
   };
   
+  // Flexible auth middleware - works with Google OAuth or Replit Auth
+  // Used for endpoints that should work for authenticated users regardless of method
+  const isFlexibleAuthenticated = async (req: any, res: any, next: any) => {
+    const adminEmails = ['martin@gofullscale.co', 'martin@whtwrks.com', 'martincekechukwu@gmail.com'];
+    const isDevelopment = process.env.NODE_ENV !== 'production';
+    
+    // First try Google OAuth session
+    const googleUser = req.session?.googleUser;
+    if (googleUser && googleUser.email) {
+      req.authEmail = googleUser.email;
+      req.authUserId = (await storage.getUserByEmail(googleUser.email))?.id || googleUser.email;
+      req.isAdmin = adminEmails.includes(googleUser.email);
+      return next();
+    }
+    
+    // Try Replit OIDC Auth (Passport-based)
+    if (req.isAuthenticated && req.isAuthenticated() && req.user?.claims) {
+      const claims = req.user.claims;
+      req.authEmail = claims.email;
+      req.authUserId = claims.sub || (await storage.getUserByEmail(claims.email))?.id || claims.email;
+      req.isAdmin = adminEmails.includes(claims.email);
+      return next();
+    }
+    
+    // DEVELOPMENT ONLY: Admin email fallback for testing without OAuth setup
+    // This should NEVER be used in production - it's only for local development
+    if (isDevelopment) {
+      const adminEmail = req.query.admin_email || req.headers['x-admin-email'];
+      if (adminEmail && adminEmails.includes(adminEmail)) {
+        console.warn(`[DEV ONLY] Using admin email fallback for: ${adminEmail}`);
+        req.authEmail = adminEmail;
+        req.authUserId = (await storage.getUserByEmail(adminEmail))?.id || adminEmail;
+        req.isAdmin = true;
+        return next();
+      }
+    }
+    
+    return res.status(401).json({ message: "Unauthorized - Please login" });
+  };
+  
   // Middleware for OAuth callbacks (redirects instead of JSON for browser flows)
   const isGoogleAuthenticatedRedirect = (req: any, res: any, next: any) => {
     const googleUser = req.session?.googleUser;
@@ -796,10 +836,10 @@ export async function registerRoutes(
   });
 
   // Trigger Cloud Scan for a specific video
-  app.post("/api/video-scan/:id", isGoogleAuthenticated, async (req: any, res) => {
+  app.post("/api/video-scan/:id", isFlexibleAuthenticated, async (req: any, res) => {
     console.log(`[BACKEND] ===== SCAN REQUEST RECEIVED =====`);
     console.log(`[BACKEND] Video ID from URL: ${req.params.id}`);
-    console.log(`[BACKEND] User: ${req.googleUser?.email || 'unknown'}`);
+    console.log(`[BACKEND] User: ${req.authEmail || 'unknown'} (ID: ${req.authUserId})`);
     
     const videoId = parseInt(req.params.id);
     if (isNaN(videoId)) {
@@ -814,8 +854,11 @@ export async function registerRoutes(
     }
 
     console.log(`[BACKEND] Video found: "${video.title}" (YouTube ID: ${video.youtubeId})`);
+    console.log(`[BACKEND] Video userId: ${video.userId}, auth userId: ${req.authUserId}, auth email: ${req.authEmail}`);
 
-    if (video.userId !== req.googleUser.email) {
+    // Check ownership - allow if video userId matches auth userId OR auth email
+    const isOwner = video.userId === req.authUserId || video.userId === req.authEmail;
+    if (!isOwner) {
       console.log(`[BACKEND] ERROR: Unauthorized - video belongs to ${video.userId}`);
       return res.status(403).json({ error: "Unauthorized" });
     }
@@ -838,8 +881,8 @@ export async function registerRoutes(
   });
 
   // Scan all pending videos for the user
-  app.post("/api/video-scan/batch", isGoogleAuthenticated, async (req: any, res) => {
-    const userId = req.googleUser.email;
+  app.post("/api/video-scan/batch", isFlexibleAuthenticated, async (req: any, res) => {
+    const userId = req.authEmail;
     const limit = parseInt(req.query.limit as string) || 5;
 
     setImmediate(async () => {
@@ -956,7 +999,7 @@ export async function registerRoutes(
   });
 
   // Get detected surfaces for a video (Ad Opportunities)
-  app.get("/api/video/:id/surfaces", isGoogleAuthenticated, async (req: any, res) => {
+  app.get("/api/video/:id/surfaces", isFlexibleAuthenticated, async (req: any, res) => {
     const videoId = parseInt(req.params.id);
     if (isNaN(videoId)) {
       return res.status(400).json({ error: "Invalid video ID" });
@@ -967,7 +1010,9 @@ export async function registerRoutes(
       return res.status(404).json({ error: "Video not found" });
     }
 
-    if (video.userId !== req.googleUser.email) {
+    // Check ownership - allow if video userId matches auth userId OR auth email
+    const isOwner = video.userId === req.authUserId || video.userId === req.authEmail;
+    if (!isOwner) {
       return res.status(403).json({ error: "Unauthorized" });
     }
 
@@ -976,8 +1021,8 @@ export async function registerRoutes(
   });
 
   // Get videos with their Ad Opportunity counts
-  app.get("/api/video-index/with-opportunities", isGoogleAuthenticated, async (req: any, res) => {
-    const userId = req.googleUser.email;
+  app.get("/api/video-index/with-opportunities", isFlexibleAuthenticated, async (req: any, res) => {
+    const userId = req.authUserId;
     const videos = await storage.getVideoIndex(userId);
     
     const videosWithCounts = await Promise.all(
