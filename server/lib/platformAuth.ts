@@ -1,8 +1,8 @@
 import passport from "passport";
 import type { Express } from "express";
 import { db } from "../db";
-import { users } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { users, videoIndex } from "@shared/schema";
+import { eq, and } from "drizzle-orm";
 import { encrypt } from "../encryption";
 
 interface TwitchProfile {
@@ -79,6 +79,137 @@ async function fetchFacebookPageData(userAccessToken: string): Promise<FacebookP
     return null;
   }
 }
+
+// Fetch Facebook Page videos
+async function fetchFacebookPageVideos(pageId: string, accessToken: string): Promise<any[]> {
+  try {
+    const url = `https://graph.facebook.com/v18.0/${pageId}/videos?fields=id,title,description,created_time,thumbnails,permalink_url,length,views&limit=50&access_token=${accessToken}`;
+    const response = await fetch(url);
+    const data = await response.json();
+    
+    if (data.error) {
+      console.error("[Graph API] Error fetching Facebook videos:", data.error.message);
+      return [];
+    }
+    
+    console.log(`[Graph API] Found ${data.data?.length || 0} Facebook videos`);
+    return data.data || [];
+  } catch (error) {
+    console.error("[Graph API] Error fetching Facebook videos:", error);
+    return [];
+  }
+}
+
+// Fetch Instagram Business media
+async function fetchInstagramMedia(igUserId: string, accessToken: string): Promise<any[]> {
+  try {
+    const url = `https://graph.facebook.com/v18.0/${igUserId}/media?fields=id,caption,media_type,media_url,thumbnail_url,timestamp,permalink&limit=50&access_token=${accessToken}`;
+    const response = await fetch(url);
+    const data = await response.json();
+    
+    if (data.error) {
+      console.error("[Graph API] Error fetching Instagram media:", data.error.message);
+      return [];
+    }
+    
+    console.log(`[Graph API] Found ${data.data?.length || 0} Instagram media items`);
+    return data.data || [];
+  } catch (error) {
+    console.error("[Graph API] Error fetching Instagram media:", error);
+    return [];
+  }
+}
+
+// Import Facebook videos into video_index
+async function importFacebookVideos(userId: string, pageId: string, accessToken: string): Promise<number> {
+  const videos = await fetchFacebookPageVideos(pageId, accessToken);
+  let imported = 0;
+  
+  for (const video of videos) {
+    try {
+      // Check if already exists
+      const existing = await db.query.videoIndex.findFirst({
+        where: and(
+          eq(videoIndex.userId, userId),
+          eq(videoIndex.youtubeId, `facebook:${video.id}`),
+          eq(videoIndex.platform, "facebook")
+        )
+      });
+      
+      if (!existing) {
+        await db.insert(videoIndex).values({
+          userId,
+          youtubeId: `facebook:${video.id}`,
+          title: video.title || "Untitled Video",
+          description: video.description || "",
+          viewCount: video.views || 0,
+          thumbnailUrl: video.thumbnails?.data?.[0]?.uri || null,
+          status: "Pending Scan",
+          priorityScore: 50,
+          publishedAt: video.created_time ? new Date(video.created_time) : new Date(),
+          platform: "facebook",
+          duration: video.length ? `${Math.floor(video.length / 60)}:${String(video.length % 60).padStart(2, '0')}` : null,
+          sourceUrl: video.permalink_url || null,
+        });
+        imported++;
+      }
+    } catch (error) {
+      console.error(`[Graph API] Error importing Facebook video ${video.id}:`, error);
+    }
+  }
+  
+  console.log(`[Graph API] Imported ${imported} new Facebook videos`);
+  return imported;
+}
+
+// Import Instagram media into video_index
+async function importInstagramMedia(userId: string, igUserId: string, accessToken: string): Promise<number> {
+  const media = await fetchInstagramMedia(igUserId, accessToken);
+  let imported = 0;
+  
+  for (const item of media) {
+    try {
+      // Only import videos and reels (not images)
+      if (item.media_type !== "VIDEO" && item.media_type !== "REELS") {
+        continue;
+      }
+      
+      // Check if already exists
+      const existing = await db.query.videoIndex.findFirst({
+        where: and(
+          eq(videoIndex.userId, userId),
+          eq(videoIndex.youtubeId, `instagram:${item.id}`),
+          eq(videoIndex.platform, "instagram")
+        )
+      });
+      
+      if (!existing) {
+        await db.insert(videoIndex).values({
+          userId,
+          youtubeId: `instagram:${item.id}`,
+          title: item.caption?.substring(0, 100) || "Instagram Video",
+          description: item.caption || "",
+          viewCount: 0,
+          thumbnailUrl: item.thumbnail_url || item.media_url || null,
+          status: "Pending Scan",
+          priorityScore: 50,
+          publishedAt: item.timestamp ? new Date(item.timestamp) : new Date(),
+          platform: "instagram",
+          sourceUrl: item.permalink || null,
+        });
+        imported++;
+      }
+    } catch (error) {
+      console.error(`[Graph API] Error importing Instagram media ${item.id}:`, error);
+    }
+  }
+  
+  console.log(`[Graph API] Imported ${imported} new Instagram videos/reels`);
+  return imported;
+}
+
+// Export for use in routes
+export { importFacebookVideos, importInstagramMedia };
 
 export async function setupPlatformAuth(app: Express) {
   const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID;

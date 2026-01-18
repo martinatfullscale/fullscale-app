@@ -8,11 +8,15 @@ import { runIndexerForUser } from "./lib/indexer";
 import { processVideoScan, scanPendingVideos, addToLocalAssetMap } from "./lib/scanner";
 import { hashPassword, verifyPassword } from "./lib/password";
 import { addSignupToAirtable } from "./lib/airtable";
-import { setupPlatformAuth } from "./lib/platformAuth";
+import { setupPlatformAuth, importFacebookVideos, importInstagramMedia } from "./lib/platformAuth";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
 import ytdl from "@distube/ytdl-core";
+import { decrypt } from "./encryption";
+import { db } from "./db";
+import { users } from "@shared/schema";
+import { eq } from "drizzle-orm";
 
 // Configure multer for video uploads
 const uploadStorage = multer.diskStorage({
@@ -1392,6 +1396,93 @@ export async function registerRoutes(
         redirectTo: role === "brand" ? "/marketplace" : "/"
       });
     });
+  });
+
+  // Sync Facebook and Instagram content into video library
+  app.post("/api/sync/facebook-instagram", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      // Get user identifier from multiple auth methods
+      const sessionUserId = req.session?.userId;
+      const googleEmail = req.googleUser?.email;
+      const replitSub = req.user?.claims?.sub;
+      const replitEmail = req.user?.claims?.email;
+      
+      if (!sessionUserId && !googleEmail && !replitSub) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      
+      // Find user using multiple methods (support both ID and email-based lookups)
+      let user = null;
+      
+      // Try session userId first (works for Facebook-auth users)
+      if (sessionUserId) {
+        user = await db.query.users.findFirst({
+          where: eq(users.id, sessionUserId),
+        });
+      }
+      
+      // Try Google email (works for Google OAuth users)
+      if (!user && googleEmail) {
+        user = await db.query.users.findFirst({
+          where: eq(users.id, googleEmail),
+        });
+        // Also try by email field
+        if (!user) {
+          user = await db.query.users.findFirst({
+            where: eq(users.email, googleEmail),
+          });
+        }
+      }
+      
+      // Try Replit OIDC
+      if (!user && replitSub) {
+        user = await db.query.users.findFirst({
+          where: eq(users.id, replitSub),
+        });
+      }
+      if (!user && replitEmail) {
+        user = await db.query.users.findFirst({
+          where: eq(users.email, replitEmail),
+        });
+      }
+      
+      if (!user) {
+        return res.status(404).json({ error: "User not found. Please reconnect your Facebook account." });
+      }
+      
+      if (!user.facebookAccessToken || !user.facebookPageId) {
+        return res.status(400).json({ error: "Facebook not connected. Please connect your Facebook account first." });
+      }
+      
+      // Decrypt the access token
+      const accessToken = decrypt(user.facebookAccessToken);
+      
+      // Use the user's ID for storing videos
+      const userIdForVideos = user.id;
+      
+      let facebookImported = 0;
+      let instagramImported = 0;
+      
+      // Import Facebook Page videos
+      if (user.facebookPageId) {
+        facebookImported = await importFacebookVideos(userIdForVideos, user.facebookPageId, accessToken);
+      }
+      
+      // Import Instagram media if connected
+      if (user.instagramBusinessId) {
+        instagramImported = await importInstagramMedia(userIdForVideos, user.instagramBusinessId, accessToken);
+      }
+      
+      res.json({
+        success: true,
+        facebookVideos: facebookImported,
+        instagramVideos: instagramImported,
+        message: `Imported ${facebookImported} Facebook videos and ${instagramImported} Instagram videos/reels`
+      });
+    } catch (error: any) {
+      console.error("[Sync] Error syncing Facebook/Instagram:", error);
+      res.status(500).json({ error: error.message || "Failed to sync content" });
+    }
   });
 
   // Get brand's campaigns (bids they've placed)

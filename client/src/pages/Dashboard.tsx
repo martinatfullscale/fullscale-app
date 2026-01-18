@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { TopBar } from "@/components/TopBar";
-import { Video, Youtube, CheckCircle, Unlink, TrendingUp, Gavel, BarChart3, Loader2, ToggleLeft, ToggleRight, Link2 } from "lucide-react";
+import { Video, Youtube, CheckCircle, Unlink, TrendingUp, Gavel, BarChart3, Loader2, ToggleLeft, ToggleRight, Link2, RefreshCw } from "lucide-react";
 import { SiFacebook, SiInstagram } from "react-icons/si";
 import { motion } from "framer-motion";
 import { useAuth } from "@/hooks/use-auth";
@@ -119,6 +119,54 @@ function formatReach(count: number): string {
   if (count >= 1000000) return `${(count / 1000000).toFixed(1)}M`;
   if (count >= 1000) return `${(count / 1000).toFixed(0)}K`;
   return count.toString();
+}
+
+// Sync button component with proper React Query mutation and toast feedback
+function SyncSocialButton() {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  
+  const syncMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch('/api/sync/facebook-instagram', { 
+        method: 'POST',
+        credentials: 'include'
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Sync failed');
+      }
+      return data;
+    },
+    onSuccess: (data) => {
+      toast({
+        title: "Content synced",
+        description: data.message,
+      });
+      // Invalidate video queries to refresh the library
+      queryClient.invalidateQueries({ queryKey: ['/api/video-index'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/video-index/with-opportunities'] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Sync failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    }
+  });
+
+  return (
+    <button
+      onClick={() => syncMutation.mutate()}
+      disabled={syncMutation.isPending}
+      data-testid="button-sync-social"
+      className="w-full text-left px-4 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-600/90 disabled:opacity-50 text-white text-sm font-medium transition-colors flex items-center gap-2"
+    >
+      <RefreshCw className={`w-4 h-4 ${syncMutation.isPending ? 'animate-spin' : ''}`} />
+      {syncMutation.isPending ? 'Syncing...' : 'Sync Facebook & Instagram Content'}
+    </button>
+  );
 }
 
 export default function Dashboard() {
@@ -657,8 +705,17 @@ export default function Dashboard() {
                   className="w-full text-left px-4 py-3 rounded-xl bg-[#1877F2] hover:bg-[#1877F2]/90 text-white text-sm font-medium transition-colors flex items-center gap-2"
                 >
                   <SiFacebook className="w-4 h-4" />
-                  Connect Facebook & Instagram
+                  Connect Facebook Page
                 </button>
+                <button
+                  onClick={() => window.location.href = "/auth/facebook"}
+                  data-testid="button-connect-instagram"
+                  className="w-full text-left px-4 py-3 rounded-xl bg-gradient-to-r from-[#833AB4] via-[#E1306C] to-[#F77737] hover:opacity-90 text-white text-sm font-medium transition-colors flex items-center gap-2"
+                >
+                  <SiInstagram className="w-4 h-4" />
+                  Connect Instagram Business
+                </button>
+                <SyncSocialButton />
                 <button
                   onClick={() => setLocation("/settings")}
                   data-testid="button-manage-connections"
