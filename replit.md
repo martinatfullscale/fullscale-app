@@ -5,6 +5,14 @@
 FullScale is a dual-portal content monetization platform with Google OAuth-gated access and YouTube integration. Features role-based views (creator/brand) with View Switcher for admins, a Brand Marketplace where brands purchase ad placements, and Campaign Tracker for monitoring bids. Built as a full-stack TypeScript application with React frontend and Express backend, using PostgreSQL for data persistence. Includes real-time AI object detection using TensorFlow.js COCO-SSD for product placement surface analysis.
 
 ## Recent Changes (January 2026)
+- **Facebook/Instagram Content Import**: Full Graph API integration to import videos from connected Facebook Pages and Instagram Business Accounts
+  - New /api/sync/facebook-instagram endpoint with multi-auth user lookup (session, Google, Replit OIDC)
+  - Facebook Page videos imported with Graph API fields: title, description, views, thumbnails, permalink_url
+  - Instagram media imported (VIDEO, REELS) with fields: caption, thumbnail_url, media_url, permalink
+  - sourceUrl field added to video_index schema for storing canonical URLs to original content
+  - Separate "Connect Facebook Page" and "Connect Instagram Business" buttons in Dashboard
+  - React Query mutation for sync button with loading state and toast feedback
+  - Session cookie sameSite set to 'none' for cross-site OAuth redirect support
 - **Facebook Graph API Integration**: Real creator data fetched from Facebook Pages and Instagram Business Accounts
   - Scopes: email, public_profile, pages_show_list, pages_read_engagement
   - Graph API fetches: Page name, Page ID, follower count (fan_count), Instagram Business Account
