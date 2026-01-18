@@ -561,27 +561,62 @@ export async function registerRoutes(
   });
 
   // Get auth status (for frontend to check approval)
-  app.get("/api/auth/status", async (req, res) => {
+  // Supports: Google OAuth, Replit OIDC, Facebook session auth
+  app.get("/api/auth/status", async (req: any, res) => {
+    // Try Google OAuth session first
     const googleUser = (req.session as any)?.googleUser;
+    if (googleUser && googleUser.email) {
+      const user = await storage.getUserByEmail(googleUser.email);
+      const isApproved = user?.isApproved ?? googleUser.isApproved ?? false;
+      return res.json({
+        authenticated: true,
+        email: googleUser.email,
+        name: googleUser.name,
+        firstName: user?.firstName || null,
+        lastName: user?.lastName || null,
+        picture: googleUser.picture,
+        authProvider: googleUser.authProvider || "google",
+        isApproved,
+      });
+    }
     
-    if (!googleUser || !googleUser.email) {
-      return res.json({ authenticated: false });
+    // Try Replit OIDC Auth (Passport-based)
+    if (req.isAuthenticated && req.isAuthenticated() && req.user?.claims) {
+      const claims = req.user.claims;
+      const user = await storage.getUserByEmail(claims.email);
+      const isApproved = user?.isApproved ?? false;
+      return res.json({
+        authenticated: true,
+        email: claims.email,
+        name: `${claims.first_name || ""} ${claims.last_name || ""}`.trim() || claims.email,
+        firstName: claims.first_name || null,
+        lastName: claims.last_name || null,
+        picture: claims.profile_image_url || null,
+        authProvider: "replit",
+        isApproved,
+      });
+    }
+    
+    // Try Facebook session auth (via req.session.userId from platformAuth)
+    const sessionUserId = (req.session as any)?.userId;
+    if (sessionUserId) {
+      const user = await storage.getUserById(sessionUserId);
+      if (user) {
+        const isApproved = user.isApproved ?? false;
+        return res.json({
+          authenticated: true,
+          email: user.email,
+          name: `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.email,
+          firstName: user.firstName || null,
+          lastName: user.lastName || null,
+          picture: user.profileImageUrl || null,
+          authProvider: "facebook",
+          isApproved,
+        });
+      }
     }
 
-    // Fetch latest user data from database
-    const user = await storage.getUserByEmail(googleUser.email);
-    const isApproved = user?.isApproved ?? googleUser.isApproved ?? false;
-
-    res.json({
-      authenticated: true,
-      email: googleUser.email,
-      name: googleUser.name,
-      firstName: user?.firstName || null,
-      lastName: user?.lastName || null,
-      picture: googleUser.picture,
-      authProvider: googleUser.authProvider,
-      isApproved,
-    });
+    return res.json({ authenticated: false });
   });
 
   // ============================================
@@ -598,7 +633,7 @@ export async function registerRoutes(
     next();
   };
   
-  // Flexible auth middleware - works with Google OAuth or Replit Auth
+  // Flexible auth middleware - works with Google OAuth, Replit Auth, or Facebook session
   // Used for endpoints that should work for authenticated users regardless of method
   const isFlexibleAuthenticated = async (req: any, res: any, next: any) => {
     const adminEmails = ['martin@gofullscale.co', 'martin@whtwrks.com', 'martincekechukwu@gmail.com'];
@@ -620,6 +655,18 @@ export async function registerRoutes(
       req.authUserId = claims.sub || (await storage.getUserByEmail(claims.email))?.id || claims.email;
       req.isAdmin = adminEmails.includes(claims.email);
       return next();
+    }
+    
+    // Try Facebook session auth (via req.session.userId from platformAuth)
+    const sessionUserId = req.session?.userId;
+    if (sessionUserId) {
+      const user = await storage.getUserById(sessionUserId);
+      if (user && user.email) {
+        req.authEmail = user.email;
+        req.authUserId = user.id;
+        req.isAdmin = adminEmails.includes(user.email);
+        return next();
+      }
     }
     
     // DEVELOPMENT ONLY: Admin email fallback for testing without OAuth setup
@@ -1273,13 +1320,31 @@ export async function registerRoutes(
   const ADMIN_EMAILS = ["martin@gofullscale.co", "martin@whtwrks.com", "martincekechukwu@gmail.com"];
 
   // Get user type (creator or brand) for routing - supports admin role override
+  // Supports: Google OAuth, Replit OIDC, Facebook session auth
   app.get("/api/auth/user-type", async (req: any, res) => {
+    let email: string | null = null;
+    
+    // Try Google OAuth session first
+    if (req.session?.googleUser?.email) {
+      email = req.session.googleUser.email;
+    }
+    // Try Replit OIDC Auth (Passport-based)
+    else if (req.isAuthenticated && req.isAuthenticated() && req.user?.claims?.email) {
+      email = req.user.claims.email;
+    }
+    // Try Facebook session auth (via req.session.userId)
+    else if (req.session?.userId) {
+      const user = await storage.getUserById(req.session.userId);
+      if (user) {
+        email = user.email;
+      }
+    }
+    
     // Return null for unauthenticated users - no 401 loop
-    if (!req.session?.googleUser) {
+    if (!email) {
       return res.json({ authenticated: false, userType: null });
     }
     
-    const email = req.session.googleUser.email;
     const allowedUser = await storage.getAllowedUser(email);
     const isAdmin = ADMIN_EMAILS.includes(email);
     
