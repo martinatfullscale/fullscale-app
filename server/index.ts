@@ -1,11 +1,12 @@
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
-import { serveStatic } from "./static";
+import { serveStatic, waitForBuild } from "./static";
 import { createServer } from "http";
 import { db } from "./db";
 import { videoIndex } from "@shared/schema";
 import { seed } from "./db/seed";
 import { sql } from "drizzle-orm";
+import path from "path";
 
 const app = express();
 const httpServer = createServer(app);
@@ -15,6 +16,10 @@ declare module "http" {
     rawBody: unknown;
   }
 }
+
+// CRITICAL: Set trust proxy FIRST - before ANY middleware
+// This is required for secure cookies to work behind Replit's reverse proxy
+app.set("trust proxy", 1);
 
 app.use(
   express.json({
@@ -26,13 +31,7 @@ app.use(
 
 app.use(express.urlencoded({ extended: false }));
 
-// CRITICAL: Set trust proxy BEFORE any session/cookie handling
-// This is required for secure cookies to work behind Replit's reverse proxy
-app.set("trust proxy", 1);
-
 // Serve static files from public directory (for uploaded frames, videos, etc.)
-import path from "path";
-// Use process.cwd() for bundled CJS compatibility (import.meta.url is undefined in CJS bundles)
 const projectRoot = process.cwd();
 app.use(express.static(path.join(projectRoot, "public")));
 
@@ -43,13 +42,13 @@ export function log(message: string, source = "express") {
     second: "2-digit",
     hour12: true,
   });
-
   console.log(`${formattedTime} [${source}] ${message}`);
 }
 
+// Request logging middleware
 app.use((req, res, next) => {
   const start = Date.now();
-  const path = req.path;
+  const reqPath = req.path;
   let capturedJsonResponse: Record<string, any> | undefined = undefined;
 
   const originalResJson = res.json;
@@ -60,12 +59,11 @@ app.use((req, res, next) => {
 
   res.on("finish", () => {
     const duration = Date.now() - start;
-    if (path.startsWith("/api")) {
-      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
+    if (reqPath.startsWith("/api")) {
+      let logLine = `${req.method} ${reqPath} ${res.statusCode} in ${duration}ms`;
       if (capturedJsonResponse) {
         logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
       }
-
       log(logLine);
     }
   });
@@ -73,68 +71,117 @@ app.use((req, res, next) => {
   next();
 });
 
+// Track server readiness
+let serverReady = false;
+
 (async () => {
   try {
     log("Starting server initialization...");
     
-    // Add health check endpoint FIRST - responds immediately
+    // ============================================
+    // PHASE 1: Health endpoint (for load balancer)
+    // ============================================
     app.get("/health", (_req, res) => {
       res.status(200).json({ status: "ok", timestamp: Date.now() });
     });
     
-    // Register all routes BEFORE starting to listen
+    // Readiness endpoint - only returns 200 when fully ready
+    app.get("/ready", (_req, res) => {
+      if (serverReady) {
+        res.status(200).json({ status: "ready", timestamp: Date.now() });
+      } else {
+        res.status(503).json({ status: "starting", timestamp: Date.now() });
+      }
+    });
+
+    // ============================================
+    // PHASE 2: Pre-warm database connection
+    // ============================================
+    log("Pre-warming database connection...");
+    try {
+      const result = await db.select({ count: sql<number>`count(*)` }).from(videoIndex);
+      const videoCount = Number(result[0]?.count || 0);
+      log(`Database ready: ${videoCount} videos found`);
+    } catch (dbError) {
+      log(`Database pre-warm warning: ${dbError}`);
+      // Continue anyway - DB might be empty but that's OK
+    }
+
+    // ============================================
+    // PHASE 3: Wait for client build in production
+    // ============================================
+    if (process.env.NODE_ENV === "production") {
+      log("Production mode: waiting for client build...");
+      const buildReady = await waitForBuild(30000); // Wait up to 30 seconds
+      if (buildReady) {
+        log("Client build ready");
+      } else {
+        log("Warning: Client build not found after 30s, continuing anyway");
+      }
+    }
+
+    // ============================================
+    // PHASE 4: Register all routes (includes auth pre-warming)
+    // ============================================
     await registerRoutes(httpServer, app);
     log("Routes registered successfully");
 
+    // Error handler
     app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
       const status = err.status || err.statusCode || 500;
       const message = err.message || "Internal Server Error";
-
       res.status(status).json({ message });
       console.error("Server error:", err);
     });
 
-    // Setup static file serving or Vite
+    // ============================================
+    // PHASE 5: Setup static file serving
+    // ============================================
     if (process.env.NODE_ENV === "production") {
-      log("Production mode: serving static files");
+      log("Setting up static file serving...");
       serveStatic(app);
     } else {
-      log("Development mode: setting up Vite");
+      log("Development mode: setting up Vite...");
       const { setupVite } = await import("./vite");
       await setupVite(httpServer, app);
     }
     
-    // Start listening AFTER routes are ready
+    // ============================================
+    // PHASE 6: Start listening - ONLY when everything is ready
+    // ============================================
     const port = parseInt(process.env.PORT || "5000", 10);
-    httpServer.listen(
-      {
-        port,
-        host: "0.0.0.0",
-        reusePort: true,
-      },
-      () => {
-        log(`Server listening on port ${port}`);
-      },
-    );
     
-    // Run database seeding in background AFTER server is ready (non-blocking)
+    await new Promise<void>((resolve) => {
+      httpServer.listen(
+        { port, host: "0.0.0.0", reusePort: true },
+        () => {
+          log(`Server listening on port ${port}`);
+          resolve();
+        },
+      );
+    });
+    
+    // Mark server as fully ready AFTER listening
+    serverReady = true;
+    log("Server fully ready and accepting traffic");
+    
+    // ============================================
+    // PHASE 7: Background tasks (non-blocking)
+    // ============================================
     setImmediate(async () => {
       try {
         const result = await db.select({ count: sql<number>`count(*)` }).from(videoIndex);
         const videoCount = Number(result[0]?.count || 0);
-        log(`Database check: ${videoCount} videos found`);
-        
         if (videoCount === 0) {
           log("Database empty - seeding demo data in background...");
           await seed();
           log("Demo data seeded successfully");
         }
       } catch (dbError) {
-        log(`Database bootstrap warning: ${dbError}`);
+        log(`Database seeding warning: ${dbError}`);
       }
     });
-    
-    log("Server initialization complete");
+
   } catch (error) {
     console.error("Failed to start server:", error);
     process.exit(1);
