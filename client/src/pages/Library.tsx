@@ -512,7 +512,7 @@ function EmptyLibrary({ onSync, isSyncing }: { onSync: () => void; isSyncing: bo
 
 export default function Library() {
   const { user } = useAuth();
-  const { mode } = useHybridMode();
+  const { mode: hybridMode } = useHybridMode();
   const { isPitchMode } = usePitchMode();
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -522,10 +522,20 @@ export default function Library() {
   const [sceneModalOpen, setSceneModalOpen] = useState(false);
   const [sceneVideo, setSceneVideo] = useState<VideoWithScenes | null>(null);
   
-  // Admin emails for flexible auth fallback
+  // Admin emails for flexible auth fallback (supports URL param bypass in dev)
   const ADMIN_EMAILS = ['martin@gofullscale.co', 'martin@whtwrks.com', 'martincekechukwu@gmail.com'];
-  const userEmail = user?.email || '';
+  
+  // Check for admin_email in URL (dev bypass)
+  const urlParams = new URLSearchParams(window.location.search);
+  const adminEmailFromUrl = urlParams.get('admin_email') || '';
+  const isUrlAdminBypass = ADMIN_EMAILS.includes(adminEmailFromUrl);
+  
+  // Use URL admin email if present and valid, otherwise fall back to session user
+  const userEmail = isUrlAdminBypass ? adminEmailFromUrl : (user?.email || '');
   const isAdminUser = ADMIN_EMAILS.includes(userEmail);
+  
+  // Force "real" mode if admin_email bypass is active
+  const mode = isUrlAdminBypass ? "real" : hybridMode;
   
   const handleVideoClick = async (video: DisplayVideo) => {
     const videoId = video.id || 1001;

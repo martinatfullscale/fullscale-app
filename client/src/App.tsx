@@ -59,7 +59,13 @@ function Router() {
   const { isAuthenticated: isGoogleAuthenticated, isLoading: isLoadingGoogleAuth } = useHybridMode();
   const [location, setLocation] = useLocation();
 
-  const isAuthenticated = !!user || isGoogleAuthenticated;
+  // Admin email bypass for dev/testing (same list as Library.tsx)
+  const ADMIN_EMAILS = ['martin@gofullscale.co', 'martin@whtwrks.com', 'martincekechukwu@gmail.com'];
+  const urlParams = new URLSearchParams(window.location.search);
+  const adminEmailFromUrl = urlParams.get('admin_email') || '';
+  const isAdminBypass = ADMIN_EMAILS.includes(adminEmailFromUrl);
+  
+  const isAuthenticated = !!user || isGoogleAuthenticated || isAdminBypass;
 
   useEffect(() => {
     ReactGA.send({ hitType: "pageview", page: location });
@@ -86,8 +92,11 @@ function Router() {
   const protectedRoutes = ["/dashboard", "/library", "/opportunities", "/marketplace", "/campaigns", "/settings", "/earnings", "/upload"];
   const isProtectedRoute = protectedRoutes.some(route => location === route || location === "/");
 
-  // Redirect based on approval status
+  // Redirect based on approval status (skip for admin bypass)
   useEffect(() => {
+    // Admin bypass skips approval check
+    if (isAdminBypass) return;
+    
     if (isAuthenticated && authStatus && !isLoadingAuthStatus) {
       // Redirect unapproved users to waitlist
       if (!authStatus.isApproved && isProtectedRoute && location !== "/waitlist") {
@@ -98,7 +107,7 @@ function Router() {
         setLocation("/dashboard");
       }
     }
-  }, [authStatus, isAuthenticated, isLoadingAuthStatus, location, isProtectedRoute, setLocation]);
+  }, [authStatus, isAuthenticated, isLoadingAuthStatus, location, isProtectedRoute, setLocation, isAdminBypass]);
 
   useEffect(() => {
     // Only do role-based redirects if user is approved
@@ -140,8 +149,8 @@ function Router() {
     );
   }
 
-  // Show loading while checking approval status
-  if (isLoadingAuthStatus) {
+  // Show loading while checking approval status (skip for admin bypass)
+  if (isLoadingAuthStatus && !isAdminBypass) {
     return (
       <div className="min-h-screen w-full flex items-center justify-center bg-background">
         <Loader2 className="w-10 h-10 text-primary animate-spin" />
@@ -149,8 +158,8 @@ function Router() {
     );
   }
 
-  // User is authenticated but not approved - show waitlist
-  if (authStatus && !authStatus.isApproved) {
+  // User is authenticated but not approved - show waitlist (skip for admin bypass)
+  if (authStatus && !authStatus.isApproved && !isAdminBypass) {
     // Redirect to waitlist if not already there (effect handles this)
     return (
       <Switch>
