@@ -742,6 +742,13 @@ export async function processVideoScan(videoId: number, forceRescan: boolean = f
   if (!video) {
     return { success: false, videoId, surfacesDetected: 0, error: "Video not found" };
   }
+  
+  // DEBUG: Log the actual video object properties
+  console.log(`[Scanner] Video object keys:`, Object.keys(video));
+  console.log(`[Scanner] video.filePath:`, (video as any).filePath);
+  console.log(`[Scanner] video.file_path:`, (video as any).file_path);
+  console.log(`[Scanner] video.title:`, video.title);
+  console.log(`[Scanner] video.youtubeId:`, video.youtubeId);
 
   // Allow rescanning failed or already indexed videos if forceRescan is true
   if (!forceRescan && video.status !== "Pending Scan") {
