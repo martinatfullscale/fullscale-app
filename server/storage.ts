@@ -236,14 +236,17 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getVideoIndex(userId: string): Promise<VideoIndex[]> {
+    console.log(`[Storage.getVideoIndex] Looking up user by ID: ${userId}`);
     // First, try to get user by ID to also check by email
     const user = await this.getUserById(userId);
     const userEmail = user?.email;
+    console.log(`[Storage.getVideoIndex] User found: ${!!user}, email: ${userEmail}`);
     
     // Query videos matching either the user ID or the user's email
     // This handles legacy videos stored with email as userId
     if (userEmail && userEmail !== userId) {
-      return await db
+      console.log(`[Storage.getVideoIndex] Querying by userId=${userId} OR userId=${userEmail}`);
+      const videos = await db
         .select()
         .from(videoIndex)
         .where(or(
@@ -251,13 +254,18 @@ export class DatabaseStorage implements IStorage {
           eq(videoIndex.userId, userEmail)
         ))
         .orderBy(desc(videoIndex.priorityScore));
+      console.log(`[Storage.getVideoIndex] Found ${videos.length} videos (dual query)`);
+      return videos;
     }
     
-    return await db
+    console.log(`[Storage.getVideoIndex] Querying by userId=${userId} only`);
+    const videos = await db
       .select()
       .from(videoIndex)
       .where(eq(videoIndex.userId, userId))
       .orderBy(desc(videoIndex.priorityScore));
+    console.log(`[Storage.getVideoIndex] Found ${videos.length} videos (single query)`);
+    return videos;
   }
 
   async getAllVideos(): Promise<VideoIndex[]> {

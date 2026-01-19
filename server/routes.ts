@@ -1108,7 +1108,11 @@ export async function registerRoutes(
   // Get videos with their Ad Opportunity counts
   app.get("/api/video-index/with-opportunities", isFlexibleAuthenticated, async (req: any, res) => {
     const userId = req.authUserId;
+    const authEmail = req.authEmail;
+    console.log(`[VideoIndex] Fetching videos for userId: ${userId}, authEmail: ${authEmail}`);
+    
     const videos = await storage.getVideoIndex(userId);
+    console.log(`[VideoIndex] Found ${videos.length} videos for user`);
     
     const videosWithCounts = await Promise.all(
       videos.map(async (video) => {
