@@ -5,7 +5,7 @@ import { api } from "@shared/routes";
 import { z } from "zod";
 import { setupAuth, registerAuthRoutes, isAuthenticated } from "./replit_integrations/auth";
 import { runIndexerForUser } from "./lib/indexer";
-import { processVideoScan, scanPendingVideos, addToLocalAssetMap } from "./lib/scanner";
+import { processVideoScan, scanPendingVideos, addToLocalAssetMap, getYouTubeThumbnailWithFallback } from "./lib/scanner";
 import { hashPassword, verifyPassword } from "./lib/password";
 import { addSignupToAirtable } from "./lib/airtable";
 import { setupPlatformAuth, importFacebookVideos, importInstagramMedia } from "./lib/platformAuth";
@@ -1612,13 +1612,17 @@ export async function registerRoutes(
 
       const videosData = await getYoutubeVideos(accessToken, uploadsPlaylistId, 5);
       
-      const videos = (videosData.items || []).map((item: any) => ({
-        id: item.contentDetails?.videoId || item.id,
-        title: item.snippet.title,
-        thumbnailUrl: item.snippet.thumbnails?.medium?.url || item.snippet.thumbnails?.default?.url,
-        publishedAt: item.snippet.publishedAt,
-        description: item.snippet.description,
-      }));
+      const videos = (videosData.items || []).map((item: any) => {
+        const videoId = item.contentDetails?.videoId || item.id;
+        return {
+          id: videoId,
+          title: item.snippet.title,
+          // Use public YouTube thumbnail URL (no OAuth required for thumbnails)
+          thumbnailUrl: getYouTubeThumbnailWithFallback(videoId),
+          publishedAt: item.snippet.publishedAt,
+          description: item.snippet.description,
+        };
+      });
 
       res.json({ connected: true, videos });
     } catch (err: any) {

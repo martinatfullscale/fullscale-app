@@ -113,6 +113,29 @@ export function addToLocalAssetMap(videoId: string, filePath: string) {
   console.log(`[Scanner] LOCAL_ASSET_MAP now has ${Object.keys(LOCAL_ASSET_MAP).length} entries`);
 }
 
+// ============================================================================
+// PUBLIC YOUTUBE THUMBNAIL RESOLVER
+// Construct thumbnail URLs from YouTube video IDs without OAuth
+// ============================================================================
+export function getYouTubeThumbnailUrl(youtubeId: string, quality: 'default' | 'hq' | 'mq' | 'sd' | 'maxres' = 'hq'): string {
+  // YouTube public thumbnail URL formats (no API key required)
+  const qualityMap: Record<string, string> = {
+    'default': 'default.jpg',      // 120x90
+    'mq': 'mqdefault.jpg',         // 320x180
+    'hq': 'hqdefault.jpg',         // 480x360
+    'sd': 'sddefault.jpg',         // 640x480
+    'maxres': 'maxresdefault.jpg', // 1280x720 (may not exist for all videos)
+  };
+  
+  return `https://i.ytimg.com/vi/${youtubeId}/${qualityMap[quality]}`;
+}
+
+// Get thumbnail with fallback to lower quality if maxres not available
+export function getYouTubeThumbnailWithFallback(youtubeId: string): string {
+  // Use hqdefault as it's reliably available for all YouTube videos
+  return getYouTubeThumbnailUrl(youtubeId, 'hq');
+}
+
 // === VERBOSE STARTUP LOGGING ===
 console.log(`[Scanner] ========== SCANNER MODULE LOADED ==========`);
 console.log(`[Scanner] AI_INTEGRATIONS_GEMINI_API_KEY exists: ${!!process.env.AI_INTEGRATIONS_GEMINI_API_KEY}`);
@@ -801,16 +824,8 @@ export async function processVideoScan(videoId: number, forceRescan: boolean = f
       }
     }
     
-    // PRIORITY 4: Platform-specific fallbacks for imported content without local files
-    if (!localPath) {
-      if (platform === 'instagram') {
-        console.log('[Scanner] Instagram content without local file - using demo placeholder');
-        localPath = './public/hero_video.mp4';
-      } else if (platform === 'facebook') {
-        console.log('[Scanner] Facebook content without local file - using demo placeholder');
-        localPath = './public/hero_video.mp4';
-      }
-    }
+    // PRIORITY 4: No more platform fallbacks - all content requires local files
+    // (Removed Instagram/Facebook placeholder fallback to enforce local-file-only scanning)
     
     let videoPath: string;
     
@@ -835,27 +850,17 @@ export async function processVideoScan(videoId: number, forceRescan: boolean = f
       console.log(`[Scanner] Bypassing YouTube download for ${video.youtubeId}`);
       videoPath = absoluteLocalPath;
     } else {
-      // No local file found - only attempt YouTube download for actual YouTube content
-      if (platform !== 'youtube') {
-        console.log(`[Scanner] No local file for ${platform} content (ID: ${video.youtubeId})`);
-        console.log(`[Scanner] Non-YouTube content requires a local file to scan.`);
-        await storage.updateVideoStatus(videoId, "Scan Failed");
-        return { 
-          success: false, 
-          videoId, 
-          surfacesDetected: 0, 
-          error: `No local file found for ${platform} content. Upload the video file to scan.` 
-        };
-      }
-      
-      // Only for YouTube: attempt download as last resort
-      videoPath = path.join(tempDir, "video.mp4");
-      console.log(`[Scanner] No local asset mapped for YouTube video ${video.youtubeId}, attempting download...`);
-      const downloaded = await downloadVideo(video.youtubeId, videoPath);
-      if (!downloaded) {
-        await storage.updateVideoStatus(videoId, "Scan Failed");
-        return { success: false, videoId, surfacesDetected: 0, error: "Failed to download video from YouTube" };
-      }
+      // No local file found - scanning requires local files only (no YouTube downloads)
+      console.log(`[Scanner] No local file found for ${platform} content (ID: ${video.youtubeId})`);
+      console.log(`[Scanner] VIDEO SCANNING REQUIRES LOCAL FILES ONLY.`);
+      console.log(`[Scanner] To scan this video, upload the video file or add it to LOCAL_ASSET_MAP.`);
+      await storage.updateVideoStatus(videoId, "Pending Upload");
+      return { 
+        success: false, 
+        videoId, 
+        surfacesDetected: 0, 
+        error: `No local file available. Upload the video file to enable scanning.` 
+      };
     }
 
     const frames = await extractFrames(videoPath, framesDir, 10);
