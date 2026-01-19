@@ -177,12 +177,23 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
   
-  // Setup Replit Auth (MUST be before other routes if you want to protect them globaly, but usually fine here)
-  await setupAuth(app);
-  registerAuthRoutes(app);
+  // Setup Replit Auth (optional - server should start even if OIDC discovery fails)
+  try {
+    await setupAuth(app);
+    registerAuthRoutes(app);
+    console.log("[Routes] Replit Auth setup completed");
+  } catch (authError) {
+    console.error("[Routes] Replit Auth setup failed (non-fatal):", authError);
+    // Server continues without Replit Auth - Google OAuth will still work
+  }
   
   // Setup multi-platform auth (Twitch, Facebook)
-  await setupPlatformAuth(app);
+  try {
+    await setupPlatformAuth(app);
+    console.log("[Routes] Platform Auth setup completed");
+  } catch (platformError) {
+    console.error("[Routes] Platform Auth setup failed (non-fatal):", platformError);
+  }
 
   // ============================================
   // Google Login OAuth Routes (with Allowlist)
