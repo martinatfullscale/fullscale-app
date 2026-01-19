@@ -956,7 +956,7 @@ export default function Dashboard() {
               <div className="p-8 text-center">
                 <Video className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
                 <p className="text-muted-foreground text-sm">
-                  No high-value videos found yet. We're looking for videos with 5,000+ views from the last 2 years.
+                  No videos found yet. Sync your YouTube channel to import your videos.
                 </p>
               </div>
             ) : (
