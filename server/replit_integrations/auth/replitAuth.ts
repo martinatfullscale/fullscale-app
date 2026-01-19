@@ -78,8 +78,10 @@ async function upsertUser(claims: any) {
 }
 
 export async function setupAuth(app: Express) {
-  app.set("trust proxy", 1);
-  app.use(getSession());
+  // Note: trust proxy is set in index.ts
+  // Note: session middleware is set up in routes.ts before calling this function
+  // This function only sets up Replit OIDC passport strategy
+  
   app.use(passport.initialize());
   app.use(passport.session());
 

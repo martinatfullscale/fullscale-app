@@ -177,7 +177,17 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
   
+  // Import session setup separately - this MUST succeed for OAuth to work
+  const { getSession } = await import("./replit_integrations/auth/replitAuth");
+  
+  // Setup session middleware FIRST - required for all OAuth flows
+  // This must run even if Replit OIDC fails
+  console.log("[Routes] Setting up session middleware...");
+  app.use(getSession());
+  console.log("[Routes] Session middleware ready");
+  
   // Setup Replit Auth (optional - server should start even if OIDC discovery fails)
+  // Note: Session is already set up above, so this only adds OIDC routes
   try {
     await setupAuth(app);
     registerAuthRoutes(app);
@@ -185,6 +195,7 @@ export async function registerRoutes(
   } catch (authError) {
     console.error("[Routes] Replit Auth setup failed (non-fatal):", authError);
     // Server continues without Replit Auth - Google OAuth will still work
+    // because session middleware was already set up above
   }
   
   // Setup multi-platform auth (Twitch, Facebook)
