@@ -73,21 +73,25 @@ app.use((req, res, next) => {
   try {
     log("Starting server initialization...");
     
-    // Bootstrap: Check if demo data exists, seed if empty
-    try {
-      const result = await db.select({ count: sql<number>`count(*)` }).from(videoIndex);
-      const videoCount = Number(result[0]?.count || 0);
-      log(`Database check: ${videoCount} videos found`);
-      
-      if (videoCount === 0) {
-        log("Database empty - seeding demo data...");
-        await seed();
-        log("Demo data seeded successfully");
-      }
-    } catch (dbError) {
-      log(`Database bootstrap warning: ${dbError}`);
-    }
+    // Add a simple health check endpoint FIRST - before any other setup
+    app.get("/health", (_req, res) => {
+      res.status(200).json({ status: "ok", timestamp: Date.now() });
+    });
     
+    // Start listening IMMEDIATELY to pass health checks
+    const port = parseInt(process.env.PORT || "5000", 10);
+    httpServer.listen(
+      {
+        port,
+        host: "0.0.0.0",
+        reusePort: true,
+      },
+      () => {
+        log(`Server listening on port ${port}`);
+      },
+    );
+    
+    // Now set up routes and other middleware
     await registerRoutes(httpServer, app);
     log("Routes registered successfully");
 
@@ -99,9 +103,7 @@ app.use((req, res, next) => {
       console.error("Server error:", err);
     });
 
-    // importantly only setup vite in development and after
-    // setting up all the other routes so the catch-all route
-    // doesn't interfere with the other routes
+    // Setup static file serving or Vite
     if (process.env.NODE_ENV === "production") {
       log("Production mode: serving static files");
       serveStatic(app);
@@ -110,22 +112,25 @@ app.use((req, res, next) => {
       const { setupVite } = await import("./vite");
       await setupVite(httpServer, app);
     }
-
-    // ALWAYS serve the app on the port specified in the environment variable PORT
-    // Other ports are firewalled. Default to 5000 if not specified.
-    // this serves both the API and the client.
-    // It is the only port that is not firewalled.
-    const port = parseInt(process.env.PORT || "5000", 10);
-    httpServer.listen(
-      {
-        port,
-        host: "0.0.0.0",
-        reusePort: true,
-      },
-      () => {
-        log(`serving on port ${port}`);
-      },
-    );
+    
+    // Run database operations in background AFTER server is ready
+    setImmediate(async () => {
+      try {
+        const result = await db.select({ count: sql<number>`count(*)` }).from(videoIndex);
+        const videoCount = Number(result[0]?.count || 0);
+        log(`Database check: ${videoCount} videos found`);
+        
+        if (videoCount === 0) {
+          log("Database empty - seeding demo data in background...");
+          await seed();
+          log("Demo data seeded successfully");
+        }
+      } catch (dbError) {
+        log(`Database bootstrap warning: ${dbError}`);
+      }
+    });
+    
+    log("Server initialization complete");
   } catch (error) {
     console.error("Failed to start server:", error);
     process.exit(1);
