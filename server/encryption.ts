@@ -6,6 +6,8 @@ const IV_LENGTH = 16;
 function getEncryptionKey(): Buffer {
   const secret = process.env.ENCRYPTION_KEY || process.env.SESSION_SECRET;
   if (!secret) {
+    console.error("[Encryption] CRITICAL: ENCRYPTION_KEY or SESSION_SECRET is required for encryption");
+    console.error("[Encryption] Available env vars:", Object.keys(process.env).filter(k => !k.startsWith('npm_') && !k.startsWith('PATH')).join(', '));
     throw new Error("ENCRYPTION_KEY or SESSION_SECRET is required for encryption");
   }
   const salt = crypto.createHash("sha256").update("fullscale-oauth-token-encryption-v1").digest();

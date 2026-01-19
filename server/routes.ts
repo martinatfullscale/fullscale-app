@@ -715,46 +715,56 @@ export async function registerRoutes(
 
   // YouTube OAuth callback - uses redirect middleware for graceful session handling
   app.get("/api/auth/youtube/callback", isGoogleAuthenticatedRedirect, async (req: any, res) => {
+    console.log("[YouTube Callback] Received callback request");
     const { code, error } = req.query;
     
     if (error) {
-      console.error("YouTube OAuth error:", error);
+      console.error("[YouTube Callback] OAuth error from Google:", error);
       return res.redirect("/dashboard?youtube_error=" + encodeURIComponent(error as string));
     }
 
     if (!code) {
+      console.error("[YouTube Callback] No code received");
       return res.redirect("/dashboard?youtube_error=no_code");
     }
 
     try {
       const baseUrl = process.env.BASE_URL;
+      console.log("[YouTube Callback] BASE_URL:", baseUrl);
       if (!baseUrl) {
-        console.error("BASE_URL environment variable is not set");
+        console.error("[YouTube Callback] BASE_URL environment variable is not set");
         return res.redirect("/dashboard?youtube_error=configuration_error");
       }
       const redirectUri = `${baseUrl}/api/auth/youtube/callback`;
+      console.log("[YouTube Callback] Using redirect URI:", redirectUri);
       
       // Exchange code for tokens
       let tokens;
       try {
+        console.log("[YouTube Callback] Exchanging code for tokens...");
         tokens = await exchangeCodeForTokens(code as string, redirectUri);
+        console.log("[YouTube Callback] Token exchange successful");
       } catch (exchangeErr: any) {
-        console.error("Token exchange failed:", exchangeErr.message);
+        console.error("[YouTube Callback] Token exchange failed:", exchangeErr.message);
         return res.redirect("/dashboard?youtube_error=token_exchange_failed");
       }
       
       if (tokens.error) {
-        console.error("Token exchange returned error:", tokens.error, tokens.error_description);
+        console.error("[YouTube Callback] Token exchange returned error:", tokens.error, tokens.error_description);
         return res.redirect("/dashboard?youtube_error=" + encodeURIComponent(tokens.error_description || tokens.error));
       }
 
       // Get channel info
+      console.log("[YouTube Callback] Fetching channel info...");
       const channelData = await getYoutubeChannelInfo(tokens.access_token);
       const channel = channelData.items?.[0];
+      console.log("[YouTube Callback] Channel:", channel?.snippet?.title || "No channel found");
 
       const userId = req.googleUser.email;
+      console.log("[YouTube Callback] User:", userId);
       
       // Save the connection
+      console.log("[YouTube Callback] Saving connection to database...");
       await storage.upsertYoutubeConnection({
         userId,
         accessToken: tokens.access_token,
@@ -765,6 +775,7 @@ export async function registerRoutes(
         channelId: channel?.id || null,
         channelTitle: channel?.snippet?.title || null,
       });
+      console.log("[YouTube Callback] Connection saved successfully");
 
       // Trigger video indexer asynchronously (don't block the redirect)
       setImmediate(async () => {
@@ -778,9 +789,10 @@ export async function registerRoutes(
       });
 
       // Redirect to dashboard with success flag
+      console.log("[YouTube Callback] Success - redirecting to dashboard");
       res.redirect("/dashboard?youtube_connected=true");
     } catch (err: any) {
-      console.error("YouTube callback error:", err.message || err);
+      console.error("[YouTube Callback] Unexpected error:", err.message || err, err.stack);
       res.redirect("/dashboard?youtube_error=connection_failed");
     }
   });
