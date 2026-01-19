@@ -184,15 +184,115 @@ export default function Dashboard() {
   // Use global pitch mode context for simulation toggle
   const { isPitchMode, setPitchMode } = usePitchMode();
 
-  const handleVideoClick = (video: IndexedVideo) => {
-    const scenes = DEMO_VIDEO_SCENES[video.id] || DEMO_VIDEO_SCENES[1001];
-    setSelectedVideo({
-      id: video.id,
-      title: video.title,
-      duration: video.duration || "10:00",
-      viewCount: video.viewCount,
-      scenes: scenes,
-    });
+  const handleVideoClick = async (video: IndexedVideo) => {
+    // For demo/pitch mode, use demo scenes
+    if (isPitchMode || (video.id >= 1001 && video.id <= 1012)) {
+      const scenes = DEMO_VIDEO_SCENES[video.id] || DEMO_VIDEO_SCENES[1001];
+      setSelectedVideo({
+        id: video.id,
+        title: video.title,
+        duration: video.duration || "10:00",
+        viewCount: video.viewCount,
+        scenes: scenes,
+      });
+      setSceneModalOpen(true);
+      return;
+    }
+    
+    // For real videos, fetch actual detected surfaces from backend
+    const videoThumbnail = (video as IndexedVideo & { thumbnailUrl?: string }).thumbnailUrl || "";
+    
+    try {
+      const res = await fetch(`/api/video/${video.id}/surfaces`, { credentials: "include" });
+      if (res.ok) {
+        const data = await res.json();
+        
+        interface DetectedSurface {
+          id: number;
+          videoId: number;
+          timestamp: string;
+          surfaceType: string;
+          confidence: string;
+          frameUrl: string | null;
+          boundingBoxX: string;
+          boundingBoxY: string;
+          boundingBoxWidth: string;
+          boundingBoxHeight: string;
+        }
+        
+        // Transform detected surfaces to Scene format with proper type handling
+        const realScenes = data.surfaces.length > 0 
+          ? data.surfaces.map((surface: DetectedSurface, index: number) => {
+              const confidenceNum = parseFloat(surface.confidence) || 0.8;
+              const timestamp = parseFloat(surface.timestamp) || 0;
+              const minutes = Math.floor(timestamp / 60);
+              const seconds = Math.floor(timestamp % 60);
+              const timestampStr = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+              
+              return {
+                id: `${video.id}-${index}`,
+                timestamp: timestampStr,
+                imageUrl: surface.frameUrl || videoThumbnail,
+                surfaces: 1,
+                surfaceTypes: [surface.surfaceType || "Surface"],
+                context: `Detected ${surface.surfaceType || 'surface'} in video`,
+                confidence: Math.round(confidenceNum * 100),
+              };
+            })
+          : [{
+              id: `${video.id}-placeholder`,
+              timestamp: "00:00",
+              imageUrl: videoThumbnail,
+              surfaces: 0,
+              surfaceTypes: ["No surfaces detected yet"],
+              context: "Click 'Scan Analysis' to detect placement surfaces",
+              confidence: 0,
+            }];
+        
+        setSelectedVideo({
+          id: video.id,
+          title: video.title,
+          duration: video.duration || "10:00",
+          viewCount: video.viewCount,
+          scenes: realScenes,
+        });
+      } else {
+        // Fallback: show video info without demo data
+        setSelectedVideo({
+          id: video.id,
+          title: video.title,
+          duration: video.duration || "10:00",
+          viewCount: video.viewCount,
+          scenes: [{
+            id: `${video.id}-placeholder`,
+            timestamp: "00:00",
+            imageUrl: videoThumbnail,
+            surfaces: 0,
+            surfaceTypes: ["Scan needed"],
+            context: "Click 'Scan Analysis' to detect placement surfaces",
+            confidence: 0,
+          }],
+        });
+      }
+    } catch (err) {
+      console.error("[Dashboard] Failed to fetch surfaces:", err);
+      // Use video thumbnail as placeholder, NOT demo data
+      setSelectedVideo({
+        id: video.id,
+        title: video.title,
+        duration: video.duration || "10:00",
+        viewCount: video.viewCount,
+        scenes: [{
+          id: `${video.id}-placeholder`,
+          timestamp: "00:00",
+          imageUrl: videoThumbnail,
+          surfaces: 0,
+          surfaceTypes: ["Scan needed"],
+          context: "Click 'Scan Analysis' to detect placement surfaces",
+          confidence: 0,
+        }],
+      });
+    }
     setSceneModalOpen(true);
   };
 

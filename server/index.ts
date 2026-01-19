@@ -26,6 +26,13 @@ app.use(
 
 app.use(express.urlencoded({ extended: false }));
 
+// Serve static files from public directory (for uploaded frames, videos, etc.)
+import path from "path";
+import { fileURLToPath } from "url";
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+app.use(express.static(path.join(__dirname, "..", "public")));
+
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {
     hour: "numeric",

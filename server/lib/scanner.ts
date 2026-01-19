@@ -880,6 +880,12 @@ export async function processVideoScan(videoId: number, forceRescan: boolean = f
     }
 
     let totalSurfaces = 0;
+    
+    // Create frames directory for permanent storage
+    const framesOutputDir = path.join(process.cwd(), "public", "uploads", "frames", videoId.toString());
+    if (!fs.existsSync(framesOutputDir)) {
+      fs.mkdirSync(framesOutputDir, { recursive: true });
+    }
 
     for (let i = 0; i < frames.length; i++) {
       const framePath = frames[i];
@@ -898,6 +904,20 @@ export async function processVideoScan(videoId: number, forceRescan: boolean = f
           culturalContext: analysisResult.culturalContext
         });
       }
+      
+      // Save frame to permanent location if surfaces detected
+      let savedFrameUrl: string | null = null;
+      if (analysisResult.surfaces.length > 0) {
+        const frameFilename = `frame_${timestamp}s.jpg`;
+        const permanentFramePath = path.join(framesOutputDir, frameFilename);
+        try {
+          fs.copyFileSync(framePath, permanentFramePath);
+          savedFrameUrl = `/uploads/frames/${videoId}/${frameFilename}`;
+          console.log(`[Scanner] Saved frame to: ${savedFrameUrl}`);
+        } catch (err) {
+          console.error(`[Scanner] Failed to save frame:`, err);
+        }
+      }
 
       for (const obj of analysisResult.surfaces) {
         const surface: InsertDetectedSurface = {
@@ -909,12 +929,13 @@ export async function processVideoScan(videoId: number, forceRescan: boolean = f
           boundingBoxY: obj.boundingBox.y.toString(),
           boundingBoxWidth: obj.boundingBox.width.toString(),
           boundingBoxHeight: obj.boundingBox.height.toString(),
+          frameUrl: savedFrameUrl,
         };
 
         const inserted = await storage.insertDetectedSurface(surface);
         
         // SUCCESS LOG - This is what the user wants to see!
-        console.log(`[Scanner] *** SURFACE FOUND: { type: "${obj.surfaceType}", x: ${obj.boundingBox.x.toFixed(2)}, y: ${obj.boundingBox.y.toFixed(2)}, width: ${obj.boundingBox.width.toFixed(2)}, height: ${obj.boundingBox.height.toFixed(2)}, confidence: ${obj.confidence.toFixed(2)} } ***`);
+        console.log(`[Scanner] *** SURFACE FOUND: { type: "${obj.surfaceType}", x: ${obj.boundingBox.x.toFixed(2)}, y: ${obj.boundingBox.y.toFixed(2)}, width: ${obj.boundingBox.width.toFixed(2)}, height: ${obj.boundingBox.height.toFixed(2)}, confidence: ${obj.confidence.toFixed(2)}, frameUrl: "${savedFrameUrl || 'none'}" } ***`);
         console.log(`[Scanner] Inserted to DB with id ${inserted.id}`);
         totalSurfaces++;
       }
