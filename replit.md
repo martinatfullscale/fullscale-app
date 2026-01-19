@@ -5,6 +5,13 @@
 FullScale is a dual-portal content monetization platform with Google OAuth-gated access and YouTube integration. Features role-based views (creator/brand) with View Switcher for admins, a Brand Marketplace where brands purchase ad placements, and Campaign Tracker for monitoring bids. Built as a full-stack TypeScript application with React frontend and Express backend, using PostgreSQL for data persistence. Includes real-time AI object detection using TensorFlow.js COCO-SSD for product placement surface analysis.
 
 ## Recent Changes (January 2026)
+- **Local-File-Only Video Scanning**: Scanner workflow simplified to only scan videos with local files
+  - YouTube downloads disabled - videos must be uploaded locally or mapped in LOCAL_ASSET_MAP
+  - Returns "Pending Upload" status for videos without local files
+  - Removed Instagram/Facebook placeholder fallbacks
+- **Public YouTube Thumbnail Resolver**: Thumbnails fetched from public YouTube URLs (no OAuth required)
+  - `getYouTubeThumbnailWithFallback(videoId)` constructs https://i.ytimg.com/vi/{id}/hqdefault.jpg
+  - Used in `/api/youtube/videos` endpoint instead of OAuth API thumbnails
 - **Facebook/Instagram Content Import**: Full Graph API integration to import videos from connected Facebook Pages and Instagram Business Accounts
   - New /api/sync/facebook-instagram endpoint with multi-auth user lookup (session, Google, Replit OIDC)
   - Facebook Page videos imported with Graph API fields: title, description, views, thumbnails, permalink_url
