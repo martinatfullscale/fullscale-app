@@ -671,16 +671,20 @@ export default function Library() {
       
       setScanningVideoIds(prev => new Set(prev).add(videoId));
       
-      // Immediately update UI to show "Scanning..." status and clear any failed state
-      queryClient.setQueryData(["/api/video-index/with-opportunities"], (oldData: VideoIndexResponse | undefined) => {
-        if (!oldData?.videos) return oldData;
-        return {
-          ...oldData,
-          videos: oldData.videos.map((v: IndexedVideo) => 
-            v.id === videoId ? { ...v, status: "Scanning", adOpportunities: 0 } : v
-          )
-        };
-      });
+      // Immediately update UI to show "Scanning..." status
+      // Use invalidateQueries to force refetch with correct query key
+      queryClient.setQueryData(
+        ["videos", isPitchMode, mode, DEMO_DATA_VERSION, isAdminUser, userEmail],
+        (oldData: VideoIndexResponse | undefined) => {
+          if (!oldData?.videos) return oldData;
+          return {
+            ...oldData,
+            videos: oldData.videos.map((v: IndexedVideo) => 
+              v.id === videoId ? { ...v, status: "Scanning" } : v
+            )
+          };
+        }
+      );
       
       console.log(`[FRONTEND] UI updated to Scanning state, making fetch call...`);
       
@@ -716,7 +720,11 @@ export default function Library() {
           if (!res.ok) return;
           const data = await res.json();
           
-          queryClient.setQueryData(["videos", "auth"], data);
+          // Update cache with correct query key to match useQuery
+          queryClient.setQueryData(
+            ["videos", isPitchMode, mode, DEMO_DATA_VERSION, isAdminUser, userEmail],
+            data
+          );
           
           const video = data.videos?.find((v: IndexedVideo) => v.id === videoId);
           
