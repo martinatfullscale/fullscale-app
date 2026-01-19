@@ -26,6 +26,10 @@ app.use(
 
 app.use(express.urlencoded({ extended: false }));
 
+// CRITICAL: Set trust proxy BEFORE any session/cookie handling
+// This is required for secure cookies to work behind Replit's reverse proxy
+app.set("trust proxy", 1);
+
 // Serve static files from public directory (for uploaded frames, videos, etc.)
 import path from "path";
 // Use process.cwd() for bundled CJS compatibility (import.meta.url is undefined in CJS bundles)
