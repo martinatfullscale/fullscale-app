@@ -318,35 +318,53 @@ export async function registerRoutes(
       }
 
       // Get user info
-      const userInfo = await getGoogleUserInfo(tokens.access_token);
+      console.log("[Google OAuth Callback] Getting user info from Google...");
+      let userInfo;
+      try {
+        userInfo = await getGoogleUserInfo(tokens.access_token);
+      } catch (userInfoErr: any) {
+        console.error("[Google OAuth Callback] Failed to get user info:", userInfoErr.message);
+        return res.redirect("/?error=failed_to_get_user_info");
+      }
       
       if (!userInfo || !userInfo.email) {
         console.error("Failed to get user info from Google");
         return res.redirect("/?error=failed_to_get_user_info");
       }
+      
+      console.log("[Google OAuth Callback] User info received for:", userInfo.email);
 
       // Check VIP status using unified helper
       const normalizedEmail = userInfo.email.toLowerCase().trim();
       const isVip = isVipEmail(normalizedEmail);
+      console.log("[Google OAuth Callback] VIP check:", normalizedEmail, "isVip:", isVip);
       
       // Check if user exists in users table
+      console.log("[Google OAuth Callback] Looking up existing user...");
       let existingUser = await storage.getUserByEmail(userInfo.email);
       let userIsApproved = false;
       
       // Auto-create user if they don't exist (PUBLIC SIGN UP)
       if (!existingUser) {
+        console.log("[Google OAuth Callback] Creating new user...");
         const nameParts = (userInfo.name || "").split(" ");
         // Only VIPs/Founding members are auto-approved
         userIsApproved = isVip;
-        existingUser = await storage.createUser({
-          email: normalizedEmail,
-          firstName: nameParts[0] || null,
-          lastName: nameParts.slice(1).join(" ") || null,
-          profileImageUrl: userInfo.picture || null,
-          isApproved: userIsApproved,
-          authProvider: "google",
-        });
-        console.log(`Auto-created new Google user: ${userInfo.email}, VIP: ${isVip}, approved: ${userIsApproved}`);
+        try {
+          existingUser = await storage.createUser({
+            email: normalizedEmail,
+            firstName: nameParts[0] || null,
+            lastName: nameParts.slice(1).join(" ") || null,
+            profileImageUrl: userInfo.picture || null,
+            isApproved: userIsApproved,
+            authProvider: "google",
+          });
+          console.log(`Auto-created new Google user: ${userInfo.email}, VIP: ${isVip}, approved: ${userIsApproved}`);
+        } catch (createErr: any) {
+          console.error("[Google OAuth Callback] Failed to create user:", createErr.message);
+          console.error("[Google OAuth Callback] Stack:", createErr.stack);
+          return res.redirect("/?error=user_creation_failed");
+        }
         
         // Sync new Google signup to Airtable
         const nameParts2 = (userInfo.name || "").split(" ");
@@ -409,6 +427,15 @@ export async function registerRoutes(
       });
     } catch (err: any) {
       console.error("Google login callback error:", err.message || err);
+      console.error("Google login callback stack:", err.stack);
+      // Return JSON error in development, redirect in production
+      if (process.env.NODE_ENV !== 'production') {
+        return res.status(500).json({ 
+          error: "login_failed", 
+          message: err.message || "Unknown error",
+          stack: err.stack 
+        });
+      }
       res.redirect("https://gofullscale.co/?error=login_failed");
     }
   });
