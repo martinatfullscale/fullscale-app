@@ -73,25 +73,12 @@ app.use((req, res, next) => {
   try {
     log("Starting server initialization...");
     
-    // Add a simple health check endpoint FIRST - before any other setup
+    // Add health check endpoint FIRST - responds immediately
     app.get("/health", (_req, res) => {
       res.status(200).json({ status: "ok", timestamp: Date.now() });
     });
     
-    // Start listening IMMEDIATELY to pass health checks
-    const port = parseInt(process.env.PORT || "5000", 10);
-    httpServer.listen(
-      {
-        port,
-        host: "0.0.0.0",
-        reusePort: true,
-      },
-      () => {
-        log(`Server listening on port ${port}`);
-      },
-    );
-    
-    // Now set up routes and other middleware
+    // Register all routes BEFORE starting to listen
     await registerRoutes(httpServer, app);
     log("Routes registered successfully");
 
@@ -113,7 +100,20 @@ app.use((req, res, next) => {
       await setupVite(httpServer, app);
     }
     
-    // Run database operations in background AFTER server is ready
+    // Start listening AFTER routes are ready
+    const port = parseInt(process.env.PORT || "5000", 10);
+    httpServer.listen(
+      {
+        port,
+        host: "0.0.0.0",
+        reusePort: true,
+      },
+      () => {
+        log(`Server listening on port ${port}`);
+      },
+    );
+    
+    // Run database seeding in background AFTER server is ready (non-blocking)
     setImmediate(async () => {
       try {
         const result = await db.select({ count: sql<number>`count(*)` }).from(videoIndex);
