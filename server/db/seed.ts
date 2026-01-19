@@ -183,8 +183,10 @@ export async function seed() {
 }
 
 // Only run seed directly when executed as a script
-// Check if this file is being run directly (ES module compatible)
-const isDirectRun = import.meta.url === `file://${process.argv[1]}`;
+// Check if this file is being run directly (compatible with both ESM and CJS bundles)
+const isDirectRun = typeof import.meta !== 'undefined' && import.meta.url 
+  ? import.meta.url === `file://${process.argv[1]}`
+  : require.main === module;
 if (isDirectRun) {
   seed()
     .then(() => process.exit(0))
