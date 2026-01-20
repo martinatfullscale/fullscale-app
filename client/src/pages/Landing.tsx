@@ -401,7 +401,7 @@ function SurfaceEngineDemo({ isInView, aspectRatio = "16:9", videoSrc = heroVide
       />
       
       <div className="relative aspect-video rounded-2xl overflow-hidden border border-emerald-500/30 bg-black">
-        <img src={realityImg} alt="Scene" className="absolute inset-0 w-full h-full object-cover" />
+        <img src={realityImg} alt="Scene" loading="lazy" className="absolute inset-0 w-full h-full object-cover" />
         
         <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 100 100" preserveAspectRatio="none">
           <defs>
@@ -575,7 +575,7 @@ function ModalNeuralScan({ isInView }: { isInView: boolean }) {
 
   return (
     <div className="relative aspect-video rounded-2xl overflow-hidden border border-emerald-500/30">
-      <img src={realityImg} alt="Reality Scene" className="absolute inset-0 w-full h-full object-cover" />
+      <img src={realityImg} alt="Reality Scene" loading="lazy" className="absolute inset-0 w-full h-full object-cover" />
       
       <motion.div
         initial={{ opacity: 0 }}
@@ -583,7 +583,7 @@ function ModalNeuralScan({ isInView }: { isInView: boolean }) {
         transition={{ duration: 0.4 }}
         className="absolute inset-0"
       >
-        <img src={aiAugmentedImg} alt="AI Augmented" className="absolute inset-0 w-full h-full object-cover" />
+        <img src={aiAugmentedImg} alt="AI Augmented" loading="lazy" className="absolute inset-0 w-full h-full object-cover" />
       </motion.div>
 
       <svg className="absolute inset-0 w-full h-full pointer-events-none" preserveAspectRatio="none">
@@ -1074,6 +1074,8 @@ export default function Landing() {
           loop
           muted
           playsInline
+          // @ts-ignore - fetchpriority is a valid HTML attribute
+          fetchpriority="high"
           className="absolute inset-0 w-full h-full object-cover"
           data-testid="video-hero"
         />
@@ -1260,16 +1262,16 @@ export default function Landing() {
             {[...Array(4)].map((_, setIndex) => (
               <div key={setIndex} className="flex items-center shrink-0" style={{ gap: '4rem' }}>
                 <div className="p-3 md:p-4 rounded-xl backdrop-blur-md bg-white/5 border border-white/10 hover:bg-white/10 hover:scale-105 hover:shadow-lg hover:shadow-white/5 transition-all duration-300 ml-16">
-                  <img src={logoBlackAmbition} alt="Black Ambition" className="h-6 md:h-10 w-auto opacity-70 hover:opacity-100 transition-opacity" />
+                  <img src={logoBlackAmbition} alt="Black Ambition" loading="lazy" className="h-6 md:h-10 w-auto opacity-70 hover:opacity-100 transition-opacity" />
                 </div>
                 <div className="p-3 md:p-4 rounded-xl backdrop-blur-md bg-white/5 border border-white/10 hover:bg-white/10 hover:scale-105 hover:shadow-lg hover:shadow-white/5 transition-all duration-300">
-                  <img src={logoMayDavis} alt="May Davis Partners" className="h-8 md:h-12 w-auto opacity-70 hover:opacity-100 transition-opacity" />
+                  <img src={logoMayDavis} alt="May Davis Partners" loading="lazy" className="h-8 md:h-12 w-auto opacity-70 hover:opacity-100 transition-opacity" />
                 </div>
                 <div className="p-3 md:p-4 rounded-xl backdrop-blur-md bg-white/5 border border-white/10 hover:bg-white/10 hover:scale-105 hover:shadow-lg hover:shadow-white/5 transition-all duration-300">
-                  <img src={logoElementa} alt="Elementa" className="h-8 md:h-12 w-auto opacity-70 hover:opacity-100 transition-opacity" />
+                  <img src={logoElementa} alt="Elementa" loading="lazy" className="h-8 md:h-12 w-auto opacity-70 hover:opacity-100 transition-opacity" />
                 </div>
                 <div className="p-3 md:p-4 rounded-xl backdrop-blur-md bg-white/5 border border-white/10 hover:bg-white/10 hover:scale-105 hover:shadow-lg hover:shadow-white/5 transition-all duration-300">
-                  <img src={logoNue} alt="Nue Agency" className="h-6 md:h-10 w-auto opacity-70 hover:opacity-100 transition-opacity" />
+                  <img src={logoNue} alt="Nue Agency" loading="lazy" className="h-6 md:h-10 w-auto opacity-70 hover:opacity-100 transition-opacity" />
                 </div>
               </div>
             ))}
@@ -1613,7 +1615,7 @@ export default function Landing() {
                       <span className="px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-400 text-xs font-bold">Proprietary AI</span>
                     </div>
                     <div className="w-full max-w-4xl mx-auto">
-                      <SurfaceEngineDemo isInView={showDemoModal} />
+                      <SurfaceEngineDemo isInView={showDemoModal} videoSrc="" />
                       <p className="mt-4 text-center text-muted-foreground text-sm" data-testid="text-engine-caption">
                         Homography estimation locks onto horizontal planes. Confidence thresholds ensure stable, jitter-free placement grids.
                       </p>
