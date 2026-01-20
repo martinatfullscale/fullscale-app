@@ -36,22 +36,20 @@ export function getSession() {
     tableName: "sessions",
   });
   
-  // Use sameSite: 'none' for cross-site OAuth redirects (Facebook, etc.)
-  // This is required because OAuth callbacks are cross-site navigations
-  // and 'lax' can cause cookies to be blocked on the redirect back
-  const isProduction = process.env.NODE_ENV === 'production';
+  // Use sameSite: 'lax' for same-site OAuth redirects (Google, etc.)
+  // 'lax' allows cookies on top-level navigations (like OAuth redirects back to our domain)
+  // while still protecting against CSRF attacks
   
   return session({
     secret: process.env.SESSION_SECRET!,
     store: sessionStore,
     resave: false,
     saveUninitialized: false,
+    proxy: true,
     cookie: {
       httpOnly: true,
       secure: true,
-      // Use 'none' for production to support cross-site OAuth redirects
-      // 'lax' works for development but blocks cookies on cross-site redirects in production
-      sameSite: 'none' as const,
+      sameSite: 'lax' as const,
       maxAge: sessionTtl,
     },
   });

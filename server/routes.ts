@@ -239,10 +239,16 @@ export async function registerRoutes(
       return res.redirect("/?error=configuration_error");
     }
     const redirectUri = `${baseUrl}/api/auth/oauth-callback`;
+    
+    // Clear any old OAuth state and Google user data to prevent conflicts
+    delete req.session.oauthState;
+    delete req.session.googleUser;
+    
     const state = generateOAuthState();
-    (req.session as any).oauthState = state;
+    req.session.oauthState = state;
     console.log("[Google OAuth] Redirect URI:", redirectUri);
     console.log("[Google OAuth] State generated:", state);
+    console.log("[Google OAuth] Session ID:", req.sessionID);
     
     // Save session before redirect to ensure state persists
     req.session.save((err: any) => {
@@ -250,6 +256,7 @@ export async function registerRoutes(
         console.error("[Google OAuth] Session save error:", err);
         return res.redirect("/?error=session_error");
       }
+      console.log("[Google OAuth] Session saved successfully");
       const authUrl = getGoogleLoginAuthUrl(redirectUri, state);
       console.log("[Google OAuth] Redirecting to Google...");
       res.redirect(authUrl);
