@@ -271,6 +271,16 @@ export async function registerRoutes(
     });
   });
 
+  // Helper to clear session and redirect on auth error
+  const clearSessionAndRedirect = (req: any, res: any, errorCode: string) => {
+    console.log("[Auth Error] Clearing session due to error:", errorCode);
+    req.session.destroy((err: any) => {
+      if (err) console.error("[Auth Error] Session destroy failed:", err);
+      res.clearCookie("connect.sid");
+      res.redirect("/?error=" + encodeURIComponent(errorCode));
+    });
+  };
+
   // Google login callback with allowlist check
   app.get("/api/auth/oauth-callback", async (req: any, res) => {
     const { code, error, state } = req.query;
@@ -279,13 +289,13 @@ export async function registerRoutes(
     console.log("[Google OAuth Callback] Session ID:", req.sessionID);
     
     if (error) {
-      console.error("[Google OAuth Callback] Error:", error);
-      return res.redirect("/?error=" + encodeURIComponent(error as string));
+      console.error("[Google OAuth Callback] Error from Google:", error);
+      return clearSessionAndRedirect(req, res, error as string);
     }
 
     if (!code) {
       console.error("[Google OAuth Callback] No code received");
-      return res.redirect("/?error=no_code");
+      return clearSessionAndRedirect(req, res, "no_code");
     }
 
     // Verify state to prevent CSRF attacks
@@ -295,7 +305,7 @@ export async function registerRoutes(
     
     if (!state || state !== savedState) {
       console.error("[Google OAuth Callback] State mismatch - received:", state, "expected:", savedState);
-      return res.redirect("/?error=invalid_state");
+      return clearSessionAndRedirect(req, res, "invalid_state");
     }
 
     try {
@@ -445,16 +455,19 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("Google login callback error:", err.message || err);
       console.error("Google login callback stack:", err.stack);
-      // Return JSON error in development, redirect in production
-      if (process.env.NODE_ENV !== 'production') {
-        return res.status(500).json({ 
-          error: "login_failed", 
-          message: err.message || "Unknown error",
-          stack: err.stack 
-        });
-      }
-      res.redirect("https://gofullscale.co/?error=login_failed");
+      // Clear session on any auth error to allow fresh retry
+      return clearSessionAndRedirect(req, res, "login_failed");
     }
+  });
+
+  // Session reset endpoint - allows users to clear stuck sessions
+  app.get("/api/auth/reset", (req: any, res) => {
+    console.log("[Auth] Session reset requested");
+    req.session.destroy((err: any) => {
+      if (err) console.error("[Auth] Session reset failed:", err);
+      res.clearCookie("connect.sid");
+      res.redirect("/");
+    });
   });
 
   // Logout from Google session
