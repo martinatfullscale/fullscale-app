@@ -28,26 +28,40 @@ const getOidcConfig = memoize(
 
 export function getSession() {
   const sessionTtl = 2 * 60 * 60 * 1000; // 2 hours
-  const pgStore = connectPg(session);
-  const sessionStore = new pgStore({
-    conString: process.env.DATABASE_URL,
-    createTableIfMissing: true, // Create table if missing to prevent startup errors
-    ttl: sessionTtl,
-    tableName: "sessions",
-    pruneSessionInterval: 60, // Prune expired sessions every 60 seconds
-    errorLog: (err: Error) => {
-      console.error("[Session Store] PostgreSQL error:", err.message);
-    },
-  });
+  const isProduction = process.env.NODE_ENV === 'production';
   
-  // Log session store errors to prevent silent failures
-  sessionStore.on('error', (error: Error) => {
-    console.error('[Session Store] Connection error:', error.message);
-  });
+  // Try PostgreSQL store, fall back to MemoryStore if it fails
+  let sessionStore: session.Store | undefined;
   
-  // Use sameSite: 'lax' for same-site OAuth redirects (Google, etc.)
-  // 'lax' allows cookies on top-level navigations (like OAuth redirects back to our domain)
-  // while still protecting against CSRF attacks
+  if (process.env.DATABASE_URL) {
+    try {
+      const pgStore = connectPg(session);
+      sessionStore = new pgStore({
+        conString: process.env.DATABASE_URL,
+        createTableIfMissing: true,
+        ttl: sessionTtl,
+        tableName: "sessions",
+        pruneSessionInterval: 60,
+        errorLog: (err: Error) => {
+          console.error("[Session Store] PostgreSQL error:", err.message);
+        },
+      });
+      
+      sessionStore.on('error', (error: Error) => {
+        console.error('[Session Store] Connection error:', error.message);
+      });
+      
+      console.log("[Session] Using PostgreSQL session store");
+    } catch (pgErr: any) {
+      console.error("[Session] PostgreSQL store failed, using MemoryStore:", pgErr.message);
+      sessionStore = undefined; // Will use default MemoryStore
+    }
+  } else {
+    console.warn("[Session] No DATABASE_URL, using MemoryStore (sessions won't persist across restarts)");
+  }
+  
+  // Use sameSite: 'lax' for OAuth redirects
+  // secure: true in production, false in development for incognito compatibility
   
   return session({
     secret: process.env.SESSION_SECRET!,
@@ -57,7 +71,7 @@ export function getSession() {
     proxy: true,
     cookie: {
       httpOnly: true,
-      secure: true,
+      secure: isProduction, // true in production, false in dev
       sameSite: 'lax' as const,
       maxAge: sessionTtl,
     },

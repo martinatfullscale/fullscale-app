@@ -461,13 +461,28 @@ export async function registerRoutes(
   });
 
   // Session reset endpoint - allows users to clear stuck sessions
+  // Force-clears cookies even if database operations fail
   app.get("/api/auth/reset", (req: any, res) => {
     console.log("[Auth] Session reset requested");
-    req.session.destroy((err: any) => {
-      if (err) console.error("[Auth] Session reset failed:", err);
-      res.clearCookie("connect.sid");
-      res.redirect("/");
-    });
+    
+    // Force-clear cookies FIRST (before any database operations)
+    res.clearCookie("connect.sid", { path: "/" });
+    res.clearCookie("connect.sid", { path: "/", domain: ".gofullscale.co" });
+    res.clearCookie("connect.sid", { path: "/", domain: "gofullscale.co" });
+    
+    // Try to destroy session but don't block on errors
+    try {
+      if (req.session) {
+        req.session.destroy((err: any) => {
+          if (err) console.error("[Auth] Session destroy warning (non-fatal):", err.message || err);
+        });
+      }
+    } catch (destroyErr: any) {
+      console.error("[Auth] Session destroy exception (non-fatal):", destroyErr.message || destroyErr);
+    }
+    
+    // Always redirect, regardless of session destroy success
+    res.redirect("/");
   });
 
   // Logout from Google session
