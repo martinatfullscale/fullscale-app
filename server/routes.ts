@@ -13,10 +13,11 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 import ytdl from "@distube/ytdl-core";
-import { decrypt } from "./encryption";
+import { decrypt, encrypt } from "./encryption";
 import { db } from "./db";
 import { users } from "@shared/schema";
 import { eq } from "drizzle-orm";
+import crypto from "crypto";
 
 // Configure multer for video uploads
 const uploadStorage = multer.diskStorage({
@@ -66,7 +67,19 @@ const GOOGLE_LOGIN_SCOPES = [
 ];
 
 function generateOAuthState(): string {
-  return Math.random().toString(36).substring(2) + Date.now().toString(36);
+  return crypto.randomBytes(32).toString('hex');
+}
+
+function signState(state: string): string {
+  const secret = process.env.SESSION_SECRET || 'fallback-secret';
+  const hmac = crypto.createHmac('sha256', secret);
+  hmac.update(state);
+  return hmac.digest('hex');
+}
+
+function verifySignedState(state: string, signature: string): boolean {
+  const expectedSig = signState(state);
+  return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSig));
 }
 
 function getGoogleLoginAuthUrl(redirectUri: string, state: string): string {
@@ -234,13 +247,8 @@ export async function registerRoutes(
   app.get("/api/auth/google", (req: any, res) => {
     try {
       const baseUrl = process.env.BASE_URL;
-      const requestHost = req.get('host');
-      const requestProtocol = req.protocol;
       console.log("[Google OAuth] ========== LOGIN INITIATED ==========");
       console.log("[Google OAuth] BASE_URL env:", baseUrl);
-      console.log("[Google OAuth] Request host:", requestHost);
-      console.log("[Google OAuth] Request protocol:", requestProtocol);
-      console.log("[Google OAuth] Request hostname:", req.hostname);
       console.log("[Google OAuth] Session exists:", !!req.session);
       
       if (!baseUrl) {
@@ -248,35 +256,49 @@ export async function registerRoutes(
         return res.redirect("/?error=configuration_error");
       }
       
-      if (!req.session) {
-        console.error("[Google OAuth] No session available");
-        return res.redirect("/?error=no_session");
+      const redirectUri = `${baseUrl}/api/auth/google/callback`;
+      const state = generateOAuthState();
+      const stateSig = signState(state);
+      
+      console.log("[Google OAuth] State generated:", state.substring(0, 16) + "...");
+      console.log("[Google OAuth] Redirect URI:", redirectUri);
+      
+      // Store state in BOTH session (if available) AND a signed cookie for redundancy
+      if (req.session) {
+        delete req.session.oauthState;
+        delete req.session.googleUser;
+        req.session.oauthState = state;
       }
       
-      const redirectUri = `${baseUrl}/api/auth/google/callback`;
+      // Also store in a signed cookie as backup (works even if session is lost)
+      res.cookie('oauth_state', state, {
+        httpOnly: true,
+        secure: true,
+        sameSite: 'lax',
+        maxAge: 10 * 60 * 1000, // 10 minutes
+      });
+      res.cookie('oauth_state_sig', stateSig, {
+        httpOnly: true,
+        secure: true,
+        sameSite: 'lax',
+        maxAge: 10 * 60 * 1000,
+      });
       
-      // Clear any old OAuth state and Google user data to prevent conflicts
-      delete req.session.oauthState;
-      delete req.session.googleUser;
-      
-      const state = generateOAuthState();
-      req.session.oauthState = state;
-      console.log("[Google OAuth] Redirect URI being used:", redirectUri);
-      console.log("[Google OAuth] State generated:", state);
-      console.log("[Google OAuth] Session ID:", req.sessionID);
       console.log("[Google OAuth] ====================================");
       
-      // Save session before redirect to ensure state persists
-      req.session.save((err: any) => {
-        if (err) {
-          console.error("[Google OAuth] Session save error:", err);
-          return res.redirect("/?error=session_error");
-        }
-        console.log("[Google OAuth] Session saved successfully");
+      // Save session before redirect (if available)
+      if (req.session?.save) {
+        req.session.save((err: any) => {
+          if (err) {
+            console.error("[Google OAuth] Session save error (continuing anyway):", err);
+          }
+          const authUrl = getGoogleLoginAuthUrl(redirectUri, state);
+          res.redirect(authUrl);
+        });
+      } else {
         const authUrl = getGoogleLoginAuthUrl(redirectUri, state);
-        console.log("[Google OAuth] Redirecting to Google...");
         res.redirect(authUrl);
-      });
+      }
     } catch (err: any) {
       console.error("[Google OAuth] Unexpected error:", err.message, err.stack);
       res.redirect("/?error=auth_initialization_failed");
@@ -296,29 +318,65 @@ export async function registerRoutes(
   // Google login callback with allowlist check
   app.get("/api/auth/google/callback", async (req: any, res) => {
     const { code, error, state } = req.query;
-    console.log("[Google OAuth Callback] Received callback");
-    console.log("[Google OAuth Callback] State from query:", state);
+    console.log("[Google OAuth Callback] ========== CALLBACK RECEIVED ==========");
+    console.log("[Google OAuth Callback] State from query:", state ? (state as string).substring(0, 16) + "..." : "missing");
     console.log("[Google OAuth Callback] Session ID:", req.sessionID);
+    console.log("[Google OAuth Callback] Session exists:", !!req.session);
     
     if (error) {
       console.error("[Google OAuth Callback] Error from Google:", error);
+      res.clearCookie('oauth_state');
+      res.clearCookie('oauth_state_sig');
       return clearSessionAndRedirect(req, res, error as string);
     }
 
     if (!code) {
       console.error("[Google OAuth Callback] No code received");
+      res.clearCookie('oauth_state');
+      res.clearCookie('oauth_state_sig');
       return clearSessionAndRedirect(req, res, "no_code");
     }
 
-    // Verify state to prevent CSRF attacks
-    const savedState = req.session?.oauthState;
-    console.log("[Google OAuth Callback] Saved state from session:", savedState);
-    delete req.session?.oauthState;
+    // Verify state to prevent CSRF attacks - check BOTH session AND cookie
+    const sessionState = req.session?.oauthState;
+    const cookieState = req.cookies?.oauth_state;
+    const cookieStateSig = req.cookies?.oauth_state_sig;
     
-    if (!state || state !== savedState) {
-      console.error("[Google OAuth Callback] State mismatch - received:", state, "expected:", savedState);
+    console.log("[Google OAuth Callback] Session state:", sessionState ? sessionState.substring(0, 16) + "..." : "missing");
+    console.log("[Google OAuth Callback] Cookie state:", cookieState ? cookieState.substring(0, 16) + "..." : "missing");
+    
+    // Clear states after reading
+    if (req.session?.oauthState) {
+      delete req.session.oauthState;
+    }
+    res.clearCookie('oauth_state');
+    res.clearCookie('oauth_state_sig');
+    
+    // Try session state first, then fall back to verified cookie state
+    let stateValid = false;
+    if (state && sessionState && state === sessionState) {
+      console.log("[Google OAuth Callback] State verified via session");
+      stateValid = true;
+    } else if (state && cookieState && cookieStateSig) {
+      try {
+        if (state === cookieState && verifySignedState(cookieState, cookieStateSig)) {
+          console.log("[Google OAuth Callback] State verified via signed cookie");
+          stateValid = true;
+        }
+      } catch (sigErr) {
+        console.error("[Google OAuth Callback] Cookie signature verification failed:", sigErr);
+      }
+    }
+    
+    if (!stateValid) {
+      console.error("[Google OAuth Callback] State verification failed");
+      console.error("[Google OAuth Callback] Query state:", state);
+      console.error("[Google OAuth Callback] Session state:", sessionState);
+      console.error("[Google OAuth Callback] Cookie state:", cookieState);
       return clearSessionAndRedirect(req, res, "invalid_state");
     }
+    
+    console.log("[Google OAuth Callback] State verified successfully");
 
     try {
       const baseUrl = process.env.BASE_URL;

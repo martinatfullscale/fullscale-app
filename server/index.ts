@@ -7,6 +7,7 @@ import { videoIndex } from "@shared/schema";
 import { seed } from "./db/seed";
 import { sql } from "drizzle-orm";
 import path from "path";
+import cookieParser from "cookie-parser";
 
 const app = express();
 const httpServer = createServer(app);
@@ -56,6 +57,9 @@ app.use(
 );
 
 app.use(express.urlencoded({ extended: false }));
+
+// Cookie parser for reading OAuth state cookies
+app.use(cookieParser());
 
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {
