@@ -1671,13 +1671,28 @@ export async function registerRoutes(
     }
   });
 
-  // Get user's latest YouTube videos
+  // Get user's latest YouTube videos (from API + local database)
   app.get("/api/youtube/videos", isGoogleAuthenticated, async (req: any, res) => {
     const userId = req.googleUser.email;
     const connection = await storage.getYoutubeConnection(userId);
     
+    // Always get locally stored/uploaded videos from video_index
+    const localVideos = await storage.getVideoIndex(userId);
+    const localVideosList = localVideos.map((v: any) => ({
+      id: v.youtubeId || `local-${v.id}`,
+      dbId: v.id,
+      title: v.title,
+      thumbnailUrl: v.thumbnailUrl || (v.youtubeId ? getYouTubeThumbnailWithFallback(v.youtubeId) : '/fullscale-logo.png'),
+      publishedAt: v.createdAt,
+      description: v.description || '',
+      platform: v.platform || 'youtube',
+      scanStatus: v.scanStatus,
+      filePath: v.filePath,
+    }));
+    
     if (!connection) {
-      return res.json({ connected: false, videos: [] });
+      // Return local videos even without YouTube connection
+      return res.json({ connected: false, videos: localVideosList });
     }
 
     try {
@@ -1707,27 +1722,33 @@ export async function registerRoutes(
       const uploadsPlaylistId = channel?.contentDetails?.relatedPlaylists?.uploads;
 
       if (!uploadsPlaylistId) {
-        return res.json({ videos: [] });
+        // Return local videos if no YouTube uploads found
+        return res.json({ connected: true, videos: localVideosList });
       }
 
       const videosData = await getYoutubeVideos(accessToken, uploadsPlaylistId, 5);
       
-      const videos = (videosData.items || []).map((item: any) => {
+      const ytVideos = (videosData.items || []).map((item: any) => {
         const videoId = item.contentDetails?.videoId || item.id;
         return {
           id: videoId,
           title: item.snippet.title,
-          // Use public YouTube thumbnail URL (no OAuth required for thumbnails)
           thumbnailUrl: getYouTubeThumbnailWithFallback(videoId),
           publishedAt: item.snippet.publishedAt,
           description: item.snippet.description,
+          platform: 'youtube',
         };
       });
 
-      res.json({ connected: true, videos });
+      // Merge YouTube API videos with local videos, avoiding duplicates
+      const seenIds = new Set(ytVideos.map((v: any) => v.id));
+      const mergedVideos = [...ytVideos, ...localVideosList.filter((v: any) => !seenIds.has(v.id))];
+
+      res.json({ connected: true, videos: mergedVideos });
     } catch (err: any) {
       console.error("Error fetching YouTube videos:", err);
-      res.status(500).json({ error: "Failed to fetch videos" });
+      // On error, still return local videos
+      res.json({ connected: false, videos: localVideosList, error: "YouTube API unavailable" });
     }
   });
 
