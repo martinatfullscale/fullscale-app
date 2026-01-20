@@ -112,13 +112,24 @@ function getYoutubeAuthUrl(redirectUri: string): string {
 }
 
 async function exchangeCodeForTokens(code: string, redirectUri: string) {
+  console.log("[Token Exchange] Starting token exchange...");
+  console.log("[Token Exchange] Redirect URI:", redirectUri);
+  console.log("[Token Exchange] Code length:", code?.length || 0);
+  
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  
+  if (!clientId || !clientSecret) {
+    throw new Error("Missing GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET");
+  }
+  
   const response = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       code,
-      client_id: process.env.GOOGLE_CLIENT_ID!,
-      client_secret: process.env.GOOGLE_CLIENT_SECRET!,
+      client_id: clientId,
+      client_secret: clientSecret,
       redirect_uri: redirectUri,
       grant_type: "authorization_code",
     }),
@@ -126,10 +137,12 @@ async function exchangeCodeForTokens(code: string, redirectUri: string) {
   
   if (!response.ok) {
     const errorText = await response.text();
-    console.error("Token exchange failed:", response.status, errorText);
-    throw new Error(`Token exchange failed: ${response.status}`);
+    console.error("[Token Exchange] Failed:", response.status);
+    console.error("[Token Exchange] Error response:", errorText);
+    throw new Error(`Token exchange failed: ${response.status} - ${errorText}`);
   }
   
+  console.log("[Token Exchange] Success");
   return response.json();
 }
 
@@ -785,14 +798,27 @@ export async function registerRoutes(
   
   // Middleware for OAuth callbacks (redirects instead of JSON for browser flows)
   const isGoogleAuthenticatedRedirect = (req: any, res: any, next: any) => {
-    const googleUser = req.session?.googleUser;
-    if (!googleUser || !googleUser.email) {
-      // Session lost - redirect to Google login to re-authenticate
-      console.log("YouTube callback: session missing, redirecting to Google login");
-      return res.redirect("/api/auth/google?youtube_pending=true");
+    try {
+      // Check if session exists at all
+      if (!req.session) {
+        console.error("[YouTube Middleware] No session object - session middleware may have failed");
+        return res.redirect("/dashboard?youtube_error=session_unavailable");
+      }
+      
+      const googleUser = req.session?.googleUser;
+      if (!googleUser || !googleUser.email) {
+        // Session lost - redirect to Google login to re-authenticate
+        console.log("[YouTube Middleware] Session missing googleUser, redirecting to Google login");
+        console.log("[YouTube Middleware] Session ID:", req.sessionID);
+        console.log("[YouTube Middleware] Session keys:", Object.keys(req.session || {}));
+        return res.redirect("/api/auth/google?youtube_pending=true");
+      }
+      req.googleUser = googleUser;
+      next();
+    } catch (middlewareErr: any) {
+      console.error("[YouTube Middleware] Unexpected error:", middlewareErr.message);
+      return res.redirect("/dashboard?youtube_error=auth_middleware_error");
     }
-    req.googleUser = googleUser;
-    next();
   };
   
   // Initiate YouTube OAuth flow
@@ -809,7 +835,10 @@ export async function registerRoutes(
 
   // YouTube OAuth callback - uses redirect middleware for graceful session handling
   app.get("/api/auth/youtube/callback", isGoogleAuthenticatedRedirect, async (req: any, res) => {
-    console.log("[YouTube Callback] Received callback request");
+    console.log("[YouTube Callback] ========== CALLBACK RECEIVED ==========");
+    console.log("[YouTube Callback] Session ID:", req.sessionID);
+    console.log("[YouTube Callback] GoogleUser email:", req.googleUser?.email);
+    
     const { code, error } = req.query;
     
     if (error) {
@@ -825,10 +854,21 @@ export async function registerRoutes(
     try {
       const baseUrl = process.env.BASE_URL;
       console.log("[YouTube Callback] BASE_URL:", baseUrl);
+      
+      // Verify required env vars
       if (!baseUrl) {
         console.error("[YouTube Callback] BASE_URL environment variable is not set");
         return res.redirect("/dashboard?youtube_error=configuration_error");
       }
+      if (!process.env.GOOGLE_CLIENT_ID) {
+        console.error("[YouTube Callback] GOOGLE_CLIENT_ID not set");
+        return res.redirect("/dashboard?youtube_error=configuration_error");
+      }
+      if (!process.env.GOOGLE_CLIENT_SECRET) {
+        console.error("[YouTube Callback] GOOGLE_CLIENT_SECRET not set");
+        return res.redirect("/dashboard?youtube_error=configuration_error");
+      }
+      
       const redirectUri = `${baseUrl}/api/auth/youtube/callback`;
       console.log("[YouTube Callback] Using redirect URI:", redirectUri);
       
@@ -836,10 +876,12 @@ export async function registerRoutes(
       let tokens;
       try {
         console.log("[YouTube Callback] Exchanging code for tokens...");
+        console.log("[YouTube Callback] Client ID prefix:", process.env.GOOGLE_CLIENT_ID?.substring(0, 20) + "...");
         tokens = await exchangeCodeForTokens(code as string, redirectUri);
         console.log("[YouTube Callback] Token exchange successful");
       } catch (exchangeErr: any) {
         console.error("[YouTube Callback] Token exchange failed:", exchangeErr.message);
+        console.error("[YouTube Callback] Full error:", exchangeErr);
         return res.redirect("/dashboard?youtube_error=token_exchange_failed");
       }
       
