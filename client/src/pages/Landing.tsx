@@ -6,7 +6,8 @@ import logoBlackAmbition from "@assets/logo-black-ambition_1767712118620.png";
 import logoMayDavis from "@assets/logo-may-davis_1767712118621.png";
 import logoElementa from "@assets/logo-elementa_1767712118620.png";
 import logoNue from "@assets/logo-nue_1767712118621.png";
-import heroVideo from "@assets/generated_videos/creator_studio_cinematic_loop.mp4";
+// Video is lazy-loaded after page becomes interactive to prevent 503 errors
+const heroVideoPath = "/attached_assets/generated_videos/creator_studio_cinematic_loop.mp4";
 import realityImg from "@assets/generated_images/modern_kitchen_with_empty_counter.png";
 import aiAugmentedImg from "@assets/generated_images/kitchen_with_liquid_death_can.png";
 import surfaceEngineImg from "@assets/generated_images/desk_with_ai_tracking_grid.png";
@@ -209,7 +210,7 @@ function trackSurface(aspectRatio: "16:9" | "9:16", frameTime: number): {
   };
 }
 
-function SurfaceEngineDemo({ isInView, aspectRatio = "16:9", videoSrc = heroVideo }: { isInView: boolean; aspectRatio?: "16:9" | "9:16"; videoSrc?: string }) {
+function SurfaceEngineDemo({ isInView, aspectRatio = "16:9", videoSrc = heroVideoPath }: { isInView: boolean; aspectRatio?: "16:9" | "9:16"; videoSrc?: string }) {
   const [scanPhase, setScanPhase] = useState(0);
   const [confidence, setConfidence] = useState(0);
   const [lightingMatch, setLightingMatch] = useState(0);
@@ -1100,11 +1101,22 @@ export default function Landing() {
     }
   }, []);
 
+  // Lazy load video after page is interactive
+  const [videoLoaded, setVideoLoaded] = useState(false);
+  
   useEffect(() => {
-    if (videoRef.current) {
+    // Delay video loading to prevent blocking initial render
+    const timer = setTimeout(() => {
+      setVideoLoaded(true);
+    }, 100); // Load video after 100ms
+    return () => clearTimeout(timer);
+  }, []);
+  
+  useEffect(() => {
+    if (videoRef.current && videoLoaded) {
       videoRef.current.play().catch(() => {});
     }
-  }, []);
+  }, [videoLoaded]);
 
   const handleLoginClick = () => {
     setAccessError(null);
@@ -1119,17 +1131,24 @@ export default function Landing() {
     <div className="min-h-screen bg-background text-foreground flex flex-col relative">
       {/* Cinematic Hero Section */}
       <section className="relative min-h-[500px] md:min-h-[700px] lg:h-screen overflow-hidden pb-8 md:pb-0">
-        <video
-          ref={videoRef}
-          src={heroVideo}
-          preload="auto"
-          autoPlay
-          loop
-          muted
-          playsInline
-          className="absolute inset-0 w-full h-full object-cover"
-          data-testid="video-hero"
-        />
+        {/* Lazy-loaded video - only renders after page is interactive */}
+        {videoLoaded && (
+          <video
+            ref={videoRef}
+            src={heroVideoPath}
+            preload="none"
+            autoPlay
+            loop
+            muted
+            playsInline
+            className="absolute inset-0 w-full h-full object-cover"
+            data-testid="video-hero"
+          />
+        )}
+        {/* Fallback gradient while video loads */}
+        {!videoLoaded && (
+          <div className="absolute inset-0 bg-gradient-to-br from-gray-900 via-gray-800 to-black" />
+        )}
         <div className="absolute inset-0 bg-gradient-to-b from-black/70 via-black/50 to-background" />
         <NeuralGrid />
         

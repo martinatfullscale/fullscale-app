@@ -866,29 +866,31 @@ export async function registerRoutes(
       });
       console.log("[YouTube Callback] Tokens saved successfully");
       
-      // Fetch channel info in background (non-blocking)
-      setImmediate(async () => {
-        try {
-          console.log("[YouTube Background] Fetching channel info...");
-          const channelData = await getYoutubeChannelInfo(tokens.access_token);
-          const channel = channelData.items?.[0];
-          if (channel) {
-            await storage.upsertYoutubeConnection({
-              userId,
-              accessToken: tokens.access_token,
-              refreshToken: tokens.refresh_token || null,
-              expiresAt: tokens.expires_in 
-                ? new Date(Date.now() + tokens.expires_in * 1000) 
-                : null,
-              channelId: channel.id || null,
-              channelTitle: channel.snippet?.title || null,
-            });
-            console.log("[YouTube Background] Channel info saved:", channel.snippet?.title);
-          }
-        } catch (bgErr: any) {
-          console.error("[YouTube Background] Channel fetch failed:", bgErr.message);
-        }
-      });
+      // BACKGROUND TASKS DISABLED: User requested no background syncing during login
+      // Channel info will be fetched on first dashboard load or manual sync
+      // This prevents server hangs and 503 errors during login
+      // setImmediate(async () => {
+      //   try {
+      //     console.log("[YouTube Background] Fetching channel info...");
+      //     const channelData = await getYoutubeChannelInfo(tokens.access_token);
+      //     const channel = channelData.items?.[0];
+      //     if (channel) {
+      //       await storage.upsertYoutubeConnection({
+      //         userId,
+      //         accessToken: tokens.access_token,
+      //         refreshToken: tokens.refresh_token || null,
+      //         expiresAt: tokens.expires_in 
+      //           ? new Date(Date.now() + tokens.expires_in * 1000) 
+      //           : null,
+      //         channelId: channel.id || null,
+      //         channelTitle: channel.snippet?.title || null,
+      //       });
+      //       console.log("[YouTube Background] Channel info saved:", channel.snippet?.title);
+      //     }
+      //   } catch (bgErr: any) {
+      //     console.error("[YouTube Background] Channel fetch failed:", bgErr.message);
+      //   }
+      // });
 
       // AUTO-SYNC DISABLED: User requested manual sync only via dashboard button
       // setImmediate(async () => {
