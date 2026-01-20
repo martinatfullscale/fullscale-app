@@ -222,7 +222,6 @@ function SurfaceEngineDemo({ isInView, aspectRatio = "16:9", videoSrc = heroVide
   const [cameraFov, setCameraFov] = useState(45);
   const [statusMessage, setStatusMessage] = useState<'scanning' | 'syncing' | 'found' | 'locked'>('scanning');
   const [videoReady, setVideoReady] = useState(false);
-  const [debugInfo, setDebugInfo] = useState({ time: 0, readyState: 0, isPlaying: false });
   const frameTimeRef = useRef(0);
   
   // Video/Canvas refs for real frame extraction
@@ -241,7 +240,6 @@ function SurfaceEngineDemo({ isInView, aspectRatio = "16:9", videoSrc = heroVide
     
     const checkReady = () => {
       if (video.readyState >= 2) {
-        console.log('[SurfaceEngine] Video ready! readyState:', video.readyState);
         setVideoReady(true);
       }
     };
@@ -249,10 +247,8 @@ function SurfaceEngineDemo({ isInView, aspectRatio = "16:9", videoSrc = heroVide
     video.addEventListener('loadeddata', checkReady);
     video.addEventListener('canplay', checkReady);
     
-    // Try to play
-    video.play().catch(err => {
-      console.warn('[SurfaceEngine] Video autoplay blocked:', err);
-    });
+    // Try to play (silently handle autoplay restrictions)
+    video.play().catch(() => {});
     
     return () => {
       video.removeEventListener('loadeddata', checkReady);
@@ -260,41 +256,26 @@ function SurfaceEngineDemo({ isInView, aspectRatio = "16:9", videoSrc = heroVide
     };
   }, [isInView, videoSrc]);
   
-  // ============================================================================
-  // PULSE LOGGING - Every 500ms, log video state for debugging
-  // ============================================================================
+  // Frame extraction (only when video ready, no debug logging)
   useEffect(() => {
-    if (!isInView) return;
+    if (!isInView || !videoReady) return;
     
-    const pulseInterval = setInterval(() => {
+    const frameInterval = setInterval(() => {
       const video = scanVideoRef.current;
       const canvas = scanCanvasRef.current;
       
-      if (video) {
-        const info = {
-          time: video.currentTime,
-          readyState: video.readyState,
-          isPlaying: !video.paused && !video.ended
-        };
-        setDebugInfo(info);
-        
-        console.log(`[SurfaceEngine] Pulse: Time=${info.time.toFixed(2)}s, ReadyState=${info.readyState}, Playing=${info.isPlaying}`);
-        
-        // Draw frame to canvas if video is playing
-        if (canvas && video.readyState >= 2) {
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            canvas.width = video.videoWidth || 320;
-            canvas.height = video.videoHeight || 180;
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            console.log('[SurfaceEngine] Frame drawn to canvas:', canvas.width, 'x', canvas.height);
-          }
+      if (video && canvas && video.readyState >= 2) {
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          canvas.width = video.videoWidth || 320;
+          canvas.height = video.videoHeight || 180;
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         }
       }
     }, 500);
     
-    return () => clearInterval(pulseInterval);
-  }, [isInView]);
+    return () => clearInterval(frameInterval);
+  }, [isInView, videoReady]);
 
   // ============================================================================
   // REAL CV TRACKING LOGIC - Uses actual geometric calculations
@@ -412,46 +393,12 @@ function SurfaceEngineDemo({ isInView, aspectRatio = "16:9", videoSrc = heroVide
         />
       )}
       
-      {/* Debug canvas - VISIBLE for debugging (shows if video frames are being drawn) */}
+      {/* Hidden canvas for frame processing */}
       <canvas
         ref={scanCanvasRef}
-        style={{
-          display: 'block',
-          width: '200px',
-          height: 'auto',
-          position: 'fixed',
-          bottom: '10px',
-          right: '10px',
-          zIndex: 9999,
-          border: '2px solid #10b981',
-          borderRadius: '8px',
-          backgroundColor: '#000',
-        }}
+        style={{ display: 'none' }}
         data-testid="canvas-debug"
       />
-      
-      {/* Debug overlay showing video status */}
-      <div 
-        style={{
-          position: 'fixed',
-          bottom: '120px',
-          right: '10px',
-          zIndex: 9999,
-          padding: '8px 12px',
-          backgroundColor: 'rgba(0,0,0,0.9)',
-          border: '1px solid #10b981',
-          borderRadius: '6px',
-          fontFamily: 'monospace',
-          fontSize: '10px',
-          color: '#10b981',
-        }}
-        data-testid="debug-video-status"
-      >
-        <div>Time: {debugInfo.time.toFixed(2)}s</div>
-        <div>ReadyState: {debugInfo.readyState}</div>
-        <div>Playing: {debugInfo.isPlaying ? 'YES' : 'NO'}</div>
-        <div>VideoReady: {videoReady ? 'YES' : 'NO'}</div>
-      </div>
       
       <div className="relative aspect-video rounded-2xl overflow-hidden border border-emerald-500/30 bg-black">
         <img src={realityImg} alt="Scene" className="absolute inset-0 w-full h-full object-cover" />
