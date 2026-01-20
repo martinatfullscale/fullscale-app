@@ -46,11 +46,13 @@ export function serveStatic(app: Express) {
   
   console.log(`[Static] Serving static files from: ${distPath}`);
 
-  // Serve static files with caching headers
+  // Serve static files with aggressive caching headers
+  // Vite adds content hashes to filenames, so we can cache forever
   app.use(express.static(distPath, {
-    maxAge: '1d', // Cache static assets for 1 day
+    maxAge: '7d',
     etag: true,
     lastModified: true,
+    immutable: true,
   }));
 
   // SPA fallback - serve index.html for all non-API routes
