@@ -833,17 +833,12 @@ export async function registerRoutes(
         return res.redirect("/dashboard?youtube_error=" + encodeURIComponent(tokens.error_description || tokens.error));
       }
 
-      // Get channel info
-      console.log("[YouTube Callback] Fetching channel info...");
-      const channelData = await getYoutubeChannelInfo(tokens.access_token);
-      const channel = channelData.items?.[0];
-      console.log("[YouTube Callback] Channel:", channel?.snippet?.title || "No channel found");
-
       const userId = req.googleUser.email;
       console.log("[YouTube Callback] User:", userId);
       
-      // Save the connection
-      console.log("[YouTube Callback] Saving connection to database...");
+      // FAST LOGIN: Save tokens immediately, defer channel fetch to background
+      // This prevents slow API calls from blocking login
+      console.log("[YouTube Callback] Saving tokens to database (channel fetch deferred)...");
       await storage.upsertYoutubeConnection({
         userId,
         accessToken: tokens.access_token,
@@ -851,10 +846,34 @@ export async function registerRoutes(
         expiresAt: tokens.expires_in 
           ? new Date(Date.now() + tokens.expires_in * 1000) 
           : null,
-        channelId: channel?.id || null,
-        channelTitle: channel?.snippet?.title || null,
+        channelId: null, // Will be fetched on first dashboard load or manual sync
+        channelTitle: null,
       });
-      console.log("[YouTube Callback] Connection saved successfully");
+      console.log("[YouTube Callback] Tokens saved successfully");
+      
+      // Fetch channel info in background (non-blocking)
+      setImmediate(async () => {
+        try {
+          console.log("[YouTube Background] Fetching channel info...");
+          const channelData = await getYoutubeChannelInfo(tokens.access_token);
+          const channel = channelData.items?.[0];
+          if (channel) {
+            await storage.upsertYoutubeConnection({
+              userId,
+              accessToken: tokens.access_token,
+              refreshToken: tokens.refresh_token || null,
+              expiresAt: tokens.expires_in 
+                ? new Date(Date.now() + tokens.expires_in * 1000) 
+                : null,
+              channelId: channel.id || null,
+              channelTitle: channel.snippet?.title || null,
+            });
+            console.log("[YouTube Background] Channel info saved:", channel.snippet?.title);
+          }
+        } catch (bgErr: any) {
+          console.error("[YouTube Background] Channel fetch failed:", bgErr.message);
+        }
+      });
 
       // AUTO-SYNC DISABLED: User requested manual sync only via dashboard button
       // setImmediate(async () => {
