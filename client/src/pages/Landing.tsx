@@ -209,7 +209,7 @@ function trackSurface(aspectRatio: "16:9" | "9:16", frameTime: number): {
   };
 }
 
-function SurfaceEngineDemo({ isInView, aspectRatio = "16:9", videoSrc = "" }: { isInView: boolean; aspectRatio?: "16:9" | "9:16"; videoSrc?: string }) {
+function SurfaceEngineDemo({ isInView, aspectRatio = "16:9", videoSrc = heroVideo }: { isInView: boolean; aspectRatio?: "16:9" | "9:16"; videoSrc?: string }) {
   const [scanPhase, setScanPhase] = useState(0);
   const [confidence, setConfidence] = useState(0);
   const [lightingMatch, setLightingMatch] = useState(0);
