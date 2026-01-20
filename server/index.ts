@@ -31,9 +31,24 @@ app.use(
 
 app.use(express.urlencoded({ extended: false }));
 
-// Serve static files from public directory (for uploaded frames, videos, etc.)
+// Serve static files from public directory with HIGH PRIORITY caching
+// Videos and images get long cache times to avoid blocking slow API calls
 const projectRoot = process.cwd();
-app.use(express.static(path.join(projectRoot, "public")));
+app.use(express.static(path.join(projectRoot, "public"), {
+  maxAge: '7d',           // Cache video/image assets for 7 days
+  etag: true,             // Enable ETag for cache validation
+  lastModified: true,     // Include Last-Modified header
+  immutable: true,        // Assets are immutable (use versioning if changed)
+  index: false,           // Don't serve index.html from public
+}));
+
+// Serve attached assets with same high-priority caching
+app.use('/attached_assets', express.static(path.join(projectRoot, "attached_assets"), {
+  maxAge: '7d',
+  etag: true,
+  lastModified: true,
+  immutable: true,
+}));
 
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {
