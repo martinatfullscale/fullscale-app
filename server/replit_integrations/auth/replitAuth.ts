@@ -31,9 +31,18 @@ export function getSession() {
   const pgStore = connectPg(session);
   const sessionStore = new pgStore({
     conString: process.env.DATABASE_URL,
-    createTableIfMissing: false,
+    createTableIfMissing: true, // Create table if missing to prevent startup errors
     ttl: sessionTtl,
     tableName: "sessions",
+    pruneSessionInterval: 60, // Prune expired sessions every 60 seconds
+    errorLog: (err: Error) => {
+      console.error("[Session Store] PostgreSQL error:", err.message);
+    },
+  });
+  
+  // Log session store errors to prevent silent failures
+  sessionStore.on('error', (error: Error) => {
+    console.error('[Session Store] Connection error:', error.message);
   });
   
   // Use sameSite: 'lax' for same-site OAuth redirects (Google, etc.)
