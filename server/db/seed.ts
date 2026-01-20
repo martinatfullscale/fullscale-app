@@ -182,12 +182,9 @@ export async function seed() {
   console.log(`- Surfaces for ${insertedVideos.filter(v => v.status === "Scan Complete").length} completed scans`);
 }
 
-// Only run seed directly when executed as a script
-// Check if this file is being run directly (compatible with both ESM and CJS bundles)
-const isDirectRun = typeof import.meta !== 'undefined' && import.meta.url 
-  ? import.meta.url === `file://${process.argv[1]}`
-  : require.main === module;
-if (isDirectRun) {
+// Export seed function for programmatic use
+// To run seed directly, use: npx tsx server/db/seed.ts --run
+if (process.argv.includes('--run')) {
   seed()
     .then(() => process.exit(0))
     .catch((err) => {
