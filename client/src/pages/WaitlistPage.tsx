@@ -4,7 +4,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { LogOut, Loader2 } from "lucide-react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
-const logoUrl = "/fullscale-logo.png";
+import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 
 interface AuthStatus {
   authenticated: boolean;

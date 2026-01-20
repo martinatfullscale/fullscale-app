@@ -1,6 +1,6 @@
 import { Link } from "wouter";
 import { ArrowLeft } from "lucide-react";
-const logoUrl = "/fullscale-logo.png";
+import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 
 export default function Privacy() {
   return (
