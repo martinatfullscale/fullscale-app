@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Zap, Shield, Video, X, Ban, DollarSign, TrendingUp, Users, Sparkles, Cpu, Eye, Timer, Layers, Mail, User, Plus, Globe } from "lucide-react";
-import logoUrl from "@assets/fullscale-logo_1767679525676.png";
+// Use public URLs for reliable asset serving
+const logoUrl = "/fullscale-logo.png";
+const heroVideo = "/hero_video.mp4";
 import logoBlackAmbition from "@assets/logo-black-ambition_1767712118620.png";
 import logoMayDavis from "@assets/logo-may-davis_1767712118621.png";
 import logoElementa from "@assets/logo-elementa_1767712118620.png";
 import logoNue from "@assets/logo-nue_1767712118621.png";
-import heroVideo from "@assets/generated_videos/creator_studio_cinematic_loop.mp4";
 import realityImg from "@assets/generated_images/modern_kitchen_with_empty_counter.png";
 import aiAugmentedImg from "@assets/generated_images/kitchen_with_liquid_death_can.png";
 import surfaceEngineImg from "@assets/generated_images/desk_with_ai_tracking_grid.png";
