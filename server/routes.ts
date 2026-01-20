@@ -331,7 +331,12 @@ export async function registerRoutes(
 
       if (!tokenResponse.ok) {
         const errorText = await tokenResponse.text();
-        console.error("Google token exchange failed:", tokenResponse.status, errorText);
+        console.error("[Google OAuth Callback] Token exchange failed!");
+        console.error("[Google OAuth Callback] Status:", tokenResponse.status);
+        console.error("[Google OAuth Callback] Response:", errorText);
+        console.error("[Google OAuth Callback] Redirect URI used:", redirectUri);
+        console.error("[Google OAuth Callback] GOOGLE_CLIENT_ID exists:", !!process.env.GOOGLE_CLIENT_ID);
+        console.error("[Google OAuth Callback] GOOGLE_CLIENT_SECRET exists:", !!process.env.GOOGLE_CLIENT_SECRET);
         return res.redirect("/?error=token_exchange_failed");
       }
 
