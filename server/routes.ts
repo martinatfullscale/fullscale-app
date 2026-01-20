@@ -373,15 +373,17 @@ export async function registerRoutes(
           return res.redirect("/?error=user_creation_failed");
         }
         
-        // Sync new Google signup to Airtable
+        // Defer Airtable sync to after login completes (non-blocking)
         const nameParts2 = (userInfo.name || "").split(" ");
-        addSignupToAirtable({
-          email: normalizedEmail,
-          firstName: nameParts2[0] || null,
-          lastName: nameParts2.slice(1).join(" ") || null,
-          authProvider: "google",
-          isApproved: userIsApproved,
-        }).catch(err => console.error("[Airtable] Sync failed:", err));
+        setTimeout(() => {
+          addSignupToAirtable({
+            email: normalizedEmail,
+            firstName: nameParts2[0] || null,
+            lastName: nameParts2.slice(1).join(" ") || null,
+            authProvider: "google",
+            isApproved: userIsApproved,
+          }).catch(err => console.error("[Airtable] Sync failed:", err));
+        }, 5000);
       } else {
         // Existing user - use their current approval status
         userIsApproved = existingUser.isApproved ?? false;
