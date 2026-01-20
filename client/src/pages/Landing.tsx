@@ -7,6 +7,7 @@ import logoMayDavis from "@assets/logo-may-davis_1767712118621.png";
 import logoElementa from "@assets/logo-elementa_1767712118620.png";
 import logoNue from "@assets/logo-nue_1767712118621.png";
 import heroVideo from "@assets/generated_videos/creator_studio_cinematic_loop.mp4";
+import heroPoster from "@assets/generated_images/creator_at_desk_with_empty_spot.png";
 import realityImg from "@assets/generated_images/modern_kitchen_with_empty_counter.png";
 import aiAugmentedImg from "@assets/generated_images/kitchen_with_liquid_death_can.png";
 import surfaceEngineImg from "@assets/generated_images/desk_with_ai_tracking_grid.png";
@@ -1122,6 +1123,8 @@ export default function Landing() {
         <video
           ref={videoRef}
           src={heroVideo}
+          poster={heroPoster}
+          preload="auto"
           autoPlay
           loop
           muted
