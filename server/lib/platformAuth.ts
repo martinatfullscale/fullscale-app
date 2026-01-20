@@ -341,35 +341,17 @@ export async function setupPlatformAuth(app: Express) {
               const existingLoggedInUser = req.user?.claims?.sub || req.session?.userId;
               const fbEmail = profile.emails?.[0]?.value;
               
-              // Fetch real Page data from Graph API
-              console.log(`[PlatformAuth] Fetching Graph API data for ${profile.displayName}...`);
-              const pageData = await fetchFacebookPageData(accessToken);
+              // FAST LOGIN: Only save basic Facebook ID, defer Page data fetch to manual sync
+              // This prevents slow API calls from blocking login
+              console.log(`[PlatformAuth] Fast login for ${profile.displayName} - Page data will sync on demand`);
               
-              // Build update object with Page data
+              // Build minimal update object (no Graph API calls during login)
               const socialDataUpdate: Record<string, any> = {
                 facebookId: profile.id,
               };
               
-              if (pageData) {
-                socialDataUpdate.facebookPageId = pageData.pageId;
-                socialDataUpdate.facebookPageName = pageData.pageName;
-                socialDataUpdate.facebookFollowers = pageData.followers;
-                socialDataUpdate.facebookAccessToken = encrypt(pageData.accessToken);
-                
-                if (pageData.instagramBusinessId) {
-                  socialDataUpdate.instagramBusinessId = pageData.instagramBusinessId;
-                  socialDataUpdate.instagramHandle = pageData.instagramHandle;
-                  socialDataUpdate.instagramFollowers = pageData.instagramFollowers;
-                  socialDataUpdate.instagramId = pageData.instagramBusinessId;
-                }
-                
-                console.log(`[PlatformAuth] Page data: ${pageData.pageName} - ${pageData.followers} followers`);
-                if (pageData.instagramHandle) {
-                  console.log(`[PlatformAuth] Instagram: ${pageData.instagramHandle} - ${pageData.instagramFollowers} followers`);
-                }
-              } else {
-                console.log(`[PlatformAuth] No Page data found (user may not manage a Page)`);
-              }
+              // Store access token for later manual sync (encrypted)
+              socialDataUpdate.facebookAccessToken = encrypt(accessToken);
               
               // Check if user with this Facebook ID already exists
               let existingUser = await db.query.users.findFirst({
@@ -383,13 +365,11 @@ export async function setupPlatformAuth(app: Express) {
                   .set(socialDataUpdate)
                   .where(eq(users.id, existingUser.id));
                   
-                console.log(`[PlatformAuth] Facebook login: Updated user ${existingUser.id} with Page data`);
+                console.log(`[PlatformAuth] Facebook login: Updated user ${existingUser.id}`);
                 req.session.userId = existingUser.id;
                 req.session.facebookProfile = { 
                   id: profile.id, 
-                  displayName: profile.displayName,
-                  pageName: pageData?.pageName,
-                  followers: pageData?.followers
+                  displayName: profile.displayName
                 };
                 return done(null, existingUser);
               }
@@ -403,9 +383,7 @@ export async function setupPlatformAuth(app: Express) {
                 console.log(`[PlatformAuth] Linked Facebook account ${profile.displayName} to user ${existingLoggedInUser}`);
                 req.session.facebookProfile = { 
                   id: profile.id, 
-                  displayName: profile.displayName,
-                  pageName: pageData?.pageName,
-                  followers: pageData?.followers
+                  displayName: profile.displayName
                 };
                 return done(null, req.user);
               }
@@ -424,9 +402,7 @@ export async function setupPlatformAuth(app: Express) {
                   req.session.userId = existingUser.id;
                   req.session.facebookProfile = { 
                     id: profile.id, 
-                    displayName: profile.displayName,
-                    pageName: pageData?.pageName,
-                    followers: pageData?.followers
+                    displayName: profile.displayName
                   };
                   return done(null, existingUser);
                 }
@@ -448,9 +424,7 @@ export async function setupPlatformAuth(app: Express) {
               req.session.userId = newUser.id;
               req.session.facebookProfile = { 
                 id: profile.id, 
-                displayName: profile.displayName,
-                pageName: pageData?.pageName,
-                followers: pageData?.followers
+                displayName: profile.displayName
               };
               done(null, newUser);
             } catch (error) {

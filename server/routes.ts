@@ -826,16 +826,16 @@ export async function registerRoutes(
       });
       console.log("[YouTube Callback] Connection saved successfully");
 
-      // Trigger video indexer asynchronously (don't block the redirect)
-      setImmediate(async () => {
-        try {
-          console.log(`[OAuth] Triggering video indexer for user: ${userId}`);
-          const result = await runIndexerForUser(userId);
-          console.log(`[OAuth] Indexer completed: indexed ${result.indexed}, filtered ${result.filtered}`);
-        } catch (indexerError: any) {
-          console.error(`[OAuth] Indexer failed:`, indexerError.message || indexerError);
-        }
-      });
+      // AUTO-SYNC DISABLED: User requested manual sync only via dashboard button
+      // setImmediate(async () => {
+      //   try {
+      //     console.log(`[OAuth] Triggering video indexer for user: ${userId}`);
+      //     const result = await runIndexerForUser(userId);
+      //     console.log(`[OAuth] Indexer completed: indexed ${result.indexed}, filtered ${result.filtered}`);
+      //   } catch (indexerError: any) {
+      //     console.error(`[OAuth] Indexer failed:`, indexerError.message || indexerError);
+      //   }
+      // });
 
       // Redirect to dashboard with success flag
       console.log("[YouTube Callback] Success - redirecting to dashboard");
