@@ -40,11 +40,6 @@ export function getSession() {
     },
   });
   
-  // Log session store errors to prevent silent failures
-  sessionStore.on('error', (error: Error) => {
-    console.error('[Session Store] Connection error:', error.message);
-  });
-  
   // Use sameSite: 'lax' for same-site OAuth redirects (Google, etc.)
   // 'lax' allows cookies on top-level navigations (like OAuth redirects back to our domain)
   // while still protecting against CSRF attacks
