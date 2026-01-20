@@ -233,7 +233,14 @@ export async function registerRoutes(
   // Initiate Google login flow
   app.get("/api/auth/google", (req: any, res) => {
     const baseUrl = process.env.BASE_URL;
-    console.log("[Google OAuth] Initiating login, BASE_URL:", baseUrl);
+    const requestHost = req.get('host');
+    const requestProtocol = req.protocol;
+    console.log("[Google OAuth] ========== LOGIN INITIATED ==========");
+    console.log("[Google OAuth] BASE_URL env:", baseUrl);
+    console.log("[Google OAuth] Request host:", requestHost);
+    console.log("[Google OAuth] Request protocol:", requestProtocol);
+    console.log("[Google OAuth] Request hostname:", req.hostname);
+    
     if (!baseUrl) {
       console.error("BASE_URL environment variable is not set");
       return res.redirect("/?error=configuration_error");
@@ -246,9 +253,10 @@ export async function registerRoutes(
     
     const state = generateOAuthState();
     req.session.oauthState = state;
-    console.log("[Google OAuth] Redirect URI:", redirectUri);
+    console.log("[Google OAuth] Redirect URI being used:", redirectUri);
     console.log("[Google OAuth] State generated:", state);
     console.log("[Google OAuth] Session ID:", req.sessionID);
+    console.log("[Google OAuth] ====================================");
     
     // Save session before redirect to ensure state persists
     req.session.save((err: any) => {
