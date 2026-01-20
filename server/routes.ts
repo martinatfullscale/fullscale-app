@@ -79,6 +79,10 @@ function signState(state: string): string {
 
 function verifySignedState(state: string, signature: string): boolean {
   const expectedSig = signState(state);
+  // Buffer lengths must match for timingSafeEqual
+  if (signature.length !== expectedSig.length) {
+    return false;
+  }
   return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSig));
 }
 
@@ -271,18 +275,23 @@ export async function registerRoutes(
       }
       
       // Also store in a signed cookie as backup (works even if session is lost)
-      res.cookie('oauth_state', state, {
+      // Parse domain from BASE_URL for explicit cookie domain
+      const cookieDomain = baseUrl.replace(/^https?:\/\//, '').split('/')[0];
+      const isProduction = process.env.NODE_ENV === 'production' || baseUrl.includes('gofullscale.co');
+      
+      console.log("[Google OAuth] Cookie domain:", cookieDomain);
+      console.log("[Google OAuth] Is production:", isProduction);
+      
+      const cookieOptions = {
         httpOnly: true,
-        secure: true,
-        sameSite: 'lax',
+        secure: isProduction,
+        sameSite: 'lax' as const,
         maxAge: 10 * 60 * 1000, // 10 minutes
-      });
-      res.cookie('oauth_state_sig', stateSig, {
-        httpOnly: true,
-        secure: true,
-        sameSite: 'lax',
-        maxAge: 10 * 60 * 1000,
-      });
+        path: '/',
+      };
+      
+      res.cookie('oauth_state', state, cookieOptions);
+      res.cookie('oauth_state_sig', stateSig, cookieOptions);
       
       console.log("[Google OAuth] ====================================");
       
@@ -322,6 +331,8 @@ export async function registerRoutes(
     console.log("[Google OAuth Callback] State from query:", state ? (state as string).substring(0, 16) + "..." : "missing");
     console.log("[Google OAuth Callback] Session ID:", req.sessionID);
     console.log("[Google OAuth Callback] Session exists:", !!req.session);
+    console.log("[Google OAuth Callback] All cookies received:", Object.keys(req.cookies || {}));
+    console.log("[Google OAuth Callback] Cookie header:", req.headers.cookie?.substring(0, 100) || "none");
     
     if (error) {
       console.error("[Google OAuth Callback] Error from Google:", error);
