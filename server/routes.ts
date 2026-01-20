@@ -461,28 +461,13 @@ export async function registerRoutes(
   });
 
   // Session reset endpoint - allows users to clear stuck sessions
-  // Force-clears cookies even if database operations fail
   app.get("/api/auth/reset", (req: any, res) => {
     console.log("[Auth] Session reset requested");
-    
-    // Force-clear cookies FIRST (before any database operations)
-    res.clearCookie("connect.sid", { path: "/" });
-    res.clearCookie("connect.sid", { path: "/", domain: ".gofullscale.co" });
-    res.clearCookie("connect.sid", { path: "/", domain: "gofullscale.co" });
-    
-    // Try to destroy session but don't block on errors
-    try {
-      if (req.session) {
-        req.session.destroy((err: any) => {
-          if (err) console.error("[Auth] Session destroy warning (non-fatal):", err.message || err);
-        });
-      }
-    } catch (destroyErr: any) {
-      console.error("[Auth] Session destroy exception (non-fatal):", destroyErr.message || destroyErr);
-    }
-    
-    // Always redirect, regardless of session destroy success
-    res.redirect("/");
+    req.session.destroy((err: any) => {
+      if (err) console.error("[Auth] Session reset failed:", err);
+      res.clearCookie("connect.sid");
+      res.redirect("/");
+    });
   });
 
   // Logout from Google session
@@ -866,31 +851,29 @@ export async function registerRoutes(
       });
       console.log("[YouTube Callback] Tokens saved successfully");
       
-      // BACKGROUND TASKS DISABLED: User requested no background syncing during login
-      // Channel info will be fetched on first dashboard load or manual sync
-      // This prevents server hangs and 503 errors during login
-      // setImmediate(async () => {
-      //   try {
-      //     console.log("[YouTube Background] Fetching channel info...");
-      //     const channelData = await getYoutubeChannelInfo(tokens.access_token);
-      //     const channel = channelData.items?.[0];
-      //     if (channel) {
-      //       await storage.upsertYoutubeConnection({
-      //         userId,
-      //         accessToken: tokens.access_token,
-      //         refreshToken: tokens.refresh_token || null,
-      //         expiresAt: tokens.expires_in 
-      //           ? new Date(Date.now() + tokens.expires_in * 1000) 
-      //           : null,
-      //         channelId: channel.id || null,
-      //         channelTitle: channel.snippet?.title || null,
-      //       });
-      //       console.log("[YouTube Background] Channel info saved:", channel.snippet?.title);
-      //     }
-      //   } catch (bgErr: any) {
-      //     console.error("[YouTube Background] Channel fetch failed:", bgErr.message);
-      //   }
-      // });
+      // Fetch channel info in background (non-blocking)
+      setImmediate(async () => {
+        try {
+          console.log("[YouTube Background] Fetching channel info...");
+          const channelData = await getYoutubeChannelInfo(tokens.access_token);
+          const channel = channelData.items?.[0];
+          if (channel) {
+            await storage.upsertYoutubeConnection({
+              userId,
+              accessToken: tokens.access_token,
+              refreshToken: tokens.refresh_token || null,
+              expiresAt: tokens.expires_in 
+                ? new Date(Date.now() + tokens.expires_in * 1000) 
+                : null,
+              channelId: channel.id || null,
+              channelTitle: channel.snippet?.title || null,
+            });
+            console.log("[YouTube Background] Channel info saved:", channel.snippet?.title);
+          }
+        } catch (bgErr: any) {
+          console.error("[YouTube Background] Channel fetch failed:", bgErr.message);
+        }
+      });
 
       // AUTO-SYNC DISABLED: User requested manual sync only via dashboard button
       // setImmediate(async () => {
