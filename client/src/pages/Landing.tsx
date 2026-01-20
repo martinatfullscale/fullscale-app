@@ -6,7 +6,7 @@ import logoBlackAmbition from "@assets/logo-black-ambition_1767712118620.png";
 import logoMayDavis from "@assets/logo-may-davis_1767712118621.png";
 import logoElementa from "@assets/logo-elementa_1767712118620.png";
 import logoNue from "@assets/logo-nue_1767712118621.png";
-const heroVideo = "/hero_video.mp4";
+import heroVideo from "@assets/generated_videos/creator_studio_cinematic_loop.mp4";
 import realityImg from "@assets/generated_images/modern_kitchen_with_empty_counter.png";
 import aiAugmentedImg from "@assets/generated_images/kitchen_with_liquid_death_can.png";
 import surfaceEngineImg from "@assets/generated_images/desk_with_ai_tracking_grid.png";
