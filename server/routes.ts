@@ -300,20 +300,12 @@ export async function registerRoutes(
 
     // Verify state to prevent CSRF attacks
     const savedState = req.session?.oauthState;
-    console.log("[Google OAuth Callback] Saved state from session:", savedState || "(missing - session may have been lost)");
+    console.log("[Google OAuth Callback] Saved state from session:", savedState);
     delete req.session?.oauthState;
     
-    // Be lenient with state validation:
-    // - If savedState exists, validate it matches
-    // - If savedState is missing (session lost after deploy), proceed anyway since
-    //   the code exchange with Google validates this is a legitimate callback
-    if (savedState && state !== savedState) {
+    if (!state || state !== savedState) {
       console.error("[Google OAuth Callback] State mismatch - received:", state, "expected:", savedState);
       return clearSessionAndRedirect(req, res, "invalid_state");
-    }
-    
-    if (!savedState) {
-      console.warn("[Google OAuth Callback] Session state was missing - proceeding with OAuth (session may have been lost after deployment)");
     }
 
     try {

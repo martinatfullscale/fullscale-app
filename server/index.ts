@@ -1,6 +1,6 @@
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
-import { serveStatic } from "./static";
+import { serveStatic, waitForBuild } from "./static";
 import { createServer } from "http";
 import { db } from "./db";
 import { videoIndex } from "@shared/schema";
@@ -20,26 +20,6 @@ declare module "http" {
 // CRITICAL: Set trust proxy FIRST - before ANY middleware
 // This is required for secure cookies to work behind Replit's reverse proxy
 app.set("trust proxy", 1);
-
-// ============================================
-// IMMEDIATE HEALTH CHECK - Before ALL middleware (for deployment)
-// This ensures health checks pass instantly during startup
-// ============================================
-app.get("/health", (_req, res) => {
-  res.status(200).json({ status: "ok", timestamp: Date.now() });
-});
-
-// Root endpoint for deployment health checks - returns immediately
-app.get("/", (_req, res, next) => {
-  // If Accept header indicates HTML, let Vite/static serving handle it
-  if (res.headersSent) return;
-  const acceptHeader = _req.headers.accept || "";
-  if (acceptHeader.includes("text/html")) {
-    return next(); // Let later middleware serve the SPA
-  }
-  // For non-HTML requests (like health checks), return 200 immediately
-  res.status(200).json({ status: "ok" });
-});
 
 // ============================================
 // HIGHEST PRIORITY: Static assets before EVERYTHING
@@ -121,7 +101,23 @@ let serverReady = false;
     log("Starting server initialization...");
     
     // ============================================
-    // PHASE 1: Pre-warm database connection (non-blocking for health checks)
+    // PHASE 1: Health endpoint (for load balancer)
+    // ============================================
+    app.get("/health", (_req, res) => {
+      res.status(200).json({ status: "ok", timestamp: Date.now() });
+    });
+    
+    // Readiness endpoint - only returns 200 when fully ready
+    app.get("/ready", (_req, res) => {
+      if (serverReady) {
+        res.status(200).json({ status: "ready", timestamp: Date.now() });
+      } else {
+        res.status(503).json({ status: "starting", timestamp: Date.now() });
+      }
+    });
+
+    // ============================================
+    // PHASE 2: Pre-warm database connection
     // ============================================
     log("Pre-warming database connection...");
     try {
@@ -134,7 +130,20 @@ let serverReady = false;
     }
 
     // ============================================
-    // PHASE 2: Register all routes (includes auth pre-warming)
+    // PHASE 3: Wait for client build in production
+    // ============================================
+    if (process.env.NODE_ENV === "production") {
+      log("Production mode: waiting for client build...");
+      const buildReady = await waitForBuild(30000); // Wait up to 30 seconds
+      if (buildReady) {
+        log("Client build ready");
+      } else {
+        log("Warning: Client build not found after 30s, continuing anyway");
+      }
+    }
+
+    // ============================================
+    // PHASE 4: Register all routes (includes auth pre-warming)
     // ============================================
     await registerRoutes(httpServer, app);
     log("Routes registered successfully");
@@ -148,7 +157,7 @@ let serverReady = false;
     });
 
     // ============================================
-    // PHASE 3: Setup static file serving
+    // PHASE 5: Setup static file serving
     // ============================================
     if (process.env.NODE_ENV === "production") {
       log("Setting up static file serving...");
@@ -160,7 +169,7 @@ let serverReady = false;
     }
     
     // ============================================
-    // PHASE 4: Start listening
+    // PHASE 6: Start listening - ONLY when everything is ready
     // ============================================
     const port = parseInt(process.env.PORT || "5000", 10);
     
@@ -179,7 +188,7 @@ let serverReady = false;
     log("Server fully ready and accepting traffic");
     
     // ============================================
-    // PHASE 5: Background tasks (non-blocking)
+    // PHASE 7: Background tasks (non-blocking)
     // ============================================
     setImmediate(async () => {
       try {
