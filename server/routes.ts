@@ -238,7 +238,7 @@ export async function registerRoutes(
       console.error("BASE_URL environment variable is not set");
       return res.redirect("/?error=configuration_error");
     }
-    const redirectUri = `${baseUrl}/api/auth/callback/google`;
+    const redirectUri = `${baseUrl}/api/auth/oauth-callback`;
     const state = generateOAuthState();
     (req.session as any).oauthState = state;
     console.log("[Google OAuth] Redirect URI:", redirectUri);
@@ -257,7 +257,7 @@ export async function registerRoutes(
   });
 
   // Google login callback with allowlist check
-  app.get("/api/auth/callback/google", async (req: any, res) => {
+  app.get("/api/auth/oauth-callback", async (req: any, res) => {
     const { code, error, state } = req.query;
     console.log("[Google OAuth Callback] Received callback");
     console.log("[Google OAuth Callback] State from query:", state);
@@ -289,7 +289,7 @@ export async function registerRoutes(
         console.error("BASE_URL environment variable is not set");
         return res.redirect("/?error=configuration_error");
       }
-      const redirectUri = `${baseUrl}/api/auth/callback/google`;
+      const redirectUri = `${baseUrl}/api/auth/oauth-callback`;
       
       // Exchange code for tokens
       const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
