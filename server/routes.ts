@@ -16,7 +16,7 @@ import ytdl from "@distube/ytdl-core";
 import { decrypt, encrypt } from "./encryption";
 import { db } from "./db";
 import { users } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import crypto from "crypto";
 
 // Configure multer for video uploads
@@ -70,20 +70,25 @@ function generateOAuthState(): string {
   return crypto.randomBytes(32).toString('hex');
 }
 
-function signState(state: string): string {
-  const secret = process.env.SESSION_SECRET || 'fallback-secret';
-  const hmac = crypto.createHmac('sha256', secret);
-  hmac.update(state);
-  return hmac.digest('hex');
+// Database-backed OAuth state storage (survives server restarts)
+async function saveOAuthState(state: string): Promise<void> {
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+  await db.execute(
+    sql`INSERT INTO oauth_states (state, expires_at) VALUES (${state}, ${expiresAt}) ON CONFLICT (state) DO UPDATE SET expires_at = ${expiresAt}`
+  );
 }
 
-function verifySignedState(state: string, signature: string): boolean {
-  const expectedSig = signState(state);
-  // Buffer lengths must match for timingSafeEqual
-  if (signature.length !== expectedSig.length) {
+async function verifyAndConsumeOAuthState(state: string): Promise<boolean> {
+  if (!state) return false;
+  try {
+    // Delete expired states and check if this state exists
+    await db.execute(sql`DELETE FROM oauth_states WHERE expires_at < NOW()`);
+    const result = await db.execute(sql`DELETE FROM oauth_states WHERE state = ${state} RETURNING state`);
+    return (result as any).rowCount > 0 || (result as any).rows?.length > 0;
+  } catch (err) {
+    console.error("[OAuth State] Database error:", err);
     return false;
   }
-  return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSig));
 }
 
 function getGoogleLoginAuthUrl(redirectUri: string, state: string): string {
@@ -248,12 +253,11 @@ export async function registerRoutes(
   });
 
   // Initiate Google login flow
-  app.get("/api/auth/google", (req: any, res) => {
+  app.get("/api/auth/google", async (req: any, res) => {
     try {
       const baseUrl = process.env.BASE_URL;
       console.log("[Google OAuth] ========== LOGIN INITIATED ==========");
       console.log("[Google OAuth] BASE_URL env:", baseUrl);
-      console.log("[Google OAuth] Session exists:", !!req.session);
       
       if (!baseUrl) {
         console.error("BASE_URL environment variable is not set");
@@ -262,52 +266,23 @@ export async function registerRoutes(
       
       const redirectUri = `${baseUrl}/api/auth/google/callback`;
       const state = generateOAuthState();
-      const stateSig = signState(state);
       
       console.log("[Google OAuth] State generated:", state.substring(0, 16) + "...");
       console.log("[Google OAuth] Redirect URI:", redirectUri);
       
-      // Store state in BOTH session (if available) AND a signed cookie for redundancy
+      // Store state in DATABASE (survives server restarts and cold starts)
+      await saveOAuthState(state);
+      console.log("[Google OAuth] State saved to database");
+      
+      // Also clear any old Google user data from session
       if (req.session) {
-        delete req.session.oauthState;
         delete req.session.googleUser;
-        req.session.oauthState = state;
       }
-      
-      // Also store in a signed cookie as backup (works even if session is lost)
-      // Parse domain from BASE_URL for explicit cookie domain
-      const cookieDomain = baseUrl.replace(/^https?:\/\//, '').split('/')[0];
-      const isProduction = process.env.NODE_ENV === 'production' || baseUrl.includes('gofullscale.co');
-      
-      console.log("[Google OAuth] Cookie domain:", cookieDomain);
-      console.log("[Google OAuth] Is production:", isProduction);
-      
-      const cookieOptions = {
-        httpOnly: true,
-        secure: isProduction,
-        sameSite: 'lax' as const,
-        maxAge: 10 * 60 * 1000, // 10 minutes
-        path: '/',
-      };
-      
-      res.cookie('oauth_state', state, cookieOptions);
-      res.cookie('oauth_state_sig', stateSig, cookieOptions);
       
       console.log("[Google OAuth] ====================================");
       
-      // Save session before redirect (if available)
-      if (req.session?.save) {
-        req.session.save((err: any) => {
-          if (err) {
-            console.error("[Google OAuth] Session save error (continuing anyway):", err);
-          }
-          const authUrl = getGoogleLoginAuthUrl(redirectUri, state);
-          res.redirect(authUrl);
-        });
-      } else {
-        const authUrl = getGoogleLoginAuthUrl(redirectUri, state);
-        res.redirect(authUrl);
-      }
+      const authUrl = getGoogleLoginAuthUrl(redirectUri, state);
+      res.redirect(authUrl);
     } catch (err: any) {
       console.error("[Google OAuth] Unexpected error:", err.message, err.stack);
       res.redirect("/?error=auth_initialization_failed");
@@ -330,64 +305,28 @@ export async function registerRoutes(
     console.log("[Google OAuth Callback] ========== CALLBACK RECEIVED ==========");
     console.log("[Google OAuth Callback] State from query:", state ? (state as string).substring(0, 16) + "..." : "missing");
     console.log("[Google OAuth Callback] Session ID:", req.sessionID);
-    console.log("[Google OAuth Callback] Session exists:", !!req.session);
-    console.log("[Google OAuth Callback] All cookies received:", Object.keys(req.cookies || {}));
-    console.log("[Google OAuth Callback] Cookie header:", req.headers.cookie?.substring(0, 100) || "none");
     
     if (error) {
       console.error("[Google OAuth Callback] Error from Google:", error);
-      res.clearCookie('oauth_state');
-      res.clearCookie('oauth_state_sig');
       return clearSessionAndRedirect(req, res, error as string);
     }
 
     if (!code) {
       console.error("[Google OAuth Callback] No code received");
-      res.clearCookie('oauth_state');
-      res.clearCookie('oauth_state_sig');
       return clearSessionAndRedirect(req, res, "no_code");
     }
 
-    // Verify state to prevent CSRF attacks - check BOTH session AND cookie
-    const sessionState = req.session?.oauthState;
-    const cookieState = req.cookies?.oauth_state;
-    const cookieStateSig = req.cookies?.oauth_state_sig;
-    
-    console.log("[Google OAuth Callback] Session state:", sessionState ? sessionState.substring(0, 16) + "..." : "missing");
-    console.log("[Google OAuth Callback] Cookie state:", cookieState ? cookieState.substring(0, 16) + "..." : "missing");
-    
-    // Clear states after reading
-    if (req.session?.oauthState) {
-      delete req.session.oauthState;
-    }
-    res.clearCookie('oauth_state');
-    res.clearCookie('oauth_state_sig');
-    
-    // Try session state first, then fall back to verified cookie state
-    let stateValid = false;
-    if (state && sessionState && state === sessionState) {
-      console.log("[Google OAuth Callback] State verified via session");
-      stateValid = true;
-    } else if (state && cookieState && cookieStateSig) {
-      try {
-        if (state === cookieState && verifySignedState(cookieState, cookieStateSig)) {
-          console.log("[Google OAuth Callback] State verified via signed cookie");
-          stateValid = true;
-        }
-      } catch (sigErr) {
-        console.error("[Google OAuth Callback] Cookie signature verification failed:", sigErr);
-      }
-    }
+    // Verify state using DATABASE (survives server restarts and cold starts)
+    console.log("[Google OAuth Callback] Verifying state from database...");
+    const stateValid = await verifyAndConsumeOAuthState(state as string);
     
     if (!stateValid) {
-      console.error("[Google OAuth Callback] State verification failed");
+      console.error("[Google OAuth Callback] State verification failed - not found in database");
       console.error("[Google OAuth Callback] Query state:", state);
-      console.error("[Google OAuth Callback] Session state:", sessionState);
-      console.error("[Google OAuth Callback] Cookie state:", cookieState);
       return clearSessionAndRedirect(req, res, "invalid_state");
     }
     
-    console.log("[Google OAuth Callback] State verified successfully");
+    console.log("[Google OAuth Callback] State verified successfully via database");
 
     try {
       const baseUrl = process.env.BASE_URL;
