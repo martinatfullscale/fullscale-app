@@ -734,6 +734,7 @@ export async function registerRoutes(
   // Middleware to check Google OAuth session (returns JSON for API calls)
   const isGoogleAuthenticated = (req: any, res: any, next: any) => {
     const googleUser = req.session?.googleUser;
+    console.log(`[isGoogleAuthenticated] Session ID: ${req.sessionID}, googleUser: ${googleUser?.email || 'missing'}`);
     if (!googleUser || !googleUser.email) {
       return res.status(401).json({ message: "Unauthorized - Please login with Google" });
     }
@@ -902,9 +903,17 @@ export async function registerRoutes(
   });
 
   // Get current user's YouTube connection status
-  app.get("/api/auth/youtube/status", isGoogleAuthenticated, async (req: any, res) => {
-    const userId = req.googleUser.email;
-    const connection = await storage.getYoutubeConnection(userId);
+  app.get("/api/auth/youtube/status", isFlexibleAuthenticated, async (req: any, res) => {
+    const userId = req.authUserId;
+    const authEmail = req.authEmail;
+    console.log(`[YouTube Status] Checking for userId: ${userId}, email: ${authEmail}`);
+    
+    // Try to find connection by user ID first, then by email as fallback
+    let connection = await storage.getYoutubeConnection(userId);
+    if (!connection && authEmail && authEmail !== userId) {
+      connection = await storage.getYoutubeConnection(authEmail);
+    }
+    console.log(`[YouTube Status] Connection found: ${!!connection}, channelTitle: ${connection?.channelTitle || 'none'}`);
     
     if (connection) {
       res.json({
@@ -918,8 +927,8 @@ export async function registerRoutes(
   });
 
   // Disconnect YouTube
-  app.delete("/api/auth/youtube", isGoogleAuthenticated, async (req: any, res) => {
-    const userId = req.googleUser.email;
+  app.delete("/api/auth/youtube", isFlexibleAuthenticated, async (req: any, res) => {
+    const userId = req.authUserId;
     await storage.deleteYoutubeConnection(userId);
     await storage.deleteVideoIndex(userId);
     res.json({ success: true });
