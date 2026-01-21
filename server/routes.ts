@@ -1694,10 +1694,16 @@ export async function registerRoutes(
   // Get user's latest YouTube videos (from API + local database)
   app.get("/api/youtube/videos", isGoogleAuthenticated, async (req: any, res) => {
     const userId = req.googleUser.email;
+    console.log(`[YouTube Videos] Fetching videos for userId: ${userId}`);
+    console.log(`[YouTube Videos] googleUser object:`, JSON.stringify(req.googleUser));
+    
     const connection = await storage.getYoutubeConnection(userId);
+    console.log(`[YouTube Videos] YouTube connection found: ${!!connection}`);
     
     // Always get locally stored/uploaded videos from video_index
     const localVideos = await storage.getVideoIndex(userId);
+    console.log(`[YouTube Videos] Local videos found: ${localVideos.length}`);
+    
     const localVideosList = localVideos.map((v: any) => ({
       id: v.youtubeId || `local-${v.id}`,
       dbId: v.id,
