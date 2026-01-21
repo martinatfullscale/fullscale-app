@@ -403,21 +403,37 @@ export async function setupPlatformAuth(app: Express) {
               
               // If logged in with Google OAuth, link Facebook to that account
               if (googleUserEmail) {
+                console.log(`[PlatformAuth] Looking up user by Google email: ${googleUserEmail}`);
                 const googleUser = await db.query.users.findFirst({
                   where: eq(users.email, googleUserEmail),
                 });
+                console.log(`[PlatformAuth] User lookup result: ${googleUser ? `found (id=${googleUser.id})` : 'NOT FOUND'}`);
+                
                 if (googleUser) {
-                  await db
-                    .update(users)
-                    .set(socialDataUpdate)
-                    .where(eq(users.id, googleUser.id));
-                  console.log(`[PlatformAuth] Linked Facebook account ${profile.displayName} to Google OAuth user ${googleUserEmail}`);
+                  console.log(`[PlatformAuth] Updating user ${googleUser.id} with Facebook data...`);
+                  console.log(`[PlatformAuth] Update payload: ${JSON.stringify(Object.keys(socialDataUpdate))}`);
+                  
+                  try {
+                    const updateResult = await db
+                      .update(users)
+                      .set(socialDataUpdate)
+                      .where(eq(users.id, googleUser.id))
+                      .returning();
+                    console.log(`[PlatformAuth] Update result: ${JSON.stringify(updateResult?.length)} rows affected`);
+                    console.log(`[PlatformAuth] Successfully linked Facebook to user ${googleUserEmail}`);
+                  } catch (updateError: any) {
+                    console.error(`[PlatformAuth] DATABASE UPDATE ERROR: ${updateError.message}`);
+                    console.error(`[PlatformAuth] Update error stack:`, updateError.stack);
+                  }
+                  
                   req.session.userId = googleUser.id;
                   req.session.facebookProfile = { 
                     id: profile.id, 
                     displayName: profile.displayName
                   };
                   return done(null, googleUser);
+                } else {
+                  console.log(`[PlatformAuth] WARNING: Could not find user with email ${googleUserEmail} in database`);
                 }
               }
 
@@ -649,6 +665,54 @@ export async function setupPlatformAuth(app: Express) {
         ...instagramData,
       },
     });
+  });
+
+  // Debug endpoint to manually test Facebook database update
+  app.get("/api/debug/test-fb-update", async (req: any, res) => {
+    const email = req.session?.googleUser?.email || req.session?.pendingGoogleUser?.email;
+    if (!email) {
+      return res.json({ error: "Not logged in with Google", session: req.session });
+    }
+    
+    try {
+      // Find user by email
+      const user = await db.query.users.findFirst({
+        where: eq(users.email, email),
+      });
+      
+      if (!user) {
+        return res.json({ error: "User not found", email });
+      }
+      
+      // Try updating with test data
+      const testUpdate = {
+        facebookId: "TEST_FB_ID_" + Date.now(),
+      };
+      
+      const result = await db
+        .update(users)
+        .set(testUpdate)
+        .where(eq(users.id, user.id))
+        .returning();
+      
+      // Read back the user
+      const updatedUser = await db.query.users.findFirst({
+        where: eq(users.id, user.id),
+      });
+      
+      return res.json({
+        success: true,
+        userId: user.id,
+        email: user.email,
+        updateResult: result?.length,
+        updatedFacebookId: updatedUser?.facebookId,
+      });
+    } catch (error: any) {
+      return res.json({
+        error: error.message,
+        stack: error.stack,
+      });
+    }
   });
 
   // Debug endpoint to check session state after OAuth
