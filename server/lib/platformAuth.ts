@@ -651,5 +651,39 @@ export async function setupPlatformAuth(app: Express) {
     });
   });
 
+  // Debug endpoint to check session state after OAuth
+  app.get("/api/debug/facebook-session", async (req: any, res) => {
+    const sessionData = {
+      sessionId: req.sessionID,
+      googleUser: req.session?.googleUser?.email || null,
+      pendingGoogleUser: req.session?.pendingGoogleUser?.email || null,
+      userId: req.session?.userId || null,
+      facebookConnected: req.session?.facebookConnected || false,
+      facebookProfile: req.session?.facebookProfile || null,
+      replitUser: req.user?.claims?.email || null,
+    };
+    
+    // Check database for user
+    const email = sessionData.googleUser || sessionData.pendingGoogleUser;
+    let dbUser = null;
+    if (email) {
+      dbUser = await db.query.users.findFirst({
+        where: eq(users.email, email),
+      });
+    }
+    
+    res.json({
+      session: sessionData,
+      dbUser: dbUser ? {
+        id: dbUser.id,
+        email: dbUser.email,
+        facebookId: dbUser.facebookId,
+        facebookPageId: dbUser.facebookPageId,
+        facebookPageName: dbUser.facebookPageName,
+        hasToken: !!dbUser.facebookAccessToken,
+      } : null,
+    });
+  });
+
   console.log("[PlatformAuth] Platform auth routes registered");
 }
