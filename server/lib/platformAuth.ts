@@ -343,6 +343,15 @@ export async function setupPlatformAuth(app: Express) {
               const googleUserEmail = req.session?.googleUser?.email;
               const fbEmail = profile.emails?.[0]?.value;
               
+              // Comprehensive logging for debugging account linking
+              console.log(`[PlatformAuth] ========== FACEBOOK VERIFY CALLBACK ==========`);
+              console.log(`[PlatformAuth] Facebook profile: ${profile.displayName} (${profile.id})`);
+              console.log(`[PlatformAuth] Facebook email: ${fbEmail || 'none'}`);
+              console.log(`[PlatformAuth] Session existingLoggedInUser: ${existingLoggedInUser || 'none'}`);
+              console.log(`[PlatformAuth] Session googleUserEmail: ${googleUserEmail || 'none'}`);
+              console.log(`[PlatformAuth] Session ID: ${req.sessionID}`);
+              console.log(`[PlatformAuth] Full session googleUser: ${JSON.stringify(req.session?.googleUser || 'none')}`);
+              
               // FAST LOGIN: Only save basic Facebook ID, defer Page data fetch to manual sync
               // This prevents slow API calls from blocking login
               console.log(`[PlatformAuth] Fast login for ${profile.displayName} - Page data will sync on demand`);
