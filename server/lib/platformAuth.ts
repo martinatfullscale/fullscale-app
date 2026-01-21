@@ -667,6 +667,60 @@ export async function setupPlatformAuth(app: Express) {
     });
   });
 
+  // Endpoint to sync Facebook connection from session to database
+  // Call this after Facebook OAuth to ensure the connection is saved
+  // Accepts both GET (for easy testing) and POST
+  app.all("/api/facebook/sync-connection", async (req: any, res) => {
+    const googleEmail = req.session?.googleUser?.email || req.session?.pendingGoogleUser?.email;
+    const facebookProfile = req.session?.facebookProfile;
+    
+    console.log("[Facebook Sync] Starting sync...");
+    console.log("[Facebook Sync] Google email:", googleEmail);
+    console.log("[Facebook Sync] Facebook profile:", JSON.stringify(facebookProfile));
+    
+    if (!googleEmail) {
+      return res.status(401).json({ error: "Not logged in with Google" });
+    }
+    
+    if (!facebookProfile || !facebookProfile.id) {
+      return res.status(400).json({ error: "No Facebook profile in session. Please connect Facebook first." });
+    }
+    
+    try {
+      // Find user by Google email
+      const user = await db.query.users.findFirst({
+        where: eq(users.email, googleEmail),
+      });
+      
+      if (!user) {
+        console.log("[Facebook Sync] User not found:", googleEmail);
+        return res.status(404).json({ error: "User not found" });
+      }
+      
+      console.log("[Facebook Sync] Found user:", user.id);
+      
+      // Update user with Facebook data from session
+      await db
+        .update(users)
+        .set({
+          facebookId: facebookProfile.id,
+        })
+        .where(eq(users.id, user.id));
+      
+      console.log("[Facebook Sync] Successfully synced Facebook connection");
+      
+      return res.json({
+        success: true,
+        message: "Facebook connection synced",
+        facebookId: facebookProfile.id,
+        displayName: facebookProfile.displayName,
+      });
+    } catch (error: any) {
+      console.error("[Facebook Sync] Error:", error.message);
+      return res.status(500).json({ error: error.message });
+    }
+  });
+
   // Debug endpoint to manually test Facebook database update
   app.get("/api/debug/test-fb-update", async (req: any, res) => {
     const email = req.session?.googleUser?.email || req.session?.pendingGoogleUser?.email;
