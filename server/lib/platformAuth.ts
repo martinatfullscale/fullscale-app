@@ -429,7 +429,8 @@ export async function setupPlatformAuth(app: Express) {
                   req.session.userId = googleUser.id;
                   req.session.facebookProfile = { 
                     id: profile.id, 
-                    displayName: profile.displayName
+                    displayName: profile.displayName,
+                    accessToken: accessToken,  // Store for later sync
                   };
                   return done(null, googleUser);
                 } else {
@@ -586,7 +587,7 @@ export async function setupPlatformAuth(app: Express) {
         console.log("[PlatformAuth] Session ID after login:", req.sessionID);
         console.log("[PlatformAuth] Session userId set to:", req.session.userId);
         
-        // SYNC: Update database with Facebook ID using session data
+        // SYNC: Update database with Facebook ID and token using session data
         const googleEmail = req.session?.googleUser?.email || req.session?.pendingGoogleUser?.email;
         const facebookProfile = req.session?.facebookProfile;
         
@@ -596,11 +597,20 @@ export async function setupPlatformAuth(app: Express) {
               where: eq(users.email, googleEmail),
             });
             if (dbUser) {
+              const updateData: Record<string, any> = { 
+                facebookId: facebookProfile.id 
+              };
+              
+              // Also save the encrypted access token if available
+              if (facebookProfile.accessToken) {
+                updateData.facebookAccessToken = encrypt(facebookProfile.accessToken);
+              }
+              
               await db
                 .update(users)
-                .set({ facebookId: facebookProfile.id })
+                .set(updateData)
                 .where(eq(users.id, dbUser.id));
-              console.log(`[PlatformAuth] Auto-synced Facebook ID ${facebookProfile.id} to user ${googleEmail}`);
+              console.log(`[PlatformAuth] Auto-synced Facebook ID ${facebookProfile.id} to user ${googleEmail} (with token: ${!!facebookProfile.accessToken})`);
             }
           } catch (syncErr: any) {
             console.error("[PlatformAuth] Auto-sync error:", syncErr.message);
@@ -697,7 +707,8 @@ export async function setupPlatformAuth(app: Express) {
     
     console.log("[Facebook Sync] Starting sync...");
     console.log("[Facebook Sync] Google email:", googleEmail);
-    console.log("[Facebook Sync] Facebook profile:", JSON.stringify(facebookProfile));
+    console.log("[Facebook Sync] Facebook profile id:", facebookProfile?.id);
+    console.log("[Facebook Sync] Has access token:", !!facebookProfile?.accessToken);
     
     if (!googleEmail) {
       return res.status(401).json({ error: "Not logged in with Google" });
@@ -720,12 +731,21 @@ export async function setupPlatformAuth(app: Express) {
       
       console.log("[Facebook Sync] Found user:", user.id);
       
+      // Build update data
+      const updateData: Record<string, any> = {
+        facebookId: facebookProfile.id,
+      };
+      
+      // Also save the encrypted access token if available
+      if (facebookProfile.accessToken) {
+        updateData.facebookAccessToken = encrypt(facebookProfile.accessToken);
+        console.log("[Facebook Sync] Saving encrypted access token");
+      }
+      
       // Update user with Facebook data from session
       await db
         .update(users)
-        .set({
-          facebookId: facebookProfile.id,
-        })
+        .set(updateData)
         .where(eq(users.id, user.id));
       
       console.log("[Facebook Sync] Successfully synced Facebook connection");
@@ -735,6 +755,7 @@ export async function setupPlatformAuth(app: Express) {
         message: "Facebook connection synced",
         facebookId: facebookProfile.id,
         displayName: facebookProfile.displayName,
+        hasToken: !!facebookProfile.accessToken,
       });
     } catch (error: any) {
       console.error("[Facebook Sync] Error:", error.message);
