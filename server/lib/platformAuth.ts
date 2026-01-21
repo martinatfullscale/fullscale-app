@@ -432,7 +432,14 @@ export async function setupPlatformAuth(app: Express) {
                     displayName: profile.displayName,
                     accessToken: accessToken,  // Store for later sync
                   };
-                  return done(null, googleUser);
+                  // Save session before calling done to ensure data persists
+                  req.session.save((saveErr: any) => {
+                    if (saveErr) {
+                      console.error("[PlatformAuth] Session save error:", saveErr);
+                    }
+                    return done(null, googleUser);
+                  });
+                  return;  // Prevent fall-through
                 } else {
                   console.log(`[PlatformAuth] WARNING: Could not find user with email ${googleUserEmail} in database`);
                 }
@@ -452,9 +459,17 @@ export async function setupPlatformAuth(app: Express) {
                   req.session.userId = existingUser.id;
                   req.session.facebookProfile = { 
                     id: profile.id, 
-                    displayName: profile.displayName
+                    displayName: profile.displayName,
+                    accessToken: accessToken,  // Store for later sync
                   };
-                  return done(null, existingUser);
+                  // Save session before calling done to ensure data persists
+                  req.session.save((saveErr: any) => {
+                    if (saveErr) {
+                      console.error("[PlatformAuth] Session save error:", saveErr);
+                    }
+                    return done(null, existingUser);
+                  });
+                  return;  // Prevent fall-through
                 }
               }
 
