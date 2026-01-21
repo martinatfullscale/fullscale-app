@@ -340,7 +340,8 @@ export async function setupPlatformAuth(app: Express) {
             try {
               // Support multiple auth methods: Replit OIDC, session userId, AND Google OAuth
               const existingLoggedInUser = req.user?.claims?.sub || req.session?.userId;
-              const googleUserEmail = req.session?.googleUser?.email;
+              // Check both googleUser AND pendingGoogleUser (saved before OAuth redirect)
+              const googleUserEmail = req.session?.googleUser?.email || req.session?.pendingGoogleUser?.email;
               const fbEmail = profile.emails?.[0]?.value;
               
               // Comprehensive logging for debugging account linking
@@ -350,7 +351,8 @@ export async function setupPlatformAuth(app: Express) {
               console.log(`[PlatformAuth] Session existingLoggedInUser: ${existingLoggedInUser || 'none'}`);
               console.log(`[PlatformAuth] Session googleUserEmail: ${googleUserEmail || 'none'}`);
               console.log(`[PlatformAuth] Session ID: ${req.sessionID}`);
-              console.log(`[PlatformAuth] Full session googleUser: ${JSON.stringify(req.session?.googleUser || 'none')}`);
+              console.log(`[PlatformAuth] Session googleUser: ${JSON.stringify(req.session?.googleUser || 'none')}`);
+              console.log(`[PlatformAuth] Session pendingGoogleUser: ${JSON.stringify(req.session?.pendingGoogleUser || 'none')}`);
               
               // FAST LOGIN: Only save basic Facebook ID, defer Page data fetch to manual sync
               // This prevents slow API calls from blocking login
@@ -490,25 +492,43 @@ export async function setupPlatformAuth(app: Express) {
   });
 
   // Facebook auth routes - works for both login and account linking
-  app.get("/auth/facebook", (req, res, next) => {
+  app.get("/auth/facebook", (req: any, res, next) => {
     console.log("[PlatformAuth] Starting Facebook OAuth flow...");
     console.log("[PlatformAuth] Callback URL will be:", `${BASE_URL}/auth/facebook/callback`);
+    console.log("[PlatformAuth] Session ID at start:", req.sessionID);
+    console.log("[PlatformAuth] GoogleUser in session:", req.session?.googleUser?.email || 'none');
+    
     if (!FACEBOOK_APP_ID) {
       console.error("[PlatformAuth] Facebook auth not configured - missing FACEBOOK_APP_ID");
       return res.status(503).json({ error: "Facebook auth not configured" });
     }
-    // Request scopes for creator data access
-    // Note: instagram_basic and instagram_manage_insights require Facebook App Review approval
-    // The instagram_business_account is fetched via pages_read_engagement when a Page has linked IG
-    passport.authenticate("facebook", { 
-      scope: ["email", "public_profile", "pages_show_list", "pages_read_engagement"] 
-    })(req, res, next);
+    
+    // Save Google user info to session before OAuth redirect (survives redirect)
+    if (req.session?.googleUser) {
+      req.session.pendingGoogleUser = req.session.googleUser;
+      console.log("[PlatformAuth] Saved pendingGoogleUser for linking:", req.session.pendingGoogleUser.email);
+    }
+    
+    // Save session before redirecting to Facebook
+    req.session.save((err: any) => {
+      if (err) {
+        console.error("[PlatformAuth] Session save error:", err);
+      }
+      // Request scopes for creator data access
+      // Note: instagram_basic and instagram_manage_insights require Facebook App Review approval
+      // The instagram_business_account is fetched via pages_read_engagement when a Page has linked IG
+      passport.authenticate("facebook", { 
+        scope: ["email", "public_profile", "pages_show_list", "pages_read_engagement"] 
+      })(req, res, next);
+    });
   });
 
   app.get("/auth/facebook/callback", (req: any, res, next) => {
     console.log("[PlatformAuth] ========== FACEBOOK CALLBACK RECEIVED ==========");
     console.log("[PlatformAuth] Query params:", JSON.stringify(req.query));
     console.log("[PlatformAuth] Session ID before auth:", req.sessionID);
+    console.log("[PlatformAuth] Session googleUser:", req.session?.googleUser?.email || 'none');
+    console.log("[PlatformAuth] Session pendingGoogleUser:", req.session?.pendingGoogleUser?.email || 'none');
     
     if (!FACEBOOK_APP_ID) {
       console.error("[PlatformAuth] Facebook auth not configured");
