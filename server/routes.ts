@@ -255,13 +255,23 @@ export async function registerRoutes(
   // Initiate Google login flow
   app.get("/api/auth/google", async (req: any, res) => {
     try {
-      const baseUrl = process.env.BASE_URL;
       console.log("[Google OAuth] ========== LOGIN INITIATED ==========");
-      console.log("[Google OAuth] BASE_URL env:", baseUrl);
       
-      if (!baseUrl) {
-        console.error("BASE_URL environment variable is not set");
-        return res.redirect("/?error=configuration_error");
+      // Check all required config upfront
+      const baseUrl = process.env.BASE_URL;
+      const clientId = process.env.GOOGLE_CLIENT_ID;
+      const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+      
+      console.log("[Google OAuth] BASE_URL:", baseUrl ? "set" : "MISSING");
+      console.log("[Google OAuth] GOOGLE_CLIENT_ID:", clientId ? "set" : "MISSING");
+      console.log("[Google OAuth] GOOGLE_CLIENT_SECRET:", clientSecret ? "set" : "MISSING");
+      
+      if (!baseUrl || !clientId || !clientSecret) {
+        console.error("[Google OAuth] Missing required configuration");
+        return res.status(500).json({ 
+          error: "Google OAuth not configured. Please contact support.",
+          missing: { baseUrl: !baseUrl, clientId: !clientId, clientSecret: !clientSecret }
+        });
       }
       
       const redirectUri = `${baseUrl}/api/auth/google/callback`;
@@ -271,8 +281,13 @@ export async function registerRoutes(
       console.log("[Google OAuth] Redirect URI:", redirectUri);
       
       // Store state in DATABASE (survives server restarts and cold starts)
-      await saveOAuthState(state);
-      console.log("[Google OAuth] State saved to database");
+      try {
+        await saveOAuthState(state);
+        console.log("[Google OAuth] State saved to database");
+      } catch (dbErr: any) {
+        console.error("[Google OAuth] Failed to save state:", dbErr.message);
+        return res.status(500).json({ error: "Database error during auth initialization" });
+      }
       
       // Also clear any old Google user data from session
       if (req.session) {
@@ -285,7 +300,7 @@ export async function registerRoutes(
       res.redirect(authUrl);
     } catch (err: any) {
       console.error("[Google OAuth] Unexpected error:", err.message, err.stack);
-      res.redirect("/?error=auth_initialization_failed");
+      res.status(500).json({ error: "Auth initialization failed", details: err.message });
     }
   });
 
