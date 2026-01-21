@@ -828,13 +828,19 @@ export async function setupPlatformAuth(app: Express) {
 
   // Debug endpoint to check session state after OAuth
   app.get("/api/debug/facebook-session", async (req: any, res) => {
+    const fbProfile = req.session?.facebookProfile;
     const sessionData = {
       sessionId: req.sessionID,
       googleUser: req.session?.googleUser?.email || null,
       pendingGoogleUser: req.session?.pendingGoogleUser?.email || null,
       userId: req.session?.userId || null,
       facebookConnected: req.session?.facebookConnected || false,
-      facebookProfile: req.session?.facebookProfile || null,
+      facebookProfile: fbProfile ? {
+        id: fbProfile.id,
+        displayName: fbProfile.displayName,
+        hasAccessToken: !!fbProfile.accessToken,
+        tokenLength: fbProfile.accessToken?.length || 0,
+      } : null,
       replitUser: req.user?.claims?.email || null,
     };
     
