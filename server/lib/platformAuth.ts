@@ -573,7 +573,7 @@ export async function setupPlatformAuth(app: Express) {
       console.log("[PlatformAuth] User email:", user.email);
       
       // Use req.login with keepSessionInfo to preserve session data
-      req.login(user, { keepSessionInfo: true }, (loginErr: any) => {
+      req.login(user, { keepSessionInfo: true }, async (loginErr: any) => {
         if (loginErr) {
           console.error("[PlatformAuth] req.login ERROR:", loginErr.message || loginErr);
           return res.redirect("/?error=facebook_auth_failed&reason=login_error");
@@ -585,6 +585,27 @@ export async function setupPlatformAuth(app: Express) {
         
         console.log("[PlatformAuth] Session ID after login:", req.sessionID);
         console.log("[PlatformAuth] Session userId set to:", req.session.userId);
+        
+        // SYNC: Update database with Facebook ID using session data
+        const googleEmail = req.session?.googleUser?.email || req.session?.pendingGoogleUser?.email;
+        const facebookProfile = req.session?.facebookProfile;
+        
+        if (googleEmail && facebookProfile?.id) {
+          try {
+            const dbUser = await db.query.users.findFirst({
+              where: eq(users.email, googleEmail),
+            });
+            if (dbUser) {
+              await db
+                .update(users)
+                .set({ facebookId: facebookProfile.id })
+                .where(eq(users.id, dbUser.id));
+              console.log(`[PlatformAuth] Auto-synced Facebook ID ${facebookProfile.id} to user ${googleEmail}`);
+            }
+          } catch (syncErr: any) {
+            console.error("[PlatformAuth] Auto-sync error:", syncErr.message);
+          }
+        }
         
         // Save session explicitly before redirect
         req.session.save((saveErr: any) => {
