@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { 
   Search, Filter, DollarSign, Tag, Play, 
   ShoppingCart, TrendingUp, Eye, Clock,
-  Briefcase, Palette, Monitor, Sparkles, X, Globe
+  Briefcase, Palette, Monitor, Sparkles, X, Globe, ExternalLink
 } from "lucide-react";
 import { SiYoutube, SiTwitch, SiFacebook } from "react-icons/si";
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { useHybridMode } from "@/hooks/use-hybrid-mode";
 import { usePitchMode } from "@/contexts/pitch-mode-context";
@@ -137,6 +143,7 @@ export default function BrandMarketplace() {
   const [showCategories, setShowCategories] = useState(true);
   const [activeTab, setActiveTab] = useState<"categories" | "opportunities">("categories");
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [selectedOpportunity, setSelectedOpportunity] = useState<MarketplaceOpportunity | null>(null);
 
   // PRIORITY: isPitchMode toggle is checked FIRST - overrides authentication state
   const isAuthenticated = !!googleUser;
@@ -482,7 +489,11 @@ export default function BrandMarketplace() {
                 transition={{ delay: idx * 0.05 }}
               >
                 <Card className="group overflow-visible hover-elevate cursor-pointer" data-testid={`card-opportunity-${opportunity.id}`}>
-                  <div className="aspect-video relative overflow-hidden rounded-t-md">
+                  <div 
+                    className="aspect-video relative overflow-hidden rounded-t-md cursor-pointer"
+                    onClick={() => setSelectedOpportunity(opportunity)}
+                    data-testid={`thumbnail-opportunity-${opportunity.id}`}
+                  >
                     <img
                       src={(opportunity as any).thumbnailUrl || (opportunity as any).thumbnail_url || `https://picsum.photos/seed/${opportunity.id}/640/360`}
                       alt={opportunity.title}
@@ -491,6 +502,12 @@ export default function BrandMarketplace() {
                         (e.target as HTMLImageElement).src = `https://picsum.photos/seed/${opportunity.id}/640/360`;
                       }}
                     />
+                    {/* Overlay play icon on hover */}
+                    <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200 bg-black/30">
+                      <div className="w-12 h-12 rounded-full bg-white/90 flex items-center justify-center">
+                        <Play className="w-6 h-6 text-black fill-black ml-1" />
+                      </div>
+                    </div>
                     <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent" />
                     
                     <div className="absolute top-2 left-2 flex items-center gap-1.5">
@@ -587,6 +604,123 @@ export default function BrandMarketplace() {
         </> 
         )}
       </div>
+
+      {/* Video Opportunity Detail Modal */}
+      <Dialog open={!!selectedOpportunity} onOpenChange={(open) => !open && setSelectedOpportunity(null)}>
+        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto" data-testid="modal-opportunity-detail">
+          {selectedOpportunity && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="text-xl font-bold">{selectedOpportunity.title}</DialogTitle>
+              </DialogHeader>
+              
+              <div className="space-y-6 py-4">
+                {/* Video thumbnail with platform badges */}
+                <div className="aspect-video relative rounded-lg overflow-hidden bg-black">
+                  <img
+                    src={(selectedOpportunity as any).thumbnailUrl || (selectedOpportunity as any).thumbnail_url || `https://picsum.photos/seed/${selectedOpportunity.id}/1280/720`}
+                    alt={selectedOpportunity.title}
+                    className="w-full h-full object-cover"
+                  />
+                  <div className="absolute top-3 right-3 flex items-center gap-2">
+                    {(selectedOpportunity.platforms || [selectedOpportunity.platform]).filter(Boolean).map((p) => (
+                      <div 
+                        key={p} 
+                        className={`w-8 h-8 rounded-full flex items-center justify-center shadow-lg ${
+                          p === 'twitch' ? 'bg-[#9146FF]' : 
+                          p === 'facebook' ? 'bg-[#1877F2]' : 
+                          'bg-[#FF0000]'
+                        }`}
+                      >
+                        {p === 'twitch' ? <SiTwitch className="w-4 h-4 text-white" /> :
+                         p === 'facebook' ? <SiFacebook className="w-4 h-4 text-white" /> :
+                         <SiYoutube className="w-4 h-4 text-white" />}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="absolute bottom-3 right-3 bg-black/70 px-2 py-1 rounded text-sm text-white">
+                    {selectedOpportunity.duration}
+                  </div>
+                </div>
+
+                {/* Creator info and stats */}
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-primary to-primary/60 flex items-center justify-center text-white font-bold">
+                      {(selectedOpportunity.creatorName || "C").charAt(0)}
+                    </div>
+                    <div>
+                      <p className="font-semibold">{selectedOpportunity.creatorName}</p>
+                      <p className="text-sm text-muted-foreground">Creator</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-4 text-sm">
+                    <div className="flex items-center gap-1 text-muted-foreground">
+                      <Eye className="w-4 h-4" />
+                      <span>{formatViewCount(selectedOpportunity.viewCount)}</span>
+                    </div>
+                    <Badge variant="outline">{selectedOpportunity.genre}</Badge>
+                  </div>
+                </div>
+
+                {/* Placement Opportunities Section */}
+                <div className="bg-card rounded-lg border p-4">
+                  <h3 className="font-semibold mb-3 flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-primary" />
+                    Placement Opportunities
+                  </h3>
+                  <div className="grid grid-cols-2 gap-3">
+                    {selectedOpportunity.surfaces.map((surface, idx) => (
+                      <div key={idx} className="flex items-center justify-between p-3 bg-background rounded-lg border">
+                        <div className="flex items-center gap-2">
+                          <Monitor className="w-4 h-4 text-muted-foreground" />
+                          <span className="text-sm font-medium">{surface}</span>
+                        </div>
+                        <Badge className="bg-emerald-500/20 text-emerald-500 border-emerald-500/30">
+                          Available
+                        </Badge>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Scene Context */}
+                <div className="flex items-center gap-4">
+                  <div className="flex-1 bg-card rounded-lg border p-4">
+                    <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Scene Context</p>
+                    <p className="font-medium">{selectedOpportunity.context}</p>
+                  </div>
+                  <div className="flex-1 bg-card rounded-lg border p-4">
+                    <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Scene Type</p>
+                    <p className="font-medium">{selectedOpportunity.sceneType}</p>
+                  </div>
+                </div>
+
+                {/* Price and Buy */}
+                <div className="flex items-center justify-between p-4 bg-primary/5 rounded-lg border border-primary/20">
+                  <div>
+                    <p className="text-sm text-muted-foreground">Placement Value</p>
+                    <p className="text-3xl font-bold text-emerald-500">${selectedOpportunity.sceneValue}</p>
+                  </div>
+                  <Button 
+                    size="lg" 
+                    className="gap-2"
+                    onClick={() => {
+                      handleBuy(selectedOpportunity);
+                      setSelectedOpportunity(null);
+                    }}
+                    disabled={buyingId === selectedOpportunity.id}
+                    data-testid="button-buy-modal"
+                  >
+                    <ShoppingCart className="w-5 h-5" />
+                    {buyingId === selectedOpportunity.id ? "Processing..." : "Purchase Placement"}
+                  </Button>
+                </div>
+              </div>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

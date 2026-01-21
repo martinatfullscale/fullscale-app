@@ -929,9 +929,90 @@ export async function registerRoutes(
   // Disconnect YouTube
   app.delete("/api/auth/youtube", isFlexibleAuthenticated, async (req: any, res) => {
     const userId = req.authUserId;
-    await storage.deleteYoutubeConnection(userId);
+    const userEmail = req.authEmail;
+    console.log(`[YouTube Disconnect] Disconnecting for userId: ${userId}, email: ${userEmail}`);
+    await storage.deleteYoutubeConnection(userId, userEmail);
     await storage.deleteVideoIndex(userId);
     res.json({ success: true });
+  });
+
+  // Sync YouTube videos from API to database
+  app.post("/api/youtube/sync", isFlexibleAuthenticated, async (req: any, res) => {
+    const userId = req.authUserId;
+    const authEmail = req.authEmail;
+    console.log(`[YouTube Sync] Syncing videos for userId: ${userId}`);
+    
+    // Find YouTube connection
+    let connection = await storage.getYoutubeConnection(userId);
+    if (!connection && authEmail && authEmail !== userId) {
+      connection = await storage.getYoutubeConnection(authEmail);
+    }
+    
+    if (!connection) {
+      return res.status(400).json({ error: "YouTube not connected" });
+    }
+
+    try {
+      let accessToken = connection.accessToken;
+      
+      // Refresh token if expired
+      if (connection.expiresAt && new Date(connection.expiresAt) < new Date()) {
+        if (connection.refreshToken) {
+          const refreshed = await refreshAccessToken(connection.refreshToken);
+          if (refreshed) {
+            accessToken = refreshed.access_token;
+            await storage.upsertYoutubeConnection({
+              userId: connection.userId,
+              accessToken: refreshed.access_token,
+              refreshToken: connection.refreshToken,
+              expiresAt: new Date(Date.now() + refreshed.expires_in * 1000),
+              channelId: connection.channelId,
+              channelTitle: connection.channelTitle,
+            });
+          }
+        }
+      }
+
+      // Get channel info for uploads playlist
+      const channelData = await getYoutubeChannelInfo(accessToken);
+      const channel = channelData.items?.[0];
+      const uploadsPlaylistId = channel?.contentDetails?.relatedPlaylists?.uploads;
+
+      if (!uploadsPlaylistId) {
+        return res.json({ success: true, imported: 0, message: "No uploads found on channel" });
+      }
+
+      // Get up to 50 videos from YouTube
+      const videosData = await getYoutubeVideos(accessToken, uploadsPlaylistId, 50);
+      const ytVideos = videosData.items || [];
+      
+      let importedCount = 0;
+      for (const item of ytVideos) {
+        const videoId = item.contentDetails?.videoId || item.id;
+        try {
+          await storage.upsertVideoIndex({
+            userId: userId,
+            youtubeId: videoId,
+            title: item.snippet.title,
+            description: item.snippet.description || '',
+            thumbnailUrl: getYouTubeThumbnailWithFallback(videoId),
+            platform: 'youtube',
+            viewCount: 0,
+            status: 'Pending Scan',
+            priorityScore: 50,
+          });
+          importedCount++;
+        } catch (err) {
+          console.error(`[YouTube Sync] Failed to import video ${videoId}:`, err);
+        }
+      }
+
+      console.log(`[YouTube Sync] Imported ${importedCount} videos for user ${userId}`);
+      res.json({ success: true, imported: importedCount });
+    } catch (err: any) {
+      console.error("[YouTube Sync] Error:", err);
+      res.status(500).json({ error: "Failed to sync YouTube videos" });
+    }
   });
 
   // Get indexed videos for the user's library
@@ -1579,7 +1660,7 @@ export async function registerRoutes(
         return res.status(404).json({ error: "User not found. Please reconnect your Facebook account." });
       }
       
-      if (!user.facebookAccessToken || !user.facebookPageId) {
+      if (!user.facebookAccessToken) {
         return res.status(400).json({ error: "Facebook not connected. Please connect your Facebook account first." });
       }
       
@@ -1589,17 +1670,84 @@ export async function registerRoutes(
       // Use the user's ID for storing videos
       const userIdForVideos = user.id;
       
+      // If Page data wasn't fetched during login, fetch it now
+      let pageId = user.facebookPageId;
+      let instagramBusinessId = user.instagramBusinessId;
+      
+      if (!pageId) {
+        console.log("[Sync] Page data not found, fetching from Graph API...");
+        try {
+          // Fetch Page data on demand
+          const pagesUrl = `https://graph.facebook.com/v18.0/me/accounts?fields=id,name,fan_count,access_token,instagram_business_account&access_token=${accessToken}`;
+          const pagesResponse = await fetch(pagesUrl);
+          const pagesData = await pagesResponse.json();
+          
+          if (pagesData.data && pagesData.data.length > 0) {
+            const page = pagesData.data[0];
+            pageId = page.id;
+            
+            // Update user with Page data
+            const updateData: Record<string, any> = {
+              facebookPageId: page.id,
+              facebookPageName: page.name,
+              facebookFollowers: page.fan_count || 0,
+            };
+            
+            // Check for Instagram Business Account
+            if (page.instagram_business_account?.id) {
+              const igId = page.instagram_business_account.id;
+              const igUrl = `https://graph.facebook.com/v18.0/${igId}?fields=username,followers_count&access_token=${page.access_token}`;
+              const igResponse = await fetch(igUrl);
+              const igData = await igResponse.json();
+              
+              if (igData.username) {
+                updateData.instagramBusinessId = igId;
+                updateData.instagramHandle = `@${igData.username}`;
+                updateData.instagramFollowers = igData.followers_count || 0;
+                instagramBusinessId = igId;
+              }
+            }
+            
+            await db.update(users).set(updateData).where(eq(users.id, user.id));
+            console.log(`[Sync] Updated user ${user.id} with Page data: ${page.name}`);
+          } else {
+            return res.status(400).json({ error: "No Facebook Pages found. Please ensure you have a Facebook Page to import videos from." });
+          }
+        } catch (err) {
+          console.error("[Sync] Error fetching Page data:", err);
+          return res.status(500).json({ error: "Failed to fetch Facebook Page data" });
+        }
+      }
+      
       let facebookImported = 0;
       let instagramImported = 0;
       
-      // Import Facebook Page videos
-      if (user.facebookPageId) {
-        facebookImported = await importFacebookVideos(userIdForVideos, user.facebookPageId, accessToken);
+      // Get page access token for video API calls
+      let pageAccessToken = accessToken;
+      try {
+        const pagesUrl = `https://graph.facebook.com/v18.0/me/accounts?fields=id,access_token&access_token=${accessToken}`;
+        const pagesResponse = await fetch(pagesUrl);
+        const pagesData = await pagesResponse.json();
+        if (pagesData.data && pagesData.data.length > 0) {
+          const page = pagesData.data.find((p: any) => p.id === pageId) || pagesData.data[0];
+          if (page.access_token) {
+            pageAccessToken = page.access_token;
+            console.log(`[Sync] Using page access token for video import`);
+          }
+        }
+      } catch (err) {
+        console.log(`[Sync] Could not get page token, using user token`);
       }
       
-      // Import Instagram media if connected
-      if (user.instagramBusinessId) {
-        instagramImported = await importInstagramMedia(userIdForVideos, user.instagramBusinessId, accessToken);
+      // Import Facebook Page videos using page access token
+      if (pageId) {
+        facebookImported = await importFacebookVideos(userIdForVideos, pageId, pageAccessToken);
+      }
+      
+      // Import Instagram media if connected (uses page access token for IG Business)
+      if (instagramBusinessId || user.instagramBusinessId) {
+        const igId = instagramBusinessId || user.instagramBusinessId;
+        instagramImported = await importInstagramMedia(userIdForVideos, igId, pageAccessToken);
       }
       
       res.json({

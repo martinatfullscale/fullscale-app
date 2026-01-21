@@ -8,6 +8,8 @@ import { useHybridMode } from "@/hooks/use-hybrid-mode";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { UploadModal } from "@/components/UploadModal";
 import { SceneAnalysisModal, DEMO_VIDEO_SCENES, VideoWithScenes } from "@/components/SceneAnalysisModal";
 import { useLocation } from "wouter";
@@ -157,15 +159,15 @@ function SyncSocialButton() {
   });
 
   return (
-    <button
+    <Button
       onClick={() => syncMutation.mutate()}
       disabled={syncMutation.isPending}
       data-testid="button-sync-social"
-      className="w-full text-left px-4 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-600/90 disabled:opacity-50 text-white text-sm font-medium transition-colors flex items-center gap-2"
+      className="w-full justify-start"
     >
-      <RefreshCw className={`w-4 h-4 ${syncMutation.isPending ? 'animate-spin' : ''}`} />
+      <RefreshCw className={`w-4 h-4 mr-2 ${syncMutation.isPending ? 'animate-spin' : ''}`} />
       {syncMutation.isPending ? 'Syncing...' : 'Sync Facebook & Instagram Content'}
-    </button>
+    </Button>
   );
 }
 
@@ -487,6 +489,24 @@ export default function Dashboard() {
     },
   });
 
+  const syncYouTubeMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch("/api/youtube/sync", { method: "POST", credentials: "include" });
+      if (!res.ok) throw new Error("Failed to sync");
+      return res.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/youtube/videos"] });
+      toast({ 
+        title: "Videos Synced", 
+        description: `Imported ${data.imported} videos from your YouTube channel.` 
+      });
+    },
+    onError: () => {
+      toast({ title: "Sync Failed", description: "Could not sync YouTube videos.", variant: "destructive" });
+    },
+  });
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get("youtube_connected") === "true") {
@@ -705,14 +725,14 @@ export default function Dashboard() {
                   Connect your YouTube channel to start tracking monetization opportunities and brand campaigns.
                 </p>
                 {!isConnected && (
-                  <button
+                  <Button
                     onClick={handleConnect}
-                    className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors inline-flex items-center gap-2"
+                    variant="destructive"
                     data-testid="button-connect-youtube-chart"
                   >
-                    <Youtube className="w-4 h-4" />
+                    <Youtube className="w-4 h-4 mr-2" />
                     Connect YouTube
-                  </button>
+                  </Button>
                 )}
               </motion.div>
             )}
@@ -728,62 +748,61 @@ export default function Dashboard() {
               <h3 className="font-semibold mb-4">Quick Actions</h3>
               <div className="space-y-3">
                 {(isDemoMode ? !simulatedConnected : !isConnected) && (
-                  <button
+                  <Button
                     onClick={isDemoMode ? handleSimulatedConnect : handleConnect}
                     disabled={isSimulatingConnect}
                     data-testid="button-connect-youtube"
-                    className={`w-full text-left px-4 py-3 rounded-xl text-white text-sm font-medium transition-all flex items-center gap-2 ${
-                      isSimulatingConnect 
-                        ? "bg-yellow-600 cursor-not-allowed" 
-                        : "bg-red-600 hover:bg-red-700"
-                    }`}
+                    variant={isSimulatingConnect ? "secondary" : "destructive"}
+                    className="w-full justify-start"
                   >
                     {isSimulatingConnect ? (
                       <>
-                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                         Connecting to Google API...
                       </>
                     ) : (
                       <>
-                        <Youtube className="w-4 h-4" />
+                        <Youtube className="w-4 h-4 mr-2" />
                         Connect YouTube
                       </>
                     )}
-                  </button>
+                  </Button>
                 )}
                 {(isDemoMode && simulatedConnected) && (
-                  <button
+                  <Button
                     disabled
                     data-testid="button-youtube-synced"
-                    className="w-full text-left px-4 py-3 rounded-xl bg-emerald-600/20 text-emerald-400 text-sm font-medium flex items-center gap-2 border border-emerald-500/30"
+                    variant="outline"
+                    className="w-full justify-start text-emerald-400 border-emerald-500/30"
                   >
-                    <CheckCircle className="w-4 h-4" />
+                    <CheckCircle className="w-4 h-4 mr-2" />
                     Channel Synced: @MartinCreators
-                  </button>
+                  </Button>
                 )}
                 {(isRealMode && isConnected) && (
-                  <button
+                  <Button
                     disabled
                     data-testid="button-youtube-synced-real"
-                    className="w-full text-left px-4 py-3 rounded-xl bg-emerald-600/20 text-emerald-400 text-sm font-medium flex items-center gap-2 border border-emerald-500/30"
+                    variant="outline"
+                    className="w-full justify-start text-emerald-400 border-emerald-500/30"
                   >
-                    <CheckCircle className="w-4 h-4" />
+                    <CheckCircle className="w-4 h-4 mr-2" />
                     Channel Synced: {channelData?.title || youtubeStatus?.channelTitle || "YouTube"}
-                  </button>
+                  </Button>
                 )}
-                <button 
+                <Button 
                   onClick={() => setUploadModalOpen(true)}
-                  className="w-full text-left px-4 py-3 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium transition-colors"
+                  className="w-full justify-start"
                   data-testid="button-upload-manual-dashboard"
                 >
                   Upload Manual Asset
-                </button>
-                <button className="w-full text-left px-4 py-3 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium transition-colors">
+                </Button>
+                <Button variant="outline" className="w-full justify-start" data-testid="button-configure-webhooks">
                   Configure Webhooks
-                </button>
-                <button className="w-full text-left px-4 py-3 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium transition-colors">
+                </Button>
+                <Button variant="outline" className="w-full justify-start" data-testid="button-view-api-docs">
                   View API Documentation
-                </button>
+                </Button>
               </div>
             </motion.div>
 
@@ -799,31 +818,32 @@ export default function Dashboard() {
                 <h3 className="font-semibold">Connect Platforms</h3>
               </div>
               <div className="space-y-3">
-                <button
+                <Button
                   onClick={() => window.location.href = "/auth/facebook"}
                   data-testid="button-connect-facebook"
-                  className="w-full text-left px-4 py-3 rounded-xl bg-[#1877F2] hover:bg-[#1877F2]/90 text-white text-sm font-medium transition-colors flex items-center gap-2"
+                  className="w-full justify-start bg-[#1877F2] text-white border-[#1877F2]"
                 >
-                  <SiFacebook className="w-4 h-4" />
+                  <SiFacebook className="w-4 h-4 mr-2" />
                   Connect Facebook Page
-                </button>
-                <button
+                </Button>
+                <Button
                   onClick={() => window.location.href = "/auth/facebook"}
                   data-testid="button-connect-instagram"
-                  className="w-full text-left px-4 py-3 rounded-xl bg-gradient-to-r from-[#833AB4] via-[#E1306C] to-[#F77737] hover:opacity-90 text-white text-sm font-medium transition-colors flex items-center gap-2"
+                  className="w-full justify-start bg-gradient-to-r from-[#833AB4] via-[#E1306C] to-[#F77737] text-white border-transparent"
                 >
-                  <SiInstagram className="w-4 h-4" />
+                  <SiInstagram className="w-4 h-4 mr-2" />
                   Connect Instagram Business
-                </button>
+                </Button>
                 <SyncSocialButton />
-                <button
+                <Button
                   onClick={() => setLocation("/settings")}
                   data-testid="button-manage-connections"
-                  className="w-full text-left px-4 py-3 rounded-xl bg-white/5 hover:bg-white/10 text-muted-foreground text-sm font-medium transition-colors flex items-center gap-2"
+                  variant="ghost"
+                  className="w-full justify-start"
                 >
-                  <Link2 className="w-4 h-4" />
+                  <Link2 className="w-4 h-4 mr-2" />
                   Manage All Connections
-                </button>
+                </Button>
               </div>
             </motion.div>
 
@@ -878,30 +898,52 @@ export default function Dashboard() {
               
               {((isDemoMode && simulatedConnected) || (isRealMode && isConnected)) ? (
                 <>
-                  <p className="text-sm text-muted-foreground mb-6">
+                  <p className="text-sm text-muted-foreground mb-4">
                     {isDemoMode && simulatedConnected 
                       ? "Your channel with 125,400 subscribers is connected. 45 videos imported."
                       : `Your channel with ${channelData?.subscriberCount ? parseInt(channelData.subscriberCount).toLocaleString() : "0"} subscribers is connected.${indexedVideos.length > 0 ? ` ${indexedVideos.length} videos indexed.` : ""}`
                     }
                   </p>
-                  <button
-                    onClick={isDemoMode ? () => setSimulatedConnected(false) : handleDisconnect}
-                    disabled={disconnectMutation.isPending}
-                    data-testid="button-disconnect-youtube"
-                    className="w-full py-3 px-4 bg-destructive/10 hover:bg-destructive/20 text-destructive font-semibold rounded-xl border border-destructive/20 transition-all duration-200 flex items-center justify-center gap-2"
-                  >
-                    {disconnectMutation.isPending ? (
-                      <>
-                        <span className="w-4 h-4 border-2 border-destructive/30 border-t-destructive rounded-full animate-spin" />
-                        Disconnecting...
-                      </>
-                    ) : (
-                      <>
-                        <Unlink className="w-4 h-4" />
-                        Disconnect Channel
-                      </>
-                    )}
-                  </button>
+                  <div className="flex flex-col gap-2">
+                    <Button
+                      variant="outline"
+                      onClick={() => syncYouTubeMutation.mutate()}
+                      disabled={syncYouTubeMutation.isPending || isDemoMode}
+                      data-testid="button-sync-youtube"
+                      className="w-full"
+                    >
+                      {syncYouTubeMutation.isPending ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                          Syncing Videos...
+                        </>
+                      ) : (
+                        <>
+                          <RefreshCw className="w-4 h-4 mr-2" />
+                          Sync Videos
+                        </>
+                      )}
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      onClick={isDemoMode ? () => setSimulatedConnected(false) : handleDisconnect}
+                      disabled={disconnectMutation.isPending}
+                      data-testid="button-disconnect-youtube"
+                      className="w-full"
+                    >
+                      {disconnectMutation.isPending ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                          Disconnecting...
+                        </>
+                      ) : (
+                        <>
+                          <Unlink className="w-4 h-4 mr-2" />
+                          Disconnect Channel
+                        </>
+                      )}
+                    </Button>
+                  </div>
                 </>
               ) : (
                 <p className="text-sm text-muted-foreground">
@@ -930,14 +972,15 @@ export default function Dashboard() {
               </div>
               <div className="flex items-center gap-3">
                 {indexedVideos.some(v => v.status === "Pending Scan") && (
-                  <button
+                  <Button
                     onClick={() => batchScanMutation.mutate()}
                     disabled={batchScanMutation.isPending}
-                    className="px-3 py-1 text-xs font-medium bg-primary/20 text-primary rounded-full hover:bg-primary/30 transition-colors"
+                    variant="secondary"
+                    size="sm"
                     data-testid="button-scan-all"
                   >
                     {batchScanMutation.isPending ? "Scanning..." : "Scan All Pending"}
-                  </button>
+                  </Button>
                 )}
                 {indexedVideos.length > 0 && (
                   <span className="px-2 py-1 rounded-full bg-emerald-500/20 text-emerald-400 text-xs font-medium">
@@ -1003,22 +1046,22 @@ export default function Dashboard() {
                             </span>
                           )}
                           {status === "Pending Scan" ? (
-                            <button
-                              onClick={() => scanMutation.mutate(video.id)}
+                            <Button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                scanMutation.mutate(video.id);
+                              }}
                               disabled={scanMutation.isPending}
-                              className="px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30 transition-colors"
+                              variant="secondary"
+                              size="sm"
                               data-testid={`button-scan-${video.id}`}
                             >
                               Scan
-                            </button>
+                            </Button>
                           ) : (
-                            <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                              status === "Scan Failed"
-                                ? "bg-red-500/20 text-red-400"
-                                : "bg-emerald-500/20 text-emerald-400"
-                            }`}>
+                            <Badge variant={status === "Scan Failed" ? "destructive" : "outline"} className={status === "Scan Failed" ? "" : "text-emerald-400 border-emerald-500/30"}>
                               {status}
-                            </span>
+                            </Badge>
                           )}
                         </div>
                       </div>
@@ -1031,13 +1074,13 @@ export default function Dashboard() {
             
             {indexedVideos.length > 6 && (
               <div className="px-6 py-3 border-t border-white/5 text-center">
-                <button
+                <Button
                   onClick={() => setLocation("/library")}
-                  className="text-sm text-primary hover:text-primary/80 font-medium"
+                  variant="link"
                   data-testid="button-view-all-library"
                 >
                   View all {indexedVideos.length} videos
-                </button>
+                </Button>
               </div>
             )}
           </motion.div>

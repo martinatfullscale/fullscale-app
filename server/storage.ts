@@ -38,7 +38,7 @@ export interface IStorage {
   createMonetizationItem(item: InsertMonetizationItem): Promise<MonetizationItem>;
   getYoutubeConnection(userId: string): Promise<YoutubeConnection | undefined>;
   upsertYoutubeConnection(connection: InsertYoutubeConnection): Promise<YoutubeConnection>;
-  deleteYoutubeConnection(userId: string): Promise<void>;
+  deleteYoutubeConnection(userId: string, userEmail?: string): Promise<void>;
   isEmailAllowed(email: string): Promise<boolean>;
   addAllowedUser(user: InsertAllowedUser): Promise<AllowedUser>;
   getAllowedUsers(): Promise<AllowedUser[]>;
@@ -168,8 +168,13 @@ export class DatabaseStorage implements IStorage {
     return result;
   }
 
-  async deleteYoutubeConnection(userId: string): Promise<void> {
+  async deleteYoutubeConnection(userId: string, userEmail?: string): Promise<void> {
+    // Delete by userId first
     await db.delete(youtubeConnections).where(eq(youtubeConnections.userId, userId));
+    // Also try to delete by email if provided (for legacy connections)
+    if (userEmail && userEmail !== userId) {
+      await db.delete(youtubeConnections).where(eq(youtubeConnections.userId, userEmail));
+    }
   }
 
   async isEmailAllowed(email: string): Promise<boolean> {
