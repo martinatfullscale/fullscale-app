@@ -48,6 +48,15 @@ export const insertAllowedUserSchema = createInsertSchema(allowedUsers).omit({
 export type AllowedUser = typeof allowedUsers.$inferSelect;
 export type InsertAllowedUser = z.infer<typeof insertAllowedUserSchema>;
 
+// OAuth States Table - stores state tokens for OAuth CSRF protection (survives server restarts)
+export const oauthStates = pgTable("oauth_states", {
+  state: varchar("state").primaryKey(),
+  expiresAt: timestamp("expires_at").notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export type OAuthState = typeof oauthStates.$inferSelect;
+
 // Monetization Items Table - Brand bids on creator video surfaces
 export const monetizationItems = pgTable("monetization_items", {
   id: serial("id").primaryKey(),
