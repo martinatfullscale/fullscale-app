@@ -1745,8 +1745,8 @@ export async function registerRoutes(
       }
       
       // Import Instagram media if connected (uses page access token for IG Business)
-      if (instagramBusinessId || user.instagramBusinessId) {
-        const igId = instagramBusinessId || user.instagramBusinessId;
+      const igId = instagramBusinessId || user.instagramBusinessId;
+      if (igId) {
         instagramImported = await importInstagramMedia(userIdForVideos, igId, pageAccessToken);
       }
       

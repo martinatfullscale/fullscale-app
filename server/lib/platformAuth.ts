@@ -338,7 +338,9 @@ export async function setupPlatformAuth(app: Express) {
             done: (err: Error | null, user?: any) => void
           ) => {
             try {
+              // Support multiple auth methods: Replit OIDC, session userId, AND Google OAuth
               const existingLoggedInUser = req.user?.claims?.sub || req.session?.userId;
+              const googleUserEmail = req.session?.googleUser?.email;
               const fbEmail = profile.emails?.[0]?.value;
               
               // FAST LOGIN: Only save basic Facebook ID, defer Page data fetch to manual sync
@@ -386,6 +388,26 @@ export async function setupPlatformAuth(app: Express) {
                   displayName: profile.displayName
                 };
                 return done(null, req.user);
+              }
+              
+              // If logged in with Google OAuth, link Facebook to that account
+              if (googleUserEmail) {
+                const googleUser = await db.query.users.findFirst({
+                  where: eq(users.email, googleUserEmail),
+                });
+                if (googleUser) {
+                  await db
+                    .update(users)
+                    .set(socialDataUpdate)
+                    .where(eq(users.id, googleUser.id));
+                  console.log(`[PlatformAuth] Linked Facebook account ${profile.displayName} to Google OAuth user ${googleUserEmail}`);
+                  req.session.userId = googleUser.id;
+                  req.session.facebookProfile = { 
+                    id: profile.id, 
+                    displayName: profile.displayName
+                  };
+                  return done(null, googleUser);
+                }
               }
 
               // Check if user exists by email (to link accounts)
