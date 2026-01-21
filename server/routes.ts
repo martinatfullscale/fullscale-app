@@ -1647,9 +1647,15 @@ export async function registerRoutes(
   });
 
   // Get full YouTube channel data (with profile picture and stats)
-  app.get("/api/youtube/channel", isGoogleAuthenticated, async (req: any, res) => {
-    const userId = req.googleUser.email;
-    const connection = await storage.getYoutubeConnection(userId);
+  app.get("/api/youtube/channel", isFlexibleAuthenticated, async (req: any, res) => {
+    const userId = req.authUserId;
+    const authEmail = req.authEmail;
+    
+    // Try to find connection by user ID first, then by email as fallback
+    let connection = await storage.getYoutubeConnection(userId);
+    if (!connection && authEmail && authEmail !== userId) {
+      connection = await storage.getYoutubeConnection(authEmail);
+    }
     
     if (!connection) {
       return res.json({ connected: false });
@@ -1701,12 +1707,16 @@ export async function registerRoutes(
   });
 
   // Get user's latest YouTube videos (from API + local database)
-  app.get("/api/youtube/videos", isGoogleAuthenticated, async (req: any, res) => {
-    const userId = req.googleUser.email;
-    console.log(`[YouTube Videos] Fetching videos for userId: ${userId}`);
-    console.log(`[YouTube Videos] googleUser object:`, JSON.stringify(req.googleUser));
+  app.get("/api/youtube/videos", isFlexibleAuthenticated, async (req: any, res) => {
+    const userId = req.authUserId;
+    const authEmail = req.authEmail;
+    console.log(`[YouTube Videos] Fetching videos for userId: ${userId}, email: ${authEmail}`);
     
-    const connection = await storage.getYoutubeConnection(userId);
+    // Try to find connection by user ID first, then by email as fallback
+    let connection = await storage.getYoutubeConnection(userId);
+    if (!connection && authEmail && authEmail !== userId) {
+      connection = await storage.getYoutubeConnection(authEmail);
+    }
     console.log(`[YouTube Videos] YouTube connection found: ${!!connection}`);
     
     // Always get locally stored/uploaded videos from video_index
