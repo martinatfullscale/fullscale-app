@@ -1076,7 +1076,7 @@ export default function Dashboard() {
               <div className="px-6 py-3 border-t border-white/5 text-center">
                 <Button
                   onClick={() => setLocation("/library")}
-                  variant="link"
+                  variant="ghost"
                   data-testid="button-view-all-library"
                 >
                   View all {indexedVideos.length} videos
