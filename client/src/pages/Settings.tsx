@@ -565,43 +565,63 @@ export default function Settings() {
                       </div>
 
                       {/* Instagram Source Selection */}
-                      {facebookSources.some(s => s.instagramAccount) && (
-                        <div className="space-y-2">
-                          <Label className="text-white flex items-center gap-2">
-                            <SiInstagram className="w-4 h-4 text-[#E4405F]" />
-                            Instagram Business Account
-                          </Label>
-                          <Select
-                            value={selectedInstagramSource}
-                            onValueChange={setSelectedInstagramSource}
-                          >
-                            <SelectTrigger className="bg-black/30 border-white/10 text-white" data-testid="select-instagram-source">
-                              <SelectValue placeholder="Select an Instagram account" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="">No Instagram account</SelectItem>
-                              {facebookSources
-                                .filter(s => s.instagramAccount)
-                                .map((source) => (
-                                  <SelectItem key={source.instagramAccount!.id} value={source.instagramAccount!.id}>
-                                    <div className="flex items-center gap-2">
-                                      <span>@{source.instagramAccount!.username}</span>
-                                      <span className="text-xs text-muted-foreground">
-                                        (linked to {source.name})
-                                      </span>
-                                      <span className="text-xs text-muted-foreground">
-                                        {formatFollowers(source.instagramAccount!.followers)} followers
-                                      </span>
-                                    </div>
-                                  </SelectItem>
-                                ))}
-                            </SelectContent>
-                          </Select>
-                          <p className="text-xs text-muted-foreground">
-                            Instagram Business accounts are linked through Facebook Pages
-                          </p>
-                        </div>
-                      )}
+                      <div className="space-y-2">
+                        <Label className="text-white flex items-center gap-2">
+                          <SiInstagram className="w-4 h-4 text-[#E4405F]" />
+                          Instagram Business Account
+                        </Label>
+                        {facebookSources.some(s => s.instagramAccount) ? (
+                          <>
+                            <Select
+                              value={selectedInstagramSource}
+                              onValueChange={setSelectedInstagramSource}
+                            >
+                              <SelectTrigger className="bg-black/30 border-white/10 text-white" data-testid="select-instagram-source">
+                                <SelectValue placeholder="Select an Instagram account" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="">No Instagram account</SelectItem>
+                                {facebookSources
+                                  .filter(s => s.instagramAccount)
+                                  .map((source) => (
+                                    <SelectItem key={source.instagramAccount!.id} value={source.instagramAccount!.id}>
+                                      <div className="flex items-center gap-2">
+                                        <span>@{source.instagramAccount!.username}</span>
+                                        <span className="text-xs text-muted-foreground">
+                                          (linked to {source.name})
+                                        </span>
+                                        <span className="text-xs text-muted-foreground">
+                                          {formatFollowers(source.instagramAccount!.followers)} followers
+                                        </span>
+                                      </div>
+                                    </SelectItem>
+                                  ))}
+                              </SelectContent>
+                            </Select>
+                            <p className="text-xs text-muted-foreground">
+                              Instagram Business accounts are linked through Facebook Pages
+                            </p>
+                          </>
+                        ) : (
+                          <div className="bg-black/20 border border-white/10 rounded-lg p-4">
+                            <p className="text-sm text-muted-foreground mb-2">
+                              No Instagram Business accounts found linked to your Facebook Pages.
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              To import Instagram content, you need an Instagram Business or Creator account 
+                              linked to one of your Facebook Pages. You can set this up in 
+                              <a 
+                                href="https://business.facebook.com/settings/instagram-account-linking" 
+                                target="_blank" 
+                                rel="noopener noreferrer"
+                                className="text-[#E4405F] hover:underline ml-1"
+                              >
+                                Meta Business Suite
+                              </a>.
+                            </p>
+                          </div>
+                        )}
+                      </div>
 
                       <Button
                         onClick={handleSaveSourceSelection}
