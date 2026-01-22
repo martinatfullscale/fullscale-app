@@ -1624,7 +1624,8 @@ export async function registerRoutes(
   });
 
   // Sync Facebook and Instagram content into video library
-  app.post("/api/sync/facebook-instagram", isFlexibleAuthenticated, async (req: any, res) => {
+  // Supports both GET (for testing) and POST (for production use)
+  app.all("/api/sync/facebook-instagram", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       // Get user identifier from multiple auth methods
       const sessionUserId = req.session?.userId;
