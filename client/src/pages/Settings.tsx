@@ -497,6 +497,78 @@ export default function Settings() {
                   </div>
                 )}
 
+                {/* Instagram Business Connection Card - Always visible */}
+                <div className="mt-6 bg-black/30 rounded-xl border border-white/5 p-6">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="w-10 h-10 bg-gradient-to-br from-[#833AB4] via-[#E4405F] to-[#FCAF45] rounded-lg flex items-center justify-center">
+                      <SiInstagram className="w-5 h-5 text-white" />
+                    </div>
+                    <div>
+                      <h3 className="text-lg font-semibold text-white">Instagram Business</h3>
+                      <p className="text-sm text-muted-foreground">Import videos and reels from your Instagram account</p>
+                    </div>
+                  </div>
+                  
+                  {isFacebookConnected && facebookSources.some(s => s.instagramAccount) ? (
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-2 text-emerald-400">
+                        <CheckCircle className="w-4 h-4" />
+                        <span className="text-sm">Instagram Business connected</span>
+                      </div>
+                      <div className="space-y-2">
+                        {facebookSources.filter(s => s.instagramAccount).map(source => (
+                          <div key={source.instagramAccount!.id} className="flex items-center gap-3 p-3 rounded-lg bg-white/5 border border-white/5">
+                            <SiInstagram className="w-5 h-5 text-[#E4405F]" />
+                            <div className="flex-1">
+                              <p className="text-sm font-medium text-white">@{source.instagramAccount!.username}</p>
+                              <p className="text-xs text-muted-foreground">Linked to {source.name}</p>
+                            </div>
+                            <div className="text-right">
+                              <p className="text-sm font-medium text-white">{formatFollowers(source.instagramAccount!.followers)}</p>
+                              <p className="text-xs text-muted-foreground">followers</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : isFacebookConnected ? (
+                    <div className="space-y-3">
+                      <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-4">
+                        <p className="text-sm text-amber-200 mb-2">
+                          No Instagram Business account found linked to your Facebook Pages.
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          To import Instagram content, your Instagram account must be a Business or Creator account 
+                          linked to a Facebook Page you manage.
+                        </p>
+                      </div>
+                      <a 
+                        href="https://business.facebook.com/settings/instagram-account-linking" 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-2 text-sm text-[#E4405F] hover:underline"
+                      >
+                        <ExternalLink className="w-4 h-4" />
+                        Link Instagram in Meta Business Suite
+                      </a>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <p className="text-sm text-muted-foreground">
+                        Connect your Facebook Page first, then link your Instagram Business account to import content.
+                      </p>
+                      <Button
+                        onClick={() => handleConnectSocial("facebook")}
+                        className="w-full bg-gradient-to-r from-[#833AB4] via-[#E4405F] to-[#FCAF45] hover:opacity-90"
+                        data-testid="button-connect-instagram-via-facebook"
+                      >
+                        <SiFacebook className="w-4 h-4 mr-2" />
+                        Connect Facebook to Enable Instagram
+                      </Button>
+                    </div>
+                  )}
+                </div>
+
                 {/* Facebook/Instagram Source Selection */}
                 {isFacebookConnected && facebookSources.length > 0 && (
                   <div className="mt-6 bg-black/30 rounded-xl border border-white/5 p-6">
