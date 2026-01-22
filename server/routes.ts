@@ -823,14 +823,22 @@ export async function registerRoutes(
   
   // Initiate YouTube OAuth flow
   app.get("/api/auth/youtube", isGoogleAuthenticated, (req: any, res) => {
-    const baseUrl = process.env.BASE_URL;
-    if (!baseUrl) {
-      console.error("BASE_URL environment variable is not set");
-      return res.redirect("/?youtube_error=configuration_error");
+    try {
+      console.log("[YouTube OAuth] ========== INITIATING ==========");
+      const baseUrl = process.env.BASE_URL;
+      if (!baseUrl) {
+        console.error("[YouTube OAuth] BASE_URL environment variable is not set");
+        return res.redirect("/?youtube_error=configuration_error");
+      }
+      const redirectUri = `${baseUrl}/api/auth/youtube/callback`;
+      console.log("[YouTube OAuth] Redirect URI:", redirectUri);
+      const authUrl = getYoutubeAuthUrl(redirectUri);
+      console.log("[YouTube OAuth] Auth URL generated, redirecting...");
+      res.redirect(authUrl);
+    } catch (err: any) {
+      console.error("[YouTube OAuth] Error initiating:", err.message, err.stack);
+      return res.status(500).json({ error: "Failed to initiate YouTube OAuth" });
     }
-    const redirectUri = `${baseUrl}/api/auth/youtube/callback`;
-    const authUrl = getYoutubeAuthUrl(redirectUri);
-    res.redirect(authUrl);
   });
 
   // YouTube OAuth callback - uses redirect middleware for graceful session handling
