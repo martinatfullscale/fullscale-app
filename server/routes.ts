@@ -8,7 +8,7 @@ import { runIndexerForUser } from "./lib/indexer";
 import { processVideoScan, scanPendingVideos, addToLocalAssetMap, getYouTubeThumbnailWithFallback } from "./lib/scanner";
 import { hashPassword, verifyPassword } from "./lib/password";
 import { addSignupToAirtable } from "./lib/airtable";
-import { setupPlatformAuth, importFacebookVideos, importInstagramMedia } from "./lib/platformAuth";
+import { setupPlatformAuth, importFacebookVideos, importInstagramMedia, importPersonalVideos } from "./lib/platformAuth";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
@@ -1686,14 +1686,43 @@ export async function registerRoutes(
       // Use the user's ID for storing videos
       const userIdForVideos = user.id;
       
-      // If Page data wasn't fetched during login, fetch it now
+      // Get Page and Instagram Business Account info
       let pageId = user.facebookPageId;
       let instagramBusinessId = user.instagramBusinessId;
       
-      if (!pageId) {
-        console.log("[Sync] Page data not found, fetching from Graph API...");
+      let facebookImported = 0;
+      let instagramImported = 0;
+      let personalImported = 0;
+      
+      // Import from personal profile (always try - uses user_videos permission)
+      console.log("[Sync] Importing from personal profile...");
+      try {
+        personalImported = await importPersonalVideos(userIdForVideos, accessToken);
+      } catch (err) {
+        console.log("[Sync] Could not import personal videos:", err);
+      }
+      
+      // If user has a Page selected, also import Page videos
+      if (pageId) {
+        console.log(`[Sync] Importing from Page ${pageId}...`);
         try {
-          // Fetch Page data on demand
+          // Get page access token
+          const pagesUrl = `https://graph.facebook.com/v18.0/me/accounts?fields=id,access_token&access_token=${accessToken}`;
+          const pagesResponse = await fetch(pagesUrl);
+          const pagesData = await pagesResponse.json();
+          
+          if (pagesData.data && pagesData.data.length > 0) {
+            const page = pagesData.data.find((p: any) => p.id === pageId) || pagesData.data[0];
+            const pageAccessToken = page.access_token || accessToken;
+            facebookImported = await importFacebookVideos(userIdForVideos, pageId, pageAccessToken);
+          }
+        } catch (err) {
+          console.log("[Sync] Could not import Page videos:", err);
+        }
+      } else {
+        // Try to find and import from any available Pages
+        console.log("[Sync] No Page selected, checking for available Pages...");
+        try {
           const pagesUrl = `https://graph.facebook.com/v18.0/me/accounts?fields=id,name,fan_count,access_token,instagram_business_account&access_token=${accessToken}`;
           const pagesResponse = await fetch(pagesUrl);
           const pagesData = await pagesResponse.json();
@@ -1726,55 +1755,218 @@ export async function registerRoutes(
             
             await db.update(users).set(updateData).where(eq(users.id, user.id));
             console.log(`[Sync] Updated user ${user.id} with Page data: ${page.name}`);
+            
+            // Import from the Page
+            facebookImported = await importFacebookVideos(userIdForVideos, page.id, page.access_token || accessToken);
           } else {
-            return res.status(400).json({ error: "No Facebook Pages found. Please ensure you have a Facebook Page to import videos from." });
+            console.log("[Sync] No Facebook Pages found - only personal profile imported");
           }
         } catch (err) {
-          console.error("[Sync] Error fetching Page data:", err);
-          return res.status(500).json({ error: "Failed to fetch Facebook Page data" });
+          console.log("[Sync] Could not fetch Page data:", err);
         }
       }
       
-      let facebookImported = 0;
-      let instagramImported = 0;
-      
-      // Get page access token for video API calls
-      let pageAccessToken = accessToken;
-      try {
-        const pagesUrl = `https://graph.facebook.com/v18.0/me/accounts?fields=id,access_token&access_token=${accessToken}`;
-        const pagesResponse = await fetch(pagesUrl);
-        const pagesData = await pagesResponse.json();
-        if (pagesData.data && pagesData.data.length > 0) {
-          const page = pagesData.data.find((p: any) => p.id === pageId) || pagesData.data[0];
-          if (page.access_token) {
-            pageAccessToken = page.access_token;
-            console.log(`[Sync] Using page access token for video import`);
-          }
-        }
-      } catch (err) {
-        console.log(`[Sync] Could not get page token, using user token`);
-      }
-      
-      // Import Facebook Page videos using page access token
-      if (pageId) {
-        facebookImported = await importFacebookVideos(userIdForVideos, pageId, pageAccessToken);
-      }
-      
-      // Import Instagram media if connected (uses page access token for IG Business)
+      // Import Instagram media if connected
       const igId = instagramBusinessId || user.instagramBusinessId;
       if (igId) {
-        instagramImported = await importInstagramMedia(userIdForVideos, igId, pageAccessToken);
+        // Get page access token for IG Business
+        try {
+          const pagesUrl = `https://graph.facebook.com/v18.0/me/accounts?fields=id,access_token,instagram_business_account&access_token=${accessToken}`;
+          const pagesResponse = await fetch(pagesUrl);
+          const pagesData = await pagesResponse.json();
+          
+          if (pagesData.data) {
+            const pageWithIg = pagesData.data.find((p: any) => p.instagram_business_account?.id === igId);
+            const pageAccessToken = pageWithIg?.access_token || accessToken;
+            instagramImported = await importInstagramMedia(userIdForVideos, igId, pageAccessToken);
+          }
+        } catch (err) {
+          console.log("[Sync] Could not import Instagram media:", err);
+        }
       }
       
+      const totalFacebookImported = personalImported + facebookImported;
       res.json({
         success: true,
-        facebookVideos: facebookImported,
+        personalVideos: personalImported,
+        pageVideos: facebookImported,
+        facebookVideos: totalFacebookImported,
         instagramVideos: instagramImported,
-        message: `Imported ${facebookImported} Facebook videos and ${instagramImported} Instagram videos/reels`
+        message: `Imported ${personalImported} personal videos, ${facebookImported} Page videos, and ${instagramImported} Instagram videos/reels`
       });
     } catch (error: any) {
       console.error("[Sync] Error syncing Facebook/Instagram:", error);
       res.status(500).json({ error: error.message || "Failed to sync content" });
+    }
+  });
+
+  // Get available Facebook sources (personal profile + pages) for selection
+  app.get("/api/facebook/sources", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const googleEmail = req.googleUser?.email || req.session?.googleUser?.email;
+      const sessionUserId = req.session?.userId;
+      
+      // Find user
+      let user = null;
+      if (googleEmail) {
+        user = await db.query.users.findFirst({
+          where: eq(users.email, googleEmail),
+        });
+      }
+      if (!user && sessionUserId) {
+        user = await db.query.users.findFirst({
+          where: eq(users.id, sessionUserId),
+        });
+      }
+      
+      if (!user || !user.facebookAccessToken) {
+        return res.status(400).json({ 
+          error: "Facebook not connected. Please connect your Facebook account first." 
+        });
+      }
+      
+      const accessToken = decrypt(user.facebookAccessToken);
+      const sources: Array<{
+        id: string;
+        name: string;
+        type: "personal" | "page";
+        followers?: number;
+        profilePicture?: string;
+        instagramAccount?: { id: string; username: string; followers: number } | null;
+      }> = [];
+      
+      // Add personal profile as an option
+      try {
+        const meUrl = `https://graph.facebook.com/v18.0/me?fields=id,name,picture&access_token=${accessToken}`;
+        const meResponse = await fetch(meUrl);
+        const meData = await meResponse.json();
+        
+        if (meData.id) {
+          sources.push({
+            id: meData.id,
+            name: meData.name || "Personal Profile",
+            type: "personal",
+            profilePicture: meData.picture?.data?.url,
+          });
+        }
+      } catch (err) {
+        console.log("[Sources] Could not fetch personal profile");
+      }
+      
+      // Add managed Pages
+      try {
+        const pagesUrl = `https://graph.facebook.com/v18.0/me/accounts?fields=id,name,fan_count,picture,instagram_business_account&access_token=${accessToken}`;
+        const pagesResponse = await fetch(pagesUrl);
+        const pagesData = await pagesResponse.json();
+        
+        if (pagesData.data && pagesData.data.length > 0) {
+          for (const page of pagesData.data) {
+            let igAccount = null;
+            
+            // Fetch Instagram Business Account details if linked
+            if (page.instagram_business_account?.id) {
+              try {
+                const igUrl = `https://graph.facebook.com/v18.0/${page.instagram_business_account.id}?fields=username,followers_count,profile_picture_url&access_token=${accessToken}`;
+                const igResponse = await fetch(igUrl);
+                const igData = await igResponse.json();
+                
+                if (igData.username) {
+                  igAccount = {
+                    id: page.instagram_business_account.id,
+                    username: igData.username,
+                    followers: igData.followers_count || 0,
+                  };
+                }
+              } catch (igErr) {
+                console.log("[Sources] Could not fetch IG for page:", page.id);
+              }
+            }
+            
+            sources.push({
+              id: page.id,
+              name: page.name,
+              type: "page",
+              followers: page.fan_count || 0,
+              profilePicture: page.picture?.data?.url,
+              instagramAccount: igAccount,
+            });
+          }
+        }
+      } catch (err) {
+        console.log("[Sources] Could not fetch pages");
+      }
+      
+      res.json({
+        sources,
+        currentSelection: {
+          facebookSourceId: user.facebookPageId || user.facebookId,
+          facebookSourceType: user.facebookPageId ? "page" : "personal",
+          instagramBusinessId: user.instagramBusinessId,
+        },
+      });
+    } catch (error: any) {
+      console.error("[Sources] Error:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch Facebook sources" });
+    }
+  });
+
+  // Save selected Facebook/Instagram sources
+  app.post("/api/facebook/select-source", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const { facebookSourceId, facebookSourceType, instagramBusinessId } = req.body;
+      
+      const googleEmail = req.googleUser?.email || req.session?.googleUser?.email;
+      const sessionUserId = req.session?.userId;
+      
+      // Find user
+      let user = null;
+      if (googleEmail) {
+        user = await db.query.users.findFirst({
+          where: eq(users.email, googleEmail),
+        });
+      }
+      if (!user && sessionUserId) {
+        user = await db.query.users.findFirst({
+          where: eq(users.id, sessionUserId),
+        });
+      }
+      
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+      
+      // Update user with selected source
+      const updateData: Record<string, any> = {};
+      
+      if (facebookSourceType === "page" && facebookSourceId) {
+        updateData.facebookPageId = facebookSourceId;
+        // Clear personal profile selection if switching to page
+      } else if (facebookSourceType === "personal") {
+        // Clear page selection if switching to personal profile
+        updateData.facebookPageId = null;
+        updateData.facebookPageName = null;
+      }
+      
+      if (instagramBusinessId !== undefined) {
+        updateData.instagramBusinessId = instagramBusinessId || null;
+      }
+      
+      if (Object.keys(updateData).length > 0) {
+        await db.update(users).set(updateData).where(eq(users.id, user.id));
+      }
+      
+      res.json({
+        success: true,
+        message: "Source selection saved",
+        selection: {
+          facebookSourceId,
+          facebookSourceType,
+          instagramBusinessId,
+        },
+      });
+    } catch (error: any) {
+      console.error("[SelectSource] Error:", error);
+      res.status(500).json({ error: error.message || "Failed to save source selection" });
     }
   });
 

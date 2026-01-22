@@ -92,10 +92,31 @@ async function fetchFacebookPageVideos(pageId: string, accessToken: string): Pro
       return [];
     }
     
-    console.log(`[Graph API] Found ${data.data?.length || 0} Facebook videos`);
+    console.log(`[Graph API] Found ${data.data?.length || 0} Facebook Page videos`);
     return data.data || [];
   } catch (error) {
     console.error("[Graph API] Error fetching Facebook videos:", error);
+    return [];
+  }
+}
+
+// Fetch Facebook personal profile videos (requires user_videos permission)
+async function fetchPersonalProfileVideos(accessToken: string): Promise<any[]> {
+  try {
+    // Personal profile videos endpoint
+    const url = `https://graph.facebook.com/v18.0/me/videos?fields=id,title,description,created_time,thumbnails,permalink_url,length,views&type=uploaded&limit=50&access_token=${accessToken}`;
+    const response = await fetch(url);
+    const data = await response.json();
+    
+    if (data.error) {
+      console.error("[Graph API] Error fetching personal videos:", data.error.message);
+      return [];
+    }
+    
+    console.log(`[Graph API] Found ${data.data?.length || 0} personal profile videos`);
+    return data.data || [];
+  } catch (error) {
+    console.error("[Graph API] Error fetching personal videos:", error);
     return [];
   }
 }
@@ -118,6 +139,48 @@ async function fetchInstagramMedia(igUserId: string, accessToken: string): Promi
     console.error("[Graph API] Error fetching Instagram media:", error);
     return [];
   }
+}
+
+// Import personal profile videos into video_index
+async function importPersonalVideos(userId: string, accessToken: string): Promise<number> {
+  const videos = await fetchPersonalProfileVideos(accessToken);
+  let imported = 0;
+  
+  for (const video of videos) {
+    try {
+      // Check if already exists
+      const existing = await db.query.videoIndex.findFirst({
+        where: and(
+          eq(videoIndex.userId, userId),
+          eq(videoIndex.youtubeId, `facebook:${video.id}`),
+          eq(videoIndex.platform, "facebook")
+        )
+      });
+      
+      if (!existing) {
+        await db.insert(videoIndex).values({
+          userId,
+          youtubeId: `facebook:${video.id}`,
+          title: video.title || "Untitled Video",
+          description: video.description || "",
+          viewCount: video.views || 0,
+          thumbnailUrl: video.thumbnails?.data?.[0]?.uri || null,
+          status: "Pending Scan",
+          priorityScore: 50,
+          publishedAt: video.created_time ? new Date(video.created_time) : new Date(),
+          platform: "facebook",
+          duration: video.length ? `${Math.floor(video.length / 60)}:${String(video.length % 60).padStart(2, '0')}` : null,
+          sourceUrl: video.permalink_url || null,
+        });
+        imported++;
+      }
+    } catch (error) {
+      console.error(`[Graph API] Error importing personal video ${video.id}:`, error);
+    }
+  }
+  
+  console.log(`[Graph API] Imported ${imported} new personal profile videos`);
+  return imported;
 }
 
 // Import Facebook videos into video_index
@@ -209,7 +272,7 @@ async function importInstagramMedia(userId: string, igUserId: string, accessToke
 }
 
 // Export for use in routes
-export { importFacebookVideos, importInstagramMedia };
+export { importFacebookVideos, importInstagramMedia, importPersonalVideos };
 
 export async function setupPlatformAuth(app: Express) {
   const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID;
@@ -548,9 +611,18 @@ export async function setupPlatformAuth(app: Express) {
       }
       // Request scopes for creator data access
       // Note: instagram_basic and instagram_manage_insights require Facebook App Review approval
-      // The instagram_business_account is fetched via pages_read_engagement when a Page has linked IG
+      // Scopes:
+      // - user_videos: Access videos from personal profile
+      // - pages_show_list, pages_read_engagement: Access Facebook Pages and their data
+      // - instagram_basic, instagram_content_publish: Access Instagram Business accounts
       passport.authenticate("facebook", { 
-        scope: ["email", "public_profile", "pages_show_list", "pages_read_engagement"] 
+        scope: [
+          "email", 
+          "public_profile", 
+          "user_videos",           // Personal profile videos
+          "pages_show_list",       // List of managed Pages
+          "pages_read_engagement", // Page insights and Instagram Business Account
+        ] 
       })(req, res, next);
     });
   });
