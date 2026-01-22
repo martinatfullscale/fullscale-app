@@ -613,11 +613,11 @@ export async function setupPlatformAuth(app: Express) {
       }
       // Request scopes for creator data access
       // Note: Some scopes require Facebook App Review for production use
-      // Note: user_videos scope was removed - it's deprecated and causes "Invalid Scopes" error
+      // Note: user_videos and instagram_basic scopes are deprecated/invalid for Facebook Login
       // Scopes:
       // - pages_show_list, pages_read_engagement: Access Facebook Pages and their data
       // - pages_read_user_content: Read videos posted to Pages
-      // - instagram_basic: Access Instagram Business Account info
+      // Instagram Business Account is accessed via pages_read_engagement + Page access token
       passport.authenticate("facebook", { 
         scope: [
           "email", 
@@ -625,7 +625,6 @@ export async function setupPlatformAuth(app: Express) {
           "pages_show_list",          // List of managed Pages
           "pages_read_engagement",    // Page insights and Instagram Business Account
           "pages_read_user_content",  // Read videos/posts from Pages
-          "instagram_basic",          // Instagram Business Account access
         ] 
       })(req, res, next);
     });
