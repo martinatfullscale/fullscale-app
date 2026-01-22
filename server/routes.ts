@@ -1722,64 +1722,80 @@ export async function registerRoutes(
         console.log("[Sync] Could not import personal videos:", err);
       }
       
-      // If user has a Page selected, also import Page videos
+      // If user has a Page selected, import videos from it
       if (pageId) {
-        console.log(`[Sync] Importing from Page ${pageId}...`);
+        console.log(`[Sync] Importing from selected Page ${pageId}...`);
         try {
-          // Get page access token
-          const pagesUrl = `https://graph.facebook.com/v18.0/me/accounts?fields=id,access_token&access_token=${accessToken}`;
-          const pagesResponse = await fetch(pagesUrl);
-          const pagesData = await pagesResponse.json();
-          
-          if (pagesData.data && pagesData.data.length > 0) {
-            const page = pagesData.data.find((p: any) => p.id === pageId) || pagesData.data[0];
-            const pageAccessToken = page.access_token || accessToken;
-            facebookImported = await importFacebookVideos(userIdForVideos, pageId, pageAccessToken);
-          }
+          // Use user access token directly (works for Business Manager Pages)
+          facebookImported = await importFacebookVideos(userIdForVideos, pageId, accessToken);
         } catch (err) {
           console.log("[Sync] Could not import Page videos:", err);
         }
       } else {
-        // Try to find and import from any available Pages
-        console.log("[Sync] No Page selected, checking for available Pages...");
+        // Try to find and import from available Pages using granular_scopes
+        console.log("[Sync] No Page selected, checking for available Pages via granular_scopes...");
         try {
-          const pagesUrl = `https://graph.facebook.com/v18.0/me/accounts?fields=id,name,fan_count,access_token,instagram_business_account&access_token=${accessToken}`;
-          const pagesResponse = await fetch(pagesUrl);
-          const pagesData = await pagesResponse.json();
+          // Debug token to get Page IDs from granular_scopes
+          const debugUrl = `https://graph.facebook.com/debug_token?input_token=${accessToken}&access_token=${accessToken}`;
+          const debugResponse = await fetch(debugUrl);
+          const debugData = await debugResponse.json();
           
-          if (pagesData.data && pagesData.data.length > 0) {
-            const page = pagesData.data[0];
-            pageId = page.id;
+          let pageIds: string[] = [];
+          if (debugData.data?.granular_scopes) {
+            const pagesScope = debugData.data.granular_scopes.find((s: any) => s.scope === "pages_show_list");
+            if (pagesScope?.target_ids) {
+              pageIds = pagesScope.target_ids;
+            }
+          }
+          
+          if (pageIds.length > 0) {
+            console.log(`[Sync] Found ${pageIds.length} Pages in granular_scopes`);
             
-            // Update user with Page data
-            const updateData: Record<string, any> = {
-              facebookPageId: page.id,
-              facebookPageName: page.name,
-              facebookFollowers: page.fan_count || 0,
-            };
-            
-            // Check for Instagram Business Account
-            if (page.instagram_business_account?.id) {
-              const igId = page.instagram_business_account.id;
-              const igUrl = `https://graph.facebook.com/v18.0/${igId}?fields=username,followers_count&access_token=${page.access_token}`;
-              const igResponse = await fetch(igUrl);
-              const igData = await igResponse.json();
-              
-              if (igData.username) {
-                updateData.instagramBusinessId = igId;
-                updateData.instagramHandle = `@${igData.username}`;
-                updateData.instagramFollowers = igData.followers_count || 0;
-                instagramBusinessId = igId;
+            // Import from all available Pages
+            for (const pId of pageIds) {
+              try {
+                const imported = await importFacebookVideos(userIdForVideos, pId, accessToken);
+                facebookImported += imported;
+                console.log(`[Sync] Imported ${imported} videos from Page ${pId}`);
+              } catch (pageErr) {
+                console.log(`[Sync] Could not import from Page ${pId}:`, pageErr);
               }
             }
             
-            await db.update(users).set(updateData).where(eq(users.id, user.id));
-            console.log(`[Sync] Updated user ${user.id} with Page data: ${page.name}`);
-            
-            // Import from the Page
-            facebookImported = await importFacebookVideos(userIdForVideos, page.id, page.access_token || accessToken);
+            // Update user with first Page data
+            if (pageIds.length > 0) {
+              const firstPageUrl = `https://graph.facebook.com/v18.0/${pageIds[0]}?fields=id,name,fan_count,instagram_business_account&access_token=${accessToken}`;
+              const firstPageResponse = await fetch(firstPageUrl);
+              const firstPageData = await firstPageResponse.json();
+              
+              if (firstPageData.id) {
+                const updateData: Record<string, any> = {
+                  facebookPageId: firstPageData.id,
+                  facebookPageName: firstPageData.name,
+                  facebookFollowers: firstPageData.fan_count || 0,
+                };
+                
+                // Check for Instagram Business Account
+                if (firstPageData.instagram_business_account?.id) {
+                  const igId = firstPageData.instagram_business_account.id;
+                  const igUrl = `https://graph.facebook.com/v18.0/${igId}?fields=username,followers_count&access_token=${accessToken}`;
+                  const igResponse = await fetch(igUrl);
+                  const igData = await igResponse.json();
+                  
+                  if (igData.username) {
+                    updateData.instagramBusinessId = igId;
+                    updateData.instagramHandle = `@${igData.username}`;
+                    updateData.instagramFollowers = igData.followers_count || 0;
+                    instagramBusinessId = igId;
+                  }
+                }
+                
+                await db.update(users).set(updateData).where(eq(users.id, user.id));
+                console.log(`[Sync] Updated user ${user.id} with Page data: ${firstPageData.name}`);
+              }
+            }
           } else {
-            console.log("[Sync] No Facebook Pages found - only personal profile imported");
+            console.log("[Sync] No Facebook Pages found in granular_scopes - only personal profile imported");
           }
         } catch (err) {
           console.log("[Sync] Could not fetch Page data:", err);
