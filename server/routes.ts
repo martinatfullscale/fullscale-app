@@ -2019,10 +2019,41 @@ export async function registerRoutes(
       const accountsResponse = await fetch(accountsUrl);
       const accountsData = await accountsResponse.json();
       
+      // Try to fetch Pages directly from granular_scopes
+      const pageDetails: any[] = [];
+      if (debugData.data?.granular_scopes) {
+        const pagesScope = debugData.data.granular_scopes.find((s: any) => s.scope === "pages_show_list");
+        if (pagesScope?.target_ids) {
+          for (const pageId of pagesScope.target_ids) {
+            try {
+              const pageUrl = `https://graph.facebook.com/v18.0/${pageId}?fields=id,name,fan_count,instagram_business_account&access_token=${accessToken}`;
+              const pageResponse = await fetch(pageUrl);
+              const pageData = await pageResponse.json();
+              
+              // Try to get videos from this page
+              let videos: any = null;
+              try {
+                const videosUrl = `https://graph.facebook.com/v18.0/${pageId}/videos?fields=id,title,description&limit=5&access_token=${accessToken}`;
+                const videosResponse = await fetch(videosUrl);
+                videos = await videosResponse.json();
+              } catch (e) {}
+              
+              pageDetails.push({
+                ...pageData,
+                videosResponse: videos,
+              });
+            } catch (e) {
+              pageDetails.push({ id: pageId, error: "Failed to fetch" });
+            }
+          }
+        }
+      }
+      
       res.json({
         tokenSource,
         tokenInfo: debugData,
         accounts: accountsData,
+        pageDetails,
         sessionFacebookProfile: req.session?.facebookProfile ? {
           id: req.session.facebookProfile.id,
           hasToken: !!req.session.facebookProfile.accessToken,
