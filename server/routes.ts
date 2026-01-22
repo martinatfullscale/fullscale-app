@@ -1885,8 +1885,14 @@ export async function registerRoutes(
       // Add managed Pages
       try {
         const pagesUrl = `https://graph.facebook.com/v18.0/me/accounts?fields=id,name,fan_count,picture,instagram_business_account&access_token=${accessToken}`;
+        console.log("[Sources] Fetching Pages from:", pagesUrl.replace(accessToken!, '[TOKEN]'));
         const pagesResponse = await fetch(pagesUrl);
         const pagesData = await pagesResponse.json();
+        console.log("[Sources] Pages response:", JSON.stringify(pagesData, null, 2));
+        
+        if (pagesData.error) {
+          console.log("[Sources] Facebook API error:", pagesData.error.message);
+        }
         
         if (pagesData.data && pagesData.data.length > 0) {
           for (const page of pagesData.data) {
