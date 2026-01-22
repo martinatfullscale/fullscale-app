@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { TopBar } from "@/components/TopBar";
-import { User, CreditCard, Bell, CheckCircle, ExternalLink, Save, Link2, Loader2 } from "lucide-react";
+import { User, CreditCard, Bell, CheckCircle, ExternalLink, Save, Link2, Loader2, ChevronDown, RefreshCw } from "lucide-react";
 import { SiInstagram, SiFacebook, SiX, SiTiktok, SiYoutube, SiTwitch } from "react-icons/si";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,7 @@ import { Switch } from "@/components/ui/switch";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useToast } from "@/hooks/use-toast";
 import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 type TabType = "profile" | "payouts" | "notifications" | "integrations";
 
@@ -37,6 +38,24 @@ interface PlatformAuthStatus {
   instagram: { configured: boolean; connected: boolean; handle?: string; followers?: number };
 }
 
+interface FacebookSource {
+  id: string;
+  name: string;
+  type: "personal" | "page";
+  followers?: number;
+  profilePicture?: string;
+  instagramAccount?: { id: string; username: string; followers: number } | null;
+}
+
+interface FacebookSourcesResponse {
+  sources: FacebookSource[];
+  currentSelection: {
+    facebookSourceId: string | null;
+    facebookSourceType: "personal" | "page";
+    instagramBusinessId: string | null;
+  };
+}
+
 function formatFollowers(count: number): string {
   if (count >= 1000000) return `${(count / 1000000).toFixed(1)}M`;
   if (count >= 1000) return `${(count / 1000).toFixed(0)}K`;
@@ -57,6 +76,14 @@ export default function Settings() {
   const [activeTab, setActiveTab] = useState<TabType>("profile");
   const [socialConnections, setSocialConnections] = useState<SocialConnection[]>(initialSocialConnections);
   const [isLoadingStatus, setIsLoadingStatus] = useState(true);
+  
+  // Facebook/Instagram source selection state
+  const [facebookSources, setFacebookSources] = useState<FacebookSource[]>([]);
+  const [selectedFacebookSource, setSelectedFacebookSource] = useState<string>("");
+  const [selectedInstagramSource, setSelectedInstagramSource] = useState<string>("");
+  const [isLoadingSources, setIsLoadingSources] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [isFacebookConnected, setIsFacebookConnected] = useState(false);
   
   const [profile, setProfile] = useState({
     fullName: "Martin Creators",
@@ -113,6 +140,114 @@ export default function Settings() {
     
     fetchPlatformStatus();
   }, []);
+
+  // Fetch Facebook sources when Facebook is connected
+  const fetchFacebookSources = async () => {
+    setIsLoadingSources(true);
+    try {
+      const response = await fetch("/api/facebook/sources");
+      if (response.ok) {
+        const data: FacebookSourcesResponse = await response.json();
+        setFacebookSources(data.sources);
+        setIsFacebookConnected(true);
+        
+        // Set current selection
+        if (data.currentSelection.facebookSourceId) {
+          setSelectedFacebookSource(data.currentSelection.facebookSourceId);
+        } else if (data.sources.length > 0) {
+          // Default to personal profile if available
+          const personalSource = data.sources.find(s => s.type === "personal");
+          setSelectedFacebookSource(personalSource?.id || data.sources[0].id);
+        }
+        
+        if (data.currentSelection.instagramBusinessId) {
+          setSelectedInstagramSource(data.currentSelection.instagramBusinessId);
+        }
+      }
+    } catch (error) {
+      console.error("Failed to fetch Facebook sources:", error);
+    } finally {
+      setIsLoadingSources(false);
+    }
+  };
+
+  // Fetch sources when integrations tab is opened and Facebook is connected
+  useEffect(() => {
+    if (activeTab === "integrations") {
+      const fbConnection = socialConnections.find(c => c.id === "facebook");
+      if (fbConnection?.status === "connected") {
+        fetchFacebookSources();
+      }
+    }
+  }, [activeTab, socialConnections]);
+
+  // Save selected sources
+  const handleSaveSourceSelection = async () => {
+    try {
+      const selectedSource = facebookSources.find(s => s.id === selectedFacebookSource);
+      const response = await fetch("/api/facebook/select-source", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          facebookSourceId: selectedFacebookSource,
+          facebookSourceType: selectedSource?.type || "personal",
+          instagramBusinessId: selectedInstagramSource || null,
+        }),
+      });
+      
+      if (response.ok) {
+        toast({
+          title: "Source Selection Saved",
+          description: "Your Facebook/Instagram source preferences have been saved.",
+        });
+      } else {
+        const data = await response.json();
+        toast({
+          title: "Save Failed",
+          description: data.error || "Failed to save source selection. Please try again.",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
+      console.error("Failed to save source selection:", error);
+      toast({
+        title: "Error",
+        description: "Failed to save source selection. Please try again.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // Sync Facebook/Instagram content
+  const handleSyncContent = async () => {
+    setIsSyncing(true);
+    try {
+      const response = await fetch("/api/sync/facebook-instagram", { method: "POST" });
+      const data = await response.json();
+      
+      if (response.ok) {
+        toast({
+          title: "Content Synced",
+          description: data.message || `Imported ${data.facebookVideos || 0} Facebook videos and ${data.instagramVideos || 0} Instagram videos.`,
+        });
+      } else {
+        toast({
+          title: "Sync Error",
+          description: data.error || "Failed to sync content. Please try again.",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
+      console.error("Failed to sync content:", error);
+      toast({
+        title: "Error",
+        description: "Failed to sync content. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsSyncing(false);
+    }
+  };
 
   const handleConnectSocial = (id: string) => {
     const connection = socialConnections.find((c) => c.id === id);
@@ -359,6 +494,132 @@ export default function Settings() {
                         </div>
                       ))}
                     </div>
+                  </div>
+                )}
+
+                {/* Facebook/Instagram Source Selection */}
+                {isFacebookConnected && facebookSources.length > 0 && (
+                  <div className="mt-6 bg-black/30 rounded-xl border border-white/5 p-6">
+                    <div className="flex items-center justify-between mb-4">
+                      <div>
+                        <h3 className="text-lg font-semibold text-white">Import Sources</h3>
+                        <p className="text-sm text-muted-foreground">Choose which profiles to import videos from</p>
+                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handleSyncContent}
+                        disabled={isSyncing}
+                        data-testid="button-sync-content"
+                        className="gap-2"
+                      >
+                        {isSyncing ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Syncing...
+                          </>
+                        ) : (
+                          <>
+                            <RefreshCw className="w-4 h-4" />
+                            Sync Now
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                    
+                    <div className="space-y-4">
+                      {/* Facebook Source Selection */}
+                      <div className="space-y-2">
+                        <Label className="text-white flex items-center gap-2">
+                          <SiFacebook className="w-4 h-4 text-[#1877F2]" />
+                          Facebook Source
+                        </Label>
+                        <Select
+                          value={selectedFacebookSource}
+                          onValueChange={setSelectedFacebookSource}
+                        >
+                          <SelectTrigger className="bg-black/30 border-white/10 text-white" data-testid="select-facebook-source">
+                            <SelectValue placeholder="Select a Facebook profile or page" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {facebookSources.map((source) => (
+                              <SelectItem key={source.id} value={source.id}>
+                                <div className="flex items-center gap-2">
+                                  <span>{source.name}</span>
+                                  <Badge variant="outline" className="text-xs">
+                                    {source.type === "personal" ? "Personal" : "Page"}
+                                  </Badge>
+                                  {source.followers && (
+                                    <span className="text-xs text-muted-foreground">
+                                      {formatFollowers(source.followers)} followers
+                                    </span>
+                                  )}
+                                </div>
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <p className="text-xs text-muted-foreground">
+                          Your personal profile videos and any Page videos you manage will be imported
+                        </p>
+                      </div>
+
+                      {/* Instagram Source Selection */}
+                      {facebookSources.some(s => s.instagramAccount) && (
+                        <div className="space-y-2">
+                          <Label className="text-white flex items-center gap-2">
+                            <SiInstagram className="w-4 h-4 text-[#E4405F]" />
+                            Instagram Business Account
+                          </Label>
+                          <Select
+                            value={selectedInstagramSource}
+                            onValueChange={setSelectedInstagramSource}
+                          >
+                            <SelectTrigger className="bg-black/30 border-white/10 text-white" data-testid="select-instagram-source">
+                              <SelectValue placeholder="Select an Instagram account" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="">No Instagram account</SelectItem>
+                              {facebookSources
+                                .filter(s => s.instagramAccount)
+                                .map((source) => (
+                                  <SelectItem key={source.instagramAccount!.id} value={source.instagramAccount!.id}>
+                                    <div className="flex items-center gap-2">
+                                      <span>@{source.instagramAccount!.username}</span>
+                                      <span className="text-xs text-muted-foreground">
+                                        (linked to {source.name})
+                                      </span>
+                                      <span className="text-xs text-muted-foreground">
+                                        {formatFollowers(source.instagramAccount!.followers)} followers
+                                      </span>
+                                    </div>
+                                  </SelectItem>
+                                ))}
+                            </SelectContent>
+                          </Select>
+                          <p className="text-xs text-muted-foreground">
+                            Instagram Business accounts are linked through Facebook Pages
+                          </p>
+                        </div>
+                      )}
+
+                      <Button
+                        onClick={handleSaveSourceSelection}
+                        className="w-full mt-2"
+                        data-testid="button-save-sources"
+                      >
+                        <Save className="w-4 h-4 mr-2" />
+                        Save Source Selection
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Loading state for sources */}
+                {isLoadingSources && (
+                  <div className="mt-6 bg-black/30 rounded-xl border border-white/5 p-6 flex items-center justify-center">
+                    <Loader2 className="w-6 h-6 animate-spin text-primary mr-3" />
+                    <span className="text-muted-foreground">Loading available sources...</span>
                   </div>
                 )}
               </motion.div>
