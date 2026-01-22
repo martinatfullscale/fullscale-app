@@ -674,10 +674,21 @@ export async function setupPlatformAuth(app: Express) {
         console.log("[PlatformAuth] Session ID after login:", req.sessionID);
         console.log("[PlatformAuth] Session userId set to:", req.session.userId);
         
-        // SYNC: Update database with Facebook ID and token using session data
+        // SYNC: Update database with Facebook ID and token using multiple methods
         const googleEmail = req.session?.googleUser?.email || req.session?.pendingGoogleUser?.email;
         const facebookProfile = req.session?.facebookProfile;
         
+        console.log("[PlatformAuth] Token sync attempt:");
+        console.log("[PlatformAuth] - googleEmail:", googleEmail || "missing");
+        console.log("[PlatformAuth] - facebookProfile.id:", facebookProfile?.id || "missing");
+        console.log("[PlatformAuth] - facebookProfile.accessToken:", facebookProfile?.accessToken ? "present" : "missing");
+        console.log("[PlatformAuth] - user.id:", user?.id || "missing");
+        console.log("[PlatformAuth] - user.email:", user?.email || "missing");
+        
+        // Method 1: Use the user object from passport (already saved/updated in verify callback)
+        // The user object already has the updated facebookId and token from the verify callback
+        
+        // Method 2: Update by googleEmail if available (cross-email linking)
         if (googleEmail && facebookProfile?.id) {
           try {
             const dbUser = await db.query.users.findFirst({
@@ -691,6 +702,7 @@ export async function setupPlatformAuth(app: Express) {
               // Also save the encrypted access token if available
               if (facebookProfile.accessToken) {
                 updateData.facebookAccessToken = encrypt(facebookProfile.accessToken);
+                console.log(`[PlatformAuth] Saving encrypted token for ${googleEmail}`);
               }
               
               await db
@@ -698,9 +710,30 @@ export async function setupPlatformAuth(app: Express) {
                 .set(updateData)
                 .where(eq(users.id, dbUser.id));
               console.log(`[PlatformAuth] Auto-synced Facebook ID ${facebookProfile.id} to user ${googleEmail} (with token: ${!!facebookProfile.accessToken})`);
+            } else {
+              console.log(`[PlatformAuth] No user found with email ${googleEmail}`);
             }
           } catch (syncErr: any) {
             console.error("[PlatformAuth] Auto-sync error:", syncErr.message);
+          }
+        }
+        
+        // Method 3: Fallback - update the user returned by passport if they exist and have an email
+        if (user?.id && facebookProfile?.accessToken) {
+          try {
+            const updateData: Record<string, any> = { 
+              facebookId: facebookProfile.id 
+            };
+            if (facebookProfile.accessToken) {
+              updateData.facebookAccessToken = encrypt(facebookProfile.accessToken);
+            }
+            await db
+              .update(users)
+              .set(updateData)
+              .where(eq(users.id, user.id));
+            console.log(`[PlatformAuth] Fallback: Updated user ${user.id} with Facebook token`);
+          } catch (fallbackErr: any) {
+            console.error("[PlatformAuth] Fallback update error:", fallbackErr.message);
           }
         }
         
