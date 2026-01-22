@@ -1884,6 +1884,7 @@ export async function registerRoutes(
       
       // Add managed Pages
       try {
+        // First try /me/accounts
         const pagesUrl = `https://graph.facebook.com/v18.0/me/accounts?fields=id,name,fan_count,picture,instagram_business_account&access_token=${accessToken}`;
         console.log("[Sources] Fetching Pages from:", pagesUrl.replace(accessToken!, '[TOKEN]'));
         const pagesResponse = await fetch(pagesUrl);
@@ -1894,8 +1895,45 @@ export async function registerRoutes(
           console.log("[Sources] Facebook API error:", pagesData.error.message);
         }
         
-        if (pagesData.data && pagesData.data.length > 0) {
-          for (const page of pagesData.data) {
+        // If /me/accounts is empty, try to get Pages from token debug info (for Business Manager Pages)
+        let pagesToProcess = pagesData.data || [];
+        
+        if (pagesToProcess.length === 0) {
+          console.log("[Sources] /me/accounts empty, checking token granular_scopes...");
+          
+          // Debug token to get granular scopes with Page IDs
+          const debugUrl = `https://graph.facebook.com/debug_token?input_token=${accessToken}&access_token=${accessToken}`;
+          const debugResponse = await fetch(debugUrl);
+          const debugData = await debugResponse.json();
+          
+          if (debugData.data?.granular_scopes) {
+            const pagesScope = debugData.data.granular_scopes.find((s: any) => s.scope === "pages_show_list");
+            if (pagesScope?.target_ids?.length > 0) {
+              console.log("[Sources] Found Page IDs in granular_scopes:", pagesScope.target_ids);
+              
+              // Fetch each Page directly using the user access token
+              for (const pageId of pagesScope.target_ids) {
+                try {
+                  const pageUrl = `https://graph.facebook.com/v18.0/${pageId}?fields=id,name,fan_count,picture,instagram_business_account&access_token=${accessToken}`;
+                  const pageResponse = await fetch(pageUrl);
+                  const pageData = await pageResponse.json();
+                  
+                  if (pageData.id && !pageData.error) {
+                    pagesToProcess.push(pageData);
+                    console.log("[Sources] Fetched Page:", pageData.name);
+                  } else if (pageData.error) {
+                    console.log("[Sources] Could not fetch Page", pageId, ":", pageData.error.message);
+                  }
+                } catch (pageErr) {
+                  console.log("[Sources] Error fetching Page", pageId);
+                }
+              }
+            }
+          }
+        }
+        
+        if (pagesToProcess.length > 0) {
+          for (const page of pagesToProcess) {
             let igAccount = null;
             
             // Fetch Instagram Business Account details if linked
