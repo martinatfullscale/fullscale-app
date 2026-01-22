@@ -611,15 +611,13 @@ export async function setupPlatformAuth(app: Express) {
       }
       // Request scopes for creator data access
       // Note: instagram_basic and instagram_manage_insights require Facebook App Review approval
+      // Note: user_videos scope was removed - it's deprecated and causes "Invalid Scopes" error
       // Scopes:
-      // - user_videos: Access videos from personal profile
       // - pages_show_list, pages_read_engagement: Access Facebook Pages and their data
-      // - instagram_basic, instagram_content_publish: Access Instagram Business accounts
       passport.authenticate("facebook", { 
         scope: [
           "email", 
           "public_profile", 
-          "user_videos",           // Personal profile videos
           "pages_show_list",       // List of managed Pages
           "pages_read_engagement", // Page insights and Instagram Business Account
         ] 
