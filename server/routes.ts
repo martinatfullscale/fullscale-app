@@ -1945,6 +1945,56 @@ export async function registerRoutes(
     }
   });
 
+  // Debug endpoint to check Facebook token and permissions
+  app.get("/api/facebook/debug", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const googleEmail = req.googleUser?.email || req.session?.googleUser?.email;
+      let user = null;
+      if (googleEmail) {
+        user = await db.query.users.findFirst({
+          where: eq(users.email, googleEmail),
+        });
+      }
+      
+      let accessToken: string | null = null;
+      let tokenSource = "none";
+      
+      if (user?.facebookAccessToken) {
+        accessToken = decrypt(user.facebookAccessToken);
+        tokenSource = "database";
+      } else if (req.session?.facebookProfile?.accessToken) {
+        accessToken = req.session.facebookProfile.accessToken;
+        tokenSource = "session";
+      }
+      
+      if (!accessToken) {
+        return res.json({ error: "No Facebook token available", tokenSource });
+      }
+      
+      // Check token permissions
+      const debugUrl = `https://graph.facebook.com/debug_token?input_token=${accessToken}&access_token=${accessToken}`;
+      const debugResponse = await fetch(debugUrl);
+      const debugData = await debugResponse.json();
+      
+      // Get /me/accounts response
+      const accountsUrl = `https://graph.facebook.com/v18.0/me/accounts?fields=id,name,fan_count,access_token&access_token=${accessToken}`;
+      const accountsResponse = await fetch(accountsUrl);
+      const accountsData = await accountsResponse.json();
+      
+      res.json({
+        tokenSource,
+        tokenInfo: debugData,
+        accounts: accountsData,
+        sessionFacebookProfile: req.session?.facebookProfile ? {
+          id: req.session.facebookProfile.id,
+          hasToken: !!req.session.facebookProfile.accessToken,
+        } : null,
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // Save selected Facebook/Instagram sources
   app.post("/api/facebook/select-source", isFlexibleAuthenticated, async (req: any, res) => {
     try {
