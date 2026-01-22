@@ -445,7 +445,8 @@ export async function setupPlatformAuth(app: Express) {
                 req.session.userId = existingUser.id;
                 req.session.facebookProfile = { 
                   id: profile.id, 
-                  displayName: profile.displayName
+                  displayName: profile.displayName,
+                  accessToken: accessToken,  // Store for later sync
                 };
                 return done(null, existingUser);
               }
@@ -459,7 +460,8 @@ export async function setupPlatformAuth(app: Express) {
                 console.log(`[PlatformAuth] Linked Facebook account ${profile.displayName} to user ${existingLoggedInUser}`);
                 req.session.facebookProfile = { 
                   id: profile.id, 
-                  displayName: profile.displayName
+                  displayName: profile.displayName,
+                  accessToken: accessToken,  // Store for later sync
                 };
                 return done(null, req.user);
               }
