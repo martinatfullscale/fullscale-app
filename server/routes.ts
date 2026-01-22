@@ -316,34 +316,34 @@ export async function registerRoutes(
 
   // Google login callback with allowlist check
   app.get("/api/auth/google/callback", async (req: any, res) => {
-    const { code, error, state } = req.query;
-    console.log("[Google OAuth Callback] ========== CALLBACK RECEIVED ==========");
-    console.log("[Google OAuth Callback] State from query:", state ? (state as string).substring(0, 16) + "..." : "missing");
-    console.log("[Google OAuth Callback] Session ID:", req.sessionID);
-    
-    if (error) {
-      console.error("[Google OAuth Callback] Error from Google:", error);
-      return clearSessionAndRedirect(req, res, error as string);
-    }
-
-    if (!code) {
-      console.error("[Google OAuth Callback] No code received");
-      return clearSessionAndRedirect(req, res, "no_code");
-    }
-
-    // Verify state using DATABASE (survives server restarts and cold starts)
-    console.log("[Google OAuth Callback] Verifying state from database...");
-    const stateValid = await verifyAndConsumeOAuthState(state as string);
-    
-    if (!stateValid) {
-      console.error("[Google OAuth Callback] State verification failed - not found in database");
-      console.error("[Google OAuth Callback] Query state:", state);
-      return clearSessionAndRedirect(req, res, "invalid_state");
-    }
-    
-    console.log("[Google OAuth Callback] State verified successfully via database");
-
     try {
+      const { code, error, state } = req.query;
+      console.log("[Google OAuth Callback] ========== CALLBACK RECEIVED ==========");
+      console.log("[Google OAuth Callback] State from query:", state ? (state as string).substring(0, 16) + "..." : "missing");
+      console.log("[Google OAuth Callback] Session ID:", req.sessionID);
+    
+      if (error) {
+        console.error("[Google OAuth Callback] Error from Google:", error);
+        return clearSessionAndRedirect(req, res, error as string);
+      }
+
+      if (!code) {
+        console.error("[Google OAuth Callback] No code received");
+        return clearSessionAndRedirect(req, res, "no_code");
+      }
+
+      // Verify state using DATABASE (survives server restarts and cold starts)
+      console.log("[Google OAuth Callback] Verifying state from database...");
+      const stateValid = await verifyAndConsumeOAuthState(state as string);
+    
+      if (!stateValid) {
+        console.error("[Google OAuth Callback] State verification failed - not found in database");
+        console.error("[Google OAuth Callback] Query state:", state);
+        return clearSessionAndRedirect(req, res, "invalid_state");
+      }
+    
+      console.log("[Google OAuth Callback] State verified successfully via database");
+
       const baseUrl = process.env.BASE_URL;
       if (!baseUrl) {
         console.error("BASE_URL environment variable is not set");
