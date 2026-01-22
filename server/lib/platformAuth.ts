@@ -612,16 +612,20 @@ export async function setupPlatformAuth(app: Express) {
         console.error("[PlatformAuth] Session save error:", err);
       }
       // Request scopes for creator data access
-      // Note: instagram_basic and instagram_manage_insights require Facebook App Review approval
+      // Note: Some scopes require Facebook App Review for production use
       // Note: user_videos scope was removed - it's deprecated and causes "Invalid Scopes" error
       // Scopes:
       // - pages_show_list, pages_read_engagement: Access Facebook Pages and their data
+      // - pages_read_user_content: Read videos posted to Pages
+      // - instagram_basic: Access Instagram Business Account info
       passport.authenticate("facebook", { 
         scope: [
           "email", 
           "public_profile", 
-          "pages_show_list",       // List of managed Pages
-          "pages_read_engagement", // Page insights and Instagram Business Account
+          "pages_show_list",          // List of managed Pages
+          "pages_read_engagement",    // Page insights and Instagram Business Account
+          "pages_read_user_content",  // Read videos/posts from Pages
+          "instagram_basic",          // Instagram Business Account access
         ] 
       })(req, res, next);
     });

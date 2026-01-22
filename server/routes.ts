@@ -1676,12 +1676,32 @@ export async function registerRoutes(
         return res.status(404).json({ error: "User not found. Please reconnect your Facebook account." });
       }
       
-      if (!user.facebookAccessToken) {
-        return res.status(400).json({ error: "Facebook not connected. Please connect your Facebook account first." });
+      // Try to get access token from database first, then session
+      let accessToken: string | null = null;
+      
+      if (user.facebookAccessToken) {
+        accessToken = decrypt(user.facebookAccessToken);
+        console.log("[Sync] Using database token");
+      } else if (req.session?.facebookProfile?.accessToken) {
+        // Fallback to session token and try to save it to DB
+        accessToken = req.session.facebookProfile.accessToken;
+        console.log("[Sync] Using session token - attempting to save to database");
+        
+        // Try to save the token to database now
+        try {
+          await db.update(users).set({
+            facebookAccessToken: encrypt(accessToken!),
+            facebookId: req.session.facebookProfile.id,
+          }).where(eq(users.id, user.id));
+          console.log("[Sync] Successfully saved token to database");
+        } catch (saveErr) {
+          console.error("[Sync] Failed to save token to database:", saveErr);
+        }
       }
       
-      // Decrypt the access token
-      const accessToken = decrypt(user.facebookAccessToken);
+      if (!accessToken) {
+        return res.status(400).json({ error: "Facebook not connected. Please connect your Facebook account first." });
+      }
       
       // Use the user's ID for storing videos
       const userIdForVideos = user.id;
@@ -1819,13 +1839,22 @@ export async function registerRoutes(
         });
       }
       
-      if (!user || !user.facebookAccessToken) {
+      // Try to get access token from database first, then session
+      let accessToken: string | null = null;
+      
+      if (user?.facebookAccessToken) {
+        accessToken = decrypt(user.facebookAccessToken);
+      } else if (req.session?.facebookProfile?.accessToken) {
+        // Fallback to session token
+        accessToken = req.session.facebookProfile.accessToken;
+        console.log("[Sources] Using session token instead of DB token");
+      }
+      
+      if (!accessToken) {
         return res.status(400).json({ 
           error: "Facebook not connected. Please connect your Facebook account first." 
         });
       }
-      
-      const accessToken = decrypt(user.facebookAccessToken);
       const sources: Array<{
         id: string;
         name: string;
@@ -1899,9 +1928,9 @@ export async function registerRoutes(
       res.json({
         sources,
         currentSelection: {
-          facebookSourceId: user.facebookPageId || user.facebookId,
-          facebookSourceType: user.facebookPageId ? "page" : "personal",
-          instagramBusinessId: user.instagramBusinessId,
+          facebookSourceId: user?.facebookPageId || user?.facebookId || null,
+          facebookSourceType: user?.facebookPageId ? "page" : "personal",
+          instagramBusinessId: user?.instagramBusinessId || null,
         },
       });
     } catch (error: any) {
