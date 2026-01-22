@@ -1802,23 +1802,65 @@ export async function registerRoutes(
         }
       }
       
-      // Import Instagram media if connected
-      const igId = instagramBusinessId || user.instagramBusinessId;
-      if (igId) {
-        // Get page access token for IG Business
+      // Import Instagram media - find Instagram Business Accounts from Pages via granular_scopes
+      let igId = instagramBusinessId || user.instagramBusinessId;
+      
+      if (!igId) {
+        // Try to find Instagram Business Accounts from all Pages
+        console.log("[Sync] Looking for Instagram Business Accounts on Pages...");
         try {
-          const pagesUrl = `https://graph.facebook.com/v18.0/me/accounts?fields=id,access_token,instagram_business_account&access_token=${accessToken}`;
-          const pagesResponse = await fetch(pagesUrl);
-          const pagesData = await pagesResponse.json();
+          const debugUrl = `https://graph.facebook.com/debug_token?input_token=${accessToken}&access_token=${accessToken}`;
+          const debugResponse = await fetch(debugUrl);
+          const debugData = await debugResponse.json();
           
-          if (pagesData.data) {
-            const pageWithIg = pagesData.data.find((p: any) => p.instagram_business_account?.id === igId);
-            const pageAccessToken = pageWithIg?.access_token || accessToken;
-            instagramImported = await importInstagramMedia(userIdForVideos, igId, pageAccessToken);
+          let pageIds: string[] = [];
+          if (debugData.data?.granular_scopes) {
+            const pagesScope = debugData.data.granular_scopes.find((s: any) => s.scope === "pages_show_list");
+            if (pagesScope?.target_ids) {
+              pageIds = pagesScope.target_ids;
+            }
           }
+          
+          for (const pId of pageIds) {
+            const pageUrl = `https://graph.facebook.com/v18.0/${pId}?fields=instagram_business_account&access_token=${accessToken}`;
+            const pageResponse = await fetch(pageUrl);
+            const pageData = await pageResponse.json();
+            
+            if (pageData.instagram_business_account?.id) {
+              igId = pageData.instagram_business_account.id;
+              console.log(`[Sync] Found Instagram Business Account ${igId} on Page ${pId}`);
+              
+              // Fetch Instagram username and update user
+              const igUrl = `https://graph.facebook.com/v18.0/${igId}?fields=username,followers_count&access_token=${accessToken}`;
+              const igResponse = await fetch(igUrl);
+              const igData = await igResponse.json();
+              
+              if (igData.username) {
+                await db.update(users).set({
+                  instagramBusinessId: igId,
+                  instagramHandle: `@${igData.username}`,
+                  instagramFollowers: igData.followers_count || 0,
+                }).where(eq(users.id, user.id));
+                console.log(`[Sync] Updated user with Instagram: @${igData.username}`);
+              }
+              break; // Use first found Instagram account
+            }
+          }
+        } catch (err) {
+          console.log("[Sync] Could not find Instagram Business Accounts:", err);
+        }
+      }
+      
+      if (igId) {
+        console.log(`[Sync] Importing Instagram media from ${igId}...`);
+        try {
+          // Use user access token directly (works for Business Manager Pages)
+          instagramImported = await importInstagramMedia(userIdForVideos, igId, accessToken);
         } catch (err) {
           console.log("[Sync] Could not import Instagram media:", err);
         }
+      } else {
+        console.log("[Sync] No Instagram Business Account found on any Page");
       }
       
       const totalFacebookImported = personalImported + facebookImported;

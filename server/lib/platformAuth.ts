@@ -83,13 +83,19 @@ async function fetchFacebookPageData(userAccessToken: string): Promise<FacebookP
 // Fetch Facebook Page videos
 async function fetchFacebookPageVideos(pageId: string, accessToken: string): Promise<any[]> {
   try {
-    const url = `https://graph.facebook.com/v18.0/${pageId}/videos?fields=id,title,description,created_time,thumbnails,permalink_url,length,views&limit=50&access_token=${accessToken}`;
+    // Include 'title' and 'name' fields - Facebook uses different fields for different video types
+    const url = `https://graph.facebook.com/v18.0/${pageId}/videos?fields=id,title,name,description,created_time,thumbnails,permalink_url,length,views,source&limit=50&access_token=${accessToken}`;
     const response = await fetch(url);
     const data = await response.json();
     
     if (data.error) {
       console.error("[Graph API] Error fetching Facebook videos:", data.error.message);
       return [];
+    }
+    
+    // Log first video to see what fields we get
+    if (data.data?.length > 0) {
+      console.log(`[Graph API] Sample video fields:`, Object.keys(data.data[0]));
     }
     
     console.log(`[Graph API] Found ${data.data?.length || 0} Facebook Page videos`);
@@ -200,10 +206,19 @@ async function importFacebookVideos(userId: string, pageId: string, accessToken:
       });
       
       if (!existing) {
+        // Try multiple fields for title: title, name, or first line of description
+        let videoTitle = video.title || video.name;
+        if (!videoTitle && video.description) {
+          // Use first line of description as title (up to 100 chars)
+          const firstLine = video.description.split('\n')[0].trim();
+          videoTitle = firstLine.substring(0, 100) || "Facebook Video";
+        }
+        videoTitle = videoTitle || "Facebook Video";
+        
         await db.insert(videoIndex).values({
           userId,
           youtubeId: `facebook:${video.id}`,
-          title: video.title || "Untitled Video",
+          title: videoTitle,
           description: video.description || "",
           viewCount: video.views || 0,
           thumbnailUrl: video.thumbnails?.data?.[0]?.uri || null,
