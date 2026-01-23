@@ -915,25 +915,25 @@ function RealityToAugmentedTransition() {
         onTouchMove={handleTouchMove}
         onTouchEnd={handleMouseUp}
       >
-        {/* Augmented image (right side - underneath as base) */}
+        {/* Reality image (base - empty counter, shows when slider is left) */}
         <img 
-          src={aiAugmentedImg} 
-          alt="AI Augmented - Product placed on counter" 
+          src={realityImg} 
+          alt="Reality - Empty counter surface" 
           className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-          data-testid="img-augmented-base"
+          data-testid="img-reality-base"
           draggable={false}
         />
         
-        {/* Reality image (left side - clipped overlay) */}
+        {/* Augmented image (overlay - product on counter, revealed as slider moves right) */}
         <div 
           className="absolute inset-0 overflow-hidden pointer-events-none"
           style={{ clipPath: `inset(0 ${100 - sliderValue[0]}% 0 0)` }}
         >
           <img 
-            src={realityImg} 
-            alt="Reality - Empty counter surface" 
+            src={aiAugmentedImg} 
+            alt="AI Augmented - Product placed on counter" 
             className="absolute inset-0 w-full h-full object-cover"
-            data-testid="img-reality-overlay"
+            data-testid="img-augmented-overlay"
             draggable={false}
           />
         </div>
