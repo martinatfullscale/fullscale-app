@@ -5,6 +5,17 @@
 FullScale is a dual-portal content monetization platform with Google OAuth-gated access and YouTube integration. Features role-based views (creator/brand) with View Switcher for admins, a Brand Marketplace where brands purchase ad placements, and Campaign Tracker for monitoring bids. Built as a full-stack TypeScript application with React frontend and Express backend, using PostgreSQL for data persistence. Includes real-time AI object detection using TensorFlow.js COCO-SSD for product placement surface analysis.
 
 ## Recent Changes (January 2026)
+- **Platform Disconnect Persistence**: Fixed social platform disconnect to persist to database
+  - DELETE /api/auth/facebook clears Facebook and Instagram data (shared auth)
+  - DELETE /api/auth/twitch clears Twitch connection data
+  - DELETE /api/auth/youtube clears YouTube connection and video index
+  - Settings page now fetches real connection status on mount from /api/platform-auth/status and /api/youtube/videos
+  - Disconnect calls actual API endpoints instead of just updating local state
+- **Local File Badge in Demo Mode**: Demo videos endpoint now includes real videos with local files
+  - /api/demo/videos merges real local videos (with fileExists: true) with static demo videos
+  - Real local videos appear first in the list, showing "Local File" badge
+  - Hero Video (ID 52) with local file at ./public/hero_video.mp4 displays Local File badge
+- **Database Cleanup**: Removed orphaned demo videos - only 1 video (Hero Video ID 52) remains
 - **TensorFlow.js Surface Detection**: New background worker queue for AI-powered surface detection
   - COCO-SSD model detects objects: tables, desks, laptops, keyboards, monitors, phones, etc.
   - Returns JSON: `{surface: "desk", surroundings: ["laptop", "keyboard"]}` or "NO_SURFACES_EXIST"
