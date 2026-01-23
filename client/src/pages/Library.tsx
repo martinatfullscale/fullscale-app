@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { TopBar } from "@/components/TopBar";
-import { Upload, Eye, CheckCircle, Loader2, AlertTriangle, X, Shield, Sun, Tag, Box, DollarSign, Sparkles, RefreshCw, Play, Globe, HardDrive, Scan } from "lucide-react";
+import { Upload, Eye, CheckCircle, Loader2, AlertTriangle, X, Shield, Sun, Tag, Box, DollarSign, Sparkles, RefreshCw, Play, Globe, HardDrive, Scan, Video } from "lucide-react";
 import { SiInstagram, SiYoutube, SiTwitch, SiFacebook } from "react-icons/si";
 import { motion } from "framer-motion";
 import { useAuth } from "@/hooks/use-auth";
@@ -37,7 +37,7 @@ interface IndexedVideo {
   filePath?: string | null;
 }
 
-type PlatformFilter = "all" | "youtube" | "instagram" | "twitch" | "facebook";
+type PlatformFilter = "all" | "youtube" | "instagram" | "twitch" | "facebook" | "fullscale";
 
 interface VideoIndexResponse {
   videos: IndexedVideo[];
@@ -933,6 +933,7 @@ export default function Library() {
   const instagramCount = displayVideos.filter(v => v.platform === "instagram").length;
   const twitchCount = displayVideos.filter(v => v.platform === "twitch").length;
   const facebookCount = displayVideos.filter(v => v.platform === "facebook").length;
+  const uploadsCount = displayVideos.filter(v => v.platform === "fullscale").length;
   
   // Debug logging
   console.log("[Library] isPitchMode:", isPitchMode, "videos.length:", videos.length, "isLoading:", isLoadingVideos, "platformFilter:", platformFilter);
@@ -1029,6 +1030,10 @@ export default function Library() {
                 <SiFacebook className="w-4 h-4 text-blue-500" />
                 Facebook ({facebookCount})
               </TabsTrigger>
+              <TabsTrigger value="fullscale" className="gap-2 data-[state=active]:bg-emerald-500/20" data-testid="tab-uploads">
+                <Upload className="w-4 h-4 text-emerald-500" />
+                Uploads ({uploadsCount})
+              </TabsTrigger>
             </TabsList>
           </Tabs>
           
@@ -1102,9 +1107,17 @@ export default function Library() {
                       <div className="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center">
                         <SiFacebook className="w-3.5 h-3.5 text-white" />
                       </div>
-                    ) : (
+                    ) : video.platform === "fullscale" ? (
+                      <div className="w-6 h-6 rounded-full bg-emerald-600 flex items-center justify-center">
+                        <Upload className="w-3.5 h-3.5 text-white" />
+                      </div>
+                    ) : video.platform === "youtube" ? (
                       <div className="w-6 h-6 rounded-full bg-red-600 flex items-center justify-center">
                         <SiYoutube className="w-3.5 h-3.5 text-white" />
+                      </div>
+                    ) : (
+                      <div className="w-6 h-6 rounded-full bg-zinc-600 flex items-center justify-center">
+                        <Video className="w-3.5 h-3.5 text-white" />
                       </div>
                     )}
                   </div>
