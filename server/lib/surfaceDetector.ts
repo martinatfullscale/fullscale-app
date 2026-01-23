@@ -7,23 +7,95 @@ import sharp from 'sharp';
 let model: cocoSsd.ObjectDetection | null = null;
 let modelLoading: Promise<cocoSsd.ObjectDetection> | null = null;
 
-const SURFACE_OBJECTS = ['dining table', 'desk', 'bench', 'table'];
-const SURROUNDING_OBJECTS = ['laptop', 'keyboard', 'mouse', 'cell phone', 'bottle', 'cup', 'book', 'remote', 'clock', 'vase', 'tv', 'monitor'];
+// COCO-SSD detectable classes expanded for maximum scene capture
+// Surfaces: flat horizontal surfaces suitable for product placement
+const SURFACE_OBJECTS = [
+  'dining table', 'desk', 'bench', 'table',
+  'bed', 'couch', 'sofa', 'chair',  // furniture surfaces
+  'refrigerator', 'oven', 'microwave', 'sink',  // kitchen surfaces
+];
+
+// Surrounding objects: context items that indicate placement opportunities
+const SURROUNDING_OBJECTS = [
+  // Electronics & Tech
+  'laptop', 'keyboard', 'mouse', 'cell phone', 'tv', 'monitor', 'remote',
+  // Kitchen & Dining
+  'bottle', 'cup', 'wine glass', 'bowl', 'fork', 'knife', 'spoon',
+  'banana', 'apple', 'orange', 'sandwich', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake',
+  // Living Space
+  'book', 'clock', 'vase', 'potted plant', 'teddy bear',
+  // Sports & Fitness
+  'sports ball', 'tennis racket', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard', 'frisbee',
+  // Personal Items
+  'backpack', 'umbrella', 'handbag', 'tie', 'suitcase',
+  // Bathroom
+  'toothbrush', 'hair drier', 'scissors',
+];
+
+// Map COCO-SSD class names to clean display names
 const OBJECT_MAP: Record<string, string> = {
+  // Surfaces
   'dining table': 'desk',
   'bench': 'table',
+  'couch': 'couch',
+  'sofa': 'couch',
+  'bed': 'bed',
+  'chair': 'chair',
+  'refrigerator': 'kitchen counter',
+  'oven': 'kitchen counter',
+  'microwave': 'kitchen counter',
+  'sink': 'kitchen counter',
+  // Electronics
   'laptop': 'laptop',
   'keyboard': 'keyboard',
   'mouse': 'mouse',
   'cell phone': 'phone',
-  'bottle': 'bottle',
-  'cup': 'cup',
-  'book': 'book',
-  'remote': 'remote',
-  'clock': 'clock',
-  'vase': 'vase',
   'tv': 'monitor',
   'tvmonitor': 'monitor',
+  'remote': 'remote',
+  // Kitchen items
+  'bottle': 'bottle',
+  'cup': 'cup',
+  'wine glass': 'glass',
+  'bowl': 'bowl',
+  'fork': 'utensil',
+  'knife': 'utensil',
+  'spoon': 'utensil',
+  // Food items
+  'banana': 'fruit',
+  'apple': 'fruit',
+  'orange': 'fruit',
+  'sandwich': 'food',
+  'broccoli': 'food',
+  'carrot': 'food',
+  'hot dog': 'food',
+  'pizza': 'food',
+  'donut': 'food',
+  'cake': 'food',
+  // Living space
+  'book': 'book',
+  'clock': 'clock',
+  'vase': 'vase',
+  'potted plant': 'plant',
+  'teddy bear': 'toy',
+  // Sports
+  'sports ball': 'ball',
+  'tennis racket': 'sports gear',
+  'baseball bat': 'sports gear',
+  'baseball glove': 'sports gear',
+  'skateboard': 'sports gear',
+  'surfboard': 'sports gear',
+  'frisbee': 'sports gear',
+  // Personal items
+  'backpack': 'bag',
+  'umbrella': 'accessory',
+  'handbag': 'bag',
+  'tie': 'accessory',
+  'suitcase': 'luggage',
+  // Bathroom
+  'toothbrush': 'toiletry',
+  'hair drier': 'appliance',
+  'scissors': 'tool',
 };
 
 export interface SurfaceDetectionResult {

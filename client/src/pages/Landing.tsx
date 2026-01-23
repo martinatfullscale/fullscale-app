@@ -1,14 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Zap, Shield, Video, X, Ban, DollarSign, TrendingUp, Users, Sparkles, Cpu, Eye, Timer, Layers, Mail, User, Plus, Globe } from "lucide-react";
+import { Zap, Shield, Video, X, Ban, DollarSign, TrendingUp, Users, Sparkles, Cpu, Eye, Timer, Layers, Mail, User, Plus, Globe, ArrowRight } from "lucide-react";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 import logoBlackAmbition from "@assets/logo-black-ambition_1767712118620.png";
 import logoMayDavis from "@assets/logo-may-davis_1767712118621.png";
 import logoElementa from "@assets/logo-elementa_1767712118620.png";
 import logoNue from "@assets/logo-nue_1767712118621.png";
 import heroVideo from "@assets/generated_videos/creator_studio_cinematic_loop.mp4";
-import realityImg from "@assets/generated_images/modern_kitchen_with_empty_counter.png";
-import aiAugmentedImg from "@assets/generated_images/kitchen_with_liquid_death_can.png";
+import realityImg from "@assets/unnamed_1769147394407.JPEG";
+import aiAugmentedImg from "@assets/Gemini_Generated_Image_rykd4crykd4crykd_1769147394406.PNG";
 import surfaceEngineImg from "@assets/generated_images/desk_with_ai_tracking_grid.png";
 import kitchenFrame from "@assets/generated_images/kitchen_vlog_frame.png";
 import fitnessFrame from "@assets/generated_images/fitness_vlog_frame.png";
@@ -850,75 +850,199 @@ function NeuralScanOverlay({ isVisible, onRevealProduct }: { isVisible: boolean;
   );
 }
 
-function RealitySlider() {
-  const [sliderValue, setSliderValue] = useState([50]);
-  const [productRevealed, setProductRevealed] = useState(false);
-  const showScan = sliderValue[0] > 10 && !productRevealed;
-  const showAiImage = productRevealed;
+function RealityToAugmentedTransition() {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const isInView = useInView(containerRef, { once: false, margin: "-100px" });
+  const [activeSlide, setActiveSlide] = useState<'reality' | 'augmented'>('reality');
+  const [isTransitioning, setIsTransitioning] = useState(false);
 
-  const handleRevealProduct = useCallback((revealed: boolean) => {
-    if (revealed) {
-      setProductRevealed(true);
-    }
-  }, []);
-
+  // Auto-transition when in view
   useEffect(() => {
-    if (sliderValue[0] <= 10) {
-      setProductRevealed(false);
+    if (!isInView) {
+      setActiveSlide('reality');
+      return;
     }
-  }, [sliderValue]);
+    
+    const interval = setInterval(() => {
+      setIsTransitioning(true);
+      setTimeout(() => {
+        setActiveSlide(prev => prev === 'reality' ? 'augmented' : 'reality');
+        setTimeout(() => setIsTransitioning(false), 500);
+      }, 200);
+    }, 4000);
+    
+    return () => clearInterval(interval);
+  }, [isInView]);
 
   return (
-    <div className="relative w-full max-w-4xl mx-auto">
-      <div className="relative aspect-video rounded-2xl overflow-hidden border border-white/10 shadow-2xl shadow-primary/10">
-        <img src={realityImg} alt="Reality Scene (Empty)" className="absolute inset-0 w-full h-full object-cover" data-testid="img-reality-base" />
-        
+    <div ref={containerRef} className="relative w-full max-w-5xl mx-auto">
+      {/* Side-by-side comparison layout */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-8">
+        {/* Reality - Flat Surface (Left) */}
         <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: showAiImage ? 1 : 0 }}
-          transition={{ duration: 0.5 }}
-          className="absolute inset-0"
+          initial={{ opacity: 0, x: -20 }}
+          whileInView={{ opacity: 1, x: 0 }}
+          viewport={{ once: true }}
+          transition={{ delay: 0.2 }}
+          className="relative"
         >
-          <img src={aiAugmentedImg} alt="AI Augmented Scene" className="absolute inset-0 w-full h-full object-cover" data-testid="img-ai-augmented" />
-        </motion.div>
-        
-        <NeuralScanOverlay isVisible={showScan} onRevealProduct={handleRevealProduct} />
-        
-        <div 
-          className="absolute inset-0 overflow-hidden"
-          style={{ clipPath: `inset(0 0 0 ${sliderValue[0]}%)` }}
-        >
-          <img src={realityImg} alt="Reality Scene" className="absolute inset-0 w-full h-full object-cover" data-testid="img-reality" />
-        </div>
-        <div 
-          className="absolute top-0 bottom-0 w-1 bg-gradient-to-b from-primary via-emerald-400 to-primary shadow-lg shadow-primary/50"
-          style={{ left: `${sliderValue[0]}%`, transform: 'translateX(-50%)' }}
-        >
-          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/80 border-2 border-primary flex items-center justify-center backdrop-blur-sm">
-            <Layers className="w-4 h-4 text-primary" />
+          <div 
+            className={`relative aspect-[4/3] rounded-2xl overflow-hidden border-2 transition-all duration-500 ${
+              activeSlide === 'reality' 
+                ? 'border-white/30 shadow-2xl shadow-white/10 scale-[1.02]' 
+                : 'border-white/10 shadow-lg opacity-80'
+            }`}
+            onClick={() => setActiveSlide('reality')}
+          >
+            <img 
+              src={realityImg} 
+              alt="Reality - Empty counter surface" 
+              className="w-full h-full object-cover"
+              data-testid="img-reality-surface"
+            />
+            
+            {/* Label */}
+            <div className="absolute top-4 left-4 px-3 py-1.5 rounded-full bg-black/60 backdrop-blur-md border border-white/20 text-sm font-medium text-white">
+              Reality
+            </div>
+            
+            {/* Scanning overlay when active */}
+            {activeSlide === 'reality' && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="absolute inset-0 pointer-events-none"
+              >
+                {/* Scan grid effect */}
+                <div className="absolute inset-0 bg-gradient-to-b from-transparent via-emerald-500/5 to-emerald-500/10" />
+                <svg className="absolute inset-0 w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none">
+                  <motion.line
+                    x1="0" y1="0" x2="100" y2="0"
+                    stroke="rgba(16, 185, 129, 0.4)"
+                    strokeWidth="0.3"
+                    initial={{ y1: 0, y2: 0 }}
+                    animate={{ y1: [0, 100, 0], y2: [0, 100, 0] }}
+                    transition={{ duration: 3, repeat: Infinity, ease: "linear" }}
+                  />
+                </svg>
+                <div className="absolute bottom-4 left-4 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <span className="text-xs text-emerald-400 font-medium">Detecting surfaces...</span>
+                </div>
+              </motion.div>
+            )}
           </div>
+          <p className="text-center text-sm text-muted-foreground mt-3">Flat surface detected</p>
+        </motion.div>
+
+        {/* Arrow transition indicator */}
+        <div className="hidden md:flex absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-10">
+          <motion.div
+            animate={{ 
+              x: isTransitioning ? [0, 10, 0] : 0,
+              scale: isTransitioning ? 1.2 : 1
+            }}
+            transition={{ duration: 0.3 }}
+            className="w-12 h-12 rounded-full bg-emerald-500/20 backdrop-blur-sm border border-emerald-500/40 flex items-center justify-center"
+          >
+            <ArrowRight className="w-5 h-5 text-emerald-400" />
+          </motion.div>
         </div>
-        <div className="absolute top-4 left-4 px-3 py-1.5 rounded-full bg-black/60 backdrop-blur-md border border-white/10 text-xs font-medium text-white/80">
-          Reality
-        </div>
-        <div className="absolute top-4 right-4 px-3 py-1.5 rounded-full bg-emerald-500/20 backdrop-blur-md border border-emerald-500/30 text-xs font-medium text-emerald-400 flex items-center gap-1.5">
-          {showScan && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />}
-          AI Augmented
-        </div>
+
+        {/* Augmented - Product Placed (Right) */}
+        <motion.div
+          initial={{ opacity: 0, x: 20 }}
+          whileInView={{ opacity: 1, x: 0 }}
+          viewport={{ once: true }}
+          transition={{ delay: 0.4 }}
+          className="relative"
+        >
+          <div 
+            className={`relative aspect-[4/3] rounded-2xl overflow-hidden border-2 transition-all duration-500 ${
+              activeSlide === 'augmented' 
+                ? 'border-emerald-500/40 shadow-2xl shadow-emerald-500/20 scale-[1.02]' 
+                : 'border-white/10 shadow-lg opacity-80'
+            }`}
+            onClick={() => setActiveSlide('augmented')}
+          >
+            <img 
+              src={aiAugmentedImg} 
+              alt="Augmented - Product placed on counter" 
+              className="w-full h-full object-cover"
+              data-testid="img-augmented-product"
+            />
+            
+            {/* Label */}
+            <div className="absolute top-4 right-4 px-3 py-1.5 rounded-full bg-emerald-500/20 backdrop-blur-md border border-emerald-500/30 text-sm font-medium text-emerald-400 flex items-center gap-2">
+              <Sparkles className="w-3 h-3" />
+              AI Augmented
+            </div>
+            
+            {/* Product highlight when active */}
+            {activeSlide === 'augmented' && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="absolute inset-0 pointer-events-none"
+              >
+                {/* Subtle glow around product area */}
+                <div className="absolute left-[15%] top-[25%] w-[25%] h-[50%]">
+                  <motion.div
+                    animate={{ opacity: [0.3, 0.6, 0.3] }}
+                    transition={{ duration: 2, repeat: Infinity }}
+                    className="absolute inset-0 rounded-lg border-2 border-emerald-400/40 shadow-lg shadow-emerald-500/30"
+                  />
+                </div>
+                <div className="absolute bottom-4 right-4 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                  <span className="text-xs text-emerald-400 font-medium">Product inserted</span>
+                </div>
+              </motion.div>
+            )}
+          </div>
+          <p className="text-center text-sm text-muted-foreground mt-3">Brand product placed naturally</p>
+        </motion.div>
       </div>
-      <div className="mt-6 px-4">
-        <Slider
-          value={sliderValue}
-          onValueChange={setSliderValue}
-          max={100}
-          step={1}
-          className="w-full"
-          data-testid="slider-reality-augmented"
-        />
-        <div className="flex justify-between gap-4 mt-2 text-xs text-muted-foreground">
-          <span>Reality</span>
-          <span>AI Augmented</span>
-        </div>
+
+      {/* Mobile: Arrow between images */}
+      <div className="flex md:hidden justify-center my-4">
+        <motion.div
+          animate={{ 
+            y: isTransitioning ? [-5, 5, -5] : 0,
+            rotate: 90
+          }}
+          className="w-10 h-10 rounded-full bg-emerald-500/20 backdrop-blur-sm border border-emerald-500/40 flex items-center justify-center"
+        >
+          <ArrowRight className="w-4 h-4 text-emerald-400" />
+        </motion.div>
+      </div>
+
+      {/* Status indicator */}
+      <div className="flex justify-center gap-8 mt-6">
+        <button 
+          onClick={() => setActiveSlide('reality')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-full transition-all ${
+            activeSlide === 'reality' 
+              ? 'bg-white/10 text-white' 
+              : 'text-muted-foreground hover:text-white'
+          }`}
+          data-testid="button-reality"
+        >
+          <span className={`w-2 h-2 rounded-full ${activeSlide === 'reality' ? 'bg-white' : 'bg-muted-foreground'}`} />
+          Reality
+        </button>
+        <button 
+          onClick={() => setActiveSlide('augmented')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-full transition-all ${
+            activeSlide === 'augmented' 
+              ? 'bg-emerald-500/20 text-emerald-400' 
+              : 'text-muted-foreground hover:text-emerald-400'
+          }`}
+          data-testid="button-augmented"
+        >
+          <span className={`w-2 h-2 rounded-full ${activeSlide === 'augmented' ? 'bg-emerald-400' : 'bg-muted-foreground'}`} />
+          Augmented
+        </button>
       </div>
     </div>
   );
@@ -1226,11 +1350,11 @@ export default function Landing() {
               Reality vs <span className="text-emerald-400">Augmented</span>
             </h2>
             <p className="text-muted-foreground text-sm md:text-lg max-w-2xl mx-auto max-[480px]:hidden">
-              Watch our AI dream products onto surfaces with perfect occlusion and lighting. Drag the slider to see the transformation.
+              Watch our AI dream products onto surfaces with perfect occlusion and lighting. From flat surface to seamless product placement.
             </p>
           </motion.div>
           
-          <RealitySlider />
+          <RealityToAugmentedTransition />
         </div>
       </section>
 
