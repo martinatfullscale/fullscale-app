@@ -1010,6 +1010,34 @@ export async function registerRoutes(
     }
   });
 
+  // Seed demo video endpoint (uses secret key for external access)
+  app.get("/api/seed-demo-video", async (req, res) => {
+    const secretKey = req.query.key;
+    if (secretKey !== process.env.SESSION_SECRET?.substring(0, 16)) {
+      return res.status(403).json({ error: "Invalid key" });
+    }
+
+    try {
+      const video = await storage.upsertVideoIndex({
+        userId: "martin@gofullscale.co",
+        youtubeId: `hero-local-${Date.now()}`,
+        title: "Hero Video - Local Test",
+        description: "Local video file for testing surface detection scanning",
+        platform: "upload",
+        filePath: "/home/runner/workspace/public/hero_video.mp4",
+        status: "pending",
+        priorityScore: 100,
+        viewCount: 0,
+      });
+      
+      console.log(`[Seed Demo] Added hero video with ID: ${video.id}`);
+      res.json({ success: true, video });
+    } catch (error: any) {
+      console.error("[Seed Demo] Error:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // Disconnect Facebook (also clears Instagram since they share auth)
   app.delete("/api/auth/facebook", isFlexibleAuthenticated, async (req: any, res) => {
     const userId = req.authUserId;
