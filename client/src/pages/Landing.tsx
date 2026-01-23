@@ -851,198 +851,130 @@ function NeuralScanOverlay({ isVisible, onRevealProduct }: { isVisible: boolean;
 }
 
 function RealityToAugmentedTransition() {
+  const [sliderValue, setSliderValue] = useState([50]);
   const containerRef = useRef<HTMLDivElement>(null);
-  const isInView = useInView(containerRef, { once: false, margin: "-100px" });
-  const [activeSlide, setActiveSlide] = useState<'reality' | 'augmented'>('reality');
-  const [isTransitioning, setIsTransitioning] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
 
-  // Auto-transition when in view
-  useEffect(() => {
-    if (!isInView) {
-      setActiveSlide('reality');
-      return;
+  // Handle mouse/touch drag on the image
+  const handleMove = useCallback((clientX: number) => {
+    if (!containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    const x = clientX - rect.left;
+    const percentage = Math.max(0, Math.min(100, (x / rect.width) * 100));
+    setSliderValue([percentage]);
+  }, []);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    setIsDragging(true);
+    handleMove(e.clientX);
+  }, [handleMove]);
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    if (isDragging) {
+      handleMove(e.clientX);
     }
-    
-    const interval = setInterval(() => {
-      setIsTransitioning(true);
-      setTimeout(() => {
-        setActiveSlide(prev => prev === 'reality' ? 'augmented' : 'reality');
-        setTimeout(() => setIsTransitioning(false), 500);
-      }, 200);
-    }, 4000);
-    
-    return () => clearInterval(interval);
-  }, [isInView]);
+  }, [isDragging, handleMove]);
+
+  const handleMouseUp = useCallback(() => {
+    setIsDragging(false);
+  }, []);
+
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    setIsDragging(true);
+    handleMove(e.touches[0].clientX);
+  }, [handleMove]);
+
+  const handleTouchMove = useCallback((e: React.TouchEvent) => {
+    if (isDragging) {
+      handleMove(e.touches[0].clientX);
+    }
+  }, [isDragging, handleMove]);
+
+  // Add global mouse up listener for when mouse leaves the container
+  useEffect(() => {
+    const handleGlobalMouseUp = () => setIsDragging(false);
+    window.addEventListener('mouseup', handleGlobalMouseUp);
+    window.addEventListener('touchend', handleGlobalMouseUp);
+    return () => {
+      window.removeEventListener('mouseup', handleGlobalMouseUp);
+      window.removeEventListener('touchend', handleGlobalMouseUp);
+    };
+  }, []);
 
   return (
-    <div ref={containerRef} className="relative w-full max-w-5xl mx-auto">
-      {/* Side-by-side comparison layout */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-8">
-        {/* Reality - Flat Surface (Left) */}
-        <motion.div
-          initial={{ opacity: 0, x: -20 }}
-          whileInView={{ opacity: 1, x: 0 }}
-          viewport={{ once: true }}
-          transition={{ delay: 0.2 }}
-          className="relative"
+    <div className="relative w-full max-w-4xl mx-auto">
+      {/* Main comparison container */}
+      <div 
+        ref={containerRef}
+        className="relative aspect-video rounded-2xl overflow-hidden border border-white/10 shadow-2xl shadow-primary/10 cursor-ew-resize select-none"
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleMouseUp}
+      >
+        {/* Reality image (left side - underneath) */}
+        <img 
+          src={realityImg} 
+          alt="Reality - Empty counter surface" 
+          className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+          data-testid="img-reality-base"
+          draggable={false}
+        />
+        
+        {/* Augmented image (right side - clipped overlay) */}
+        <div 
+          className="absolute inset-0 overflow-hidden pointer-events-none"
+          style={{ clipPath: `inset(0 0 0 ${sliderValue[0]}%)` }}
         >
-          <div 
-            className={`relative aspect-[4/3] rounded-2xl overflow-hidden border-2 transition-all duration-500 ${
-              activeSlide === 'reality' 
-                ? 'border-white/30 shadow-2xl shadow-white/10 scale-[1.02]' 
-                : 'border-white/10 shadow-lg opacity-80'
-            }`}
-            onClick={() => setActiveSlide('reality')}
-          >
-            <img 
-              src={realityImg} 
-              alt="Reality - Empty counter surface" 
-              className="w-full h-full object-cover"
-              data-testid="img-reality-surface"
-            />
-            
-            {/* Label */}
-            <div className="absolute top-4 left-4 px-3 py-1.5 rounded-full bg-black/60 backdrop-blur-md border border-white/20 text-sm font-medium text-white">
-              Reality
-            </div>
-            
-            {/* Scanning overlay when active */}
-            {activeSlide === 'reality' && (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                className="absolute inset-0 pointer-events-none"
-              >
-                {/* Scan grid effect */}
-                <div className="absolute inset-0 bg-gradient-to-b from-transparent via-emerald-500/5 to-emerald-500/10" />
-                <svg className="absolute inset-0 w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none">
-                  <motion.line
-                    x1="0" y1="0" x2="100" y2="0"
-                    stroke="rgba(16, 185, 129, 0.4)"
-                    strokeWidth="0.3"
-                    initial={{ y1: 0, y2: 0 }}
-                    animate={{ y1: [0, 100, 0], y2: [0, 100, 0] }}
-                    transition={{ duration: 3, repeat: Infinity, ease: "linear" }}
-                  />
-                </svg>
-                <div className="absolute bottom-4 left-4 flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                  <span className="text-xs text-emerald-400 font-medium">Detecting surfaces...</span>
-                </div>
-              </motion.div>
-            )}
-          </div>
-          <p className="text-center text-sm text-muted-foreground mt-3">Flat surface detected</p>
-        </motion.div>
-
-        {/* Arrow transition indicator */}
-        <div className="hidden md:flex absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-10">
-          <motion.div
-            animate={{ 
-              x: isTransitioning ? [0, 10, 0] : 0,
-              scale: isTransitioning ? 1.2 : 1
-            }}
-            transition={{ duration: 0.3 }}
-            className="w-12 h-12 rounded-full bg-emerald-500/20 backdrop-blur-sm border border-emerald-500/40 flex items-center justify-center"
-          >
-            <ArrowRight className="w-5 h-5 text-emerald-400" />
-          </motion.div>
+          <img 
+            src={aiAugmentedImg} 
+            alt="AI Augmented - Product placed" 
+            className="absolute inset-0 w-full h-full object-cover"
+            data-testid="img-augmented-overlay"
+            draggable={false}
+          />
         </div>
-
-        {/* Augmented - Product Placed (Right) */}
-        <motion.div
-          initial={{ opacity: 0, x: 20 }}
-          whileInView={{ opacity: 1, x: 0 }}
-          viewport={{ once: true }}
-          transition={{ delay: 0.4 }}
-          className="relative"
+        
+        {/* Slider divider line */}
+        <div 
+          className="absolute top-0 bottom-0 w-1 bg-gradient-to-b from-emerald-400 via-white to-emerald-400 shadow-lg shadow-emerald-500/50 pointer-events-none"
+          style={{ left: `${sliderValue[0]}%`, transform: 'translateX(-50%)' }}
         >
-          <div 
-            className={`relative aspect-[4/3] rounded-2xl overflow-hidden border-2 transition-all duration-500 ${
-              activeSlide === 'augmented' 
-                ? 'border-emerald-500/40 shadow-2xl shadow-emerald-500/20 scale-[1.02]' 
-                : 'border-white/10 shadow-lg opacity-80'
-            }`}
-            onClick={() => setActiveSlide('augmented')}
-          >
-            <img 
-              src={aiAugmentedImg} 
-              alt="Augmented - Product placed on counter" 
-              className="w-full h-full object-cover"
-              data-testid="img-augmented-product"
-            />
-            
-            {/* Label */}
-            <div className="absolute top-4 right-4 px-3 py-1.5 rounded-full bg-emerald-500/20 backdrop-blur-md border border-emerald-500/30 text-sm font-medium text-emerald-400 flex items-center gap-2">
-              <Sparkles className="w-3 h-3" />
-              AI Augmented
-            </div>
-            
-            {/* Product highlight when active */}
-            {activeSlide === 'augmented' && (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                className="absolute inset-0 pointer-events-none"
-              >
-                {/* Subtle glow around product area */}
-                <div className="absolute left-[15%] top-[25%] w-[25%] h-[50%]">
-                  <motion.div
-                    animate={{ opacity: [0.3, 0.6, 0.3] }}
-                    transition={{ duration: 2, repeat: Infinity }}
-                    className="absolute inset-0 rounded-lg border-2 border-emerald-400/40 shadow-lg shadow-emerald-500/30"
-                  />
-                </div>
-                <div className="absolute bottom-4 right-4 flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400" />
-                  <span className="text-xs text-emerald-400 font-medium">Product inserted</span>
-                </div>
-              </motion.div>
-            )}
+          {/* Slider handle */}
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-12 h-12 rounded-full bg-black/80 border-2 border-emerald-400 flex items-center justify-center backdrop-blur-sm shadow-lg shadow-emerald-500/30">
+            <Layers className="w-5 h-5 text-emerald-400" />
           </div>
-          <p className="text-center text-sm text-muted-foreground mt-3">Brand product placed naturally</p>
-        </motion.div>
-      </div>
-
-      {/* Mobile: Arrow between images */}
-      <div className="flex md:hidden justify-center my-4">
-        <motion.div
-          animate={{ 
-            y: isTransitioning ? [-5, 5, -5] : 0,
-            rotate: 90
-          }}
-          className="w-10 h-10 rounded-full bg-emerald-500/20 backdrop-blur-sm border border-emerald-500/40 flex items-center justify-center"
-        >
-          <ArrowRight className="w-4 h-4 text-emerald-400" />
-        </motion.div>
-      </div>
-
-      {/* Status indicator */}
-      <div className="flex justify-center gap-8 mt-6">
-        <button 
-          onClick={() => setActiveSlide('reality')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-full transition-all ${
-            activeSlide === 'reality' 
-              ? 'bg-white/10 text-white' 
-              : 'text-muted-foreground hover:text-white'
-          }`}
-          data-testid="button-reality"
-        >
-          <span className={`w-2 h-2 rounded-full ${activeSlide === 'reality' ? 'bg-white' : 'bg-muted-foreground'}`} />
+        </div>
+        
+        {/* Reality label (top left) */}
+        <div className="absolute top-4 left-4 px-3 py-1.5 rounded-full bg-black/60 backdrop-blur-md border border-white/20 text-sm font-medium text-white pointer-events-none">
           Reality
-        </button>
-        <button 
-          onClick={() => setActiveSlide('augmented')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-full transition-all ${
-            activeSlide === 'augmented' 
-              ? 'bg-emerald-500/20 text-emerald-400' 
-              : 'text-muted-foreground hover:text-emerald-400'
-          }`}
-          data-testid="button-augmented"
-        >
-          <span className={`w-2 h-2 rounded-full ${activeSlide === 'augmented' ? 'bg-emerald-400' : 'bg-muted-foreground'}`} />
-          Augmented
-        </button>
+        </div>
+        
+        {/* AI Augmented label (top right) */}
+        <div className="absolute top-4 right-4 px-3 py-1.5 rounded-full bg-emerald-500/20 backdrop-blur-md border border-emerald-500/30 text-sm font-medium text-emerald-400 flex items-center gap-1.5 pointer-events-none">
+          <Sparkles className="w-3 h-3" />
+          AI Augmented
+        </div>
+      </div>
+      
+      {/* Slider control below */}
+      <div className="mt-6 px-4">
+        <Slider
+          value={sliderValue}
+          onValueChange={setSliderValue}
+          max={100}
+          step={1}
+          className="w-full"
+          data-testid="slider-reality-augmented"
+        />
+        <div className="flex justify-between gap-4 mt-2 text-xs text-muted-foreground">
+          <span>Reality</span>
+          <span>AI Augmented</span>
+        </div>
       </div>
     </div>
   );
