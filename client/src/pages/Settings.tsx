@@ -313,6 +313,14 @@ export default function Settings() {
           })
         );
         
+        // Clear Facebook-related state when disconnecting Facebook/Instagram
+        if (id === "facebook" || id === "instagram") {
+          setIsFacebookConnected(false);
+          setFacebookSources([]);
+          setSelectedFacebookSource("");
+          setSelectedInstagramSource("");
+        }
+        
         toast({
           title: `${connection.name} Disconnected`,
           description: `Your ${connection.name} account has been disconnected.`,

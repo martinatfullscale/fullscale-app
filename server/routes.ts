@@ -962,6 +962,70 @@ export async function registerRoutes(
     res.json({ success: true });
   });
 
+  // Disconnect Facebook (also clears Instagram since they share auth)
+  app.delete("/api/auth/facebook", isFlexibleAuthenticated, async (req: any, res) => {
+    const userId = req.authUserId;
+    const userEmail = req.authEmail;
+    console.log(`[Facebook Disconnect] Disconnecting for userId: ${userId}, email: ${userEmail}`);
+    
+    try {
+      // Find user by ID or email
+      let user = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+      if (!user.length && userEmail) {
+        user = await db.select().from(users).where(eq(users.email, userEmail)).limit(1);
+      }
+      
+      if (user.length) {
+        // Clear Facebook and Instagram data (they share auth)
+        await db.update(users).set({
+          facebookId: null,
+          facebookPageId: null,
+          facebookPageName: null,
+          facebookFollowers: null,
+          facebookAccessToken: null,
+          instagramBusinessId: null,
+          instagramHandle: null,
+          instagramFollowers: null,
+          instagramId: null,
+        }).where(eq(users.id, user[0].id));
+        console.log(`[Facebook Disconnect] Cleared Facebook/Instagram data for user ${user[0].id}`);
+      }
+      
+      res.json({ success: true });
+    } catch (error) {
+      console.error("[Facebook Disconnect] Error:", error);
+      res.status(500).json({ error: "Failed to disconnect Facebook" });
+    }
+  });
+
+  // Disconnect Twitch
+  app.delete("/api/auth/twitch", isFlexibleAuthenticated, async (req: any, res) => {
+    const userId = req.authUserId;
+    const userEmail = req.authEmail;
+    console.log(`[Twitch Disconnect] Disconnecting for userId: ${userId}, email: ${userEmail}`);
+    
+    try {
+      // Find user by ID or email
+      let user = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+      if (!user.length && userEmail) {
+        user = await db.select().from(users).where(eq(users.email, userEmail)).limit(1);
+      }
+      
+      if (user.length) {
+        // Clear Twitch data
+        await db.update(users).set({
+          twitchId: null,
+        }).where(eq(users.id, user[0].id));
+        console.log(`[Twitch Disconnect] Cleared Twitch data for user ${user[0].id}`);
+      }
+      
+      res.json({ success: true });
+    } catch (error) {
+      console.error("[Twitch Disconnect] Error:", error);
+      res.status(500).json({ error: "Failed to disconnect Twitch" });
+    }
+  });
+
   // Sync YouTube videos from API to database
   app.post("/api/youtube/sync", isFlexibleAuthenticated, async (req: any, res) => {
     const userId = req.authUserId;
@@ -1100,11 +1164,83 @@ export async function registerRoutes(
     { id: 4004, userId: "demo-creator", user_id: "demo-creator", youtubeId: "fb-4", youtube_id: "fb-4", title: "Behind the Scenes Vlog", description: "A day in the life of a content creator.", viewCount: 540000, view_count: 540000, thumbnailUrl: "https://images.unsplash.com/photo-1600494603989-9650cf6ddd3d?w=480&h=270&fit=crop", thumbnail_url: "https://images.unsplash.com/photo-1600494603989-9650cf6ddd3d?w=480&h=270&fit=crop", videoUrl: "/hero_video.mp4", video_url: "/hero_video.mp4", status: "Scan Complete", scan_status: "completed", priorityScore: 68, priority_score: 68, publishedAt: "2025-12-28T10:00:00Z", published_at: "2025-12-28T10:00:00Z", category: "Vlog", isEvergreen: false, is_evergreen: false, duration: "0:15:45", adOpportunities: 4, opportunities_count: 4, surfaceCount: 4, surface_count: 4, platform: "facebook", brandName: "Canon", brand_name: "Canon", createdAt: "2025-12-28T10:00:00Z", created_at: "2025-12-28T10:00:00Z", updatedAt: "2025-12-28T10:00:00Z", updated_at: "2025-12-28T10:00:00Z" },
   ];
 
-  // Public demo endpoint - returns STATIC demo videos (NO database query)
-  // Completely decoupled from real user data for pitch mode
-  app.get("/api/demo/videos", (req, res) => {
-    console.log(`[DEMO] Returning ${STATIC_DEMO_VIDEOS.length} static demo videos (no DB query)`);
-    res.json({ videos: STATIC_DEMO_VIDEOS, total: STATIC_DEMO_VIDEOS.length });
+  // Public demo endpoint - returns STATIC demo videos + real videos with local files
+  // Shows Local File badge for videos that have actual local files
+  app.get("/api/demo/videos", async (req, res) => {
+    try {
+      // Get real videos that have local files to show "Local File" badge
+      const allRealVideos = await storage.getAllVideos();
+      const localVideos = await Promise.all(
+        allRealVideos.map(async (video) => {
+          let fileExists = false;
+          if (video.filePath) {
+            try {
+              fileExists = fs.existsSync(video.filePath);
+            } catch {
+              fileExists = false;
+            }
+          }
+          if (fileExists) {
+            // Convert to demo format with fileExists
+            const count = await storage.getSurfaceCountByVideo(video.id);
+            return {
+              id: video.id,
+              userId: video.userId,
+              user_id: video.userId,
+              youtubeId: video.youtubeId,
+              youtube_id: video.youtubeId,
+              title: video.title,
+              description: video.description || "",
+              viewCount: video.viewCount || 0,
+              view_count: video.viewCount || 0,
+              thumbnailUrl: video.thumbnailUrl || "",
+              thumbnail_url: video.thumbnailUrl || "",
+              videoUrl: video.filePath || "",
+              video_url: video.filePath || "",
+              status: video.status || "Ready (0 Spots)",
+              scan_status: count > 0 ? "completed" : "pending",
+              priorityScore: video.priorityScore || 50,
+              priority_score: video.priorityScore || 50,
+              publishedAt: video.publishedAt,
+              published_at: video.publishedAt,
+              category: video.category || "General",
+              isEvergreen: video.isEvergreen ?? true,
+              is_evergreen: video.isEvergreen ?? true,
+              duration: video.duration || "0:00",
+              adOpportunities: count,
+              opportunities_count: count,
+              surfaceCount: count,
+              surface_count: count,
+              platform: video.platform || "fullscale",
+              filePath: video.filePath,
+              file_path: video.filePath,
+              fileExists: true,
+              createdAt: video.createdAt,
+              created_at: video.createdAt,
+              updatedAt: video.updatedAt,
+              updated_at: video.updatedAt,
+            };
+          }
+          return null;
+        })
+      );
+      
+      // Filter out null entries and combine with static demos
+      const realLocalVideos = localVideos.filter((v) => v !== null);
+      
+      // Add fileExists: false to all static demo videos
+      const staticWithFlag = STATIC_DEMO_VIDEOS.map((v: any) => ({ ...v, fileExists: false, file_exists: false }));
+      
+      // Real local videos first, then static demos
+      const allVideos = [...realLocalVideos, ...staticWithFlag];
+      
+      console.log(`[DEMO] Returning ${allVideos.length} videos (${realLocalVideos.length} local + ${STATIC_DEMO_VIDEOS.length} static demos)`);
+      res.json({ videos: allVideos, total: allVideos.length });
+    } catch (error) {
+      console.error("[DEMO] Error fetching videos:", error);
+      // Fallback to static demo videos only
+      res.json({ videos: STATIC_DEMO_VIDEOS, total: STATIC_DEMO_VIDEOS.length });
+    }
   });
 
   // Manually trigger re-indexing
