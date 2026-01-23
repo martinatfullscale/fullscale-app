@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { TopBar } from "@/components/TopBar";
-import { Upload, Eye, CheckCircle, Loader2, AlertTriangle, X, Shield, Sun, Tag, Box, DollarSign, Sparkles, RefreshCw, Play, Globe } from "lucide-react";
+import { Upload, Eye, CheckCircle, Loader2, AlertTriangle, X, Shield, Sun, Tag, Box, DollarSign, Sparkles, RefreshCw, Play, Globe, HardDrive, Scan } from "lucide-react";
 import { SiInstagram, SiYoutube, SiTwitch, SiFacebook } from "react-icons/si";
 import { motion } from "framer-motion";
 import { useAuth } from "@/hooks/use-auth";
@@ -34,6 +34,7 @@ interface IndexedVideo {
   createdAt: string;
   updatedAt: string;
   adOpportunities: number;
+  filePath?: string | null;
 }
 
 type PlatformFilter = "all" | "youtube" | "instagram" | "twitch" | "facebook";
@@ -192,6 +193,7 @@ interface DisplayVideo {
   brandName?: string;
   sentiment?: string;
   culturalContext?: string;
+  hasLocalFile: boolean;
 }
 
 function getVideoStatusInfo(video: IndexedVideo): { status: string; statusColor: string; statusDot: string; aiStatus: string; aiText: string } {
@@ -257,6 +259,7 @@ function formatIndexedVideo(video: IndexedVideo): DisplayVideo {
   const brandName = (video as any).brandName || (video as any).brand_name || "";
   const sentiment = (video as any).sentiment || (video as any).sentiment || "";
   const culturalContext = (video as any).culturalContext || (video as any).cultural_context || "";
+  const filePath = (video as any).filePath || (video as any).file_path || null;
   
   return {
     id: video.id,
@@ -275,6 +278,7 @@ function formatIndexedVideo(video: IndexedVideo): DisplayVideo {
     brandName,
     sentiment,
     culturalContext,
+    hasLocalFile: !!filePath,
   };
 }
 
@@ -821,6 +825,98 @@ export default function Library() {
     },
   });
 
+  // TensorFlow Surface Detection for local files
+  const tfScanMutation = useMutation({
+    mutationFn: async (videoId: number) => {
+      console.log(`[FRONTEND] ===== TF SCAN BUTTON CLICKED =====`);
+      console.log(`[FRONTEND] Video ID: ${videoId}`);
+      const tfScanUrl = isAdminUser 
+        ? `/api/tf-scan/${videoId}?admin_email=${encodeURIComponent(userEmail)}`
+        : `/api/tf-scan/${videoId}`;
+      console.log(`[FRONTEND] Sending POST to ${tfScanUrl}`);
+      
+      setScanningVideoIds(prev => new Set(prev).add(videoId));
+      
+      const res = await fetch(tfScanUrl, { 
+        method: "POST",
+        credentials: "include" 
+      });
+      
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error(`[FRONTEND] TF Scan failed: ${errorText}`);
+        throw new Error("Failed to start TensorFlow scan");
+      }
+      
+      return res.json();
+    },
+    onSuccess: (data, videoId) => {
+      toast({
+        title: "Surface Scan Started",
+        description: "TensorFlow is analyzing your video for surfaces. This takes about 10-30 seconds.",
+      });
+      
+      // Poll for job completion
+      const pollInterval = setInterval(async () => {
+        try {
+          const jobUrl = isAdminUser 
+            ? `/api/tf-scan/job/${data.jobId}?admin_email=${encodeURIComponent(userEmail)}`
+            : `/api/tf-scan/job/${data.jobId}`;
+          const res = await fetch(jobUrl, { credentials: "include" });
+          if (!res.ok) return;
+          const job = await res.json();
+          
+          if (job.status === "completed" || job.status === "failed") {
+            clearInterval(pollInterval);
+            setScanningVideoIds(prev => {
+              const next = new Set(prev);
+              next.delete(videoId);
+              return next;
+            });
+            queryClient.invalidateQueries({ queryKey: ["videos"] });
+            
+            if (job.status === "completed" && job.result !== "NO_SURFACES_EXIST") {
+              const result = typeof job.result === 'string' ? JSON.parse(job.result) : job.result;
+              toast({
+                title: "Surfaces Found!",
+                description: `Detected: ${result.surface}${result.surroundings?.length ? ` with ${result.surroundings.join(', ')}` : ''}`,
+              });
+            } else {
+              toast({
+                title: "No Surfaces Detected",
+                description: "No desks, tables, or placement surfaces found in this video.",
+              });
+            }
+          }
+        } catch (err) {
+          console.error("TF Poll error:", err);
+        }
+      }, 2000);
+      
+      // Timeout after 2 minutes
+      setTimeout(() => {
+        clearInterval(pollInterval);
+        setScanningVideoIds(prev => {
+          const next = new Set(prev);
+          next.delete(videoId);
+          return next;
+        });
+      }, 120000);
+    },
+    onError: (error: Error, videoId) => {
+      setScanningVideoIds(prev => {
+        const next = new Set(prev);
+        next.delete(videoId);
+        return next;
+      });
+      toast({
+        title: "Surface Scan Failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
   // Unified video data - comes from either auth or demo endpoint based on mode
   const videos = videoData?.videos || [];
   const displayVideos: DisplayVideo[] = videos.map(formatIndexedVideo);
@@ -981,6 +1077,15 @@ export default function Library() {
                   handleVideoClick(video);
                 }}
               >
+                {/* Local file indicator - shows when video has local file ready for scanning */}
+                {video.hasLocalFile && (
+                  <div className="absolute top-2 left-2 z-10">
+                    <div className="px-2 py-1 rounded-md bg-emerald-500/90 text-white text-xs font-medium flex items-center gap-1">
+                      <HardDrive className="w-3 h-3" />
+                      Local File
+                    </div>
+                  </div>
+                )}
                 {/* Platform icon overlay for All view */}
                 {platformFilter === "all" && (
                   <div className="absolute top-2 right-2 z-10">
@@ -1014,33 +1119,27 @@ export default function Library() {
                     <AiOverlayIcon status={video.aiStatus} />
                     <span className="text-xs text-white/90 font-medium">{video.aiText}</span>
                   </div>
-                  {/* TODO: RESUME VISION HANDSHAKE HERE
-                      Deep Vision scanner handshake is currently silent.
-                      YouTube indexing works, but scanVideoForSurfaces needs debugging.
-                      See PROJECT_TODO.md and server/lib/scanner.ts for context.
-                  */}
+                  {/* Scanning controls - local files use TensorFlow, social media shows "coming soon" */}
                   {isRealMode && video.id && (
                     <>
-                      {(video.aiStatus === "pending" || video.aiStatus === "retry" || scanningVideoIds.has(video.id)) && (
+                      {/* Local files: Show scan button using TensorFlow */}
+                      {video.hasLocalFile && (video.aiStatus === "pending" || video.aiStatus === "retry" || scanningVideoIds.has(video.id)) && (
                         <div 
-                          className="absolute top-2 right-2 z-20"
+                          className="absolute bottom-12 right-2 z-20"
                           onClick={(e) => {
                             e.stopPropagation();
-                            console.log(`[FRONTEND] Scan button div clicked for video ID: ${video.id}`);
-                            console.log(`[FRONTEND] Is already scanning: ${scanningVideoIds.has(video.id || 0)}`);
+                            console.log(`[FRONTEND] TF Scan button clicked for video ID: ${video.id}`);
                             if (video.id && !scanningVideoIds.has(video.id)) {
-                              console.log(`[FRONTEND] Calling scanVideoMutation.mutate(${video.id})`);
-                              scanVideoMutation.mutate(video.id);
-                            } else {
-                              console.log(`[FRONTEND] Mutation NOT called - already scanning or no video ID`);
+                              console.log(`[FRONTEND] Calling tfScanMutation.mutate(${video.id})`);
+                              tfScanMutation.mutate(video.id);
                             }
                           }}
                         >
                           <Button 
                             size="sm" 
-                            variant={video.aiStatus === "retry" ? "default" : "secondary"} 
-                            className="gap-1.5" 
-                            data-testid={`button-scan-${video.id}`}
+                            variant="default"
+                            className="gap-1.5 bg-emerald-600 hover:bg-emerald-700" 
+                            data-testid={`button-tf-scan-${video.id}`}
                             disabled={scanningVideoIds.has(video.id)}
                           >
                             {scanningVideoIds.has(video.id) ? (
@@ -1048,18 +1147,22 @@ export default function Library() {
                                 <Loader2 className="w-3 h-3 animate-spin" />
                                 Scanning...
                               </>
-                            ) : video.aiStatus === "retry" ? (
-                              <>
-                                <RefreshCw className="w-3 h-3" />
-                                Re-Scan
-                              </>
                             ) : (
                               <>
-                                <Play className="w-3 h-3" />
-                                Scan
+                                <Scan className="w-3 h-3" />
+                                Scan Surfaces
                               </>
                             )}
                           </Button>
+                        </div>
+                      )}
+                      {/* Social media (no local file): Show "Upload Required" indicator */}
+                      {!video.hasLocalFile && video.aiStatus === "pending" && (
+                        <div className="absolute bottom-12 right-2 z-20">
+                          <div className="px-2 py-1 rounded-md bg-zinc-700/90 text-zinc-300 text-xs font-medium flex items-center gap-1">
+                            <Upload className="w-3 h-3" />
+                            Upload to Scan
+                          </div>
                         </div>
                       )}
                       {video.aiStatus === "ready" && (

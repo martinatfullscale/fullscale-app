@@ -145,11 +145,13 @@ export async function detectSurfaces(imagePath: string): Promise<SurfaceDetectio
   }
 }
 
-export async function detectSurfacesFromVideo(videoPath: string): Promise<SurfaceDetectionResult | 'NO_SURFACES_EXIST'> {
+// Extract multiple frames at specified intervals (default every 3 seconds, up to 10 frames)
+export async function detectSurfacesFromVideo(videoPath: string, frameInterval: number = 3, maxFrames: number = 10): Promise<SurfaceDetectionResult | 'NO_SURFACES_EXIST'> {
   const { spawn } = await import('child_process');
   const os = await import('os');
   
   console.log(`[SurfaceDetector] Processing video: ${videoPath}`);
+  console.log(`[SurfaceDetector] Frame interval: ${frameInterval}s, max frames: ${maxFrames}`);
   
   const absoluteVideoPath = path.resolve(videoPath);
   if (!fs.existsSync(absoluteVideoPath)) {
@@ -158,38 +160,105 @@ export async function detectSurfacesFromVideo(videoPath: string): Promise<Surfac
   }
   
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'surface-detect-'));
-  const framePath = path.join(tempDir, 'frame_001.jpg');
   
   try {
-    await new Promise<void>((resolve, reject) => {
-      const ffmpeg = spawn('ffmpeg', [
-        '-i', absoluteVideoPath,
-        '-ss', '2',
-        '-vframes', '1',
-        '-q:v', '2',
-        framePath
-      ]);
-      
-      let stderr = '';
-      ffmpeg.stderr.on('data', (data) => { stderr += data.toString(); });
-      
-      ffmpeg.on('close', (code) => {
-        if (code === 0 && fs.existsSync(framePath)) {
-          console.log(`[SurfaceDetector] Extracted frame to: ${framePath}`);
-          resolve();
-        } else {
-          reject(new Error(`FFmpeg failed: ${stderr.slice(-500)}`));
-        }
+    // First, get video duration using ffprobe
+    let videoDuration = 30; // default fallback
+    try {
+      const durationResult = await new Promise<string>((resolve, reject) => {
+        const ffprobe = spawn('ffprobe', [
+          '-v', 'error',
+          '-show_entries', 'format=duration',
+          '-of', 'csv=p=0',
+          absoluteVideoPath
+        ]);
+        let output = '';
+        ffprobe.stdout.on('data', (data) => { output += data.toString(); });
+        ffprobe.on('close', (code) => code === 0 ? resolve(output.trim()) : reject());
+        ffprobe.on('error', reject);
       });
-      
-      ffmpeg.on('error', reject);
-    });
+      videoDuration = parseFloat(durationResult) || 30;
+      console.log(`[SurfaceDetector] Video duration: ${videoDuration.toFixed(1)}s`);
+    } catch {
+      console.log(`[SurfaceDetector] Could not get duration, using default: ${videoDuration}s`);
+    }
     
-    const result = await detectSurfaces(framePath);
+    // Calculate frame timestamps (every frameInterval seconds, starting at 1s)
+    const timestamps: number[] = [];
+    for (let t = 1; t < videoDuration && timestamps.length < maxFrames; t += frameInterval) {
+      timestamps.push(t);
+    }
+    
+    console.log(`[SurfaceDetector] Extracting ${timestamps.length} frames at: ${timestamps.map(t => t + 's').join(', ')}`);
+    
+    // Extract all frames
+    const framePaths: string[] = [];
+    for (let i = 0; i < timestamps.length; i++) {
+      const framePath = path.join(tempDir, `frame_${String(i + 1).padStart(3, '0')}.jpg`);
+      
+      await new Promise<void>((resolve, reject) => {
+        const ffmpeg = spawn('ffmpeg', [
+          '-ss', String(timestamps[i]),
+          '-i', absoluteVideoPath,
+          '-vframes', '1',
+          '-q:v', '2',
+          framePath
+        ]);
+        
+        let stderr = '';
+        ffmpeg.stderr.on('data', (data) => { stderr += data.toString(); });
+        
+        ffmpeg.on('close', (code) => {
+          if (code === 0 && fs.existsSync(framePath)) {
+            framePaths.push(framePath);
+            resolve();
+          } else {
+            console.warn(`[SurfaceDetector] Frame at ${timestamps[i]}s failed, skipping`);
+            resolve(); // Don't fail, just skip this frame
+          }
+        });
+        
+        ffmpeg.on('error', () => resolve()); // Skip on error
+      });
+    }
+    
+    console.log(`[SurfaceDetector] Successfully extracted ${framePaths.length} frames`);
+    
+    if (framePaths.length === 0) {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+      return 'NO_SURFACES_EXIST';
+    }
+    
+    // Analyze each frame and collect all results
+    let bestResult: SurfaceDetectionResult | null = null;
+    let allSurroundings: string[] = [];
+    
+    for (const framePath of framePaths) {
+      const result = await detectSurfaces(framePath);
+      
+      if (result !== 'NO_SURFACES_EXIST') {
+        // Collect all surroundings from all frames
+        allSurroundings = [...allSurroundings, ...result.surroundings];
+        
+        // Keep the best surface (highest confidence)
+        if (!bestResult || result.confidence > bestResult.confidence) {
+          bestResult = result;
+        }
+      }
+    }
     
     fs.rmSync(tempDir, { recursive: true, force: true });
     
-    return result;
+    if (!bestResult) {
+      console.log(`[SurfaceDetector] No surfaces found in any of ${framePaths.length} frames`);
+      return 'NO_SURFACES_EXIST';
+    }
+    
+    // Merge unique surroundings from all frames
+    bestResult.surroundings = [...new Set([...bestResult.surroundings, ...allSurroundings])];
+    
+    console.log(`[SurfaceDetector] Best result from ${framePaths.length} frames: ${JSON.stringify(bestResult)}`);
+    return bestResult;
     
   } catch (err: any) {
     console.error(`[SurfaceDetector] Video processing error:`, err.message);
