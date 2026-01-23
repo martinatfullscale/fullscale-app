@@ -986,5 +986,85 @@ export async function setupPlatformAuth(app: Express) {
     });
   });
 
+  // Disconnect Facebook - clears Facebook and Instagram data
+  app.delete("/api/auth/facebook", async (req: any, res) => {
+    const googleUser = req.session?.googleUser;
+    const replitUser = req.user?.claims;
+    const adminEmail = process.env.NODE_ENV !== 'production' ? req.query.admin_email : null;
+    
+    const userEmail = googleUser?.email || replitUser?.email || adminEmail;
+    
+    if (!userEmail) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+    
+    try {
+      const user = await db.query.users.findFirst({
+        where: eq(users.email, userEmail),
+      });
+      
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+      
+      // Clear Facebook and Instagram fields
+      await db.update(users).set({
+        facebookId: null,
+        facebookPageId: null,
+        facebookPageName: null,
+        facebookFollowers: null,
+        facebookAccessToken: null,
+        instagramBusinessId: null,
+        instagramHandle: null,
+        instagramFollowers: null,
+      }).where(eq(users.id, user.id));
+      
+      // Clear session data
+      if (req.session?.facebookProfile) {
+        delete req.session.facebookProfile;
+      }
+      
+      console.log("[Facebook Disconnect] Cleared Facebook/Instagram data for:", userEmail);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("[Facebook Disconnect] Error:", error);
+      res.status(500).json({ error: "Failed to disconnect Facebook" });
+    }
+  });
+
+  // Disconnect Twitch
+  app.delete("/api/auth/twitch", async (req: any, res) => {
+    const googleUser = req.session?.googleUser;
+    const replitUser = req.user?.claims;
+    const adminEmail = process.env.NODE_ENV !== 'production' ? req.query.admin_email : null;
+    
+    const userEmail = googleUser?.email || replitUser?.email || adminEmail;
+    
+    if (!userEmail) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+    
+    try {
+      const user = await db.query.users.findFirst({
+        where: eq(users.email, userEmail),
+      });
+      
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+      
+      // Clear Twitch field
+      await db.update(users).set({
+        twitchId: null,
+      }).where(eq(users.id, user.id));
+      
+      console.log("[Twitch Disconnect] Cleared Twitch data for:", userEmail);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("[Twitch Disconnect] Error:", error);
+      res.status(500).json({ error: "Failed to disconnect Twitch" });
+    }
+  });
+
   console.log("[PlatformAuth] Platform auth routes registered");
 }

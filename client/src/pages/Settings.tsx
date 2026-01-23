@@ -68,7 +68,7 @@ const initialSocialConnections: SocialConnection[] = [
   { id: "twitch", name: "Twitch Channel", icon: SiTwitch, color: "#9146FF", bgColor: "bg-[#9146FF]", status: "disconnected" },
   { id: "x", name: "X (Twitter)", icon: SiX, color: "#000000", bgColor: "bg-black", status: "disconnected" },
   { id: "tiktok", name: "TikTok", icon: SiTiktok, color: "#000000", bgColor: "bg-gradient-to-br from-[#00F2EA] to-[#FF0050]", status: "disconnected" },
-  { id: "youtube", name: "YouTube", icon: SiYoutube, color: "#FF0000", bgColor: "bg-[#FF0000]", status: "connected", followers: "850K", handle: "Creator Channel" },
+  { id: "youtube", name: "YouTube", icon: SiYoutube, color: "#FF0000", bgColor: "bg-[#FF0000]", status: "disconnected" },
 ];
 
 export default function Settings() {
@@ -101,36 +101,63 @@ export default function Settings() {
   useEffect(() => {
     async function fetchPlatformStatus() {
       try {
-        const response = await fetch("/api/platform-auth/status");
-        if (response.ok) {
-          const data: PlatformAuthStatus = await response.json();
+        // Fetch platform auth status (Twitch, Facebook, Instagram)
+        const [platformResponse, youtubeResponse] = await Promise.all([
+          fetch("/api/platform-auth/status", { credentials: "include" }),
+          fetch("/api/youtube/videos", { credentials: "include" }),
+        ]);
+        
+        let updates: Partial<Record<string, Partial<SocialConnection>>> = {};
+        
+        if (platformResponse.ok) {
+          const data: PlatformAuthStatus = await platformResponse.json();
           
-          setSocialConnections(prev => prev.map(conn => {
-            if (conn.id === "facebook" && data.facebook.connected) {
-              return {
-                ...conn,
-                status: "connected" as const,
-                handle: data.facebook.pageName || "Facebook Page",
-                followers: data.facebook.followers ? formatFollowers(data.facebook.followers) : undefined,
-              };
-            }
-            if (conn.id === "instagram" && data.instagram.connected) {
-              return {
-                ...conn,
-                status: "connected" as const,
-                handle: data.instagram.handle || "@instagram",
-                followers: data.instagram.followers ? formatFollowers(data.instagram.followers) : undefined,
-              };
-            }
-            if (conn.id === "twitch" && data.twitch.connected) {
-              return {
-                ...conn,
-                status: "connected" as const,
-              };
-            }
-            return conn;
-          }));
+          if (data.facebook.connected) {
+            updates.facebook = {
+              status: "connected" as const,
+              handle: data.facebook.pageName || "Facebook Page",
+              followers: data.facebook.followers ? formatFollowers(data.facebook.followers) : undefined,
+            };
+          } else {
+            updates.facebook = { status: "disconnected" as const, handle: undefined, followers: undefined };
+          }
+          
+          if (data.instagram.connected) {
+            updates.instagram = {
+              status: "connected" as const,
+              handle: data.instagram.handle || "@instagram",
+              followers: data.instagram.followers ? formatFollowers(data.instagram.followers) : undefined,
+            };
+          } else {
+            updates.instagram = { status: "disconnected" as const, handle: undefined, followers: undefined };
+          }
+          
+          if (data.twitch.connected) {
+            updates.twitch = { status: "connected" as const };
+          } else {
+            updates.twitch = { status: "disconnected" as const };
+          }
         }
+        
+        // Check YouTube connection status
+        if (youtubeResponse.ok) {
+          const ytData = await youtubeResponse.json();
+          if (ytData.connected) {
+            updates.youtube = { status: "connected" as const };
+          } else {
+            updates.youtube = { status: "disconnected" as const, handle: undefined, followers: undefined };
+          }
+        } else {
+          updates.youtube = { status: "disconnected" as const, handle: undefined, followers: undefined };
+        }
+        
+        // Apply all updates
+        setSocialConnections(prev => prev.map(conn => {
+          if (updates[conn.id]) {
+            return { ...conn, ...updates[conn.id] };
+          }
+          return conn;
+        }));
       } catch (error) {
         console.error("Failed to fetch platform status:", error);
       } finally {
@@ -249,18 +276,54 @@ export default function Settings() {
     }
   };
 
-  const handleConnectSocial = (id: string) => {
+  const handleConnectSocial = async (id: string) => {
     const connection = socialConnections.find((c) => c.id === id);
     if (!connection) return;
 
     if (connection.status === "connected") {
-      setSocialConnections((prev) =>
-        prev.map((c) => (c.id === id ? { ...c, status: "disconnected" as const } : c))
-      );
-      toast({
-        title: `${connection.name} Disconnected`,
-        description: `Your ${connection.name} account has been disconnected.`,
-      });
+      // Call the actual disconnect API
+      try {
+        let endpoint = "";
+        if (id === "facebook" || id === "instagram") {
+          endpoint = "/api/auth/facebook";
+        } else if (id === "twitch") {
+          endpoint = "/api/auth/twitch";
+        } else if (id === "youtube") {
+          endpoint = "/api/auth/youtube";
+        }
+
+        if (endpoint) {
+          const response = await fetch(endpoint, { method: "DELETE", credentials: "include" });
+          if (!response.ok) {
+            throw new Error("Failed to disconnect");
+          }
+        }
+
+        // Update local state after successful disconnect
+        setSocialConnections((prev) =>
+          prev.map((c) => {
+            // Disconnecting Facebook also disconnects Instagram
+            if (id === "facebook" && c.id === "instagram") {
+              return { ...c, status: "disconnected" as const, handle: undefined, followers: undefined };
+            }
+            if (c.id === id) {
+              return { ...c, status: "disconnected" as const, handle: undefined, followers: undefined };
+            }
+            return c;
+          })
+        );
+        
+        toast({
+          title: `${connection.name} Disconnected`,
+          description: `Your ${connection.name} account has been disconnected.`,
+        });
+      } catch (error) {
+        toast({
+          title: "Disconnect Failed",
+          description: "Failed to disconnect account. Please try again.",
+          variant: "destructive",
+        });
+      }
       return;
     }
 
@@ -273,8 +336,12 @@ export default function Settings() {
       window.location.href = "/auth/facebook";
       return;
     }
+    if (id === "youtube") {
+      window.location.href = "/api/auth/google";
+      return;
+    }
 
-    // Simulated connection for other platforms (TikTok, X, YouTube)
+    // Simulated connection for other platforms (TikTok, X)
     setSocialConnections((prev) =>
       prev.map((c) => (c.id === id ? { ...c, status: "connecting" as const } : c))
     );
