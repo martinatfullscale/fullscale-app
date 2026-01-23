@@ -968,19 +968,16 @@ export default function Library() {
             </p>
           </div>
           <div className="flex items-center gap-3">
-            {isRealMode && videos.length > 0 && (
+            {isRealMode && (
               <Button 
                 variant="outline" 
                 className="gap-2" 
-                onClick={() => syncMutation.mutate()}
-                disabled={syncMutation.isPending}
+                onClick={() => {
+                  queryClient.invalidateQueries({ queryKey: ['/api/video-index/with-opportunities'] });
+                }}
                 data-testid="button-refresh-library"
               >
-                {syncMutation.isPending ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <RefreshCw className="w-4 h-4" />
-                )}
+                <RefreshCw className="w-4 h-4" />
                 Refresh
               </Button>
             )}
