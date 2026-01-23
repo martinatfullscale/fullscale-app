@@ -260,6 +260,7 @@ function formatIndexedVideo(video: IndexedVideo): DisplayVideo {
   const sentiment = (video as any).sentiment || (video as any).sentiment || "";
   const culturalContext = (video as any).culturalContext || (video as any).cultural_context || "";
   const filePath = (video as any).filePath || (video as any).file_path || null;
+  const fileExists = (video as any).fileExists ?? false;
   
   return {
     id: video.id,
@@ -278,7 +279,7 @@ function formatIndexedVideo(video: IndexedVideo): DisplayVideo {
     brandName,
     sentiment,
     culturalContext,
-    hasLocalFile: !!filePath,
+    hasLocalFile: fileExists,
   };
 }
 

@@ -1439,7 +1439,15 @@ export async function registerRoutes(
     const videosWithCounts = await Promise.all(
       videos.map(async (video) => {
         const count = await storage.getSurfaceCountByVideo(video.id);
-        return { ...video, adOpportunities: count };
+        let fileExists = false;
+        if (video.filePath) {
+          try {
+            fileExists = fs.existsSync(video.filePath);
+          } catch {
+            fileExists = false;
+          }
+        }
+        return { ...video, adOpportunities: count, fileExists };
       })
     );
 
