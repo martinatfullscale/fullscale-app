@@ -14,6 +14,7 @@ import { UploadModal } from "@/components/UploadModal";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SceneAnalysisModal, DEMO_VIDEO_SCENES, VideoWithScenes } from "@/components/SceneAnalysisModal";
+import { VideoPreviewModal } from "@/components/VideoPreviewModal";
 
 interface IndexedVideo {
   id: number;
@@ -194,6 +195,8 @@ interface DisplayVideo {
   sentiment?: string;
   culturalContext?: string;
   hasLocalFile: boolean;
+  filePath?: string | null;
+  thumbnailUrl?: string | null;
 }
 
 function getVideoStatusInfo(video: IndexedVideo): { status: string; statusColor: string; statusDot: string; aiStatus: string; aiText: string } {
@@ -280,6 +283,8 @@ function formatIndexedVideo(video: IndexedVideo): DisplayVideo {
     sentiment,
     culturalContext,
     hasLocalFile: fileExists,
+    filePath,
+    thumbnailUrl,
   };
 }
 
@@ -526,6 +531,8 @@ export default function Library() {
   const [platformFilter, setPlatformFilter] = useState<PlatformFilter>("all");
   const [sceneModalOpen, setSceneModalOpen] = useState(false);
   const [sceneVideo, setSceneVideo] = useState<VideoWithScenes | null>(null);
+  const [previewModalOpen, setPreviewModalOpen] = useState(false);
+  const [previewVideo, setPreviewVideo] = useState<DisplayVideo | null>(null);
   
   // Admin emails for flexible auth fallback (supports URL param bypass in dev)
   const ADMIN_EMAILS = ['martin@gofullscale.co', 'martin@whtwrks.com', 'martincekechukwu@gmail.com'];
@@ -545,6 +552,13 @@ export default function Library() {
   const handleVideoClick = async (video: DisplayVideo) => {
     const videoId = video.id || 1001;
     const viewCount = parseInt(video.views.replace(/[^0-9]/g, '')) || 0;
+    
+    // For videos with local files, show the video preview modal
+    if (video.hasLocalFile && video.filePath) {
+      setPreviewVideo(video);
+      setPreviewModalOpen(true);
+      return;
+    }
     
     // In real mode, fetch actual detected surfaces from the database
     if (isRealMode && videoId >= 50) {
@@ -1261,6 +1275,23 @@ export default function Library() {
             description: "Your asset has been uploaded successfully.",
           });
         }}
+      />
+
+      <VideoPreviewModal
+        video={previewVideo ? {
+          id: previewVideo.id || 0,
+          title: previewVideo.title,
+          filePath: previewVideo.filePath,
+          thumbnailUrl: previewVideo.thumbnailUrl,
+          status: previewVideo.aiStatus,
+          platform: previewVideo.platform
+        } : null}
+        open={previewModalOpen}
+        onClose={() => {
+          setPreviewModalOpen(false);
+          setPreviewVideo(null);
+        }}
+        isScanning={previewVideo?.id ? scanningVideoIds.has(previewVideo.id) : false}
       />
     </div>
   );
