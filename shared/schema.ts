@@ -126,6 +126,8 @@ export const detectedSurfaces = pgTable("detected_surfaces", {
   boundingBoxWidth: numeric("bounding_box_width").notNull(), // Width (0-1 normalized)
   boundingBoxHeight: numeric("bounding_box_height").notNull(), // Height (0-1 normalized)
   frameUrl: text("frame_url"), // Optional: stored frame image URL
+  surroundings: text("surroundings").array(), // Array of surrounding objects detected
+  sceneContext: text("scene_context"), // Scene description from AI
   createdAt: timestamp("created_at").defaultNow(),
 });
 

@@ -5,6 +5,19 @@
 FullScale is a dual-portal content monetization platform with Google OAuth-gated access and YouTube integration. Features role-based views (creator/brand) with View Switcher for admins, a Brand Marketplace where brands purchase ad placements, and Campaign Tracker for monitoring bids. Built as a full-stack TypeScript application with React frontend and Express backend, using PostgreSQL for data persistence. Includes real-time AI object detection using TensorFlow.js COCO-SSD for product placement surface analysis.
 
 ## Recent Changes (January 2026)
+- **TensorFlow.js Surface Detection**: New background worker queue for AI-powered surface detection
+  - COCO-SSD model detects objects: tables, desks, laptops, keyboards, monitors, phones, etc.
+  - Returns JSON: `{surface: "desk", surroundings: ["laptop", "keyboard"]}` or "NO_SURFACES_EXIST"
+  - Background worker prevents 503 crashes - queues scan jobs for async processing
+  - API routes: POST /api/tf-scan/:id (queued), GET /api/tf-scan/job/:jobId (status), GET /api/tf-scan/queue (queue status)
+  - Model pre-warmed at server startup for faster first scan
+  - All routes require authentication; admin-only for direct detection endpoints
+- **FFmpeg Thumbnail Extraction**: Automatic thumbnail generation from local video files
+  - Extracts frame at 2-second mark with 480x270 resolution
+  - Saved to public/thumbnails/ directory, served from /thumbnails/ URL path
+  - API routes: POST /api/thumbnails/extract/:id, POST /api/thumbnails/extract-all (admin)
+  - Database updated with updateVideoThumbnail() - only updates thumbnail field, not full upsert
+- **Schema Updates**: detected_surfaces table extended with surroundings and sceneContext columns
 - **Local-File-Only Video Scanning**: Scanner workflow simplified to only scan videos with local files
   - YouTube downloads disabled - videos must be uploaded locally or mapped in LOCAL_ASSET_MAP
   - Returns "Pending Upload" status for videos without local files

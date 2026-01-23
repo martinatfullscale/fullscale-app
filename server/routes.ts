@@ -6,6 +6,9 @@ import { z } from "zod";
 import { setupAuth, registerAuthRoutes, isAuthenticated } from "./replit_integrations/auth";
 import { runIndexerForUser } from "./lib/indexer";
 import { processVideoScan, scanPendingVideos, addToLocalAssetMap, getYouTubeThumbnailWithFallback } from "./lib/scanner";
+import { queueVideoScan, getScanJobStatus, getQueueStatus, initializeScanWorker } from "./lib/scanWorker";
+import { detectSurfacesFromVideo } from "./lib/surfaceDetector";
+import { extractThumbnailForVideo, extractAndUpdateThumbnails } from "./lib/thumbnailExtractor";
 import { hashPassword, verifyPassword } from "./lib/password";
 import { addSignupToAirtable } from "./lib/airtable";
 import { setupPlatformAuth, importFacebookVideos, importInstagramMedia, importPersonalVideos } from "./lib/platformAuth";
@@ -1205,6 +1208,140 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error(`[ADMIN SCAN] Scan failed for ${videoId}:`, err);
       res.status(500).json({ error: err.message || "Scan failed" });
+    }
+  });
+
+  // TensorFlow.js Surface Detection - Background Worker Queue
+  app.post("/api/tf-scan/:id", isFlexibleAuthenticated, async (req: any, res) => {
+    const videoId = parseInt(req.params.id);
+    if (isNaN(videoId)) {
+      return res.status(400).json({ error: "Invalid video ID" });
+    }
+
+    const video = await storage.getVideoById(videoId);
+    if (!video) {
+      return res.status(404).json({ error: "Video not found" });
+    }
+
+    // Check ownership
+    const isOwner = video.userId === req.authUserId || video.userId === req.authEmail;
+    if (!isOwner && !adminEmails.includes(req.authEmail || '')) {
+      return res.status(403).json({ error: "Unauthorized" });
+    }
+
+    if (!video.filePath) {
+      return res.status(400).json({ error: "Video has no local file. Upload a video first." });
+    }
+
+    console.log(`[TF-SCAN] Queuing TensorFlow scan for video ${videoId}: "${video.title}"`);
+    
+    // Queue the scan job for background processing (prevents 503)
+    const jobId = queueVideoScan(videoId, video.filePath);
+    
+    res.json({ 
+      success: true, 
+      message: "Scan queued for background processing", 
+      jobId,
+      videoId 
+    });
+  });
+
+  // Check scan job status
+  app.get("/api/tf-scan/job/:jobId", isFlexibleAuthenticated, async (req: any, res) => {
+    const job = getScanJobStatus(req.params.jobId);
+    if (!job) {
+      return res.status(404).json({ error: "Job not found" });
+    }
+    res.json(job);
+  });
+
+  // Get scan queue status
+  app.get("/api/tf-scan/queue", isFlexibleAuthenticated, async (req: any, res) => {
+    const status = getQueueStatus();
+    res.json(status);
+  });
+
+  // Direct TensorFlow surface detection (synchronous - admin only for testing)
+  app.post("/api/tf-detect/:id", isFlexibleAuthenticated, async (req: any, res) => {
+    // Admin only - synchronous detection can be heavy
+    if (!adminEmails.includes(req.authEmail || '')) {
+      return res.status(403).json({ error: "Admin only endpoint" });
+    }
+    
+    const videoId = parseInt(req.params.id);
+    if (isNaN(videoId)) {
+      return res.status(400).json({ error: "Invalid video ID" });
+    }
+
+    const video = await storage.getVideoById(videoId);
+    if (!video) {
+      return res.status(404).json({ error: "Video not found" });
+    }
+
+    if (!video.filePath) {
+      return res.status(400).json({ error: "Video has no local file" });
+    }
+
+    console.log(`[TF-DETECT] Running direct detection for video ${videoId}: "${video.title}"`);
+    
+    try {
+      const result = await detectSurfacesFromVideo(video.filePath);
+      console.log(`[TF-DETECT] Result:`, result);
+      res.json({ success: true, result });
+    } catch (err: any) {
+      console.error(`[TF-DETECT] Failed:`, err);
+      res.status(500).json({ error: err.message || "Detection failed" });
+    }
+  });
+
+  // Extract thumbnails from local videos
+  app.post("/api/thumbnails/extract/:id", isFlexibleAuthenticated, async (req: any, res) => {
+    const videoId = parseInt(req.params.id);
+    if (isNaN(videoId)) {
+      return res.status(400).json({ error: "Invalid video ID" });
+    }
+
+    const video = await storage.getVideoById(videoId);
+    if (!video) {
+      return res.status(404).json({ error: "Video not found" });
+    }
+
+    // Check ownership
+    const isOwner = video.userId === req.authUserId || video.userId === req.authEmail;
+    if (!isOwner && !adminEmails.includes(req.authEmail || '')) {
+      return res.status(403).json({ error: "Unauthorized" });
+    }
+
+    console.log(`[THUMBNAIL] Extracting thumbnail for video ${videoId}`);
+    
+    try {
+      const thumbnailUrl = await extractThumbnailForVideo(videoId);
+      if (thumbnailUrl) {
+        res.json({ success: true, thumbnailUrl });
+      } else {
+        res.status(400).json({ error: "Failed to extract thumbnail - video may not have local file" });
+      }
+    } catch (err: any) {
+      console.error(`[THUMBNAIL] Failed:`, err);
+      res.status(500).json({ error: err.message || "Extraction failed" });
+    }
+  });
+
+  // Batch extract thumbnails for all videos with local files (admin only)
+  app.post("/api/thumbnails/extract-all", isFlexibleAuthenticated, async (req: any, res) => {
+    // Admin only - batch operation
+    if (!adminEmails.includes(req.authEmail || '')) {
+      return res.status(403).json({ error: "Admin only endpoint" });
+    }
+    
+    console.log(`[THUMBNAIL] Starting batch thumbnail extraction`);
+    
+    try {
+      const result = await extractAndUpdateThumbnails();
+      res.json({ success: true, ...result });
+    } catch (err: any) {
+      console.error(`[THUMBNAIL] Batch extraction failed:`, err);
+      res.status(500).json({ error: err.message || "Batch extraction failed" });
     }
   });
 

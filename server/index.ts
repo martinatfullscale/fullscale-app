@@ -8,6 +8,7 @@ import { seed } from "./db/seed";
 import { sql } from "drizzle-orm";
 import path from "path";
 import cookieParser from "cookie-parser";
+import { initializeScanWorker } from "./lib/scanWorker";
 
 const app = express();
 const httpServer = createServer(app);
@@ -205,6 +206,15 @@ let serverReady = false;
         }
       } catch (dbError) {
         log(`Database seeding warning: ${dbError}`);
+      }
+      
+      // Initialize TensorFlow scan worker (model pre-loading)
+      try {
+        log("Initializing TensorFlow scan worker...");
+        await initializeScanWorker();
+        log("TensorFlow scan worker ready");
+      } catch (tfError) {
+        log(`TensorFlow worker initialization warning: ${tfError}`);
       }
     });
 
