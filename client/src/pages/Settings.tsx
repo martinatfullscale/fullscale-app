@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { TopBar } from "@/components/TopBar";
-import { User, CreditCard, Bell, CheckCircle, ExternalLink, Save, Link2, Loader2, ChevronDown, RefreshCw } from "lucide-react";
+import { User, CreditCard, Bell, CheckCircle, ExternalLink, Save, Link2, Loader2, ChevronDown, RefreshCw, Trash2 } from "lucide-react";
 import { SiInstagram, SiFacebook, SiX, SiTiktok, SiYoutube, SiTwitch } from "react-icons/si";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
@@ -370,6 +370,37 @@ export default function Settings() {
       title: "Settings Saved",
       description: "Your preferences have been updated successfully.",
     });
+  };
+
+  const [isClearingLibrary, setIsClearingLibrary] = useState(false);
+  
+  const handleClearLibrary = async () => {
+    if (!confirm("Are you sure you want to clear all videos from your library? This cannot be undone.")) {
+      return;
+    }
+    
+    setIsClearingLibrary(true);
+    try {
+      const response = await fetch("/api/video-index/clear-all", { 
+        method: "DELETE", 
+        credentials: "include" 
+      });
+      if (!response.ok) {
+        throw new Error("Failed to clear library");
+      }
+      toast({
+        title: "Library Cleared",
+        description: "All videos have been removed from your library.",
+      });
+    } catch (error) {
+      toast({
+        title: "Clear Failed",
+        description: "Failed to clear library. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsClearingLibrary(false);
+    }
   };
 
   return (
@@ -789,6 +820,33 @@ export default function Settings() {
                     <span className="text-muted-foreground">Loading available sources...</span>
                   </div>
                 )}
+
+                {/* Data Management Section */}
+                <div className="mt-8 bg-black/30 rounded-xl border border-destructive/20 p-6">
+                  <h3 className="text-lg font-semibold text-white mb-2">Data Management</h3>
+                  <p className="text-sm text-muted-foreground mb-4">
+                    Clear orphaned videos from your library. Use this if you see videos that shouldn't be there after disconnecting platforms.
+                  </p>
+                  <Button
+                    variant="destructive"
+                    onClick={handleClearLibrary}
+                    disabled={isClearingLibrary}
+                    data-testid="button-clear-library"
+                    className="gap-2"
+                  >
+                    {isClearingLibrary ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Clearing...
+                      </>
+                    ) : (
+                      <>
+                        <Trash2 className="w-4 h-4" />
+                        Clear Library
+                      </>
+                    )}
+                  </Button>
+                </div>
               </motion.div>
             )}
 

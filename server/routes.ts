@@ -958,8 +958,18 @@ export async function registerRoutes(
     const userEmail = req.authEmail;
     console.log(`[YouTube Disconnect] Disconnecting for userId: ${userId}, email: ${userEmail}`);
     await storage.deleteYoutubeConnection(userId, userEmail);
-    await storage.deleteVideoIndex(userId);
+    // Pass both userId and email to ensure all videos are deleted (handles legacy data)
+    await storage.deleteVideoIndex(userId, userEmail);
     res.json({ success: true });
+  });
+
+  // Clear all videos from library (for removing ghost/orphaned videos)
+  app.delete("/api/video-index/clear-all", isFlexibleAuthenticated, async (req: any, res) => {
+    const userId = req.authUserId;
+    const userEmail = req.authEmail;
+    console.log(`[Clear Library] Clearing all videos for userId: ${userId}, email: ${userEmail}`);
+    await storage.deleteVideoIndex(userId, userEmail);
+    res.json({ success: true, message: "All videos cleared from library" });
   });
 
   // Disconnect Facebook (also clears Instagram since they share auth)
