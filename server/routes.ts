@@ -972,6 +972,44 @@ export async function registerRoutes(
     res.json({ success: true, message: "All videos cleared from library" });
   });
 
+  // Admin endpoint to add a video entry directly (for local files)
+  app.post("/api/video-index/add-local", isFlexibleAuthenticated, async (req: any, res) => {
+    const userEmail = req.authEmail;
+    
+    // Only allow admin emails
+    const adminEmails = ["martin@gofullscale.co", "martin@whtwrks.com", "martincekechukwu@gmail.com"];
+    if (!adminEmails.includes(userEmail)) {
+      return res.status(403).json({ error: "Admin only endpoint" });
+    }
+
+    const { title, description, filePath, platform = "upload" } = req.body;
+    
+    if (!title || !filePath) {
+      return res.status(400).json({ error: "Title and filePath are required" });
+    }
+
+    try {
+      const videoId = `local-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+      const video = await storage.upsertVideoIndex({
+        userId: userEmail,
+        youtubeId: videoId,
+        title,
+        description: description || `Local video file: ${title}`,
+        platform,
+        filePath,
+        status: "pending",
+        priorityScore: 100,
+        viewCount: 0,
+      });
+      
+      console.log(`[Add Local Video] Added video: ${title} with filePath: ${filePath}`);
+      res.json({ success: true, video });
+    } catch (error: any) {
+      console.error("[Add Local Video] Error:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // Disconnect Facebook (also clears Instagram since they share auth)
   app.delete("/api/auth/facebook", isFlexibleAuthenticated, async (req: any, res) => {
     const userId = req.authUserId;
