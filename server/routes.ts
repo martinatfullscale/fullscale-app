@@ -521,12 +521,23 @@ export async function registerRoutes(
 
   // Unified logout endpoint (works for both Google and email auth)
   app.post("/api/auth/logout", (req, res) => {
+    // Clear any session data first
+    (req.session as any).googleUser = null;
+    (req.session as any).userId = null;
+    
     req.session.destroy((err) => {
       if (err) {
         console.error("Logout error:", err);
         return res.status(500).json({ success: false, message: "Logout failed" });
       }
-      res.clearCookie("connect.sid");
+      // Clear cookie with same options it was set with
+      res.clearCookie("connect.sid", {
+        path: "/",
+        httpOnly: true,
+        secure: true,
+        sameSite: "lax" as const,
+      });
+      console.log("[Auth] User logged out successfully");
       res.json({ success: true });
     });
   });
