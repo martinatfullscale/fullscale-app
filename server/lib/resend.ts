@@ -109,10 +109,13 @@ export async function sendCohortInviteEmail(toEmail: string, firstName: string) 
       <td align="center" style="padding: 40px 20px;">
         <table role="presentation" width="600" cellspacing="0" cellpadding="0" style="background-color: #0a1628; border-radius: 12px; border: 1px solid #1e293b;">
           
-          <!-- Header with Logo -->
+          <!-- Header with Brand Name -->
           <tr>
             <td style="padding: 30px 40px; border-bottom: 1px solid #1e293b; text-align: center;">
-              <img src="https://gofullscale.co/fullscale-logo.png" alt="FullScale" width="180" style="display: block; margin: 0 auto;" />
+              <h1 style="margin: 0; font-family: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif; font-size: 32px; font-weight: 700; letter-spacing: -0.5px;">
+                <span style="color: #ffffff;">Full</span><span style="color: #D90429;">Scale</span>
+              </h1>
+              <p style="margin: 8px 0 0; color: #64748b; font-size: 13px; text-transform: uppercase; letter-spacing: 2px;">Creator Portal</p>
             </td>
           </tr>
           
