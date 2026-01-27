@@ -2808,6 +2808,53 @@ export async function registerRoutes(
     }
   });
 
+  // Send cohort invite emails (admin only)
+  app.post("/api/admin/send-cohort-emails", isAdmin, async (req, res) => {
+    try {
+      const { sendCohortInviteEmail } = await import("./lib/resend");
+      
+      // List of cohort members to email (from production database)
+      const cohortMembers = [
+        { email: "ellingtonandre7@gmail.com", firstName: "Andre" },
+        { email: "chavezprocope@gmail.com", firstName: "Chavez" },
+        { email: "martin.e@me.com", firstName: "Martin" },
+        { email: "idia.ogala@gmail.com", firstName: "Idia" },
+        { email: "simmone@capitalizevc.com", firstName: "Simmone" },
+      ];
+      
+      // Filter by specific emails if provided
+      const targetEmails = req.body.emails as string[] | undefined;
+      const membersToEmail = targetEmails 
+        ? cohortMembers.filter(m => targetEmails.includes(m.email))
+        : cohortMembers;
+      
+      console.log(`[Admin] Sending cohort emails to ${membersToEmail.length} members`);
+      
+      const results = [];
+      for (const member of membersToEmail) {
+        const result = await sendCohortInviteEmail(member.email, member.firstName);
+        results.push(result);
+        // Small delay between emails to avoid rate limits
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      
+      const successful = results.filter(r => r.success).length;
+      const failed = results.filter(r => !r.success).length;
+      
+      console.log(`[Admin] Cohort emails sent: ${successful} success, ${failed} failed`);
+      
+      res.json({ 
+        success: true, 
+        sent: successful, 
+        failed, 
+        results 
+      });
+    } catch (err: any) {
+      console.error("[Admin] Failed to send cohort emails:", err);
+      res.status(500).json({ error: "Failed to send emails", details: err.message });
+    }
+  });
+
   // Seed Data
   await seedDatabase();
 

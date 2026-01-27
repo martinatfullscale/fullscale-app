@@ -84,6 +84,77 @@ export async function sendWelcomeEmail(toEmail: string, firstName: string) {
   }
 }
 
+// Send cohort invitation email
+export async function sendCohortInviteEmail(toEmail: string, firstName: string) {
+  try {
+    const { client, fromEmail } = await getResendClient();
+    
+    // Use verified from email or Resend's test sender if domain not verified
+    const senderEmail = fromEmail?.includes('@') && !fromEmail.includes('gofullscale.co')
+      ? fromEmail 
+      : 'FullScale <onboarding@resend.dev>';
+    
+    const result = await client.emails.send({
+      from: senderEmail,
+      to: toEmail,
+      subject: 'Thank You for Joining FullScale - Demo Coming Soon!',
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background: #0f0f0f; padding: 40px; border-radius: 12px;">
+          <div style="text-align: center; margin-bottom: 30px;">
+            <h1 style="color: #ffffff; font-size: 28px; margin: 0;">FullScale</h1>
+            <p style="color: #6366f1; font-size: 14px; margin: 5px 0;">Creator Portal</p>
+          </div>
+          
+          <p style="color: #ffffff; font-size: 18px; line-height: 1.6;">
+            Hey ${firstName},
+          </p>
+          
+          <p style="color: #d1d5db; font-size: 16px; line-height: 1.8;">
+            Thank you for signing up for FullScale! We're thrilled to have you as part of our founding creator cohort.
+          </p>
+          
+          <p style="color: #d1d5db; font-size: 16px; line-height: 1.8;">
+            We're putting the finishing touches on our AI-powered content monetization platform, and we'll be opening the cohort for testing and demos <strong style="color: #6366f1;">very shortly</strong>.
+          </p>
+          
+          <p style="color: #d1d5db; font-size: 16px; line-height: 1.8;">
+            As a founding member, you'll get:
+          </p>
+          
+          <ul style="color: #d1d5db; font-size: 16px; line-height: 1.8; padding-left: 20px;">
+            <li><strong style="color: #ffffff;">Early Access</strong> - Be among the first to use our AI video scanning</li>
+            <li><strong style="color: #ffffff;">Direct Feedback Channel</strong> - Shape the product with your input</li>
+            <li><strong style="color: #ffffff;">Priority Brand Matching</strong> - First in line for monetization opportunities</li>
+          </ul>
+          
+          <p style="color: #d1d5db; font-size: 16px; line-height: 1.8;">
+            Keep an eye on your inbox - I'll be reaching out personally when we're ready to onboard you.
+          </p>
+          
+          <p style="color: #ffffff; font-size: 16px; margin-top: 30px;">
+            Best,<br/>
+            <strong>Martin Ekechukwu</strong><br/>
+            <span style="color: #6366f1;">Founder, FullScale</span>
+          </p>
+          
+          <hr style="border: none; border-top: 1px solid #333; margin: 30px 0;" />
+          
+          <p style="color: #666; font-size: 12px; text-align: center;">
+            FullScale Creator Portal - AI-Powered Content Monetization<br/>
+            <a href="https://gofullscale.co" style="color: #6366f1;">gofullscale.co</a>
+          </p>
+        </div>
+      `
+    });
+    
+    console.log('[Resend] Cohort invite email sent to:', toEmail, result);
+    return { success: true, email: toEmail, result };
+  } catch (error) {
+    console.error('[Resend] Failed to send cohort invite to:', toEmail, error);
+    return { success: false, email: toEmail, error: String(error) };
+  }
+}
+
 // Send notification to admin about new signup
 export async function sendAdminNotification(userData: {
   email: string;
