@@ -131,7 +131,7 @@ export async function sendCohortInviteEmail(toEmail: string, firstName: string) 
               </p>
               
               <p style="margin: 0 0 20px; color: #94a3b8; font-size: 16px; line-height: 1.8;">
-                We're putting the finishing touches on our AI-powered content monetization platform, and we'll be opening the cohort for testing and demos <strong style="color: #D90429;">very shortly</strong>.
+                We have a ton of <strong style="color: #D90429;">great announcements</strong> coming your way that will be meaningful, helpful, and frankly the foundation of who we are.
               </p>
               
               <p style="margin: 0 0 15px; color: #94a3b8; font-size: 16px; line-height: 1.8;">
