@@ -1,6 +1,6 @@
 const AIRTABLE_API_TOKEN = process.env.AIRTABLE_API_TOKEN;
 const AIRTABLE_BASE_ID = "appF4oLhgbf143xe7";
-const AIRTABLE_TABLE_NAME = "Signups";
+const AIRTABLE_TABLE_NAME = "Creator Submissions";
 
 interface AirtableSignupData {
   email: string;
