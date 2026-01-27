@@ -89,10 +89,8 @@ export async function sendCohortInviteEmail(toEmail: string, firstName: string) 
   try {
     const { client, fromEmail } = await getResendClient();
     
-    // Use verified from email or Resend's test sender if domain not verified
-    const senderEmail = fromEmail?.includes('@') && !fromEmail.includes('gofullscale.co')
-      ? fromEmail 
-      : 'FullScale <onboarding@resend.dev>';
+    // Use verified gofullscale.co domain
+    const senderEmail = 'Martin from FullScale <martin@gofullscale.co>';
     
     const result = await client.emails.send({
       from: senderEmail,
