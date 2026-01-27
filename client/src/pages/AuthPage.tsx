@@ -6,7 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, Mail, Lock, User, X } from "lucide-react";
+import { Loader2, Mail, Lock, User, X, Eye, EyeOff } from "lucide-react";
 import { SiGoogle } from "react-icons/si";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 
@@ -30,6 +30,11 @@ export default function AuthPage() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
+
+  // Password visibility
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
+  const [showRegisterPassword, setShowRegisterPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
   const handleGoogleLogin = () => {
     window.location.href = "/api/auth/google";
@@ -224,14 +229,22 @@ export default function AuthPage() {
                       <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                       <Input
                         id="login-password"
-                        type="password"
+                        type={showLoginPassword ? "text" : "password"}
                         placeholder="Enter your password"
                         value={loginPassword}
                         onChange={(e) => setLoginPassword(e.target.value)}
-                        className="pl-10"
+                        className="pl-10 pr-10"
                         required
                         data-testid="input-login-password"
                       />
+                      <button
+                        type="button"
+                        onClick={() => setShowLoginPassword(!showLoginPassword)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-white transition-colors"
+                        data-testid="button-toggle-login-password"
+                      >
+                        {showLoginPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      </button>
                     </div>
                   </div>
                   <Button type="submit" className="w-full" disabled={isLoading} data-testid="button-login">
@@ -293,14 +306,22 @@ export default function AuthPage() {
                       <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                       <Input
                         id="register-password"
-                        type="password"
+                        type={showRegisterPassword ? "text" : "password"}
                         placeholder="At least 6 characters"
                         value={registerPassword}
                         onChange={(e) => setRegisterPassword(e.target.value)}
-                        className="pl-10"
+                        className="pl-10 pr-10"
                         required
                         data-testid="input-register-password"
                       />
+                      <button
+                        type="button"
+                        onClick={() => setShowRegisterPassword(!showRegisterPassword)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-white transition-colors"
+                        data-testid="button-toggle-register-password"
+                      >
+                        {showRegisterPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      </button>
                     </div>
                   </div>
                   <div className="space-y-2">
@@ -309,15 +330,29 @@ export default function AuthPage() {
                       <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                       <Input
                         id="confirm-password"
-                        type="password"
+                        type={showConfirmPassword ? "text" : "password"}
                         placeholder="Confirm your password"
                         value={confirmPassword}
                         onChange={(e) => setConfirmPassword(e.target.value)}
-                        className="pl-10"
+                        className="pl-10 pr-10"
                         required
                         data-testid="input-confirm-password"
                       />
+                      <button
+                        type="button"
+                        onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-white transition-colors"
+                        data-testid="button-toggle-confirm-password"
+                      >
+                        {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      </button>
                     </div>
+                    {confirmPassword && registerPassword !== confirmPassword && (
+                      <p className="text-xs text-red-400">Passwords do not match</p>
+                    )}
+                    {confirmPassword && registerPassword === confirmPassword && confirmPassword.length >= 6 && (
+                      <p className="text-xs text-green-400">Passwords match</p>
+                    )}
                   </div>
                   <Button type="submit" className="w-full" disabled={isLoading} data-testid="button-register">
                     {isLoading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
