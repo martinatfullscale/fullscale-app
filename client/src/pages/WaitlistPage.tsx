@@ -1,7 +1,7 @@
 import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { LogOut, Loader2 } from "lucide-react";
+import { LogOut, Loader2, X, Home } from "lucide-react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
@@ -65,19 +65,31 @@ export default function WaitlistPage() {
         <img 
           src={logoUrl} 
           alt="FullScale" 
-          className="h-8"
+          className="h-8 cursor-pointer"
+          onClick={() => setLocation("/")}
           data-testid="img-logo"
         />
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={handleLogout}
-          disabled={logoutMutation.isPending}
-          data-testid="button-logout"
-        >
-          <LogOut className="w-4 h-4 mr-2" />
-          {logoutMutation.isPending ? "Logging out..." : "Logout"}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setLocation("/")}
+            data-testid="button-continue-later"
+          >
+            <Home className="w-4 h-4 mr-2" />
+            Continue Later
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleLogout}
+            disabled={logoutMutation.isPending}
+            data-testid="button-logout"
+          >
+            <LogOut className="w-4 h-4 mr-2" />
+            {logoutMutation.isPending ? "Logging out..." : "Logout"}
+          </Button>
+        </div>
       </header>
 
       <main className="flex-1 flex flex-col items-center p-4 pt-8">
@@ -93,6 +105,9 @@ export default function WaitlistPage() {
             data-testid="text-waitlist-info"
           >
             Your account has been created. Please complete this form to access the FullScale Dashboard.
+          </p>
+          <p className="text-sm text-muted-foreground/70 mt-2">
+            Don't have time now? Click "Continue Later" to come back and finish this anytime.
           </p>
         </div>
 
