@@ -541,6 +541,7 @@ export async function registerRoutes(
     password: z.string().min(6, "Password must be at least 6 characters"),
     firstName: z.string().optional(),
     lastName: z.string().optional(),
+    userType: z.enum(["creator", "brand", "press", "other", "nosy"]).optional().default("creator"),
   });
 
   const loginSchema = z.object({
@@ -556,7 +557,7 @@ export async function registerRoutes(
         return res.status(400).json({ message: parsed.error.errors[0]?.message || "Invalid input" });
       }
       
-      const { email, password, firstName, lastName } = parsed.data;
+      const { email, password, firstName, lastName, userType } = parsed.data;
       const normalizedEmail = email.toLowerCase().trim();
 
       // Check if user already exists
@@ -579,7 +580,23 @@ export async function registerRoutes(
         authProvider: "email",
       });
 
-      console.log(`User registered: ${normalizedEmail}, VIP: ${isVip}, approved: ${isVip}`);
+      console.log(`User registered: ${normalizedEmail}, VIP: ${isVip}, approved: ${isVip}, userType: ${userType}`);
+
+      // Send emails (async, don't block registration)
+      const { sendWelcomeEmail, sendAdminNotification } = await import("./lib/resend");
+      
+      // Send welcome email to user
+      sendWelcomeEmail(normalizedEmail, firstName || "there").catch(err => 
+        console.error("[Resend] Welcome email failed:", err)
+      );
+      
+      // Send admin notification about new signup
+      sendAdminNotification({
+        email: normalizedEmail,
+        firstName: firstName || "Unknown",
+        lastName: lastName || "User",
+        userType: userType || "creator",
+      }).catch(err => console.error("[Resend] Admin notification failed:", err));
 
       // Sync to Airtable (async, don't block registration)
       addSignupToAirtable({

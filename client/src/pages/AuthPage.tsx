@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { Loader2, Mail, Lock, User, X, Eye, EyeOff } from "lucide-react";
 import { SiGoogle } from "react-icons/si";
@@ -30,6 +31,7 @@ export default function AuthPage() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
+  const [userType, setUserType] = useState<string>("creator");
 
   // Password visibility
   const [showLoginPassword, setShowLoginPassword] = useState(false);
@@ -132,6 +134,7 @@ export default function AuthPage() {
           password: registerPassword,
           firstName,
           lastName,
+          userType,
         }),
       });
 
@@ -299,6 +302,21 @@ export default function AuthPage() {
                         data-testid="input-register-email"
                       />
                     </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="user-type">I am a...</Label>
+                    <Select value={userType} onValueChange={setUserType}>
+                      <SelectTrigger data-testid="select-user-type">
+                        <SelectValue placeholder="Select your role" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="creator">Creator - I make content</SelectItem>
+                        <SelectItem value="brand">Brand - I want to advertise</SelectItem>
+                        <SelectItem value="press">Press - I cover the industry</SelectItem>
+                        <SelectItem value="other">Other - Something else</SelectItem>
+                        <SelectItem value="nosy">Just Looking Around</SelectItem>
+                      </SelectContent>
+                    </Select>
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="register-password">Password</Label>
