@@ -166,7 +166,14 @@ let serverReady = false;
     // ============================================
     if (process.env.NODE_ENV === "production") {
       log("Setting up static file serving...");
-      serveStatic(app);
+      log(`Current working directory: ${process.cwd()}`);
+      try {
+        serveStatic(app);
+        log("Static file serving configured successfully");
+      } catch (staticError) {
+        log(`ERROR setting up static files: ${staticError}`);
+        throw staticError;
+      }
     } else {
       log("Development mode: setting up Vite...");
       const { setupVite } = await import("./vite");

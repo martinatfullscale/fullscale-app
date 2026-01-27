@@ -56,7 +56,17 @@ export function serveStatic(app: Express) {
   }));
 
   // SPA fallback - serve index.html for all non-API routes
-  app.use("*", (_req, res) => {
-    res.sendFile(indexPath);
+  app.use("*", (_req, res, next) => {
+    try {
+      res.sendFile(indexPath, (err) => {
+        if (err) {
+          console.error("[Static] Error sending index.html:", err);
+          next(err);
+        }
+      });
+    } catch (err) {
+      console.error("[Static] Unexpected error in SPA fallback:", err);
+      next(err);
+    }
   });
 }

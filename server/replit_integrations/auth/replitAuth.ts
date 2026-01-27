@@ -27,25 +27,37 @@ const getOidcConfig = memoize(
 );
 
 export function getSession() {
+  console.log("[Session] Initializing session middleware...");
+  console.log("[Session] DATABASE_URL exists:", !!process.env.DATABASE_URL);
+  console.log("[Session] SESSION_SECRET exists:", !!process.env.SESSION_SECRET);
+  
+  if (!process.env.SESSION_SECRET) {
+    console.error("[Session] CRITICAL: SESSION_SECRET is not set!");
+    throw new Error("SESSION_SECRET environment variable is required");
+  }
+  
+  if (!process.env.DATABASE_URL) {
+    console.error("[Session] CRITICAL: DATABASE_URL is not set!");
+    throw new Error("DATABASE_URL environment variable is required");
+  }
+  
   const sessionTtl = 2 * 60 * 60 * 1000; // 2 hours
   const pgStore = connectPg(session);
   const sessionStore = new pgStore({
     conString: process.env.DATABASE_URL,
-    createTableIfMissing: true, // Create table if missing to prevent startup errors
+    createTableIfMissing: true,
     ttl: sessionTtl,
     tableName: "sessions",
-    pruneSessionInterval: 60, // Prune expired sessions every 60 seconds
+    pruneSessionInterval: 60,
     errorLog: (err: Error) => {
       console.error("[Session Store] PostgreSQL error:", err.message);
     },
   });
   
-  // Use sameSite: 'lax' for same-site OAuth redirects (Google, etc.)
-  // 'lax' allows cookies on top-level navigations (like OAuth redirects back to our domain)
-  // while still protecting against CSRF attacks
+  console.log("[Session] Session store created successfully");
   
   return session({
-    secret: process.env.SESSION_SECRET!,
+    secret: process.env.SESSION_SECRET,
     store: sessionStore,
     resave: false,
     saveUninitialized: false,
