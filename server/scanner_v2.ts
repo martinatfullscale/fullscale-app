@@ -340,12 +340,26 @@ function analyzeHorizontalEdges(
   };
   
   if (buffer.length !== width * height) {
+    console.log(`[Scanner V2] DEBUG: Buffer size mismatch - expected ${width * height}, got ${buffer.length}`);
     return defaultResult;
   }
+  
+  // Debug: Check pixel value distribution
+  let minVal = 255, maxVal = 0, sum = 0;
+  for (let i = 0; i < buffer.length; i++) {
+    minVal = Math.min(minVal, buffer[i]);
+    maxVal = Math.max(maxVal, buffer[i]);
+    sum += buffer[i];
+  }
+  console.log(`[Scanner V2] DEBUG: Pixel range: ${minVal}-${maxVal}, mean: ${(sum / buffer.length).toFixed(1)}`);
   
   const rowEdgeCounts: number[] = [];
   let maxEdgeCount = 0;
   let maxEdgeRow = 0;
+  let totalGradientSum = 0;
+  let edgesAtThreshold10 = 0;
+  let edgesAtThreshold20 = 0;
+  let edgesAtThreshold30 = 0;
   
   for (let y = 1; y < height - 1; y++) {
     let edgeCount = 0;
@@ -358,6 +372,11 @@ function analyzeHorizontalEdges(
       const above = buffer[idx - width];
       const below = buffer[idx + width];
       const gradient = Math.abs(below - above);
+      totalGradientSum += gradient;
+      
+      if (gradient > 10) edgesAtThreshold10++;
+      if (gradient > 20) edgesAtThreshold20++;
+      if (gradient > 30) edgesAtThreshold30++;
       
       if (gradient > CONFIG.EDGE_THRESHOLD) {
         edgeCount++;
@@ -379,6 +398,13 @@ function analyzeHorizontalEdges(
       rowEdgeCounts[y] = 0;
     }
   }
+  
+  const totalPixels = (width - 2) * (height - 2);
+  console.log(`[Scanner V2] DEBUG: Avg gradient: ${(totalGradientSum / totalPixels).toFixed(2)}`);
+  console.log(`[Scanner V2] DEBUG: Edges at threshold 10: ${(edgesAtThreshold10/totalPixels*100).toFixed(2)}%`);
+  console.log(`[Scanner V2] DEBUG: Edges at threshold 20: ${(edgesAtThreshold20/totalPixels*100).toFixed(2)}%`);
+  console.log(`[Scanner V2] DEBUG: Edges at threshold 30: ${(edgesAtThreshold30/totalPixels*100).toFixed(2)}%`);
+  console.log(`[Scanner V2] DEBUG: Max consecutive edge run: ${maxEdgeCount} pixels (need ${Math.floor(width * CONFIG.HORIZONTAL_LINE_MIN_LENGTH)} for ${CONFIG.HORIZONTAL_LINE_MIN_LENGTH * 100}% threshold)`);
   
   const totalEdges = rowEdgeCounts.reduce((sum, count) => sum + (count || 0), 0);
   const maxPossibleEdges = width * height;
