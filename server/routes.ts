@@ -6,8 +6,9 @@ import { z } from "zod";
 import { setupAuth, registerAuthRoutes, isAuthenticated } from "./replit_integrations/auth";
 import { runIndexerForUser } from "./lib/indexer";
 import { processVideoScan, scanPendingVideos, addToLocalAssetMap, getYouTubeThumbnailWithFallback } from "./scanner_v2";
-import { queueVideoScan, getScanJobStatus, getQueueStatus, initializeScanWorker } from "./lib/scanWorker";
-import { detectSurfacesFromVideo } from "./lib/surfaceDetector";
+// DISABLED: TensorFlow scanner replaced by scanner_v2.ts which uses Sharp
+// import { queueVideoScan, getScanJobStatus, getQueueStatus, initializeScanWorker } from "./lib/scanWorker";
+// import { detectSurfacesFromVideo } from "./lib/surfaceDetector";
 import { extractThumbnailForVideo, extractAndUpdateThumbnails } from "./lib/thumbnailExtractor";
 import { hashPassword, verifyPassword } from "./lib/password";
 import { addSignupToAirtable } from "./lib/airtable";
@@ -1451,6 +1452,9 @@ export async function registerRoutes(
     }
   });
 
+  // DISABLED: TensorFlow scanner replaced by scanner_v2.ts which uses Sharp
+  // These routes are commented out to prevent TensorFlow from loading
+  /*
   // TensorFlow.js Surface Detection - Background Worker Queue
   app.post("/api/tf-scan/:id", isFlexibleAuthenticated, async (req: any, res) => {
     const videoId = parseInt(req.params.id);
@@ -1528,6 +1532,7 @@ export async function registerRoutes(
       res.status(500).json({ error: err.message || "Detection failed" });
     }
   });
+  */
 
   // Extract thumbnails from local videos
   app.post("/api/thumbnails/extract/:id", isFlexibleAuthenticated, async (req: any, res) => {

@@ -8,7 +8,8 @@ import { seed } from "./db/seed";
 import { sql } from "drizzle-orm";
 import path from "path";
 import cookieParser from "cookie-parser";
-import { initializeScanWorker } from "./lib/scanWorker";
+// DISABLED: TensorFlow scanner replaced by scanner_v2.ts which uses Sharp
+// import { initializeScanWorker } from "./lib/scanWorker";
 
 const app = express();
 const httpServer = createServer(app);
@@ -215,14 +216,14 @@ let serverReady = false;
         log(`Database seeding warning: ${dbError}`);
       }
       
-      // Initialize TensorFlow scan worker (model pre-loading)
-      try {
-        log("Initializing TensorFlow scan worker...");
-        await initializeScanWorker();
-        log("TensorFlow scan worker ready");
-      } catch (tfError) {
-        log(`TensorFlow worker initialization warning: ${tfError}`);
-      }
+      // DISABLED: TensorFlow scanner replaced by scanner_v2.ts which uses Sharp
+      // try {
+      //   log("Initializing TensorFlow scan worker...");
+      //   await initializeScanWorker();
+      //   log("TensorFlow scan worker ready");
+      // } catch (tfError) {
+      //   log(`TensorFlow worker initialization warning: ${tfError}`);
+      // }
     });
 
   } catch (error) {
