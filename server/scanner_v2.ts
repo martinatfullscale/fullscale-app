@@ -103,6 +103,7 @@ const LOCAL_ASSET_MAP: Record<string, string> = {
   'yt_final_004': './public/fullscale_final4.mov',
   'test-video-1': './public/hero_video.mp4',
   'hero-local-001': './public/hero_video.mp4',
+  'many-jobs-test': './public/many_jobs.mov',
   'user-quick-update': './attached_assets/Quick_Update_1767906117156.mov',
   'user-many-jobs': './attached_assets/Many_Jobs_1767904823555.mov',
   'user-hero-video': './attached_assets/hero_video_1767897215595.mp4',
