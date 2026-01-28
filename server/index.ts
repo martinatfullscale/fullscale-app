@@ -102,6 +102,24 @@ app.use((req, res, next) => {
 // Track server readiness
 let serverReady = false;
 
+// Loading page middleware - serve loading.html during cold start
+app.use((req, res, next) => {
+  // Allow health checks and static assets through
+  if (req.path === '/health' || req.path === '/ready' || 
+      req.path.startsWith('/attached_assets') || 
+      req.path.startsWith('/thumbnails') ||
+      req.path.endsWith('.png') || req.path.endsWith('.jpg') || 
+      req.path.endsWith('.mp4') || req.path.endsWith('.css') || 
+      req.path.endsWith('.js')) {
+    return next();
+  }
+  // If server not ready, serve loading page
+  if (!serverReady) {
+    return res.sendFile(path.join(process.cwd(), 'public', 'loading.html'));
+  }
+  next();
+});
+
 (async () => {
   try {
     log("Starting server initialization...");
