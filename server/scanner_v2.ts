@@ -102,6 +102,7 @@ const LOCAL_ASSET_MAP: Record<string, string> = {
   'yt_vlog_003': './public/quick_update.mov',
   'yt_final_004': './public/fullscale_final4.mov',
   'test-video-1': './public/hero_video.mp4',
+  'hero-local-001': './public/hero_video.mp4',
   'user-quick-update': './attached_assets/Quick_Update_1767906117156.mov',
   'user-many-jobs': './attached_assets/Many_Jobs_1767904823555.mov',
   'user-hero-video': './attached_assets/hero_video_1767897215595.mp4',
@@ -471,6 +472,11 @@ export async function processVideoScan(
         console.log(`[Scanner V2] Using description fallback: ${videoPath}`);
       }
     }
+    
+    // DEBUG LOGGING
+    console.log('[Scanner V2] DEBUG - youtubeId:', video.youtubeId);
+    console.log('[Scanner V2] DEBUG - LOCAL_ASSET_MAP keys:', Object.keys(LOCAL_ASSET_MAP));
+    console.log('[Scanner V2] DEBUG - Resolved videoPath:', videoPath);
     
     if (!videoPath || !fs.existsSync(videoPath)) {
       console.error(`[Scanner V2] Video file not found: ${videoPath}`);
