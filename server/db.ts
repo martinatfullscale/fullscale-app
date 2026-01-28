@@ -10,15 +10,27 @@ if (!process.env.DATABASE_URL) {
   );
 }
 
-// Optimized connection pool configuration
-// Prevents opening new connections per request - reuses existing pool
+// Optimized connection pool configuration for Neon (handles connection drops)
 export const pool = new Pool({ 
   connectionString: process.env.DATABASE_URL,
   max: 10,                    // Maximum 10 connections in pool
-  min: 2,                     // Keep 2 connections warm
-  idleTimeoutMillis: 30000,   // Close idle connections after 30s
-  connectionTimeoutMillis: 5000, // Fail fast if can't connect in 5s
+  min: 1,                     // Keep 1 connection warm (reduced for Neon)
+  idleTimeoutMillis: 20000,   // Close idle connections after 20s (before Neon kills them)
+  connectionTimeoutMillis: 10000, // Wait up to 10s for connection
   allowExitOnIdle: false,     // Keep pool alive
+});
+
+// Handle pool errors gracefully (Neon can terminate idle connections)
+pool.on('error', (err) => {
+  console.error('[DB Pool] Unexpected error on idle client:', err.message);
+  // Don't crash - pool will create new connections as needed
+});
+
+// Handle individual client errors
+pool.on('connect', (client) => {
+  client.on('error', (err) => {
+    console.error('[DB Client] Connection error:', err.message);
+  });
 });
 
 export const db = drizzle(pool, { schema });
