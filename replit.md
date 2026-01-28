@@ -5,6 +5,14 @@
 FullScale is a dual-portal content monetization platform with Google OAuth-gated access and YouTube integration. Features role-based views (creator/brand) with View Switcher for admins, a Brand Marketplace where brands purchase ad placements, and Campaign Tracker for monitoring bids. Built as a full-stack TypeScript application with React frontend and Express backend, using PostgreSQL for data persistence. Includes real-time AI object detection using TensorFlow.js COCO-SSD for product placement surface analysis.
 
 ## Recent Changes (January 2026)
+- **Scanner V2 Implementation**: New resource-safe video scanner replacing unstable Gemini AI scanner
+  - Uses Sharp edge detection instead of Gemini AI (faster, free, no timeouts)
+  - Deletes frames IMMEDIATELY after processing (disk-safe)
+  - Never throws - all errors caught and returned gracefully
+  - Pre-flight disk space check before extraction
+  - Processes one frame at a time (memory-safe)
+  - Located at server/scanner_v2.ts (original scanner.ts kept as fallback)
+  - Exports: processVideoScan, scanPendingVideos, addToLocalAssetMap, getYouTubeThumbnailWithFallback
 - **Platform Disconnect Persistence**: Fixed social platform disconnect to persist to database
   - DELETE /api/auth/facebook clears Facebook and Instagram data (shared auth)
   - DELETE /api/auth/twitch clears Twitch connection data
