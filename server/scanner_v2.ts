@@ -5,8 +5,11 @@
  * 
  * This is a lightweight, production-safe replacement for scanner.ts.
  * 
- * KEY DIFFERENCES FROM V1:
- * - Uses Sharp edge detection instead of Gemini AI (faster, free, no timeouts)
+ * DETECTION METHODS:
+ * - Gemini AI: Deep understanding of scene content, product placement zones
+ * - Sharp edge detection: Fast fallback for desk/table horizontal lines
+ * 
+ * KEY FEATURES:
  * - Deletes frames IMMEDIATELY after processing (disk-safe)
  * - Never throws - all errors caught and returned gracefully
  * - Pre-flight disk space check before extraction
@@ -20,6 +23,19 @@ import * as os from "os";
 import sharp from "sharp";
 import { storage } from "./storage";
 import type { InsertDetectedSurface } from "@shared/schema";
+import { GoogleGenAI } from "@google/genai";
+
+// ============================================================================
+// GEMINI AI CLIENT
+// ============================================================================
+
+const ai = new GoogleGenAI({
+  apiKey: process.env.AI_INTEGRATIONS_GEMINI_API_KEY || "dummy-key",
+  httpOptions: {
+    apiVersion: "",
+    baseUrl: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL,
+  },
+});
 
 // ============================================================================
 // CONFIGURATION
@@ -35,7 +51,10 @@ const CONFIG = {
   // Disk safety
   MIN_DISK_SPACE_MB: 100,
   
-  // Detection thresholds
+  // Detection method: 'gemini' or 'edge'
+  DETECTION_METHOD: 'gemini' as 'gemini' | 'edge',
+  
+  // Detection thresholds (for edge detection fallback)
   EDGE_THRESHOLD: 30,
   HORIZONTAL_LINE_MIN_LENGTH: 0.3,
   SURFACE_CONFIDENCE_THRESHOLD: 0.4,
@@ -43,6 +62,7 @@ const CONFIG = {
   // Timeouts
   FFMPEG_TIMEOUT_MS: 60000,
   FRAME_PROCESS_TIMEOUT_MS: 5000,
+  GEMINI_TIMEOUT_MS: 30000,
   
   // Vertical video handling
   VERTICAL_ASPECT_THRESHOLD: 1.0,
@@ -91,6 +111,87 @@ interface EdgeAnalysisResult {
     height: number;
   };
 }
+
+// Gemini AI types
+interface GeminiBoundingBox {
+  x: number;      // percentage 0-100
+  y: number;      // percentage 0-100  
+  width: number;  // percentage 0-100
+  height: number; // percentage 0-100
+}
+
+interface GeminiDetectedSurface {
+  location: GeminiBoundingBox;
+  surface_type: string;
+  confidence: number;
+  reasoning: string;
+}
+
+interface GeminiSurfaceDetectionResult {
+  surfaces_found: boolean;
+  frame_description: string;
+  surfaces: GeminiDetectedSurface[];
+  recommended_placement: {
+    location: GeminiBoundingBox;
+    reason: string;
+  } | null;
+  no_surface_reason?: string;
+}
+
+// ============================================================================
+// GEMINI AI PROMPT
+// ============================================================================
+
+const SURFACE_DETECTION_PROMPT = `You are analyzing a video frame to identify suitable areas for product placement in advertising.
+
+TASK: Find areas where a product (like a beverage, phone, or small object) could be naturally placed.
+
+LOOK FOR:
+1. **Flat surfaces** - Tables, desks, countertops, shelves, nightstands, coffee tables
+2. **Empty spaces** - Clear areas beside or near the subject where a product could appear
+3. **Natural placement zones** - Lower third of frame, surfaces in foreground/background
+4. **Contextual fits** - Kitchen counter for food products, desk for tech products, etc.
+
+DO NOT FLAG:
+- Areas blocked by people or moving hands
+- Surfaces that are too cluttered
+- Areas outside the main visual focus
+- Vertical surfaces (walls) unless they have shelves
+
+For each suitable area found, provide:
+- **location**: Bounding box as {x, y, width, height} in percentages (0-100) of frame dimensions
+- **surface_type**: What it is (desk, table, shelf, counter, open_space, etc.)
+- **confidence**: 0.0 to 1.0 based on how suitable it is for product placement
+- **reasoning**: Brief explanation of why this spot works
+
+RESPOND IN THIS EXACT JSON FORMAT:
+{
+  "surfaces_found": true/false,
+  "frame_description": "Brief description of what's in the frame",
+  "surfaces": [
+    {
+      "location": {"x": 20, "y": 60, "width": 30, "height": 25},
+      "surface_type": "desk",
+      "confidence": 0.85,
+      "reasoning": "Clear wooden desk surface in lower right, good lighting, unobstructed"
+    }
+  ],
+  "recommended_placement": {
+    "location": {"x": ..., "y": ..., "width": ..., "height": ...},
+    "reason": "Best overall spot because..."
+  }
+}
+
+If NO suitable surfaces exist in this frame, respond with:
+{
+  "surfaces_found": false,
+  "frame_description": "Description of frame",
+  "surfaces": [],
+  "recommended_placement": null,
+  "no_surface_reason": "Why no placement works (e.g., 'close-up face shot', 'too much motion blur', 'fully outdoor scene with no surfaces')"
+}
+
+Analyze the frame now:`;
 
 // ============================================================================
 // LOCAL ASSET MAP
@@ -435,6 +536,139 @@ function analyzeHorizontalEdges(
 }
 
 // ============================================================================
+// GEMINI AI SURFACE DETECTION
+// ============================================================================
+
+function parseGeminiResponse(rawResponse: string): GeminiSurfaceDetectionResult | null {
+  try {
+    let jsonStr = rawResponse.trim();
+    if (jsonStr.startsWith('```json')) {
+      jsonStr = jsonStr.slice(7);
+    } else if (jsonStr.startsWith('```')) {
+      jsonStr = jsonStr.slice(3);
+    }
+    if (jsonStr.endsWith('```')) {
+      jsonStr = jsonStr.slice(0, -3);
+    }
+    
+    const parsed = JSON.parse(jsonStr.trim());
+    
+    if (typeof parsed.surfaces_found !== 'boolean') {
+      console.warn('[Gemini] Invalid response: missing surfaces_found');
+      return null;
+    }
+    
+    if (parsed.surfaces_found && Array.isArray(parsed.surfaces)) {
+      parsed.surfaces = parsed.surfaces.filter((s: any) => {
+        return s.location && 
+               typeof s.location.x === 'number' &&
+               typeof s.location.y === 'number' &&
+               typeof s.confidence === 'number';
+      });
+    }
+    
+    return parsed;
+  } catch (e) {
+    console.error('[Gemini] Failed to parse response:', e);
+    console.error('[Gemini] Raw response:', rawResponse.substring(0, 500));
+    return null;
+  }
+}
+
+async function analyzeFrameWithGemini(
+  framePath: string,
+  timestamp: number,
+  isVertical: boolean
+): Promise<FrameAnalysisResult> {
+  const defaultResult: FrameAnalysisResult = {
+    hasSurface: false,
+    confidence: 0,
+    surfaces: [],
+    isVertical,
+  };
+  
+  try {
+    console.log(`[Gemini] Analyzing frame at ${timestamp}s...`);
+    
+    const imageBuffer = fs.readFileSync(framePath);
+    const base64Image = imageBuffer.toString('base64');
+    const metadata = await sharp(framePath).metadata();
+    const mimeType = metadata.format === 'png' ? 'image/png' : 'image/jpeg';
+    
+    const timeoutPromise = new Promise<null>((_, reject) => {
+      setTimeout(() => reject(new Error('Gemini timeout')), CONFIG.GEMINI_TIMEOUT_MS);
+    });
+    
+    const analysisPromise = ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: [{
+        role: "user",
+        parts: [
+          { text: SURFACE_DETECTION_PROMPT },
+          { inlineData: { mimeType, data: base64Image } }
+        ]
+      }],
+    });
+    
+    const response = await Promise.race([analysisPromise, timeoutPromise]);
+    
+    if (!response) {
+      console.error('[Gemini] Request timed out');
+      return defaultResult;
+    }
+    
+    const textContent = response.candidates?.[0]?.content?.parts?.[0];
+    if (!textContent || !('text' in textContent) || !textContent.text) {
+      console.error('[Gemini] No text in response');
+      return defaultResult;
+    }
+    
+    const parsed = parseGeminiResponse(textContent.text as string);
+    
+    if (!parsed) {
+      console.error('[Gemini] Failed to parse response');
+      return defaultResult;
+    }
+    
+    console.log(`[Gemini] Frame ${timestamp}s: ${parsed.frame_description}`);
+    console.log(`[Gemini] Surfaces found: ${parsed.surfaces_found}, count: ${parsed.surfaces.length}`);
+    
+    if (parsed.no_surface_reason) {
+      console.log(`[Gemini] No surface reason: ${parsed.no_surface_reason}`);
+    }
+    
+    if (!parsed.surfaces_found || parsed.surfaces.length === 0) {
+      return defaultResult;
+    }
+    
+    const surfaces: DetectedSurface[] = parsed.surfaces.map(s => ({
+      surfaceType: s.surface_type.charAt(0).toUpperCase() + s.surface_type.slice(1),
+      confidence: s.confidence,
+      boundingBox: {
+        x: s.location.x / 100,
+        y: s.location.y / 100,
+        width: s.location.width / 100,
+        height: s.location.height / 100,
+      },
+      timestamp,
+    }));
+    
+    const maxConfidence = Math.max(...surfaces.map(s => s.confidence));
+    
+    return {
+      hasSurface: true,
+      confidence: maxConfidence,
+      surfaces,
+      isVertical,
+    };
+    
+  } catch (err) {
+    console.error(`[Gemini] Frame analysis error:`, err);
+    return defaultResult;
+  }
+}
+
+// ============================================================================
 // MAIN SCAN FUNCTIONS
 // ============================================================================
 
@@ -546,6 +780,7 @@ export async function processVideoScan(
     
     // PROCESS FRAMES ONE BY ONE (with immediate cleanup)
     let totalSurfaces = 0;
+    console.log(`[Scanner V2] Detection method: ${CONFIG.DETECTION_METHOD.toUpperCase()}`);
     
     for (let i = 0; i < frames.length; i++) {
       const framePath = frames[i];
@@ -554,7 +789,10 @@ export async function processVideoScan(
       try {
         console.log(`[Scanner V2] Processing frame ${i + 1}/${frames.length} (${timestamp}s)...`);
         
-        const analysis = await analyzeFrameForSurfaces(framePath, timestamp, isVertical);
+        // Use Gemini AI or edge detection based on config
+        const analysis = CONFIG.DETECTION_METHOD === 'gemini'
+          ? await analyzeFrameWithGemini(framePath, timestamp, isVertical)
+          : await analyzeFrameForSurfaces(framePath, timestamp, isVertical);
         
         if (analysis.hasSurface && analysis.surfaces.length > 0) {
           const frameFilename = `frame_${timestamp}s.jpg`;
