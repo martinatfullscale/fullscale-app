@@ -5,6 +5,12 @@
 FullScale is a dual-portal content monetization platform with Google OAuth-gated access and YouTube integration. Features role-based views (creator/brand) with View Switcher for admins, a Brand Marketplace where brands purchase ad placements, and Campaign Tracker for monitoring bids. Built as a full-stack TypeScript application with React frontend and Express backend, using PostgreSQL for data persistence. Includes real-time AI object detection using TensorFlow.js COCO-SSD for product placement surface analysis.
 
 ## Recent Changes (January 2026)
+- **Public Creator Profile Pages**: Brands can view creator content and request placements at /c/:slug
+  - GET /api/public/creator/:slug returns creator info and videos with detected surfaces
+  - POST /api/public/placement-request creates monetization items (derives creator from video ownership)
+  - CreatorProfile.tsx shows creator name, avatar, video grid with ad spot counts
+  - Placement modal collects brand contact info and message
+  - Currently hardcoded slug "martin" → martin@gofullscale.co for testing
 - **Scanner V2 Implementation**: New resource-safe video scanner replacing unstable Gemini AI scanner
   - Uses Sharp edge detection instead of Gemini AI (faster, free, no timeouts)
   - Deletes frames IMMEDIATELY after processing (disk-safe)
