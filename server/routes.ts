@@ -2860,6 +2860,95 @@ export async function registerRoutes(
     }
   });
 
+  // ============================================
+  // PUBLIC CREATOR PROFILE ROUTES (No Auth Required)
+  // ============================================
+  
+  // Get creator by slug (email prefix) with their ready videos
+  app.get("/api/public/creator/:slug", async (req, res) => {
+    const { slug } = req.params;
+    
+    try {
+      // Map slug to email (for now, martin -> martin@gofullscale.co)
+      const emailMappings: Record<string, string> = {
+        "martin": "martin@gofullscale.co",
+      };
+      
+      const email = emailMappings[slug.toLowerCase()];
+      if (!email) {
+        return res.status(404).json({ error: "Creator not found" });
+      }
+      
+      // Get creator info from allowed_users
+      const creator = await storage.getAllowedUser(email);
+      if (!creator) {
+        return res.status(404).json({ error: "Creator not found" });
+      }
+      
+      // Get videos that are "Ready" with detected surfaces
+      const videos = await storage.getVideosWithSurfacesPublic(email);
+      
+      res.json({
+        creator: {
+          name: creator.name || email.split("@")[0],
+          email: creator.email,
+          slug,
+        },
+        videos: videos.map((v: any) => ({
+          id: v.id,
+          title: v.title,
+          thumbnail: v.thumbnailUrl,
+          platform: v.platform,
+          viewCount: v.viewCount,
+          surfaceCount: v.surfaceCount || 0,
+          surfaces: v.surfaces || [],
+        })),
+      });
+    } catch (err: any) {
+      console.error("[Public] Error fetching creator:", err);
+      res.status(500).json({ error: "Failed to fetch creator" });
+    }
+  });
+  
+  // Submit a placement request (public - no auth)
+  app.post("/api/public/placement-request", async (req, res) => {
+    const { videoId, brandName, brandEmail, message } = req.body;
+    
+    if (!videoId || !brandName || !brandEmail) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+    
+    try {
+      // Get video info and derive creator email from video ownership
+      const video = await storage.getVideoById(parseInt(videoId));
+      if (!video) {
+        return res.status(404).json({ error: "Video not found" });
+      }
+      
+      // Use video's userId (which is the creator's email) for integrity
+      const creatorEmail = video.userId;
+      
+      // Create monetization item with pending status
+      const item = await storage.createMonetizationItem({
+        title: `Placement Request: ${video.title}`,
+        thumbnailUrl: video.thumbnailUrl,
+        status: "pending",
+        videoId: video.id,
+        creatorUserId: creatorEmail,
+        brandEmail,
+        brandName,
+        sceneType: message || "General",
+      });
+      
+      console.log(`[Public] New placement request from ${brandName} (${brandEmail}) for video ${video.title}`);
+      
+      res.json({ success: true, message: "Request sent! The creator will be in touch." });
+    } catch (err: any) {
+      console.error("[Public] Error creating placement request:", err);
+      res.status(500).json({ error: "Failed to submit request" });
+    }
+  });
+
   // Seed Data
   await seedDatabase();
 

@@ -26,6 +26,7 @@ import Campaigns from "@/pages/Campaigns";
 import Settings from "@/pages/Settings";
 import Privacy from "@/pages/Privacy";
 import Terms from "@/pages/Terms";
+import CreatorProfile from "@/pages/CreatorProfile";
 
 interface AuthStatusResponse {
   authenticated: boolean;
@@ -143,6 +144,7 @@ function Router() {
         <Route path="/privacy" component={Privacy} />
         <Route path="/terms" component={Terms} />
         <Route path="/waitlist" component={WaitlistPage} />
+        <Route path="/c/:slug" component={CreatorProfile} />
         <Route path="/dashboard" component={Landing} />
         <Route path="/:rest*" component={Landing} />
       </Switch>
@@ -184,6 +186,7 @@ function Router() {
   return (
     <Switch>
       <Route path="/home" component={Landing} />
+      <Route path="/c/:slug" component={CreatorProfile} />
       <Route>
         {() => (
           <AuthenticatedLayout userType={currentRole}>
