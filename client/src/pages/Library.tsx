@@ -549,6 +549,15 @@ export default function Library() {
   // Force "real" mode if admin_email bypass is active
   const mode = isUrlAdminBypass ? "real" : hybridMode;
   
+  // Debug logging for mode detection
+  console.log(`[Library] ===== MODE DEBUG =====`);
+  console.log(`[Library] URL: ${window.location.href}`);
+  console.log(`[Library] adminEmailFromUrl: "${adminEmailFromUrl}"`);
+  console.log(`[Library] isUrlAdminBypass: ${isUrlAdminBypass}`);
+  console.log(`[Library] hybridMode: ${hybridMode}`);
+  console.log(`[Library] FINAL mode: ${mode}`);
+  console.log(`[Library] userEmail: ${userEmail}, isAdminUser: ${isAdminUser}`);
+  
   const handleVideoClick = async (video: DisplayVideo) => {
     const videoId = video.id || 1001;
     const viewCount = parseInt(video.views.replace(/[^0-9]/g, '')) || 0;
