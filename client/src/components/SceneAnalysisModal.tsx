@@ -48,6 +48,7 @@ interface SceneAnalysisModalProps {
   video: VideoWithScenes | null;
   open: boolean;
   onClose: () => void;
+  adminEmail?: string;
 }
 
 const PLACEMENT_SURFACES = [
@@ -57,7 +58,7 @@ const PLACEMENT_SURFACES = [
   "oven", "toaster", "sink", "backpack", "handbag", "suitcase", "umbrella"
 ];
 
-export function SceneAnalysisModal({ video, open, onClose }: SceneAnalysisModalProps) {
+export function SceneAnalysisModal({ video, open, onClose, adminEmail }: SceneAnalysisModalProps) {
   const [currentSceneIndex, setCurrentSceneIndex] = useState(0);
   const [model, setModel] = useState<cocoSsd.ObjectDetection | null>(null);
   const [isLoadingModel, setIsLoadingModel] = useState(false);
@@ -102,9 +103,14 @@ export function SceneAnalysisModal({ video, open, onClose }: SceneAnalysisModalP
     console.log(`[SceneAnalysisModal] ===== FETCHING SURFACES =====`);
     console.log(`[SceneAnalysisModal] Video ID: ${videoId}`);
     console.log(`[SceneAnalysisModal] Video object:`, video);
+    console.log(`[SceneAnalysisModal] adminEmail prop:`, adminEmail);
     setIsLoadingDbSurfaces(true);
     try {
-      const url = `/api/video/${videoId}/surfaces`;
+      // Include admin_email for flexible auth if available
+      let url = `/api/video/${videoId}/surfaces`;
+      if (adminEmail) {
+        url += `?admin_email=${encodeURIComponent(adminEmail)}`;
+      }
       console.log(`[SceneAnalysisModal] Fetching: ${url}`);
       const res = await fetch(url, { credentials: "include" });
       console.log(`[SceneAnalysisModal] Response status: ${res.status}`);

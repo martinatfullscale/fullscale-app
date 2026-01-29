@@ -1287,6 +1287,7 @@ export default function Library() {
           setSceneModalOpen(false);
           setSceneVideo(null);
         }}
+        adminEmail={isAdminUser ? userEmail : undefined}
       />
 
       <UploadModal 
