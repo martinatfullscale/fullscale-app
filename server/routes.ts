@@ -1651,7 +1651,8 @@ export async function registerRoutes(
   });
 
   // Get detected surfaces for a video (Ad Opportunities)
-  app.get("/api/video/:id/surfaces", isFlexibleAuthenticated, async (req: any, res) => {
+  // PUBLIC endpoint - surfaces are viewable by brands on creator profiles
+  app.get("/api/video/:id/surfaces", async (req: any, res) => {
     const videoId = parseInt(req.params.id);
     if (isNaN(videoId)) {
       return res.status(400).json({ error: "Invalid video ID" });
@@ -1662,12 +1663,7 @@ export async function registerRoutes(
       return res.status(404).json({ error: "Video not found" });
     }
 
-    // Check ownership - allow if video userId matches auth userId OR auth email
-    const isOwner = video.userId === req.authUserId || video.userId === req.authEmail;
-    if (!isOwner) {
-      return res.status(403).json({ error: "Unauthorized" });
-    }
-
+    // No auth required - surfaces data is public for brand marketplace
     const surfaces = await storage.getDetectedSurfaces(videoId);
     res.json({ surfaces, count: surfaces.length });
   });
