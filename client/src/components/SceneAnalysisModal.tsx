@@ -99,17 +99,27 @@ export function SceneAnalysisModal({ video, open, onClose }: SceneAnalysisModalP
   
   // Fetch surfaces from database API
   const fetchDbSurfaces = async (videoId: number) => {
+    console.log(`[SceneAnalysisModal] ===== FETCHING SURFACES =====`);
+    console.log(`[SceneAnalysisModal] Video ID: ${videoId}`);
+    console.log(`[SceneAnalysisModal] Video object:`, video);
     setIsLoadingDbSurfaces(true);
     try {
-      const res = await fetch(`/api/video/${videoId}/surfaces`, { credentials: "include" });
+      const url = `/api/video/${videoId}/surfaces`;
+      console.log(`[SceneAnalysisModal] Fetching: ${url}`);
+      const res = await fetch(url, { credentials: "include" });
+      console.log(`[SceneAnalysisModal] Response status: ${res.status}`);
       if (res.ok) {
         const data = await res.json();
+        console.log(`[SceneAnalysisModal] Surfaces from DB:`, data);
         setDbSurfaces(data.surfaces || []);
         setHasDbSurfaces((data.surfaces || []).length > 0);
-        console.log(`[SceneModal] Loaded ${data.surfaces?.length || 0} surfaces from database`);
+        console.log(`[SceneAnalysisModal] Loaded ${data.surfaces?.length || 0} surfaces, hasDbSurfaces: ${(data.surfaces || []).length > 0}`);
+      } else {
+        const errText = await res.text();
+        console.error(`[SceneAnalysisModal] Failed to fetch: ${res.status}`, errText);
       }
     } catch (err) {
-      console.error("[SceneModal] Failed to fetch surfaces:", err);
+      console.error("[SceneAnalysisModal] Failed to fetch surfaces:", err);
     } finally {
       setIsLoadingDbSurfaces(false);
     }

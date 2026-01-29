@@ -553,23 +553,46 @@ export default function Library() {
     const videoId = video.id || 1001;
     const viewCount = parseInt(video.views.replace(/[^0-9]/g, '')) || 0;
     
-    // For videos with local files, show the video preview modal
-    if (video.hasLocalFile && video.filePath) {
+    console.log(`[Library] ===== VIDEO CLICKED =====`);
+    console.log(`[Library] Video:`, video);
+    console.log(`[Library] videoId: ${videoId}, isRealMode: ${isRealMode}, isPitchMode: ${isPitchMode}, mode: ${mode}`);
+    console.log(`[Library] hasLocalFile: ${video.hasLocalFile}, filePath: ${video.filePath}, status: ${video.status}`);
+    
+    // For scanned videos (status contains "Complete" or "Ready"), show scene analysis modal with surfaces
+    // This takes priority over video preview for analyzed content
+    const videoAny = video as any;
+    const adOpportunityCount = videoAny.adOpportunities ?? videoAny.surfaceCount ?? 0;
+    const hasCompletedScan = video.status?.toLowerCase().includes('complete') || 
+                             video.status?.toLowerCase().includes('ready') ||
+                             adOpportunityCount > 0;
+    
+    console.log(`[Library] hasCompletedScan: ${hasCompletedScan}, adOpportunities: ${adOpportunityCount}`);
+    
+    // In real mode with completed scan, show scene analysis modal
+    if (isRealMode && videoId >= 50 && hasCompletedScan) {
+      console.log(`[Library] Video has completed scan - showing scene analysis modal`);
+    } else if (video.hasLocalFile && video.filePath && !hasCompletedScan) {
+      // Only show video preview for local files that haven't been scanned yet
+      console.log(`[Library] Opening video preview modal (unscanned local file)`);
       setPreviewVideo(video);
       setPreviewModalOpen(true);
       return;
     }
     
     // In real mode, fetch actual detected surfaces from the database
+    console.log(`[Library] Checking real mode: isRealMode=${isRealMode}, videoId >= 50: ${videoId >= 50}`);
     if (isRealMode && videoId >= 50) {
       try {
         // Pass admin_email for flexible auth if user is admin
         const url = isAdminUser 
           ? `/api/video/${videoId}/surfaces?admin_email=${encodeURIComponent(userEmail)}`
           : `/api/video/${videoId}/surfaces`;
+        console.log(`[Library] Fetching surfaces from: ${url}`);
         const res = await fetch(url, { credentials: "include" });
+        console.log(`[Library] Response status: ${res.status}`);
         if (res.ok) {
           const data = await res.json();
+          console.log(`[Library] Surfaces data:`, data);
           // Convert detected_surfaces to Scene format
           const surfaces = data.surfaces || [];
           const uniqueTimestamps = Array.from(new Set(surfaces.map((s: any) => s.timestamp || 0))) as number[];
