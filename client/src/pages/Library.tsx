@@ -677,16 +677,30 @@ export default function Library() {
     queryFn: async ({ queryKey }) => {
       // Extract isPitchMode and mode from queryKey to avoid stale closure
       const [, pitchModeFromKey, modeFromKey, , isAdmin, email] = queryKey;
+      
+      console.log(`[Library] ===== QUERY FN DEBUG =====`);
+      console.log(`[Library] queryKey:`, queryKey);
+      console.log(`[Library] pitchModeFromKey: ${pitchModeFromKey}`);
+      console.log(`[Library] modeFromKey: ${modeFromKey}`);
+      console.log(`[Library] isAdmin: ${isAdmin}, email: ${email}`);
+      
       let endpoint = pitchModeFromKey ? "/api/demo/videos" : (modeFromKey === "real" ? "/api/video-index/with-opportunities" : "/api/demo/videos");
+      
       // Add admin_email param for flexible auth
       if (!pitchModeFromKey && modeFromKey === "real" && isAdmin && email) {
         endpoint += `?admin_email=${encodeURIComponent(email as string)}`;
       }
-      console.log(`[Library] Fetching videos from ${endpoint} (isPitchMode from key: ${pitchModeFromKey})`);
+      
+      console.log(`[Library] FINAL endpoint: ${endpoint}`);
+      console.log(`[Library] Expected: /api/video-index/with-opportunities?admin_email=...`);
+      
       const res = await fetch(endpoint, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch videos");
       const data = await res.json();
+      
       console.log(`[Library] Videos fetched: ${data.videos?.length} items`);
+      console.log(`[Library] First video ID: ${data.videos?.[0]?.id} (should be < 100 for real videos)`);
+      
       return data;
     },
     retry: 2,
@@ -967,6 +981,17 @@ export default function Library() {
   // Unified video data - comes from either auth or demo endpoint based on mode
   const videos = videoData?.videos || [];
   const displayVideos: DisplayVideo[] = videos.map(formatIndexedVideo);
+  
+  // DEBUG: Show exactly what videos are being displayed and why
+  console.log(`[Library] ===== VIDEO DISPLAY DEBUG =====`);
+  console.log(`[Library] isRealMode: ${isRealMode} (isPitchMode: ${isPitchMode}, mode: ${mode})`);
+  console.log(`[Library] videoData exists: ${!!videoData}`);
+  console.log(`[Library] videos array length: ${videos.length}`);
+  console.log(`[Library] Videos being displayed:`, videos.map(v => ({ id: v.id, title: v.title, status: v.status })));
+  if (videos.length > 0 && videos[0].id > 90000) {
+    console.warn(`[Library] WARNING: Showing DEMO videos (IDs > 90000) instead of real videos!`);
+    console.warn(`[Library] This means mode="${mode}" but demo endpoint was called`);
+  }
   
   // Filter videos by platform
   const filteredDisplayVideos = displayVideos.filter((video) => {
