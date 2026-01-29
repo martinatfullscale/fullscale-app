@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, ChevronLeft, ChevronRight, Target, Clock, Eye, Sparkles, Scan, Loader2 } from "lucide-react";
+import { X, ChevronLeft, ChevronRight, Target, Clock, Eye, Sparkles, Scan, Loader2, Database } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import * as tf from "@tensorflow/tfjs";
@@ -30,6 +30,20 @@ interface DetectedObject {
   bbox: [number, number, number, number];
 }
 
+// Database surface from Gemini AI scan
+interface DatabaseSurface {
+  id: number;
+  videoId: number;
+  timestamp: string;
+  surfaceType: string;
+  confidence: string;
+  boundingBoxX: string;
+  boundingBoxY: string;
+  boundingBoxWidth: string;
+  boundingBoxHeight: string;
+  frameUrl: string | null;
+}
+
 interface SceneAnalysisModalProps {
   video: VideoWithScenes | null;
   open: boolean;
@@ -52,8 +66,20 @@ export function SceneAnalysisModal({ video, open, onClose }: SceneAnalysisModalP
   const [hasScanned, setHasScanned] = useState(false);
   const [modelError, setModelError] = useState<string | null>(null);
   
+  // Database surfaces from Gemini AI scan
+  const [dbSurfaces, setDbSurfaces] = useState<DatabaseSurface[]>([]);
+  const [isLoadingDbSurfaces, setIsLoadingDbSurfaces] = useState(false);
+  const [hasDbSurfaces, setHasDbSurfaces] = useState(false);
+  
   const imageRef = useRef<HTMLImageElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  // Fetch database surfaces when modal opens
+  useEffect(() => {
+    if (open && video?.id) {
+      fetchDbSurfaces(video.id);
+    }
+  }, [open, video?.id]);
 
   useEffect(() => {
     if (open && !model && !isLoadingModel) {
@@ -65,7 +91,88 @@ export function SceneAnalysisModal({ video, open, onClose }: SceneAnalysisModalP
     setDetections([]);
     setHasScanned(false);
     clearCanvas();
+    // Redraw database surfaces when scene changes
+    if (hasDbSurfaces && dbSurfaces.length > 0) {
+      drawDbSurfaces();
+    }
   }, [currentSceneIndex]);
+  
+  // Fetch surfaces from database API
+  const fetchDbSurfaces = async (videoId: number) => {
+    setIsLoadingDbSurfaces(true);
+    try {
+      const res = await fetch(`/api/video/${videoId}/surfaces`, { credentials: "include" });
+      if (res.ok) {
+        const data = await res.json();
+        setDbSurfaces(data.surfaces || []);
+        setHasDbSurfaces((data.surfaces || []).length > 0);
+        console.log(`[SceneModal] Loaded ${data.surfaces?.length || 0} surfaces from database`);
+      }
+    } catch (err) {
+      console.error("[SceneModal] Failed to fetch surfaces:", err);
+    } finally {
+      setIsLoadingDbSurfaces(false);
+    }
+  };
+  
+  // Draw bounding boxes from database surfaces
+  const drawDbSurfaces = useCallback(() => {
+    const canvas = canvasRef.current;
+    const image = imageRef.current;
+    if (!canvas || !image) return;
+    
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    
+    // Match canvas to image display size
+    const rect = image.getBoundingClientRect();
+    canvas.width = rect.width;
+    canvas.height = rect.height;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    // Get current scene's timestamp (e.g., "00:05" -> 5)
+    const currentScene = video?.scenes[currentSceneIndex];
+    const sceneTimestamp = currentScene?.timestamp || "00:00";
+    const [mins, secs] = sceneTimestamp.split(":").map(Number);
+    const sceneSeconds = (mins || 0) * 60 + (secs || 0);
+    
+    // Filter surfaces for this timestamp (within 5 second window)
+    const sceneSurfaces = dbSurfaces.filter(s => {
+      const surfaceTs = parseInt(s.timestamp) || 0;
+      return Math.abs(surfaceTs - sceneSeconds) <= 5;
+    });
+    
+    if (sceneSurfaces.length === 0) return;
+    
+    // Draw each surface bounding box
+    sceneSurfaces.forEach((surface, idx) => {
+      const x = parseFloat(surface.boundingBoxX) * canvas.width;
+      const y = parseFloat(surface.boundingBoxY) * canvas.height;
+      const w = parseFloat(surface.boundingBoxWidth) * canvas.width;
+      const h = parseFloat(surface.boundingBoxHeight) * canvas.height;
+      const confidence = Math.round(parseFloat(surface.confidence) * 100);
+      
+      // Bright colors for visibility
+      const colors = ["#10b981", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899"];
+      const color = colors[idx % colors.length];
+      
+      // Draw box
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 3;
+      ctx.strokeRect(x, y, w, h);
+      
+      // Draw label background
+      const label = `${surface.surfaceType} (${confidence}%)`;
+      ctx.font = "bold 14px Inter, sans-serif";
+      const textWidth = ctx.measureText(label).width;
+      ctx.fillStyle = color;
+      ctx.fillRect(x, y - 24, textWidth + 12, 24);
+      
+      // Draw label text
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText(label, x + 6, y - 7);
+    });
+  }, [dbSurfaces, currentSceneIndex, video]);
 
   const loadModel = async () => {
     setIsLoadingModel(true);
@@ -221,16 +328,42 @@ export function SceneAnalysisModal({ video, open, onClose }: SceneAnalysisModalP
     PLACEMENT_SURFACES.includes(d.class.toLowerCase())
   );
   
-  const displaySurfaces = hasScanned 
-    ? detections.map((d) => `${d.class} (${Math.round(d.score * 100)}%)`)
-    : currentScene.surfaceTypes;
+  // Get current scene's timestamp for filtering database surfaces
+  const sceneTimestamp = currentScene?.timestamp || "00:00";
+  const [mins, secs] = sceneTimestamp.split(":").map(Number);
+  const sceneSeconds = (mins || 0) * 60 + (secs || 0);
+  
+  // Filter database surfaces for current timestamp (within 5 second window)
+  const currentDbSurfaces = dbSurfaces.filter(s => {
+    const surfaceTs = parseInt(s.timestamp) || 0;
+    return Math.abs(surfaceTs - sceneSeconds) <= 5;
+  });
+  
+  // Priority: Database surfaces (Gemini AI) > TensorFlow detections > Demo data
+  const displaySurfaces = hasDbSurfaces && currentDbSurfaces.length > 0
+    ? currentDbSurfaces.map((s) => `${s.surfaceType} (${Math.round(parseFloat(s.confidence) * 100)}%)`)
+    : hasScanned 
+      ? detections.map((d) => `${d.class} (${Math.round(d.score * 100)}%)`)
+      : currentScene.surfaceTypes;
 
-  const displayCount = hasScanned ? detections.length : currentScene.surfaces;
-  const displayConfidence = hasScanned 
-    ? detections.length > 0 
-      ? Math.round(detections.reduce((sum, d) => sum + d.score, 0) / detections.length * 100)
-      : 0
-    : currentScene.confidence;
+  const displayCount = hasDbSurfaces && currentDbSurfaces.length > 0
+    ? currentDbSurfaces.length
+    : hasScanned ? detections.length : currentScene.surfaces;
+    
+  const displayConfidence = hasDbSurfaces && currentDbSurfaces.length > 0
+    ? Math.round(currentDbSurfaces.reduce((sum, s) => sum + parseFloat(s.confidence), 0) / currentDbSurfaces.length * 100)
+    : hasScanned 
+      ? detections.length > 0 
+        ? Math.round(detections.reduce((sum, d) => sum + d.score, 0) / detections.length * 100)
+        : 0
+      : currentScene.confidence;
+  
+  // Data source indicator
+  const dataSource = hasDbSurfaces && currentDbSurfaces.length > 0 
+    ? "gemini" 
+    : hasScanned 
+      ? "tensorflow" 
+      : "demo";
 
   return (
     <AnimatePresence>
@@ -269,6 +402,12 @@ export function SceneAnalysisModal({ video, open, onClose }: SceneAnalysisModalP
                     className="w-full h-full object-cover"
                     crossOrigin="anonymous"
                     data-testid="img-scene-main"
+                    onLoad={() => {
+                      // Draw database surfaces after image loads
+                      if (hasDbSurfaces && currentDbSurfaces.length > 0) {
+                        setTimeout(drawDbSurfaces, 100);
+                      }
+                    }}
                   />
                   
                   <canvas
@@ -286,11 +425,23 @@ export function SceneAnalysisModal({ video, open, onClose }: SceneAnalysisModalP
                     </Badge>
                     <Badge className="bg-emerald-500/90 text-white">
                       <Target className="w-3 h-3 mr-1" />
-                      {displayCount} {hasScanned ? "Detected" : "Surfaces"}
+                      {displayCount} {dataSource === "gemini" ? "Surfaces" : hasScanned ? "Detected" : "Surfaces"}
                     </Badge>
-                    {hasScanned && (
+                    {dataSource === "gemini" && (
+                      <Badge className="bg-purple-500/90 text-white">
+                        <Database className="w-3 h-3 mr-1" />
+                        Gemini AI
+                      </Badge>
+                    )}
+                    {dataSource === "tensorflow" && (
                       <Badge className="bg-blue-500/90 text-white">
                         AI Scanned
+                      </Badge>
+                    )}
+                    {isLoadingDbSurfaces && (
+                      <Badge className="bg-yellow-500/90 text-white">
+                        <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                        Loading...
                       </Badge>
                     )}
                   </div>
