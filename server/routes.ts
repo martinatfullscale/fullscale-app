@@ -1420,6 +1420,51 @@ export async function registerRoutes(
     res.json({ success: true, message: "Batch scan started" });
   });
 
+  // Update video file path and thumbnail - for fixing database records
+  // Only works for videos owned by admin emails
+  app.post("/api/videos/:id/update-path", async (req, res) => {
+    const videoId = parseInt(req.params.id);
+    if (isNaN(videoId)) {
+      return res.status(400).json({ error: "Invalid video ID" });
+    }
+
+    const { filePath, thumbnailUrl } = req.body;
+    if (!filePath && !thumbnailUrl) {
+      return res.status(400).json({ error: "Must provide filePath or thumbnailUrl" });
+    }
+
+    const video = await storage.getVideoById(videoId);
+    if (!video) {
+      return res.status(404).json({ error: "Video not found" });
+    }
+
+    // Only allow updates for admin-owned videos
+    const adminEmailsList = ['martin@gofullscale.co', 'martin@whtwrks.com', 'martincekechukwu@gmail.com'];
+    if (!adminEmailsList.includes(video.userId)) {
+      return res.status(403).json({ error: "Can only update admin-owned videos" });
+    }
+
+    try {
+      // Update the video record
+      const updates: any = {};
+      if (filePath) updates.filePath = filePath;
+      if (thumbnailUrl) updates.thumbnailUrl = thumbnailUrl;
+      
+      await storage.updateVideoIndex(videoId, updates);
+      
+      console.log(`[UPDATE PATH] Video ${videoId} updated:`, updates);
+      res.json({ 
+        success: true, 
+        videoId,
+        updates,
+        message: "Video path updated successfully"
+      });
+    } catch (err: any) {
+      console.error(`[UPDATE PATH] Failed for video ${videoId}:`, err);
+      res.status(500).json({ error: err.message || "Update failed" });
+    }
+  });
+
   // Admin scan endpoint - for testing uploaded videos without auth
   // Only works for videos owned by admin emails (uses ADMIN_EMAILS defined below)
   const adminEmails = ['martin@gofullscale.co', 'martin@whtwrks.com', 'martincekechukwu@gmail.com'];
