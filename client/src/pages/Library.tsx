@@ -1194,11 +1194,11 @@ export default function Library() {
                     )}
                   </div>
                 )}
-                <div className={video.platform === "instagram" ? "aspect-[9/16] relative overflow-hidden" : "aspect-video relative overflow-hidden"}>
+                <div className={video.platform === "instagram" ? "aspect-[9/16] relative overflow-hidden bg-black" : "aspect-video relative overflow-hidden bg-black"}>
                   <img 
                     src={video.image} 
                     alt={video.title}
-                    className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                    className={`w-full h-full transition-transform duration-300 group-hover:scale-105 ${video.hasLocalFile ? 'object-contain' : 'object-cover'}`}
                   />
                   <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent" />
                   <div className="absolute bottom-2 left-2 flex items-center gap-1.5 px-2 py-1 rounded-md bg-black/50 backdrop-blur-sm">
