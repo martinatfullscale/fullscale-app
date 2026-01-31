@@ -606,6 +606,10 @@ export default function Library() {
           const surfaces = data.surfaces || [];
           const uniqueTimestamps = Array.from(new Set(surfaces.map((s: any) => s.timestamp || 0))) as number[];
           
+          // Use actual video thumbnail instead of stock images
+          const videoThumbnail = video.thumbnailUrl || (video.filePath ? video.filePath : null);
+          const fallbackImage = videoThumbnail || `/thumbnails/video-${videoId}.png`;
+          
           const scenes = uniqueTimestamps.map((ts: number, idx: number) => {
             const surfacesAtTime = surfaces.filter((s: any) => (s.timestamp || 0) === ts);
             const surfaceTypes = Array.from(new Set(surfacesAtTime.map((s: any) => s.surfaceType || s.surface_type))) as string[];
@@ -614,7 +618,7 @@ export default function Library() {
             return {
               id: `scene-${videoId}-${idx}`,
               timestamp: `${Math.floor(Number(ts) / 60)}:${String(Math.floor(Number(ts) % 60)).padStart(2, '0')}`,
-              imageUrl: surfacesAtTime[0]?.frameUrl || surfacesAtTime[0]?.frame_url || `https://images.unsplash.com/photo-1593642632559-0c6d3fc62b89?w=800&h=450&fit=crop`,
+              imageUrl: surfacesAtTime[0]?.frameUrl || surfacesAtTime[0]?.frame_url || fallbackImage,
               surfaces: surfacesAtTime.length,
               surfaceTypes: surfaceTypes as string[],
               context: surfaceTypes.length > 0 ? `${surfaceTypes[0]} area` : "Workspace",
@@ -622,14 +626,14 @@ export default function Library() {
             };
           });
           
-          // If no surfaces, create a placeholder scene
+          // If no surfaces, create a placeholder scene using video thumbnail
           const finalScenes = scenes.length > 0 ? scenes : [{
             id: `scene-${videoId}-0`,
             timestamp: "0:00",
-            imageUrl: `https://images.unsplash.com/photo-1593642632559-0c6d3fc62b89?w=800&h=450&fit=crop`,
+            imageUrl: fallbackImage,
             surfaces: 0,
             surfaceTypes: [],
-            context: "No surfaces detected yet",
+            context: "No surfaces detected yet - scan video to detect placement surfaces",
             confidence: 0,
           }];
           
