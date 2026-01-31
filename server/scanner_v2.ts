@@ -207,6 +207,8 @@ const LOCAL_ASSET_MAP: Record<string, string> = {
   'many-jobs-test': './public/many_jobs.mov',
   'local-many-jobs': './public/many_jobs.mov',
   'prod-many-jobs': './public/many_jobs.mov',
+  // Production upload mapping (ephemeral uploads -> deployed assets)
+  'upload-1769888669571-r3dd53': './public/many_jobs.mov',
   'user-quick-update': './attached_assets/Quick_Update_1767906117156.mov',
   'user-many-jobs': './attached_assets/Many_Jobs_1767904823555.mov',
   'user-hero-video': './attached_assets/hero_video_1767897215595.mp4',
