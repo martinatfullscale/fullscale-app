@@ -52,12 +52,12 @@ const CONFIG = {
   MIN_DISK_SPACE_MB: 100,
   
   // Detection method: 'gemini' or 'edge'
-  DETECTION_METHOD: 'gemini' as 'gemini' | 'edge',
+  DETECTION_METHOD: 'edge' as 'gemini' | 'edge',
   
   // Detection thresholds (for edge detection fallback)
-  EDGE_THRESHOLD: 30,
-  HORIZONTAL_LINE_MIN_LENGTH: 0.3,
-  SURFACE_CONFIDENCE_THRESHOLD: 0.4,
+  EDGE_THRESHOLD: 15,
+  HORIZONTAL_LINE_MIN_LENGTH: 0.15,
+  SURFACE_CONFIDENCE_THRESHOLD: 0.20,
   
   // Timeouts
   FFMPEG_TIMEOUT_MS: 60000,
