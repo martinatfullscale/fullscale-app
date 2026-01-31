@@ -198,21 +198,16 @@ Analyze the frame now:`;
 // ============================================================================
 
 const LOCAL_ASSET_MAP: Record<string, string> = {
-  'yt_techguru_001': './public/many_jobs.mov',
+  // Production video - permanently deployed
+  'upload-1769888669571-r3dd53': './public/videos/many_jobs.mov',
+  // Legacy mappings
+  'yt_techguru_001': './public/videos/many_jobs.mov',
   'yt_beauty_02': './public/hero_video.mp4',
-  'yt_vlog_003': './public/quick_update.mov',
-  'yt_final_004': './public/fullscale_final4.mov',
   'test-video-1': './public/hero_video.mp4',
   'hero-local-001': './public/hero_video.mp4',
-  'many-jobs-test': './public/many_jobs.mov',
-  'local-many-jobs': './public/many_jobs.mov',
-  'prod-many-jobs': './public/many_jobs.mov',
-  // Production upload mapping (ephemeral uploads -> deployed assets)
-  'upload-1769888669571-r3dd53': './public/many_jobs.mov',
-  'user-quick-update': './attached_assets/Quick_Update_1767906117156.mov',
-  'user-many-jobs': './attached_assets/Many_Jobs_1767904823555.mov',
-  'user-hero-video': './attached_assets/hero_video_1767897215595.mp4',
-  'user-fullscale-final': './attached_assets/FullScale_Final4_1767897231210.mov',
+  'many-jobs-test': './public/videos/many_jobs.mov',
+  'local-many-jobs': './public/videos/many_jobs.mov',
+  'prod-many-jobs': './public/videos/many_jobs.mov',
 };
 
 export function addToLocalAssetMap(videoId: string, filePath: string): void {
