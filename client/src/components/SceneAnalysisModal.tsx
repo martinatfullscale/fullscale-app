@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, ChevronLeft, ChevronRight, Target, Clock, Eye, Sparkles, Scan, Loader2, Database } from "lucide-react";
+import { X, ChevronLeft, ChevronRight, Target, Clock, Eye, Sparkles, Scan, Loader2, Database, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import * as tf from "@tensorflow/tfjs";
@@ -22,6 +22,7 @@ export interface VideoWithScenes {
   duration: string;
   viewCount: number;
   scenes: Scene[];
+  filePath?: string | null;
 }
 
 interface DetectedObject {
@@ -49,6 +50,7 @@ interface SceneAnalysisModalProps {
   open: boolean;
   onClose: () => void;
   adminEmail?: string;
+  onPlayVideo?: () => void;
 }
 
 const PLACEMENT_SURFACES = [
@@ -58,7 +60,7 @@ const PLACEMENT_SURFACES = [
   "oven", "toaster", "sink", "backpack", "handbag", "suitcase", "umbrella"
 ];
 
-export function SceneAnalysisModal({ video, open, onClose, adminEmail }: SceneAnalysisModalProps) {
+export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVideo }: SceneAnalysisModalProps) {
   const [currentSceneIndex, setCurrentSceneIndex] = useState(0);
   const [model, setModel] = useState<cocoSsd.ObjectDetection | null>(null);
   const [isLoadingModel, setIsLoadingModel] = useState(false);
@@ -400,6 +402,20 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail }: SceneAn
             className="relative w-full max-w-5xl bg-card border border-white/10 rounded-2xl overflow-hidden shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
+            {video?.filePath && onPlayVideo && (
+              <Button
+                size="sm"
+                onClick={() => {
+                  onClose();
+                  onPlayVideo();
+                }}
+                className="absolute top-4 right-16 z-20 gap-1.5 bg-emerald-600"
+                data-testid="button-play-video"
+              >
+                <Play className="w-4 h-4" />
+                Play Video
+              </Button>
+            )}
             <button
               onClick={onClose}
               className="absolute top-4 right-4 z-20 p-2 rounded-full bg-black/50 hover:bg-black/70 text-white transition-colors"

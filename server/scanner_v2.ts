@@ -57,7 +57,7 @@ const CONFIG = {
   // Detection thresholds (for edge detection fallback)
   EDGE_THRESHOLD: 15,
   HORIZONTAL_LINE_MIN_LENGTH: 0.15,
-  SURFACE_CONFIDENCE_THRESHOLD: 0.20,
+  SURFACE_CONFIDENCE_THRESHOLD: 0.10,
   
   // Timeouts
   FFMPEG_TIMEOUT_MS: 60000,

@@ -643,6 +643,7 @@ export default function Library() {
             duration: "10:00",
             viewCount: viewCount,
             scenes: finalScenes,
+            filePath: video.filePath,
           });
           setSceneModalOpen(true);
           return;
@@ -660,6 +661,7 @@ export default function Library() {
       duration: "10:00",
       viewCount: viewCount,
       scenes: scenes,
+      filePath: video.filePath,
     });
     setSceneModalOpen(true);
   };
@@ -1025,7 +1027,8 @@ export default function Library() {
                 variant="outline" 
                 className="gap-2" 
                 onClick={() => {
-                  queryClient.invalidateQueries({ queryKey: ['/api/video-index/with-opportunities'] });
+                  console.log('[FRONTEND] Refresh button clicked - invalidating videos query');
+                  queryClient.invalidateQueries({ queryKey: ["videos"] });
                 }}
                 data-testid="button-refresh-library"
               >
@@ -1171,7 +1174,7 @@ export default function Library() {
                     )}
                   </div>
                 )}
-                <div className="aspect-video relative overflow-hidden bg-black">
+                <div className="aspect-[4/3] relative overflow-hidden bg-black">
                   <img 
                     src={video.image} 
                     alt={video.title}
@@ -1303,6 +1306,30 @@ export default function Library() {
           setSceneVideo(null);
         }}
         adminEmail={isAdminUser ? userEmail : undefined}
+        onPlayVideo={sceneVideo?.filePath ? () => {
+          setPreviewVideo({
+            id: sceneVideo.id,
+            title: sceneVideo.title,
+            image: sceneVideo.scenes[0]?.imageUrl || '',
+            views: sceneVideo.viewCount.toString(),
+            status: "Ready",
+            statusColor: "text-emerald-400",
+            statusDot: "bg-emerald-400",
+            platform: "youtube",
+            aiStatus: "ready",
+            aiText: "Scanned",
+            detectedObjects: [],
+            context: "",
+            brandSafety: 100,
+            cpm: 0,
+            opportunity: "",
+            surfaceLabel: "",
+            boundingBox: { top: "0%", left: "0%", width: "100%", height: "100%" },
+            hasLocalFile: true,
+            filePath: sceneVideo.filePath,
+          });
+          setPreviewModalOpen(true);
+        } : undefined}
       />
 
       <UploadModal 

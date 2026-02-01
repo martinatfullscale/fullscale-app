@@ -46,10 +46,12 @@ export function VideoPreviewModal({ video, open, onClose, isScanning = false }: 
     } else if (path.startsWith("public/")) {
       path = "/" + path.replace("public/", "");
     }
+    console.log(`[VideoPreviewModal] Original filePath: ${video.filePath}, transformed: ${path}`);
     return path;
   };
 
   const videoSrc = getVideoSrc();
+  console.log(`[VideoPreviewModal] videoSrc for playback: ${videoSrc}`);
 
   const togglePlay = () => {
     if (!videoRef.current) return;
@@ -176,7 +178,7 @@ export function VideoPreviewModal({ video, open, onClose, isScanning = false }: 
             </Button>
           </div>
 
-          <div className="relative aspect-video bg-black">
+          <div className="relative bg-black flex items-center justify-center" style={{ minHeight: '300px', maxHeight: '70vh' }}>
             {videoSrc ? (
               <>
                 <video
