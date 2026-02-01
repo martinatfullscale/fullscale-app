@@ -1713,6 +1713,65 @@ export async function registerRoutes(
     res.json({ surfaces, count: surfaces.length });
   });
 
+  // Batch insert surfaces for a video (Admin only)
+  // Used to copy scan results to production database
+  app.post("/api/videos/:id/batch-insert-surfaces", isFlexibleAuthenticated, async (req: any, res) => {
+    const authEmail = req.authEmail;
+    
+    // Admin only
+    const adminEmails = ["martin@gofullscale.co", "martin@whtwrks.com", "martincekechukwu@gmail.com"];
+    if (!adminEmails.includes(authEmail)) {
+      return res.status(403).json({ error: "Admin access required" });
+    }
+
+    const videoId = parseInt(req.params.id);
+    if (isNaN(videoId)) {
+      return res.status(400).json({ error: "Invalid video ID" });
+    }
+
+    const video = await storage.getVideoById(videoId);
+    if (!video) {
+      return res.status(404).json({ error: "Video not found" });
+    }
+
+    const { surfaces } = req.body;
+    if (!Array.isArray(surfaces) || surfaces.length === 0) {
+      return res.status(400).json({ error: "surfaces array is required" });
+    }
+
+    try {
+      // Clear existing surfaces first
+      await storage.clearDetectedSurfaces(videoId);
+      
+      const inserted = [];
+      for (const s of surfaces) {
+        const surface = await storage.insertDetectedSurface({
+          videoId,
+          timestamp: String(s.timestamp || "0"),
+          surfaceType: s.surfaceType || "Desk",
+          confidence: String(s.confidence),
+          boundingBoxX: String(s.boundingBox?.x || 0.05),
+          boundingBoxY: String(s.boundingBox?.y || 0.4),
+          boundingBoxWidth: String(s.boundingBox?.width || 0.9),
+          boundingBoxHeight: String(s.boundingBox?.height || 0.24),
+          frameUrl: s.frameUrl || null,
+          surroundings: null,
+          sceneContext: null,
+        });
+        inserted.push(surface);
+      }
+      
+      // Update video status
+      await storage.updateVideoStatus(videoId, "Scan Complete");
+      
+      console.log(`[BatchInsertSurfaces] Added ${inserted.length} surfaces to video ${videoId}`);
+      res.json({ success: true, count: inserted.length, surfaces: inserted });
+    } catch (error: any) {
+      console.error(`[BatchInsertSurfaces] Error:`, error);
+      res.status(500).json({ error: error.message || "Failed to insert surfaces" });
+    }
+  });
+
   // Insert a detected surface for a video (Admin only)
   // Used to add scan results to production database
   app.post("/api/videos/:id/insert-surface", isFlexibleAuthenticated, async (req: any, res) => {
