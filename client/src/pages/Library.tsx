@@ -890,27 +890,27 @@ export default function Library() {
     },
   });
 
-  // TensorFlow Surface Detection for local files
+  // Video Surface Scan for local files (uses scanner_v2 with Sharp edge detection)
   const tfScanMutation = useMutation({
     mutationFn: async (videoId: number) => {
-      console.log(`[FRONTEND] ===== TF SCAN BUTTON CLICKED =====`);
+      console.log(`[FRONTEND] ===== SCAN BUTTON CLICKED =====`);
       console.log(`[FRONTEND] Video ID: ${videoId}`);
-      const tfScanUrl = isAdminUser 
-        ? `/api/tf-scan/${videoId}?admin_email=${encodeURIComponent(userEmail)}`
-        : `/api/tf-scan/${videoId}`;
-      console.log(`[FRONTEND] Sending POST to ${tfScanUrl}`);
+      const scanUrl = isAdminUser 
+        ? `/api/video-scan/${videoId}?admin_email=${encodeURIComponent(userEmail)}`
+        : `/api/video-scan/${videoId}`;
+      console.log(`[FRONTEND] Sending POST to ${scanUrl}`);
       
       setScanningVideoIds(prev => new Set(prev).add(videoId));
       
-      const res = await fetch(tfScanUrl, { 
+      const res = await fetch(scanUrl, { 
         method: "POST",
         credentials: "include" 
       });
       
       if (!res.ok) {
         const errorText = await res.text();
-        console.error(`[FRONTEND] TF Scan failed: ${errorText}`);
-        throw new Error("Failed to start TensorFlow scan");
+        console.error(`[FRONTEND] Scan failed: ${errorText}`);
+        throw new Error("Failed to start video scan");
       }
       
       return res.json();
@@ -918,47 +918,19 @@ export default function Library() {
     onSuccess: (data, videoId) => {
       toast({
         title: "Surface Scan Started",
-        description: "TensorFlow is analyzing your video for surfaces. This takes about 10-30 seconds.",
+        description: "Analyzing your video for placement surfaces. This takes about 15-30 seconds.",
       });
       
-      // Poll for job completion
+      // Poll for scan completion by checking video status
       const pollInterval = setInterval(async () => {
         try {
-          const jobUrl = isAdminUser 
-            ? `/api/tf-scan/job/${data.jobId}?admin_email=${encodeURIComponent(userEmail)}`
-            : `/api/tf-scan/job/${data.jobId}`;
-          const res = await fetch(jobUrl, { credentials: "include" });
-          if (!res.ok) return;
-          const job = await res.json();
-          
-          if (job.status === "completed" || job.status === "failed") {
-            clearInterval(pollInterval);
-            setScanningVideoIds(prev => {
-              const next = new Set(prev);
-              next.delete(videoId);
-              return next;
-            });
-            queryClient.invalidateQueries({ queryKey: ["videos"] });
-            
-            if (job.status === "completed" && job.result !== "NO_SURFACES_EXIST") {
-              const result = typeof job.result === 'string' ? JSON.parse(job.result) : job.result;
-              toast({
-                title: "Surfaces Found!",
-                description: `Detected: ${result.surface}${result.surroundings?.length ? ` with ${result.surroundings.join(', ')}` : ''}`,
-              });
-            } else {
-              toast({
-                title: "No Surfaces Detected",
-                description: "No desks, tables, or placement surfaces found in this video.",
-              });
-            }
-          }
+          queryClient.invalidateQueries({ queryKey: ["videos"] });
         } catch (err) {
-          console.error("TF Poll error:", err);
+          console.error("Poll error:", err);
         }
-      }, 2000);
+      }, 5000);
       
-      // Timeout after 2 minutes
+      // Stop scanning state after 30 seconds
       setTimeout(() => {
         clearInterval(pollInterval);
         setScanningVideoIds(prev => {
@@ -966,7 +938,12 @@ export default function Library() {
           next.delete(videoId);
           return next;
         });
-      }, 120000);
+        queryClient.invalidateQueries({ queryKey: ["videos"] });
+        toast({
+          title: "Scan Complete",
+          description: "Check the video for detected surfaces.",
+        });
+      }, 30000);
     },
     onError: (error: Error, videoId) => {
       setScanningVideoIds(prev => {
@@ -1194,11 +1171,11 @@ export default function Library() {
                     )}
                   </div>
                 )}
-                <div className={video.platform === "instagram" ? "aspect-[9/16] relative overflow-hidden bg-black" : "aspect-video relative overflow-hidden bg-black"}>
+                <div className="aspect-video relative overflow-hidden bg-black">
                   <img 
                     src={video.image} 
                     alt={video.title}
-                    className={`w-full h-full transition-transform duration-300 group-hover:scale-105 ${video.hasLocalFile ? 'object-contain' : 'object-cover'}`}
+                    className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                   />
                   <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent" />
                   <div className="absolute bottom-2 left-2 flex items-center gap-1.5 px-2 py-1 rounded-md bg-black/50 backdrop-blur-sm">

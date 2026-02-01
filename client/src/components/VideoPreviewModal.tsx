@@ -38,13 +38,15 @@ export function VideoPreviewModal({ video, open, onClose, isScanning = false }: 
 
   const getVideoSrc = () => {
     if (!video?.filePath) return null;
-    if (video.filePath.startsWith("/home/runner/workspace/public/")) {
-      return "/" + video.filePath.replace("/home/runner/workspace/public/", "");
+    let path = video.filePath;
+    if (path.startsWith("/home/runner/workspace/public/")) {
+      path = "/" + path.replace("/home/runner/workspace/public/", "");
+    } else if (path.startsWith("./public/")) {
+      path = path.replace("./public", "");
+    } else if (path.startsWith("public/")) {
+      path = "/" + path.replace("public/", "");
     }
-    if (video.filePath.startsWith("public/")) {
-      return "/" + video.filePath.replace("public/", "");
-    }
-    return video.filePath;
+    return path;
   };
 
   const videoSrc = getVideoSrc();
