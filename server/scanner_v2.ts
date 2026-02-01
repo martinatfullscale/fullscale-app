@@ -200,6 +200,9 @@ Analyze the frame now:`;
 const LOCAL_ASSET_MAP: Record<string, string> = {
   // Production video - permanently deployed
   'upload-1769888669571-r3dd53': './public/videos/many_jobs.mov',
+  // Test video 2 - Bar table test
+  'test-video-2': './public/videos/test_video2.mov',
+  'upload-test-video-2': './public/videos/test_video2.mov',
   // Legacy mappings
   'yt_techguru_001': './public/videos/many_jobs.mov',
   'yt_beauty_02': './public/hero_video.mp4',
