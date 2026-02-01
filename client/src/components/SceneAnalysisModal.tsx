@@ -357,31 +357,30 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
     return Math.abs(surfaceTs - sceneSeconds) <= 5;
   });
   
-  // Priority: Database surfaces (Gemini AI) > TensorFlow detections > Demo data
+  // Priority: Database surfaces (real scan) > TensorFlow live detections > NO FALLBACK (show empty state)
+  // NEVER use demo/placeholder data - only show real scan results
   const displaySurfaces = hasDbSurfaces && currentDbSurfaces.length > 0
     ? currentDbSurfaces.map((s) => `${s.surfaceType} (${Math.round(parseFloat(s.confidence) * 100)}%)`)
-    : hasScanned 
+    : hasScanned && detections.length > 0
       ? detections.map((d) => `${d.class} (${Math.round(d.score * 100)}%)`)
-      : currentScene.surfaceTypes;
+      : ["No surfaces detected - run scan"];
 
   const displayCount = hasDbSurfaces && currentDbSurfaces.length > 0
     ? currentDbSurfaces.length
-    : hasScanned ? detections.length : currentScene.surfaces;
+    : hasScanned ? detections.length : 0;
     
   const displayConfidence = hasDbSurfaces && currentDbSurfaces.length > 0
     ? Math.round(currentDbSurfaces.reduce((sum, s) => sum + parseFloat(s.confidence), 0) / currentDbSurfaces.length * 100)
-    : hasScanned 
-      ? detections.length > 0 
-        ? Math.round(detections.reduce((sum, d) => sum + d.score, 0) / detections.length * 100)
-        : 0
-      : currentScene.confidence;
+    : hasScanned && detections.length > 0
+      ? Math.round(detections.reduce((sum, d) => sum + d.score, 0) / detections.length * 100)
+      : 0;
   
-  // Data source indicator
+  // Data source indicator - NO demo fallback
   const dataSource = hasDbSurfaces && currentDbSurfaces.length > 0 
     ? "gemini" 
-    : hasScanned 
+    : hasScanned && detections.length > 0
       ? "tensorflow" 
-      : "demo";
+      : "none";
 
   return (
     <AnimatePresence>

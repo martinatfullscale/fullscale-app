@@ -653,14 +653,22 @@ export default function Library() {
       }
     }
     
-    // Fallback to demo scenes
-    const scenes = DEMO_VIDEO_SCENES[videoId] || DEMO_VIDEO_SCENES[1001];
+    // No fallback - use empty state to trigger scan prompt in modal
+    const emptyScene = [{
+      id: `${videoId}-empty`,
+      timestamp: "00:00",
+      imageUrl: video.image || video.thumbnailUrl || "",
+      surfaces: 0,
+      surfaceTypes: [],
+      context: "No scan data - click 'Scan with AI' to detect surfaces",
+      confidence: 0,
+    }];
     setSceneVideo({
       id: videoId,
       title: video.title,
       duration: "10:00",
       viewCount: viewCount,
-      scenes: scenes,
+      scenes: emptyScene,
       filePath: video.filePath,
     });
     setSceneModalOpen(true);
