@@ -11,7 +11,7 @@ import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { UploadModal } from "@/components/UploadModal";
-import { SceneAnalysisModal, DEMO_VIDEO_SCENES, VideoWithScenes } from "@/components/SceneAnalysisModal";
+import { SceneAnalysisModal, VideoWithScenes } from "@/components/SceneAnalysisModal";
 import { useLocation } from "wouter";
 import { Switch } from "@/components/ui/switch";
 import { usePitchMode } from "@/contexts/pitch-mode-context";
@@ -187,21 +187,7 @@ export default function Dashboard() {
   const { isPitchMode, setPitchMode } = usePitchMode();
 
   const handleVideoClick = async (video: IndexedVideo) => {
-    // For demo/pitch mode, use demo scenes
-    if (isPitchMode || (video.id >= 1001 && video.id <= 1012)) {
-      const scenes = DEMO_VIDEO_SCENES[video.id] || DEMO_VIDEO_SCENES[1001];
-      setSelectedVideo({
-        id: video.id,
-        title: video.title,
-        duration: video.duration || "10:00",
-        viewCount: video.viewCount,
-        scenes: scenes,
-      });
-      setSceneModalOpen(true);
-      return;
-    }
-    
-    // For real videos, fetch actual detected surfaces from backend
+    // For all videos (including pitch mode), fetch actual detected surfaces from backend
     const videoThumbnail = (video as IndexedVideo & { thumbnailUrl?: string }).thumbnailUrl || "";
     
     try {

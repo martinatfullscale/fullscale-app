@@ -1713,6 +1713,56 @@ export async function registerRoutes(
     res.json({ surfaces, count: surfaces.length });
   });
 
+  // Insert a detected surface for a video (Admin only)
+  // Used to add scan results to production database
+  app.post("/api/videos/:id/insert-surface", isFlexibleAuthenticated, async (req: any, res) => {
+    const authEmail = req.authEmail;
+    
+    // Admin only
+    const adminEmails = ["martin@gofullscale.co", "martin@whtwrks.com", "martincekechukwu@gmail.com"];
+    if (!adminEmails.includes(authEmail)) {
+      return res.status(403).json({ error: "Admin access required" });
+    }
+
+    const videoId = parseInt(req.params.id);
+    if (isNaN(videoId)) {
+      return res.status(400).json({ error: "Invalid video ID" });
+    }
+
+    const video = await storage.getVideoById(videoId);
+    if (!video) {
+      return res.status(404).json({ error: "Video not found" });
+    }
+
+    const { timestamp, surfaceType, confidence, boundingBox } = req.body;
+    
+    if (!surfaceType || confidence === undefined) {
+      return res.status(400).json({ error: "surfaceType and confidence are required" });
+    }
+
+    try {
+      const surface = await storage.insertDetectedSurface({
+        videoId,
+        timestamp: String(timestamp || "0"),
+        surfaceType,
+        confidence: String(confidence),
+        boundingBoxX: String(boundingBox?.x || 0),
+        boundingBoxY: String(boundingBox?.y || 0),
+        boundingBoxWidth: String(boundingBox?.width || 1),
+        boundingBoxHeight: String(boundingBox?.height || 1),
+        frameUrl: null,
+        surroundings: null,
+        sceneContext: null,
+      });
+      
+      console.log(`[InsertSurface] Added surface to video ${videoId}: ${surfaceType} @ ${confidence}`);
+      res.json({ success: true, surface });
+    } catch (error: any) {
+      console.error(`[InsertSurface] Error:`, error);
+      res.status(500).json({ error: error.message || "Failed to insert surface" });
+    }
+  });
+
   // Get videos with their Ad Opportunity counts
   app.get("/api/video-index/with-opportunities", isFlexibleAuthenticated, async (req: any, res) => {
     const userId = req.authUserId;
