@@ -792,7 +792,7 @@ export async function registerRoutes(
   // Flexible auth middleware - works with Google OAuth, Replit Auth, or Facebook session
   // Used for endpoints that should work for authenticated users regardless of method
   const isFlexibleAuthenticated = async (req: any, res: any, next: any) => {
-    const adminEmails = ['martin@gofullscale.co', 'martin@whtwrks.com', 'martincekechukwu@gmail.com'];
+    const adminEmails = ['martin@gofullscale.co', 'martin@whtwrks.com', 'martincekechukwu@gmail.com', 'thekimkwilson@gmail.com', 'tamara@whtwrks.com'];
     const isDevelopment = process.env.NODE_ENV !== 'production';
     
     // First try Google OAuth session
@@ -1006,7 +1006,7 @@ export async function registerRoutes(
     const userEmail = req.authEmail;
     
     // Only allow admin emails
-    const adminEmails = ["martin@gofullscale.co", "martin@whtwrks.com", "martincekechukwu@gmail.com"];
+    const adminEmails = ["martin@gofullscale.co", "martin@whtwrks.com", "martincekechukwu@gmail.com", "thekimkwilson@gmail.com", "tamara@whtwrks.com"];
     if (!adminEmails.includes(userEmail)) {
       return res.status(403).json({ error: "Admin only endpoint" });
     }
@@ -1439,7 +1439,7 @@ export async function registerRoutes(
     }
 
     // Only allow updates for admin-owned videos
-    const adminEmailsList = ['martin@gofullscale.co', 'martin@whtwrks.com', 'martincekechukwu@gmail.com'];
+    const adminEmailsList = ['martin@gofullscale.co', 'martin@whtwrks.com', 'martincekechukwu@gmail.com', 'thekimkwilson@gmail.com', 'tamara@whtwrks.com'];
     if (!adminEmailsList.includes(video.userId)) {
       return res.status(403).json({ error: "Can only update admin-owned videos" });
     }
@@ -1467,7 +1467,7 @@ export async function registerRoutes(
 
   // Admin scan endpoint - for testing uploaded videos without auth
   // Only works for videos owned by admin emails (uses ADMIN_EMAILS defined below)
-  const adminEmails = ['martin@gofullscale.co', 'martin@whtwrks.com', 'martincekechukwu@gmail.com'];
+  const adminEmails = ['martin@gofullscale.co', 'martin@whtwrks.com', 'martincekechukwu@gmail.com', 'thekimkwilson@gmail.com', 'tamara@whtwrks.com'];
   app.post("/api/admin-scan/:id", async (req, res) => {
     const videoId = parseInt(req.params.id);
     if (isNaN(videoId)) {
@@ -1726,7 +1726,7 @@ export async function registerRoutes(
     const authEmail = req.authEmail;
     
     // Admin only
-    const adminEmails = ["martin@gofullscale.co", "martin@whtwrks.com", "martincekechukwu@gmail.com"];
+    const adminEmails = ["martin@gofullscale.co", "martin@whtwrks.com", "martincekechukwu@gmail.com", "thekimkwilson@gmail.com", "tamara@whtwrks.com"];
     if (!adminEmails.includes(authEmail)) {
       return res.status(403).json({ error: "Admin access required" });
     }
@@ -1787,7 +1787,7 @@ export async function registerRoutes(
     const authEmail = req.authEmail;
     
     // Admin only
-    const adminEmails = ["martin@gofullscale.co", "martin@whtwrks.com", "martincekechukwu@gmail.com"];
+    const adminEmails = ["martin@gofullscale.co", "martin@whtwrks.com", "martincekechukwu@gmail.com", "thekimkwilson@gmail.com", "tamara@whtwrks.com"];
     if (!adminEmails.includes(authEmail)) {
       return res.status(403).json({ error: "Admin access required" });
     }
