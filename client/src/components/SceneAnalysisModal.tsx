@@ -51,6 +51,7 @@ interface SceneAnalysisModalProps {
   onClose: () => void;
   adminEmail?: string;
   onPlayVideo?: () => void;
+  onPlayFromTimestamp?: (timestamp: number) => void;
 }
 
 const PLACEMENT_SURFACES = [
@@ -60,7 +61,7 @@ const PLACEMENT_SURFACES = [
   "oven", "toaster", "sink", "backpack", "handbag", "suitcase", "umbrella"
 ];
 
-export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVideo }: SceneAnalysisModalProps) {
+export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVideo, onPlayFromTimestamp }: SceneAnalysisModalProps) {
   const [currentSceneIndex, setCurrentSceneIndex] = useState(0);
   const [model, setModel] = useState<cocoSsd.ObjectDetection | null>(null);
   const [isLoadingModel, setIsLoadingModel] = useState(false);
@@ -401,18 +402,22 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
             className="relative w-full max-w-5xl bg-card border border-white/10 rounded-2xl overflow-hidden shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            {video?.filePath && onPlayVideo && (
+            {video?.filePath && (onPlayVideo || onPlayFromTimestamp) && (
               <Button
                 size="sm"
                 onClick={() => {
                   onClose();
-                  onPlayVideo();
+                  if (onPlayFromTimestamp) {
+                    onPlayFromTimestamp(sceneSeconds);
+                  } else if (onPlayVideo) {
+                    onPlayVideo();
+                  }
                 }}
                 className="absolute top-4 right-16 z-20 gap-1.5 bg-emerald-600"
-                data-testid="button-play-video"
+                data-testid="button-play-from-here"
               >
                 <Play className="w-4 h-4" />
-                Play Video
+                Play from {currentScene?.timestamp}
               </Button>
             )}
             <button

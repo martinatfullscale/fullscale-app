@@ -16,9 +16,10 @@ interface VideoPreviewModalProps {
   open: boolean;
   onClose: () => void;
   isScanning?: boolean;
+  startTime?: number;
 }
 
-export function VideoPreviewModal({ video, open, onClose, isScanning = false }: VideoPreviewModalProps) {
+export function VideoPreviewModal({ video, open, onClose, isScanning = false, startTime = 0 }: VideoPreviewModalProps) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(true);
   const [currentTime, setCurrentTime] = useState(0);
@@ -31,10 +32,17 @@ export function VideoPreviewModal({ video, open, onClose, isScanning = false }: 
   useEffect(() => {
     if (open && video?.filePath && videoRef.current) {
       setIsPlaying(false);
-      setCurrentTime(0);
       setThumbnails([]);
+      if (startTime > 0) {
+        videoRef.current.currentTime = startTime;
+        setCurrentTime(startTime);
+        videoRef.current.play();
+        setIsPlaying(true);
+      } else {
+        setCurrentTime(0);
+      }
     }
-  }, [open, video?.id]);
+  }, [open, video?.id, startTime]);
 
   const getVideoSrc = () => {
     if (!video?.filePath) return null;

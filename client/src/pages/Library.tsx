@@ -533,6 +533,7 @@ export default function Library() {
   const [sceneVideo, setSceneVideo] = useState<VideoWithScenes | null>(null);
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
   const [previewVideo, setPreviewVideo] = useState<DisplayVideo | null>(null);
+  const [previewStartTime, setPreviewStartTime] = useState(0);
   
   // Admin emails for flexible auth fallback (supports URL param bypass in dev)
   const ADMIN_EMAILS = ['martin@gofullscale.co', 'martin@whtwrks.com', 'martincekechukwu@gmail.com'];
@@ -1314,7 +1315,7 @@ export default function Library() {
           setSceneVideo(null);
         }}
         adminEmail={isAdminUser ? userEmail : undefined}
-        onPlayVideo={sceneVideo?.filePath ? () => {
+        onPlayFromTimestamp={sceneVideo?.filePath ? (timestamp: number) => {
           setPreviewVideo({
             id: sceneVideo.id,
             title: sceneVideo.title,
@@ -1336,6 +1337,7 @@ export default function Library() {
             hasLocalFile: true,
             filePath: sceneVideo.filePath,
           });
+          setPreviewStartTime(timestamp);
           setPreviewModalOpen(true);
         } : undefined}
       />
@@ -1364,8 +1366,10 @@ export default function Library() {
         onClose={() => {
           setPreviewModalOpen(false);
           setPreviewVideo(null);
+          setPreviewStartTime(0);
         }}
         isScanning={previewVideo?.id ? scanningVideoIds.has(previewVideo.id) : false}
+        startTime={previewStartTime}
       />
     </div>
   );
