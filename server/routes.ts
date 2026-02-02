@@ -1734,14 +1734,16 @@ export async function registerRoutes(
       return res.status(404).json({ error: "Video not found" });
     }
 
-    const { surfaces } = req.body;
+    const { surfaces, append } = req.body;
     if (!Array.isArray(surfaces) || surfaces.length === 0) {
       return res.status(400).json({ error: "surfaces array is required" });
     }
 
     try {
-      // Clear existing surfaces first
-      await storage.clearDetectedSurfaces(videoId);
+      // Only clear existing surfaces if not in append mode
+      if (!append) {
+        await storage.clearDetectedSurfaces(videoId);
+      }
       
       const inserted = [];
       for (const s of surfaces) {
