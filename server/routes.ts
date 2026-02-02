@@ -1671,7 +1671,14 @@ export async function registerRoutes(
       });
 
       console.log(`[UPLOAD] Video inserted with ID: ${video.id}`);
-      console.log(`[UPLOAD] Ready for scanning`);
+      console.log(`[UPLOAD] Starting auto-scan...`);
+
+      // AUTO-SCAN: Trigger scan immediately after upload (non-blocking)
+      processVideoScan(video.id, true).then(result => {
+        console.log(`[UPLOAD] Auto-scan complete for ${video.id}: ${result.surfacesDetected} surfaces`);
+      }).catch(err => {
+        console.error(`[UPLOAD] Auto-scan failed for ${video.id}:`, err.message);
+      });
 
       res.json({ 
         success: true, 

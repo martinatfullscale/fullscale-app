@@ -42,8 +42,8 @@ const ai = new GoogleGenAI({
 // ============================================================================
 
 const CONFIG = {
-  // Frame extraction
-  FRAME_INTERVAL_SECONDS: 5,
+  // Frame extraction - every 2 seconds for better coverage
+  FRAME_INTERVAL_SECONDS: 2,
   MAX_FRAMES_PER_VIDEO: 24,
   FRAME_MAX_DIMENSION: 640,
   FRAME_QUALITY: 70,
@@ -57,7 +57,11 @@ const CONFIG = {
   // Detection thresholds (for edge detection fallback)
   EDGE_THRESHOLD: 15,
   HORIZONTAL_LINE_MIN_LENGTH: 0.15,
-  SURFACE_CONFIDENCE_THRESHOLD: 0.10,
+  SURFACE_CONFIDENCE_THRESHOLD: 0.05, // Lowered to catch more surfaces
+  
+  // Fallback detection - add "Potential Surface" if too few found
+  MIN_SURFACES_BEFORE_FALLBACK: 3,
+  FALLBACK_CONFIDENCE: 0.15,
   
   // Timeouts
   FFMPEG_TIMEOUT_MS: 60000,
@@ -830,6 +834,40 @@ export async function processVideoScan(
       } finally {
         // CRITICAL: Always delete the frame after processing
         safeUnlink(framePath);
+      }
+    }
+    
+    // FALLBACK DETECTION - Add "Potential Surface" for videos with too few detections
+    if (totalSurfaces < CONFIG.MIN_SURFACES_BEFORE_FALLBACK && frames.length > 0) {
+      console.log(`[Scanner V2] Low surface count (${totalSurfaces}), adding fallback surfaces...`);
+      
+      // Find frames that didn't get surfaces and add potential surfaces
+      const framesWithSurfaces = new Set<number>();
+      const existingSurfaces = await storage.getDetectedSurfaces(videoId);
+      existingSurfaces.forEach(s => framesWithSurfaces.add(parseInt(s.timestamp)));
+      
+      for (let i = 0; i < frames.length && totalSurfaces < CONFIG.MIN_SURFACES_BEFORE_FALLBACK + 2; i++) {
+        const timestamp = i * CONFIG.FRAME_INTERVAL_SECONDS;
+        if (!framesWithSurfaces.has(timestamp)) {
+          // Add fallback surface for bottom 40% of frame
+          const dbSurface = {
+            videoId,
+            timestamp: String(timestamp),
+            surfaceType: "Potential Surface",
+            confidence: String(CONFIG.FALLBACK_CONFIDENCE),
+            boundingBoxX: "0.05",
+            boundingBoxY: "0.6", // Bottom 40%
+            boundingBoxWidth: "0.9",
+            boundingBoxHeight: "0.35",
+            frameUrl: null,
+            surroundings: null,
+            sceneContext: "Fallback detection - potential placement area",
+          };
+          
+          await storage.insertDetectedSurface(dbSurface);
+          console.log(`[Scanner V2] *** FALLBACK SURFACE at ${timestamp}s (confidence: ${(CONFIG.FALLBACK_CONFIDENCE * 100).toFixed(1)}%) ***`);
+          totalSurfaces++;
+        }
       }
     }
     
