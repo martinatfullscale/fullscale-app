@@ -258,16 +258,21 @@ function formatIndexedVideo(video: IndexedVideo): DisplayVideo {
   const statusInfo = getVideoStatusInfo(video);
   const viewCount = (video as any).viewCount ?? (video as any).view_count ?? 0;
   const rawThumbnailUrl = (video as any).thumbnailUrl || (video as any).thumbnail_url || "";
-  // Use thumbnail if it's a valid URL, otherwise fall back to first extracted frame
-  const thumbnailUrl = (rawThumbnailUrl && (rawThumbnailUrl.startsWith('http') || rawThumbnailUrl.startsWith('/')))
-    ? rawThumbnailUrl
-    : `/uploads/frames/${video.id}/frame_0s.jpg`;
+  const filePath = (video as any).filePath || (video as any).file_path || null;
+  const fileExists = (video as any).fileExists ?? false;
+  // For local files, prefer the extracted frame (correct orientation) over YouTube thumbnail
+  // YouTube thumbnails are always 16:9 landscape regardless of actual video orientation
+  const hasLocalFile = !!(filePath && fileExists);
+  const extractedFrame = `/uploads/frames/${video.id}/frame_0s.jpg`;
+  const thumbnailUrl = hasLocalFile
+    ? extractedFrame
+    : (rawThumbnailUrl && (rawThumbnailUrl.startsWith('http') || rawThumbnailUrl.startsWith('/')))
+      ? rawThumbnailUrl
+      : extractedFrame;
   const platform = (video as any).platform || "youtube";
   const brandName = (video as any).brandName || (video as any).brand_name || "";
   const sentiment = (video as any).sentiment || (video as any).sentiment || "";
   const culturalContext = (video as any).culturalContext || (video as any).cultural_context || "";
-  const filePath = (video as any).filePath || (video as any).file_path || null;
-  const fileExists = (video as any).fileExists ?? false;
 
   return {
     id: video.id,
