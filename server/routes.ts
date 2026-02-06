@@ -483,15 +483,15 @@ export async function registerRoutes(
       console.log(`Access set for: ${userInfo.email}, approved: ${userIsApproved}`);
       
       // Redirect based on approval status — use BASE_URL so dev deploys redirect back to themselves
-      const baseUrl = process.env.BASE_URL || "https://gofullscale.co";
+      const callbackBaseUrl = process.env.BASE_URL || "https://gofullscale.co";
       const redirectPath = userIsApproved ? "/dashboard" : "/waitlist";
-      const redirectUrl = `${baseUrl}${redirectPath}`;
+      const redirectUrl = `${callbackBaseUrl}${redirectPath}`;
 
       // Explicitly save session before redirect to ensure it persists
       req.session.save((err: any) => {
         if (err) {
           console.error("Session save error:", err);
-          return res.redirect(`${baseUrl}/?error=session_error`);
+          return res.redirect(`${callbackBaseUrl}/?error=session_error`);
         }
         console.log(`[Google OAuth] Redirecting to: ${redirectUrl}`);
         res.redirect(redirectUrl);
