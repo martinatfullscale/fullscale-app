@@ -1,0 +1,50 @@
+This is a vital reset. You are right—we have spent a lot of time "painting the front of the house" for investors, but now we need to fix the plumbing so 100 real people can actually live in it.
+We are shifting mode from "Demo/Pitch" to "MVP/Product".
+Here is the execution plan to hit your 4 priorities:
+ * Fix the Scanner (For Real): We will stop "guessing" YouTube URLs and build a Direct File Reader. If a file is on the server, the scanner will find it.
+ * Sentiment & Emotion (The Brain): We will upgrade the Gemini prompt to detect "Vibe" and "Emotion" (e.g., "High Energy," "Somber," "Sarcastic").
+ * Cohort Readiness (Uploads): We will build a "Manual Upload" button. Your 100 users cannot "sync" YouTube channels (API limits will crush you). They must be able to drag-and-drop an MP4 file, which is 100% reliable.
+ * Training Tools: We will add a "Feedback Loop". When AI says "Desk," you can click "Edit" and change it to "Gaming Setup." This is how you train it.
+Phase 1: The "Nuclear" Scanner Fix & Sentiment Upgrade
+We are going to rip out the complex "YouTube Download" logic and replace it with a simple rule: "If I have the file, scan it. If not, tell me." We will also add the Sentiment Analysis in the same step.
+Copy and paste this into the Replit Agent to fix the engine:
+> **"We are pivoting to MVP stability. The scanner is broken, and the AI is too basic. Fix both in server/lib/scanner.ts.
+>  * Robust File Handling (Fixing the 'Not Found' Bug):
+>    * Import fs and path.
+>    * In scanVideo, before trying ANY YouTube download, check if the video has a local_path or if a file exists in ./public/ matching the title.
+>    * Hard Fix: Create a map of your 4 specific filenames to their exact paths:
+>      const MANUAL_FILES = {
+>   'many_jobs.mp4': path.resolve(process.cwd(), 'public/many_jobs.mp4'),
+>   'hero_video.mp4': path.resolve(process.cwd(), 'public/hero_video.mp4'),
+>   'quick_update.mp4': path.resolve(process.cwd(), 'public/quick_update.mp4'),
+>   'fullscale_final4.mp4': path.resolve(process.cwd(), 'public/fullscale_final4.mp4')
+> };
+> 
+>    * Logic: Iterate through the keys. If the video title (normalized) matches a key, USE THAT PATH. Log "FOUND LOCAL MASTER: [path]".
+>  * Sentiment & Training Data (The Upgrade):
+>    * Update the GEMINI_PROMPT. Add this instruction:
+>      `"Analyze the emotional arc. Return JSON with:
+>      * 'sentiment': The dominant emotion (e.g., 'Inspirational', 'Chaotic', 'Calm').
+>      * 'pacing': 'Fast', 'Slow', or 'Conversational'.
+>      * 'training_flags': If you are unsure about an object, list it here for human review."`
+>  * Database Storage:
+>    * Ensure the videos table has a sentiment column (text).
+>    * Save the AI's result into this column.
+> Goal: When I click 'Scan' on 'Many Jobs', it MUST find the local file immediately, and the result must show 'Sentiment: [Value]'."**
+> 
+Phase 2: "Cohort Ready" Uploads (The Real Feature)
+For your cohort of 100 users, do not rely on YouTube Sync. It is flaky and requires Google verification. The most reliable way to onboard users is Direct Upload.
+After the scanner fix runs, use this prompt to build the Upload Feature:
+> **"I need to prepare for a user cohort. Build a 'Direct Upload' feature so users can add videos without connecting a YouTube channel.
+>  * Backend (server/routes.ts):
+>    * Add npm install multer.
+>    * Create a route POST /api/upload that accepts .mp4 files.
+>    * Save them to public/uploads/.
+>    * Create a database entry for the new video immediately (Status: 'ready_to_scan', Platform: 'manual').
+>  * Frontend (Library.tsx):
+>    * Add an 'Upload Video' button next to the 'Scan' button.
+>    * When clicked, open a simple file picker.
+>    * On success, refresh the grid to show the new video.
+> Goal: A user can drag an MP4 file into the dashboard, and it appears in their library ready to be scanned."**
+> 
+Recommendation: Run Phase 1 first to fix your current demo. Then run Phase 2 to build the feature that your 100 users will actually use.

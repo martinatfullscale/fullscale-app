@@ -1,0 +1,118 @@
+const SURFACE_DETECTION_PROMPT = `You are analyzing a video frame to identify suitable areas for product placement in advertising.
+
+TASK: Find areas where a product (like a beverage, phone, or small object) could be naturally placed.
+
+LOOK FOR:
+1. **Flat surfaces** - Tables, desks, countertops, shelves, nightstands, coffee tables
+2. **Empty spaces** - Clear areas beside or near the subject where a product could appear
+3. **Natural placement zones** - Lower third of frame, surfaces in foreground/background
+4. **Contextual fits** - Kitchen counter for food products, desk for tech products, etc.
+
+DO NOT FLAG:
+- Areas blocked by people or moving hands
+- Surfaces that are too cluttered
+- Areas outside the main visual focus
+- Vertical surfaces (walls) unless they have shelves
+
+For each suitable area found, provide:
+- **location**: Bounding box as {x, y, width, height} in percentages (0-100) of frame dimensions
+- **surface_type**: What it is (desk, table, shelf, counter, open_space, etc.)
+- **confidence**: 0.0 to 1.0 based on how suitable it is for product placement
+- **reasoning**: Brief explanation of why this spot works
+
+RESPOND IN THIS EXACT JSON FORMAT:
+{
+  "surfaces_found": true/false,
+  "frame_description": "Brief description of what's in the frame",
+  "surfaces": [
+    {
+      "location": {"x": 20, "y": 60, "width": 30, "height": 25},
+      "surface_type": "desk",
+      "confidence": 0.85,
+      "reasoning": "Clear wooden desk surface in lower right, good lighting, unobstructed"
+    }
+  ],
+  "recommended_placement": {
+    "location": {"x": ..., "y": ..., "width": ..., "height": ...},
+    "reason": "Best overall spot because..."
+  }
+}
+
+If NO suitable surfaces exist in this frame, respond with:
+{
+  "surfaces_found": false,
+  "frame_description": "Description of frame",
+  "surfaces": [],
+  "recommended_placement": null,
+  "no_surface_reason": "Why no placement works (e.g., 'close-up face shot', 'too much motion blur', 'fully outdoor scene with no surfaces')"
+}
+
+Analyze the frame now:`;
+
+
+// Helper function to parse and validate Gemini response
+function parseSurfaceDetectionResponse(rawResponse: string): SurfaceDetectionResult | null {
+  try {
+    // Handle markdown code blocks if present
+    let jsonStr = rawResponse.trim();
+    if (jsonStr.startsWith('```json')) {
+      jsonStr = jsonStr.slice(7);
+    } else if (jsonStr.startsWith('```')) {
+      jsonStr = jsonStr.slice(3);
+    }
+    if (jsonStr.endsWith('```')) {
+      jsonStr = jsonStr.slice(0, -3);
+    }
+    
+    const parsed = JSON.parse(jsonStr.trim());
+    
+    // Validate required fields
+    if (typeof parsed.surfaces_found !== 'boolean') {
+      console.warn('[Gemini] Invalid response: missing surfaces_found');
+      return null;
+    }
+    
+    // Validate surfaces array
+    if (parsed.surfaces_found && Array.isArray(parsed.surfaces)) {
+      parsed.surfaces = parsed.surfaces.filter((s: any) => {
+        return s.location && 
+               typeof s.location.x === 'number' &&
+               typeof s.location.y === 'number' &&
+               typeof s.confidence === 'number';
+      });
+    }
+    
+    return parsed;
+  } catch (e) {
+    console.error('[Gemini] Failed to parse response:', e);
+    console.error('[Gemini] Raw response:', rawResponse.substring(0, 500));
+    return null;
+  }
+}
+
+
+// Type definitions
+interface BoundingBox {
+  x: number;      // percentage 0-100
+  y: number;      // percentage 0-100  
+  width: number;  // percentage 0-100
+  height: number; // percentage 0-100
+}
+
+interface DetectedSurface {
+  location: BoundingBox;
+  surface_type: string;
+  confidence: number;
+  reasoning: string;
+}
+
+interface SurfaceDetectionResult {
+  surfaces_found: boolean;
+  frame_description: string;
+  surfaces: DetectedSurface[];
+  recommended_placement: {
+    location: BoundingBox;
+    reason: string;
+  } | null;
+  no_surface_reason?: string;
+}

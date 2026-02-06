@@ -727,12 +727,12 @@ export async function processVideoScan(
       console.log(`[Scanner V2] Using DB filePath: ${videoPath}`);
     }
     
-    if ((!videoPath || !fs.existsSync(videoPath)) && LOCAL_ASSET_MAP[video.youtubeId]) {
+    if (!videoPath && LOCAL_ASSET_MAP[video.youtubeId]) {
       videoPath = path.resolve(process.cwd(), LOCAL_ASSET_MAP[video.youtubeId]);
-      console.log(`[Scanner V2] Using LOCAL_ASSET_MAP (DB path failed): ${videoPath}`);
+      console.log(`[Scanner V2] Using LOCAL_ASSET_MAP: ${videoPath}`);
     }
-
-    if ((!videoPath || !fs.existsSync(videoPath)) && video.youtubeId.startsWith("upload-")) {
+    
+    if (!videoPath && video.youtubeId.startsWith("upload-")) {
       const fileMatch = video.description?.match(/File: (\/uploads\/[^\s|]+)/);
       if (fileMatch) {
         videoPath = path.resolve(process.cwd(), `./public${fileMatch[1]}`);

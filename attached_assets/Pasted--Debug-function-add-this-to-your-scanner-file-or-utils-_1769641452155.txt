@@ -1,0 +1,108 @@
+// Debug function - add this to your scanner file or utils
+
+async function debugEdgeDetection(frameBuffer: Buffer, frameLabel: string): Promise<void> {
+  const sharp = require('sharp');
+  
+  console.log(`\n[DEBUG] ===== Edge Detection Debug: ${frameLabel} =====`);
+  
+  // Step 1: Check input buffer
+  console.log(`[DEBUG] Input buffer size: ${frameBuffer.length} bytes`);
+  
+  // Step 2: Get image metadata
+  const metadata = await sharp(frameBuffer).metadata();
+  console.log(`[DEBUG] Image metadata:`, {
+    width: metadata.width,
+    height: metadata.height,
+    format: metadata.format,
+    channels: metadata.channels,
+    space: metadata.space
+  });
+  
+  // Step 3: Convert to grayscale and get raw pixel data
+  const grayscale = await sharp(frameBuffer)
+    .grayscale()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  
+  console.log(`[DEBUG] Grayscale buffer size: ${grayscale.data.length}`);
+  console.log(`[DEBUG] Grayscale dimensions: ${grayscale.info.width}x${grayscale.info.height}`);
+  
+  // Step 4: Sample some pixel values to ensure we have real image data
+  const pixels = grayscale.data;
+  const sampleIndices = [0, 100, 1000, 10000, pixels.length - 1];
+  const samples = sampleIndices.map(i => pixels[i] ?? 'N/A');
+  console.log(`[DEBUG] Sample pixel values: ${samples.join(', ')}`);
+  
+  // Step 5: Check pixel value distribution
+  let minVal = 255, maxVal = 0, sum = 0;
+  for (let i = 0; i < pixels.length; i++) {
+    minVal = Math.min(minVal, pixels[i]);
+    maxVal = Math.max(maxVal, pixels[i]);
+    sum += pixels[i];
+  }
+  console.log(`[DEBUG] Pixel range: ${minVal} - ${maxVal}, mean: ${(sum / pixels.length).toFixed(1)}`);
+  
+  // Step 6: Apply Sobel filter and check output
+  const sobelX = await sharp(frameBuffer)
+    .grayscale()
+    .convolve({
+      width: 3,
+      height: 3,
+      kernel: [-1, 0, 1, -2, 0, 2, -1, 0, 1] // Vertical edges
+    })
+    .raw()
+    .toBuffer();
+  
+  const sobelY = await sharp(frameBuffer)
+    .grayscale()
+    .convolve({
+      width: 3,
+      height: 3,
+      kernel: [-1, -2, -1, 0, 0, 0, 1, 2, 1] // Horizontal edges
+    })
+    .raw()
+    .toBuffer();
+  
+  console.log(`[DEBUG] Sobel X (vertical edges) buffer size: ${sobelX.length}`);
+  console.log(`[DEBUG] Sobel Y (horizontal edges) buffer size: ${sobelY.length}`);
+  
+  // Step 7: Analyze Sobel outputs
+  let sobelXMin = 255, sobelXMax = 0, sobelXSum = 0;
+  let sobelYMin = 255, sobelYMax = 0, sobelYSum = 0;
+  
+  for (let i = 0; i < sobelX.length; i++) {
+    sobelXMin = Math.min(sobelXMin, sobelX[i]);
+    sobelXMax = Math.max(sobelXMax, sobelX[i]);
+    sobelXSum += sobelX[i];
+  }
+  
+  for (let i = 0; i < sobelY.length; i++) {
+    sobelYMin = Math.min(sobelYMin, sobelY[i]);
+    sobelYMax = Math.max(sobelYMax, sobelY[i]);
+    sobelYSum += sobelY[i];
+  }
+  
+  console.log(`[DEBUG] Sobel X range: ${sobelXMin} - ${sobelXMax}, mean: ${(sobelXSum / sobelX.length).toFixed(1)}`);
+  console.log(`[DEBUG] Sobel Y range: ${sobelYMin} - ${sobelYMax}, mean: ${(sobelYSum / sobelY.length).toFixed(1)}`);
+  
+  // Step 8: Count edges at different thresholds
+  const thresholds = [10, 20, 30, 50, 75, 100, 128, 150];
+  console.log(`[DEBUG] Edge pixel counts at different thresholds:`);
+  
+  for (const thresh of thresholds) {
+    let sobelXCount = 0, sobelYCount = 0;
+    for (let i = 0; i < sobelX.length; i++) {
+      if (sobelX[i] > thresh) sobelXCount++;
+    }
+    for (let i = 0; i < sobelY.length; i++) {
+      if (sobelY[i] > thresh) sobelYCount++;
+    }
+    const totalPixels = sobelX.length;
+    console.log(`[DEBUG]   Threshold ${thresh}: vertical=${(sobelXCount/totalPixels*100).toFixed(2)}%, horizontal=${(sobelYCount/totalPixels*100).toFixed(2)}%`);
+  }
+  
+  console.log(`[DEBUG] ===== End Debug =====\n`);
+}
+
+// Call this in your frame processing loop:
+// await debugEdgeDetection(frameBuffer, `Frame ${timestamp}s`);

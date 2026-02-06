@@ -1,0 +1,15 @@
+Yes, those are the exact instructions you should feed into the Replit Agent to fix the UI "clutter" you’re seeing on your iPhone.
+Since you are picking back up from your pinned memory, you can send these as one comprehensive "cleanup" prompt. This tells the Agent to resolve the overlapping elements while keeping the "Neural Kitchen" logic intact.
+The "iPhone Cleanup" Prompt for Replit Agent
+Copy and paste this entire block into your Agent chat:
+> "Let's fix the mobile UI overlaps and the surface scanning issue from our pinned state:
+>  * Move the Scroll Icon: On mobile, the mouse/scroll indicator is overlapping the 'Take an Interactive Tour' button. Action: Shift the scroll icon to the bottom of the screen (absolute bottom: 5%) or hide it entirely on devices under 768px.
+>  * Reposition the Status Badge: The '3D Scene Reconstruction Active' pill is crowding the logo and header icons. Action: Move this badge so it sits directly above the main headline 'WE TURN STORYTELLING INTO REVENUE' with 2rem of spacing.
+>  * Fix Surface Detection: Resolve the issue where the 'Surface Engine' fails to find flat planes. Action: Increase the Planar Tracking priority. Ensure the green neural grid 'locks' onto the horizontal table surface and ignores vertical wall noise.
+>  * Header Spacing: Force the 'Apply' and 'Sign In' icons to have 1.5rem of padding from the 'FullScale' logo so nothing feels bunched.
+> Goal: A clean, breathable iPhone view that prioritizes the technical scan and the main CTA."
+> 
+Why this fixes the "Flat Surface" Problem
+ * Logical Priority: By moving the "3D Reconstruction" badge near the headline, the Agent is forced to re-calculate the layout. This often clears up "z-index" issues where the UI elements were accidentally blocking the AI's "view" of the scene.
+ * Stability: Fixing the Planar Tracking ensures that even if you tilt your phone, the Liquid Death can and the neural grid stay glued to the table instead of sliding into the middle of your buttons.
+Would you like me to help you check the code for the "Neural Scan" once the Agent finishes, to make sure the green grid is properly calibrated for the kitchen table?
