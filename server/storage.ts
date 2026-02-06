@@ -275,24 +275,36 @@ export class DatabaseStorage implements IStorage {
       console.log(`[Storage.getVideoIndex] Found ${videos.length} videos (single query)`);
     }
 
-    // Deduplicate: uploads can create multiple entries for the same video
-    // For YouTube videos, dedupe by youtubeId; for uploads/local, dedupe by normalized title
+    // Deduplicate by normalized title — keeps the entry with the most surfaces (best scan)
+    // This handles duplicate uploads, re-imports, and mixed youtubeId formats
     const seen = new Map<string, VideoIndex>();
-    for (const video of videos) {
-      const isUpload = video.youtubeId.startsWith('upload-') || video.youtubeId.startsWith('local-');
-      const dedupeKey = isUpload
-        ? video.title.toLowerCase().replace(/[_\s-]+/g, ' ').trim()
-        : video.youtubeId;
+    const surfaceCounts = new Map<number, number>();
 
+    // Pre-fetch surface counts for smarter dedup (keep the best-scanned version)
+    for (const video of videos) {
+      const count = await this.getSurfaceCountByVideo(video.id);
+      surfaceCounts.set(video.id, count);
+    }
+
+    for (const video of videos) {
+      const dedupeKey = video.title.toLowerCase().replace(/[_\s-]+/g, ' ').trim();
       const existing = seen.get(dedupeKey);
-      if (!existing || new Date(video.updatedAt!) > new Date(existing.updatedAt!)) {
+
+      if (!existing) {
         seen.set(dedupeKey, video);
+      } else {
+        // Prefer the version with more detected surfaces; tie-break by most recent update
+        const existingCount = surfaceCounts.get(existing.id) || 0;
+        const currentCount = surfaceCounts.get(video.id) || 0;
+        if (currentCount > existingCount || (currentCount === existingCount && new Date(video.updatedAt!) > new Date(existing.updatedAt!))) {
+          seen.set(dedupeKey, video);
+        }
       }
     }
 
     const dedupedVideos = Array.from(seen.values())
       .sort((a, b) => (b.priorityScore || 0) - (a.priorityScore || 0));
-    console.log(`[Storage.getVideoIndex] After dedup: ${dedupedVideos.length} unique videos`);
+    console.log(`[Storage.getVideoIndex] After dedup: ${dedupedVideos.length} unique videos (from ${videos.length})`);
     return dedupedVideos;
   }
 

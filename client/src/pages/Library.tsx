@@ -1194,9 +1194,9 @@ export default function Library() {
                     )}
                   </div>
                 )}
-                <div className="aspect-video relative overflow-hidden bg-black">
-                  <img 
-                    src={video.image} 
+                <div className="aspect-square relative overflow-hidden bg-black">
+                  <img
+                    src={video.image}
                     alt={video.title}
                     className="w-full h-full object-contain transition-transform duration-300 group-hover:scale-105"
                   />

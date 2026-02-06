@@ -430,13 +430,12 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
 
             <div className="flex flex-col lg:flex-row">
               <div className="flex-1 relative">
-                <div className="aspect-video relative overflow-hidden bg-black">
+                <div className="relative overflow-hidden bg-black flex items-center justify-center" style={{ minHeight: '300px', maxHeight: '70vh' }}>
                   <img
                     ref={imageRef}
                     src={currentScene.imageUrl}
                     alt={`Scene at ${currentScene.timestamp}`}
-                    className="w-full h-full object-cover"
-                    crossOrigin="anonymous"
+                    className="max-w-full max-h-[70vh] object-contain"
                     data-testid="img-scene-main"
                     onLoad={() => {
                       // Draw database surfaces after image loads
