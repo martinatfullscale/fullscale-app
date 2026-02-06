@@ -1209,18 +1209,21 @@ export default function Library() {
                     <img
                       src={video.image}
                       alt={video.title}
-                      className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                      className="max-w-full max-h-full object-contain transition-transform duration-300 group-hover:scale-105"
                       onError={(e) => {
                         // Hide broken image and show fallback
-                        (e.target as HTMLImageElement).style.display = 'none';
+                        const el = e.target as HTMLImageElement;
+                        el.style.display = 'none';
+                        // Show the sibling placeholder
+                        const placeholder = el.parentElement?.querySelector('.img-placeholder');
+                        if (placeholder) (placeholder as HTMLElement).style.display = 'flex';
                       }}
                     />
-                  ) : (
-                    <div className="flex flex-col items-center gap-2 text-zinc-500">
-                      <Video className="w-10 h-10" />
-                      <span className="text-xs">No thumbnail</span>
-                    </div>
-                  )}
+                  ) : null}
+                  <div className={`img-placeholder flex-col items-center gap-2 text-zinc-500 ${video.image ? 'hidden' : 'flex'}`}>
+                    <Video className="w-10 h-10" />
+                    <span className="text-xs">No thumbnail</span>
+                  </div>
                   <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent" />
                   <div className="absolute bottom-2 left-2 flex items-center gap-1.5 px-2 py-1 rounded-md bg-black/50 backdrop-blur-sm">
                     <AiOverlayIcon status={video.aiStatus} />
