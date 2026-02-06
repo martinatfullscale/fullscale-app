@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { useToast } from "@/hooks/use-toast";
 import { Loader2, Play, Eye, Target, CheckCircle } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
-import fullscaleLogo from "@assets/fullscale-logo_1767679525676.png";
+import fullscaleLogo from "@assets/fullscale-logo.png";
 
 interface CreatorData {
   creator: {

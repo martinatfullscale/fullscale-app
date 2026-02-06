@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "wouter";
-import logoUrl from "@assets/fullscale-logo_1767679525676.png";
+import logoUrl from "@assets/fullscale-logo.png";
 import { SiInstagram } from "react-icons/si";
 import { Mail } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";

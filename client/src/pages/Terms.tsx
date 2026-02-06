@@ -1,7 +1,7 @@
 import { motion } from "framer-motion";
 import { Link } from "wouter";
 import { ArrowLeft, FileText, Scale, Users } from "lucide-react";
-import logoUrl from "@assets/fullscale-logo_1767679525676.png";
+import logoUrl from "@assets/fullscale-logo.png";
 import { Footer } from "@/components/Footer";
 
 export default function Terms() {
