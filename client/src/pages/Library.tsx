@@ -607,19 +607,30 @@ export default function Library() {
           const surfaces = data.surfaces || [];
           const uniqueTimestamps = Array.from(new Set(surfaces.map((s: any) => s.timestamp || 0))) as number[];
           
-          // Use actual video thumbnail instead of stock images
-          const videoThumbnail = video.thumbnailUrl || (video.filePath ? video.filePath : null);
-          const fallbackImage = videoThumbnail || `/thumbnails/video-${videoId}.png`;
-          
+          // Use actual video thumbnail — only use valid browser URLs (http or root-relative)
+          const videoThumbnail = video.thumbnailUrl && (video.thumbnailUrl.startsWith('http') || video.thumbnailUrl.startsWith('/'))
+            ? video.thumbnailUrl
+            : null;
+          const fallbackImage = videoThumbnail || `/uploads/frames/${videoId}/frame_0s.jpg`;
+
+          // Normalize frame URLs from DB (may have absolute Replit paths or ./public/ prefixes)
+          const normalizeFrameUrl = (url: string | null | undefined): string | null => {
+            if (!url) return null;
+            if (url.startsWith('/home/runner/workspace/public/')) return '/' + url.replace('/home/runner/workspace/public/', '');
+            if (url.startsWith('./public/')) return url.replace('./public', '');
+            if (url.startsWith('/') || url.startsWith('http')) return url;
+            return null;
+          };
+
           const scenes = uniqueTimestamps.map((ts: number, idx: number) => {
             const surfacesAtTime = surfaces.filter((s: any) => (s.timestamp || 0) === ts);
             const surfaceTypes = Array.from(new Set(surfacesAtTime.map((s: any) => s.surfaceType || s.surface_type))) as string[];
             const avgConfidence = surfacesAtTime.reduce((sum: number, s: any) => sum + (s.confidence || 0.5), 0) / surfacesAtTime.length;
-            
+
             return {
               id: `scene-${videoId}-${idx}`,
               timestamp: `${Math.floor(Number(ts) / 60)}:${String(Math.floor(Number(ts) % 60)).padStart(2, '0')}`,
-              imageUrl: surfacesAtTime[0]?.frameUrl || surfacesAtTime[0]?.frame_url || fallbackImage,
+              imageUrl: normalizeFrameUrl(surfacesAtTime[0]?.frameUrl || surfacesAtTime[0]?.frame_url) || fallbackImage,
               surfaces: surfacesAtTime.length,
               surfaceTypes: surfaceTypes as string[],
               context: surfaceTypes.length > 0 ? `${surfaceTypes[0]} area` : "Workspace",

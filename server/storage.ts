@@ -249,12 +249,14 @@ export class DatabaseStorage implements IStorage {
     const user = await this.getUserById(userId);
     const userEmail = user?.email;
     console.log(`[Storage.getVideoIndex] User found: ${!!user}, email: ${userEmail}`);
-    
+
+    let videos: VideoIndex[];
+
     // Query videos matching either the user ID or the user's email
     // This handles legacy videos stored with email as userId
     if (userEmail && userEmail !== userId) {
       console.log(`[Storage.getVideoIndex] Querying by userId=${userId} OR userId=${userEmail}`);
-      const videos = await db
+      videos = await db
         .select()
         .from(videoIndex)
         .where(or(
@@ -263,17 +265,35 @@ export class DatabaseStorage implements IStorage {
         ))
         .orderBy(desc(videoIndex.priorityScore));
       console.log(`[Storage.getVideoIndex] Found ${videos.length} videos (dual query)`);
-      return videos;
+    } else {
+      console.log(`[Storage.getVideoIndex] Querying by userId=${userId} only`);
+      videos = await db
+        .select()
+        .from(videoIndex)
+        .where(eq(videoIndex.userId, userId))
+        .orderBy(desc(videoIndex.priorityScore));
+      console.log(`[Storage.getVideoIndex] Found ${videos.length} videos (single query)`);
     }
-    
-    console.log(`[Storage.getVideoIndex] Querying by userId=${userId} only`);
-    const videos = await db
-      .select()
-      .from(videoIndex)
-      .where(eq(videoIndex.userId, userId))
-      .orderBy(desc(videoIndex.priorityScore));
-    console.log(`[Storage.getVideoIndex] Found ${videos.length} videos (single query)`);
-    return videos;
+
+    // Deduplicate: uploads can create multiple entries for the same video
+    // For YouTube videos, dedupe by youtubeId; for uploads/local, dedupe by normalized title
+    const seen = new Map<string, VideoIndex>();
+    for (const video of videos) {
+      const isUpload = video.youtubeId.startsWith('upload-') || video.youtubeId.startsWith('local-');
+      const dedupeKey = isUpload
+        ? video.title.toLowerCase().replace(/[_\s-]+/g, ' ').trim()
+        : video.youtubeId;
+
+      const existing = seen.get(dedupeKey);
+      if (!existing || new Date(video.updatedAt!) > new Date(existing.updatedAt!)) {
+        seen.set(dedupeKey, video);
+      }
+    }
+
+    const dedupedVideos = Array.from(seen.values())
+      .sort((a, b) => (b.priorityScore || 0) - (a.priorityScore || 0));
+    console.log(`[Storage.getVideoIndex] After dedup: ${dedupedVideos.length} unique videos`);
+    return dedupedVideos;
   }
 
   async getAllVideos(): Promise<VideoIndex[]> {

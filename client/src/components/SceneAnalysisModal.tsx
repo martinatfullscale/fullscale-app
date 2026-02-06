@@ -466,7 +466,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                     {dataSource === "gemini" && (
                       <Badge className="bg-purple-500/90 text-white">
                         <Database className="w-3 h-3 mr-1" />
-                        Gemini AI
+                        FullScale Edge
                       </Badge>
                     )}
                     {dataSource === "tensorflow" && (

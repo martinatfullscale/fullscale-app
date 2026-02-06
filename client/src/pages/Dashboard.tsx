@@ -188,8 +188,18 @@ export default function Dashboard() {
 
   const handleVideoClick = async (video: IndexedVideo) => {
     // For all videos (including pitch mode), fetch actual detected surfaces from backend
-    const videoThumbnail = (video as IndexedVideo & { thumbnailUrl?: string }).thumbnailUrl || "";
-    
+    const rawThumbnail = (video as IndexedVideo & { thumbnailUrl?: string }).thumbnailUrl || "";
+    const videoThumbnail = (rawThumbnail.startsWith('http') || rawThumbnail.startsWith('/')) ? rawThumbnail : "";
+
+    // Normalize frame URLs from DB (may have absolute Replit paths or ./public/ prefixes)
+    const normalizeFrameUrl = (url: string | null | undefined): string | null => {
+      if (!url) return null;
+      if (url.startsWith('/home/runner/workspace/public/')) return '/' + url.replace('/home/runner/workspace/public/', '');
+      if (url.startsWith('./public/')) return url.replace('./public', '');
+      if (url.startsWith('/') || url.startsWith('http')) return url;
+      return null;
+    };
+
     try {
       const res = await fetch(`/api/video/${video.id}/surfaces`, { credentials: "include" });
       if (res.ok) {
@@ -220,7 +230,7 @@ export default function Dashboard() {
               return {
                 id: `${video.id}-${index}`,
                 timestamp: timestampStr,
-                imageUrl: surface.frameUrl || videoThumbnail,
+                imageUrl: normalizeFrameUrl(surface.frameUrl) || videoThumbnail,
                 surfaces: 1,
                 surfaceTypes: [surface.surfaceType || "Surface"],
                 context: `Detected ${surface.surfaceType || 'surface'} in video`,
