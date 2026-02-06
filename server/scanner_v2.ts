@@ -784,34 +784,46 @@ export async function processVideoScan(
       fs.mkdirSync(permanentFramesDir, { recursive: true });
     }
     
+    // Clear old frames from permanent directory before re-extracting
+    try {
+      const existingFrames = fs.readdirSync(permanentFramesDir).filter(f => f.endsWith('.jpg'));
+      for (const f of existingFrames) {
+        safeUnlink(path.join(permanentFramesDir, f));
+      }
+      console.log(`[Scanner V2] Cleared ${existingFrames.length} old frames from permanent directory`);
+    } catch (clearErr) {
+      console.warn(`[Scanner V2] Could not clear old frames:`, clearErr);
+    }
+
     // PROCESS FRAMES ONE BY ONE (with immediate cleanup)
     let totalSurfaces = 0;
     console.log(`[Scanner V2] Detection method: ${CONFIG.DETECTION_METHOD.toUpperCase()}`);
-    
+
     for (let i = 0; i < frames.length; i++) {
       const framePath = frames[i];
       const timestamp = i * CONFIG.FRAME_INTERVAL_SECONDS;
-      
+
       try {
         console.log(`[Scanner V2] Processing frame ${i + 1}/${frames.length} (${timestamp}s)...`);
-        
+
+        // Save ALL frames to permanent directory for thumbnail strip
+        const frameFilename = `frame_${timestamp}s.jpg`;
+        const permanentPath = path.join(permanentFramesDir, frameFilename);
+
+        try {
+          fs.copyFileSync(framePath, permanentPath);
+        } catch (copyErr) {
+          console.error(`[Scanner V2] Failed to save frame:`, copyErr);
+        }
+
         // Use Gemini AI or edge detection based on config
         const analysis = CONFIG.DETECTION_METHOD === 'gemini'
           ? await analyzeFrameWithGemini(framePath, timestamp, isVertical)
           : await analyzeFrameForSurfaces(framePath, timestamp, isVertical);
-        
+
         if (analysis.hasSurface && analysis.surfaces.length > 0) {
-          const frameFilename = `frame_${timestamp}s.jpg`;
-          const permanentPath = path.join(permanentFramesDir, frameFilename);
-          
-          try {
-            fs.copyFileSync(framePath, permanentPath);
-          } catch (copyErr) {
-            console.error(`[Scanner V2] Failed to save frame:`, copyErr);
-          }
-          
           const frameUrl = `/uploads/frames/${videoId}/${frameFilename}`;
-          
+
           for (const surface of analysis.surfaces) {
             const dbSurface: InsertDetectedSurface = {
               videoId,
@@ -824,15 +836,15 @@ export async function processVideoScan(
               boundingBoxHeight: surface.boundingBox.height.toString(),
               frameUrl,
             };
-            
+
             const inserted = await storage.insertDetectedSurface(dbSurface);
             console.log(`[Scanner V2] *** SURFACE FOUND: ${surface.surfaceType} at ${timestamp}s (confidence: ${(surface.confidence * 100).toFixed(1)}%, id: ${inserted.id}) ***`);
             totalSurfaces++;
           }
         }
-        
+
       } finally {
-        // CRITICAL: Always delete the frame after processing
+        // CRITICAL: Always delete the temp frame after processing
         safeUnlink(framePath);
       }
     }
