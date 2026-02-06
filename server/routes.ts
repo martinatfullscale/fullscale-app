@@ -1626,16 +1626,16 @@ export async function registerRoutes(
   });
 
   // Direct video upload endpoint - bypass YouTube download
-  app.post("/api/upload", isGoogleAuthenticated, uploadMiddleware.single("video"), async (req: any, res) => {
+  app.post("/api/upload", isFlexibleAuthenticated, uploadMiddleware.single("video"), async (req: any, res) => {
     console.log(`[UPLOAD] ===== VIDEO UPLOAD RECEIVED =====`);
-    console.log(`[UPLOAD] User: ${req.googleUser?.email}`);
+    console.log(`[UPLOAD] User: ${req.authEmail || req.googleUser?.email}`);
     
     if (!req.file) {
       console.log(`[UPLOAD] ERROR: No file received`);
       return res.status(400).json({ error: "No video file uploaded" });
     }
 
-    const userId = req.googleUser.email;
+    const userId = req.authEmail || req.googleUser?.email;
     const file = req.file;
     const title = req.body.title || file.originalname.replace(/\.[^/.]+$/, "");
     
