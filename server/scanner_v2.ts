@@ -45,8 +45,8 @@ const CONFIG = {
   // Frame extraction - every 2 seconds for better coverage
   FRAME_INTERVAL_SECONDS: 2,
   MAX_FRAMES_PER_VIDEO: 24,
-  FRAME_MAX_DIMENSION: 640,
-  FRAME_QUALITY: 70,
+  FRAME_MAX_DIMENSION: 1280,
+  FRAME_QUALITY: 85,
   
   // Disk safety
   MIN_DISK_SPACE_MB: 100,
@@ -321,7 +321,7 @@ async function extractFrames(
     const ffmpegArgs = [
       "-i", absoluteVideoPath,
       "-vf", `fps=1/${CONFIG.FRAME_INTERVAL_SECONDS},scale='min(${CONFIG.FRAME_MAX_DIMENSION},iw)':'min(${CONFIG.FRAME_MAX_DIMENSION},ih)':force_original_aspect_ratio=decrease`,
-      "-q:v", "5",
+      "-q:v", "2",
       "-frames:v", CONFIG.MAX_FRAMES_PER_VIDEO.toString(),
       outputPattern,
     ];
