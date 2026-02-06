@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, ChevronLeft, ChevronRight, Target, Clock, Eye, Sparkles, Scan, Loader2, Database, Play } from "lucide-react";
+import { X, ChevronLeft, ChevronRight, Target, Clock, Eye, Sparkles, Scan, Loader2, Database, Play, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import * as tf from "@tensorflow/tfjs";
@@ -443,7 +443,20 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                         setTimeout(drawDbSurfaces, 100);
                       }
                     }}
+                    onError={(e) => {
+                      const img = e.currentTarget;
+                      img.style.display = 'none';
+                      const fallback = img.parentElement?.querySelector('.main-frame-fallback') as HTMLElement;
+                      if (fallback) fallback.style.display = 'flex';
+                    }}
                   />
+                  <div className="main-frame-fallback w-full items-center justify-center bg-zinc-900 text-zinc-500" style={{ display: 'none', minHeight: '300px' }}>
+                    <div className="text-center">
+                      <Video className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                      <p className="text-sm">Frame not available</p>
+                      <p className="text-xs mt-1">{currentScene.timestamp}</p>
+                    </div>
+                  </div>
                   
                   <canvas
                     ref={canvasRef}
@@ -519,7 +532,16 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                           src={scene.imageUrl}
                           alt={`Scene ${idx + 1}`}
                           className="w-full h-full object-cover"
+                          onError={(e) => {
+                            const img = e.currentTarget;
+                            img.style.display = 'none';
+                            const fallback = img.nextElementSibling as HTMLElement;
+                            if (fallback) fallback.style.display = 'flex';
+                          }}
                         />
+                        <div className="w-full h-full bg-zinc-800 items-center justify-center hidden" style={{ display: 'none' }}>
+                          <span className="text-[8px] text-zinc-400">{scene.timestamp}</span>
+                        </div>
                         <span className="absolute bottom-0 left-0 right-0 bg-black/70 text-[8px] text-white text-center py-0.5">
                           {scene.timestamp}
                         </span>

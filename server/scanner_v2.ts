@@ -806,12 +806,17 @@ export async function processVideoScan(
       try {
         console.log(`[Scanner V2] Processing frame ${i + 1}/${frames.length} (${timestamp}s)...`);
 
-        // Save ALL frames to permanent directory for thumbnail strip
+        // Save ALL valid frames to permanent directory for thumbnail strip
         const frameFilename = `frame_${timestamp}s.jpg`;
         const permanentPath = path.join(permanentFramesDir, frameFilename);
 
         try {
-          fs.copyFileSync(framePath, permanentPath);
+          const frameSize = fs.statSync(framePath).size;
+          if (frameSize > 5000) { // Skip corrupt/blank frames under 5KB
+            fs.copyFileSync(framePath, permanentPath);
+          } else {
+            console.warn(`[Scanner V2] Skipping tiny frame ${frameFilename} (${frameSize} bytes)`);
+          }
         } catch (copyErr) {
           console.error(`[Scanner V2] Failed to save frame:`, copyErr);
         }
