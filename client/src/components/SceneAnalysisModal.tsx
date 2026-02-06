@@ -399,7 +399,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 20 }}
             transition={{ duration: 0.2 }}
-            className="relative w-full max-w-5xl bg-card border border-white/10 rounded-2xl overflow-hidden shadow-2xl"
+            className="relative w-full max-w-5xl max-h-[90vh] bg-card border border-white/10 rounded-2xl overflow-hidden shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             {video?.filePath && (onPlayVideo || onPlayFromTimestamp) && (
@@ -428,8 +428,8 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
               <X className="w-5 h-5" />
             </button>
 
-            <div className="flex flex-col lg:flex-row">
-              <div className="flex-1 relative">
+            <div className="flex flex-col lg:flex-row overflow-hidden">
+              <div className="flex-1 min-w-0 relative overflow-hidden">
                 <div className="relative overflow-hidden bg-black flex items-center justify-center" style={{ minHeight: '300px', maxHeight: '70vh' }}>
                   <img
                     ref={imageRef}
@@ -532,7 +532,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                 </div>
               </div>
 
-              <div className="lg:w-80 p-6 bg-gradient-to-b from-card to-secondary/20 border-l border-white/10">
+              <div className="lg:w-80 flex-shrink-0 p-6 bg-gradient-to-b from-card to-secondary/20 border-l border-white/10 overflow-y-auto max-h-[90vh]">
                 <h3 className="text-lg font-bold text-white mb-1 line-clamp-2" data-testid="text-video-title">
                   {video.title}
                 </h3>

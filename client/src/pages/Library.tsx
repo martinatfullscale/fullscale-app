@@ -1204,12 +1204,23 @@ export default function Library() {
                     )}
                   </div>
                 )}
-                <div className="aspect-square relative overflow-hidden bg-black">
-                  <img
-                    src={video.image}
-                    alt={video.title}
-                    className="w-full h-full object-contain transition-transform duration-300 group-hover:scale-105"
-                  />
+                <div className="relative overflow-hidden bg-zinc-900 flex items-center justify-center" style={{ height: '220px' }}>
+                  {video.image ? (
+                    <img
+                      src={video.image}
+                      alt={video.title}
+                      className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                      onError={(e) => {
+                        // Hide broken image and show fallback
+                        (e.target as HTMLImageElement).style.display = 'none';
+                      }}
+                    />
+                  ) : (
+                    <div className="flex flex-col items-center gap-2 text-zinc-500">
+                      <Video className="w-10 h-10" />
+                      <span className="text-xs">No thumbnail</span>
+                    </div>
+                  )}
                   <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent" />
                   <div className="absolute bottom-2 left-2 flex items-center gap-1.5 px-2 py-1 rounded-md bg-black/50 backdrop-blur-sm">
                     <AiOverlayIcon status={video.aiStatus} />
