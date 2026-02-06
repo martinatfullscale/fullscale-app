@@ -42,6 +42,31 @@ export default function AuthPage() {
     window.location.href = "/api/auth/google";
   };
 
+  // Dev-only admin login bypass — skips OAuth entirely
+  const isDevEnvironment = window.location.hostname !== "gofullscale.co";
+  const handleDevLogin = async () => {
+    setIsLoading(true);
+    try {
+      const response = await fetch("/api/auth/dev-login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ email: "martin@gofullscale.co" }),
+      });
+      const data = await response.json();
+      if (response.ok) {
+        toast({ title: "Dev Login", description: `Logged in as ${data.email}` });
+        setTimeout(() => setLocation("/dashboard"), 300);
+      } else {
+        toast({ title: "Dev Login Failed", description: data.error, variant: "destructive" });
+      }
+    } catch {
+      toast({ title: "Error", description: "Dev login request failed", variant: "destructive" });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
@@ -399,6 +424,28 @@ export default function AuthPage() {
               <SiGoogle className="h-4 w-4 mr-2" />
               Sign in with Google
             </Button>
+
+            {isDevEnvironment && (
+              <>
+                <div className="relative my-4">
+                  <div className="absolute inset-0 flex items-center">
+                    <div className="w-full border-t border-orange-500/30" />
+                  </div>
+                  <div className="relative flex justify-center text-xs uppercase">
+                    <span className="bg-card px-2 text-orange-400">Dev Only</span>
+                  </div>
+                </div>
+                <Button
+                  variant="outline"
+                  className="w-full border-orange-500/50 text-orange-400 hover:bg-orange-500/10"
+                  onClick={handleDevLogin}
+                  disabled={isLoading}
+                >
+                  {isLoading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                  Dev Login (martin@gofullscale.co)
+                </Button>
+              </>
+            )}
 
             <p className="text-xs text-muted-foreground text-center mt-6">
               By continuing, you agree to our{" "}

@@ -482,19 +482,19 @@ export async function registerRoutes(
       
       console.log(`Access set for: ${userInfo.email}, approved: ${userIsApproved}`);
       
-      // Redirect based on approval status
-      const productionDashboardUrl = userIsApproved 
-        ? "https://gofullscale.co/dashboard" 
-        : "https://gofullscale.co/waitlist";
-      
+      // Redirect based on approval status — use BASE_URL so dev deploys redirect back to themselves
+      const baseUrl = process.env.BASE_URL || "https://gofullscale.co";
+      const redirectPath = userIsApproved ? "/dashboard" : "/waitlist";
+      const redirectUrl = `${baseUrl}${redirectPath}`;
+
       // Explicitly save session before redirect to ensure it persists
       req.session.save((err: any) => {
         if (err) {
           console.error("Session save error:", err);
-          return res.redirect("https://gofullscale.co/?error=session_error");
+          return res.redirect(`${baseUrl}/?error=session_error`);
         }
-        console.log(`[Google OAuth] Redirecting to: ${productionDashboardUrl}`);
-        res.redirect(productionDashboardUrl);
+        console.log(`[Google OAuth] Redirecting to: ${redirectUrl}`);
+        res.redirect(redirectUrl);
       });
     } catch (err: any) {
       console.error("Google login callback error:", err.message || err);
@@ -511,6 +511,46 @@ export async function registerRoutes(
       if (err) console.error("[Auth] Session reset failed:", err);
       res.clearCookie("connect.sid");
       res.redirect("/");
+    });
+  });
+
+  // Dev-only admin login bypass — skips Google OAuth for admin emails
+  // Creates a real session so the entire app works (Library, Dashboard, etc.)
+  app.post("/api/auth/dev-login", async (req: any, res) => {
+    const adminEmails = ['martin@gofullscale.co', 'martin@whtwrks.com', 'martincekechukwu@gmail.com', 'thekimkwilson@gmail.com', 'tamara@whtwrks.com'];
+    const isDevelopment = process.env.NODE_ENV !== 'production';
+
+    if (!isDevelopment) {
+      return res.status(403).json({ error: "Dev login is only available in development mode" });
+    }
+
+    const { email } = req.body;
+    if (!email || !adminEmails.includes(email)) {
+      return res.status(403).json({ error: "Not an authorized admin email" });
+    }
+
+    // Look up user record (create if needed for dev)
+    let user = await storage.getUserByEmail(email);
+    if (!user) {
+      user = await storage.createUser({ email, firstName: "Admin", lastName: "Dev", authProvider: "dev-bypass", isApproved: true });
+    }
+
+    // Set session exactly like Google OAuth would
+    (req.session as any).googleUser = {
+      email,
+      name: user ? `${user.firstName || ""} ${user.lastName || ""}`.trim() || "Admin (Dev)" : "Admin (Dev)",
+      picture: null,
+      authProvider: "dev-bypass",
+      isApproved: true,
+    };
+
+    req.session.save((err: any) => {
+      if (err) {
+        console.error("[Dev Login] Session save error:", err);
+        return res.status(500).json({ error: "Session save failed" });
+      }
+      console.log(`[Dev Login] Admin session created for: ${email}`);
+      res.json({ success: true, email, message: "Dev session created" });
     });
   });
 
