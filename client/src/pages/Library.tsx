@@ -257,14 +257,18 @@ function getVideoStatusInfo(video: IndexedVideo): { status: string; statusColor:
 function formatIndexedVideo(video: IndexedVideo): DisplayVideo {
   const statusInfo = getVideoStatusInfo(video);
   const viewCount = (video as any).viewCount ?? (video as any).view_count ?? 0;
-  const thumbnailUrl = (video as any).thumbnailUrl || (video as any).thumbnail_url || "";
+  const rawThumbnailUrl = (video as any).thumbnailUrl || (video as any).thumbnail_url || "";
+  // Use thumbnail if it's a valid URL, otherwise fall back to first extracted frame
+  const thumbnailUrl = (rawThumbnailUrl && (rawThumbnailUrl.startsWith('http') || rawThumbnailUrl.startsWith('/')))
+    ? rawThumbnailUrl
+    : `/uploads/frames/${video.id}/frame_0s.jpg`;
   const platform = (video as any).platform || "youtube";
   const brandName = (video as any).brandName || (video as any).brand_name || "";
   const sentiment = (video as any).sentiment || (video as any).sentiment || "";
   const culturalContext = (video as any).culturalContext || (video as any).cultural_context || "";
   const filePath = (video as any).filePath || (video as any).file_path || null;
   const fileExists = (video as any).fileExists ?? false;
-  
+
   return {
     id: video.id,
     title: video.title,
@@ -622,6 +626,12 @@ export default function Library() {
             return null;
           };
 
+          // Build frame URL from timestamp when DB has no frameUrl (batch/admin inserts)
+          const buildFrameUrl = (ts: number): string => {
+            const roundedTs = Math.floor(Number(ts));
+            return `/uploads/frames/${videoId}/frame_${roundedTs}s.jpg`;
+          };
+
           const scenes = uniqueTimestamps.map((ts: number, idx: number) => {
             const surfacesAtTime = surfaces.filter((s: any) => (s.timestamp || 0) === ts);
             const surfaceTypes = Array.from(new Set(surfacesAtTime.map((s: any) => s.surfaceType || s.surface_type))) as string[];
@@ -630,7 +640,7 @@ export default function Library() {
             return {
               id: `scene-${videoId}-${idx}`,
               timestamp: `${Math.floor(Number(ts) / 60)}:${String(Math.floor(Number(ts) % 60)).padStart(2, '0')}`,
-              imageUrl: normalizeFrameUrl(surfacesAtTime[0]?.frameUrl || surfacesAtTime[0]?.frame_url) || fallbackImage,
+              imageUrl: normalizeFrameUrl(surfacesAtTime[0]?.frameUrl || surfacesAtTime[0]?.frame_url) || buildFrameUrl(ts),
               surfaces: surfacesAtTime.length,
               surfaceTypes: surfaceTypes as string[],
               context: surfaceTypes.length > 0 ? `${surfaceTypes[0]} area` : "Workspace",
