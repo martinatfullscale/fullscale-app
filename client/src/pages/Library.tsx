@@ -1204,23 +1204,21 @@ export default function Library() {
                     )}
                   </div>
                 )}
-                <div className="relative overflow-hidden bg-zinc-900 flex items-center justify-center" style={{ height: '220px' }}>
+                <div className="relative overflow-hidden bg-zinc-900">
                   {video.image ? (
                     <img
                       src={video.image}
                       alt={video.title}
-                      className="max-w-full max-h-full object-contain transition-transform duration-300 group-hover:scale-105"
+                      className="w-full block transition-transform duration-300 group-hover:scale-105"
                       onError={(e) => {
-                        // Hide broken image and show fallback
                         const el = e.target as HTMLImageElement;
                         el.style.display = 'none';
-                        // Show the sibling placeholder
                         const placeholder = el.parentElement?.querySelector('.img-placeholder');
                         if (placeholder) (placeholder as HTMLElement).style.display = 'flex';
                       }}
                     />
                   ) : null}
-                  <div className={`img-placeholder flex-col items-center gap-2 text-zinc-500 ${video.image ? 'hidden' : 'flex'}`}>
+                  <div className={`img-placeholder items-center justify-center gap-2 text-zinc-500 ${video.image ? 'hidden' : 'flex'}`} style={{ height: '200px' }}>
                     <Video className="w-10 h-10" />
                     <span className="text-xs">No thumbnail</span>
                   </div>
