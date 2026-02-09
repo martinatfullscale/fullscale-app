@@ -69,11 +69,26 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
   const [detections, setDetections] = useState<DetectedObject[]>([]);
   const [hasScanned, setHasScanned] = useState(false);
   const [modelError, setModelError] = useState<string | null>(null);
-  
+
   // Database surfaces from Gemini AI scan
   const [dbSurfaces, setDbSurfaces] = useState<DatabaseSurface[]>([]);
   const [isLoadingDbSurfaces, setIsLoadingDbSurfaces] = useState(false);
   const [hasDbSurfaces, setHasDbSurfaces] = useState(false);
+
+  // Server-side rescan state
+  const [isServerScanning, setIsServerScanning] = useState(false);
+  const [serverScanError, setServerScanError] = useState<string | null>(null);
+
+  // Local scenes state — starts from video.scenes, rebuilt after server rescan
+  const [localScenes, setLocalScenes] = useState<Scene[]>(video?.scenes || []);
+
+  // Sync localScenes when video prop changes (e.g., different video opened)
+  useEffect(() => {
+    if (video?.scenes) {
+      setLocalScenes(video.scenes);
+      setCurrentSceneIndex(0);
+    }
+  }, [video?.id]);
   
   const imageRef = useRef<HTMLImageElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -133,7 +148,100 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
       setIsLoadingDbSurfaces(false);
     }
   };
-  
+
+  // Helper: build scenes from surfaces data (same logic as Library.tsx handleVideoClick)
+  const buildScenesFromSurfaces = (surfaces: any[], videoId: number): Scene[] => {
+    const normalizeFrameUrl = (url: string | null | undefined): string | null => {
+      if (!url) return null;
+      if (url.startsWith('/home/runner/workspace/public/')) return '/' + url.replace('/home/runner/workspace/public/', '');
+      if (url.startsWith('./public/')) return url.replace('./public', '');
+      if (url.startsWith('/') || url.startsWith('http')) return url;
+      return null;
+    };
+    const buildFrameUrl = (ts: number): string => {
+      const roundedTs = Math.floor(Number(ts));
+      return `/uploads/frames/${videoId}/frame_${roundedTs}s.jpg`;
+    };
+
+    const uniqueTimestamps = Array.from(new Set(surfaces.map((s: any) => s.timestamp || 0))) as number[];
+    return uniqueTimestamps
+      .map((ts: number, idx: number) => {
+        const surfacesAtTime = surfaces.filter((s: any) => (s.timestamp || 0) === ts);
+        const hasFrame = surfacesAtTime.some((s: any) => s.frameExists !== false);
+        const surfaceTypes = Array.from(new Set(surfacesAtTime.map((s: any) => s.surfaceType || s.surface_type))) as string[];
+        const avgConfidence = surfacesAtTime.reduce((sum: number, s: any) => sum + (parseFloat(s.confidence) || 0.5), 0) / surfacesAtTime.length;
+
+        return {
+          id: `scene-${videoId}-${idx}`,
+          timestamp: `${Math.floor(Number(ts) / 60)}:${String(Math.floor(Number(ts) % 60)).padStart(2, '0')}`,
+          imageUrl: normalizeFrameUrl(surfacesAtTime[0]?.frameUrl || surfacesAtTime[0]?.frame_url) || buildFrameUrl(ts),
+          surfaces: surfacesAtTime.length,
+          surfaceTypes: surfaceTypes as string[],
+          context: surfaceTypes.length > 0 ? `${surfaceTypes[0]} area` : "Workspace",
+          confidence: avgConfidence,
+          hasFrame,
+        };
+      })
+      .filter(scene => scene.hasFrame);
+  };
+
+  // Server-side rescan: re-extract frames + detect surfaces, then rebuild scenes
+  const triggerServerRescan = async () => {
+    if (!video?.id) return;
+
+    setIsServerScanning(true);
+    setServerScanError(null);
+
+    try {
+      // Use admin-scan endpoint (synchronous, returns when scan completes)
+      const res = await fetch(`/api/admin-scan/${video.id}`, {
+        method: "POST",
+        credentials: "include",
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Scan failed (${res.status}): ${errText}`);
+      }
+
+      const scanResult = await res.json();
+      console.log(`[SceneAnalysisModal] Server scan complete:`, scanResult);
+
+      // Refetch surfaces from the API
+      const surfacesRes = await fetch(`/api/video/${video.id}/surfaces`, { credentials: "include" });
+      if (surfacesRes.ok) {
+        const data = await surfacesRes.json();
+        const surfaces = data.surfaces || [];
+        setDbSurfaces(surfaces);
+        setHasDbSurfaces(surfaces.length > 0);
+
+        // Rebuild scenes from fresh surface data
+        const newScenes = buildScenesFromSurfaces(surfaces, video.id);
+        if (newScenes.length > 0) {
+          setLocalScenes(newScenes);
+          setCurrentSceneIndex(0);
+        } else {
+          // Fallback: single scene from thumbnail
+          setLocalScenes([{
+            id: `scene-${video.id}-0`,
+            timestamp: "0:00",
+            imageUrl: `/uploads/frames/${video.id}/frame_0s.jpg`,
+            surfaces: scanResult.result?.surfacesDetected || 0,
+            surfaceTypes: [],
+            context: "Scan complete",
+            confidence: 0,
+          }]);
+          setCurrentSceneIndex(0);
+        }
+      }
+    } catch (err) {
+      console.error("[SceneAnalysisModal] Server rescan failed:", err);
+      setServerScanError(err instanceof Error ? err.message : "Scan failed");
+    } finally {
+      setIsServerScanning(false);
+    }
+  };
+
   // Draw bounding boxes from database surfaces
   const drawDbSurfaces = useCallback(() => {
     const canvas = canvasRef.current;
@@ -150,7 +258,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     
     // Get current scene's timestamp (e.g., "00:05" -> 5)
-    const currentScene = video?.scenes[currentSceneIndex];
+    const currentScene = localScenes[currentSceneIndex];
     const sceneTimestamp = currentScene?.timestamp || "00:00";
     const [mins, secs] = sceneTimestamp.split(":").map(Number);
     const sceneSeconds = (mins || 0) * 60 + (secs || 0);
@@ -328,8 +436,9 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
 
   if (!video || !open) return null;
 
-  const currentScene = video.scenes[currentSceneIndex];
-  const totalScenes = video.scenes.length;
+  const totalScenes = localScenes.length;
+  const safeIndex = Math.min(currentSceneIndex, totalScenes - 1);
+  const currentScene = localScenes[safeIndex >= 0 ? safeIndex : 0];
 
   const goToPrevious = () => {
     setCurrentSceneIndex((prev) => (prev > 0 ? prev - 1 : totalScenes - 1));
@@ -517,7 +626,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
 
                 <div className="p-3 bg-black/50 border-t border-white/10">
                   <div className="flex items-center gap-2 overflow-x-auto pb-1">
-                    {video.scenes.map((scene, idx) => (
+                    {localScenes.map((scene, idx) => (
                       <button
                         key={scene.id}
                         onClick={() => goToScene(idx)}
@@ -563,31 +672,26 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                 </p>
 
                 <Button
-                  onClick={runDetection}
-                  disabled={isLoadingModel || isScanning || !model}
-                  className="w-full mb-4 gap-2"
+                  onClick={triggerServerRescan}
+                  disabled={isServerScanning}
+                  className="w-full mb-4 gap-2 bg-primary hover:bg-primary/90"
                   data-testid="button-scan-analysis"
                 >
-                  {isLoadingModel ? (
+                  {isServerScanning ? (
                     <>
                       <Loader2 className="w-4 h-4 animate-spin" />
-                      Loading AI Model...
-                    </>
-                  ) : isScanning ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      Scanning...
+                      Scanning Video...
                     </>
                   ) : (
                     <>
                       <Scan className="w-4 h-4" />
-                      {hasScanned ? "Re-Scan Scene" : "Scan Analysis"}
+                      {hasDbSurfaces ? "Re-Scan Video" : "Scan with FullScale Edge"}
                     </>
                   )}
                 </Button>
 
-                {modelError && (
-                  <p className="text-xs text-red-400 mb-4 text-center">{modelError}</p>
+                {serverScanError && (
+                  <p className="text-xs text-red-400 mb-4 text-center">{serverScanError}</p>
                 )}
 
                 <div className="space-y-4">

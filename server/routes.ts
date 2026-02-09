@@ -1757,7 +1757,22 @@ export async function registerRoutes(
 
     // No auth required - surfaces data is public for brand marketplace
     const surfaces = await storage.getDetectedSurfaces(videoId);
-    res.json({ surfaces, count: surfaces.length });
+
+    // Enrich surfaces with frame availability info
+    const framesDir = path.join(process.cwd(), "public", "uploads", "frames", videoId.toString());
+    const enrichedSurfaces = surfaces.map(s => {
+      const ts = Math.floor(Number(s.timestamp));
+      const frameFilename = `frame_${ts}s.jpg`;
+      const framePath = path.join(framesDir, frameFilename);
+      const frameExists = fs.existsSync(framePath);
+
+      // Backfill frameUrl if frame exists but surface has no URL
+      const frameUrl = s.frameUrl || (frameExists ? `/uploads/frames/${videoId}/${frameFilename}` : null);
+
+      return { ...s, frameUrl, frameExists };
+    });
+
+    res.json({ surfaces: enrichedSurfaces, count: enrichedSurfaces.length });
   });
 
   // Batch insert surfaces for a video (Admin only)

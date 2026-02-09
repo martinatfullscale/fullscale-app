@@ -637,21 +637,26 @@ export default function Library() {
             return `/uploads/frames/${videoId}/frame_${roundedTs}s.jpg`;
           };
 
-          const scenes = uniqueTimestamps.map((ts: number, idx: number) => {
-            const surfacesAtTime = surfaces.filter((s: any) => (s.timestamp || 0) === ts);
-            const surfaceTypes = Array.from(new Set(surfacesAtTime.map((s: any) => s.surfaceType || s.surface_type))) as string[];
-            const avgConfidence = surfacesAtTime.reduce((sum: number, s: any) => sum + (s.confidence || 0.5), 0) / surfacesAtTime.length;
+          const scenes = uniqueTimestamps
+            .map((ts: number, idx: number) => {
+              const surfacesAtTime = surfaces.filter((s: any) => (s.timestamp || 0) === ts);
+              // Only include scenes where at least one surface has a frame on disk
+              const hasFrame = surfacesAtTime.some((s: any) => s.frameExists !== false);
+              const surfaceTypes = Array.from(new Set(surfacesAtTime.map((s: any) => s.surfaceType || s.surface_type))) as string[];
+              const avgConfidence = surfacesAtTime.reduce((sum: number, s: any) => sum + (s.confidence || 0.5), 0) / surfacesAtTime.length;
 
-            return {
-              id: `scene-${videoId}-${idx}`,
-              timestamp: `${Math.floor(Number(ts) / 60)}:${String(Math.floor(Number(ts) % 60)).padStart(2, '0')}`,
-              imageUrl: normalizeFrameUrl(surfacesAtTime[0]?.frameUrl || surfacesAtTime[0]?.frame_url) || buildFrameUrl(ts),
-              surfaces: surfacesAtTime.length,
-              surfaceTypes: surfaceTypes as string[],
-              context: surfaceTypes.length > 0 ? `${surfaceTypes[0]} area` : "Workspace",
-              confidence: avgConfidence,
-            };
-          });
+              return {
+                id: `scene-${videoId}-${idx}`,
+                timestamp: `${Math.floor(Number(ts) / 60)}:${String(Math.floor(Number(ts) % 60)).padStart(2, '0')}`,
+                imageUrl: normalizeFrameUrl(surfacesAtTime[0]?.frameUrl || surfacesAtTime[0]?.frame_url) || buildFrameUrl(ts),
+                surfaces: surfacesAtTime.length,
+                surfaceTypes: surfaceTypes as string[],
+                context: surfaceTypes.length > 0 ? `${surfaceTypes[0]} area` : "Workspace",
+                confidence: avgConfidence,
+                hasFrame,
+              };
+            })
+            .filter(scene => scene.hasFrame);
           
           // If no surfaces, create a placeholder scene using video thumbnail
           const finalScenes = scenes.length > 0 ? scenes : [{

@@ -319,7 +319,12 @@ async function extractFrames(
     fs.mkdirSync(absoluteOutputDir, { recursive: true });
     
     const ffmpegArgs = [
+      "-nostdin",               // Non-interactive mode
+      "-y",                     // Overwrite output files
       "-i", absoluteVideoPath,
+      "-an",                    // Skip audio (faster, avoids codec issues)
+      "-vsync", "vfr",         // Variable frame rate (prevents duplicate frames)
+      "-pix_fmt", "yuvj420p",  // Force JPEG-compatible pixel format (fixes HEVC/HDR)
       "-vf", `fps=1/${CONFIG.FRAME_INTERVAL_SECONDS},scale='min(${CONFIG.FRAME_MAX_DIMENSION},iw)':'min(${CONFIG.FRAME_MAX_DIMENSION},ih)':force_original_aspect_ratio=decrease`,
       "-q:v", "2",
       "-frames:v", CONFIG.MAX_FRAMES_PER_VIDEO.toString(),
@@ -866,7 +871,11 @@ export async function processVideoScan(
       for (let i = 0; i < frames.length && totalSurfaces < CONFIG.MIN_SURFACES_BEFORE_FALLBACK + 2; i++) {
         const timestamp = i * CONFIG.FRAME_INTERVAL_SECONDS;
         if (!framesWithSurfaces.has(timestamp)) {
-          // Add fallback surface for bottom 40% of frame
+          // Only add fallback surface if the frame file actually exists on disk
+          const fallbackFrameFilename = `frame_${timestamp}s.jpg`;
+          const fallbackFramePath = path.join(permanentFramesDir, fallbackFrameFilename);
+          const fallbackFrameExists = fs.existsSync(fallbackFramePath);
+
           const dbSurface = {
             videoId,
             timestamp: String(timestamp),
@@ -876,13 +885,13 @@ export async function processVideoScan(
             boundingBoxY: "0.6", // Bottom 40%
             boundingBoxWidth: "0.9",
             boundingBoxHeight: "0.35",
-            frameUrl: null,
+            frameUrl: fallbackFrameExists ? `/uploads/frames/${videoId}/${fallbackFrameFilename}` : null,
             surroundings: null,
             sceneContext: "Fallback detection - potential placement area",
           };
-          
+
           await storage.insertDetectedSurface(dbSurface);
-          console.log(`[Scanner V2] *** FALLBACK SURFACE at ${timestamp}s (confidence: ${(CONFIG.FALLBACK_CONFIDENCE * 100).toFixed(1)}%) ***`);
+          console.log(`[Scanner V2] *** FALLBACK SURFACE at ${timestamp}s (confidence: ${(CONFIG.FALLBACK_CONFIDENCE * 100).toFixed(1)}%, frameExists: ${fallbackFrameExists}) ***`);
           totalSurfaces++;
         }
       }
