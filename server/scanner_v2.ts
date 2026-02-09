@@ -680,45 +680,8 @@ async function analyzeFrameWithGemini(
 }
 
 // ============================================================================
-// SCENE CONTEXT + CULTURAL RELEVANCE ANALYSIS (Post-Detection Enhancement)
+// SCENE CONTEXT ANALYSIS — FullScale Edge (Sharp-based, no external AI)
 // ============================================================================
-
-const SCENE_CONTEXT_PROMPT = `You are analyzing a video frame to understand scene context, cultural elements, and refine surface identification for product placement advertising.
-
-Analyze this frame and return a JSON response with the following structure:
-{
-  "scene_setting": "Brief description of the setting (e.g., 'Home office with modern decor', 'Podcast studio', 'Kitchen', 'Outdoor cafe')",
-  "refined_surface_type": "More specific surface type than generic 'Desk' — e.g., 'Podcast Desk', 'Kitchen Counter', 'Coffee Table', 'Bookshelf', 'Monitor Stand', 'Studio Console'",
-  "surroundings": ["list", "of", "visible", "objects", "in", "scene"],
-  "mood": "One of: Professional, Casual, Energetic, Intimate, Educational, Entertainment, Creative",
-  "cultural_markers": {
-    "detected": true/false,
-    "elements": ["list of cultural elements like decor style, food items, clothing, music instruments, language on screen"],
-    "cultural_context": "Brief cultural context description (e.g., 'West African home decor', 'Japanese minimalist', 'American suburban', 'South Asian kitchen')",
-    "sensitivities": ["any cultural sensitivities to be aware of for ad placement"]
-  },
-  "audience_profile": {
-    "age_range": "e.g., '18-34'",
-    "lifestyle": "e.g., 'Urban professional', 'Student', 'Creative professional', 'Home cook'",
-    "interests": ["relevant interests based on scene"]
-  },
-  "brand_recommendations": {
-    "ideal_categories": ["top 3-5 brand categories that fit this scene and cultural context"],
-    "avoid_categories": ["brand categories that would be inappropriate or culturally insensitive here"],
-    "reasoning": "Brief explanation of why these brands fit"
-  }
-}
-
-IMPORTANT GUIDELINES FOR CULTURAL RELEVANCE:
-- Do NOT assume Western/American as the default. Describe what you actually see.
-- Recognize diverse food, decor, clothing, music, and setting styles from all cultures.
-- A "desk" in different cultural contexts may look very different — describe it specifically.
-- Suggest brand pairings that RESPECT the cultural context (e.g., tea brands for East Asian content, not just coffee brands).
-- Identify language on screen or signage that indicates cultural context.
-- Note any religious or traditional items that should be respected in ad placement.
-- Be specific about decor styles (e.g., 'African textile patterns', 'Scandinavian minimalism', 'Indian traditional').
-
-Return ONLY valid JSON. No markdown formatting.`;
 
 interface SceneContextResult {
   sceneSetting: string;
@@ -726,92 +689,261 @@ interface SceneContextResult {
   surroundings: string[];
   mood: string;
   culturalContext: string;
-  audienceProfile: string;
   brandCategories: string[];
 }
 
+/**
+ * Analyzes a video frame using Sharp image statistics to infer scene context.
+ * Uses brightness zones, color channel distribution, edge density patterns,
+ * and aspect ratio to classify the scene — no external AI API required.
+ */
 async function analyzeSceneContext(
   framePath: string,
   currentSurfaceType: string,
+  isVertical: boolean,
 ): Promise<SceneContextResult | null> {
-  // Check if Gemini API key is available
-  const apiKey = process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
-  if (!apiKey || apiKey === "dummy-key") {
-    console.log("[Scene Context] No Gemini API key — skipping scene context analysis");
-    return null;
-  }
-
   try {
-    const imageBuffer = fs.readFileSync(framePath);
-    const base64 = imageBuffer.toString("base64");
-    const metadata = await sharp(imageBuffer).metadata();
-    const mimeType = metadata.format === "png" ? "image/png" : "image/jpeg";
+    const image = sharp(framePath);
+    const metadata = await image.metadata();
+    const width = metadata.width || 1280;
+    const height = metadata.height || 720;
 
-    const timeoutPromise = new Promise<null>((_, reject) => {
-      setTimeout(() => reject(new Error("Scene context Gemini timeout")), CONFIG.GEMINI_TIMEOUT_MS);
-    });
+    // Get image statistics (channel means, dominant colors)
+    const stats = await image.stats();
+    const rMean = stats.channels[0]?.mean || 0;
+    const gMean = stats.channels[1]?.mean || 0;
+    const bMean = stats.channels[2]?.mean || 0;
+    const overallBrightness = (rMean + gMean + bMean) / 3;
 
-    const analysisPromise = ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: [
-        {
-          role: "user",
-          parts: [
-            { inlineData: { mimeType, data: base64 } },
-            { text: `Current detected surface type: "${currentSurfaceType}"\n\n${SCENE_CONTEXT_PROMPT}` },
-          ],
-        },
-      ],
-    });
+    // Analyze top third vs bottom third brightness (helps detect studio lighting)
+    const topThird = await sharp(framePath)
+      .extract({ left: 0, top: 0, width, height: Math.floor(height / 3) })
+      .stats();
+    const bottomThird = await sharp(framePath)
+      .extract({ left: 0, top: Math.floor(height * 2 / 3), width, height: Math.floor(height / 3) })
+      .stats();
 
-    const response = (await Promise.race([analysisPromise, timeoutPromise])) as any;
-    if (!response) return null;
+    const topBrightness = ((topThird.channels[0]?.mean || 0) + (topThird.channels[1]?.mean || 0) + (topThird.channels[2]?.mean || 0)) / 3;
+    const bottomBrightness = ((bottomThird.channels[0]?.mean || 0) + (bottomThird.channels[1]?.mean || 0) + (bottomThird.channels[2]?.mean || 0)) / 3;
 
-    const rawText = response.text || "";
-    // Strip markdown fences if present
-    const cleanJson = rawText.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+    // Analyze edge density in the surface region (bottom half)
+    const bottomHalf = await sharp(framePath)
+      .extract({ left: 0, top: Math.floor(height / 2), width, height: Math.floor(height / 2) })
+      .greyscale()
+      .raw()
+      .toBuffer();
 
-    const parsed = JSON.parse(cleanJson);
+    let edgeCount = 0;
+    const bw = width;
+    const bh = Math.floor(height / 2);
+    for (let y = 1; y < bh - 1; y++) {
+      for (let x = 1; x < bw - 1; x++) {
+        const idx = y * bw + x;
+        const gradient = Math.abs(bottomHalf[idx + bw] - bottomHalf[idx - bw]);
+        if (gradient > 15) edgeCount++;
+      }
+    }
+    const edgeDensity = edgeCount / ((bw - 2) * (bh - 2));
 
-    const result: SceneContextResult = {
-      sceneSetting: parsed.scene_setting || "Unknown setting",
-      refinedSurfaceType: parsed.refined_surface_type || currentSurfaceType,
-      surroundings: parsed.surroundings || [],
-      mood: parsed.mood || "General",
-      culturalContext: parsed.cultural_markers?.cultural_context || "General",
-      audienceProfile: parsed.audience_profile
-        ? `${parsed.audience_profile.lifestyle || ""} (${parsed.audience_profile.age_range || "all ages"})`
-        : "General audience",
-      brandCategories: parsed.brand_recommendations?.ideal_categories || [],
+    // Color warmth analysis (warm = reddish/orange, cool = bluish)
+    const warmth = rMean - bMean; // positive = warm, negative = cool
+
+    // Classify scene based on heuristics
+    const sceneSetting = classifyScene(overallBrightness, topBrightness, bottomBrightness, edgeDensity, warmth, isVertical);
+    const refinedSurfaceType = refineSurfaceType(currentSurfaceType, sceneSetting, edgeDensity, overallBrightness);
+    const surroundings = inferSurroundings(sceneSetting, edgeDensity, overallBrightness, warmth);
+    const mood = inferMood(overallBrightness, warmth, edgeDensity);
+    const brandCategories = suggestBrands(sceneSetting, mood);
+
+    console.log(`[FullScale Edge Context] Setting: ${sceneSetting}`);
+    console.log(`[FullScale Edge Context] Refined type: ${refinedSurfaceType} (was: ${currentSurfaceType})`);
+    console.log(`[FullScale Edge Context] Brightness: ${overallBrightness.toFixed(0)}, Warmth: ${warmth.toFixed(0)}, Edge density: ${(edgeDensity * 100).toFixed(1)}%`);
+
+    return {
+      sceneSetting,
+      refinedSurfaceType,
+      surroundings,
+      mood,
+      culturalContext: "General", // Sharp can't determine cultural markers — needs future training data
+      brandCategories,
     };
-
-    console.log(`[Scene Context] Setting: ${result.sceneSetting}`);
-    console.log(`[Scene Context] Refined type: ${result.refinedSurfaceType} (was: ${currentSurfaceType})`);
-    console.log(`[Scene Context] Cultural: ${result.culturalContext}`);
-    console.log(`[Scene Context] Surroundings: ${result.surroundings.join(", ")}`);
-
-    return result;
   } catch (err) {
-    console.error("[Scene Context] Analysis failed:", err);
+    console.error("[FullScale Edge Context] Analysis failed:", err);
     return null;
   }
 }
 
+function classifyScene(
+  brightness: number, topBright: number, bottomBright: number,
+  edgeDensity: number, warmth: number, isVertical: boolean,
+): string {
+  const lightingContrast = Math.abs(topBright - bottomBright);
+
+  // Studio/podcast: controlled lighting (low contrast), darker background, bright subject area
+  if (lightingContrast > 30 && topBright < bottomBright && brightness > 80) {
+    return "Podcast/Recording Studio";
+  }
+  if (lightingContrast > 30 && topBright < 100 && bottomBright > 120) {
+    return "Studio Setup";
+  }
+
+  // Office/workspace: moderate brightness, high edge density (lots of objects/edges)
+  if (edgeDensity > 0.15 && brightness > 100 && brightness < 200) {
+    return warmth > 10 ? "Warm Office/Workspace" : "Modern Office/Workspace";
+  }
+
+  // Kitchen: typically warm, moderate brightness, high edge density
+  if (warmth > 20 && edgeDensity > 0.12 && brightness > 120) {
+    return "Kitchen/Dining Area";
+  }
+
+  // Outdoor: very bright, high brightness variance
+  if (brightness > 170) {
+    return "Outdoor/Bright Setting";
+  }
+
+  // Dark/moody setting: low overall brightness
+  if (brightness < 60) {
+    return "Dark/Moody Setting";
+  }
+
+  // Living space: moderate everything
+  if (brightness > 90 && brightness < 160 && warmth > 0) {
+    return "Living Space";
+  }
+
+  // Vertical video often = mobile/casual content
+  if (isVertical) {
+    return "Mobile/Casual Setting";
+  }
+
+  return "Indoor Setting";
+}
+
+function refineSurfaceType(
+  currentType: string, sceneSetting: string,
+  edgeDensity: number, brightness: number,
+): string {
+  // Only refine if current type is generic
+  if (currentType !== "Desk" && currentType !== "Potential Surface") {
+    return currentType;
+  }
+
+  const setting = sceneSetting.toLowerCase();
+
+  if (setting.includes("podcast") || setting.includes("studio") || setting.includes("recording")) {
+    return "Studio Desk";
+  }
+  if (setting.includes("kitchen") || setting.includes("dining")) {
+    return "Kitchen Counter";
+  }
+  if (setting.includes("office") || setting.includes("workspace")) {
+    return edgeDensity > 0.2 ? "Cluttered Desk" : "Clean Desk";
+  }
+  if (setting.includes("outdoor")) {
+    return "Outdoor Table";
+  }
+  if (setting.includes("living")) {
+    return "Coffee Table";
+  }
+  if (setting.includes("mobile") || setting.includes("casual")) {
+    return "Surface";
+  }
+  if (setting.includes("dark") || setting.includes("moody")) {
+    return "Dark Surface";
+  }
+
+  if (currentType === "Potential Surface") return "Surface";
+  return currentType;
+}
+
+function inferSurroundings(
+  sceneSetting: string, edgeDensity: number,
+  brightness: number, warmth: number,
+): string[] {
+  const items: string[] = [];
+  const setting = sceneSetting.toLowerCase();
+
+  if (setting.includes("podcast") || setting.includes("studio")) {
+    items.push("Microphone", "Monitor", "Camera");
+    if (edgeDensity > 0.15) items.push("Cables", "Audio equipment");
+  }
+  if (setting.includes("office") || setting.includes("workspace")) {
+    items.push("Computer", "Chair");
+    if (edgeDensity > 0.2) items.push("Books", "Papers", "Stationery");
+    if (brightness > 140) items.push("Desk lamp", "Window");
+  }
+  if (setting.includes("kitchen") || setting.includes("dining")) {
+    items.push("Countertop", "Appliances");
+    if (warmth > 20) items.push("Warm lighting", "Food items");
+  }
+  if (setting.includes("outdoor")) {
+    items.push("Natural light", "Plants");
+  }
+  if (setting.includes("living")) {
+    items.push("Sofa", "Decor");
+    if (warmth > 15) items.push("Warm lighting", "Textiles");
+  }
+
+  // Generic items based on edge density
+  if (edgeDensity > 0.18 && items.length < 3) items.push("Multiple objects");
+  if (brightness > 150 && !items.includes("Window")) items.push("Well-lit");
+  if (warmth > 25 && !items.includes("Warm lighting")) items.push("Warm ambiance");
+
+  return items.slice(0, 8);
+}
+
+function inferMood(brightness: number, warmth: number, edgeDensity: number): string {
+  if (brightness > 160 && warmth > 15) return "Energetic";
+  if (brightness > 130 && edgeDensity < 0.1) return "Calm";
+  if (brightness > 100 && warmth < -5) return "Professional";
+  if (brightness < 80) return "Intimate";
+  if (edgeDensity > 0.2) return "Creative";
+  if (warmth > 10) return "Casual";
+  return "Neutral";
+}
+
+function suggestBrands(sceneSetting: string, mood: string): string[] {
+  const setting = sceneSetting.toLowerCase();
+  const brands: string[] = [];
+
+  if (setting.includes("podcast") || setting.includes("studio")) {
+    brands.push("Audio equipment", "Tech accessories", "Beverages", "Software");
+  } else if (setting.includes("kitchen") || setting.includes("dining")) {
+    brands.push("Food & beverage", "Kitchen appliances", "Health & wellness");
+  } else if (setting.includes("office") || setting.includes("workspace")) {
+    brands.push("Tech products", "Office supplies", "Productivity software", "Coffee/beverages");
+  } else if (setting.includes("outdoor")) {
+    brands.push("Outdoor gear", "Fitness", "Suncare", "Beverages");
+  } else if (setting.includes("living")) {
+    brands.push("Home decor", "Lifestyle", "Streaming services", "Beverages");
+  } else {
+    brands.push("Lifestyle", "Consumer electronics", "Beverages");
+  }
+
+  // Mood-based additions
+  if (mood === "Professional") brands.push("Business services");
+  if (mood === "Creative") brands.push("Creative tools", "Art supplies");
+  if (mood === "Energetic") brands.push("Energy drinks", "Sports brands");
+
+  return [...new Set(brands)].slice(0, 5);
+}
+
 /**
- * Runs scene context analysis on detected surfaces after the main scan.
- * Picks unique frames (one per timestamp) to avoid redundant API calls.
+ * Runs FullScale Edge scene context analysis on detected surfaces after the main scan.
+ * Picks unique frames (one per timestamp) to minimize processing.
  * Updates surface records with refined types, scene context, and surroundings.
- * Updates video record with cultural context.
+ * Uses Sharp image statistics only — no external AI API.
  */
 async function enrichSurfacesWithContext(
   videoId: number,
   permanentFramesDir: string,
 ): Promise<void> {
-  console.log(`[Scene Context] Starting post-scan enrichment for video ${videoId}`);
+  console.log(`[FullScale Edge Context] Starting post-scan enrichment for video ${videoId}`);
 
   const surfaces = await storage.getDetectedSurfaces(videoId);
   if (surfaces.length === 0) {
-    console.log("[Scene Context] No surfaces to enrich");
+    console.log("[FullScale Edge Context] No surfaces to enrich");
     return;
   }
 
@@ -825,26 +957,29 @@ async function enrichSurfacesWithContext(
     timestampMap.get(ts)!.push(surface);
   }
 
-  console.log(`[Scene Context] ${surfaces.length} surfaces across ${timestampMap.size} unique timestamps`);
+  console.log(`[FullScale Edge Context] ${surfaces.length} surfaces across ${timestampMap.size} unique timestamps`);
 
   let enrichedCount = 0;
-  let culturalContext = "General";
 
   for (const [timestamp, surfacesAtTime] of timestampMap) {
     const frameFilename = `frame_${timestamp}s.jpg`;
     const framePath = path.join(permanentFramesDir, frameFilename);
 
     if (!fs.existsSync(framePath)) {
-      console.log(`[Scene Context] Frame not found: ${frameFilename}, skipping`);
+      console.log(`[FullScale Edge Context] Frame not found: ${frameFilename}, skipping`);
       continue;
     }
+
+    // Detect if frame is vertical
+    const frameMeta = await sharp(framePath).metadata();
+    const isVertical = (frameMeta.height || 720) > (frameMeta.width || 1280);
 
     // Use the highest-confidence surface type as input
     const bestSurface = surfacesAtTime.reduce((a, b) =>
       parseFloat(String(a.confidence)) > parseFloat(String(b.confidence)) ? a : b
     );
 
-    const result = await analyzeSceneContext(framePath, bestSurface.surfaceType);
+    const result = await analyzeSceneContext(framePath, bestSurface.surfaceType, isVertical);
     if (!result) continue;
 
     // Update ALL surfaces at this timestamp with the context
@@ -857,27 +992,12 @@ async function enrichSurfacesWithContext(
         });
         enrichedCount++;
       } catch (err) {
-        console.error(`[Scene Context] Failed to update surface ${surface.id}:`, err);
+        console.error(`[FullScale Edge Context] Failed to update surface ${surface.id}:`, err);
       }
     }
-
-    // Keep the most specific cultural context found
-    if (result.culturalContext && result.culturalContext !== "General") {
-      culturalContext = result.culturalContext;
-    }
   }
 
-  // Update video-level cultural context
-  if (culturalContext !== "General") {
-    try {
-      await storage.updateVideoMetadata(videoId, { culturalContext });
-      console.log(`[Scene Context] Updated video cultural context: ${culturalContext}`);
-    } catch (err) {
-      console.error(`[Scene Context] Failed to update video metadata:`, err);
-    }
-  }
-
-  console.log(`[Scene Context] Enriched ${enrichedCount}/${surfaces.length} surfaces`);
+  console.log(`[FullScale Edge Context] Enriched ${enrichedCount}/${surfaces.length} surfaces`);
 }
 
 // ============================================================================
@@ -1098,8 +1218,8 @@ export async function processVideoScan(
       }
     }
     
-    // SCENE CONTEXT ENRICHMENT — runs after all surfaces detected
-    // Only runs if Gemini API key is available, otherwise surfaces keep edge detection data
+    // SCENE CONTEXT ENRICHMENT — FullScale Edge image analysis
+    // Uses Sharp to analyze brightness, edges, and color to infer scene context
     try {
       await enrichSurfacesWithContext(videoId, permanentFramesDir);
     } catch (enrichErr) {

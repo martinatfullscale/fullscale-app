@@ -32,7 +32,7 @@ interface DetectedObject {
   bbox: [number, number, number, number];
 }
 
-// Database surface from FullScale Edge scan (+ optional Gemini enrichment)
+// Database surface from FullScale Edge scan
 interface DatabaseSurface {
   id: number;
   videoId: number;
@@ -73,7 +73,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
   const [hasScanned, setHasScanned] = useState(false);
   const [modelError, setModelError] = useState<string | null>(null);
 
-  // Database surfaces from Gemini AI scan
+  // Database surfaces from FullScale Edge scan
   const [dbSurfaces, setDbSurfaces] = useState<DatabaseSurface[]>([]);
   const [isLoadingDbSurfaces, setIsLoadingDbSurfaces] = useState(false);
   const [hasDbSurfaces, setHasDbSurfaces] = useState(false);
@@ -490,10 +490,10 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
       : 0;
   
   // Data source indicator - NO demo fallback
-  const dataSource = hasDbSurfaces && currentDbSurfaces.length > 0 
-    ? "gemini" 
+  const dataSource = hasDbSurfaces && currentDbSurfaces.length > 0
+    ? "fullscale"
     : hasScanned && detections.length > 0
-      ? "tensorflow" 
+      ? "tensorflow"
       : "none";
 
   return (
@@ -586,9 +586,9 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                     </Badge>
                     <Badge className="bg-emerald-500/90 text-white">
                       <Target className="w-3 h-3 mr-1" />
-                      {displayCount} {dataSource === "gemini" ? "Surfaces" : hasScanned ? "Detected" : "Surfaces"}
+                      {displayCount} {dataSource === "fullscale" ? "Surfaces" : hasScanned ? "Detected" : "Surfaces"}
                     </Badge>
-                    {dataSource === "gemini" && (
+                    {dataSource === "fullscale" && (
                       <Badge className="bg-purple-500/90 text-white">
                         <Database className="w-3 h-3 mr-1" />
                         FullScale Edge
