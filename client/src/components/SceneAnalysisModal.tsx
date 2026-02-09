@@ -32,7 +32,7 @@ interface DetectedObject {
   bbox: [number, number, number, number];
 }
 
-// Database surface from Gemini AI scan
+// Database surface from FullScale Edge scan (+ optional Gemini enrichment)
 interface DatabaseSurface {
   id: number;
   videoId: number;
@@ -44,6 +44,8 @@ interface DatabaseSurface {
   boundingBoxWidth: string;
   boundingBoxHeight: string;
   frameUrl: string | null;
+  sceneContext: string | null;
+  surroundings: string[] | null;
 }
 
 interface SceneAnalysisModalProps {
@@ -749,6 +751,25 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                     <p className="text-sm text-muted-foreground" data-testid="text-scene-context">
                       {currentScene?.context || 'Scan video to detect surfaces'}
                     </p>
+                    {/* Show surroundings from enriched data */}
+                    {hasDbSurfaces && currentDbSurfaces.length > 0 && (() => {
+                      const surroundings = currentDbSurfaces
+                        .flatMap((s: any) => s.surroundings || [])
+                        .filter((v: string, i: number, a: string[]) => a.indexOf(v) === i);
+                      return surroundings.length > 0 ? (
+                        <div className="flex flex-wrap gap-1 mt-2">
+                          {surroundings.slice(0, 8).map((item: string, idx: number) => (
+                            <Badge
+                              key={idx}
+                              variant="outline"
+                              className="text-[10px] text-emerald-300 border-emerald-500/30"
+                            >
+                              {item}
+                            </Badge>
+                          ))}
+                        </div>
+                      ) : null;
+                    })()}
                   </div>
 
                   <div className="p-4 rounded-xl bg-white/5 border border-white/10">
@@ -813,7 +834,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
             boundingBoxY: parseFloat(s.boundingBoxY) || 0,
             boundingBoxWidth: parseFloat(s.boundingBoxWidth) || 0,
             boundingBoxHeight: parseFloat(s.boundingBoxHeight) || 0,
-            sceneContext: null,
+            sceneContext: (s as any).sceneContext || null,
           }))}
         />
       )}

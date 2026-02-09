@@ -680,6 +680,207 @@ async function analyzeFrameWithGemini(
 }
 
 // ============================================================================
+// SCENE CONTEXT + CULTURAL RELEVANCE ANALYSIS (Post-Detection Enhancement)
+// ============================================================================
+
+const SCENE_CONTEXT_PROMPT = `You are analyzing a video frame to understand scene context, cultural elements, and refine surface identification for product placement advertising.
+
+Analyze this frame and return a JSON response with the following structure:
+{
+  "scene_setting": "Brief description of the setting (e.g., 'Home office with modern decor', 'Podcast studio', 'Kitchen', 'Outdoor cafe')",
+  "refined_surface_type": "More specific surface type than generic 'Desk' — e.g., 'Podcast Desk', 'Kitchen Counter', 'Coffee Table', 'Bookshelf', 'Monitor Stand', 'Studio Console'",
+  "surroundings": ["list", "of", "visible", "objects", "in", "scene"],
+  "mood": "One of: Professional, Casual, Energetic, Intimate, Educational, Entertainment, Creative",
+  "cultural_markers": {
+    "detected": true/false,
+    "elements": ["list of cultural elements like decor style, food items, clothing, music instruments, language on screen"],
+    "cultural_context": "Brief cultural context description (e.g., 'West African home decor', 'Japanese minimalist', 'American suburban', 'South Asian kitchen')",
+    "sensitivities": ["any cultural sensitivities to be aware of for ad placement"]
+  },
+  "audience_profile": {
+    "age_range": "e.g., '18-34'",
+    "lifestyle": "e.g., 'Urban professional', 'Student', 'Creative professional', 'Home cook'",
+    "interests": ["relevant interests based on scene"]
+  },
+  "brand_recommendations": {
+    "ideal_categories": ["top 3-5 brand categories that fit this scene and cultural context"],
+    "avoid_categories": ["brand categories that would be inappropriate or culturally insensitive here"],
+    "reasoning": "Brief explanation of why these brands fit"
+  }
+}
+
+IMPORTANT GUIDELINES FOR CULTURAL RELEVANCE:
+- Do NOT assume Western/American as the default. Describe what you actually see.
+- Recognize diverse food, decor, clothing, music, and setting styles from all cultures.
+- A "desk" in different cultural contexts may look very different — describe it specifically.
+- Suggest brand pairings that RESPECT the cultural context (e.g., tea brands for East Asian content, not just coffee brands).
+- Identify language on screen or signage that indicates cultural context.
+- Note any religious or traditional items that should be respected in ad placement.
+- Be specific about decor styles (e.g., 'African textile patterns', 'Scandinavian minimalism', 'Indian traditional').
+
+Return ONLY valid JSON. No markdown formatting.`;
+
+interface SceneContextResult {
+  sceneSetting: string;
+  refinedSurfaceType: string;
+  surroundings: string[];
+  mood: string;
+  culturalContext: string;
+  audienceProfile: string;
+  brandCategories: string[];
+}
+
+async function analyzeSceneContext(
+  framePath: string,
+  currentSurfaceType: string,
+): Promise<SceneContextResult | null> {
+  // Check if Gemini API key is available
+  const apiKey = process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
+  if (!apiKey || apiKey === "dummy-key") {
+    console.log("[Scene Context] No Gemini API key — skipping scene context analysis");
+    return null;
+  }
+
+  try {
+    const imageBuffer = fs.readFileSync(framePath);
+    const base64 = imageBuffer.toString("base64");
+    const metadata = await sharp(imageBuffer).metadata();
+    const mimeType = metadata.format === "png" ? "image/png" : "image/jpeg";
+
+    const timeoutPromise = new Promise<null>((_, reject) => {
+      setTimeout(() => reject(new Error("Scene context Gemini timeout")), CONFIG.GEMINI_TIMEOUT_MS);
+    });
+
+    const analysisPromise = ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { inlineData: { mimeType, data: base64 } },
+            { text: `Current detected surface type: "${currentSurfaceType}"\n\n${SCENE_CONTEXT_PROMPT}` },
+          ],
+        },
+      ],
+    });
+
+    const response = (await Promise.race([analysisPromise, timeoutPromise])) as any;
+    if (!response) return null;
+
+    const rawText = response.text || "";
+    // Strip markdown fences if present
+    const cleanJson = rawText.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+
+    const parsed = JSON.parse(cleanJson);
+
+    const result: SceneContextResult = {
+      sceneSetting: parsed.scene_setting || "Unknown setting",
+      refinedSurfaceType: parsed.refined_surface_type || currentSurfaceType,
+      surroundings: parsed.surroundings || [],
+      mood: parsed.mood || "General",
+      culturalContext: parsed.cultural_markers?.cultural_context || "General",
+      audienceProfile: parsed.audience_profile
+        ? `${parsed.audience_profile.lifestyle || ""} (${parsed.audience_profile.age_range || "all ages"})`
+        : "General audience",
+      brandCategories: parsed.brand_recommendations?.ideal_categories || [],
+    };
+
+    console.log(`[Scene Context] Setting: ${result.sceneSetting}`);
+    console.log(`[Scene Context] Refined type: ${result.refinedSurfaceType} (was: ${currentSurfaceType})`);
+    console.log(`[Scene Context] Cultural: ${result.culturalContext}`);
+    console.log(`[Scene Context] Surroundings: ${result.surroundings.join(", ")}`);
+
+    return result;
+  } catch (err) {
+    console.error("[Scene Context] Analysis failed:", err);
+    return null;
+  }
+}
+
+/**
+ * Runs scene context analysis on detected surfaces after the main scan.
+ * Picks unique frames (one per timestamp) to avoid redundant API calls.
+ * Updates surface records with refined types, scene context, and surroundings.
+ * Updates video record with cultural context.
+ */
+async function enrichSurfacesWithContext(
+  videoId: number,
+  permanentFramesDir: string,
+): Promise<void> {
+  console.log(`[Scene Context] Starting post-scan enrichment for video ${videoId}`);
+
+  const surfaces = await storage.getDetectedSurfaces(videoId);
+  if (surfaces.length === 0) {
+    console.log("[Scene Context] No surfaces to enrich");
+    return;
+  }
+
+  // Group surfaces by timestamp — only analyze one frame per unique timestamp
+  const timestampMap = new Map<number, typeof surfaces>();
+  for (const surface of surfaces) {
+    const ts = Math.floor(Number(surface.timestamp));
+    if (!timestampMap.has(ts)) {
+      timestampMap.set(ts, []);
+    }
+    timestampMap.get(ts)!.push(surface);
+  }
+
+  console.log(`[Scene Context] ${surfaces.length} surfaces across ${timestampMap.size} unique timestamps`);
+
+  let enrichedCount = 0;
+  let culturalContext = "General";
+
+  for (const [timestamp, surfacesAtTime] of timestampMap) {
+    const frameFilename = `frame_${timestamp}s.jpg`;
+    const framePath = path.join(permanentFramesDir, frameFilename);
+
+    if (!fs.existsSync(framePath)) {
+      console.log(`[Scene Context] Frame not found: ${frameFilename}, skipping`);
+      continue;
+    }
+
+    // Use the highest-confidence surface type as input
+    const bestSurface = surfacesAtTime.reduce((a, b) =>
+      parseFloat(String(a.confidence)) > parseFloat(String(b.confidence)) ? a : b
+    );
+
+    const result = await analyzeSceneContext(framePath, bestSurface.surfaceType);
+    if (!result) continue;
+
+    // Update ALL surfaces at this timestamp with the context
+    for (const surface of surfacesAtTime) {
+      try {
+        await storage.updateDetectedSurface(surface.id, {
+          surfaceType: result.refinedSurfaceType,
+          sceneContext: `${result.sceneSetting} | ${result.mood} | Brands: ${result.brandCategories.slice(0, 3).join(", ")}`,
+          surroundings: result.surroundings.slice(0, 10),
+        });
+        enrichedCount++;
+      } catch (err) {
+        console.error(`[Scene Context] Failed to update surface ${surface.id}:`, err);
+      }
+    }
+
+    // Keep the most specific cultural context found
+    if (result.culturalContext && result.culturalContext !== "General") {
+      culturalContext = result.culturalContext;
+    }
+  }
+
+  // Update video-level cultural context
+  if (culturalContext !== "General") {
+    try {
+      await storage.updateVideoMetadata(videoId, { culturalContext });
+      console.log(`[Scene Context] Updated video cultural context: ${culturalContext}`);
+    } catch (err) {
+      console.error(`[Scene Context] Failed to update video metadata:`, err);
+    }
+  }
+
+  console.log(`[Scene Context] Enriched ${enrichedCount}/${surfaces.length} surfaces`);
+}
+
+// ============================================================================
 // MAIN SCAN FUNCTIONS
 // ============================================================================
 
@@ -897,6 +1098,14 @@ export async function processVideoScan(
       }
     }
     
+    // SCENE CONTEXT ENRICHMENT — runs after all surfaces detected
+    // Only runs if Gemini API key is available, otherwise surfaces keep edge detection data
+    try {
+      await enrichSurfacesWithContext(videoId, permanentFramesDir);
+    } catch (enrichErr) {
+      console.error(`[Scanner V2] Scene context enrichment failed (non-fatal):`, enrichErr);
+    }
+
     // FINALIZE
     const finalStatus = totalSurfaces > 0 ? `Ready (${totalSurfaces} Spots)` : "Ready (0 Spots)";
     await storage.updateVideoStatus(videoId, finalStatus);
