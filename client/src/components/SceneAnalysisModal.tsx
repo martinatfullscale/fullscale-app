@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, ChevronLeft, ChevronRight, Target, Clock, Eye, Sparkles, Scan, Loader2, Database, Play, Video } from "lucide-react";
+import { X, ChevronLeft, ChevronRight, Target, Clock, Eye, Sparkles, Scan, Loader2, Database, Play, Video, Layers } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import PlacementPreviewModal from "./PlacementPreviewModal";
 import * as tf from "@tensorflow/tfjs";
 import * as cocoSsd from "@tensorflow-models/coco-ssd";
 
@@ -78,6 +79,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
   // Server-side rescan state
   const [isServerScanning, setIsServerScanning] = useState(false);
   const [serverScanError, setServerScanError] = useState<string | null>(null);
+  const [isPlacementPreviewOpen, setIsPlacementPreviewOpen] = useState(false);
 
   // Local scenes state — starts from video.scenes, rebuilt after server rescan
   const [localScenes, setLocalScenes] = useState<Scene[]>(video?.scenes || []);
@@ -770,8 +772,20 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                   </div>
                 </div>
 
-                <Button 
-                  className="w-full mt-6"
+                {hasDbSurfaces && dbSurfaces.length > 0 && (
+                  <Button
+                    className="w-full mt-6 gap-2"
+                    onClick={() => setIsPlacementPreviewOpen(true)}
+                    data-testid="button-preview-placement"
+                  >
+                    <Layers className="w-4 h-4" />
+                    Preview Placement
+                  </Button>
+                )}
+
+                <Button
+                  className="w-full mt-2"
+                  variant="outline"
                   data-testid="button-view-opportunities"
                 >
                   View Ad Opportunities
@@ -780,6 +794,28 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
             </div>
           </motion.div>
         </motion.div>
+      )}
+
+      {/* Placement Preview Modal */}
+      {video && (
+        <PlacementPreviewModal
+          open={isPlacementPreviewOpen}
+          onClose={() => setIsPlacementPreviewOpen(false)}
+          videoId={video.id}
+          videoTitle={video.title}
+          surfaces={dbSurfaces.map(s => ({
+            id: s.id,
+            timestamp: parseInt(s.timestamp) || 0,
+            surfaceType: s.surfaceType,
+            confidence: parseFloat(s.confidence) || 0,
+            frameUrl: s.frameUrl,
+            boundingBoxX: parseFloat(s.boundingBoxX) || 0,
+            boundingBoxY: parseFloat(s.boundingBoxY) || 0,
+            boundingBoxWidth: parseFloat(s.boundingBoxWidth) || 0,
+            boundingBoxHeight: parseFloat(s.boundingBoxHeight) || 0,
+            sceneContext: null,
+          }))}
+        />
       )}
     </AnimatePresence>
   );

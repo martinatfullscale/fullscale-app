@@ -22,6 +22,7 @@ import { db } from "./db";
 import { users } from "@shared/schema";
 import { eq, sql } from "drizzle-orm";
 import crypto from "crypto";
+import sharp from "sharp";
 
 // Configure multer for video uploads
 const uploadStorage = multer.diskStorage({
@@ -49,6 +50,21 @@ const uploadMiddleware = multer({
       cb(null, true);
     } else {
       cb(new Error("Only video files (mp4, mov, webm, avi) are allowed"));
+    }
+  },
+});
+
+// Separate multer for image uploads (memory storage for compositing)
+const imageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB max for images
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = [".png", ".jpg", ".jpeg", ".webp", ".svg"];
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (allowedTypes.includes(ext) || file.mimetype.startsWith("image/")) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only image files are allowed"));
     }
   },
 });
@@ -3071,6 +3087,81 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("[Admin] Failed to send cohort emails:", err);
       res.status(500).json({ error: "Failed to send emails", details: err.message });
+    }
+  });
+
+  // ============================================
+  // PLACEMENT PREVIEW (Compositing) — Authenticated
+  // ============================================
+
+  // Server-side product placement compositing for higher quality output
+  app.post("/api/placement-preview", isAuthenticated, imageUpload.single("productImage"), async (req: any, res) => {
+    try {
+      const { videoId, surfaceId } = req.body;
+
+      if (!videoId || !surfaceId) {
+        return res.status(400).json({ error: "Missing videoId or surfaceId" });
+      }
+
+      if (!req.file) {
+        return res.status(400).json({ error: "No product image uploaded" });
+      }
+
+      // Get surface data from DB
+      const surfaces = await storage.getDetectedSurfaces(parseInt(videoId));
+      const surface = surfaces.find((s: any) => s.id === parseInt(surfaceId));
+      if (!surface) {
+        return res.status(404).json({ error: "Surface not found" });
+      }
+
+      // Find frame file on disk
+      const ts = Math.floor(Number(surface.timestamp));
+      const frameFilename = `frame_${ts}s.jpg`;
+      const framePath = path.join(process.cwd(), "public", "uploads", "frames", String(videoId), frameFilename);
+
+      if (!fs.existsSync(framePath)) {
+        return res.status(404).json({ error: "Frame image not found on disk" });
+      }
+
+      // Read the frame and get its dimensions
+      const frameBuffer = fs.readFileSync(framePath);
+      const frameMeta = await sharp(frameBuffer).metadata();
+      const frameWidth = frameMeta.width || 1280;
+      const frameHeight = frameMeta.height || 720;
+
+      // Calculate bounding box in pixel coordinates (values stored as percentages 0-100)
+      const bx = Math.round((parseFloat(String(surface.boundingBoxX)) / 100) * frameWidth);
+      const by = Math.round((parseFloat(String(surface.boundingBoxY)) / 100) * frameHeight);
+      const bw = Math.round((parseFloat(String(surface.boundingBoxWidth)) / 100) * frameWidth);
+      const bh = Math.round((parseFloat(String(surface.boundingBoxHeight)) / 100) * frameHeight);
+
+      // Read product image from memory buffer
+      const productBuffer = req.file.buffer;
+      const resizedProduct = await sharp(productBuffer)
+        .resize(bw, bh, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+        .png()
+        .toBuffer();
+
+      // Composite product onto frame
+      const composited = await sharp(frameBuffer)
+        .composite([
+          {
+            input: resizedProduct,
+            left: bx,
+            top: by,
+            blend: "over",
+          },
+        ])
+        .jpeg({ quality: 90 })
+        .toBuffer();
+
+      // Return the composited image
+      res.set("Content-Type", "image/jpeg");
+      res.set("Content-Disposition", `attachment; filename="placement-preview-${videoId}-${surfaceId}.jpg"`);
+      res.send(composited);
+    } catch (err: any) {
+      console.error("[Placement] Compositing error:", err);
+      res.status(500).json({ error: "Compositing failed", details: err.message });
     }
   });
 
