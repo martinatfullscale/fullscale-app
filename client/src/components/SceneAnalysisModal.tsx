@@ -82,13 +82,13 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
   // Local scenes state — starts from video.scenes, rebuilt after server rescan
   const [localScenes, setLocalScenes] = useState<Scene[]>(video?.scenes || []);
 
-  // Sync localScenes when video prop changes (e.g., different video opened)
+  // Sync localScenes when video prop changes or modal opens
   useEffect(() => {
-    if (video?.scenes) {
+    if (video?.scenes && video.scenes.length > 0) {
       setLocalScenes(video.scenes);
       setCurrentSceneIndex(0);
     }
-  }, [video?.id]);
+  }, [video?.id, video?.scenes, open]);
   
   const imageRef = useRef<HTMLImageElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -437,8 +437,8 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
   if (!video || !open) return null;
 
   const totalScenes = localScenes.length;
-  const safeIndex = Math.min(currentSceneIndex, totalScenes - 1);
-  const currentScene = localScenes[safeIndex >= 0 ? safeIndex : 0];
+  const safeIndex = totalScenes > 0 ? Math.min(currentSceneIndex, totalScenes - 1) : 0;
+  const currentScene = totalScenes > 0 ? localScenes[Math.max(0, safeIndex)] : null;
 
   const goToPrevious = () => {
     setCurrentSceneIndex((prev) => (prev > 0 ? prev - 1 : totalScenes - 1));
@@ -542,8 +542,8 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                 <div className="relative overflow-hidden bg-black flex items-center justify-center" style={{ minHeight: '300px', maxHeight: '70vh' }}>
                   <img
                     ref={imageRef}
-                    src={currentScene.imageUrl}
-                    alt={`Scene at ${currentScene.timestamp}`}
+                    src={currentScene?.imageUrl || ''}
+                    alt={`Scene at ${currentScene?.timestamp || '0:00'}`}
                     className="max-w-full max-h-[70vh] object-contain"
                     data-testid="img-scene-main"
                     onLoad={() => {
@@ -563,7 +563,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                     <div className="text-center">
                       <Video className="w-12 h-12 mx-auto mb-2 opacity-50" />
                       <p className="text-sm">Frame not available</p>
-                      <p className="text-xs mt-1">{currentScene.timestamp}</p>
+                      <p className="text-xs mt-1">{currentScene?.timestamp || '0:00'}</p>
                     </div>
                   </div>
                   
@@ -578,7 +578,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                   <div className="absolute bottom-4 left-4 flex items-center gap-2">
                     <Badge className="bg-primary/90 text-white">
                       <Clock className="w-3 h-3 mr-1" />
-                      {currentScene.timestamp}
+                      {currentScene?.timestamp || '0:00'}
                     </Badge>
                     <Badge className="bg-emerald-500/90 text-white">
                       <Target className="w-3 h-3 mr-1" />
@@ -745,7 +745,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                       <span className="text-sm font-medium text-white">Scene Context</span>
                     </div>
                     <p className="text-sm text-muted-foreground" data-testid="text-scene-context">
-                      {currentScene.context}
+                      {currentScene?.context || 'Scan video to detect surfaces'}
                     </p>
                   </div>
 
