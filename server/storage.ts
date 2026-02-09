@@ -6,6 +6,7 @@ import {
   allowedUsers,
   videoIndex,
   detectedSurfaces,
+  brandProducts,
   type MonetizationItem,
   type InsertMonetizationItem,
   type YoutubeConnection,
@@ -16,6 +17,8 @@ import {
   type InsertVideoIndex,
   type DetectedSurface,
   type InsertDetectedSurface,
+  type BrandProduct,
+  type InsertBrandProduct,
 } from "@shared/schema";
 import { users, type User, type UpsertUser } from "@shared/models/auth";
 import { encrypt, decrypt } from "./encryption";
@@ -68,6 +71,15 @@ export interface IStorage {
   createBid(bid: InsertMonetizationItem): Promise<MonetizationItem>;
   getActiveBidsForCreator(creatorUserId: string): Promise<MonetizationItem[]>;
   getBrandCampaigns(brandEmail: string): Promise<MonetizationItem[]>;
+  // YouTube stats methods
+  getYoutubeConnectionByEmail(email: string): Promise<YoutubeConnection | undefined>;
+  updateYoutubeStats(connectionId: number, stats: { subscriberCount: number; totalViewCount: number }): Promise<void>;
+  // Brand product methods
+  createBrandProduct(product: InsertBrandProduct): Promise<BrandProduct>;
+  getBrandProducts(userId: string): Promise<BrandProduct[]>;
+  getBrandProduct(productId: number): Promise<BrandProduct | undefined>;
+  deleteBrandProduct(productId: number): Promise<BrandProduct | undefined>;
+  getAllBrandProducts(): Promise<BrandProduct[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -590,6 +602,66 @@ export class DatabaseStorage implements IStorage {
     }
     
     return results;
+  }
+
+  // YouTube stats methods
+  async getYoutubeConnectionByEmail(email: string): Promise<YoutubeConnection | undefined> {
+    const normalizedEmail = email.toLowerCase().trim();
+    // Find the user by email, then get their YouTube connection
+    const user = await this.getUserByEmail(normalizedEmail);
+    if (!user) return undefined;
+    return this.getYoutubeConnection(user.id);
+  }
+
+  async updateYoutubeStats(connectionId: number, stats: { subscriberCount: number; totalViewCount: number }): Promise<void> {
+    await db
+      .update(youtubeConnections)
+      .set({
+        subscriberCount: stats.subscriberCount,
+        totalViewCount: stats.totalViewCount,
+        updatedAt: new Date(),
+      })
+      .where(eq(youtubeConnections.id, connectionId));
+  }
+
+  // Brand product methods
+  async createBrandProduct(product: InsertBrandProduct): Promise<BrandProduct> {
+    const [result] = await db
+      .insert(brandProducts)
+      .values(product)
+      .returning();
+    return result;
+  }
+
+  async getBrandProducts(userId: string): Promise<BrandProduct[]> {
+    return await db
+      .select()
+      .from(brandProducts)
+      .where(eq(brandProducts.userId, userId))
+      .orderBy(desc(brandProducts.createdAt));
+  }
+
+  async getBrandProduct(productId: number): Promise<BrandProduct | undefined> {
+    const [result] = await db
+      .select()
+      .from(brandProducts)
+      .where(eq(brandProducts.id, productId));
+    return result;
+  }
+
+  async deleteBrandProduct(productId: number): Promise<BrandProduct | undefined> {
+    const [result] = await db
+      .delete(brandProducts)
+      .where(eq(brandProducts.id, productId))
+      .returning();
+    return result;
+  }
+
+  async getAllBrandProducts(): Promise<BrandProduct[]> {
+    return await db
+      .select()
+      .from(brandProducts)
+      .orderBy(desc(brandProducts.createdAt));
   }
 
   private deriveContexts(surfaces: DetectedSurface[]): string[] {

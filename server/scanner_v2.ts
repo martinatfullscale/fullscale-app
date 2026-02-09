@@ -207,6 +207,8 @@ const LOCAL_ASSET_MAP: Record<string, string> = {
   // Test video 2 - Bar table test
   'test-video-2': './public/videos/test_video2.mov',
   'upload-test-video-2': './public/videos/test_video2.mov',
+  // Test2.mov - Podcast sample (separate from test_video2.mov)
+  'test-podcast-sample': './public/videos/Test2.mov',
   // Legacy mappings
   'yt_techguru_001': './public/videos/many_jobs.mov',
   'yt_beauty_02': './public/hero_video.mp4',

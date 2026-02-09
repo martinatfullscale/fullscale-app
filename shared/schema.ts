@@ -17,6 +17,8 @@ export const youtubeConnections = pgTable("youtube_connections", {
   expiresAt: timestamp("expires_at"),
   channelId: text("channel_id"),
   channelTitle: text("channel_title"),
+  subscriberCount: integer("subscriber_count"), // YouTube channel subscriber count
+  totalViewCount: integer("total_view_count"), // YouTube channel total view count
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
@@ -138,3 +140,27 @@ export const insertDetectedSurfaceSchema = createInsertSchema(detectedSurfaces).
 
 export type DetectedSurface = typeof detectedSurfaces.$inferSelect;
 export type InsertDetectedSurface = z.infer<typeof insertDetectedSurfaceSchema>;
+
+// Brand Products Table - stores product images uploaded by brands for placement previews
+export const brandProducts = pgTable("brand_products", {
+  id: serial("id").primaryKey(),
+  userId: varchar("user_id").notNull(), // Brand user ID (references users.id)
+  name: varchar("name").notNull(), // Product name
+  imageUrl: text("image_url").notNull(), // Path to stored product image
+  thumbnailUrl: text("thumbnail_url"), // Auto-generated smaller thumbnail
+  category: varchar("category"), // e.g., "beverage", "electronics", "fashion"
+  width: integer("width"), // Image pixel width
+  height: integer("height"), // Image pixel height
+  isTransparent: boolean("is_transparent").default(false), // Whether image has alpha channel
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const insertBrandProductSchema = createInsertSchema(brandProducts).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type BrandProduct = typeof brandProducts.$inferSelect;
+export type InsertBrandProduct = z.infer<typeof insertBrandProductSchema>;

@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   X,
@@ -11,9 +12,20 @@ import {
   RotateCcw,
   ZoomIn,
   Layers,
+  Package,
+  CheckCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+
+interface CatalogProduct {
+  id: number;
+  name: string;
+  imageUrl: string;
+  thumbnailUrl: string | null;
+  category: string | null;
+  isTransparent: boolean | null;
+}
 
 interface Surface {
   id: number;
@@ -49,8 +61,21 @@ export default function PlacementPreviewModal({
   const [isCompositing, setIsCompositing] = useState(false);
   const [compositedImage, setCompositedImage] = useState<string | null>(null);
   const [opacity, setOpacity] = useState(85);
+  const [productTab, setProductTab] = useState<"upload" | "catalog">("upload");
+  const [selectedCatalogProduct, setSelectedCatalogProduct] = useState<CatalogProduct | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Fetch product catalog
+  const { data: catalogProducts } = useQuery<CatalogProduct[]>({
+    queryKey: ["/api/brand-products/catalog"],
+    queryFn: async () => {
+      const res = await fetch("/api/brand-products/catalog");
+      if (!res.ok) return [];
+      return res.json();
+    },
+    enabled: open,
+  });
 
   // Auto-select first surface with a frame
   useEffect(() => {
@@ -68,6 +93,8 @@ export default function PlacementPreviewModal({
       setProductFile(null);
       setCompositedImage(null);
       setIsCompositing(false);
+      setProductTab("upload");
+      setSelectedCatalogProduct(null);
     }
   }, [open]);
 
@@ -203,10 +230,19 @@ export default function PlacementPreviewModal({
     link.click();
   }, [compositedImage, videoId, selectedSurface]);
 
+  const selectCatalogProduct = useCallback((product: CatalogProduct) => {
+    setSelectedCatalogProduct(product);
+    setCompositedImage(null);
+    // Load the product image URL as the product image for compositing
+    setProductImage(product.imageUrl);
+    setProductFile(null);
+  }, []);
+
   const resetPreview = () => {
     setProductImage(null);
     setProductFile(null);
     setCompositedImage(null);
+    setSelectedCatalogProduct(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
@@ -368,11 +404,43 @@ export default function PlacementPreviewModal({
                   </div>
                 )}
 
-                {/* Product image upload */}
+                {/* Product image — tabbed: Upload / Catalog */}
                 <div className="mb-5">
                   <label className="text-sm font-medium text-white mb-2 block">
                     Product Image
                   </label>
+
+                  {/* Tab switcher */}
+                  <div className="flex rounded-lg bg-black/30 p-0.5 mb-3">
+                    <button
+                      onClick={() => setProductTab("upload")}
+                      className={`flex-1 text-xs py-1.5 px-2 rounded-md transition-colors flex items-center justify-center gap-1.5 ${
+                        productTab === "upload"
+                          ? "bg-primary text-primary-foreground"
+                          : "text-muted-foreground hover:text-white"
+                      }`}
+                    >
+                      <Upload className="w-3 h-3" />
+                      Upload
+                    </button>
+                    <button
+                      onClick={() => setProductTab("catalog")}
+                      className={`flex-1 text-xs py-1.5 px-2 rounded-md transition-colors flex items-center justify-center gap-1.5 ${
+                        productTab === "catalog"
+                          ? "bg-primary text-primary-foreground"
+                          : "text-muted-foreground hover:text-white"
+                      }`}
+                    >
+                      <Package className="w-3 h-3" />
+                      Catalog
+                      {catalogProducts && catalogProducts.length > 0 && (
+                        <span className="text-[9px] bg-white/20 rounded-full px-1.5">
+                          {catalogProducts.length}
+                        </span>
+                      )}
+                    </button>
+                  </div>
+
                   <input
                     ref={fileInputRef}
                     type="file"
@@ -381,6 +449,7 @@ export default function PlacementPreviewModal({
                     className="hidden"
                   />
 
+                  {/* Selected product preview (shared for both tabs) */}
                   {productImage ? (
                     <div className="relative">
                       <div className="w-full h-24 rounded-lg overflow-hidden border border-white/10 bg-black/30">
@@ -390,12 +459,23 @@ export default function PlacementPreviewModal({
                           className="w-full h-full object-contain"
                         />
                       </div>
+                      {selectedCatalogProduct && (
+                        <p className="text-[10px] text-muted-foreground mt-1 truncate">
+                          {selectedCatalogProduct.name}
+                        </p>
+                      )}
                       <div className="flex gap-2 mt-2">
                         <Button
                           size="sm"
                           variant="outline"
                           className="flex-1 text-xs"
-                          onClick={() => fileInputRef.current?.click()}
+                          onClick={() => {
+                            if (productTab === "upload") {
+                              fileInputRef.current?.click();
+                            } else {
+                              resetPreview();
+                            }
+                          }}
                         >
                           Change
                         </Button>
@@ -410,7 +490,8 @@ export default function PlacementPreviewModal({
                         </Button>
                       </div>
                     </div>
-                  ) : (
+                  ) : productTab === "upload" ? (
+                    // Upload dropzone
                     <div
                       onDragOver={(e) => e.preventDefault()}
                       onDrop={handleDrop}
@@ -424,6 +505,43 @@ export default function PlacementPreviewModal({
                       <span className="text-[10px] text-muted-foreground/60">
                         PNG, JPG, SVG
                       </span>
+                    </div>
+                  ) : (
+                    // Catalog product grid
+                    <div className="max-h-48 overflow-y-auto rounded-lg border border-white/10 bg-black/20">
+                      {!catalogProducts || catalogProducts.length === 0 ? (
+                        <div className="p-4 text-center">
+                          <Package className="w-6 h-6 text-muted-foreground mx-auto mb-1.5" />
+                          <p className="text-xs text-muted-foreground">No products in catalog</p>
+                          <p className="text-[10px] text-muted-foreground/60 mt-0.5">
+                            Brands can upload products in Product Catalog
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-3 gap-1.5 p-1.5">
+                          {catalogProducts.map((product) => (
+                            <button
+                              key={product.id}
+                              onClick={() => selectCatalogProduct(product)}
+                              className={`relative aspect-square rounded-md overflow-hidden border-2 transition-all ${
+                                selectedCatalogProduct?.id === product.id
+                                  ? "border-primary ring-1 ring-primary/30"
+                                  : "border-white/10 hover:border-white/30"
+                              }`}
+                              title={product.name}
+                            >
+                              <img
+                                src={product.thumbnailUrl || product.imageUrl}
+                                alt={product.name}
+                                className="w-full h-full object-contain bg-white/5 p-1"
+                              />
+                              {product.isTransparent && (
+                                <CheckCircle className="absolute top-0.5 right-0.5 w-3 h-3 text-green-400" />
+                              )}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

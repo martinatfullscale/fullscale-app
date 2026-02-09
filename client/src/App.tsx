@@ -27,6 +27,8 @@ import Settings from "@/pages/Settings";
 import Privacy from "@/pages/Privacy";
 import Terms from "@/pages/Terms";
 import CreatorProfile from "@/pages/CreatorProfile";
+import BrandProducts from "@/pages/BrandProducts";
+import RemixEngine from "@/components/RemixEngine";
 
 interface AuthStatusResponse {
   authenticated: boolean;
@@ -187,6 +189,7 @@ function Router() {
     <Switch>
       <Route path="/home" component={Landing} />
       <Route path="/c/:slug" component={CreatorProfile} />
+      <Route path="/remix/:videoId" component={RemixEngine} />
       <Route>
         {() => (
           <AuthenticatedLayout userType={currentRole}>
@@ -199,6 +202,7 @@ function Router() {
               <Route path="/opportunities" component={Opportunities} />
               <Route path="/marketplace" component={BrandMarketplace} />
               <Route path="/campaigns" component={Campaigns} />
+              <Route path="/brand-products" component={BrandProducts} />
               <Route path="/settings" component={Settings} />
               <Route path="/earnings" component={Dashboard} />
               <Route component={NotFound} />

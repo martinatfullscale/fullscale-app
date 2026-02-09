@@ -981,17 +981,28 @@ export async function registerRoutes(
       
       // Save the connection
       console.log("[YouTube Callback] Saving connection to database...");
-      await storage.upsertYoutubeConnection({
+      const connectionResult = await storage.upsertYoutubeConnection({
         userId,
         accessToken: tokens.access_token,
         refreshToken: tokens.refresh_token || null,
-        expiresAt: tokens.expires_in 
-          ? new Date(Date.now() + tokens.expires_in * 1000) 
+        expiresAt: tokens.expires_in
+          ? new Date(Date.now() + tokens.expires_in * 1000)
           : null,
         channelId: channel?.id || null,
         channelTitle: channel?.snippet?.title || null,
       });
       console.log("[YouTube Callback] Connection saved successfully");
+
+      // Persist YouTube channel stats (subscriber count, total views)
+      if (channel?.statistics) {
+        const subCount = parseInt(channel.statistics.subscriberCount || "0", 10);
+        const viewCount = parseInt(channel.statistics.viewCount || "0", 10);
+        await storage.updateYoutubeStats(connectionResult.id, {
+          subscriberCount: subCount,
+          totalViewCount: viewCount,
+        });
+        console.log(`[YouTube Callback] Stats saved: ${subCount} subscribers, ${viewCount} total views`);
+      }
 
       // AUTO-SYNC DISABLED: User requested manual sync only via dashboard button
       // setImmediate(async () => {
@@ -1034,6 +1045,48 @@ export async function registerRoutes(
       });
     } else {
       res.json({ connected: false });
+    }
+  });
+
+  // Refresh YouTube channel stats (subscriber count, total views)
+  app.get("/api/youtube/refresh-stats", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.authUserId;
+      const authEmail = req.authEmail;
+
+      let connection = await storage.getYoutubeConnection(userId);
+      if (!connection && authEmail && authEmail !== userId) {
+        connection = await storage.getYoutubeConnection(authEmail);
+      }
+
+      if (!connection) {
+        return res.status(404).json({ error: "No YouTube connection found" });
+      }
+
+      const channelData = await getYoutubeChannelInfo(connection.accessToken);
+      const channel = channelData.items?.[0];
+
+      if (!channel?.statistics) {
+        return res.status(404).json({ error: "Could not fetch channel statistics" });
+      }
+
+      const subCount = parseInt(channel.statistics.subscriberCount || "0", 10);
+      const viewCount = parseInt(channel.statistics.viewCount || "0", 10);
+
+      await storage.updateYoutubeStats(connection.id, {
+        subscriberCount: subCount,
+        totalViewCount: viewCount,
+      });
+
+      console.log(`[YouTube Stats Refresh] Updated: ${subCount} subscribers, ${viewCount} views`);
+      res.json({
+        success: true,
+        subscriberCount: subCount,
+        totalViewCount: viewCount
+      });
+    } catch (err: any) {
+      console.error("[YouTube Stats Refresh] Error:", err.message);
+      res.status(500).json({ error: "Failed to refresh stats" });
     }
   });
 
@@ -1755,6 +1808,31 @@ export async function registerRoutes(
         fs.unlinkSync(path.join(process.cwd(), "public", "uploads", file.filename));
       } catch {}
       res.status(500).json({ error: "Failed to save video record" });
+    }
+  });
+
+  // Get single video with metadata (for Remix Engine)
+  app.get("/api/video/:id/details", async (req: any, res) => {
+    const videoId = parseInt(req.params.id);
+    if (isNaN(videoId)) {
+      return res.status(400).json({ error: "Invalid video ID" });
+    }
+
+    try {
+      const video = await storage.getVideoById(videoId);
+      if (!video) {
+        return res.status(404).json({ error: "Video not found" });
+      }
+
+      const surfaceCount = await storage.getSurfaceCountByVideo(videoId);
+
+      res.json({
+        ...video,
+        surfaceCount,
+      });
+    } catch (error: any) {
+      console.error("[API] Error fetching video details:", error);
+      res.status(500).json({ error: "Failed to fetch video details" });
     }
   });
 
@@ -3192,8 +3270,34 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Creator not found" });
       }
 
-      // Get user profile for avatar
+      // Get user profile for avatar and social stats
       const userProfile = await storage.getUserByEmail(email);
+
+      // Get YouTube connection for subscriber stats
+      const ytConnection = await storage.getYoutubeConnectionByEmail(email);
+
+      // Build social stats (only include platforms with data)
+      const socialStats: Record<string, any> = {};
+      if (ytConnection?.subscriberCount || ytConnection?.totalViewCount) {
+        socialStats.youtube = {
+          subscribers: ytConnection.subscriberCount || 0,
+          totalViews: ytConnection.totalViewCount || 0,
+          channelTitle: ytConnection.channelTitle || null,
+          channelId: ytConnection.channelId || null,
+        };
+      }
+      if (userProfile?.instagramFollowers || userProfile?.instagramHandle) {
+        socialStats.instagram = {
+          followers: userProfile.instagramFollowers || 0,
+          handle: userProfile.instagramHandle || null,
+        };
+      }
+      if (userProfile?.facebookFollowers || userProfile?.facebookPageName) {
+        socialStats.facebook = {
+          followers: userProfile.facebookFollowers || 0,
+          pageName: userProfile.facebookPageName || null,
+        };
+      }
 
       // Get videos that are "Ready" with detected surfaces
       const videos = await storage.getVideosWithSurfacesPublic(email);
@@ -3261,6 +3365,7 @@ export async function registerRoutes(
           surfaceTypes: Array.from(allSurfaceTypes),
           categories: Array.from(allCategories),
         },
+        socialStats: Object.keys(socialStats).length > 0 ? socialStats : null,
         videos: enrichedVideos,
       });
     } catch (err: any) {
@@ -3305,6 +3410,145 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("[Public] Error creating placement request:", err);
       res.status(500).json({ error: "Failed to submit request" });
+    }
+  });
+
+  // ── Brand Product Catalog ──
+
+  // Upload a new brand product image
+  app.post("/api/brand-products", isFlexibleAuthenticated, imageUpload.single("productImage"), async (req: any, res) => {
+    try {
+      const userId = req.authUserId;
+      const { name, category } = req.body;
+
+      if (!req.file) {
+        return res.status(400).json({ error: "No image file provided" });
+      }
+      if (!name) {
+        return res.status(400).json({ error: "Product name is required" });
+      }
+
+      // Ensure uploads/products directory exists
+      const productsDir = "./public/uploads/products";
+      if (!fs.existsSync(productsDir)) {
+        fs.mkdirSync(productsDir, { recursive: true });
+      }
+
+      // Use Sharp to validate and extract metadata
+      const imageBuffer = req.file.buffer;
+      const metadata = await sharp(imageBuffer).metadata();
+      const width = metadata.width || 0;
+      const height = metadata.height || 0;
+      const hasAlpha = metadata.hasAlpha || false;
+
+      // Save original image
+      const timestamp = Date.now();
+      const ext = metadata.format === "png" ? "png" : metadata.format === "webp" ? "webp" : "jpg";
+      const filename = `product_${timestamp}.${ext}`;
+      const imagePath = path.join(productsDir, filename);
+      await sharp(imageBuffer).toFile(imagePath);
+
+      // Generate thumbnail (200px wide)
+      const thumbFilename = `product_${timestamp}_thumb.${ext}`;
+      const thumbPath = path.join(productsDir, thumbFilename);
+      await sharp(imageBuffer).resize(200).toFile(thumbPath);
+
+      const imageUrl = `/uploads/products/${filename}`;
+      const thumbnailUrl = `/uploads/products/${thumbFilename}`;
+
+      const product = await storage.createBrandProduct({
+        userId,
+        name,
+        imageUrl,
+        thumbnailUrl,
+        category: category || null,
+        width,
+        height,
+        isTransparent: hasAlpha,
+      });
+
+      console.log(`[Brand Products] Created product "${name}" (${width}x${height}, transparent: ${hasAlpha})`);
+      res.json(product);
+    } catch (err: any) {
+      console.error("[Brand Products] Upload error:", err.message);
+      res.status(500).json({ error: "Failed to upload product image" });
+    }
+  });
+
+  // List current brand's products
+  app.get("/api/brand-products", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.authUserId;
+      const products = await storage.getBrandProducts(userId);
+      res.json(products);
+    } catch (err: any) {
+      console.error("[Brand Products] List error:", err.message);
+      res.status(500).json({ error: "Failed to list products" });
+    }
+  });
+
+  // Get single product detail
+  app.get("/api/brand-products/catalog", async (_req, res) => {
+    try {
+      const products = await storage.getAllBrandProducts();
+      res.json(products);
+    } catch (err: any) {
+      console.error("[Brand Products] Catalog error:", err.message);
+      res.status(500).json({ error: "Failed to fetch product catalog" });
+    }
+  });
+
+  app.get("/api/brand-products/:id", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const productId = parseInt(req.params.id);
+      if (isNaN(productId)) {
+        return res.status(400).json({ error: "Invalid product ID" });
+      }
+      const product = await storage.getBrandProduct(productId);
+      if (!product) {
+        return res.status(404).json({ error: "Product not found" });
+      }
+      res.json(product);
+    } catch (err: any) {
+      console.error("[Brand Products] Get error:", err.message);
+      res.status(500).json({ error: "Failed to fetch product" });
+    }
+  });
+
+  // Delete a brand product
+  app.delete("/api/brand-products/:id", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.authUserId;
+      const productId = parseInt(req.params.id);
+      if (isNaN(productId)) {
+        return res.status(400).json({ error: "Invalid product ID" });
+      }
+
+      // Verify ownership
+      const product = await storage.getBrandProduct(productId);
+      if (!product) {
+        return res.status(404).json({ error: "Product not found" });
+      }
+      if (product.userId !== userId) {
+        return res.status(403).json({ error: "Not authorized to delete this product" });
+      }
+
+      // Delete image files
+      try {
+        const imgPath = `./public${product.imageUrl}`;
+        const thumbPath = product.thumbnailUrl ? `./public${product.thumbnailUrl}` : null;
+        if (fs.existsSync(imgPath)) fs.unlinkSync(imgPath);
+        if (thumbPath && fs.existsSync(thumbPath)) fs.unlinkSync(thumbPath);
+      } catch (fileErr) {
+        console.warn("[Brand Products] Could not cleanup files:", fileErr);
+      }
+
+      await storage.deleteBrandProduct(productId);
+      console.log(`[Brand Products] Deleted product ${productId}`);
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("[Brand Products] Delete error:", err.message);
+      res.status(500).json({ error: "Failed to delete product" });
     }
   });
 
@@ -3355,5 +3599,55 @@ async function seedDatabase() {
       }
     }
     console.log("Allowed users seeded!");
+  }
+
+  // Seed local video files into library if not already present
+  // Test2.mov = Podcast Sample, test_video2.mov = Bar Table Test (separate files)
+  try {
+    const allVideos = await storage.getAllVideos();
+
+    // Seed Test2.mov - Podcast Sample
+    const hasTest2 = allVideos.some(v => v.youtubeId === "test-podcast-sample");
+    if (!hasTest2) {
+      const fileExists = fs.existsSync("./public/videos/Test2.mov");
+      const video = await storage.insertVideo({
+        userId: "martin@gofullscale.co",
+        youtubeId: "test-podcast-sample",
+        title: "Test2 - Podcast Sample",
+        description: "Podcast video sample for product placement testing | File: /videos/Test2.mov",
+        platform: "fullscale",
+        filePath: "./public/videos/Test2.mov",
+        status: fileExists ? "Pending Scan" : "Pending Upload",
+        priorityScore: 100,
+        viewCount: 0,
+        category: "Podcast",
+        isEvergreen: true,
+        duration: "0:00",
+      });
+      console.log(`[Seed] Added Test2 podcast sample to library (ID: ${video.id}, fileExists: ${fileExists})`);
+    }
+
+    // Seed test_video2.mov - Bar Table Test
+    const hasBarTable = allVideos.some(v => v.youtubeId === "test-video-2");
+    if (!hasBarTable) {
+      const fileExists = fs.existsSync("./public/videos/test_video2.mov");
+      const video = await storage.insertVideo({
+        userId: "martin@gofullscale.co",
+        youtubeId: "test-video-2",
+        title: "Bar Table Test",
+        description: "Bar table test video for surface detection | File: /videos/test_video2.mov",
+        platform: "fullscale",
+        filePath: "./public/videos/test_video2.mov",
+        status: fileExists ? "Pending Scan" : "Pending Upload",
+        priorityScore: 90,
+        viewCount: 0,
+        category: "Test",
+        isEvergreen: true,
+        duration: "0:00",
+      });
+      console.log(`[Seed] Added Bar Table Test to library (ID: ${video.id}, fileExists: ${fileExists})`);
+    }
+  } catch (err) {
+    console.error("[Seed] Error seeding local videos:", err);
   }
 }

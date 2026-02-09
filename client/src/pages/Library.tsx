@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { TopBar } from "@/components/TopBar";
-import { Upload, Eye, CheckCircle, Loader2, AlertTriangle, X, Shield, Sun, Tag, Box, DollarSign, Sparkles, RefreshCw, Play, Globe, HardDrive, Scan, Video } from "lucide-react";
+import { Upload, Eye, CheckCircle, Loader2, AlertTriangle, X, Shield, Sun, Tag, Box, DollarSign, Sparkles, RefreshCw, Play, Globe, HardDrive, Scan, Video, Wand2 } from "lucide-react";
+import { useLocation } from "wouter";
 import { SiInstagram, SiYoutube, SiTwitch, SiFacebook } from "react-icons/si";
 import { motion } from "framer-motion";
 import { useAuth } from "@/hooks/use-auth";
@@ -535,6 +536,7 @@ export default function Library() {
   const { isPitchMode } = usePitchMode();
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const [, setLocation] = useLocation();
   const [selectedVideo, setSelectedVideo] = useState<DisplayVideo | null>(null);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [platformFilter, setPlatformFilter] = useState<PlatformFilter>("all");
@@ -1284,11 +1286,25 @@ export default function Library() {
                         </div>
                       )}
                       {video.aiStatus === "ready" && (
-                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
+                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
                           <Button variant="outline" size="sm" className="gap-2">
                             <Eye className="w-4 h-4" />
                             View Analysis
                           </Button>
+                          {video.hasLocalFile && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="gap-2 border-primary/50 text-primary hover:bg-primary/10"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setLocation(`/remix/${video.id}`);
+                              }}
+                            >
+                              <Wand2 className="w-4 h-4" />
+                              Remix
+                            </Button>
+                          )}
                         </div>
                       )}
                     </>
