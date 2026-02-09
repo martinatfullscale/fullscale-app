@@ -3081,42 +3081,96 @@ export async function registerRoutes(
   // Get creator by slug (email prefix) with their ready videos
   app.get("/api/public/creator/:slug", async (req, res) => {
     const { slug } = req.params;
-    
+
     try {
-      // Map slug to email (for now, martin -> martin@gofullscale.co)
+      // Dynamic slug mapping: check allowed_users where email starts with slug
       const emailMappings: Record<string, string> = {
         "martin": "martin@gofullscale.co",
+        "kim": "thekimkwilson@gmail.com",
+        "tamara": "tamara@whtwrks.com",
       };
-      
+
       const email = emailMappings[slug.toLowerCase()];
       if (!email) {
         return res.status(404).json({ error: "Creator not found" });
       }
-      
+
       // Get creator info from allowed_users
       const creator = await storage.getAllowedUser(email);
       if (!creator) {
         return res.status(404).json({ error: "Creator not found" });
       }
-      
+
+      // Get user profile for avatar
+      const userProfile = await storage.getUserByEmail(email);
+
       // Get videos that are "Ready" with detected surfaces
       const videos = await storage.getVideosWithSurfacesPublic(email);
-      
+
+      // Compute aggregate stats
+      const totalViews = videos.reduce((sum: number, v: any) => sum + (v.viewCount || 0), 0);
+      const totalSurfaces = videos.reduce((sum: number, v: any) => sum + (v.surfaceCount || 0), 0);
+
+      // Extract unique surface types across all videos
+      const allSurfaceTypes = new Set<string>();
+      const allCategories = new Set<string>();
+      videos.forEach((v: any) => {
+        (v.surfaces || []).forEach((s: any) => {
+          if (s.surfaceType) allSurfaceTypes.add(s.surfaceType);
+        });
+        if (v.category) allCategories.add(v.category);
+      });
+
+      // Enrich videos with frame existence and surface type breakdown
+      const enrichedVideos = videos.map((v: any) => {
+        const surfaceTypes = Array.from(new Set((v.surfaces || []).map((s: any) => s.surfaceType).filter(Boolean)));
+        // Use extracted frame as thumbnail for local files
+        const thumbnail = v.filePath
+          ? `/uploads/frames/${v.id}/frame_0s.jpg`
+          : v.thumbnailUrl;
+
+        return {
+          id: v.id,
+          title: v.title,
+          thumbnail,
+          platform: v.platform || "youtube",
+          viewCount: v.viewCount || 0,
+          surfaceCount: v.surfaceCount || 0,
+          surfaceTypes,
+          surfaces: (v.surfaces || []).map((s: any) => ({
+            id: s.id,
+            timestamp: s.timestamp,
+            surfaceType: s.surfaceType,
+            confidence: s.confidence,
+            frameUrl: s.frameUrl,
+            sceneContext: s.sceneContext,
+            boundingBoxX: s.boundingBoxX,
+            boundingBoxY: s.boundingBoxY,
+            boundingBoxWidth: s.boundingBoxWidth,
+            boundingBoxHeight: s.boundingBoxHeight,
+          })),
+          category: v.category || null,
+          duration: v.duration || null,
+        };
+      });
+
       res.json({
         creator: {
           name: creator.name || email.split("@")[0],
           email: creator.email,
           slug,
+          profileImage: userProfile?.profileImageUrl || null,
+          bio: (creator as any).bio || null,
+          userType: creator.userType || "creator",
         },
-        videos: videos.map((v: any) => ({
-          id: v.id,
-          title: v.title,
-          thumbnail: v.thumbnailUrl,
-          platform: v.platform,
-          viewCount: v.viewCount,
-          surfaceCount: v.surfaceCount || 0,
-          surfaces: v.surfaces || [],
-        })),
+        stats: {
+          totalVideos: enrichedVideos.length,
+          totalViews,
+          totalSurfaces,
+          surfaceTypes: Array.from(allSurfaceTypes),
+          categories: Array.from(allCategories),
+        },
+        videos: enrichedVideos,
       });
     } catch (err: any) {
       console.error("[Public] Error fetching creator:", err);
