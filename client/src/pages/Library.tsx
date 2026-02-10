@@ -1242,23 +1242,23 @@ export default function Library() {
                   {/* Scanning controls - local files use TensorFlow, social media shows "coming soon" */}
                   {isRealMode && video.id && (
                     <>
-                      {/* Local files: Show scan button using TensorFlow */}
-                      {video.hasLocalFile && (video.aiStatus === "pending" || video.aiStatus === "retry" || scanningVideoIds.has(video.id)) && (
-                        <div 
+                      {/* Local files: Show scan/rescan button */}
+                      {video.hasLocalFile && (video.aiStatus === "pending" || video.aiStatus === "retry" || video.aiStatus === "complete" || scanningVideoIds.has(video.id)) && (
+                        <div
                           className="absolute bottom-12 right-2 z-20"
                           onClick={(e) => {
                             e.stopPropagation();
-                            console.log(`[FRONTEND] TF Scan button clicked for video ID: ${video.id}`);
+                            console.log(`[FRONTEND] Scan button clicked for video ID: ${video.id}`);
                             if (video.id && !scanningVideoIds.has(video.id)) {
                               console.log(`[FRONTEND] Calling tfScanMutation.mutate(${video.id})`);
                               tfScanMutation.mutate(video.id);
                             }
                           }}
                         >
-                          <Button 
-                            size="sm" 
+                          <Button
+                            size="sm"
                             variant="default"
-                            className="gap-1.5 bg-emerald-600 hover:bg-emerald-700" 
+                            className={`gap-1.5 ${video.aiStatus === "complete" ? "bg-blue-600 hover:bg-blue-700" : "bg-emerald-600 hover:bg-emerald-700"}`}
                             data-testid={`button-tf-scan-${video.id}`}
                             disabled={scanningVideoIds.has(video.id)}
                           >
@@ -1266,6 +1266,11 @@ export default function Library() {
                               <>
                                 <Loader2 className="w-3 h-3 animate-spin" />
                                 Scanning...
+                              </>
+                            ) : video.aiStatus === "complete" ? (
+                              <>
+                                <RefreshCw className="w-3 h-3" />
+                                Re-scan
                               </>
                             ) : (
                               <>
