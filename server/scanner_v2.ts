@@ -61,8 +61,8 @@ const CONFIG = {
   HORIZONTAL_LINE_MIN_LENGTH: 0.20,
   SURFACE_CONFIDENCE_THRESHOLD: 0.25, // Require reasonable confidence
 
-  // Fallback detection - add "Potential Surface" if too few found
-  MIN_SURFACES_BEFORE_FALLBACK: 1,
+  // Fallback detection - only add if Gemini found ZERO surfaces in entire video
+  MIN_SURFACES_BEFORE_FALLBACK: 0,
   FALLBACK_CONFIDENCE: 0.15,
   
   // Timeouts
@@ -104,6 +104,8 @@ interface FrameAnalysisResult {
   confidence: number;
   surfaces: DetectedSurface[];
   isVertical: boolean;
+  /** True if AI successfully analyzed the frame (even if it found no surfaces) */
+  aiAnalyzed?: boolean;
 }
 
 // EdgeAnalysisResult removed — replaced by band-based detection in analyzeFrameForSurfaces
@@ -772,28 +774,39 @@ async function analyzeFrameWithGemini(
     }
     
     if (!parsed.surfaces_found || parsed.surfaces.length === 0) {
-      return defaultResult;
+      // Gemini analyzed successfully but found no surfaces — don't fall back to edge
+      return { ...defaultResult, aiAnalyzed: true };
     }
-    
-    const surfaces: DetectedSurface[] = parsed.surfaces.map(s => ({
-      surfaceType: s.surface_type.charAt(0).toUpperCase() + s.surface_type.slice(1),
-      confidence: s.confidence,
-      boundingBox: {
-        x: s.location.x / 100,
-        y: s.location.y / 100,
-        width: s.location.width / 100,
-        height: s.location.height / 100,
-      },
-      timestamp,
-    }));
-    
-    const maxConfidence = Math.max(...surfaces.map(s => s.confidence));
-    
+
+    // Map Gemini surfaces, filter low-confidence, sort by confidence, take top 2
+    const allSurfaces: DetectedSurface[] = parsed.surfaces
+      .filter((s: GeminiDetectedSurface) => s.confidence >= 0.3) // Skip low-confidence junk
+      .map((s: GeminiDetectedSurface) => ({
+        surfaceType: s.surface_type.charAt(0).toUpperCase() + s.surface_type.slice(1),
+        confidence: s.confidence,
+        boundingBox: {
+          x: s.location.x / 100,
+          y: s.location.y / 100,
+          width: s.location.width / 100,
+          height: s.location.height / 100,
+        },
+        timestamp,
+      }))
+      .sort((a: DetectedSurface, b: DetectedSurface) => b.confidence - a.confidence)
+      .slice(0, 2); // Max 2 surfaces per frame to avoid clutter
+
+    if (allSurfaces.length === 0) {
+      return { ...defaultResult, aiAnalyzed: true };
+    }
+
+    const maxConfidence = Math.max(...allSurfaces.map(s => s.confidence));
+
     return {
       hasSurface: true,
       confidence: maxConfidence,
-      surfaces,
+      surfaces: allSurfaces,
       isVertical,
+      aiAnalyzed: true,
     };
     
   } catch (err) {
@@ -1284,9 +1297,10 @@ export async function processVideoScan(
         let analysis: FrameAnalysisResult;
         if (useGemini) {
           analysis = await analyzeFrameWithGemini(framePath, timestamp, isVertical);
-          // If Gemini failed (timeout, error), fall back to edge detection for this frame
-          if (!analysis.hasSurface && analysis.confidence === 0) {
-            console.log(`[Scanner V2] Gemini returned no result for frame ${timestamp}s, trying edge detection...`);
+          // Only fall back to edge if Gemini API actually failed (not if it found no surfaces)
+          // If aiAnalyzed=true, Gemini worked fine — it just said "no surfaces here"
+          if (!analysis.aiAnalyzed && !analysis.hasSurface) {
+            console.log(`[Scanner V2] Gemini API failed for frame ${timestamp}s, trying edge detection fallback...`);
             analysis = await analyzeFrameForSurfaces(framePath, timestamp, isVertical);
           }
         } else {
