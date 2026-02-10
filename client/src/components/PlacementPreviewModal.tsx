@@ -200,11 +200,11 @@ export default function PlacementPreviewModal({
       ctx.drawImage(frameImg, 0, 0);
 
       // Calculate bounding box in pixel coordinates
-      // The bounding box values are percentages (0-100)
-      const bx = (selectedSurface!.boundingBoxX / 100) * canvas.width;
-      const by = (selectedSurface!.boundingBoxY / 100) * canvas.height;
-      const bw = (selectedSurface!.boundingBoxWidth / 100) * canvas.width;
-      const bh = (selectedSurface!.boundingBoxHeight / 100) * canvas.height;
+      // The bounding box values are normalized 0-1 (e.g., 0.5 = 50%)
+      const bx = selectedSurface!.boundingBoxX * canvas.width;
+      const by = selectedSurface!.boundingBoxY * canvas.height;
+      const bw = selectedSurface!.boundingBoxWidth * canvas.width;
+      const bh = selectedSurface!.boundingBoxHeight * canvas.height;
 
       console.log("Bounding box px:", { bx, by, bw, bh });
       console.log("Bounding box %:", {
@@ -365,10 +365,10 @@ export default function PlacementPreviewModal({
                       <div
                         className="absolute border-2 border-dashed border-primary/80 bg-primary/10 rounded-sm animate-pulse"
                         style={{
-                          left: `${selectedSurface.boundingBoxX}%`,
-                          top: `${selectedSurface.boundingBoxY}%`,
-                          width: `${selectedSurface.boundingBoxWidth}%`,
-                          height: `${selectedSurface.boundingBoxHeight}%`,
+                          left: `${selectedSurface.boundingBoxX * 100}%`,
+                          top: `${selectedSurface.boundingBoxY * 100}%`,
+                          width: `${selectedSurface.boundingBoxWidth * 100}%`,
+                          height: `${selectedSurface.boundingBoxHeight * 100}%`,
                         }}
                       >
                         {!productImage && (
