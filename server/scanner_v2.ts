@@ -54,13 +54,13 @@ const CONFIG = {
   // Detection method: 'gemini' or 'edge'
   DETECTION_METHOD: 'edge' as 'gemini' | 'edge',
   
-  // Detection thresholds (for edge detection fallback)
-  EDGE_THRESHOLD: 15,
-  HORIZONTAL_LINE_MIN_LENGTH: 0.15,
-  SURFACE_CONFIDENCE_THRESHOLD: 0.05, // Lowered to catch more surfaces
-  
+  // Detection thresholds (for edge detection)
+  EDGE_THRESHOLD: 20,
+  HORIZONTAL_LINE_MIN_LENGTH: 0.20,
+  SURFACE_CONFIDENCE_THRESHOLD: 0.25, // Require reasonable confidence
+
   // Fallback detection - add "Potential Surface" if too few found
-  MIN_SURFACES_BEFORE_FALLBACK: 3,
+  MIN_SURFACES_BEFORE_FALLBACK: 1,
   FALLBACK_CONFIDENCE: 0.15,
   
   // Timeouts
@@ -104,17 +104,7 @@ interface FrameAnalysisResult {
   isVertical: boolean;
 }
 
-interface EdgeAnalysisResult {
-  horizontalEdgeDensity: number;
-  dominantHorizontalY: number;
-  surfaceConfidence: number;
-  regionOfInterest: {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  };
-}
+// EdgeAnalysisResult removed — replaced by band-based detection in analyzeFrameForSurfaces
 
 // Gemini AI types
 interface GeminiBoundingBox {
@@ -381,6 +371,18 @@ async function extractFrames(
 // EDGE-BASED SURFACE DETECTION (Sharp)
 // ============================================================================
 
+/**
+ * FullScale Edge V2 — Smart surface detection using Sharp image analysis.
+ *
+ * Approach:
+ * 1. Scan full frame for horizontal edge rows (gradient between above/below pixels)
+ * 2. Cluster edge-dense rows into surface bands (groups of adjacent rows with edges)
+ * 3. For each band, find horizontal extent by scanning columns for edge density
+ * 4. Classify surface type based on vertical position in frame
+ * 5. Score confidence based on edge continuity, band thickness, and position
+ *
+ * This produces tight, accurate bounding boxes around actual flat surfaces.
+ */
 async function analyzeFrameForSurfaces(
   framePath: string,
   timestamp: number,
@@ -392,160 +394,254 @@ async function analyzeFrameForSurfaces(
     surfaces: [],
     isVertical,
   };
-  
+
   try {
     const image = sharp(framePath);
     const metadata = await image.metadata();
     const width = metadata.width || 640;
     const height = metadata.height || 480;
-    
-    const roiTop = isVertical ? Math.floor(height * CONFIG.VERTICAL_ROI_TOP) : Math.floor(height * 0.3);
-    const roiHeight = height - roiTop;
-    
-    const roiBuffer = await image
-      .extract({ left: 0, top: roiTop, width, height: roiHeight })
-      .greyscale()
-      .raw()
-      .toBuffer();
-    
-    const edgeAnalysis = analyzeHorizontalEdges(roiBuffer, width, roiHeight);
-    
-    console.log(`[Scanner V2] Frame ${timestamp}s: horizontal edge density = ${(edgeAnalysis.horizontalEdgeDensity * 100).toFixed(1)}%, confidence = ${(edgeAnalysis.surfaceConfidence * 100).toFixed(1)}%`);
-    
-    if (edgeAnalysis.surfaceConfidence >= CONFIG.SURFACE_CONFIDENCE_THRESHOLD) {
+
+    // Analyze full frame in greyscale
+    const buffer = await image.greyscale().raw().toBuffer();
+
+    if (buffer.length !== width * height) {
+      console.log(`[Scanner V2] Buffer mismatch: expected ${width * height}, got ${buffer.length}`);
+      return defaultResult;
+    }
+
+    // Step 1: For each row, compute horizontal edge score
+    // A row with a strong horizontal edge has a long consecutive run of vertical gradients
+    const rowScores: { edgeCount: number; maxRun: number; runStart: number; runEnd: number }[] = [];
+
+    for (let y = 2; y < height - 2; y++) {
+      let edgeCount = 0;
+      let currentRun = 0;
+      let maxRun = 0;
+      let bestRunStart = 0;
+      let bestRunEnd = 0;
+      let runStart = 0;
+
+      for (let x = 1; x < width - 1; x++) {
+        const idx = y * width + x;
+        // Vertical gradient (Sobel-like: weighted above/below)
+        const above = buffer[idx - width] * 0.5 + buffer[idx - 2 * width] * 0.5;
+        const below = buffer[idx + width] * 0.5 + buffer[idx + 2 * width] * 0.5;
+        const gradient = Math.abs(below - above);
+
+        if (gradient > CONFIG.EDGE_THRESHOLD) {
+          if (currentRun === 0) runStart = x;
+          currentRun++;
+          edgeCount++;
+        } else {
+          if (currentRun > maxRun) {
+            maxRun = currentRun;
+            bestRunStart = runStart;
+            bestRunEnd = runStart + currentRun;
+          }
+          currentRun = 0;
+        }
+      }
+      // Check final run
+      if (currentRun > maxRun) {
+        maxRun = currentRun;
+        bestRunStart = runStart;
+        bestRunEnd = runStart + currentRun;
+      }
+
+      rowScores[y] = { edgeCount, maxRun, runStart: bestRunStart, runEnd: bestRunEnd };
+    }
+
+    // Step 2: Find surface bands — clusters of adjacent rows with significant horizontal edges
+    const minRunLength = Math.floor(width * CONFIG.HORIZONTAL_LINE_MIN_LENGTH);
+    interface SurfaceBand {
+      topRow: number;
+      bottomRow: number;
+      leftCol: number;
+      rightCol: number;
+      peakEdgeRow: number;
+      peakEdgeScore: number;
+      avgRunLength: number;
+    }
+
+    const bands: SurfaceBand[] = [];
+    let currentBand: SurfaceBand | null = null;
+    const GAP_TOLERANCE = Math.max(5, Math.floor(height * 0.02)); // Allow small gaps in bands
+
+    for (let y = 2; y < height - 2; y++) {
+      const row = rowScores[y];
+      if (!row) continue;
+
+      const hasSignificantEdge = row.maxRun >= minRunLength;
+
+      if (hasSignificantEdge) {
+        if (!currentBand) {
+          currentBand = {
+            topRow: y,
+            bottomRow: y,
+            leftCol: row.runStart,
+            rightCol: row.runEnd,
+            peakEdgeRow: y,
+            peakEdgeScore: row.maxRun,
+            avgRunLength: row.maxRun,
+          };
+        } else {
+          currentBand.bottomRow = y;
+          currentBand.leftCol = Math.min(currentBand.leftCol, row.runStart);
+          currentBand.rightCol = Math.max(currentBand.rightCol, row.runEnd);
+          if (row.maxRun > currentBand.peakEdgeScore) {
+            currentBand.peakEdgeRow = y;
+            currentBand.peakEdgeScore = row.maxRun;
+          }
+          const bandRows = currentBand.bottomRow - currentBand.topRow + 1;
+          currentBand.avgRunLength = (currentBand.avgRunLength * (bandRows - 1) + row.maxRun) / bandRows;
+        }
+      } else {
+        // Gap — close band if gap exceeds tolerance
+        if (currentBand && (y - currentBand.bottomRow) > GAP_TOLERANCE) {
+          const bandHeight = currentBand.bottomRow - currentBand.topRow;
+          if (bandHeight >= 3) { // Min 3 rows to be a surface
+            bands.push(currentBand);
+          }
+          currentBand = null;
+        }
+      }
+    }
+    // Close final band
+    if (currentBand) {
+      const bandHeight = currentBand.bottomRow - currentBand.topRow;
+      if (bandHeight >= 3) {
+        bands.push(currentBand);
+      }
+    }
+
+    console.log(`[Scanner V2] Frame ${timestamp}s: found ${bands.length} edge band(s)`);
+
+    // Step 3: Convert bands to surfaces with classification and confidence
+    const surfaces: DetectedSurface[] = [];
+
+    for (const band of bands) {
+      const centerY = ((band.topRow + band.bottomRow) / 2) / height; // 0-1 normalized
+      const bandHeightNorm = (band.bottomRow - band.topRow) / height;
+      const bandWidthNorm = (band.rightCol - band.leftCol) / width;
+      const runRatio = band.avgRunLength / width;
+
+      // Skip very thin or very narrow bands
+      if (bandWidthNorm < 0.15 || bandHeightNorm < 0.01) continue;
+
+      // Skip bands that span almost the entire frame (likely scene boundaries, not surfaces)
+      if (bandWidthNorm > 0.95 && bandHeightNorm > 0.5) continue;
+
+      // Confidence scoring
+      let confidence = 0;
+
+      // Edge continuity: longer horizontal runs = more likely a flat surface
+      confidence += Math.min(0.35, runRatio * 0.5);
+
+      // Band thickness: real surfaces have some vertical depth (not just a single edge line)
+      const thicknessScore = Math.min(0.25, bandHeightNorm * 2);
+      confidence += thicknessScore;
+
+      // Position bonus: surfaces in the middle 30-75% of frame are most likely tables/desks
+      if (centerY >= 0.35 && centerY <= 0.75) {
+        confidence += 0.25;
+      } else if (centerY >= 0.25 && centerY <= 0.85) {
+        confidence += 0.10;
+      }
+
+      // Width bonus: wider surfaces more likely real
+      if (bandWidthNorm > 0.3) {
+        confidence += 0.10;
+      }
+
+      confidence = Math.min(0.95, confidence);
+
+      if (confidence < CONFIG.SURFACE_CONFIDENCE_THRESHOLD) continue;
+
+      // Classify based on vertical position
+      let surfaceType: string;
+      if (centerY < 0.25) {
+        surfaceType = "Shelf"; // Top quarter = shelf/high surface
+      } else if (centerY < 0.45) {
+        surfaceType = "Desk"; // Upper-middle = desk (person sitting behind it)
+      } else if (centerY < 0.65) {
+        surfaceType = "Table"; // Center = table
+      } else if (centerY < 0.80) {
+        surfaceType = "Desk"; // Lower-middle = desk (close-up or standing desk)
+      } else {
+        surfaceType = "Floor"; // Bottom = likely floor edge, skip
+        continue; // Don't create surfaces for floor edges
+      }
+
+      // Build tight bounding box with some padding
+      const padX = Math.min(0.03, bandWidthNorm * 0.1);
+      const padY = Math.min(0.02, bandHeightNorm * 0.15);
+
+      // The surface area extends from the edge band downward (the top of a table is the edge,
+      // the placeable surface area is on/below it)
+      const surfaceTopY = Math.max(0, (band.topRow / height) - padY);
+      const surfaceBottomY = Math.min(1, (band.bottomRow / height) + bandHeightNorm * 0.5 + padY);
+
       const surface: DetectedSurface = {
-        surfaceType: "Desk",
-        confidence: edgeAnalysis.surfaceConfidence,
+        surfaceType,
+        confidence,
         boundingBox: {
-          x: edgeAnalysis.regionOfInterest.x,
-          y: (roiTop / height) + (edgeAnalysis.regionOfInterest.y * (roiHeight / height)),
-          width: edgeAnalysis.regionOfInterest.width,
-          height: edgeAnalysis.regionOfInterest.height * (roiHeight / height),
+          x: Math.max(0, (band.leftCol / width) - padX),
+          y: surfaceTopY,
+          width: Math.min(1, bandWidthNorm + padX * 2),
+          height: Math.min(1 - surfaceTopY, surfaceBottomY - surfaceTopY),
         },
         timestamp,
       };
-      
+
+      console.log(`[Scanner V2] Band → ${surfaceType} at y=${(centerY * 100).toFixed(0)}% (${(confidence * 100).toFixed(0)}% confidence, width=${(bandWidthNorm * 100).toFixed(0)}%, height=${(bandHeightNorm * 100).toFixed(0)}%)`);
+
+      surfaces.push(surface);
+    }
+
+    // Deduplicate overlapping surfaces (keep higher confidence one)
+    const dedupedSurfaces = deduplicateSurfaces(surfaces);
+
+    if (dedupedSurfaces.length > 0) {
+      const maxConfidence = Math.max(...dedupedSurfaces.map(s => s.confidence));
       return {
         hasSurface: true,
-        confidence: edgeAnalysis.surfaceConfidence,
-        surfaces: [surface],
+        confidence: maxConfidence,
+        surfaces: dedupedSurfaces,
         isVertical,
       };
     }
-    
+
     return defaultResult;
-    
+
   } catch (err) {
     console.error(`[Scanner V2] Frame analysis error:`, err);
     return defaultResult;
   }
 }
 
-function analyzeHorizontalEdges(
-  buffer: Buffer,
-  width: number,
-  height: number
-): EdgeAnalysisResult {
-  const defaultResult: EdgeAnalysisResult = {
-    horizontalEdgeDensity: 0,
-    dominantHorizontalY: 0.5,
-    surfaceConfidence: 0,
-    regionOfInterest: { x: 0.1, y: 0.3, width: 0.8, height: 0.5 },
-  };
-  
-  if (buffer.length !== width * height) {
-    console.log(`[Scanner V2] DEBUG: Buffer size mismatch - expected ${width * height}, got ${buffer.length}`);
-    return defaultResult;
-  }
-  
-  // Debug: Check pixel value distribution
-  let minVal = 255, maxVal = 0, sum = 0;
-  for (let i = 0; i < buffer.length; i++) {
-    minVal = Math.min(minVal, buffer[i]);
-    maxVal = Math.max(maxVal, buffer[i]);
-    sum += buffer[i];
-  }
-  console.log(`[Scanner V2] DEBUG: Pixel range: ${minVal}-${maxVal}, mean: ${(sum / buffer.length).toFixed(1)}`);
-  
-  const rowEdgeCounts: number[] = [];
-  let maxEdgeCount = 0;
-  let maxEdgeRow = 0;
-  let totalGradientSum = 0;
-  let edgesAtThreshold10 = 0;
-  let edgesAtThreshold20 = 0;
-  let edgesAtThreshold30 = 0;
-  
-  for (let y = 1; y < height - 1; y++) {
-    let edgeCount = 0;
-    let consecutiveEdge = 0;
-    let maxConsecutive = 0;
-    
-    for (let x = 1; x < width - 1; x++) {
-      const idx = y * width + x;
-      
-      const above = buffer[idx - width];
-      const below = buffer[idx + width];
-      const gradient = Math.abs(below - above);
-      totalGradientSum += gradient;
-      
-      if (gradient > 10) edgesAtThreshold10++;
-      if (gradient > 20) edgesAtThreshold20++;
-      if (gradient > 30) edgesAtThreshold30++;
-      
-      if (gradient > CONFIG.EDGE_THRESHOLD) {
-        edgeCount++;
-        consecutiveEdge++;
-        maxConsecutive = Math.max(maxConsecutive, consecutiveEdge);
-      } else {
-        consecutiveEdge = 0;
-      }
-    }
-    
-    const continuousRatio = maxConsecutive / width;
-    if (continuousRatio > CONFIG.HORIZONTAL_LINE_MIN_LENGTH) {
-      rowEdgeCounts[y] = edgeCount;
-      if (edgeCount > maxEdgeCount) {
-        maxEdgeCount = edgeCount;
-        maxEdgeRow = y;
-      }
-    } else {
-      rowEdgeCounts[y] = 0;
+/**
+ * Remove overlapping surface detections, keeping the higher-confidence one.
+ * Two surfaces overlap if their vertical centers are within 10% of frame height.
+ */
+function deduplicateSurfaces(surfaces: DetectedSurface[]): DetectedSurface[] {
+  if (surfaces.length <= 1) return surfaces;
+
+  // Sort by confidence descending
+  const sorted = [...surfaces].sort((a, b) => b.confidence - a.confidence);
+  const kept: DetectedSurface[] = [];
+
+  for (const surface of sorted) {
+    const centerY = surface.boundingBox.y + surface.boundingBox.height / 2;
+    const overlaps = kept.some(k => {
+      const kCenterY = k.boundingBox.y + k.boundingBox.height / 2;
+      return Math.abs(centerY - kCenterY) < 0.10;
+    });
+    if (!overlaps) {
+      kept.push(surface);
     }
   }
-  
-  const totalPixels = (width - 2) * (height - 2);
-  console.log(`[Scanner V2] DEBUG: Avg gradient: ${(totalGradientSum / totalPixels).toFixed(2)}`);
-  console.log(`[Scanner V2] DEBUG: Edges at threshold 10: ${(edgesAtThreshold10/totalPixels*100).toFixed(2)}%`);
-  console.log(`[Scanner V2] DEBUG: Edges at threshold 20: ${(edgesAtThreshold20/totalPixels*100).toFixed(2)}%`);
-  console.log(`[Scanner V2] DEBUG: Edges at threshold 30: ${(edgesAtThreshold30/totalPixels*100).toFixed(2)}%`);
-  console.log(`[Scanner V2] DEBUG: Max consecutive edge run: ${maxEdgeCount} pixels (need ${Math.floor(width * CONFIG.HORIZONTAL_LINE_MIN_LENGTH)} for ${CONFIG.HORIZONTAL_LINE_MIN_LENGTH * 100}% threshold)`);
-  
-  const totalEdges = rowEdgeCounts.reduce((sum, count) => sum + (count || 0), 0);
-  const maxPossibleEdges = width * height;
-  const horizontalEdgeDensity = totalEdges / maxPossibleEdges;
-  
-  const dominantY = maxEdgeRow / height;
-  const positionBonus = dominantY > 0.4 ? 0.2 : 0;
-  const densityScore = Math.min(1, horizontalEdgeDensity * 10);
-  const continuityScore = maxEdgeCount / width;
-  
-  const surfaceConfidence = Math.min(1, 
-    (densityScore * 0.3) + 
-    (continuityScore * 0.5) + 
-    positionBonus
-  );
-  
-  return {
-    horizontalEdgeDensity,
-    dominantHorizontalY: dominantY,
-    surfaceConfidence,
-    regionOfInterest: {
-      x: 0.05,
-      y: Math.max(0, dominantY - 0.1),
-      width: 0.9,
-      height: 0.4,
-    },
-  };
+
+  return kept;
 }
 
 // ============================================================================
@@ -826,36 +922,41 @@ function refineSurfaceType(
   currentType: string, sceneSetting: string,
   edgeDensity: number, brightness: number,
 ): string {
-  // Only refine if current type is generic
-  if (currentType !== "Desk" && currentType !== "Potential Surface") {
+  // Keep specific types from edge detection (Table, Shelf, etc.)
+  // Only refine generic types
+  if (currentType !== "Desk" && currentType !== "Table" && currentType !== "Potential Surface") {
     return currentType;
   }
 
   const setting = sceneSetting.toLowerCase();
 
-  if (setting.includes("podcast") || setting.includes("studio") || setting.includes("recording")) {
-    return "Studio Desk";
-  }
-  if (setting.includes("kitchen") || setting.includes("dining")) {
-    return "Kitchen Counter";
-  }
-  if (setting.includes("office") || setting.includes("workspace")) {
-    return edgeDensity > 0.2 ? "Cluttered Desk" : "Clean Desk";
-  }
-  if (setting.includes("outdoor")) {
-    return "Outdoor Table";
-  }
-  if (setting.includes("living")) {
-    return "Coffee Table";
-  }
-  if (setting.includes("mobile") || setting.includes("casual")) {
-    return "Surface";
-  }
-  if (setting.includes("dark") || setting.includes("moody")) {
-    return "Dark Surface";
+  if (currentType === "Desk" || currentType === "Table") {
+    // Add scene context to the type
+    if (setting.includes("podcast") || setting.includes("studio") || setting.includes("recording")) {
+      return "Studio Desk";
+    }
+    if (setting.includes("kitchen") || setting.includes("dining")) {
+      return "Counter";
+    }
+    if (setting.includes("office") || setting.includes("workspace")) {
+      return edgeDensity > 0.2 ? "Work Desk" : "Clean Desk";
+    }
+    if (setting.includes("outdoor")) {
+      return currentType === "Table" ? "Outdoor Table" : "Outdoor Desk";
+    }
+    if (setting.includes("living")) {
+      return currentType === "Table" ? "Coffee Table" : "Side Table";
+    }
+    return currentType; // Keep as-is if no scene match
   }
 
-  if (currentType === "Potential Surface") return "Surface";
+  // Potential Surface — make more specific
+  if (currentType === "Potential Surface") {
+    if (setting.includes("podcast") || setting.includes("studio")) return "Studio Surface";
+    if (setting.includes("office")) return "Desk Area";
+    return "Surface";
+  }
+
   return currentType;
 }
 
