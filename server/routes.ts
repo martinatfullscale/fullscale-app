@@ -3523,6 +3523,117 @@ export async function registerRoutes(
       const imageUrl = `/uploads/products/${filename}`;
       const thumbnailUrl = `/uploads/products/${thumbFilename}`;
 
+      // ── Product Ingest Analysis ──
+      let subjectBoundsX: number | null = null;
+      let subjectBoundsY: number | null = null;
+      let subjectBoundsW: number | null = null;
+      let subjectBoundsH: number | null = null;
+      let dominantColor: string | null = null;
+      let backgroundType: string = hasAlpha ? "transparent" : "solid";
+
+      try {
+        // 1 & 3a. Subject bounds + transparency ratio (single raw buffer decode for alpha images)
+        if (hasAlpha && width > 0 && height > 0) {
+          const rawBuffer = await sharp(imageBuffer)
+            .ensureAlpha()
+            .raw()
+            .toBuffer();
+
+          let minX = width, minY = height, maxX = 0, maxY = 0;
+          let hasOpaquePixel = false;
+          let transparentPixels = 0;
+          const totalPixels = width * height;
+
+          // Single pass: find subject bounds + count transparent pixels
+          for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+              const alphaIndex = (y * width + x) * 4 + 3; // RGBA, alpha is 4th byte
+              if (rawBuffer[alphaIndex] < 10) {
+                transparentPixels++;
+              } else {
+                hasOpaquePixel = true;
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+              }
+            }
+          }
+
+          if (hasOpaquePixel) {
+            subjectBoundsX = parseFloat((minX / width).toFixed(4));
+            subjectBoundsY = parseFloat((minY / height).toFixed(4));
+            subjectBoundsW = parseFloat(((maxX - minX + 1) / width).toFixed(4));
+            subjectBoundsH = parseFloat(((maxY - minY + 1) / height).toFixed(4));
+            console.log(`[Brand Products] Subject bounds: x=${subjectBoundsX}, y=${subjectBoundsY}, w=${subjectBoundsW}, h=${subjectBoundsH}`);
+          }
+
+          // Background type from transparency ratio
+          const transparencyRatio = transparentPixels / totalPixels;
+          if (transparencyRatio < 0.05) {
+            backgroundType = "solid"; // Has alpha channel but barely any transparent pixels
+          } else {
+            backgroundType = "transparent"; // Normal product cutout
+          }
+          console.log(`[Brand Products] Background type: ${backgroundType} (${(transparencyRatio * 100).toFixed(1)}% transparent)`);
+        }
+
+        // 2. Dominant color extraction using Sharp stats
+        const stats = await sharp(imageBuffer).stats();
+        if (stats.channels && stats.channels.length >= 3) {
+          const r = Math.round(stats.channels[0].mean);
+          const g = Math.round(stats.channels[1].mean);
+          const b = Math.round(stats.channels[2].mean);
+          dominantColor = `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`.toUpperCase();
+          console.log(`[Brand Products] Dominant color: ${dominantColor}`);
+        }
+
+        // 3b. Background type for non-alpha images
+        if (!hasAlpha) {
+          // No alpha — check if the background is uniform (solid) or complex (photo/scene)
+          // Sample corners to detect solid backgrounds
+          const cornerSize = Math.max(1, Math.min(20, Math.floor(Math.min(width, height) * 0.05)));
+          const corners = [
+            { left: 0, top: 0 },  // top-left
+            { left: width - cornerSize, top: 0 },  // top-right
+            { left: 0, top: height - cornerSize },  // bottom-left
+            { left: width - cornerSize, top: height - cornerSize },  // bottom-right
+          ];
+
+          const cornerColors: { r: number; g: number; b: number }[] = [];
+          for (const corner of corners) {
+            const cornerStats = await sharp(imageBuffer)
+              .extract({ left: corner.left, top: corner.top, width: cornerSize, height: cornerSize })
+              .stats();
+            if (cornerStats.channels && cornerStats.channels.length >= 3) {
+              cornerColors.push({
+                r: Math.round(cornerStats.channels[0].mean),
+                g: Math.round(cornerStats.channels[1].mean),
+                b: Math.round(cornerStats.channels[2].mean),
+              });
+            }
+          }
+
+          // If all corners are similar in color, it's a solid background
+          if (cornerColors.length >= 3) {
+            const avg = {
+              r: cornerColors.reduce((s, c) => s + c.r, 0) / cornerColors.length,
+              g: cornerColors.reduce((s, c) => s + c.g, 0) / cornerColors.length,
+              b: cornerColors.reduce((s, c) => s + c.b, 0) / cornerColors.length,
+            };
+            const maxDiff = cornerColors.reduce((max, c) => {
+              const diff = Math.abs(c.r - avg.r) + Math.abs(c.g - avg.g) + Math.abs(c.b - avg.b);
+              return Math.max(max, diff);
+            }, 0);
+            backgroundType = maxDiff < 60 ? "solid" : "complex";
+            console.log(`[Brand Products] Background type: ${backgroundType} (corner variance: ${maxDiff.toFixed(0)})`);
+          }
+        }
+      } catch (analysisErr: any) {
+        console.warn(`[Brand Products] Analysis pipeline warning (non-fatal): ${analysisErr.message}`);
+        // Non-fatal — product still uploads, just without analysis data
+      }
+
       const product = await storage.createBrandProduct({
         userId,
         name,
@@ -3532,9 +3643,15 @@ export async function registerRoutes(
         width,
         height,
         isTransparent: hasAlpha,
+        subjectBoundsX: subjectBoundsX != null ? subjectBoundsX.toString() : null,
+        subjectBoundsY: subjectBoundsY != null ? subjectBoundsY.toString() : null,
+        subjectBoundsW: subjectBoundsW != null ? subjectBoundsW.toString() : null,
+        subjectBoundsH: subjectBoundsH != null ? subjectBoundsH.toString() : null,
+        dominantColor,
+        backgroundType,
       });
 
-      console.log(`[Brand Products] Created product "${name}" (${width}x${height}, transparent: ${hasAlpha})`);
+      console.log(`[Brand Products] Created product "${name}" (${width}x${height}, transparent: ${hasAlpha}, bg: ${backgroundType})`);
       res.json(product);
     } catch (err: any) {
       console.error("[Brand Products] Upload error:", err.message);

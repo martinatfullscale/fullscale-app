@@ -41,6 +41,12 @@ interface BrandProduct {
   width: number | null;
   height: number | null;
   isTransparent: boolean | null;
+  subjectBoundsX: string | null;
+  subjectBoundsY: string | null;
+  subjectBoundsW: string | null;
+  subjectBoundsH: string | null;
+  dominantColor: string | null;
+  backgroundType: string | null;
   createdAt: string;
 }
 
@@ -90,9 +96,19 @@ export default function BrandProducts() {
       }
       return res.json();
     },
-    onSuccess: () => {
+    onSuccess: (data: BrandProduct) => {
       queryClient.invalidateQueries({ queryKey: ["/api/brand-products"] });
-      toast({ title: "Product uploaded", description: "Your product image has been added to the catalog." });
+
+      // Contextual feedback based on product analysis
+      let description = "Your product image has been added to the catalog.";
+      if (data.backgroundType === "solid" || data.backgroundType === "complex") {
+        description = "Product uploaded. For best placement results, re-upload as a PNG with a transparent background.";
+      } else if (data.isTransparent && data.subjectBoundsW) {
+        const coverage = Math.round(parseFloat(data.subjectBoundsW) * 100);
+        description = `Product uploaded with transparent background — subject fills ${coverage}% width. Ready for placement!`;
+      }
+
+      toast({ title: "Product uploaded", description });
       closeUpload();
     },
     onError: (err: any) => {
@@ -196,6 +212,7 @@ export default function BrandProducts() {
               <p className="text-xs text-muted-foreground mt-1">
                 Upload product images with transparent backgrounds (PNG) for best placement results.
                 360 product renders work great for realistic mockups. Minimum recommended size: 500x500px.
+                Each upload is auto-analyzed for subject bounds, dominant color, and background type.
               </p>
             </div>
           </div>
@@ -271,7 +288,7 @@ export default function BrandProducts() {
               {/* Info */}
               <CardContent className="p-3">
                 <p className="font-medium text-sm text-foreground truncate">{product.name}</p>
-                <div className="flex items-center gap-2 mt-1.5">
+                <div className="flex items-center gap-2 mt-1.5 flex-wrap">
                   {product.category && (
                     <Badge variant="outline" className="text-[10px] capitalize">
                       {product.category}
@@ -282,7 +299,33 @@ export default function BrandProducts() {
                       {product.width}x{product.height}
                     </span>
                   )}
+                  {/* Dominant color swatch */}
+                  {product.dominantColor && (
+                    <span className="flex items-center gap-1" title={`Dominant: ${product.dominantColor}`}>
+                      <span
+                        className="inline-block w-3 h-3 rounded-full border border-border"
+                        style={{ backgroundColor: product.dominantColor }}
+                      />
+                    </span>
+                  )}
+                  {/* Background type badge */}
+                  {product.backgroundType === "solid" && !product.isTransparent && (
+                    <Badge variant="outline" className="text-[10px] text-amber-600 border-amber-300 bg-amber-50 dark:bg-amber-900/20">
+                      Solid BG
+                    </Badge>
+                  )}
+                  {product.backgroundType === "complex" && (
+                    <Badge variant="outline" className="text-[10px] text-red-600 border-red-300 bg-red-50 dark:bg-red-900/20">
+                      Complex BG
+                    </Badge>
+                  )}
                 </div>
+                {/* Subject coverage info for transparent images */}
+                {product.subjectBoundsW && product.subjectBoundsH && (
+                  <p className="text-[10px] text-muted-foreground mt-1">
+                    Subject: {Math.round(parseFloat(product.subjectBoundsW) * 100)}% × {Math.round(parseFloat(product.subjectBoundsH) * 100)}% coverage
+                  </p>
+                )}
               </CardContent>
             </Card>
           ))}

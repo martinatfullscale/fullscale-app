@@ -156,6 +156,13 @@ export const brandProducts = pgTable("brand_products", {
   width: integer("width"), // Image pixel width
   height: integer("height"), // Image pixel height
   isTransparent: boolean("is_transparent").default(false), // Whether image has alpha channel
+  // Product ingest analysis fields (auto-populated on upload)
+  subjectBoundsX: numeric("subject_bounds_x"), // Normalized 0-1: X offset of non-transparent subject
+  subjectBoundsY: numeric("subject_bounds_y"), // Normalized 0-1: Y offset of non-transparent subject
+  subjectBoundsW: numeric("subject_bounds_w"), // Normalized 0-1: Width of non-transparent subject
+  subjectBoundsH: numeric("subject_bounds_h"), // Normalized 0-1: Height of non-transparent subject
+  dominantColor: varchar("dominant_color"), // Hex color e.g. "#FF6B2B"
+  backgroundType: varchar("background_type"), // 'transparent' | 'solid' | 'complex'
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
