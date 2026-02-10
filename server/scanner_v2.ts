@@ -52,7 +52,9 @@ const CONFIG = {
   MIN_DISK_SPACE_MB: 100,
   
   // Detection method: 'gemini' or 'edge'
-  DETECTION_METHOD: 'edge' as 'gemini' | 'edge',
+  // Gemini AI provides accurate surface classification and tight bounding boxes
+  // Edge detection is a fast fallback but can't distinguish real surfaces from random edges
+  DETECTION_METHOD: 'gemini' as 'gemini' | 'edge',
   
   // Detection thresholds (for edge detection)
   EDGE_THRESHOLD: 20,
@@ -136,53 +138,76 @@ interface GeminiSurfaceDetectionResult {
 // GEMINI AI PROMPT
 // ============================================================================
 
-const SURFACE_DETECTION_PROMPT = `You are analyzing a video frame to identify suitable areas for product placement in advertising.
+const SURFACE_DETECTION_PROMPT = `You are analyzing a video frame to identify REAL, PHYSICAL flat surfaces where a product could naturally be placed.
 
-TASK: Find areas where a product (like a beverage, phone, or small object) could be naturally placed.
+TASK: Find actual flat surfaces (tables, desks, countertops, shelves) visible in the frame where a small product like a beverage bottle, phone, or gadget could physically sit.
 
-LOOK FOR:
-1. **Flat surfaces** - Tables, desks, countertops, shelves, nightstands, coffee tables
-2. **Empty spaces** - Clear areas beside or near the subject where a product could appear
-3. **Natural placement zones** - Lower third of frame, surfaces in foreground/background
-4. **Contextual fits** - Kitchen counter for food products, desk for tech products, etc.
+CRITICAL RULES:
+- Only detect REAL physical surfaces that exist in the 3D scene
+- The bounding box must tightly wrap ONLY the visible surface area — not the entire frame
+- Do NOT flag roads, sidewalks, floors, or ground surfaces
+- Do NOT flag walls, ceilings, curtains, or vertical surfaces (unless it's a shelf)
+- Do NOT flag bridges, buildings, vehicles, or outdoor structures
+- Do NOT flag areas with heavy motion blur or out-of-focus regions
+- Do NOT flag surfaces blocked by people's bodies or hands
+- Do NOT flag surfaces that are too small to place a product on
+- If the frame is an exterior/outdoor shot with no furniture, return surfaces_found: false
+- If the frame is a close-up of a person with no visible surfaces, return surfaces_found: false
+- Maximum 3 surfaces per frame — only the most prominent ones
 
-DO NOT FLAG:
-- Areas blocked by people or moving hands
-- Surfaces that are too cluttered
-- Areas outside the main visual focus
-- Vertical surfaces (walls) unless they have shelves
+BOUNDING BOX RULES:
+- x, y = top-left corner of the surface as percentage of frame (0-100)
+- width, height = size of the surface area as percentage of frame (0-100)
+- The box should TIGHTLY fit the actual placeable surface area
+- A desk that takes up 30% of the frame width should have width: 30, NOT width: 90
+- Be precise — a small coffee table might be x:35, y:55, width:25, height:15
 
-For each suitable area found, provide:
-- **location**: Bounding box as {x, y, width, height} in percentages (0-100) of frame dimensions
-- **surface_type**: What it is (desk, table, shelf, counter, open_space, etc.)
-- **confidence**: 0.0 to 1.0 based on how suitable it is for product placement
-- **reasoning**: Brief explanation of why this spot works
+GOOD SURFACES (flag these):
+- Desks, tables, countertops with visible flat area
+- Shelves or ledges with clear space
+- Nightstands, side tables, coffee tables
+- Studio desks in podcast/recording setups
+- Kitchen counters with some clear space
 
-RESPOND IN THIS EXACT JSON FORMAT:
+BAD "SURFACES" (do NOT flag):
+- Roads, highways, pavement
+- Building edges, bridge structures
+- Sky, trees, outdoor scenery
+- Floors (even indoor floors)
+- Walls (even if flat)
+- Any area where a product would look unnatural
+
+For each suitable surface found, provide:
+- **location**: Tight bounding box as {x, y, width, height} in percentages (0-100)
+- **surface_type**: desk, table, shelf, counter, nightstand, coffee_table, studio_desk
+- **confidence**: 0.0 to 1.0 — only use >0.7 if the surface is clearly visible and suitable
+- **reasoning**: Brief explanation
+
+RESPOND IN THIS EXACT JSON FORMAT (no markdown, no code fences):
 {
-  "surfaces_found": true/false,
+  "surfaces_found": true,
   "frame_description": "Brief description of what's in the frame",
   "surfaces": [
     {
-      "location": {"x": 20, "y": 60, "width": 30, "height": 25},
+      "location": {"x": 20, "y": 55, "width": 30, "height": 20},
       "surface_type": "desk",
       "confidence": 0.85,
-      "reasoning": "Clear wooden desk surface in lower right, good lighting, unobstructed"
+      "reasoning": "Clear wooden desk surface, well-lit, partially visible"
     }
   ],
   "recommended_placement": {
-    "location": {"x": ..., "y": ..., "width": ..., "height": ...},
-    "reason": "Best overall spot because..."
+    "location": {"x": 25, "y": 58, "width": 15, "height": 12},
+    "reason": "Best spot — clear area on desk near subject"
   }
 }
 
-If NO suitable surfaces exist in this frame, respond with:
+If NO suitable surfaces exist:
 {
   "surfaces_found": false,
   "frame_description": "Description of frame",
   "surfaces": [],
   "recommended_placement": null,
-  "no_surface_reason": "Why no placement works (e.g., 'close-up face shot', 'too much motion blur', 'fully outdoor scene with no surfaces')"
+  "no_surface_reason": "Why no placement works here"
 }
 
 Analyze the frame now:`;
@@ -1251,9 +1276,23 @@ export async function processVideoScan(
         }
 
         // Use Gemini AI or edge detection based on config
-        const analysis = CONFIG.DETECTION_METHOD === 'gemini'
-          ? await analyzeFrameWithGemini(framePath, timestamp, isVertical)
-          : await analyzeFrameForSurfaces(framePath, timestamp, isVertical);
+        // Falls back to edge detection if Gemini API key is missing
+        const useGemini = CONFIG.DETECTION_METHOD === 'gemini'
+          && process.env.AI_INTEGRATIONS_GEMINI_API_KEY
+          && process.env.AI_INTEGRATIONS_GEMINI_API_KEY !== 'dummy-key';
+
+        let analysis: FrameAnalysisResult;
+        if (useGemini) {
+          analysis = await analyzeFrameWithGemini(framePath, timestamp, isVertical);
+          // If Gemini failed (timeout, error), fall back to edge detection for this frame
+          if (!analysis.hasSurface && analysis.confidence === 0) {
+            console.log(`[Scanner V2] Gemini returned no result for frame ${timestamp}s, trying edge detection...`);
+            analysis = await analyzeFrameForSurfaces(framePath, timestamp, isVertical);
+          }
+        } else {
+          if (i === 0) console.log(`[Scanner V2] Gemini API key not configured, using edge detection fallback`);
+          analysis = await analyzeFrameForSurfaces(framePath, timestamp, isVertical);
+        }
 
         if (analysis.hasSurface && analysis.surfaces.length > 0) {
           const frameUrl = `/uploads/frames/${videoId}/${frameFilename}`;
