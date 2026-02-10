@@ -451,9 +451,29 @@ export async function registerRoutes(
           return res.redirect("/?error=user_creation_failed");
         }
         
-        // Defer Airtable sync to after login completes (non-blocking)
+        // Send emails to new user and admin (non-blocking)
         const nameParts2 = (userInfo.name || "").split(" ");
-        setTimeout(() => {
+        const newUserFirstName = nameParts2[0] || "there";
+        const newUserLastName = nameParts2.slice(1).join(" ") || "User";
+        
+        setTimeout(async () => {
+          try {
+            const { sendWelcomeEmail, sendAdminNotification } = await import("./lib/resend");
+            
+            sendWelcomeEmail(normalizedEmail, newUserFirstName).catch(err =>
+              console.error("[Resend] Welcome email failed for Google signup:", err)
+            );
+            
+            sendAdminNotification({
+              email: normalizedEmail,
+              firstName: newUserFirstName,
+              lastName: newUserLastName,
+              userType: "creator",
+            }).catch(err => console.error("[Resend] Admin notification failed for Google signup:", err));
+          } catch (err) {
+            console.error("[Resend] Failed to load email module:", err);
+          }
+          
           addSignupToAirtable({
             email: normalizedEmail,
             firstName: nameParts2[0] || null,
@@ -461,7 +481,7 @@ export async function registerRoutes(
             authProvider: "google",
             isApproved: userIsApproved,
           }).catch(err => console.error("[Airtable] Sync failed:", err));
-        }, 5000);
+        }, 3000);
       } else {
         // Existing user - use their current approval status
         userIsApproved = existingUser.isApproved ?? false;
@@ -1735,8 +1755,9 @@ export async function registerRoutes(
   });
 
   // Direct video upload endpoint - bypass YouTube download
-  app.post("/api/upload", isGoogleAuthenticated, uploadMiddleware.single("video"), async (req: any, res) => {
-    console.log(`[UPLOAD] ===== VIDEO UPLOAD RECEIVED =====`);
+  app.post("/api/upload", isFlexibleAuthenticated, uploadMiddleware.single("video"), async (req: any, res) => {
+
+    console.log(`[UPLOAD] User: ${req.authEmail || req.googleUser?.email}`);
     console.log(`[UPLOAD] User: ${req.googleUser?.email}`);
     
     if (!req.file) {
@@ -1744,7 +1765,7 @@ export async function registerRoutes(
       return res.status(400).json({ error: "No video file uploaded" });
     }
 
-    const userId = req.googleUser.email;
+    const userId = req.authEmail || req.googleUser?.email;
     const file = req.file;
     const title = req.body.title || file.originalname.replace(/\.[^/.]+$/, "");
     
