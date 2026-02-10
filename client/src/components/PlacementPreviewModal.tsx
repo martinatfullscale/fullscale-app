@@ -135,28 +135,62 @@ export default function PlacementPreviewModal({
     reader.readAsDataURL(file);
   }, []);
 
+  // Helper to load an image as a promise
+  const loadImage = useCallback((src: string): Promise<HTMLImageElement> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      // Don't set crossOrigin for same-origin URLs to avoid CORS issues
+      // Only set for data: URLs or cross-origin
+      if (src.startsWith("data:")) {
+        // Data URLs don't need crossOrigin
+      } else if (src.startsWith("http") && !src.startsWith(window.location.origin)) {
+        img.crossOrigin = "anonymous";
+      }
+      img.onload = () => resolve(img);
+      img.onerror = (e) => {
+        console.error("Image load failed:", src.substring(0, 100), e);
+        reject(new Error(`Failed to load image: ${src.substring(0, 100)}`));
+      };
+      img.src = src;
+    });
+  }, []);
+
   // Client-side canvas compositing for instant preview
   const generatePreview = useCallback(async () => {
-    if (!selectedSurface?.frameUrl || !productImage) return;
+    const frameUrl = selectedSurface?.frameUrl;
+    const prodUrl = productImage;
+
+    if (!frameUrl || !prodUrl) {
+      console.log("generatePreview skipped: frameUrl=", !!frameUrl, "productImage=", !!prodUrl);
+      return;
+    }
 
     setIsCompositing(true);
 
     try {
       const canvas = canvasRef.current;
-      if (!canvas) return;
+      if (!canvas) {
+        console.error("Canvas ref not available");
+        return;
+      }
 
       const ctx = canvas.getContext("2d");
-      if (!ctx) return;
+      if (!ctx) {
+        console.error("Could not get 2d context");
+        return;
+      }
 
-      // Load frame image
-      const frameImg = new Image();
-      frameImg.crossOrigin = "anonymous";
+      // Load both images in parallel
+      console.log("Loading frame:", frameUrl.substring(0, 80));
+      console.log("Loading product:", prodUrl.substring(0, 80));
 
-      await new Promise<void>((resolve, reject) => {
-        frameImg.onload = () => resolve();
-        frameImg.onerror = () => reject(new Error("Failed to load frame"));
-        frameImg.src = selectedSurface.frameUrl!;
-      });
+      const [frameImg, prodImg] = await Promise.all([
+        loadImage(frameUrl),
+        loadImage(prodUrl),
+      ]);
+
+      console.log("Frame loaded:", frameImg.naturalWidth, "x", frameImg.naturalHeight);
+      console.log("Product loaded:", prodImg.naturalWidth, "x", prodImg.naturalHeight);
 
       // Set canvas to frame dimensions
       canvas.width = frameImg.naturalWidth;
@@ -165,20 +199,29 @@ export default function PlacementPreviewModal({
       // Draw frame
       ctx.drawImage(frameImg, 0, 0);
 
-      // Load product image
-      const prodImg = new Image();
-      await new Promise<void>((resolve, reject) => {
-        prodImg.onload = () => resolve();
-        prodImg.onerror = () => reject(new Error("Failed to load product image"));
-        prodImg.src = productImage;
-      });
-
       // Calculate bounding box in pixel coordinates
       // The bounding box values are percentages (0-100)
-      const bx = (selectedSurface.boundingBoxX / 100) * canvas.width;
-      const by = (selectedSurface.boundingBoxY / 100) * canvas.height;
-      const bw = (selectedSurface.boundingBoxWidth / 100) * canvas.width;
-      const bh = (selectedSurface.boundingBoxHeight / 100) * canvas.height;
+      const bx = (selectedSurface!.boundingBoxX / 100) * canvas.width;
+      const by = (selectedSurface!.boundingBoxY / 100) * canvas.height;
+      const bw = (selectedSurface!.boundingBoxWidth / 100) * canvas.width;
+      const bh = (selectedSurface!.boundingBoxHeight / 100) * canvas.height;
+
+      console.log("Bounding box px:", { bx, by, bw, bh });
+      console.log("Bounding box %:", {
+        x: selectedSurface!.boundingBoxX,
+        y: selectedSurface!.boundingBoxY,
+        w: selectedSurface!.boundingBoxWidth,
+        h: selectedSurface!.boundingBoxHeight,
+      });
+
+      // Validate bounding box — skip if zero dimensions
+      if (bw <= 0 || bh <= 0) {
+        console.error("Invalid bounding box dimensions:", bw, bh);
+        // Still show the frame even without product overlay
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+        setCompositedImage(dataUrl);
+        return;
+      }
 
       // Draw product image onto the bounding box area with opacity
       ctx.globalAlpha = opacity / 100;
@@ -202,25 +245,43 @@ export default function PlacementPreviewModal({
         drawX = bx + (bw - drawWidth) / 2;
       }
 
+      console.log("Drawing product at:", { drawX, drawY, drawWidth, drawHeight });
       ctx.drawImage(prodImg, drawX, drawY, drawWidth, drawHeight);
       ctx.globalAlpha = 1;
 
       // Export as data URL
-      const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
-      setCompositedImage(dataUrl);
+      try {
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+        console.log("Composited image generated, length:", dataUrl.length);
+        setCompositedImage(dataUrl);
+      } catch (exportErr) {
+        console.error("Canvas toDataURL failed (tainted?):", exportErr);
+        // Fallback: try without JPEG quality param
+        try {
+          const dataUrl = canvas.toDataURL();
+          setCompositedImage(dataUrl);
+        } catch (fallbackErr) {
+          console.error("Canvas toDataURL fallback also failed:", fallbackErr);
+        }
+      }
     } catch (err) {
       console.error("Compositing failed:", err);
     } finally {
       setIsCompositing(false);
     }
-  }, [selectedSurface, productImage, opacity]);
+  }, [selectedSurface, productImage, opacity, loadImage]);
 
   // Auto-generate preview when both surface and product are selected
   useEffect(() => {
     if (selectedSurface?.frameUrl && productImage) {
-      generatePreview();
+      // Small delay to ensure state is fully committed and images are cacheable
+      const timer = setTimeout(() => {
+        generatePreview();
+      }, 150);
+      return () => clearTimeout(timer);
     }
-  }, [selectedSurface, productImage, opacity, generatePreview]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSurface?.frameUrl, selectedSurface?.id, productImage, opacity, generatePreview]);
 
   const downloadPreview = useCallback(() => {
     if (!compositedImage) return;

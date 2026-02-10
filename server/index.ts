@@ -30,13 +30,17 @@ app.set("trust proxy", 1);
 // ============================================
 const projectRoot = process.cwd();
 
-// Serve public directory assets (videos, images)
+// Serve public directory assets (videos, images) with CORS headers for canvas compositing
 app.use(express.static(path.join(projectRoot, "public"), {
   maxAge: '7d',
   etag: true,
   lastModified: true,
   immutable: true,
   index: false,
+  setHeaders: (res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  },
 }));
 
 // Serve attached assets (logo, generated images/videos)
