@@ -97,6 +97,10 @@ interface DetectedSurface {
   };
   timestamp: number;
   frameUrl?: string;
+  // Lighting & camera data for realistic product placement
+  lightingDirection?: string;  // left, right, top, top-left, top-right, ambient
+  lightingIntensity?: number;  // 0.0-1.0
+  cameraAngle?: string;        // eye-level, slightly-above, top-down, low-angle
 }
 
 interface FrameAnalysisResult {
@@ -123,6 +127,9 @@ interface GeminiDetectedSurface {
   surface_type: string;
   confidence: number;
   reasoning: string;
+  lighting_direction?: string;  // left, right, top, top-left, top-right, ambient
+  lighting_intensity?: number;  // 0.0-1.0
+  camera_angle?: string;        // eye-level, slightly-above, top-down, low-angle
 }
 
 interface GeminiSurfaceDetectionResult {
@@ -184,6 +191,9 @@ For each suitable surface found, provide:
 - **surface_type**: desk, table, shelf, counter, nightstand, coffee_table, studio_desk
 - **confidence**: 0.0 to 1.0 — only use >0.7 if the surface is clearly visible and suitable
 - **reasoning**: Brief explanation
+- **lighting_direction**: Where the main light source is coming from relative to the surface. One of: "left", "right", "top", "top-left", "top-right", "ambient" (if diffuse/even lighting)
+- **lighting_intensity**: 0.0 to 1.0 — how bright the scene is (0.0 = very dark, 0.5 = moderate, 1.0 = very bright/overexposed)
+- **camera_angle**: The camera's viewing angle relative to the surface. One of: "eye-level", "slightly-above", "top-down", "low-angle"
 
 RESPOND IN THIS EXACT JSON FORMAT (no markdown, no code fences):
 {
@@ -194,7 +204,10 @@ RESPOND IN THIS EXACT JSON FORMAT (no markdown, no code fences):
       "location": {"x": 20, "y": 55, "width": 30, "height": 20},
       "surface_type": "desk",
       "confidence": 0.85,
-      "reasoning": "Clear wooden desk surface, well-lit, partially visible"
+      "reasoning": "Clear wooden desk surface, well-lit, partially visible",
+      "lighting_direction": "top-left",
+      "lighting_intensity": 0.7,
+      "camera_angle": "slightly-above"
     }
   ],
   "recommended_placement": {
@@ -791,6 +804,10 @@ async function analyzeFrameWithGemini(
           height: s.location.height / 100,
         },
         timestamp,
+        // Lighting & camera data for realistic product placement
+        lightingDirection: s.lighting_direction || undefined,
+        lightingIntensity: typeof s.lighting_intensity === 'number' ? s.lighting_intensity : undefined,
+        cameraAngle: s.camera_angle || undefined,
       }))
       .sort((a: DetectedSurface, b: DetectedSurface) => b.confidence - a.confidence)
       .slice(0, 2); // Max 2 surfaces per frame to avoid clutter
@@ -1322,6 +1339,10 @@ export async function processVideoScan(
               boundingBoxWidth: surface.boundingBox.width.toString(),
               boundingBoxHeight: surface.boundingBox.height.toString(),
               frameUrl,
+              // Lighting & camera data from Gemini AI
+              lightingDirection: surface.lightingDirection || null,
+              lightingIntensity: surface.lightingIntensity != null ? surface.lightingIntensity.toString() : null,
+              cameraAngle: surface.cameraAngle || null,
             };
 
             const inserted = await storage.insertDetectedSurface(dbSurface);

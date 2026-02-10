@@ -130,6 +130,10 @@ export const detectedSurfaces = pgTable("detected_surfaces", {
   frameUrl: text("frame_url"), // Optional: stored frame image URL
   surroundings: text("surroundings").array(), // Array of surrounding objects detected
   sceneContext: text("scene_context"), // Scene description from AI
+  // Lighting & camera data for realistic product placement (populated by Gemini AI)
+  lightingDirection: varchar("lighting_direction"), // left, right, top, top-left, top-right, ambient
+  lightingIntensity: numeric("lighting_intensity"), // 0.0-1.0 (dim to bright)
+  cameraAngle: varchar("camera_angle"), // eye-level, slightly-above, top-down, low-angle
   createdAt: timestamp("created_at").defaultNow(),
 });
 

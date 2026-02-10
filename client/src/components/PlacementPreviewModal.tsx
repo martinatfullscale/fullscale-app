@@ -48,6 +48,10 @@ interface Surface {
   boundingBoxWidth: number;
   boundingBoxHeight: number;
   sceneContext?: string | null;
+  // Lighting & camera data from Gemini AI for auto-realistic defaults
+  lightingDirection?: string | null;  // left, right, top, top-left, top-right, ambient
+  lightingIntensity?: number | null;  // 0.0-1.0
+  cameraAngle?: string | null;       // eye-level, slightly-above, top-down, low-angle
 }
 
 interface PlacementPreviewModalProps {
@@ -104,6 +108,56 @@ const DEFAULT_BLEND: PlacementBlend = {
   brightness: 0,
   contrast: 0,
 };
+
+/**
+ * Auto-generate realistic blend defaults based on Gemini's lighting/camera analysis.
+ * This makes products look natural in the scene by matching shadow direction to light source
+ * and adjusting brightness/contrast to match the scene's lighting conditions.
+ */
+function getAutoBlendDefaults(surface: Surface): PlacementBlend {
+  const blend = { ...DEFAULT_BLEND };
+
+  // Shadow direction from lighting
+  if (surface.lightingDirection) {
+    blend.shadowEnabled = true;
+    const dir = surface.lightingDirection.toLowerCase();
+
+    // Shadow falls opposite to light direction
+    const shadowMap: Record<string, { x: number; y: number }> = {
+      "left":      { x: 4, y: 3 },     // Light from left → shadow to right
+      "right":     { x: -4, y: 3 },     // Light from right → shadow to left
+      "top":       { x: 0, y: 5 },      // Light from top → shadow below
+      "top-left":  { x: 3, y: 4 },      // Light from top-left → shadow bottom-right
+      "top-right": { x: -3, y: 4 },     // Light from top-right → shadow bottom-left
+      "ambient":   { x: 1, y: 3 },      // Diffuse → subtle downward shadow
+    };
+
+    const shadow = shadowMap[dir] || shadowMap["ambient"];
+    blend.shadowOffsetX = shadow.x;
+    blend.shadowOffsetY = shadow.y;
+  }
+
+  // Shadow sharpness from lighting intensity
+  if (surface.lightingIntensity != null) {
+    const intensity = surface.lightingIntensity;
+    // Bright scenes → sharper shadows (lower blur), dark scenes → softer shadows
+    blend.shadowBlur = Math.round(12 - intensity * 8); // Range: 4 (bright) to 12 (dark)
+    blend.shadowBlur = Math.max(2, Math.min(20, blend.shadowBlur));
+
+    // Shadow opacity: brighter scene → more defined shadow
+    const shadowAlpha = 0.2 + intensity * 0.35; // 0.2 to 0.55
+    blend.shadowColor = `rgba(0,0,0,${shadowAlpha.toFixed(2)})`;
+
+    // Brightness adjustment: match product to scene
+    if (intensity > 0.7) {
+      blend.brightness = 5;  // Slightly brighten product in bright scenes
+    } else if (intensity < 0.3) {
+      blend.brightness = -10; // Darken product in dim scenes
+    }
+  }
+
+  return blend;
+}
 
 const BLEND_MODES: { value: GlobalCompositeOperation; label: string }[] = [
   { value: "source-over", label: "Normal" },
@@ -310,11 +364,14 @@ export default function PlacementPreviewModal({
     enabled: open,
   });
 
-  // Auto-select first surface with a frame
+  // Auto-select first surface with a frame and set auto-blend defaults
   useEffect(() => {
     if (open && surfaces.length > 0 && !selectedSurface) {
       const surfaceWithFrame = surfaces.find((s) => s.frameUrl);
-      setSelectedSurface(surfaceWithFrame || surfaces[0]);
+      const surface = surfaceWithFrame || surfaces[0];
+      setSelectedSurface(surface);
+      // Auto-populate blend defaults from lighting data
+      setBlend(getAutoBlendDefaults(surface));
     }
   }, [open, surfaces, selectedSurface]);
 
@@ -831,6 +888,8 @@ export default function PlacementPreviewModal({
                             setSelectedSurface(surface);
                             // Reset transform for new surface
                             setTransform({ ...DEFAULT_TRANSFORM });
+                            // Auto-populate blend from lighting data
+                            setBlend(getAutoBlendDefaults(surface));
                           }}
                           className={`relative flex-shrink-0 w-20 h-14 rounded-md overflow-hidden border-2 transition-all ${
                             selectedSurface?.id === surface.id
@@ -1197,6 +1256,28 @@ export default function PlacementPreviewModal({
                             <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Integration</h3>
                             <button onClick={resetBlend} className="text-[10px] text-primary hover:underline">Reset</button>
                           </div>
+
+                          {/* Scene analysis info badge */}
+                          {selectedSurface?.lightingDirection && (
+                            <div className="px-3 py-2 rounded-lg bg-emerald-500/5 border border-emerald-500/15">
+                              <p className="text-[10px] text-emerald-400/80 font-medium mb-1">Auto-tuned from scene analysis</p>
+                              <div className="flex flex-wrap gap-1.5">
+                                <span className="text-[9px] bg-emerald-500/10 text-emerald-400/70 px-1.5 py-0.5 rounded">
+                                  Light: {selectedSurface.lightingDirection}
+                                </span>
+                                {selectedSurface.lightingIntensity != null && (
+                                  <span className="text-[9px] bg-emerald-500/10 text-emerald-400/70 px-1.5 py-0.5 rounded">
+                                    Intensity: {Math.round(selectedSurface.lightingIntensity * 100)}%
+                                  </span>
+                                )}
+                                {selectedSurface.cameraAngle && (
+                                  <span className="text-[9px] bg-emerald-500/10 text-emerald-400/70 px-1.5 py-0.5 rounded">
+                                    Camera: {selectedSurface.cameraAngle}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          )}
 
                           {/* Opacity */}
                           <div className="space-y-2">

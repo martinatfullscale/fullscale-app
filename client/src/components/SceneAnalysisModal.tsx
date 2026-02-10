@@ -835,6 +835,9 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
             boundingBoxWidth: parseFloat(s.boundingBoxWidth) || 0,
             boundingBoxHeight: parseFloat(s.boundingBoxHeight) || 0,
             sceneContext: (s as any).sceneContext || null,
+            lightingDirection: (s as any).lightingDirection || null,
+            lightingIntensity: (s as any).lightingIntensity ? parseFloat((s as any).lightingIntensity) : null,
+            cameraAngle: (s as any).cameraAngle || null,
           }))}
         />
       )}
