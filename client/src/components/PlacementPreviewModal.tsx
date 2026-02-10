@@ -6,17 +6,27 @@ import {
   Upload,
   Download,
   Image as ImageIcon,
-  Loader2,
   Target,
   Clock,
   RotateCcw,
-  ZoomIn,
-  Layers,
+  RotateCw,
   Package,
   CheckCircle,
+  Move,
+  Maximize2,
+  FlipHorizontal,
+  Sun,
+  Droplets,
+  Blend,
+  Eye,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
+
+// ============================================================================
+// TYPES
+// ============================================================================
 
 interface CatalogProduct {
   id: number;
@@ -48,6 +58,215 @@ interface PlacementPreviewModalProps {
   surfaces: Surface[];
 }
 
+// Transform controls for product placement
+interface PlacementTransform {
+  offsetX: number;     // pixel offset from bounding box center
+  offsetY: number;
+  scale: number;       // 0.1 - 3.0 multiplier
+  rotation: number;    // degrees
+  flipH: boolean;      // horizontal flip
+}
+
+// Blend/integration settings
+interface PlacementBlend {
+  opacity: number;          // 0-100
+  blendMode: GlobalCompositeOperation;
+  shadowEnabled: boolean;
+  shadowBlur: number;       // 0-40
+  shadowOffsetX: number;    // -20 to 20
+  shadowOffsetY: number;    // -20 to 20
+  shadowColor: string;
+  featherRadius: number;    // 0-20 edge softness
+  brightness: number;       // -50 to 50
+  contrast: number;         // -50 to 50
+}
+
+type DragMode = "none" | "move" | "resize-tl" | "resize-tr" | "resize-bl" | "resize-br" | "rotate";
+type ToolPanel = "product" | "transform" | "blend";
+
+const DEFAULT_TRANSFORM: PlacementTransform = {
+  offsetX: 0,
+  offsetY: 0,
+  scale: 0.6,  // Start at 60% for breathing room
+  rotation: 0,
+  flipH: false,
+};
+
+const DEFAULT_BLEND: PlacementBlend = {
+  opacity: 90,
+  blendMode: "source-over",
+  shadowEnabled: true,
+  shadowBlur: 8,
+  shadowOffsetX: 2,
+  shadowOffsetY: 4,
+  shadowColor: "rgba(0,0,0,0.4)",
+  featherRadius: 0,
+  brightness: 0,
+  contrast: 0,
+};
+
+const BLEND_MODES: { value: GlobalCompositeOperation; label: string }[] = [
+  { value: "source-over", label: "Normal" },
+  { value: "multiply", label: "Multiply" },
+  { value: "screen", label: "Screen" },
+  { value: "overlay", label: "Overlay" },
+  { value: "soft-light", label: "Soft Light" },
+  { value: "hard-light", label: "Hard Light" },
+  { value: "color-dodge", label: "Color Dodge" },
+  { value: "color-burn", label: "Color Burn" },
+  { value: "darken", label: "Darken" },
+  { value: "lighten", label: "Lighten" },
+  { value: "luminosity", label: "Luminosity" },
+];
+
+// ============================================================================
+// UTILITY FUNCTIONS
+// ============================================================================
+
+function clamp(val: number, min: number, max: number) {
+  return Math.min(Math.max(val, min), max);
+}
+
+/** Apply brightness/contrast filter string for canvas */
+function getFilterString(blend: PlacementBlend): string {
+  const parts: string[] = [];
+  if (blend.brightness !== 0) {
+    parts.push(`brightness(${100 + blend.brightness}%)`);
+  }
+  if (blend.contrast !== 0) {
+    parts.push(`contrast(${100 + blend.contrast}%)`);
+  }
+  return parts.length > 0 ? parts.join(" ") : "none";
+}
+
+// ============================================================================
+// DRAW PRODUCT WITH FULL TRANSFORM + BLEND
+// ============================================================================
+
+function drawProduct(
+  ctx: CanvasRenderingContext2D,
+  img: HTMLImageElement,
+  px: number, py: number, pw: number, ph: number,
+  transform: PlacementTransform,
+  blend: PlacementBlend,
+) {
+  const prodAspect = img.naturalWidth / img.naturalHeight;
+  const boxAspect = pw / ph;
+
+  let drawWidth: number, drawHeight: number;
+  if (prodAspect > boxAspect) {
+    drawWidth = pw * transform.scale;
+    drawHeight = (pw / prodAspect) * transform.scale;
+  } else {
+    drawHeight = ph * transform.scale;
+    drawWidth = (ph * prodAspect) * transform.scale;
+  }
+
+  // Center within bounding box + offset
+  const centerX = px + pw / 2 + transform.offsetX;
+  const centerY = py + ph / 2 + transform.offsetY;
+
+  ctx.save();
+
+  // Blend mode
+  ctx.globalCompositeOperation = blend.blendMode;
+  ctx.globalAlpha = blend.opacity / 100;
+
+  // Canvas filter for brightness/contrast
+  const filter = getFilterString(blend);
+  if (filter !== "none") {
+    ctx.filter = filter;
+  }
+
+  // Shadow
+  if (blend.shadowEnabled) {
+    ctx.shadowBlur = blend.shadowBlur;
+    ctx.shadowColor = blend.shadowColor;
+    ctx.shadowOffsetX = blend.shadowOffsetX;
+    ctx.shadowOffsetY = blend.shadowOffsetY;
+  }
+
+  // Transform: translate to center, rotate, flip, then draw centered
+  ctx.translate(centerX, centerY);
+  ctx.rotate((transform.rotation * Math.PI) / 180);
+  if (transform.flipH) ctx.scale(-1, 1);
+
+  // Edge feathering via multi-draw with decreasing alpha at edges
+  if (blend.featherRadius > 0) {
+    const feather = blend.featherRadius;
+    const hw = drawWidth / 2;
+    const hh = drawHeight / 2;
+    const steps = Math.min(feather, 8);
+    const baseAlpha = ctx.globalAlpha;
+    for (let i = steps; i >= 0; i--) {
+      const t = i / steps;
+      const inset = feather * t;
+      ctx.globalAlpha = baseAlpha * (1 - t * 0.7);
+      ctx.drawImage(
+        img,
+        -hw - inset, -hh - inset,
+        drawWidth + inset * 2, drawHeight + inset * 2
+      );
+    }
+    ctx.globalAlpha = baseAlpha;
+    ctx.drawImage(img, -hw, -hh, drawWidth, drawHeight);
+  } else {
+    ctx.drawImage(img, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
+  }
+
+  ctx.restore();
+}
+
+// Draw product for export (full resolution)
+function drawProductExport(
+  ctx: CanvasRenderingContext2D,
+  img: HTMLImageElement,
+  px: number, py: number, pw: number, ph: number,
+  transform: PlacementTransform,
+  blend: PlacementBlend,
+  scaleRatio: number,
+) {
+  const prodAspect = img.naturalWidth / img.naturalHeight;
+  const boxAspect = pw / ph;
+
+  let drawWidth: number, drawHeight: number;
+  if (prodAspect > boxAspect) {
+    drawWidth = pw * transform.scale;
+    drawHeight = (pw / prodAspect) * transform.scale;
+  } else {
+    drawHeight = ph * transform.scale;
+    drawWidth = (ph * prodAspect) * transform.scale;
+  }
+
+  const centerX = px + pw / 2 + transform.offsetX * scaleRatio;
+  const centerY = py + ph / 2 + transform.offsetY * scaleRatio;
+
+  ctx.save();
+  ctx.globalCompositeOperation = blend.blendMode;
+  ctx.globalAlpha = blend.opacity / 100;
+
+  const filter = getFilterString(blend);
+  if (filter !== "none") ctx.filter = filter;
+
+  if (blend.shadowEnabled) {
+    ctx.shadowBlur = blend.shadowBlur * scaleRatio;
+    ctx.shadowColor = blend.shadowColor;
+    ctx.shadowOffsetX = blend.shadowOffsetX * scaleRatio;
+    ctx.shadowOffsetY = blend.shadowOffsetY * scaleRatio;
+  }
+
+  ctx.translate(centerX, centerY);
+  ctx.rotate((transform.rotation * Math.PI) / 180);
+  if (transform.flipH) ctx.scale(-1, 1);
+
+  ctx.drawImage(img, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
+  ctx.restore();
+}
+
+// ============================================================================
+// COMPONENT
+// ============================================================================
+
 export default function PlacementPreviewModal({
   open,
   onClose,
@@ -55,16 +274,30 @@ export default function PlacementPreviewModal({
   videoTitle,
   surfaces,
 }: PlacementPreviewModalProps) {
+  // Core state
   const [selectedSurface, setSelectedSurface] = useState<Surface | null>(null);
   const [productImage, setProductImage] = useState<string | null>(null);
   const [productFile, setProductFile] = useState<File | null>(null);
-  const [isCompositing, setIsCompositing] = useState(false);
-  const [compositedImage, setCompositedImage] = useState<string | null>(null);
-  const [opacity, setOpacity] = useState(85);
   const [productTab, setProductTab] = useState<"upload" | "catalog">("upload");
   const [selectedCatalogProduct, setSelectedCatalogProduct] = useState<CatalogProduct | null>(null);
+  const [toolPanel, setToolPanel] = useState<ToolPanel>("product");
+
+  // Interactive transform + blend state
+  const [transform, setTransform] = useState<PlacementTransform>({ ...DEFAULT_TRANSFORM });
+  const [blend, setBlend] = useState<PlacementBlend>({ ...DEFAULT_BLEND });
+
+  // Drag interaction state
+  const [dragMode, setDragMode] = useState<DragMode>("none");
+  const [dragStart, setDragStart] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [dragStartTransform, setDragStartTransform] = useState<PlacementTransform>(DEFAULT_TRANSFORM);
+
+  // Refs
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const frameImgRef = useRef<HTMLImageElement | null>(null);
+  const productImgRef = useRef<HTMLImageElement | null>(null);
+  const animFrameRef = useRef<number>(0);
+  const canvasContainerRef = useRef<HTMLDivElement>(null);
 
   // Fetch product catalog
   const { data: catalogProducts } = useQuery<CatalogProduct[]>({
@@ -91,56 +324,21 @@ export default function PlacementPreviewModal({
       setSelectedSurface(null);
       setProductImage(null);
       setProductFile(null);
-      setCompositedImage(null);
-      setIsCompositing(false);
       setProductTab("upload");
       setSelectedCatalogProduct(null);
+      setToolPanel("product");
+      setTransform({ ...DEFAULT_TRANSFORM });
+      setBlend({ ...DEFAULT_BLEND });
+      setDragMode("none");
+      frameImgRef.current = null;
+      productImgRef.current = null;
     }
   }, [open]);
-
-  const handleFileUpload = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-
-      if (!file.type.startsWith("image/")) {
-        alert("Please upload an image file (PNG, JPG, etc.)");
-        return;
-      }
-
-      setProductFile(file);
-      setCompositedImage(null);
-
-      const reader = new FileReader();
-      reader.onload = () => {
-        setProductImage(reader.result as string);
-      };
-      reader.readAsDataURL(file);
-    },
-    []
-  );
-
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    const file = e.dataTransfer.files[0];
-    if (!file || !file.type.startsWith("image/")) return;
-
-    setProductFile(file);
-    setCompositedImage(null);
-
-    const reader = new FileReader();
-    reader.onload = () => {
-      setProductImage(reader.result as string);
-    };
-    reader.readAsDataURL(file);
-  }, []);
 
   // Helper to load an image as a promise
   const loadImage = useCallback((src: string): Promise<HTMLImageElement> => {
     return new Promise((resolve, reject) => {
       const img = new Image();
-      // Don't set crossOrigin for same-origin URLs to avoid CORS issues
-      // Only set for data: URLs or cross-origin
       if (src.startsWith("data:")) {
         // Data URLs don't need crossOrigin
       } else if (src.startsWith("http") && !src.startsWith(window.location.origin)) {
@@ -155,159 +353,391 @@ export default function PlacementPreviewModal({
     });
   }, []);
 
-  // Client-side canvas compositing for instant preview
-  const generatePreview = useCallback(async () => {
-    const frameUrl = selectedSurface?.frameUrl;
-    const prodUrl = productImage;
+  // Load frame image when surface changes
+  useEffect(() => {
+    if (!selectedSurface?.frameUrl) {
+      frameImgRef.current = null;
+      return;
+    }
+    loadImage(selectedSurface.frameUrl).then(img => {
+      frameImgRef.current = img;
+    }).catch(err => {
+      console.error("Failed to load frame:", err);
+      frameImgRef.current = null;
+    });
+  }, [selectedSurface?.frameUrl, loadImage]);
 
-    if (!frameUrl || !prodUrl) {
-      console.log("generatePreview skipped: frameUrl=", !!frameUrl, "productImage=", !!prodUrl);
+  // Load product image when it changes
+  useEffect(() => {
+    if (!productImage) {
+      productImgRef.current = null;
+      return;
+    }
+    loadImage(productImage).then(img => {
+      productImgRef.current = img;
+      // Auto-switch to transform panel when product is loaded
+      setToolPanel("transform");
+    }).catch(err => {
+      console.error("Failed to load product:", err);
+      productImgRef.current = null;
+    });
+  }, [productImage, loadImage]);
+
+  // ============================================================================
+  // LIVE CANVAS RENDER LOOP
+  // ============================================================================
+
+  const renderFrame = useCallback(() => {
+    const canvas = canvasRef.current;
+    const container = canvasContainerRef.current;
+    if (!canvas || !container) {
+      animFrameRef.current = requestAnimationFrame(renderFrame);
       return;
     }
 
-    setIsCompositing(true);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      animFrameRef.current = requestAnimationFrame(renderFrame);
+      return;
+    }
 
-    try {
-      const canvas = canvasRef.current;
-      if (!canvas) {
-        console.error("Canvas ref not available");
-        return;
+    const frameImg = frameImgRef.current;
+    if (!frameImg || !frameImg.complete) {
+      // Clear canvas if no frame
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      animFrameRef.current = requestAnimationFrame(renderFrame);
+      return;
+    }
+
+    // Size canvas to container while maintaining frame aspect ratio
+    const containerRect = container.getBoundingClientRect();
+    const frameAspect = frameImg.naturalWidth / frameImg.naturalHeight;
+    let displayW = containerRect.width;
+    let displayH = containerRect.width / frameAspect;
+
+    const maxH = containerRect.height || 500;
+    if (displayH > maxH) {
+      displayH = maxH;
+      displayW = maxH * frameAspect;
+    }
+
+    if (canvas.width !== Math.round(displayW) || canvas.height !== Math.round(displayH)) {
+      canvas.width = Math.round(displayW);
+      canvas.height = Math.round(displayH);
+    }
+
+    // Draw frame
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(frameImg, 0, 0, canvas.width, canvas.height);
+
+    // Draw bounding box
+    if (selectedSurface) {
+      const bx = selectedSurface.boundingBoxX * canvas.width;
+      const by = selectedSurface.boundingBoxY * canvas.height;
+      const bw = selectedSurface.boundingBoxWidth * canvas.width;
+      const bh = selectedSurface.boundingBoxHeight * canvas.height;
+
+      const hasProduct = !!productImgRef.current;
+
+      // Bounding box outline
+      ctx.strokeStyle = hasProduct ? "rgba(16, 185, 129, 0.6)" : "rgba(139, 92, 246, 0.8)";
+      ctx.lineWidth = 2;
+      ctx.setLineDash(hasProduct ? [4, 4] : [6, 4]);
+      ctx.strokeRect(bx, by, bw, bh);
+      ctx.setLineDash([]);
+
+      // Surface label
+      if (!hasProduct) {
+        ctx.font = "bold 11px Inter, system-ui, sans-serif";
+        const label = selectedSurface.surfaceType;
+        const tw = ctx.measureText(label).width;
+        ctx.fillStyle = "rgba(139, 92, 246, 0.85)";
+        ctx.fillRect(bx, by - 18, tw + 10, 18);
+        ctx.fillStyle = "#fff";
+        ctx.fillText(label, bx + 5, by - 5);
       }
 
-      const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        console.error("Could not get 2d context");
-        return;
-      }
+      // Draw product if loaded
+      const prodImg = productImgRef.current;
+      if (prodImg && prodImg.complete && bw > 0 && bh > 0) {
+        drawProduct(ctx, prodImg, bx, by, bw, bh, transform, blend);
 
-      // Load both images in parallel
-      console.log("Loading frame:", frameUrl.substring(0, 80));
-      console.log("Loading product:", prodUrl.substring(0, 80));
+        // Draw resize handles + rotation handle
+        const handleSize = 8;
+        ctx.fillStyle = "rgba(139, 92, 246, 0.9)";
 
-      const [frameImg, prodImg] = await Promise.all([
-        loadImage(frameUrl),
-        loadImage(prodUrl),
-      ]);
-
-      console.log("Frame loaded:", frameImg.naturalWidth, "x", frameImg.naturalHeight);
-      console.log("Product loaded:", prodImg.naturalWidth, "x", prodImg.naturalHeight);
-
-      // Set canvas to frame dimensions
-      canvas.width = frameImg.naturalWidth;
-      canvas.height = frameImg.naturalHeight;
-
-      // Draw frame
-      ctx.drawImage(frameImg, 0, 0);
-
-      // Calculate bounding box in pixel coordinates
-      // The bounding box values are normalized 0-1 (e.g., 0.5 = 50%)
-      const bx = selectedSurface!.boundingBoxX * canvas.width;
-      const by = selectedSurface!.boundingBoxY * canvas.height;
-      const bw = selectedSurface!.boundingBoxWidth * canvas.width;
-      const bh = selectedSurface!.boundingBoxHeight * canvas.height;
-
-      console.log("Bounding box px:", { bx, by, bw, bh });
-      console.log("Bounding box %:", {
-        x: selectedSurface!.boundingBoxX,
-        y: selectedSurface!.boundingBoxY,
-        w: selectedSurface!.boundingBoxWidth,
-        h: selectedSurface!.boundingBoxHeight,
-      });
-
-      // Validate bounding box — skip if zero dimensions
-      if (bw <= 0 || bh <= 0) {
-        console.error("Invalid bounding box dimensions:", bw, bh);
-        // Still show the frame even without product overlay
-        const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
-        setCompositedImage(dataUrl);
-        return;
-      }
-
-      // Draw product image onto the bounding box area with opacity
-      ctx.globalAlpha = opacity / 100;
-
-      // Maintain product aspect ratio within bounding box
-      const prodAspect = prodImg.naturalWidth / prodImg.naturalHeight;
-      const boxAspect = bw / bh;
-
-      let drawWidth = bw;
-      let drawHeight = bh;
-      let drawX = bx;
-      let drawY = by;
-
-      if (prodAspect > boxAspect) {
-        // Product is wider than box → fit to width
-        drawHeight = bw / prodAspect;
-        drawY = by + (bh - drawHeight) / 2;
-      } else {
-        // Product is taller → fit to height
-        drawWidth = bh * prodAspect;
-        drawX = bx + (bw - drawWidth) / 2;
-      }
-
-      console.log("Drawing product at:", { drawX, drawY, drawWidth, drawHeight });
-      ctx.drawImage(prodImg, drawX, drawY, drawWidth, drawHeight);
-      ctx.globalAlpha = 1;
-
-      // Export as data URL
-      try {
-        const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
-        console.log("Composited image generated, length:", dataUrl.length);
-        setCompositedImage(dataUrl);
-      } catch (exportErr) {
-        console.error("Canvas toDataURL failed (tainted?):", exportErr);
-        // Fallback: try without JPEG quality param
-        try {
-          const dataUrl = canvas.toDataURL();
-          setCompositedImage(dataUrl);
-        } catch (fallbackErr) {
-          console.error("Canvas toDataURL fallback also failed:", fallbackErr);
+        // Corner handles
+        const corners = [
+          { x: bx, y: by },
+          { x: bx + bw, y: by },
+          { x: bx, y: by + bh },
+          { x: bx + bw, y: by + bh },
+        ];
+        for (const c of corners) {
+          ctx.fillRect(c.x - handleSize / 2, c.y - handleSize / 2, handleSize, handleSize);
         }
+
+        // Rotation handle (orange dot above center)
+        ctx.beginPath();
+        ctx.arc(bx + bw / 2, by - 22, 6, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(251, 146, 60, 0.9)";
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.8)";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        // Line from top-center to rotation handle
+        ctx.beginPath();
+        ctx.moveTo(bx + bw / 2, by);
+        ctx.lineTo(bx + bw / 2, by - 16);
+        ctx.strokeStyle = "rgba(251, 146, 60, 0.5)";
+        ctx.lineWidth = 1;
+        ctx.stroke();
       }
-    } catch (err) {
-      console.error("Compositing failed:", err);
-    } finally {
-      setIsCompositing(false);
-    }
-  }, [selectedSurface, productImage, opacity, loadImage]);
 
-  // Auto-generate preview when both surface and product are selected
+      // "Drop product here" text if no product
+      if (!hasProduct) {
+        ctx.fillStyle = "rgba(139, 92, 246, 0.15)";
+        ctx.fillRect(bx, by, bw, bh);
+
+        ctx.font = "12px Inter, system-ui, sans-serif";
+        ctx.fillStyle = "rgba(139, 92, 246, 0.8)";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("Drop product here", bx + bw / 2, by + bh / 2);
+        ctx.textAlign = "start";
+        ctx.textBaseline = "alphabetic";
+      }
+    }
+
+    animFrameRef.current = requestAnimationFrame(renderFrame);
+  }, [selectedSurface, transform, blend]);
+
+  // Start/stop render loop
   useEffect(() => {
-    if (selectedSurface?.frameUrl && productImage) {
-      // Small delay to ensure state is fully committed and images are cacheable
-      const timer = setTimeout(() => {
-        generatePreview();
-      }, 150);
-      return () => clearTimeout(timer);
+    if (open) {
+      animFrameRef.current = requestAnimationFrame(renderFrame);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedSurface?.frameUrl, selectedSurface?.id, productImage, opacity, generatePreview]);
+    return () => {
+      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+    };
+  }, [open, renderFrame]);
 
-  const downloadPreview = useCallback(() => {
-    if (!compositedImage) return;
-    const link = document.createElement("a");
-    link.download = `placement-preview-${videoId}-${selectedSurface?.id || "surface"}.jpg`;
-    link.href = compositedImage;
-    link.click();
-  }, [compositedImage, videoId, selectedSurface]);
+  // ============================================================================
+  // CANVAS MOUSE INTERACTION
+  // ============================================================================
+
+  const handleCanvasMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!selectedSurface || !productImgRef.current) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const mx = (e.clientX - rect.left) * scaleX;
+    const my = (e.clientY - rect.top) * scaleY;
+
+    const bx = selectedSurface.boundingBoxX * canvas.width;
+    const by = selectedSurface.boundingBoxY * canvas.height;
+    const bw = selectedSurface.boundingBoxWidth * canvas.width;
+    const bh = selectedSurface.boundingBoxHeight * canvas.height;
+
+    const handleSize = 14;
+
+    // Check rotation handle (orange dot above center)
+    const rotCx = bx + bw / 2;
+    const rotCy = by - 22;
+    if (Math.hypot(mx - rotCx, my - rotCy) < handleSize) {
+      setDragMode("rotate");
+      setDragStart({ x: mx, y: my });
+      setDragStartTransform({ ...transform });
+      e.preventDefault();
+      return;
+    }
+
+    // Check corner handles
+    const corners: { mode: DragMode; x: number; y: number }[] = [
+      { mode: "resize-tl", x: bx, y: by },
+      { mode: "resize-tr", x: bx + bw, y: by },
+      { mode: "resize-bl", x: bx, y: by + bh },
+      { mode: "resize-br", x: bx + bw, y: by + bh },
+    ];
+    for (const c of corners) {
+      if (Math.abs(mx - c.x) < handleSize && Math.abs(my - c.y) < handleSize) {
+        setDragMode(c.mode);
+        setDragStart({ x: mx, y: my });
+        setDragStartTransform({ ...transform });
+        e.preventDefault();
+        return;
+      }
+    }
+
+    // Check inside bounding box = move
+    if (mx >= bx && mx <= bx + bw && my >= by && my <= by + bh) {
+      setDragMode("move");
+      setDragStart({ x: mx, y: my });
+      setDragStartTransform({ ...transform });
+      e.preventDefault();
+    }
+  }, [selectedSurface, transform]);
+
+  const handleCanvasMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (dragMode === "none") return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const mx = (e.clientX - rect.left) * scaleX;
+    const my = (e.clientY - rect.top) * scaleY;
+    const dx = mx - dragStart.x;
+    const dy = my - dragStart.y;
+
+    setTransform(prev => {
+      const newTransform = { ...prev };
+
+      if (dragMode === "move") {
+        newTransform.offsetX = dragStartTransform.offsetX + dx;
+        newTransform.offsetY = dragStartTransform.offsetY + dy;
+      } else if (dragMode.startsWith("resize")) {
+        const dist = Math.hypot(dx, dy);
+        const sign = (dx + dy) > 0 ? 1 : -1;
+        newTransform.scale = clamp(dragStartTransform.scale + sign * dist * 0.005, 0.1, 4.0);
+      } else if (dragMode === "rotate") {
+        newTransform.rotation = dragStartTransform.rotation + dx * 0.5;
+      }
+
+      return newTransform;
+    });
+  }, [dragMode, dragStart, dragStartTransform]);
+
+  const handleCanvasMouseUp = useCallback(() => {
+    setDragMode("none");
+  }, []);
+
+  // ============================================================================
+  // TRANSFORM / BLEND UPDATERS
+  // ============================================================================
+
+  const updateTransform = useCallback((key: keyof PlacementTransform, value: number | boolean) => {
+    setTransform(prev => ({ ...prev, [key]: value }));
+  }, []);
+
+  const updateBlend = useCallback((key: keyof PlacementBlend, value: number | boolean | string) => {
+    setBlend(prev => ({ ...prev, [key]: value }));
+  }, []);
+
+  const resetTransform = useCallback(() => {
+    setTransform({ ...DEFAULT_TRANSFORM });
+  }, []);
+
+  const resetBlend = useCallback(() => {
+    setBlend({ ...DEFAULT_BLEND });
+  }, []);
+
+  // ============================================================================
+  // FILE UPLOAD HANDLERS
+  // ============================================================================
+
+  const handleFileUpload = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      if (!file.type.startsWith("image/")) {
+        alert("Please upload an image file (PNG, JPG, etc.)");
+        return;
+      }
+      setProductFile(file);
+      setTransform({ ...DEFAULT_TRANSFORM });
+      setBlend({ ...DEFAULT_BLEND });
+      const reader = new FileReader();
+      reader.onload = () => {
+        setProductImage(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    },
+    []
+  );
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    const file = e.dataTransfer.files[0];
+    if (!file || !file.type.startsWith("image/")) return;
+    setProductFile(file);
+    setTransform({ ...DEFAULT_TRANSFORM });
+    setBlend({ ...DEFAULT_BLEND });
+    const reader = new FileReader();
+    reader.onload = () => {
+      setProductImage(reader.result as string);
+    };
+    reader.readAsDataURL(file);
+  }, []);
 
   const selectCatalogProduct = useCallback((product: CatalogProduct) => {
     setSelectedCatalogProduct(product);
-    setCompositedImage(null);
-    // Load the product image URL as the product image for compositing
     setProductImage(product.imageUrl);
     setProductFile(null);
+    setTransform({ ...DEFAULT_TRANSFORM });
+    setBlend({ ...DEFAULT_BLEND });
   }, []);
 
   const resetPreview = () => {
     setProductImage(null);
     setProductFile(null);
-    setCompositedImage(null);
     setSelectedCatalogProduct(null);
+    setTransform({ ...DEFAULT_TRANSFORM });
+    setBlend({ ...DEFAULT_BLEND });
+    setToolPanel("product");
+    productImgRef.current = null;
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
+  // ============================================================================
+  // EXPORT
+  // ============================================================================
+
+  const downloadPreview = useCallback(() => {
+    const frameImg = frameImgRef.current;
+    const prodImg = productImgRef.current;
+    if (!frameImg || !selectedSurface) return;
+
+    const exportCanvas = document.createElement("canvas");
+    exportCanvas.width = frameImg.naturalWidth;
+    exportCanvas.height = frameImg.naturalHeight;
+    const ctx = exportCanvas.getContext("2d");
+    if (!ctx) return;
+
+    // Draw full-res frame
+    ctx.drawImage(frameImg, 0, 0, exportCanvas.width, exportCanvas.height);
+
+    // Draw product if placed
+    if (prodImg && prodImg.complete) {
+      const bx = selectedSurface.boundingBoxX * exportCanvas.width;
+      const by = selectedSurface.boundingBoxY * exportCanvas.height;
+      const bw = selectedSurface.boundingBoxWidth * exportCanvas.width;
+      const bh = selectedSurface.boundingBoxHeight * exportCanvas.height;
+
+      // Calculate scale ratio between display canvas and export canvas
+      const displayCanvas = canvasRef.current;
+      const scaleRatio = displayCanvas ? exportCanvas.width / displayCanvas.width : 1;
+
+      drawProductExport(ctx, prodImg, bx, by, bw, bh, transform, blend, scaleRatio);
+    }
+
+    try {
+      const link = document.createElement("a");
+      link.download = `placement-preview-${videoId}-${selectedSurface?.id || "surface"}.jpg`;
+      link.href = exportCanvas.toDataURL("image/jpeg", 0.92);
+      link.click();
+    } catch (err) {
+      console.error("Export failed:", err);
+    }
+  }, [selectedSurface, transform, blend, videoId]);
+
   const surfacesWithFrames = surfaces.filter((s) => s.frameUrl);
+  const hasProduct = !!productImage;
 
   if (!open) return null;
 
@@ -326,74 +756,64 @@ export default function PlacementPreviewModal({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 20 }}
             transition={{ duration: 0.2 }}
-            className="relative w-full max-w-5xl max-h-[90vh] bg-card border border-white/10 rounded-2xl overflow-hidden shadow-2xl"
+            className="relative w-full max-w-6xl max-h-[90vh] bg-card border border-white/10 rounded-2xl overflow-hidden shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             {/* Header */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-white/10">
+            <div className="flex items-center justify-between px-6 py-3 border-b border-white/10">
               <div>
                 <h2 className="text-lg font-bold text-white">Placement Preview</h2>
                 <p className="text-sm text-muted-foreground line-clamp-1">{videoTitle}</p>
               </div>
-              <button
-                onClick={onClose}
-                className="p-2 rounded-full bg-black/50 hover:bg-black/70 text-white transition-colors"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <div className="flex items-center gap-3">
+                {hasProduct && (
+                  <Button
+                    size="sm"
+                    className="gap-2"
+                    onClick={downloadPreview}
+                  >
+                    <Download className="w-4 h-4" />
+                    Export
+                  </Button>
+                )}
+                <button
+                  onClick={onClose}
+                  className="p-2 rounded-full bg-black/50 hover:bg-black/70 text-white transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </div>
 
-            <div className="flex flex-col lg:flex-row overflow-hidden">
-              {/* Main preview area */}
-              <div className="flex-1 min-w-0 p-4">
-                <div className="relative bg-black rounded-lg overflow-hidden" style={{ minHeight: "300px" }}>
-                  {compositedImage ? (
-                    // Show composited preview
-                    <img
-                      src={compositedImage}
-                      alt="Placement preview"
-                      className="w-full h-auto max-h-[60vh] object-contain mx-auto"
-                    />
-                  ) : selectedSurface?.frameUrl ? (
-                    // Show frame with bounding box overlay
-                    <div className="relative">
-                      <img
-                        src={selectedSurface.frameUrl}
-                        alt={`Surface at ${selectedSurface.timestamp}s`}
-                        className="w-full h-auto max-h-[60vh] object-contain mx-auto"
-                      />
-                      <div
-                        className="absolute border-2 border-dashed border-primary/80 bg-primary/10 rounded-sm animate-pulse"
-                        style={{
-                          left: `${selectedSurface.boundingBoxX * 100}%`,
-                          top: `${selectedSurface.boundingBoxY * 100}%`,
-                          width: `${selectedSurface.boundingBoxWidth * 100}%`,
-                          height: `${selectedSurface.boundingBoxHeight * 100}%`,
-                        }}
-                      >
-                        {!productImage && (
-                          <div className="absolute inset-0 flex items-center justify-center">
-                            <span className="text-xs text-primary font-medium bg-black/60 px-2 py-1 rounded">
-                              Drop product here
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex items-center justify-center" style={{ minHeight: "300px" }}>
+            <div className="flex flex-col lg:flex-row overflow-hidden" style={{ height: "calc(90vh - 60px)" }}>
+              {/* Main canvas area */}
+              <div className="flex-1 min-w-0 flex flex-col p-4">
+                <div
+                  ref={canvasContainerRef}
+                  className="relative flex-1 bg-black rounded-lg overflow-hidden flex items-center justify-center"
+                  style={{ minHeight: "300px" }}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={handleDrop}
+                >
+                  <canvas
+                    ref={canvasRef}
+                    className={cn(
+                      "max-w-full max-h-full rounded-lg",
+                      hasProduct && dragMode !== "none" ? "cursor-grabbing" :
+                      hasProduct ? "cursor-crosshair" : "cursor-default"
+                    )}
+                    onMouseDown={handleCanvasMouseDown}
+                    onMouseMove={handleCanvasMouseMove}
+                    onMouseUp={handleCanvasMouseUp}
+                    onMouseLeave={handleCanvasMouseUp}
+                  />
+
+                  {/* Overlay hint when no frame */}
+                  {!selectedSurface?.frameUrl && (
+                    <div className="absolute inset-0 flex items-center justify-center">
                       <div className="text-center text-muted-foreground">
                         <ImageIcon className="w-12 h-12 mx-auto mb-2 opacity-50" />
                         <p>Select a surface to preview</p>
-                      </div>
-                    </div>
-                  )}
-
-                  {isCompositing && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-black/60">
-                      <div className="text-center">
-                        <Loader2 className="w-8 h-8 animate-spin text-primary mx-auto mb-2" />
-                        <p className="text-sm text-white">Generating preview...</p>
                       </div>
                     </div>
                   )}
@@ -409,7 +829,8 @@ export default function PlacementPreviewModal({
                           key={surface.id}
                           onClick={() => {
                             setSelectedSurface(surface);
-                            setCompositedImage(null);
+                            // Reset transform for new surface
+                            setTransform({ ...DEFAULT_TRANSFORM });
                           }}
                           className={`relative flex-shrink-0 w-20 h-14 rounded-md overflow-hidden border-2 transition-all ${
                             selectedSurface?.id === surface.id
@@ -431,235 +852,479 @@ export default function PlacementPreviewModal({
                   </div>
                 )}
 
-                {/* Hidden canvas for compositing */}
-                <canvas ref={canvasRef} className="hidden" />
-              </div>
-
-              {/* Right panel — controls */}
-              <div className="lg:w-72 flex-shrink-0 p-5 bg-gradient-to-b from-card to-secondary/20 border-l border-white/10 overflow-y-auto max-h-[80vh]">
-                {/* Surface info */}
-                {selectedSurface && (
-                  <div className="mb-5 p-3 rounded-xl bg-white/5 border border-white/10">
-                    <div className="flex items-center gap-2 mb-2">
-                      <Target className="w-4 h-4 text-primary" />
-                      <span className="text-sm font-medium text-white">Selected Surface</span>
-                    </div>
-                    <div className="flex flex-wrap gap-1.5">
-                      <Badge variant="secondary" className="text-xs">
-                        {selectedSurface.surfaceType}
-                      </Badge>
-                      <Badge variant="outline" className="text-xs">
-                        <Clock className="w-3 h-3 mr-1" />
-                        {Math.floor(selectedSurface.timestamp / 60)}:
-                        {String(Math.floor(selectedSurface.timestamp) % 60).padStart(2, "0")}
-                      </Badge>
-                      <Badge variant="outline" className="text-xs">
-                        {Math.round(selectedSurface.confidence * 100)}%
-                      </Badge>
-                    </div>
-                    {selectedSurface.sceneContext && (
-                      <p className="text-xs text-muted-foreground mt-2">
-                        {selectedSurface.sceneContext}
-                      </p>
-                    )}
+                {/* Interaction hint */}
+                {hasProduct && (
+                  <div className="mt-2 text-center">
+                    <p className="text-[10px] text-muted-foreground">
+                      Drag to move | Corner handles to resize | Orange dot to rotate
+                    </p>
                   </div>
                 )}
+              </div>
 
-                {/* Product image — tabbed: Upload / Catalog */}
-                <div className="mb-5">
-                  <label className="text-sm font-medium text-white mb-2 block">
-                    Product Image
-                  </label>
-
-                  {/* Tab switcher */}
-                  <div className="flex rounded-lg bg-black/30 p-0.5 mb-3">
+              {/* Right panel — Tool panels */}
+              <div className="lg:w-80 flex-shrink-0 bg-gradient-to-b from-card to-secondary/20 border-l border-white/10 flex flex-col overflow-hidden">
+                {/* Panel tabs */}
+                <div className="flex border-b border-white/10">
+                  {[
+                    { id: "product" as ToolPanel, icon: Package, label: "Product" },
+                    { id: "transform" as ToolPanel, icon: Move, label: "Transform" },
+                    { id: "blend" as ToolPanel, icon: Blend, label: "Blend" },
+                  ].map(tab => (
                     <button
-                      onClick={() => setProductTab("upload")}
-                      className={`flex-1 text-xs py-1.5 px-2 rounded-md transition-colors flex items-center justify-center gap-1.5 ${
-                        productTab === "upload"
-                          ? "bg-primary text-primary-foreground"
-                          : "text-muted-foreground hover:text-white"
-                      }`}
-                    >
-                      <Upload className="w-3 h-3" />
-                      Upload
-                    </button>
-                    <button
-                      onClick={() => setProductTab("catalog")}
-                      className={`flex-1 text-xs py-1.5 px-2 rounded-md transition-colors flex items-center justify-center gap-1.5 ${
-                        productTab === "catalog"
-                          ? "bg-primary text-primary-foreground"
-                          : "text-muted-foreground hover:text-white"
-                      }`}
-                    >
-                      <Package className="w-3 h-3" />
-                      Catalog
-                      {catalogProducts && catalogProducts.length > 0 && (
-                        <span className="text-[9px] bg-white/20 rounded-full px-1.5">
-                          {catalogProducts.length}
-                        </span>
+                      key={tab.id}
+                      onClick={() => setToolPanel(tab.id)}
+                      className={cn(
+                        "flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 text-xs font-medium transition-colors border-b-2",
+                        toolPanel === tab.id
+                          ? "border-primary text-primary"
+                          : "border-transparent text-muted-foreground hover:text-foreground"
                       )}
+                    >
+                      <tab.icon className="w-3.5 h-3.5" />
+                      {tab.label}
                     </button>
-                  </div>
+                  ))}
+                </div>
 
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/*"
-                    onChange={handleFileUpload}
-                    className="hidden"
-                  />
+                <div className="flex-1 overflow-y-auto">
+                  {/* ============ PRODUCT PANEL ============ */}
+                  {toolPanel === "product" && (
+                    <div className="p-4 space-y-4">
+                      {/* Surface info */}
+                      {selectedSurface && (
+                        <div className="p-3 rounded-xl bg-white/5 border border-white/10">
+                          <div className="flex items-center gap-2 mb-2">
+                            <Target className="w-4 h-4 text-primary" />
+                            <span className="text-sm font-medium text-white">Selected Surface</span>
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            <Badge variant="secondary" className="text-xs">
+                              {selectedSurface.surfaceType}
+                            </Badge>
+                            <Badge variant="outline" className="text-xs">
+                              <Clock className="w-3 h-3 mr-1" />
+                              {Math.floor(selectedSurface.timestamp / 60)}:
+                              {String(Math.floor(selectedSurface.timestamp) % 60).padStart(2, "0")}
+                            </Badge>
+                            <Badge variant="outline" className="text-xs">
+                              {Math.round(selectedSurface.confidence * 100)}%
+                            </Badge>
+                          </div>
+                          {selectedSurface.sceneContext && (
+                            <p className="text-xs text-muted-foreground mt-2">
+                              {selectedSurface.sceneContext}
+                            </p>
+                          )}
+                        </div>
+                      )}
 
-                  {/* Selected product preview (shared for both tabs) */}
-                  {productImage ? (
-                    <div className="relative">
-                      <div className="w-full h-24 rounded-lg overflow-hidden border border-white/10 bg-black/30">
-                        <img
-                          src={productImage}
-                          alt="Product"
-                          className="w-full h-full object-contain"
+                      {/* Product image — tabbed: Upload / Catalog */}
+                      <div>
+                        <label className="text-sm font-medium text-white mb-2 block">
+                          Product Image
+                        </label>
+
+                        {/* Tab switcher */}
+                        <div className="flex rounded-lg bg-black/30 p-0.5 mb-3">
+                          <button
+                            onClick={() => setProductTab("upload")}
+                            className={`flex-1 text-xs py-1.5 px-2 rounded-md transition-colors flex items-center justify-center gap-1.5 ${
+                              productTab === "upload"
+                                ? "bg-primary text-primary-foreground"
+                                : "text-muted-foreground hover:text-white"
+                            }`}
+                          >
+                            <Upload className="w-3 h-3" />
+                            Upload
+                          </button>
+                          <button
+                            onClick={() => setProductTab("catalog")}
+                            className={`flex-1 text-xs py-1.5 px-2 rounded-md transition-colors flex items-center justify-center gap-1.5 ${
+                              productTab === "catalog"
+                                ? "bg-primary text-primary-foreground"
+                                : "text-muted-foreground hover:text-white"
+                            }`}
+                          >
+                            <Package className="w-3 h-3" />
+                            Catalog
+                            {catalogProducts && catalogProducts.length > 0 && (
+                              <span className="text-[9px] bg-white/20 rounded-full px-1.5">
+                                {catalogProducts.length}
+                              </span>
+                            )}
+                          </button>
+                        </div>
+
+                        <input
+                          ref={fileInputRef}
+                          type="file"
+                          accept="image/*"
+                          onChange={handleFileUpload}
+                          className="hidden"
                         />
+
+                        {/* Selected product preview */}
+                        {productImage ? (
+                          <div className="relative">
+                            <div className="w-full h-24 rounded-lg overflow-hidden border border-white/10 bg-black/30">
+                              <img
+                                src={productImage}
+                                alt="Product"
+                                className="w-full h-full object-contain"
+                              />
+                            </div>
+                            {selectedCatalogProduct && (
+                              <p className="text-[10px] text-muted-foreground mt-1 truncate">
+                                {selectedCatalogProduct.name}
+                              </p>
+                            )}
+                            <div className="flex gap-2 mt-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="flex-1 text-xs"
+                                onClick={() => {
+                                  if (productTab === "upload") {
+                                    fileInputRef.current?.click();
+                                  } else {
+                                    resetPreview();
+                                  }
+                                }}
+                              >
+                                Change
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="text-xs text-red-400 hover:text-red-300"
+                                onClick={resetPreview}
+                              >
+                                <RotateCcw className="w-3 h-3 mr-1" />
+                                Reset
+                              </Button>
+                            </div>
+                          </div>
+                        ) : productTab === "upload" ? (
+                          <div
+                            onDragOver={(e) => e.preventDefault()}
+                            onDrop={handleDrop}
+                            onClick={() => fileInputRef.current?.click()}
+                            className="w-full h-28 rounded-lg border-2 border-dashed border-white/20 hover:border-primary/50 flex flex-col items-center justify-center gap-2 cursor-pointer transition-colors bg-black/20"
+                          >
+                            <Upload className="w-5 h-5 text-muted-foreground" />
+                            <span className="text-xs text-muted-foreground">
+                              Drop or click to upload
+                            </span>
+                            <span className="text-[10px] text-muted-foreground/60">
+                              PNG, JPG, SVG
+                            </span>
+                          </div>
+                        ) : (
+                          <div className="max-h-48 overflow-y-auto rounded-lg border border-white/10 bg-black/20">
+                            {!catalogProducts || catalogProducts.length === 0 ? (
+                              <div className="p-4 text-center">
+                                <Package className="w-6 h-6 text-muted-foreground mx-auto mb-1.5" />
+                                <p className="text-xs text-muted-foreground">No products in catalog</p>
+                                <p className="text-[10px] text-muted-foreground/60 mt-0.5">
+                                  Brands can upload products in Product Catalog
+                                </p>
+                              </div>
+                            ) : (
+                              <div className="grid grid-cols-3 gap-1.5 p-1.5">
+                                {catalogProducts.map((product) => (
+                                  <button
+                                    key={product.id}
+                                    onClick={() => selectCatalogProduct(product)}
+                                    className={`relative aspect-square rounded-md overflow-hidden border-2 transition-all ${
+                                      selectedCatalogProduct?.id === product.id
+                                        ? "border-primary ring-1 ring-primary/30"
+                                        : "border-white/10 hover:border-white/30"
+                                    }`}
+                                    title={product.name}
+                                  >
+                                    <img
+                                      src={product.thumbnailUrl || product.imageUrl}
+                                      alt={product.name}
+                                      className="w-full h-full object-contain bg-white/5 p-1"
+                                    />
+                                    {product.isTransparent && (
+                                      <CheckCircle className="absolute top-0.5 right-0.5 w-3 h-3 text-green-400" />
+                                    )}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
-                      {selectedCatalogProduct && (
-                        <p className="text-[10px] text-muted-foreground mt-1 truncate">
-                          {selectedCatalogProduct.name}
-                        </p>
+
+                      {/* How it works */}
+                      {!productImage && (
+                        <div className="p-3 rounded-xl bg-white/5 border border-white/10">
+                          <h4 className="text-xs font-medium text-white mb-2">How it works</h4>
+                          <ol className="text-xs text-muted-foreground space-y-1.5 list-decimal list-inside">
+                            <li>Select an ad surface from the video</li>
+                            <li>Upload your product or brand image</li>
+                            <li>Drag to reposition, resize, and rotate</li>
+                            <li>Adjust blend, shadow, and lighting</li>
+                            <li>Export the final mockup</li>
+                          </ol>
+                        </div>
                       )}
-                      <div className="flex gap-2 mt-2">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="flex-1 text-xs"
-                          onClick={() => {
-                            if (productTab === "upload") {
-                              fileInputRef.current?.click();
-                            } else {
-                              resetPreview();
-                            }
-                          }}
-                        >
-                          Change
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="text-xs text-red-400 hover:text-red-300"
-                          onClick={resetPreview}
-                        >
-                          <RotateCcw className="w-3 h-3 mr-1" />
-                          Reset
-                        </Button>
-                      </div>
                     </div>
-                  ) : productTab === "upload" ? (
-                    // Upload dropzone
-                    <div
-                      onDragOver={(e) => e.preventDefault()}
-                      onDrop={handleDrop}
-                      onClick={() => fileInputRef.current?.click()}
-                      className="w-full h-28 rounded-lg border-2 border-dashed border-white/20 hover:border-primary/50 flex flex-col items-center justify-center gap-2 cursor-pointer transition-colors bg-black/20"
-                    >
-                      <Upload className="w-5 h-5 text-muted-foreground" />
-                      <span className="text-xs text-muted-foreground">
-                        Drop or click to upload
-                      </span>
-                      <span className="text-[10px] text-muted-foreground/60">
-                        PNG, JPG, SVG
-                      </span>
-                    </div>
-                  ) : (
-                    // Catalog product grid
-                    <div className="max-h-48 overflow-y-auto rounded-lg border border-white/10 bg-black/20">
-                      {!catalogProducts || catalogProducts.length === 0 ? (
-                        <div className="p-4 text-center">
-                          <Package className="w-6 h-6 text-muted-foreground mx-auto mb-1.5" />
-                          <p className="text-xs text-muted-foreground">No products in catalog</p>
-                          <p className="text-[10px] text-muted-foreground/60 mt-0.5">
-                            Brands can upload products in Product Catalog
+                  )}
+
+                  {/* ============ TRANSFORM PANEL ============ */}
+                  {toolPanel === "transform" && (
+                    <div className="p-4 space-y-5">
+                      {!hasProduct ? (
+                        <div className="text-center py-8">
+                          <Move className="w-8 h-8 text-muted-foreground/30 mx-auto mb-2" />
+                          <p className="text-xs text-muted-foreground">
+                            Upload a product first
                           </p>
                         </div>
                       ) : (
-                        <div className="grid grid-cols-3 gap-1.5 p-1.5">
-                          {catalogProducts.map((product) => (
-                            <button
-                              key={product.id}
-                              onClick={() => selectCatalogProduct(product)}
-                              className={`relative aspect-square rounded-md overflow-hidden border-2 transition-all ${
-                                selectedCatalogProduct?.id === product.id
-                                  ? "border-primary ring-1 ring-primary/30"
-                                  : "border-white/10 hover:border-white/30"
-                              }`}
-                              title={product.name}
-                            >
-                              <img
-                                src={product.thumbnailUrl || product.imageUrl}
-                                alt={product.name}
-                                className="w-full h-full object-contain bg-white/5 p-1"
-                              />
-                              {product.isTransparent && (
-                                <CheckCircle className="absolute top-0.5 right-0.5 w-3 h-3 text-green-400" />
-                              )}
-                            </button>
-                          ))}
+                        <>
+                          <div className="flex items-center justify-between">
+                            <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Transform</h3>
+                            <button onClick={resetTransform} className="text-[10px] text-primary hover:underline">Reset</button>
+                          </div>
+
+                          {/* Tip */}
+                          <div className="px-3 py-2 rounded-lg bg-primary/5 border border-primary/10">
+                            <p className="text-[10px] text-primary/80">
+                              Drag on the canvas to reposition. Drag corners to resize. Drag the orange dot to rotate.
+                            </p>
+                          </div>
+
+                          {/* Position offset */}
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-2">
+                              <Move className="w-3.5 h-3.5 text-muted-foreground" />
+                              <span className="text-xs text-muted-foreground">Position</span>
+                            </div>
+                            <div className="grid grid-cols-2 gap-2">
+                              <label className="space-y-1">
+                                <span className="text-[10px] text-muted-foreground">X Offset</span>
+                                <input
+                                  type="range" min={-300} max={300} value={transform.offsetX}
+                                  onChange={e => updateTransform("offsetX", parseInt(e.target.value))}
+                                  className="w-full h-1 accent-primary"
+                                />
+                                <span className="text-[10px] text-muted-foreground tabular-nums block text-center">
+                                  {Math.round(transform.offsetX)}px
+                                </span>
+                              </label>
+                              <label className="space-y-1">
+                                <span className="text-[10px] text-muted-foreground">Y Offset</span>
+                                <input
+                                  type="range" min={-300} max={300} value={transform.offsetY}
+                                  onChange={e => updateTransform("offsetY", parseInt(e.target.value))}
+                                  className="w-full h-1 accent-primary"
+                                />
+                                <span className="text-[10px] text-muted-foreground tabular-nums block text-center">
+                                  {Math.round(transform.offsetY)}px
+                                </span>
+                              </label>
+                            </div>
+                          </div>
+
+                          {/* Scale */}
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-2">
+                              <Maximize2 className="w-3.5 h-3.5 text-muted-foreground" />
+                              <span className="text-xs text-muted-foreground">Scale</span>
+                              <span className="text-[10px] text-muted-foreground ml-auto tabular-nums">
+                                {(transform.scale * 100).toFixed(0)}%
+                              </span>
+                            </div>
+                            <input
+                              type="range" min={10} max={400} value={transform.scale * 100}
+                              onChange={e => updateTransform("scale", parseInt(e.target.value) / 100)}
+                              className="w-full h-1.5 accent-primary"
+                            />
+                          </div>
+
+                          {/* Rotation */}
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-2">
+                              <RotateCw className="w-3.5 h-3.5 text-muted-foreground" />
+                              <span className="text-xs text-muted-foreground">Rotation</span>
+                              <span className="text-[10px] text-muted-foreground ml-auto tabular-nums">
+                                {transform.rotation.toFixed(0)}°
+                              </span>
+                            </div>
+                            <input
+                              type="range" min={-180} max={180} value={transform.rotation}
+                              onChange={e => updateTransform("rotation", parseInt(e.target.value))}
+                              className="w-full h-1.5 accent-primary"
+                            />
+                          </div>
+
+                          {/* Flip */}
+                          <button
+                            onClick={() => updateTransform("flipH", !transform.flipH)}
+                            className={cn(
+                              "flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium w-full transition-colors border",
+                              transform.flipH
+                                ? "border-primary bg-primary/10 text-primary"
+                                : "border-border text-muted-foreground hover:bg-muted"
+                            )}
+                          >
+                            <FlipHorizontal className="w-3.5 h-3.5" />
+                            Flip Horizontal
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )}
+
+                  {/* ============ BLEND PANEL ============ */}
+                  {toolPanel === "blend" && (
+                    <div className="p-4 space-y-5">
+                      {!hasProduct ? (
+                        <div className="text-center py-8">
+                          <Blend className="w-8 h-8 text-muted-foreground/30 mx-auto mb-2" />
+                          <p className="text-xs text-muted-foreground">
+                            Upload a product first
+                          </p>
                         </div>
+                      ) : (
+                        <>
+                          <div className="flex items-center justify-between">
+                            <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Integration</h3>
+                            <button onClick={resetBlend} className="text-[10px] text-primary hover:underline">Reset</button>
+                          </div>
+
+                          {/* Opacity */}
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-2">
+                              <Eye className="w-3.5 h-3.5 text-muted-foreground" />
+                              <span className="text-xs text-muted-foreground">Opacity</span>
+                              <span className="text-[10px] text-muted-foreground ml-auto tabular-nums">
+                                {blend.opacity}%
+                              </span>
+                            </div>
+                            <input
+                              type="range" min={5} max={100} value={blend.opacity}
+                              onChange={e => updateBlend("opacity", parseInt(e.target.value))}
+                              className="w-full h-1.5 accent-primary"
+                            />
+                          </div>
+
+                          {/* Blend mode */}
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-2">
+                              <Blend className="w-3.5 h-3.5 text-muted-foreground" />
+                              <span className="text-xs text-muted-foreground">Blend Mode</span>
+                            </div>
+                            <select
+                              value={blend.blendMode}
+                              onChange={e => updateBlend("blendMode", e.target.value)}
+                              className="w-full px-3 py-2 rounded-lg bg-muted border border-border text-xs text-foreground"
+                            >
+                              {BLEND_MODES.map(bm => (
+                                <option key={bm.value} value={bm.value}>{bm.label}</option>
+                              ))}
+                            </select>
+                          </div>
+
+                          {/* Shadow */}
+                          <div className="space-y-2">
+                            <button
+                              onClick={() => updateBlend("shadowEnabled", !blend.shadowEnabled)}
+                              className={cn(
+                                "flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium w-full transition-colors border",
+                                blend.shadowEnabled
+                                  ? "border-primary bg-primary/10 text-primary"
+                                  : "border-border text-muted-foreground hover:bg-muted"
+                              )}
+                            >
+                              <Droplets className="w-3.5 h-3.5" />
+                              Drop Shadow
+                            </button>
+
+                            {blend.shadowEnabled && (
+                              <div className="space-y-2 pl-2 border-l-2 border-primary/20 ml-2">
+                                <label className="space-y-1">
+                                  <span className="text-[10px] text-muted-foreground">Blur: {blend.shadowBlur}px</span>
+                                  <input
+                                    type="range" min={0} max={40} value={blend.shadowBlur}
+                                    onChange={e => updateBlend("shadowBlur", parseInt(e.target.value))}
+                                    className="w-full h-1 accent-primary"
+                                  />
+                                </label>
+                                <div className="grid grid-cols-2 gap-2">
+                                  <label className="space-y-1">
+                                    <span className="text-[10px] text-muted-foreground">X: {blend.shadowOffsetX}</span>
+                                    <input
+                                      type="range" min={-20} max={20} value={blend.shadowOffsetX}
+                                      onChange={e => updateBlend("shadowOffsetX", parseInt(e.target.value))}
+                                      className="w-full h-1 accent-primary"
+                                    />
+                                  </label>
+                                  <label className="space-y-1">
+                                    <span className="text-[10px] text-muted-foreground">Y: {blend.shadowOffsetY}</span>
+                                    <input
+                                      type="range" min={-20} max={20} value={blend.shadowOffsetY}
+                                      onChange={e => updateBlend("shadowOffsetY", parseInt(e.target.value))}
+                                      className="w-full h-1 accent-primary"
+                                    />
+                                  </label>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Edge Feathering */}
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs text-muted-foreground">Edge Feather</span>
+                              <span className="text-[10px] text-muted-foreground ml-auto tabular-nums">
+                                {blend.featherRadius}px
+                              </span>
+                            </div>
+                            <input
+                              type="range" min={0} max={20} value={blend.featherRadius}
+                              onChange={e => updateBlend("featherRadius", parseInt(e.target.value))}
+                              className="w-full h-1.5 accent-primary"
+                            />
+                          </div>
+
+                          {/* Brightness / Contrast */}
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-2">
+                              <Sun className="w-3.5 h-3.5 text-muted-foreground" />
+                              <span className="text-xs text-muted-foreground">Lighting</span>
+                            </div>
+                            <label className="space-y-1">
+                              <span className="text-[10px] text-muted-foreground">
+                                Brightness: {blend.brightness > 0 ? "+" : ""}{blend.brightness}
+                              </span>
+                              <input
+                                type="range" min={-50} max={50} value={blend.brightness}
+                                onChange={e => updateBlend("brightness", parseInt(e.target.value))}
+                                className="w-full h-1 accent-primary"
+                              />
+                            </label>
+                            <label className="space-y-1">
+                              <span className="text-[10px] text-muted-foreground">
+                                Contrast: {blend.contrast > 0 ? "+" : ""}{blend.contrast}
+                              </span>
+                              <input
+                                type="range" min={-50} max={50} value={blend.contrast}
+                                onChange={e => updateBlend("contrast", parseInt(e.target.value))}
+                                className="w-full h-1 accent-primary"
+                              />
+                            </label>
+                          </div>
+                        </>
                       )}
                     </div>
                   )}
                 </div>
-
-                {/* Opacity slider */}
-                {productImage && (
-                  <div className="mb-5">
-                    <div className="flex items-center justify-between mb-2">
-                      <label className="text-xs font-medium text-white">Blend Opacity</label>
-                      <span className="text-xs text-muted-foreground">{opacity}%</span>
-                    </div>
-                    <input
-                      type="range"
-                      min={20}
-                      max={100}
-                      value={opacity}
-                      onChange={(e) => setOpacity(Number(e.target.value))}
-                      className="w-full h-1.5 bg-white/10 rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary"
-                    />
-                  </div>
-                )}
-
-                {/* Action buttons */}
-                <div className="space-y-2">
-                  {compositedImage && (
-                    <Button
-                      className="w-full gap-2"
-                      onClick={downloadPreview}
-                    >
-                      <Download className="w-4 h-4" />
-                      Download Preview
-                    </Button>
-                  )}
-
-                  {productImage && !compositedImage && !isCompositing && (
-                    <Button
-                      className="w-full gap-2"
-                      onClick={generatePreview}
-                    >
-                      <Layers className="w-4 h-4" />
-                      Generate Preview
-                    </Button>
-                  )}
-                </div>
-
-                {/* How it works */}
-                {!productImage && (
-                  <div className="mt-6 p-3 rounded-xl bg-white/5 border border-white/10">
-                    <h4 className="text-xs font-medium text-white mb-2">How it works</h4>
-                    <ol className="text-xs text-muted-foreground space-y-1.5 list-decimal list-inside">
-                      <li>Select an ad surface from the video</li>
-                      <li>Upload your product or brand image</li>
-                      <li>Preview how it looks in the scene</li>
-                      <li>Download the mockup to share</li>
-                    </ol>
-                  </div>
-                )}
               </div>
             </div>
           </motion.div>
