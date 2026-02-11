@@ -1,4 +1,4 @@
-import { pgTable, text, serial, timestamp, boolean, varchar, integer, numeric, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, timestamp, boolean, varchar, integer, numeric, uniqueIndex, jsonb } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -175,3 +175,50 @@ export const insertBrandProductSchema = createInsertSchema(brandProducts).omit({
 
 export type BrandProduct = typeof brandProducts.$inferSelect;
 export type InsertBrandProduct = z.infer<typeof insertBrandProductSchema>;
+
+// Saved Placements Table - persistent product placements on video surfaces
+// Supports scene continuity: a placement on one surface auto-propagates to similar surfaces
+export const savedPlacements = pgTable("saved_placements", {
+  id: serial("id").primaryKey(),
+  videoId: integer("video_id").notNull(), // Reference to video_index.id
+  surfaceId: integer("surface_id").notNull(), // Reference to detected_surfaces.id (anchor surface)
+  productId: integer("product_id"), // Reference to brand_products.id (null if custom upload)
+  productImageUrl: text("product_image_url").notNull(), // URL of product image used
+  createdBy: varchar("created_by").notNull(), // Email of user who created placement
+  role: varchar("role").notNull().default("creator"), // 'creator' or 'brand'
+  // Scene continuity: group ID links surfaces that share the same placement
+  sceneGroupId: varchar("scene_group_id"), // e.g., "video-5-Desk-0.3-0.5" — surfaces with matching group share placements
+  // Transform settings (JSON blob)
+  transform: jsonb("transform").notNull().$type<{
+    offsetX: number;
+    offsetY: number;
+    scale: number;
+    rotation: number;
+    flipH: boolean;
+  }>(),
+  // Blend settings (JSON blob)
+  blend: jsonb("blend").notNull().$type<{
+    opacity: number;
+    blendMode: string;
+    shadowEnabled: boolean;
+    shadowBlur: number;
+    shadowOffsetX: number;
+    shadowOffsetY: number;
+    shadowColor: string;
+    featherRadius: number;
+    brightness: number;
+    contrast: number;
+  }>(),
+  status: varchar("status").notNull().default("active"), // 'active', 'archived'
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const insertSavedPlacementSchema = createInsertSchema(savedPlacements).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type SavedPlacement = typeof savedPlacements.$inferSelect;
+export type InsertSavedPlacement = z.infer<typeof insertSavedPlacementSchema>;

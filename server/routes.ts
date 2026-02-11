@@ -3736,6 +3736,190 @@ export async function registerRoutes(
     }
   });
 
+  // ============================================================================
+  // SAVED PLACEMENTS — persistent product-on-surface configurations
+  // ============================================================================
+
+  // Save a placement (creates or updates)
+  app.post("/api/placements", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const userEmail = req.authEmail || "unknown";
+      const { videoId, surfaceId, productId, productImageUrl, transform, blend, sceneGroupId, role } = req.body;
+
+      if (!videoId || !surfaceId || !productImageUrl || !transform || !blend) {
+        return res.status(400).json({ error: "Missing required fields: videoId, surfaceId, productImageUrl, transform, blend" });
+      }
+
+      const placement = await storage.savePlacement({
+        videoId,
+        surfaceId,
+        productId: productId || null,
+        productImageUrl,
+        createdBy: userEmail,
+        role: role || "creator",
+        sceneGroupId: sceneGroupId || null,
+        transform,
+        blend,
+        status: "active",
+      });
+
+      console.log(`[Placements] Saved placement ${placement.id} for video ${videoId} surface ${surfaceId} by ${userEmail}`);
+      res.json({ placement });
+    } catch (err: any) {
+      console.error("[Placements] Save error:", err.message);
+      res.status(500).json({ error: "Failed to save placement" });
+    }
+  });
+
+  // Save placement and auto-propagate to all surfaces in the same scene group
+  app.post("/api/placements/propagate", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const userEmail = req.authEmail || "unknown";
+      const { videoId, surfaceId, productId, productImageUrl, transform, blend, sceneGroupId, role } = req.body;
+
+      if (!videoId || !surfaceId || !productImageUrl || !transform || !blend || !sceneGroupId) {
+        return res.status(400).json({ error: "Missing required fields including sceneGroupId for propagation" });
+      }
+
+      // Get all surfaces for this video
+      const allSurfaces = await storage.getDetectedSurfaces(videoId);
+
+      // Find surfaces that belong to the same scene group
+      // Scene group format: "surfaceType-bbX-bbY" (rounded to 1 decimal)
+      const groupSurfaces = allSurfaces.filter(s => {
+        const bbX = parseFloat(String(s.boundingBoxX)).toFixed(1);
+        const bbY = parseFloat(String(s.boundingBoxY)).toFixed(1);
+        const groupKey = `${s.surfaceType}-${bbX}-${bbY}`;
+        return groupKey === sceneGroupId;
+      });
+
+      const placements: any[] = [];
+
+      for (const surface of groupSurfaces) {
+        const placement = await storage.savePlacement({
+          videoId,
+          surfaceId: surface.id,
+          productId: productId || null,
+          productImageUrl,
+          createdBy: userEmail,
+          role: role || "creator",
+          sceneGroupId,
+          transform,
+          blend,
+          status: "active",
+        });
+        placements.push(placement);
+      }
+
+      console.log(`[Placements] Propagated placement to ${placements.length} surfaces in group "${sceneGroupId}" for video ${videoId}`);
+      res.json({ placements, propagatedCount: placements.length });
+    } catch (err: any) {
+      console.error("[Placements] Propagate error:", err.message);
+      res.status(500).json({ error: "Failed to propagate placement" });
+    }
+  });
+
+  // Get all placements for a video
+  app.get("/api/video/:videoId/placements", async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      if (isNaN(videoId)) {
+        return res.status(400).json({ error: "Invalid video ID" });
+      }
+
+      const placements = await storage.getPlacementsForVideo(videoId);
+      res.json({ placements });
+    } catch (err: any) {
+      console.error("[Placements] Fetch error:", err.message);
+      res.status(500).json({ error: "Failed to fetch placements" });
+    }
+  });
+
+  // Update a placement
+  app.patch("/api/placements/:id", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const placementId = parseInt(req.params.id);
+      if (isNaN(placementId)) {
+        return res.status(400).json({ error: "Invalid placement ID" });
+      }
+
+      const updated = await storage.updatePlacement(placementId, req.body);
+      if (!updated) {
+        return res.status(404).json({ error: "Placement not found" });
+      }
+
+      res.json({ placement: updated });
+    } catch (err: any) {
+      console.error("[Placements] Update error:", err.message);
+      res.status(500).json({ error: "Failed to update placement" });
+    }
+  });
+
+  // Delete (archive) a placement
+  app.delete("/api/placements/:id", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const placementId = parseInt(req.params.id);
+      if (isNaN(placementId)) {
+        return res.status(400).json({ error: "Invalid placement ID" });
+      }
+
+      const deleted = await storage.deletePlacement(placementId);
+      if (!deleted) {
+        return res.status(404).json({ error: "Placement not found" });
+      }
+
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("[Placements] Delete error:", err.message);
+      res.status(500).json({ error: "Failed to delete placement" });
+    }
+  });
+
+  // Get scene groups for a video (computed from surfaces)
+  app.get("/api/video/:videoId/scene-groups", async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      if (isNaN(videoId)) {
+        return res.status(400).json({ error: "Invalid video ID" });
+      }
+
+      const surfaces = await storage.getDetectedSurfaces(videoId);
+
+      // Group surfaces by type + approximate bounding box position
+      // Surfaces with the same type and similar position are "continuous" across time
+      const groups = new Map<string, { groupId: string; surfaceType: string; surfaceIds: number[]; timestamps: number[]; count: number }>();
+
+      for (const surface of surfaces) {
+        const bbX = parseFloat(String(surface.boundingBoxX)).toFixed(1);
+        const bbY = parseFloat(String(surface.boundingBoxY)).toFixed(1);
+        const groupId = `${surface.surfaceType}-${bbX}-${bbY}`;
+
+        if (!groups.has(groupId)) {
+          groups.set(groupId, {
+            groupId,
+            surfaceType: surface.surfaceType,
+            surfaceIds: [],
+            timestamps: [],
+            count: 0,
+          });
+        }
+
+        const group = groups.get(groupId)!;
+        group.surfaceIds.push(surface.id);
+        group.timestamps.push(parseFloat(String(surface.timestamp)));
+        group.count++;
+      }
+
+      const sceneGroups = Array.from(groups.values())
+        .sort((a, b) => b.count - a.count);
+
+      res.json({ sceneGroups });
+    } catch (err: any) {
+      console.error("[Scene Groups] Error:", err.message);
+      res.status(500).json({ error: "Failed to compute scene groups" });
+    }
+  });
+
   // Seed Data
   await seedDatabase();
 

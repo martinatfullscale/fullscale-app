@@ -7,6 +7,7 @@ import {
   videoIndex,
   detectedSurfaces,
   brandProducts,
+  savedPlacements,
   type MonetizationItem,
   type InsertMonetizationItem,
   type YoutubeConnection,
@@ -19,6 +20,8 @@ import {
   type InsertDetectedSurface,
   type BrandProduct,
   type InsertBrandProduct,
+  type SavedPlacement,
+  type InsertSavedPlacement,
 } from "@shared/schema";
 import { users, type User, type UpsertUser } from "@shared/models/auth";
 import { encrypt, decrypt } from "./encryption";
@@ -80,6 +83,13 @@ export interface IStorage {
   getBrandProduct(productId: number): Promise<BrandProduct | undefined>;
   deleteBrandProduct(productId: number): Promise<BrandProduct | undefined>;
   getAllBrandProducts(): Promise<BrandProduct[]>;
+  // Saved placement methods
+  savePlacement(placement: InsertSavedPlacement): Promise<SavedPlacement>;
+  getPlacementsForVideo(videoId: number): Promise<SavedPlacement[]>;
+  getPlacementById(placementId: number): Promise<SavedPlacement | undefined>;
+  updatePlacement(placementId: number, updates: Partial<InsertSavedPlacement>): Promise<SavedPlacement | undefined>;
+  deletePlacement(placementId: number): Promise<SavedPlacement | undefined>;
+  getPlacementsBySceneGroup(videoId: number, sceneGroupId: string): Promise<SavedPlacement[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -662,6 +672,64 @@ export class DatabaseStorage implements IStorage {
       .select()
       .from(brandProducts)
       .orderBy(desc(brandProducts.createdAt));
+  }
+
+  // Saved placement methods
+  async savePlacement(placement: InsertSavedPlacement): Promise<SavedPlacement> {
+    const [result] = await db
+      .insert(savedPlacements)
+      .values(placement)
+      .returning();
+    return result;
+  }
+
+  async getPlacementsForVideo(videoId: number): Promise<SavedPlacement[]> {
+    return await db
+      .select()
+      .from(savedPlacements)
+      .where(and(
+        eq(savedPlacements.videoId, videoId),
+        eq(savedPlacements.status, "active")
+      ))
+      .orderBy(desc(savedPlacements.createdAt));
+  }
+
+  async getPlacementById(placementId: number): Promise<SavedPlacement | undefined> {
+    const [result] = await db
+      .select()
+      .from(savedPlacements)
+      .where(eq(savedPlacements.id, placementId));
+    return result;
+  }
+
+  async updatePlacement(placementId: number, updates: Partial<InsertSavedPlacement>): Promise<SavedPlacement | undefined> {
+    const [result] = await db
+      .update(savedPlacements)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(savedPlacements.id, placementId))
+      .returning();
+    return result;
+  }
+
+  async deletePlacement(placementId: number): Promise<SavedPlacement | undefined> {
+    const [result] = await db
+      .update(savedPlacements)
+      .set({ status: "archived", updatedAt: new Date() })
+      .where(eq(savedPlacements.id, placementId))
+      .returning();
+    return result;
+  }
+
+  async getPlacementsBySceneGroup(videoId: number, sceneGroupId: string): Promise<SavedPlacement[]> {
+    return await db
+      .select()
+      .from(savedPlacements)
+      .where(and(
+        eq(savedPlacements.videoId, videoId),
+        eq(savedPlacements.sceneGroupId, sceneGroupId),
+        eq(savedPlacements.status, "active")
+      ))
+      .orderBy(savedPlacements.createdAt);
   }
 
   private deriveContexts(surfaces: DetectedSurface[]): string[] {
