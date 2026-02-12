@@ -153,16 +153,18 @@ TASK: Find actual flat surfaces (tables, desks, countertops, shelves) visible in
 
 CRITICAL RULES:
 - Only detect REAL physical surfaces that exist in the 3D scene
-- The bounding box must tightly wrap ONLY the visible surface area — not the entire frame
+- The bounding box must tightly wrap ONLY the visible, FLAT, HORIZONTAL surface area
+- The surface must occupy at least 8% of the total frame area (width * height) to be valid
 - Do NOT flag roads, sidewalks, floors, or ground surfaces
 - Do NOT flag walls, ceilings, curtains, or vertical surfaces (unless it's a shelf)
 - Do NOT flag bridges, buildings, vehicles, or outdoor structures
 - Do NOT flag areas with heavy motion blur or out-of-focus regions
 - Do NOT flag surfaces blocked by people's bodies or hands
 - Do NOT flag surfaces that are too small to place a product on
+- If a person occupies more than 50% of the frame (close-up, medium shot, or bust shot), return surfaces_found: false UNLESS a clear table/desk surface is ALSO prominently visible
 - If the frame is an exterior/outdoor shot with no furniture, return surfaces_found: false
 - If the frame is a close-up of a person with no visible surfaces, return surfaces_found: false
-- Maximum 3 surfaces per frame — only the most prominent ones
+- Maximum 2 surfaces per frame — only the most prominent and clearly visible ones
 
 BOUNDING BOX RULES:
 - x, y = top-left corner of the surface as percentage of frame (0-100)
@@ -1169,6 +1171,160 @@ async function enrichSurfacesWithContext(
 }
 
 // ============================================================================
+// POST-SCAN NORMALIZATION — Cluster & Normalize Bounding Boxes
+// ============================================================================
+//
+// Problem: Gemini analyzes each frame independently, so the "same" table gets
+// wildly different bounding boxes at different timestamps. This causes:
+// 1. Products to appear at different positions per frame
+// 2. Scene group matching to fail (different bbX/bbY = different group)
+//
+// Solution: After scanning all frames, cluster surfaces that represent the same
+// physical surface (same type + approximate position), then force all surfaces
+// in a cluster to share the MEDIAN bounding box. This ensures consistent
+// product placement across frames of the same camera angle.
+
+interface SurfaceCluster {
+  surfaces: { id: number; bbX: number; bbY: number; bbW: number; bbH: number; confidence: number }[];
+  surfaceType: string;
+}
+
+/**
+ * Cluster surfaces by type and spatial proximity.
+ * Two surfaces join the same cluster if:
+ * - Same surfaceType (case-insensitive)
+ * - Bounding box centers are within CLUSTER_TOLERANCE of each other (normalized 0-1)
+ */
+function clusterSurfaces(
+  surfaces: Array<{ id: number; surfaceType: string; boundingBoxX: string; boundingBoxY: string; boundingBoxWidth: string; boundingBoxHeight: string; confidence: string }>,
+): SurfaceCluster[] {
+  const CLUSTER_TOLERANCE = 0.20; // 20% of frame = same surface
+
+  const clusters: SurfaceCluster[] = [];
+
+  for (const s of surfaces) {
+    const bbX = parseFloat(s.boundingBoxX);
+    const bbY = parseFloat(s.boundingBoxY);
+    const bbW = parseFloat(s.boundingBoxWidth);
+    const bbH = parseFloat(s.boundingBoxHeight);
+    const centerX = bbX + bbW / 2;
+    const centerY = bbY + bbH / 2;
+    const type = s.surfaceType.toLowerCase();
+
+    let matched = false;
+    for (const cluster of clusters) {
+      if (cluster.surfaceType.toLowerCase() !== type) continue;
+
+      // Check if this surface's center is near any existing surface in the cluster
+      const representative = cluster.surfaces[0];
+      const repCX = representative.bbX + representative.bbW / 2;
+      const repCY = representative.bbY + representative.bbH / 2;
+
+      if (Math.abs(centerX - repCX) < CLUSTER_TOLERANCE && Math.abs(centerY - repCY) < CLUSTER_TOLERANCE) {
+        cluster.surfaces.push({ id: s.id, bbX, bbY, bbW, bbH, confidence: parseFloat(s.confidence) });
+        matched = true;
+        break;
+      }
+    }
+
+    if (!matched) {
+      clusters.push({
+        surfaceType: s.surfaceType,
+        surfaces: [{ id: s.id, bbX, bbY, bbW, bbH, confidence: parseFloat(s.confidence) }],
+      });
+    }
+  }
+
+  return clusters;
+}
+
+/**
+ * Compute the median bounding box for a cluster.
+ * Uses the median of each dimension independently for robustness against outliers.
+ */
+function computeMedianBBox(surfaces: SurfaceCluster['surfaces']): { x: number; y: number; w: number; h: number } {
+  const median = (arr: number[]) => {
+    const sorted = [...arr].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  };
+
+  return {
+    x: median(surfaces.map(s => s.bbX)),
+    y: median(surfaces.map(s => s.bbY)),
+    w: median(surfaces.map(s => s.bbW)),
+    h: median(surfaces.map(s => s.bbH)),
+  };
+}
+
+/**
+ * Post-scan normalization pipeline.
+ * Groups all detected surfaces by spatial similarity, computes a single
+ * consistent bounding box per group, and updates all surfaces to use it.
+ * Also filters out phantom surfaces that are too small (<5% frame area).
+ */
+async function normalizeSurfaceBoundingBoxes(videoId: number): Promise<void> {
+  console.log(`[Normalize] Starting bounding box normalization for video ${videoId}`);
+
+  const surfaces = await storage.getDetectedSurfaces(videoId);
+  if (surfaces.length < 2) {
+    console.log(`[Normalize] Only ${surfaces.length} surface(s), nothing to normalize`);
+    return;
+  }
+
+  // Step 1: Filter out phantom surfaces (too small to be useful)
+  const MIN_SURFACE_AREA = 0.03; // 3% of frame area minimum
+  const phantomIds: number[] = [];
+  for (const s of surfaces) {
+    const area = parseFloat(String(s.boundingBoxWidth)) * parseFloat(String(s.boundingBoxHeight));
+    if (area < MIN_SURFACE_AREA) {
+      phantomIds.push(s.id);
+      console.log(`[Normalize] Removing phantom surface ${s.id} (${s.surfaceType}, area=${(area * 100).toFixed(1)}% < ${(MIN_SURFACE_AREA * 100)}%)`);
+    }
+  }
+
+  // Delete phantom surfaces
+  for (const id of phantomIds) {
+    try {
+      await storage.updateDetectedSurface(id, { surfaceType: "Filtered", sceneContext: "Removed: surface too small" });
+    } catch (err) {
+      console.warn(`[Normalize] Failed to filter surface ${id}:`, err);
+    }
+  }
+
+  // Step 2: Cluster remaining valid surfaces
+  const validSurfaces = surfaces.filter(s => !phantomIds.includes(s.id));
+  const clusters = clusterSurfaces(validSurfaces as any);
+
+  console.log(`[Normalize] Found ${clusters.length} cluster(s) from ${validSurfaces.length} surfaces`);
+
+  // Step 3: For each cluster with 2+ surfaces, compute median bbox and update all
+  let normalizedCount = 0;
+  for (const cluster of clusters) {
+    if (cluster.surfaces.length < 2) continue;
+
+    const medianBox = computeMedianBBox(cluster.surfaces);
+    console.log(`[Normalize] Cluster "${cluster.surfaceType}" (${cluster.surfaces.length} surfaces) → median bbox: x=${(medianBox.x * 100).toFixed(1)}%, y=${(medianBox.y * 100).toFixed(1)}%, w=${(medianBox.w * 100).toFixed(1)}%, h=${(medianBox.h * 100).toFixed(1)}%`);
+
+    for (const surface of cluster.surfaces) {
+      try {
+        await storage.updateDetectedSurface(surface.id, {
+          boundingBoxX: medianBox.x.toFixed(6),
+          boundingBoxY: medianBox.y.toFixed(6),
+          boundingBoxWidth: medianBox.w.toFixed(6),
+          boundingBoxHeight: medianBox.h.toFixed(6),
+        });
+        normalizedCount++;
+      } catch (err) {
+        console.warn(`[Normalize] Failed to update surface ${surface.id}:`, err);
+      }
+    }
+  }
+
+  console.log(`[Normalize] Normalized ${normalizedCount} surfaces across ${clusters.length} cluster(s)`);
+}
+
+// ============================================================================
 // MAIN SCAN FUNCTIONS
 // ============================================================================
 
@@ -1405,6 +1561,19 @@ export async function processVideoScan(
       }
     }
     
+    // POST-SCAN NORMALIZATION — Cluster similar surfaces and normalize bounding boxes
+    // This ensures consistent product placement across frames of the same camera angle
+    try {
+      await normalizeSurfaceBoundingBoxes(videoId);
+    } catch (normErr) {
+      console.error(`[Scanner V2] Bounding box normalization failed (non-fatal):`, normErr);
+    }
+
+    // Remove filtered/phantom surfaces from count
+    const postNormSurfaces = await storage.getDetectedSurfaces(videoId);
+    const filteredOut = postNormSurfaces.filter(s => s.surfaceType === "Filtered").length;
+    totalSurfaces = Math.max(0, totalSurfaces - filteredOut);
+
     // SCENE CONTEXT ENRICHMENT — FullScale Edge image analysis
     // Uses Sharp to analyze brightness, edges, and color to infer scene context
     try {

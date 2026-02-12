@@ -63,7 +63,7 @@ export interface IStorage {
   updateVideoIndex(videoId: number, updates: Partial<InsertVideoIndex>): Promise<void>;
   updateVideoMetadata(videoId: number, metadata: { sentiment?: string; culturalContext?: string }): Promise<void>;
   insertDetectedSurface(surface: InsertDetectedSurface): Promise<DetectedSurface>;
-  updateDetectedSurface(surfaceId: number, updates: { surfaceType?: string; sceneContext?: string; surroundings?: string[] }): Promise<void>;
+  updateDetectedSurface(surfaceId: number, updates: { surfaceType?: string; sceneContext?: string; surroundings?: string[]; boundingBoxX?: string; boundingBoxY?: string; boundingBoxWidth?: string; boundingBoxHeight?: string }): Promise<void>;
   getDetectedSurfaces(videoId: number): Promise<DetectedSurface[]>;
   getSurfaceCountByVideo(videoId: number): Promise<number>;
   clearDetectedSurfaces(videoId: number): Promise<void>;
@@ -459,7 +459,15 @@ export class DatabaseStorage implements IStorage {
     return result;
   }
 
-  async updateDetectedSurface(surfaceId: number, updates: { surfaceType?: string; sceneContext?: string; surroundings?: string[] }): Promise<void> {
+  async updateDetectedSurface(surfaceId: number, updates: {
+    surfaceType?: string;
+    sceneContext?: string;
+    surroundings?: string[];
+    boundingBoxX?: string;
+    boundingBoxY?: string;
+    boundingBoxWidth?: string;
+    boundingBoxHeight?: string;
+  }): Promise<void> {
     await db
       .update(detectedSurfaces)
       .set(updates)

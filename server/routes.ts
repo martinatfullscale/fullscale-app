@@ -1850,7 +1850,9 @@ export async function registerRoutes(
     }
 
     // No auth required - surfaces data is public for brand marketplace
-    const surfaces = await storage.getDetectedSurfaces(videoId);
+    const allSurfaces = await storage.getDetectedSurfaces(videoId);
+    // Exclude surfaces filtered out by post-scan normalization (phantom/too-small detections)
+    const surfaces = allSurfaces.filter(s => s.surfaceType !== "Filtered");
 
     // Enrich surfaces with frame availability info
     const framesDir = path.join(process.cwd(), "public", "uploads", "frames", videoId.toString());
@@ -3777,15 +3779,31 @@ export async function registerRoutes(
       });
 
       // Auto-propagate to matching surfaces in the same scene group (scene persistence)
+      // Uses fuzzy spatial matching: same surface type + bounding box center within 20% tolerance
       let propagatedCount = 0;
       if (computedGroupId) {
         const allSurfaces = await storage.getDetectedSurfaces(videoId);
+        const anchorSurface = allSurfaces.find(s => s.id === surfaceId);
+        const anchorBBX = anchorSurface ? parseFloat(String(anchorSurface.boundingBoxX)) : 0;
+        const anchorBBY = anchorSurface ? parseFloat(String(anchorSurface.boundingBoxY)) : 0;
+        const anchorBBW = anchorSurface ? parseFloat(String(anchorSurface.boundingBoxWidth)) : 0;
+        const anchorBBH = anchorSurface ? parseFloat(String(anchorSurface.boundingBoxHeight)) : 0;
+        const anchorCX = anchorBBX + anchorBBW / 2;
+        const anchorCY = anchorBBY + anchorBBH / 2;
+        const anchorType = anchorSurface?.surfaceType?.toLowerCase() || "";
+        const FUZZY_TOLERANCE = 0.20; // 20% of frame
+
         const matchingSurfaces = allSurfaces.filter(s => {
-          if (s.id === surfaceId) return false; // Skip the anchor surface (already saved)
-          const bbX = parseFloat(String(s.boundingBoxX)).toFixed(1);
-          const bbY = parseFloat(String(s.boundingBoxY)).toFixed(1);
-          const groupKey = `${s.surfaceType}-${bbX}-${bbY}`;
-          return groupKey === computedGroupId;
+          if (s.id === surfaceId) return false;
+          if (s.surfaceType === "Filtered") return false;
+          if (s.surfaceType.toLowerCase() !== anchorType) return false;
+          const sBBX = parseFloat(String(s.boundingBoxX));
+          const sBBY = parseFloat(String(s.boundingBoxY));
+          const sBBW = parseFloat(String(s.boundingBoxWidth));
+          const sBBH = parseFloat(String(s.boundingBoxHeight));
+          const sCX = sBBX + sBBW / 2;
+          const sCY = sBBY + sBBH / 2;
+          return Math.abs(sCX - anchorCX) < FUZZY_TOLERANCE && Math.abs(sCY - anchorCY) < FUZZY_TOLERANCE;
         });
 
         for (const surface of matchingSurfaces) {
@@ -3882,18 +3900,32 @@ export async function registerRoutes(
         return res.json({ placement: directPlacement, source: "direct" });
       }
 
-      // Fallback: find placement via scene group matching
+      // Fallback: find placement via fuzzy spatial matching (same type + nearby position)
       const allSurfaces = await storage.getDetectedSurfaces(videoId);
       const targetSurface = allSurfaces.find(s => s.id === surfaceId);
       if (targetSurface) {
-        const bbX = parseFloat(String(targetSurface.boundingBoxX)).toFixed(1);
-        const bbY = parseFloat(String(targetSurface.boundingBoxY)).toFixed(1);
-        const groupKey = `${targetSurface.surfaceType}-${bbX}-${bbY}`;
+        const tBBX = parseFloat(String(targetSurface.boundingBoxX));
+        const tBBY = parseFloat(String(targetSurface.boundingBoxY));
+        const tBBW = parseFloat(String(targetSurface.boundingBoxWidth));
+        const tBBH = parseFloat(String(targetSurface.boundingBoxHeight));
+        const tCX = tBBX + tBBW / 2;
+        const tCY = tBBY + tBBH / 2;
+        const tType = targetSurface.surfaceType.toLowerCase();
+        const FUZZY_TOLERANCE = 0.20;
 
-        // Find any placement in the same scene group
-        const groupPlacement = videoplacements.find(p => p.sceneGroupId === groupKey);
-        if (groupPlacement) {
-          return res.json({ placement: groupPlacement, source: "scene_group" });
+        // Find any surface that has a placement and is spatially similar
+        for (const p of videoplacements) {
+          const pSurface = allSurfaces.find(s => s.id === p.surfaceId);
+          if (!pSurface || pSurface.surfaceType.toLowerCase() !== tType) continue;
+          const pBBX = parseFloat(String(pSurface.boundingBoxX));
+          const pBBY = parseFloat(String(pSurface.boundingBoxY));
+          const pBBW = parseFloat(String(pSurface.boundingBoxWidth));
+          const pBBH = parseFloat(String(pSurface.boundingBoxHeight));
+          const pCX = pBBX + pBBW / 2;
+          const pCY = pBBY + pBBH / 2;
+          if (Math.abs(tCX - pCX) < FUZZY_TOLERANCE && Math.abs(tCY - pCY) < FUZZY_TOLERANCE) {
+            return res.json({ placement: p, source: "fuzzy_match" });
+          }
         }
       }
 
