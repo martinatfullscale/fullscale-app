@@ -383,6 +383,57 @@ export default function PlacementPreviewModal({
     }
   }, [open, surfaces, selectedSurface]);
 
+  // Scene persistence: auto-load existing placement when switching surfaces
+  useEffect(() => {
+    if (!open || !selectedSurface) return;
+    const loadExistingPlacement = async () => {
+      try {
+        const res = await fetch(`/api/video/${videoId}/surface/${selectedSurface.id}/placement`, {
+          credentials: "include",
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.placement) {
+          const p = data.placement;
+          // Restore product image
+          if (p.productImageUrl) {
+            setProductImage(p.productImageUrl);
+          }
+          // Restore transform
+          if (p.transform) {
+            setTransform({
+              offsetX: p.transform.offsetX ?? 0,
+              offsetY: p.transform.offsetY ?? 0,
+              scale: p.transform.scale ?? 0.6,
+              rotation: p.transform.rotation ?? 0,
+              flipH: p.transform.flipH ?? false,
+            });
+          }
+          // Restore blend
+          if (p.blend) {
+            setBlend({
+              opacity: p.blend.opacity ?? 90,
+              blendMode: (p.blend.blendMode ?? "source-over") as GlobalCompositeOperation,
+              shadowEnabled: p.blend.shadowEnabled ?? true,
+              shadowBlur: p.blend.shadowBlur ?? 8,
+              shadowOffsetX: p.blend.shadowOffsetX ?? 2,
+              shadowOffsetY: p.blend.shadowOffsetY ?? 4,
+              shadowColor: p.blend.shadowColor ?? "rgba(0,0,0,0.4)",
+              featherRadius: p.blend.featherRadius ?? 0,
+              brightness: p.blend.brightness ?? 0,
+              contrast: p.blend.contrast ?? 0,
+            });
+          }
+          console.log(`[PlacementPreview] Auto-loaded placement (${data.source}) for surface ${selectedSurface.id}`);
+        }
+      } catch (err) {
+        // Non-fatal — just means no existing placement
+        console.debug("[PlacementPreview] No existing placement for surface", selectedSurface.id);
+      }
+    };
+    loadExistingPlacement();
+  }, [open, selectedSurface?.id, videoId]);
+
   // Reset state on close
   useEffect(() => {
     if (!open) {
@@ -829,8 +880,15 @@ export default function PlacementPreviewModal({
         const err = await res.json().catch(() => ({ error: "Save failed" }));
         throw new Error(err.error || "Failed to save placement");
       }
+      const result = await res.json().catch(() => ({}));
       setSaveSuccess(true);
-      toast({ title: "Placement saved", description: "Your placement has been saved and can be viewed in Saved Placements." });
+      const propagated = result.propagatedCount || 0;
+      toast({
+        title: "Placement saved",
+        description: propagated > 0
+          ? `Saved and auto-applied to ${propagated} matching scene${propagated > 1 ? 's' : ''} across the video.`
+          : "Your placement has been saved and can be viewed in Saved Placements.",
+      });
       setTimeout(() => setSaveSuccess(false), 3000);
     } catch (err: any) {
       toast({ title: "Save failed", description: err.message, variant: "destructive" });

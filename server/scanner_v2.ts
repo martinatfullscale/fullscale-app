@@ -178,6 +178,14 @@ GOOD SURFACES (flag these):
 - Studio desks in podcast/recording setups
 - Kitchen counters with some clear space
 
+PODCAST / INTERVIEW / TALKING-HEAD RULES:
+- In podcast or interview setups, people sit behind desks or tables — but the desk may NOT be visible in the frame
+- If a person fills most of the frame (headshot, medium shot, or bust shot), there is likely NO usable surface visible
+- Do NOT invent or hallucinate a "desk" or "table" that is not clearly visible with a defined edge and flat area
+- If you cannot see the actual surface top (the flat plane where a product would sit), do NOT flag it
+- A dark area below a person's torso is NOT a desk — it may just be their clothing, lap, or dark background
+- Only flag a desk/table if you can clearly see the horizontal surface edge AND some of the flat top
+
 BAD "SURFACES" (do NOT flag):
 - Roads, highways, pavement
 - Building edges, bridge structures
@@ -185,11 +193,13 @@ BAD "SURFACES" (do NOT flag):
 - Floors (even indoor floors)
 - Walls (even if flat)
 - Any area where a product would look unnatural
+- Dark regions below a person's chest/torso (these are NOT desks)
+- Inferred/assumed surfaces that are not clearly visible in the frame
 
 For each suitable surface found, provide:
 - **location**: Tight bounding box as {x, y, width, height} in percentages (0-100)
 - **surface_type**: desk, table, shelf, counter, nightstand, coffee_table, studio_desk
-- **confidence**: 0.0 to 1.0 — only use >0.7 if the surface is clearly visible and suitable
+- **confidence**: 0.0 to 1.0 — use >0.7 only if the surface is clearly, unambiguously visible. Use 0.4-0.6 if partially visible. Use <0.4 if uncertain (these will be filtered out).
 - **reasoning**: Brief explanation
 - **lighting_direction**: Where the main light source is coming from relative to the surface. One of: "left", "right", "top", "top-left", "top-right", "ambient" (if diffuse/even lighting)
 - **lighting_intensity**: 0.0 to 1.0 — how bright the scene is (0.0 = very dark, 0.5 = moderate, 1.0 = very bright/overexposed)
@@ -793,7 +803,7 @@ async function analyzeFrameWithGemini(
 
     // Map Gemini surfaces, filter low-confidence, sort by confidence, take top 2
     const allSurfaces: DetectedSurface[] = parsed.surfaces
-      .filter((s: GeminiDetectedSurface) => s.confidence >= 0.3) // Skip low-confidence junk
+      .filter((s: GeminiDetectedSurface) => s.confidence >= 0.5) // Skip low/medium-confidence — only use high-quality detections
       .map((s: GeminiDetectedSurface) => ({
         surfaceType: s.surface_type.charAt(0).toUpperCase() + s.surface_type.slice(1),
         confidence: s.confidence,

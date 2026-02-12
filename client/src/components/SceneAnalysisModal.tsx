@@ -185,8 +185,9 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
           confidence: avgConfidence,
           hasFrame,
         };
-      })
-      .filter(scene => scene.hasFrame);
+      });
+      // Don't filter by hasFrame — frame URL may still be accessible even if server
+      // fs.existsSync check returned false. UI handles broken images with fallback.
   };
 
   // Server-side rescan: re-extract frames + detect surfaces, then rebuild scenes
@@ -558,6 +559,17 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                     }}
                     onError={(e) => {
                       const img = e.currentTarget;
+                      // Try alternate frame URL before giving up
+                      const currentSrc = img.src;
+                      if (video?.id && currentScene?.timestamp && !currentSrc.includes('_retry')) {
+                        const [m, s] = (currentScene.timestamp || '0:00').split(':').map(Number);
+                        const ts = (m || 0) * 60 + (s || 0);
+                        const altUrl = `/uploads/frames/${video.id}/frame_${ts}s.jpg?_retry=1`;
+                        if (!currentSrc.includes(altUrl)) {
+                          img.src = altUrl;
+                          return;
+                        }
+                      }
                       img.style.display = 'none';
                       const fallback = img.parentElement?.querySelector('.main-frame-fallback') as HTMLElement;
                       if (fallback) fallback.style.display = 'flex';

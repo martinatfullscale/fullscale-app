@@ -3750,6 +3750,19 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Missing required fields: videoId, surfaceId, productImageUrl, transform, blend" });
       }
 
+      // Auto-compute scene group ID from the anchor surface for scene persistence
+      let computedGroupId = sceneGroupId || null;
+      if (!computedGroupId) {
+        const allSurfaces = await storage.getDetectedSurfaces(videoId);
+        const anchorSurface = allSurfaces.find(s => s.id === surfaceId);
+        if (anchorSurface) {
+          const bbX = parseFloat(String(anchorSurface.boundingBoxX)).toFixed(1);
+          const bbY = parseFloat(String(anchorSurface.boundingBoxY)).toFixed(1);
+          computedGroupId = `${anchorSurface.surfaceType}-${bbX}-${bbY}`;
+        }
+      }
+
+      // Save the primary placement
       const placement = await storage.savePlacement({
         videoId,
         surfaceId,
@@ -3757,14 +3770,47 @@ export async function registerRoutes(
         productImageUrl,
         createdBy: userEmail,
         role: role || "creator",
-        sceneGroupId: sceneGroupId || null,
+        sceneGroupId: computedGroupId,
         transform,
         blend,
         status: "active",
       });
 
-      console.log(`[Placements] Saved placement ${placement.id} for video ${videoId} surface ${surfaceId} by ${userEmail}`);
-      res.json({ placement });
+      // Auto-propagate to matching surfaces in the same scene group (scene persistence)
+      let propagatedCount = 0;
+      if (computedGroupId) {
+        const allSurfaces = await storage.getDetectedSurfaces(videoId);
+        const matchingSurfaces = allSurfaces.filter(s => {
+          if (s.id === surfaceId) return false; // Skip the anchor surface (already saved)
+          const bbX = parseFloat(String(s.boundingBoxX)).toFixed(1);
+          const bbY = parseFloat(String(s.boundingBoxY)).toFixed(1);
+          const groupKey = `${s.surfaceType}-${bbX}-${bbY}`;
+          return groupKey === computedGroupId;
+        });
+
+        for (const surface of matchingSurfaces) {
+          try {
+            await storage.savePlacement({
+              videoId,
+              surfaceId: surface.id,
+              productId: productId || null,
+              productImageUrl,
+              createdBy: userEmail,
+              role: role || "creator",
+              sceneGroupId: computedGroupId,
+              transform,
+              blend,
+              status: "active",
+            });
+            propagatedCount++;
+          } catch (propErr: any) {
+            console.warn(`[Placements] Failed to propagate to surface ${surface.id}:`, propErr.message);
+          }
+        }
+      }
+
+      console.log(`[Placements] Saved placement ${placement.id} for video ${videoId} surface ${surfaceId} by ${userEmail} (propagated to ${propagatedCount} additional surfaces)`);
+      res.json({ placement, propagatedCount });
     } catch (err: any) {
       console.error("[Placements] Save error:", err.message);
       res.status(500).json({ error: "Failed to save placement" });
@@ -3816,6 +3862,45 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("[Placements] Propagate error:", err.message);
       res.status(500).json({ error: "Failed to propagate placement" });
+    }
+  });
+
+  // Get active placement for a specific surface (or its scene group)
+  // Used by PlacementPreviewModal to auto-load existing placements when switching scenes
+  app.get("/api/video/:videoId/surface/:surfaceId/placement", async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const surfaceId = parseInt(req.params.surfaceId);
+      if (isNaN(videoId) || isNaN(surfaceId)) {
+        return res.status(400).json({ error: "Invalid videoId or surfaceId" });
+      }
+
+      // First check for a direct placement on this surface
+      const videoplacements = await storage.getPlacementsForVideo(videoId);
+      const directPlacement = videoplacements.find(p => p.surfaceId === surfaceId);
+      if (directPlacement) {
+        return res.json({ placement: directPlacement, source: "direct" });
+      }
+
+      // Fallback: find placement via scene group matching
+      const allSurfaces = await storage.getDetectedSurfaces(videoId);
+      const targetSurface = allSurfaces.find(s => s.id === surfaceId);
+      if (targetSurface) {
+        const bbX = parseFloat(String(targetSurface.boundingBoxX)).toFixed(1);
+        const bbY = parseFloat(String(targetSurface.boundingBoxY)).toFixed(1);
+        const groupKey = `${targetSurface.surfaceType}-${bbX}-${bbY}`;
+
+        // Find any placement in the same scene group
+        const groupPlacement = videoplacements.find(p => p.sceneGroupId === groupKey);
+        if (groupPlacement) {
+          return res.json({ placement: groupPlacement, source: "scene_group" });
+        }
+      }
+
+      res.json({ placement: null });
+    } catch (err: any) {
+      console.error("[Placements] Surface placement lookup error:", err.message);
+      res.status(500).json({ error: "Failed to look up placement" });
     }
   });
 

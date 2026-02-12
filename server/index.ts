@@ -56,6 +56,7 @@ app.use('/attached_assets', express.static(path.join(projectRoot, "attached_asse
 // ============================================
 app.use(
   express.json({
+    limit: '10mb', // Placements send base64 product images as data URLs
     verify: (req, _res, buf) => {
       req.rawBody = buf;
     },

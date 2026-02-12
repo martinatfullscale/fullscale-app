@@ -658,8 +658,10 @@ export default function Library() {
                 hasFrame,
               };
             })
-            .filter(scene => scene.hasFrame);
-          
+            // Don't filter by hasFrame — frame files may still be accessible via URL even if
+            // server-side fs.existsSync check failed (e.g., CDN, reverse proxy, timing issues).
+            // The UI already handles broken images gracefully with a fallback.
+
           // If no surfaces, create a placeholder scene using video thumbnail
           const finalScenes = scenes.length > 0 ? scenes : [{
             id: `scene-${videoId}-0`,
