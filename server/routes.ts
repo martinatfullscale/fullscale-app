@@ -2256,7 +2256,7 @@ export async function registerRoutes(
         sceneType: video.surfaces?.[0]?.surfaceType || "Desk",
         surfaces: video.surfaces?.map(s => s.surfaceType) || [],
         duration: video.duration || "10:00",
-        platform: video.platform || "youtube",
+        platform: video.platform === "fullscale" || video.filePath ? "fullscale" : (video.platform || "youtube"),
       }));
 
       res.json({ opportunities, total: opportunities.length });

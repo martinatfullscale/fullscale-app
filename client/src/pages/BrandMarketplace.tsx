@@ -259,7 +259,8 @@ export default function BrandMarketplace() {
     const matchesGenre = genreFilter === "All" || opp.genre === genreFilter;
     const matchesSceneType = sceneTypeFilter === "All" || opp.sceneType === sceneTypeFilter;
     
-    const matchesCategory = !selectedCategory || 
+    const matchesCategory = !selectedCategory ||
+      (selectedCategory === "podcasts" && opp.platform === "fullscale") ||
       opp.genre === categoryToGenreMap[selectedCategory] ||
       opp.context.toLowerCase().includes(selectedCategory.toLowerCase());
     
@@ -267,7 +268,7 @@ export default function BrandMarketplace() {
     let matchesPlatform = true;
     if (platformFilter !== "All") {
       if (platformFilter === "Podcasts") {
-        matchesPlatform = opp.platform === "local";
+        matchesPlatform = opp.platform === "fullscale";
       } else {
         const filterValue = platformFilter.toLowerCase();
         matchesPlatform = opp.platform === filterValue ||
@@ -537,13 +538,13 @@ export default function BrandMarketplace() {
                           className={`w-5 h-5 rounded-full flex items-center justify-center ${
                             p === 'twitch' ? 'bg-[#9146FF]' :
                             p === 'facebook' ? 'bg-[#1877F2]' :
-                            p === 'local' ? 'bg-[#8B5CF6]' :
+                            p === 'fullscale' ? 'bg-[#8B5CF6]' :
                             'bg-[#FF0000]'
                           }`}
                         >
                           {p === 'twitch' ? <SiTwitch className="w-2.5 h-2.5 text-white" /> :
                            p === 'facebook' ? <SiFacebook className="w-2.5 h-2.5 text-white" /> :
-                           p === 'local' ? <Mic className="w-2.5 h-2.5 text-white" /> :
+                           p === 'fullscale' ? <Mic className="w-2.5 h-2.5 text-white" /> :
                            <SiYoutube className="w-2.5 h-2.5 text-white" />}
                         </div>
                       ))}
@@ -643,13 +644,13 @@ export default function BrandMarketplace() {
                         className={`w-8 h-8 rounded-full flex items-center justify-center shadow-lg ${
                           p === 'twitch' ? 'bg-[#9146FF]' :
                           p === 'facebook' ? 'bg-[#1877F2]' :
-                          p === 'local' ? 'bg-[#8B5CF6]' :
+                          p === 'fullscale' ? 'bg-[#8B5CF6]' :
                           'bg-[#FF0000]'
                         }`}
                       >
                         {p === 'twitch' ? <SiTwitch className="w-4 h-4 text-white" /> :
                          p === 'facebook' ? <SiFacebook className="w-4 h-4 text-white" /> :
-                         p === 'local' ? <Mic className="w-4 h-4 text-white" /> :
+                         p === 'fullscale' ? <Mic className="w-4 h-4 text-white" /> :
                          <SiYoutube className="w-4 h-4 text-white" />}
                       </div>
                     ))}
