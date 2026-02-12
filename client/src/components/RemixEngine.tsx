@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useRoute, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
-  ArrowLeft, Play, Pause, Download, Layers,
+  ArrowLeft, Play, Pause, Download, Layers, Save,
   CheckCircle, Package, Eye, EyeOff, ChevronRight,
   Move, RotateCw, Maximize2, Sun, Droplets, Blend, FlipHorizontal
 } from "lucide-react";
@@ -583,11 +583,32 @@ export default function RemixEngine() {
     const t = videoEl.currentTime;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+    // Max gap between keyframes to render through. If the time gap between prev
+    // and next keyframe exceeds this, we assume a camera cut happened and don't
+    // interpolate/render during the gap (prevents products appearing in close-ups).
+    const MAX_INTERPOLATION_GAP = 4; // seconds
+
     for (const [surfaceType, track] of surfaceTracks) {
       const { prev, next, progress } = findKeyframes(track.keyframes, t);
       if (!prev) continue;
 
-      const bbox = next ? lerpBBox(prev.bbox, next.bbox, progress) : prev.bbox;
+      // Skip rendering if we're in a gap between distant keyframes (camera cut)
+      if (next && (next.timestamp - prev.timestamp) > MAX_INTERPOLATION_GAP) {
+        // Only render if we're within MAX_INTERPOLATION_GAP/2 of either keyframe
+        const distToPrev = t - prev.timestamp;
+        const distToNext = next.timestamp - t;
+        if (distToPrev > MAX_INTERPOLATION_GAP / 2 && distToNext > MAX_INTERPOLATION_GAP / 2) {
+          continue; // In the middle of a gap — skip this track entirely for this frame
+        }
+      }
+      // If no next keyframe, only render within MAX_INTERPOLATION_GAP of the last one
+      if (!next && (t - prev.timestamp) > MAX_INTERPOLATION_GAP) {
+        continue;
+      }
+
+      const bbox = next && (next.timestamp - prev.timestamp) <= MAX_INTERPOLATION_GAP
+        ? lerpBBox(prev.bbox, next.bbox, progress)
+        : prev.bbox;
       const px = (bbox.x / 100) * canvas.width;
       const py = (bbox.y / 100) * canvas.height;
       const pw = (bbox.w / 100) * canvas.width;
@@ -921,6 +942,68 @@ export default function RemixEngine() {
   }, [assignments, surfaceTracks, video?.title, toast]);
 
   // ============================================================================
+  // SAVE ALL PLACEMENTS
+  // ============================================================================
+
+  const [isSaving, setIsSaving] = useState(false);
+
+  const handleSaveAll = useCallback(async () => {
+    if (assignments.size === 0 || !videoId) return;
+    setIsSaving(true);
+
+    let saved = 0;
+    let totalPropagated = 0;
+
+    try {
+      for (const [surfaceType, assignment] of assignments) {
+        const track = surfaceTracks.get(surfaceType);
+        if (!track || track.keyframes.length === 0) continue;
+
+        // Find the first surface ID for this track from the raw surfaces data
+        const matchingSurface = surfaces.find(s => s.surfaceType === surfaceType);
+        if (!matchingSurface) continue;
+
+        const res = await fetch("/api/placements", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            videoId: parseInt(String(videoId)),
+            surfaceId: matchingSurface.id,
+            productId: assignment.productId > 0 ? assignment.productId : null,
+            productImageUrl: assignment.imageUrl,
+            transform: assignment.transform,
+            blend: assignment.blend,
+          }),
+        });
+
+        if (res.ok) {
+          const result = await res.json();
+          saved++;
+          totalPropagated += result.propagatedCount || 0;
+        } else {
+          console.warn(`[RemixEngine] Failed to save placement for ${surfaceType}`);
+        }
+      }
+
+      if (saved > 0) {
+        toast({
+          title: `Saved ${saved} placement${saved > 1 ? 's' : ''}`,
+          description: totalPropagated > 0
+            ? `Auto-applied to ${totalPropagated} matching scene(s) for scene persistence.`
+            : "Placements persisted. They'll auto-load next time you open Remix Engine.",
+        });
+      } else {
+        toast({ title: "No placements saved", description: "Could not match any assignments to surfaces.", variant: "destructive" });
+      }
+    } catch (err: any) {
+      toast({ title: "Save failed", description: err.message, variant: "destructive" });
+    } finally {
+      setIsSaving(false);
+    }
+  }, [assignments, surfaceTracks, surfaces, videoId, toast]);
+
+  // ============================================================================
   // LOADING / ERROR STATES
   // ============================================================================
 
@@ -986,6 +1069,15 @@ export default function RemixEngine() {
           >
             {showBoundingBoxes ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
             Boxes
+          </button>
+
+          <button
+            onClick={handleSaveAll}
+            disabled={assignments.size === 0 || isSaving}
+            className="flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-medium bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            <Save className="w-3.5 h-3.5" />
+            {isSaving ? "Saving..." : "Save Placements"}
           </button>
 
           <button

@@ -1195,10 +1195,32 @@ interface SurfaceCluster {
   surfaceType: string;
 }
 
+// Normalize surface type synonyms to a canonical name
+// e.g., "Studio_desk", "studio_desk", "desk", "table" all → "Table"
+const SURFACE_TYPE_SYNONYMS: Record<string, string> = {
+  desk: "Table",
+  table: "Table",
+  studio_desk: "Table",
+  "studio desk": "Table",
+  counter: "Counter",
+  countertop: "Counter",
+  kitchen_counter: "Counter",
+  shelf: "Shelf",
+  bookshelf: "Shelf",
+  nightstand: "Nightstand",
+  side_table: "Nightstand",
+  coffee_table: "Coffee Table",
+};
+
+function canonicalSurfaceType(type: string): string {
+  const lower = type.toLowerCase().trim();
+  return SURFACE_TYPE_SYNONYMS[lower] || type.charAt(0).toUpperCase() + type.slice(1);
+}
+
 /**
- * Cluster surfaces by type and spatial proximity.
+ * Cluster surfaces by CANONICAL type and spatial proximity.
  * Two surfaces join the same cluster if:
- * - Same surfaceType (case-insensitive)
+ * - Same canonical type (Table/Desk/Studio_desk all merge)
  * - Bounding box centers are within CLUSTER_TOLERANCE of each other (normalized 0-1)
  */
 function clusterSurfaces(
@@ -1215,11 +1237,11 @@ function clusterSurfaces(
     const bbH = parseFloat(s.boundingBoxHeight);
     const centerX = bbX + bbW / 2;
     const centerY = bbY + bbH / 2;
-    const type = s.surfaceType.toLowerCase();
+    const canonical = canonicalSurfaceType(s.surfaceType);
 
     let matched = false;
     for (const cluster of clusters) {
-      if (cluster.surfaceType.toLowerCase() !== type) continue;
+      if (canonicalSurfaceType(cluster.surfaceType) !== canonical) continue;
 
       // Check if this surface's center is near any existing surface in the cluster
       const representative = cluster.surfaces[0];
@@ -1235,7 +1257,7 @@ function clusterSurfaces(
 
     if (!matched) {
       clusters.push({
-        surfaceType: s.surfaceType,
+        surfaceType: canonical, // Use canonical name for the cluster
         surfaces: [{ id: s.id, bbX, bbY, bbW, bbH, confidence: parseFloat(s.confidence) }],
       });
     }
@@ -1323,6 +1345,7 @@ async function normalizeSurfaceBoundingBoxes(videoId: number): Promise<void> {
     for (const surface of cluster.surfaces) {
       try {
         await storage.updateDetectedSurface(surface.id, {
+          surfaceType: cluster.surfaceType, // Normalize name (e.g., "Studio_desk" → "Table")
           boundingBoxX: medianBox.x.toFixed(6),
           boundingBoxY: medianBox.y.toFixed(6),
           boundingBoxWidth: medianBox.w.toFixed(6),
