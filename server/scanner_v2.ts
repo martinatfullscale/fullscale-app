@@ -169,9 +169,13 @@ CRITICAL RULES:
 BOUNDING BOX RULES:
 - x, y = top-left corner of the surface as percentage of frame (0-100)
 - width, height = size of the surface area as percentage of frame (0-100)
-- The box should TIGHTLY fit the actual placeable surface area
-- A desk that takes up 30% of the frame width should have width: 30, NOT width: 90
-- Be precise — a small coffee table might be x:35, y:55, width:25, height:15
+- The box must ONLY cover the visible FLAT HORIZONTAL surface where a product could physically sit
+- Do NOT include table legs, chairs, people, or the area BELOW the table in the bounding box
+- Do NOT include the area ABOVE the table in the bounding box
+- The height of a table/desk bounding box seen at eye level should be THIN (typically 5-20% of frame height), because you are looking at the surface edge-on
+- A wide table seen at eye level might be: x:15, y:55, width:70, height:10 (THIN horizontal strip)
+- A desk seen from slightly above might be: x:20, y:50, width:40, height:20
+- Do NOT make bounding boxes taller than 30% of frame height unless viewed from directly above (top-down)
 
 GOOD SURFACES (flag these):
 - Desks, tables, countertops with visible flat area
@@ -182,11 +186,13 @@ GOOD SURFACES (flag these):
 
 PODCAST / INTERVIEW / TALKING-HEAD RULES:
 - In podcast or interview setups, people sit behind desks or tables — but the desk may NOT be visible in the frame
-- If a person fills most of the frame (headshot, medium shot, or bust shot), there is likely NO usable surface visible
-- Do NOT invent or hallucinate a "desk" or "table" that is not clearly visible with a defined edge and flat area
+- If a single person fills more than 40% of the frame (headshot, medium shot, bust shot, or solo interview angle), return surfaces_found: false — there is NO usable surface
+- If two or more people are visible but no clear table/desk surface is visible between them, return surfaces_found: false
+- Do NOT invent or hallucinate a "desk" or "table" that is not clearly visible with a defined horizontal edge and flat area
 - If you cannot see the actual surface top (the flat plane where a product would sit), do NOT flag it
-- A dark area below a person's torso is NOT a desk — it may just be their clothing, lap, or dark background
-- Only flag a desk/table if you can clearly see the horizontal surface edge AND some of the flat top
+- A dark area below a person's torso is NOT a desk — it is clothing, lap, shadow, or dark background
+- Microphones, monitor stands, and equipment edges are NOT surfaces
+- Only flag a desk/table if you can clearly see: (1) the horizontal front edge of the table AND (2) some of the flat top surface behind that edge
 
 BAD "SURFACES" (do NOT flag):
 - Roads, highways, pavement
@@ -1272,14 +1278,22 @@ async function normalizeSurfaceBoundingBoxes(videoId: number): Promise<void> {
     return;
   }
 
-  // Step 1: Filter out phantom surfaces (too small to be useful)
+  // Step 1: Filter out phantom and invalid surfaces
   const MIN_SURFACE_AREA = 0.03; // 3% of frame area minimum
+  const MAX_SURFACE_HEIGHT = 0.40; // Surface seen at eye level shouldn't be >40% of frame height
   const phantomIds: number[] = [];
   for (const s of surfaces) {
-    const area = parseFloat(String(s.boundingBoxWidth)) * parseFloat(String(s.boundingBoxHeight));
+    const width = parseFloat(String(s.boundingBoxWidth));
+    const height = parseFloat(String(s.boundingBoxHeight));
+    const area = width * height;
+
     if (area < MIN_SURFACE_AREA) {
       phantomIds.push(s.id);
       console.log(`[Normalize] Removing phantom surface ${s.id} (${s.surfaceType}, area=${(area * 100).toFixed(1)}% < ${(MIN_SURFACE_AREA * 100)}%)`);
+    } else if (height > MAX_SURFACE_HEIGHT && s.surfaceType !== "Filtered") {
+      // Bounding box is unrealistically tall — likely includes legs/floor/people
+      phantomIds.push(s.id);
+      console.log(`[Normalize] Removing oversized surface ${s.id} (${s.surfaceType}, height=${(height * 100).toFixed(1)}% > ${(MAX_SURFACE_HEIGHT * 100)}%)`);
     }
   }
 

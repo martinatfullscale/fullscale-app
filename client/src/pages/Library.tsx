@@ -690,10 +690,12 @@ export default function Library() {
     }
     
     // No fallback - use empty state to trigger scan prompt in modal
+    const videoThumbnailEmpty = (video.thumbnailUrl && (video.thumbnailUrl.startsWith('http') || video.thumbnailUrl.startsWith('/')))
+      ? video.thumbnailUrl : null;
     const emptyScene = [{
       id: `${videoId}-empty`,
       timestamp: "00:00",
-      imageUrl: video.image || video.thumbnailUrl || "",
+      imageUrl: videoThumbnailEmpty || `/uploads/frames/${videoId}/frame_0s.jpg`,
       surfaces: 0,
       surfaceTypes: [],
       context: "No scan data - click 'Scan with AI' to detect surfaces",

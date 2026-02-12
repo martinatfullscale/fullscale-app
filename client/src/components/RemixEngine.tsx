@@ -196,13 +196,23 @@ function buildSurfaceTracks(surfaces: DetectedSurface[]): Map<string, SurfaceTra
     if (!tracks.has(type)) {
       tracks.set(type, { surfaceType: type, keyframes: [] });
     }
+
+    // DB stores bounding box as 0-1 normalized; render code expects 0-100 percentage
+    const rawX = parseFloat(surface.boundingBoxX);
+    const rawY = parseFloat(surface.boundingBoxY);
+    const rawW = parseFloat(surface.boundingBoxWidth);
+    const rawH = parseFloat(surface.boundingBoxHeight);
+    // Auto-detect: if all values are <=1, they're 0-1 normalized → scale to 0-100
+    const isNormalized = rawX <= 1 && rawY <= 1 && rawW <= 1 && rawH <= 1;
+    const scale = isNormalized ? 100 : 1;
+
     tracks.get(type)!.keyframes.push({
       timestamp: parseFloat(surface.timestamp),
       bbox: {
-        x: parseFloat(surface.boundingBoxX),
-        y: parseFloat(surface.boundingBoxY),
-        w: parseFloat(surface.boundingBoxWidth),
-        h: parseFloat(surface.boundingBoxHeight),
+        x: rawX * scale,
+        y: rawY * scale,
+        w: rawW * scale,
+        h: rawH * scale,
       },
       confidence: parseFloat(surface.confidence),
     });
@@ -436,6 +446,18 @@ export default function RemixEngine() {
     },
   });
 
+  // Fetch saved placements for this video
+  const { data: savedPlacements } = useQuery<any[]>({
+    queryKey: ["/api/video", videoId, "placements"],
+    queryFn: async () => {
+      const res = await fetch(`/api/video/${videoId}/placements`, { credentials: "include" });
+      if (!res.ok) return [];
+      const data = await res.json();
+      return data.placements || [];
+    },
+    enabled: !!videoId,
+  });
+
   // ============================================================================
   // DERIVED DATA
   // ============================================================================
@@ -454,6 +476,75 @@ export default function RemixEngine() {
       setSelectedTrack(trackNames[0]);
     }
   }, [trackNames, selectedTrack]);
+
+  // Auto-load saved placements into assignments when data arrives
+  useEffect(() => {
+    if (!savedPlacements || savedPlacements.length === 0 || !surfacesData?.surfaces) return;
+    // Only load once (don't overwrite user's manual changes)
+    if (assignments.size > 0) return;
+
+    const surfaceMap = new Map<number, DetectedSurface>();
+    for (const s of surfacesData.surfaces) {
+      surfaceMap.set(s.id, s);
+    }
+
+    // Group placements by surface type (one per track, newest wins)
+    const byTrack = new Map<string, any>();
+    for (const p of savedPlacements) {
+      const surface = surfaceMap.get(p.surfaceId);
+      if (!surface) continue;
+      const trackName = surface.surfaceType;
+      // Keep the newest placement per track
+      if (!byTrack.has(trackName) || new Date(p.createdAt) > new Date(byTrack.get(trackName).createdAt)) {
+        byTrack.set(trackName, p);
+      }
+    }
+
+    if (byTrack.size === 0) return;
+
+    // Preload product images and populate assignments
+    const loadAll = async () => {
+      const newAssignments = new Map<string, ProductAssignment>();
+      for (const [trackName, placement] of byTrack) {
+        try {
+          const img = new Image();
+          img.crossOrigin = "anonymous";
+          await new Promise<void>((resolve, reject) => {
+            img.onload = () => resolve();
+            img.onerror = () => reject(new Error("Image load failed"));
+            img.src = placement.productImageUrl;
+          });
+          productImagesRef.current.set(placement.productId || -1, img);
+          newAssignments.set(trackName, {
+            productId: placement.productId || -1,
+            imageUrl: placement.productImageUrl,
+            name: `Saved Placement`,
+            imageElement: img,
+            transform: placement.transform || { ...DEFAULT_TRANSFORM },
+            blend: placement.blend ? {
+              opacity: placement.blend.opacity ?? 90,
+              blendMode: (placement.blend.blendMode ?? "source-over") as GlobalCompositeOperation,
+              shadowEnabled: placement.blend.shadowEnabled ?? true,
+              shadowBlur: placement.blend.shadowBlur ?? 8,
+              shadowOffsetX: placement.blend.shadowOffsetX ?? 2,
+              shadowOffsetY: placement.blend.shadowOffsetY ?? 4,
+              shadowColor: placement.blend.shadowColor ?? "rgba(0,0,0,0.4)",
+              featherRadius: placement.blend.featherRadius ?? 0,
+              brightness: placement.blend.brightness ?? 0,
+              contrast: placement.blend.contrast ?? 0,
+            } : { ...DEFAULT_BLEND },
+          });
+        } catch (err) {
+          console.warn(`[RemixEngine] Failed to load saved placement for ${trackName}:`, err);
+        }
+      }
+      if (newAssignments.size > 0) {
+        setAssignments(newAssignments);
+        console.log(`[RemixEngine] Auto-loaded ${newAssignments.size} saved placement(s)`);
+      }
+    };
+    loadAll();
+  }, [savedPlacements, surfacesData?.surfaces]);
 
   // ============================================================================
   // PRODUCT IMAGE PRELOADING
@@ -971,8 +1062,37 @@ export default function RemixEngine() {
               />
             </div>
 
-            {/* Scene markers + Surface pills */}
+            {/* Surface hotkeys + Scene markers */}
             <div className="flex items-center gap-6 flex-wrap">
+              {/* Surface-type hotkey buttons — jump to first frame with that surface */}
+              {trackNames.length > 0 && (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground shrink-0">Jump to:</span>
+                  <div className="flex flex-wrap gap-1">
+                    {trackNames.map((name) => {
+                      const track = surfaceTracks.get(name);
+                      const firstTs = track?.keyframes[0]?.timestamp ?? 0;
+                      const hasAssignment = assignments.has(name);
+                      return (
+                        <button
+                          key={`jump-${name}`}
+                          onClick={() => { handleSeek(firstTs); setSelectedTrack(name); }}
+                          className={cn(
+                            "px-2.5 py-1 rounded-md text-[10px] font-semibold transition-all border",
+                            hasAssignment
+                              ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25"
+                              : "border-primary/30 bg-primary/10 text-primary hover:bg-primary/20"
+                          )}
+                        >
+                          {name} ({formatTime(firstTs)})
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Scene timestamp markers */}
               {sceneTimestamps.length > 0 && (
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-muted-foreground shrink-0">Scenes:</span>

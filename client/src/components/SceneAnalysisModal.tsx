@@ -640,7 +640,31 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                   </Button>
                 </div>
 
-                <div className="p-3 bg-black/50 border-t border-white/10">
+                <div className="p-3 bg-black/50 border-t border-white/10 space-y-2">
+                  {/* Surface-type hotkey buttons — jump to first scene with that surface */}
+                  {(() => {
+                    const surfaceTypeSet = new Set<string>();
+                    localScenes.forEach(s => s.surfaceTypes?.forEach((t: string) => surfaceTypeSet.add(t)));
+                    const types = Array.from(surfaceTypeSet);
+                    if (types.length === 0) return null;
+                    return (
+                      <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+                        <span className="text-[9px] text-zinc-400 shrink-0 uppercase tracking-wider">Jump to:</span>
+                        {types.map(type => {
+                          const sceneIdx = localScenes.findIndex(s => s.surfaceTypes?.includes(type));
+                          return (
+                            <button
+                              key={type}
+                              onClick={() => sceneIdx >= 0 && goToScene(sceneIdx)}
+                              className="px-2 py-0.5 rounded-md text-[10px] font-semibold border border-primary/40 bg-primary/15 text-primary hover:bg-primary/25 transition-all whitespace-nowrap"
+                            >
+                              {type}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
                   <div className="flex items-center gap-2 overflow-x-auto pb-1">
                     {localScenes.map((scene, idx) => (
                       <button
