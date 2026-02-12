@@ -85,6 +85,7 @@ export interface IStorage {
   getAllBrandProducts(): Promise<BrandProduct[]>;
   // Saved placement methods
   savePlacement(placement: InsertSavedPlacement): Promise<SavedPlacement>;
+  getAllActivePlacements(): Promise<SavedPlacement[]>;
   getPlacementsForVideo(videoId: number): Promise<SavedPlacement[]>;
   getPlacementById(placementId: number): Promise<SavedPlacement | undefined>;
   updatePlacement(placementId: number, updates: Partial<InsertSavedPlacement>): Promise<SavedPlacement | undefined>;
@@ -681,6 +682,14 @@ export class DatabaseStorage implements IStorage {
       .values(placement)
       .returning();
     return result;
+  }
+
+  async getAllActivePlacements(): Promise<SavedPlacement[]> {
+    return await db
+      .select()
+      .from(savedPlacements)
+      .where(eq(savedPlacements.status, "active"))
+      .orderBy(desc(savedPlacements.createdAt));
   }
 
   async getPlacementsForVideo(videoId: number): Promise<SavedPlacement[]> {

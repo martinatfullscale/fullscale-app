@@ -5,6 +5,8 @@ import {
   X,
   Upload,
   Download,
+  Save,
+  Loader2,
   Image as ImageIcon,
   Target,
   Clock,
@@ -23,6 +25,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { useToast } from "@/hooks/use-toast";
 
 // ============================================================================
 // TYPES
@@ -345,6 +348,11 @@ export default function PlacementPreviewModal({
   const [dragStart, setDragStart] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [dragStartTransform, setDragStartTransform] = useState<PlacementTransform>(DEFAULT_TRANSFORM);
 
+  // Save state
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveSuccess, setSaveSuccess] = useState(false);
+  const { toast } = useToast();
+
   // Refs
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -387,6 +395,8 @@ export default function PlacementPreviewModal({
       setTransform({ ...DEFAULT_TRANSFORM });
       setBlend({ ...DEFAULT_BLEND });
       setDragMode("none");
+      setIsSaving(false);
+      setSaveSuccess(false);
       frameImgRef.current = null;
       productImgRef.current = null;
     }
@@ -793,6 +803,42 @@ export default function PlacementPreviewModal({
     }
   }, [selectedSurface, transform, blend, videoId]);
 
+  // ============================================================================
+  // SAVE PLACEMENT
+  // ============================================================================
+
+  const savePlacement = useCallback(async () => {
+    if (!selectedSurface || !productImage) return;
+    setIsSaving(true);
+    setSaveSuccess(false);
+    try {
+      const res = await fetch("/api/placements", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          videoId,
+          surfaceId: selectedSurface.id,
+          productId: selectedCatalogProduct?.id || null,
+          productImageUrl: productImage,
+          transform,
+          blend,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "Save failed" }));
+        throw new Error(err.error || "Failed to save placement");
+      }
+      setSaveSuccess(true);
+      toast({ title: "Placement saved", description: "Your placement has been saved and can be viewed in Saved Placements." });
+      setTimeout(() => setSaveSuccess(false), 3000);
+    } catch (err: any) {
+      toast({ title: "Save failed", description: err.message, variant: "destructive" });
+    } finally {
+      setIsSaving(false);
+    }
+  }, [selectedSurface, productImage, videoId, selectedCatalogProduct, transform, blend, toast]);
+
   const surfacesWithFrames = surfaces.filter((s) => s.frameUrl);
   const hasProduct = !!productImage;
 
@@ -824,14 +870,32 @@ export default function PlacementPreviewModal({
               </div>
               <div className="flex items-center gap-3">
                 {hasProduct && (
-                  <Button
-                    size="sm"
-                    className="gap-2"
-                    onClick={downloadPreview}
-                  >
-                    <Download className="w-4 h-4" />
-                    Export
-                  </Button>
+                  <>
+                    <Button
+                      size="sm"
+                      variant={saveSuccess ? "default" : "secondary"}
+                      className={cn("gap-2", saveSuccess && "bg-emerald-600 hover:bg-emerald-700")}
+                      onClick={savePlacement}
+                      disabled={isSaving}
+                    >
+                      {isSaving ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : saveSuccess ? (
+                        <CheckCircle className="w-4 h-4" />
+                      ) : (
+                        <Save className="w-4 h-4" />
+                      )}
+                      {isSaving ? "Saving..." : saveSuccess ? "Saved" : "Save"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      className="gap-2"
+                      onClick={downloadPreview}
+                    >
+                      <Download className="w-4 h-4" />
+                      Export
+                    </Button>
+                  </>
                 )}
                 <button
                   onClick={onClose}

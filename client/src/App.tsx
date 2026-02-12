@@ -28,6 +28,7 @@ import Privacy from "@/pages/Privacy";
 import Terms from "@/pages/Terms";
 import CreatorProfile from "@/pages/CreatorProfile";
 import BrandProducts from "@/pages/BrandProducts";
+import SavedPlacements from "@/pages/SavedPlacements";
 import RemixEngine from "@/components/RemixEngine";
 
 interface AuthStatusResponse {
@@ -203,6 +204,7 @@ function Router() {
               <Route path="/marketplace" component={BrandMarketplace} />
               <Route path="/campaigns" component={Campaigns} />
               <Route path="/brand-products" component={BrandProducts} />
+              <Route path="/saved-placements" component={SavedPlacements} />
               <Route path="/settings" component={Settings} />
               <Route path="/earnings" component={Dashboard} />
               <Route component={NotFound} />

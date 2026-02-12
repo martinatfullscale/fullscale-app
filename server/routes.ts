@@ -3819,6 +3819,35 @@ export async function registerRoutes(
     }
   });
 
+  // Get all saved placements (enriched with video info)
+  app.get("/api/placements", async (req: any, res) => {
+    try {
+      const placements = await storage.getAllActivePlacements();
+
+      // Enrich with video titles/thumbnails
+      const videoIds = [...new Set(placements.map(p => p.videoId))];
+      const videoMap = new Map<number, { title: string; thumbnailUrl: string | null; youtubeId: string }>();
+      for (const vid of videoIds) {
+        const video = await storage.getVideoById(vid);
+        if (video) {
+          videoMap.set(vid, { title: video.title, thumbnailUrl: video.thumbnailUrl, youtubeId: video.youtubeId });
+        }
+      }
+
+      const enriched = placements.map(p => ({
+        ...p,
+        videoTitle: videoMap.get(p.videoId)?.title || "Unknown Video",
+        videoThumbnailUrl: videoMap.get(p.videoId)?.thumbnailUrl || null,
+        videoYoutubeId: videoMap.get(p.videoId)?.youtubeId || null,
+      }));
+
+      res.json({ placements: enriched });
+    } catch (err: any) {
+      console.error("[Placements] Fetch all error:", err.message);
+      res.status(500).json({ error: "Failed to fetch placements" });
+    }
+  });
+
   // Get all placements for a video
   app.get("/api/video/:videoId/placements", async (req: any, res) => {
     try {
