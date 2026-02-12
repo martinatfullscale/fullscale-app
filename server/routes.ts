@@ -91,6 +91,17 @@ function generateOAuthState(): string {
   return crypto.randomBytes(32).toString('hex');
 }
 
+/** Generate a short random slug for shareable links (8 chars, URL-safe) */
+function generateSlug(): string {
+  const chars = 'abcdefghijkmnpqrstuvwxyz23456789'; // No confusing chars (0/O, 1/l/I)
+  let slug = '';
+  const bytes = crypto.randomBytes(8);
+  for (let i = 0; i < 8; i++) {
+    slug += chars[bytes[i] % chars.length];
+  }
+  return slug;
+}
+
 // Database-backed OAuth state storage (survives server restarts)
 async function saveOAuthState(state: string): Promise<void> {
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
@@ -4192,6 +4203,141 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("[Video Export] Download error:", err.message);
       res.status(500).json({ error: "Failed to download export" });
+    }
+  });
+
+  // ── SHARED LINKS ──
+
+  // Create a shareable link for a placement or export
+  app.post("/api/share", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.authEmail || req.googleUser?.email;
+      if (!userId) return res.status(401).json({ error: "Authentication required" });
+
+      const { placementId, exportId, videoId, title } = req.body;
+      if (!videoId) return res.status(400).json({ error: "videoId is required" });
+
+      // Generate unique 8-char slug
+      const slug = generateSlug();
+
+      const link = await storage.createSharedLink({
+        slug,
+        placementId: placementId || null,
+        exportId: exportId || null,
+        videoId,
+        createdBy: userId,
+        title: title || null,
+        isActive: true,
+        expiresAt: null,
+      });
+
+      const shareUrl = `/s/${slug}`;
+      res.json({ slug, url: shareUrl, id: link.id });
+    } catch (err: any) {
+      console.error("[Share] Create error:", err.message);
+      res.status(500).json({ error: "Failed to create share link" });
+    }
+  });
+
+  // Get shared content (PUBLIC — no auth required)
+  app.get("/api/share/:slug", async (req: any, res) => {
+    try {
+      const { slug } = req.params;
+      const link = await storage.getSharedLinkBySlug(slug);
+      if (!link) return res.status(404).json({ error: "Share link not found" });
+      if (!link.isActive) return res.status(410).json({ error: "This share link has been deactivated" });
+      if (link.expiresAt && new Date(link.expiresAt) < new Date()) {
+        return res.status(410).json({ error: "This share link has expired" });
+      }
+
+      // Increment view count
+      await storage.incrementSharedLinkViews(slug);
+
+      // Fetch associated data
+      const video = await storage.getVideoById(link.videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+
+      let placement = null;
+      if (link.placementId) {
+        placement = await storage.getPlacementById(link.placementId);
+      }
+
+      let exportData = null;
+      if (link.exportId) {
+        exportData = await storage.getVideoExport(link.exportId);
+      }
+
+      // Get surfaces for the video
+      const surfaces = await storage.getDetectedSurfaces(link.videoId);
+
+      res.json({
+        slug: link.slug,
+        title: link.title || video.title,
+        createdBy: link.createdBy,
+        viewCount: (link.viewCount || 0) + 1,
+        createdAt: link.createdAt,
+        video: {
+          id: video.id,
+          title: video.title,
+          thumbnailUrl: video.thumbnailUrl,
+          duration: video.duration,
+          platform: video.platform,
+        },
+        placement: placement ? {
+          id: placement.id,
+          productImageUrl: placement.productImageUrl,
+          surfaceId: placement.surfaceId,
+          transform: placement.transform,
+          blend: placement.blend,
+        } : null,
+        export: exportData ? {
+          id: exportData.id,
+          status: exportData.status,
+          outputUrl: exportData.outputUrl,
+          progress: exportData.progress,
+        } : null,
+        surfaces: surfaces.map(s => ({
+          id: s.id,
+          surfaceType: s.surfaceType,
+          timestamp: s.timestamp,
+          boundingBoxX: s.boundingBoxX,
+          boundingBoxY: s.boundingBoxY,
+          boundingBoxWidth: s.boundingBoxWidth,
+          boundingBoxHeight: s.boundingBoxHeight,
+          frameUrl: s.frameUrl,
+        })),
+      });
+    } catch (err: any) {
+      console.error("[Share] Fetch error:", err.message);
+      res.status(500).json({ error: "Failed to fetch shared content" });
+    }
+  });
+
+  // Get all share links for current user
+  app.get("/api/shares", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.authEmail || req.googleUser?.email;
+      if (!userId) return res.status(401).json({ error: "Authentication required" });
+
+      const links = await storage.getSharedLinksByUser(userId);
+      res.json({ links });
+    } catch (err: any) {
+      console.error("[Share] List error:", err.message);
+      res.status(500).json({ error: "Failed to list share links" });
+    }
+  });
+
+  // Deactivate a share link
+  app.delete("/api/share/:id", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ error: "Invalid share link ID" });
+
+      await storage.deactivateSharedLink(id);
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("[Share] Deactivate error:", err.message);
+      res.status(500).json({ error: "Failed to deactivate share link" });
     }
   });
 

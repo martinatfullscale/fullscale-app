@@ -1,0 +1,430 @@
+/**
+ * SharedView — Public viewer page for shareable links
+ *
+ * Renders at /s/:slug — no authentication required.
+ * Shows composited placement frame, video metadata, and optional export download.
+ */
+
+import { useEffect, useState, useRef, useCallback } from "react";
+import { useParams, useLocation } from "wouter";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import {
+  Play,
+  Download,
+  Eye,
+  Clock,
+  Share2,
+  ExternalLink,
+  Film,
+  Loader2,
+  Image as ImageIcon,
+  ArrowLeft,
+} from "lucide-react";
+
+interface SharedData {
+  slug: string;
+  title: string;
+  createdBy: string;
+  viewCount: number;
+  createdAt: string;
+  video: {
+    id: number;
+    title: string;
+    thumbnailUrl: string | null;
+    duration: string | null;
+    platform: string;
+  };
+  placement: {
+    id: number;
+    productImageUrl: string;
+    surfaceId: number;
+    transform: {
+      offsetX: number;
+      offsetY: number;
+      scale: number;
+      rotation: number;
+      flipH: boolean;
+    };
+    blend: {
+      opacity: number;
+      blendMode: string;
+      shadowEnabled: boolean;
+      shadowBlur: number;
+      shadowOffsetX: number;
+      shadowOffsetY: number;
+      shadowColor: string;
+      featherRadius: number;
+      brightness: number;
+      contrast: number;
+    };
+  } | null;
+  export: {
+    id: number;
+    status: string;
+    outputUrl: string | null;
+    progress: number;
+  } | null;
+  surfaces: Array<{
+    id: number;
+    surfaceType: string;
+    timestamp: string;
+    boundingBoxX: string;
+    boundingBoxY: string;
+    boundingBoxWidth: string;
+    boundingBoxHeight: string;
+    frameUrl: string | null;
+  }>;
+}
+
+export default function SharedView() {
+  const params = useParams<{ slug: string }>();
+  const [, setLocation] = useLocation();
+  const [data, setData] = useState<SharedData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [composited, setComposited] = useState(false);
+
+  // Fetch shared data
+  useEffect(() => {
+    async function fetchShared() {
+      try {
+        const res = await fetch(`/api/share/${params.slug}`);
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || `Share link not found (${res.status})`);
+        }
+        const json = await res.json();
+        setData(json);
+      } catch (err: any) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    }
+    if (params.slug) fetchShared();
+  }, [params.slug]);
+
+  // Composite the placement onto the frame canvas
+  const renderComposite = useCallback(async () => {
+    if (!data || !data.placement || !canvasRef.current) return;
+
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    // Find the surface for the placement
+    const surface = data.surfaces.find((s) => s.id === data.placement!.surfaceId);
+    const frameUrl = surface?.frameUrl || data.video.thumbnailUrl;
+    if (!frameUrl) return;
+
+    // Load background frame
+    const bgImg = new Image();
+    bgImg.crossOrigin = "anonymous";
+    bgImg.src = frameUrl;
+
+    await new Promise<void>((resolve, reject) => {
+      bgImg.onload = () => resolve();
+      bgImg.onerror = () => reject(new Error("Failed to load frame"));
+    });
+
+    canvas.width = bgImg.naturalWidth;
+    canvas.height = bgImg.naturalHeight;
+    ctx.drawImage(bgImg, 0, 0);
+
+    // Load product image
+    const productImg = new Image();
+    productImg.crossOrigin = "anonymous";
+    productImg.src = data.placement!.productImageUrl;
+
+    await new Promise<void>((resolve, reject) => {
+      productImg.onload = () => resolve();
+      productImg.onerror = () => reject(new Error("Failed to load product"));
+    });
+
+    // Calculate bounding box from surface
+    if (surface) {
+      const bboxX = parseFloat(surface.boundingBoxX) * canvas.width;
+      const bboxY = parseFloat(surface.boundingBoxY) * canvas.height;
+      const bboxW = parseFloat(surface.boundingBoxWidth) * canvas.width;
+      const bboxH = parseFloat(surface.boundingBoxHeight) * canvas.height;
+
+      const t = data.placement!.transform;
+      const b = data.placement!.blend;
+
+      const scaledW = bboxW * t.scale;
+      const scaledH = bboxH * t.scale;
+      const centerX = bboxX + bboxW / 2 + t.offsetX;
+      const centerY = bboxY + bboxH / 2 + t.offsetY;
+
+      ctx.save();
+      ctx.globalAlpha = (b.opacity || 100) / 100;
+      ctx.translate(centerX, centerY);
+      if (t.rotation) ctx.rotate((t.rotation * Math.PI) / 180);
+      if (t.flipH) ctx.scale(-1, 1);
+      ctx.drawImage(productImg, -scaledW / 2, -scaledH / 2, scaledW, scaledH);
+      ctx.restore();
+    }
+
+    setComposited(true);
+  }, [data]);
+
+  useEffect(() => {
+    if (data?.placement) {
+      renderComposite().catch(console.error);
+    }
+  }, [data, renderComposite]);
+
+  // Copy share URL to clipboard
+  const copyShareUrl = () => {
+    const url = `${window.location.origin}/s/${params.slug}`;
+    navigator.clipboard.writeText(url);
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <Loader2 className="w-10 h-10 animate-spin text-primary mx-auto mb-4" />
+          <p className="text-muted-foreground">Loading shared content...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error || !data) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <Card className="max-w-md mx-auto">
+          <CardContent className="p-8 text-center">
+            <div className="w-16 h-16 rounded-full bg-red-100 dark:bg-red-900/20 flex items-center justify-center mx-auto mb-4">
+              <ExternalLink className="w-8 h-8 text-red-500" />
+            </div>
+            <h2 className="text-xl font-semibold mb-2">Link Not Found</h2>
+            <p className="text-muted-foreground mb-6">
+              {error || "This share link doesn't exist or has expired."}
+            </p>
+            <Button variant="outline" onClick={() => setLocation("/")}>
+              <ArrowLeft className="w-4 h-4 mr-2" />
+              Go to FullScale
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  const hasExport = data.export?.status === "complete" && data.export?.outputUrl;
+
+  return (
+    <div className="min-h-screen bg-background">
+      {/* Header */}
+      <header className="border-b bg-card/80 backdrop-blur-sm sticky top-0 z-50">
+        <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <a href="/" className="font-bold text-lg tracking-tight">
+              Full<span className="text-primary">Scale</span>
+            </a>
+            <Badge variant="secondary" className="text-xs">
+              Shared Content
+            </Badge>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" onClick={copyShareUrl}>
+              <Share2 className="w-4 h-4 mr-1" />
+              Copy Link
+            </Button>
+            {hasExport && (
+              <a href={data.export!.outputUrl!} download>
+                <Button size="sm">
+                  <Download className="w-4 h-4 mr-1" />
+                  Download
+                </Button>
+              </a>
+            )}
+          </div>
+        </div>
+      </header>
+
+      {/* Main Content */}
+      <main className="max-w-5xl mx-auto px-4 py-8">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Preview Area — takes 2/3 */}
+          <div className="lg:col-span-2">
+            <Card className="overflow-hidden">
+              <div className="relative aspect-video bg-black">
+                {/* Show export video if available, otherwise composited frame */}
+                {hasExport ? (
+                  <video
+                    src={data.export!.outputUrl!}
+                    controls
+                    poster={data.video.thumbnailUrl || undefined}
+                    className="w-full h-full object-contain"
+                  />
+                ) : data.placement ? (
+                  <canvas
+                    ref={canvasRef}
+                    className="w-full h-full object-contain"
+                  />
+                ) : (
+                  <img
+                    src={data.video.thumbnailUrl || "/placeholder.jpg"}
+                    alt={data.title}
+                    className="w-full h-full object-contain"
+                  />
+                )}
+
+                {/* Overlay badge */}
+                <div className="absolute top-3 left-3">
+                  <Badge
+                    variant="secondary"
+                    className="bg-black/60 backdrop-blur-sm text-white border-0"
+                  >
+                    {hasExport ? (
+                      <>
+                        <Film className="w-3 h-3 mr-1" /> Remixed Video
+                      </>
+                    ) : data.placement ? (
+                      <>
+                        <ImageIcon className="w-3 h-3 mr-1" /> Product Placement
+                      </>
+                    ) : (
+                      <>
+                        <Play className="w-3 h-3 mr-1" /> Video
+                      </>
+                    )}
+                  </Badge>
+                </div>
+              </div>
+            </Card>
+
+            {/* Title and metadata */}
+            <div className="mt-4">
+              <h1 className="text-2xl font-bold">{data.title}</h1>
+              <div className="flex items-center gap-4 mt-2 text-sm text-muted-foreground">
+                <span className="flex items-center gap-1">
+                  <Eye className="w-4 h-4" />
+                  {data.viewCount} {data.viewCount === 1 ? "view" : "views"}
+                </span>
+                {data.video.duration && (
+                  <span className="flex items-center gap-1">
+                    <Clock className="w-4 h-4" />
+                    {data.video.duration}
+                  </span>
+                )}
+                <span>
+                  Shared{" "}
+                  {new Date(data.createdAt).toLocaleDateString("en-US", {
+                    month: "short",
+                    day: "numeric",
+                    year: "numeric",
+                  })}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Sidebar — 1/3 */}
+          <div className="space-y-4">
+            {/* Placement details */}
+            {data.placement && (
+              <Card>
+                <CardContent className="p-4">
+                  <h3 className="font-semibold mb-3">Placement Details</h3>
+                  <div className="space-y-3">
+                    {/* Product preview */}
+                    <div className="rounded-lg border bg-muted/30 p-3 flex items-center gap-3">
+                      <img
+                        src={data.placement.productImageUrl}
+                        alt="Product"
+                        className="w-12 h-12 rounded object-contain bg-white"
+                      />
+                      <div className="text-sm">
+                        <div className="font-medium">Product Image</div>
+                        <div className="text-muted-foreground">
+                          Scale: {Math.round(data.placement.transform.scale * 100)}%
+                          {data.placement.transform.rotation !== 0 && ` · Rotated ${data.placement.transform.rotation}°`}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Surface info */}
+                    {data.surfaces.length > 0 && (
+                      <div className="text-sm">
+                        <span className="text-muted-foreground">Surface: </span>
+                        <Badge variant="outline">
+                          {data.surfaces.find((s) => s.id === data.placement!.surfaceId)?.surfaceType || "Unknown"}
+                        </Badge>
+                      </div>
+                    )}
+
+                    {/* Blend settings */}
+                    <div className="text-sm text-muted-foreground">
+                      Opacity: {data.placement.blend.opacity}%
+                      {data.placement.blend.shadowEnabled && " · Shadow enabled"}
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Export info */}
+            {hasExport && (
+              <Card>
+                <CardContent className="p-4">
+                  <h3 className="font-semibold mb-3">Exported Video</h3>
+                  <div className="space-y-2 text-sm">
+                    <div className="flex items-center gap-2">
+                      <Film className="w-4 h-4 text-green-500" />
+                      <span>Export complete</span>
+                    </div>
+                    <a href={data.export!.outputUrl!} download>
+                      <Button className="w-full mt-2" size="sm">
+                        <Download className="w-4 h-4 mr-2" />
+                        Download MP4
+                      </Button>
+                    </a>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Detected surfaces */}
+            {data.surfaces.length > 0 && (
+              <Card>
+                <CardContent className="p-4">
+                  <h3 className="font-semibold mb-3">Detected Surfaces</h3>
+                  <div className="flex flex-wrap gap-1.5">
+                    {data.surfaces.map((surface) => (
+                      <Badge key={surface.id} variant="outline" className="text-xs">
+                        {surface.surfaceType}
+                      </Badge>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* CTA */}
+            <Card className="bg-gradient-to-br from-primary/10 to-primary/5 border-primary/20">
+              <CardContent className="p-4 text-center">
+                <h3 className="font-semibold mb-1">Made with FullScale</h3>
+                <p className="text-sm text-muted-foreground mb-3">
+                  AI-powered product placement for creators and brands.
+                </p>
+                <a href="/">
+                  <Button variant="outline" size="sm" className="w-full">
+                    Learn More
+                    <ExternalLink className="w-3 h-3 ml-1" />
+                  </Button>
+                </a>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+}

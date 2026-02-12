@@ -13,6 +13,9 @@ import {
   Pencil,
   Video,
   RefreshCw,
+  Share2,
+  Copy,
+  Check,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -83,6 +86,8 @@ export default function SavedPlacements() {
   const [quickEditPlacement, setQuickEditPlacement] = useState<SavedPlacementEnriched | null>(null);
   const [quickEditSurfaces, setQuickEditSurfaces] = useState<any[]>([]);
   const [loadingSurfaces, setLoadingSurfaces] = useState(false);
+  const [sharingId, setSharingId] = useState<number | null>(null);
+  const [copiedSlug, setCopiedSlug] = useState<string | null>(null);
 
   // Fetch surfaces when Quick Edit is triggered
   useEffect(() => {
@@ -136,6 +141,34 @@ export default function SavedPlacements() {
       toast({ title: "Delete failed", description: err.message, variant: "destructive" });
     },
   });
+
+  // Share placement handler
+  const handleShare = async (placement: SavedPlacementEnriched) => {
+    setSharingId(placement.id);
+    try {
+      const res = await fetch("/api/share", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          placementId: placement.id,
+          videoId: placement.videoId,
+          title: placement.videoTitle || `Placement on ${placement.surfaceType}`,
+        }),
+      });
+      if (!res.ok) throw new Error("Failed to create share link");
+      const { slug } = await res.json();
+      const fullUrl = `${window.location.origin}/s/${slug}`;
+      await navigator.clipboard.writeText(fullUrl);
+      setCopiedSlug(slug);
+      toast({ title: "Share link copied!", description: fullUrl });
+      setTimeout(() => setCopiedSlug(null), 3000);
+    } catch (err: any) {
+      toast({ title: "Share failed", description: err.message, variant: "destructive" });
+    } finally {
+      setSharingId(null);
+    }
+  };
 
   const placements = data?.placements || [];
 
@@ -314,6 +347,24 @@ export default function SavedPlacements() {
                                 <Video className="w-3 h-3" />
                                 Full Editor
                               </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="gap-1 text-[10px] h-7 px-2"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleShare(placement);
+                                }}
+                                disabled={sharingId === placement.id}
+                              >
+                                {sharingId === placement.id ? (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : copiedSlug ? (
+                                  <Check className="w-3 h-3 text-green-500" />
+                                ) : (
+                                  <Share2 className="w-3 h-3" />
+                                )}
+                              </Button>
                             </div>
                           </CardContent>
                         </Card>
@@ -410,6 +461,20 @@ export default function SavedPlacements() {
                 >
                   <Video className="w-3.5 h-3.5" />
                   Full Editor
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1"
+                  onClick={() => handleShare(previewPlacement)}
+                  disabled={sharingId === previewPlacement.id}
+                >
+                  {sharingId === previewPlacement.id ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Share2 className="w-3.5 h-3.5" />
+                  )}
+                  Share
                 </Button>
                 <Button
                   variant="destructive"

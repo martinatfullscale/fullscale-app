@@ -9,6 +9,7 @@ import {
   brandProducts,
   savedPlacements,
   videoExports,
+  sharedLinks,
   type MonetizationItem,
   type InsertMonetizationItem,
   type YoutubeConnection,
@@ -25,6 +26,8 @@ import {
   type InsertSavedPlacement,
   type VideoExport,
   type InsertVideoExport,
+  type SharedLink,
+  type InsertSharedLink,
 } from "@shared/schema";
 import { users, type User, type UpsertUser } from "@shared/models/auth";
 import { encrypt, decrypt } from "./encryption";
@@ -100,6 +103,12 @@ export interface IStorage {
   updateVideoExportProgress(exportId: number, progress: number): Promise<void>;
   updateVideoExportComplete(exportId: number, outputPath: string, outputUrl: string): Promise<void>;
   updateVideoExportFailed(exportId: number, error: string): Promise<void>;
+  // Shared link methods
+  createSharedLink(data: InsertSharedLink): Promise<SharedLink>;
+  getSharedLinkBySlug(slug: string): Promise<SharedLink | undefined>;
+  incrementSharedLinkViews(slug: string): Promise<void>;
+  getSharedLinksByUser(email: string): Promise<SharedLink[]>;
+  deactivateSharedLink(id: number): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -805,6 +814,46 @@ export class DatabaseStorage implements IStorage {
         completedAt: new Date(),
       })
       .where(eq(videoExports.id, exportId));
+  }
+
+  // ── Shared Links ──
+
+  async createSharedLink(data: InsertSharedLink): Promise<SharedLink> {
+    const [result] = await db
+      .insert(sharedLinks)
+      .values(data)
+      .returning();
+    return result;
+  }
+
+  async getSharedLinkBySlug(slug: string): Promise<SharedLink | undefined> {
+    const [result] = await db
+      .select()
+      .from(sharedLinks)
+      .where(eq(sharedLinks.slug, slug));
+    return result;
+  }
+
+  async incrementSharedLinkViews(slug: string): Promise<void> {
+    await db
+      .update(sharedLinks)
+      .set({ viewCount: sql`${sharedLinks.viewCount} + 1` })
+      .where(eq(sharedLinks.slug, slug));
+  }
+
+  async getSharedLinksByUser(email: string): Promise<SharedLink[]> {
+    return db
+      .select()
+      .from(sharedLinks)
+      .where(eq(sharedLinks.createdBy, email))
+      .orderBy(desc(sharedLinks.createdAt));
+  }
+
+  async deactivateSharedLink(id: number): Promise<void> {
+    await db
+      .update(sharedLinks)
+      .set({ isActive: false })
+      .where(eq(sharedLinks.id, id));
   }
 
   private deriveContexts(surfaces: DetectedSurface[]): string[] {

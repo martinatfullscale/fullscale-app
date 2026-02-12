@@ -246,3 +246,27 @@ export const insertVideoExportSchema = createInsertSchema(videoExports).omit({
 
 export type VideoExport = typeof videoExports.$inferSelect;
 export type InsertVideoExport = z.infer<typeof insertVideoExportSchema>;
+
+// Shared Links Table — shareable public links for placements and exports
+export const sharedLinks = pgTable("shared_links", {
+  id: serial("id").primaryKey(),
+  slug: varchar("slug").notNull().unique(), // 8-char unique slug for URL (e.g., /s/abc12345)
+  placementId: integer("placement_id"), // Reference to saved_placements.id (optional)
+  exportId: integer("export_id"), // Reference to video_exports.id (optional)
+  videoId: integer("video_id").notNull(), // Reference to video_index.id
+  createdBy: varchar("created_by").notNull(), // Email of user who created the share link
+  title: text("title"), // Optional custom title for the shared content
+  viewCount: integer("view_count").notNull().default(0),
+  isActive: boolean("is_active").notNull().default(true), // Can be deactivated
+  expiresAt: timestamp("expires_at"), // Optional expiration date
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertSharedLinkSchema = createInsertSchema(sharedLinks).omit({
+  id: true,
+  viewCount: true,
+  createdAt: true,
+});
+
+export type SharedLink = typeof sharedLinks.$inferSelect;
+export type InsertSharedLink = z.infer<typeof insertSharedLinkSchema>;

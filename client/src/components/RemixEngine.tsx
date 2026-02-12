@@ -5,7 +5,7 @@ import {
   ArrowLeft, Play, Pause, Download, Layers,
   CheckCircle, Package, Eye, EyeOff, ChevronRight,
   Move, RotateCw, Maximize2, Sun, Droplets, Blend, FlipHorizontal,
-  Film, Loader2, X as XIcon,
+  Film, Loader2, X as XIcon, Share2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -1667,13 +1667,42 @@ export default function RemixEngine() {
                   <CheckCircle className="w-4 h-4 inline mr-1.5" />
                   Your remixed video is ready!
                 </p>
-                <a
-                  href={`/api/exports/${exportJobId}/download`}
-                  className="flex items-center justify-center gap-2 w-full px-4 py-2.5 rounded-lg text-sm font-medium bg-green-600 text-white hover:bg-green-700 transition-colors"
-                >
-                  <Download className="w-4 h-4" />
-                  Download Video
-                </a>
+                <div className="flex gap-2">
+                  <a
+                    href={`/api/exports/${exportJobId}/download`}
+                    className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium bg-green-600 text-white hover:bg-green-700 transition-colors"
+                  >
+                    <Download className="w-4 h-4" />
+                    Download
+                  </a>
+                  <button
+                    onClick={async () => {
+                      try {
+                        const res = await fetch("/api/share", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          credentials: "include",
+                          body: JSON.stringify({
+                            exportId: exportJobId,
+                            videoId: videoDetails?.id,
+                            title: videoDetails?.title || "Remixed Video",
+                          }),
+                        });
+                        if (!res.ok) throw new Error("Failed to create share link");
+                        const { slug } = await res.json();
+                        const fullUrl = `${window.location.origin}/s/${slug}`;
+                        await navigator.clipboard.writeText(fullUrl);
+                        toast({ title: "Share link copied!", description: fullUrl });
+                      } catch (err: any) {
+                        toast({ title: "Share failed", description: err.message, variant: "destructive" });
+                      }
+                    }}
+                    className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+                  >
+                    <Share2 className="w-4 h-4" />
+                    Share
+                  </button>
+                </div>
               </div>
             ) : exportStatus === "failed" ? (
               <div className="space-y-3">

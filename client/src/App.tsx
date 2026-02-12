@@ -30,6 +30,7 @@ import CreatorProfile from "@/pages/CreatorProfile";
 import BrandProducts from "@/pages/BrandProducts";
 import SavedPlacements from "@/pages/SavedPlacements";
 import RemixEngine from "@/components/RemixEngine";
+import SharedView from "@/pages/SharedView";
 
 interface AuthStatusResponse {
   authenticated: boolean;
@@ -148,6 +149,7 @@ function Router() {
         <Route path="/terms" component={Terms} />
         <Route path="/waitlist" component={WaitlistPage} />
         <Route path="/c/:slug" component={CreatorProfile} />
+        <Route path="/s/:slug" component={SharedView} />
         <Route path="/dashboard" component={Landing} />
         <Route path="/:rest*" component={Landing} />
       </Switch>
@@ -169,6 +171,7 @@ function Router() {
     return (
       <Switch>
         <Route path="/waitlist" component={WaitlistPage} />
+        <Route path="/s/:slug" component={SharedView} />
         <Route path="/privacy" component={Privacy} />
         <Route path="/terms" component={Terms} />
         <Route component={WaitlistPage} />
@@ -190,6 +193,7 @@ function Router() {
     <Switch>
       <Route path="/home" component={Landing} />
       <Route path="/c/:slug" component={CreatorProfile} />
+      <Route path="/s/:slug" component={SharedView} />
       <Route path="/remix/:videoId" component={RemixEngine} />
       <Route>
         {() => (
