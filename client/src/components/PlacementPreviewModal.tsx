@@ -63,6 +63,12 @@ interface PlacementPreviewModalProps {
   videoId: number;
   videoTitle: string;
   surfaces: Surface[];
+  initialPlacement?: {
+    productImageUrl: string;
+    productId: number | null;
+    transform: PlacementTransform;
+    blend: PlacementBlend;
+  };
 }
 
 // Transform controls for product placement
@@ -330,6 +336,7 @@ export default function PlacementPreviewModal({
   videoId,
   videoTitle,
   surfaces,
+  initialPlacement,
 }: PlacementPreviewModalProps) {
   // Core state
   const [selectedSurface, setSelectedSurface] = useState<Surface | null>(null);
@@ -452,6 +459,23 @@ export default function PlacementPreviewModal({
       productImgRef.current = null;
     }
   }, [open]);
+
+  // Apply initialPlacement when modal opens with pre-loaded data (re-edit flow)
+  useEffect(() => {
+    if (!open || !initialPlacement) return;
+    setProductImage(initialPlacement.productImageUrl);
+    setTransform({ ...initialPlacement.transform });
+    setBlend({ ...initialPlacement.blend });
+    setToolPanel("transform");
+    // If from catalog, pre-select the catalog product
+    if (initialPlacement.productId && catalogProducts) {
+      const match = catalogProducts.find((p: CatalogProduct) => p.id === initialPlacement.productId);
+      if (match) {
+        setSelectedCatalogProduct(match);
+        setProductTab("catalog");
+      }
+    }
+  }, [open, initialPlacement]);
 
   // Helper to load an image as a promise
   const loadImage = useCallback((src: string): Promise<HTMLImageElement> => {

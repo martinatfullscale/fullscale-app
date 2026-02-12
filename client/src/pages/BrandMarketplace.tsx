@@ -1,10 +1,10 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
-import { 
-  Search, Filter, DollarSign, Tag, Play, 
+import {
+  Search, Filter, DollarSign, Tag, Play,
   ShoppingCart, TrendingUp, Eye, Clock,
-  Briefcase, Palette, Monitor, Sparkles, X, Globe, ExternalLink
+  Briefcase, Palette, Monitor, Sparkles, X, Globe, ExternalLink, Mic
 } from "lucide-react";
 import { SiYoutube, SiTwitch, SiFacebook } from "react-icons/si";
 import { Button } from "@/components/ui/button";
@@ -76,7 +76,7 @@ const STATIC_DEMO_OPPORTUNITIES: MarketplaceOpportunity[] = [
   { id: 20, videoId: 120, youtubeId: "demo20", title: "Webcam Setup for Streamers", thumbnailUrl: "https://images.unsplash.com/photo-1587825140708-dfaf72ae4b04?w=640&h=360&fit=crop", creatorName: "WebcamReview", viewCount: 567000, sceneValue: 70, context: "Comparison", genre: "Tech", sceneType: "Product", surfaces: ["Webcams", "Desk", "Screen"], duration: "18:20", platform: "youtube", platforms: ["youtube", "twitch"] },
 ];
 
-const PLATFORMS = ["All", "YouTube", "Twitch", "Facebook"];
+const PLATFORMS = ["All", "Podcasts", "YouTube", "Twitch", "Facebook"];
 
 const GENRES = ["All", "Tech", "Gaming", "Lifestyle", "DIY", "Education", "Entertainment", "Fashion", "Beauty", "Fitness", "Food", "Travel", "Vlog", "Productivity", "Finance", "Sports", "Music", "Art", "Science", "Health"];
 const BUDGETS = ["All", "Under $50", "$50-$100", "$100-$200", "Over $200"];
@@ -91,6 +91,7 @@ interface BrandCategory {
 }
 
 const BRAND_CATEGORIES: BrandCategory[] = [
+  { id: "podcasts", name: "Podcasts", description: "Podcast & Audio Content Placements", imageUrl: "https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?w=400&h=250&fit=crop", brandCount: 42 },
   { id: "tech", name: "Technology", description: "Electronics & Software", imageUrl: "https://images.unsplash.com/photo-1518770660439-4636190af475?w=400&h=250&fit=crop", brandCount: 156 },
   { id: "gaming", name: "Gaming Hardware", description: "Consoles, PCs & Peripherals", imageUrl: "https://images.unsplash.com/photo-1612287230202-1ff1d85d1bdf?w=400&h=250&fit=crop", brandCount: 89 },
   { id: "lifestyle", name: "Lifestyle", description: "Home & Living Products", imageUrl: "https://images.unsplash.com/photo-1556909114-f6e7ad7d3136?w=400&h=250&fit=crop", brandCount: 234 },
@@ -229,6 +230,7 @@ export default function BrandMarketplace() {
   console.log("[BrandMarketplace] isPitchMode:", isPitchMode, "opportunities.length:", allOpportunities.length, "isLoading:", isLoadingOpportunities);
 
   const categoryToGenreMap: Record<string, string> = {
+    "podcasts": "Lifestyle",
     "tech": "Tech",
     "gaming": "Gaming",
     "lifestyle": "Lifestyle",
@@ -264,9 +266,13 @@ export default function BrandMarketplace() {
     // Platform filter - check both primary platform and platforms array
     let matchesPlatform = true;
     if (platformFilter !== "All") {
-      const filterValue = platformFilter.toLowerCase();
-      matchesPlatform = opp.platform === filterValue || 
-        (opp.platforms?.includes(filterValue) ?? false);
+      if (platformFilter === "Podcasts") {
+        matchesPlatform = opp.platform === "local";
+      } else {
+        const filterValue = platformFilter.toLowerCase();
+        matchesPlatform = opp.platform === filterValue ||
+          (opp.platforms?.includes(filterValue) ?? false);
+      }
     }
     
     let matchesBudget = true;
@@ -352,7 +358,10 @@ export default function BrandMarketplace() {
             {selectedCategory && (
               <Badge 
                 className="bg-primary/20 text-primary gap-1 cursor-pointer"
-                onClick={() => setSelectedCategory(null)}
+                onClick={() => {
+                  if (selectedCategory === "podcasts") setPlatformFilter("All");
+                  setSelectedCategory(null);
+                }}
                 data-testid="badge-selected-category"
               >
                 {BRAND_CATEGORIES.find(c => c.id === selectedCategory)?.name || selectedCategory}
@@ -448,6 +457,9 @@ export default function BrandMarketplace() {
                     className="group overflow-hidden cursor-pointer hover-elevate"
                     onClick={() => {
                       setSelectedCategory(category.id);
+                      if (category.id === "podcasts") {
+                        setPlatformFilter("Podcasts");
+                      }
                       setActiveTab("opportunities");
                     }}
                     data-testid={`card-category-${category.id}`}
@@ -520,16 +532,18 @@ export default function BrandMarketplace() {
                     <div className="absolute top-2 right-2 flex items-center gap-1">
                       {/* Platform icons with exact brand colors */}
                       {(opportunity.platforms || [opportunity.platform]).filter(Boolean).map((p) => (
-                        <div 
-                          key={p} 
+                        <div
+                          key={p}
                           className={`w-5 h-5 rounded-full flex items-center justify-center ${
-                            p === 'twitch' ? 'bg-[#9146FF]' : 
-                            p === 'facebook' ? 'bg-[#1877F2]' : 
+                            p === 'twitch' ? 'bg-[#9146FF]' :
+                            p === 'facebook' ? 'bg-[#1877F2]' :
+                            p === 'local' ? 'bg-[#8B5CF6]' :
                             'bg-[#FF0000]'
                           }`}
                         >
                           {p === 'twitch' ? <SiTwitch className="w-2.5 h-2.5 text-white" /> :
                            p === 'facebook' ? <SiFacebook className="w-2.5 h-2.5 text-white" /> :
+                           p === 'local' ? <Mic className="w-2.5 h-2.5 text-white" /> :
                            <SiYoutube className="w-2.5 h-2.5 text-white" />}
                         </div>
                       ))}
@@ -624,16 +638,18 @@ export default function BrandMarketplace() {
                   />
                   <div className="absolute top-3 right-3 flex items-center gap-2">
                     {(selectedOpportunity.platforms || [selectedOpportunity.platform]).filter(Boolean).map((p) => (
-                      <div 
-                        key={p} 
+                      <div
+                        key={p}
                         className={`w-8 h-8 rounded-full flex items-center justify-center shadow-lg ${
-                          p === 'twitch' ? 'bg-[#9146FF]' : 
-                          p === 'facebook' ? 'bg-[#1877F2]' : 
+                          p === 'twitch' ? 'bg-[#9146FF]' :
+                          p === 'facebook' ? 'bg-[#1877F2]' :
+                          p === 'local' ? 'bg-[#8B5CF6]' :
                           'bg-[#FF0000]'
                         }`}
                       >
                         {p === 'twitch' ? <SiTwitch className="w-4 h-4 text-white" /> :
                          p === 'facebook' ? <SiFacebook className="w-4 h-4 text-white" /> :
+                         p === 'local' ? <Mic className="w-4 h-4 text-white" /> :
                          <SiYoutube className="w-4 h-4 text-white" />}
                       </div>
                     ))}
