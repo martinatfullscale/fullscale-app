@@ -1222,7 +1222,7 @@ export default function Landing() {
                 <span className="bg-gradient-to-r from-primary via-emerald-400 to-primary bg-clip-text text-transparent">Into Revenue</span>
               </h1>
               
-              <p className="text-base md:text-2xl text-white/70 max-w-3xl mx-auto mb-6 md:mb-10 leading-relaxed max-[480px]:hidden">
+              <p className="text-base md:text-2xl text-white/70 max-w-3xl mx-auto mb-6 md:mb-10 leading-relaxed">
                 AI-powered product placement that dreams products into your existing content with perfect lighting, occlusion, and tracking—scaling your reach for a global economy.
               </p>
 
