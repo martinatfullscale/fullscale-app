@@ -8,6 +8,7 @@ import {
   detectedSurfaces,
   brandProducts,
   savedPlacements,
+  videoExports,
   type MonetizationItem,
   type InsertMonetizationItem,
   type YoutubeConnection,
@@ -22,6 +23,8 @@ import {
   type InsertBrandProduct,
   type SavedPlacement,
   type InsertSavedPlacement,
+  type VideoExport,
+  type InsertVideoExport,
 } from "@shared/schema";
 import { users, type User, type UpsertUser } from "@shared/models/auth";
 import { encrypt, decrypt } from "./encryption";
@@ -91,6 +94,12 @@ export interface IStorage {
   updatePlacement(placementId: number, updates: Partial<InsertSavedPlacement>): Promise<SavedPlacement | undefined>;
   deletePlacement(placementId: number): Promise<SavedPlacement | undefined>;
   getPlacementsBySceneGroup(videoId: number, sceneGroupId: string): Promise<SavedPlacement[]>;
+  // Video export methods
+  createVideoExport(data: InsertVideoExport): Promise<VideoExport>;
+  getVideoExport(exportId: number): Promise<VideoExport | undefined>;
+  updateVideoExportProgress(exportId: number, progress: number): Promise<void>;
+  updateVideoExportComplete(exportId: number, outputPath: string, outputUrl: string): Promise<void>;
+  updateVideoExportFailed(exportId: number, error: string): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -747,6 +756,55 @@ export class DatabaseStorage implements IStorage {
         eq(savedPlacements.status, "active")
       ))
       .orderBy(savedPlacements.createdAt);
+  }
+
+  // ── Video Export Methods ──
+
+  async createVideoExport(data: InsertVideoExport): Promise<VideoExport> {
+    const [result] = await db
+      .insert(videoExports)
+      .values(data)
+      .returning();
+    return result;
+  }
+
+  async getVideoExport(exportId: number): Promise<VideoExport | undefined> {
+    const [result] = await db
+      .select()
+      .from(videoExports)
+      .where(eq(videoExports.id, exportId));
+    return result;
+  }
+
+  async updateVideoExportProgress(exportId: number, progress: number): Promise<void> {
+    await db
+      .update(videoExports)
+      .set({ progress })
+      .where(eq(videoExports.id, exportId));
+  }
+
+  async updateVideoExportComplete(exportId: number, outputPath: string, outputUrl: string): Promise<void> {
+    await db
+      .update(videoExports)
+      .set({
+        status: "complete",
+        progress: 100,
+        outputPath,
+        outputUrl,
+        completedAt: new Date(),
+      })
+      .where(eq(videoExports.id, exportId));
+  }
+
+  async updateVideoExportFailed(exportId: number, error: string): Promise<void> {
+    await db
+      .update(videoExports)
+      .set({
+        status: "failed",
+        error,
+        completedAt: new Date(),
+      })
+      .where(eq(videoExports.id, exportId));
   }
 
   private deriveContexts(surfaces: DetectedSurface[]): string[] {

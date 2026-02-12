@@ -4,7 +4,8 @@ import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft, Play, Pause, Download, Layers,
   CheckCircle, Package, Eye, EyeOff, ChevronRight,
-  Move, RotateCw, Maximize2, Sun, Droplets, Blend, FlipHorizontal
+  Move, RotateCw, Maximize2, Sun, Droplets, Blend, FlipHorizontal,
+  Film, Loader2, X as XIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -412,6 +413,13 @@ export default function RemixEngine() {
   const [showBoundingBoxes, setShowBoundingBoxes] = useState(true);
   const [videoReady, setVideoReady] = useState(false);
   const [toolPanel, setToolPanel] = useState<ToolPanel>("catalog");
+
+  // Video export state
+  const [exportJobId, setExportJobId] = useState<number | null>(null);
+  const [exportProgress, setExportProgress] = useState(0);
+  const [exportStatus, setExportStatus] = useState<string | null>(null);
+  const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  const [exportOutputUrl, setExportOutputUrl] = useState<string | null>(null);
 
   // Drag interaction state
   const [dragMode, setDragMode] = useState<DragMode>("none");
@@ -920,6 +928,88 @@ export default function RemixEngine() {
     toast({ title: "Screenshot exported" });
   }, [assignments, surfaceTracks, video?.title, toast]);
 
+  // ── Video Export (Server-Side FFmpeg) ──
+
+  const handleVideoExport = useCallback(async () => {
+    if (!videoId || assignments.size === 0) return;
+
+    const placementData = [];
+    for (const [surfaceType, assignment] of assignments) {
+      const track = surfaceTracks.get(surfaceType);
+      if (!track || !assignment.imageElement) continue;
+
+      placementData.push({
+        surfaceType,
+        productImageUrl: assignment.imageUrl,
+        transform: assignment.transform,
+        blend: assignment.blend,
+        keyframes: track.keyframes,
+      });
+    }
+
+    if (placementData.length === 0) {
+      toast({ title: "No placements to export", variant: "destructive" });
+      return;
+    }
+
+    try {
+      setExportDialogOpen(true);
+      setExportStatus("queued");
+      setExportProgress(0);
+      setExportOutputUrl(null);
+
+      const res = await fetch(`/api/video/${videoId}/export`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ placements: placementData }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Export failed to start");
+      }
+
+      const { exportId } = await res.json();
+      setExportJobId(exportId);
+      setExportStatus("processing");
+      toast({ title: "Video export started", description: "This may take a few minutes..." });
+    } catch (err: any) {
+      setExportStatus("failed");
+      toast({ title: "Export failed", description: err.message, variant: "destructive" });
+    }
+  }, [videoId, assignments, surfaceTracks, toast]);
+
+  // Poll for export progress
+  useEffect(() => {
+    if (!exportJobId || !exportDialogOpen) return;
+    if (exportStatus === "complete" || exportStatus === "failed") return;
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/exports/${exportJobId}`, { credentials: "include" });
+        if (!res.ok) return;
+
+        const data = await res.json();
+        setExportProgress(data.progress || 0);
+        setExportStatus(data.status);
+
+        if (data.status === "complete") {
+          setExportOutputUrl(data.outputUrl);
+          toast({ title: "Video export complete!", description: "Your remixed video is ready to download." });
+          clearInterval(interval);
+        } else if (data.status === "failed") {
+          toast({ title: "Export failed", description: data.error || "Unknown error", variant: "destructive" });
+          clearInterval(interval);
+        }
+      } catch {
+        // Silently retry on next interval
+      }
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [exportJobId, exportDialogOpen, exportStatus, toast]);
+
   // ============================================================================
   // LOADING / ERROR STATES
   // ============================================================================
@@ -995,6 +1085,15 @@ export default function RemixEngine() {
           >
             <Download className="w-3.5 h-3.5" />
             Export Frame
+          </button>
+
+          <button
+            onClick={handleVideoExport}
+            disabled={assignments.size === 0}
+            className="flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-medium bg-green-600 text-white hover:bg-green-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            <Film className="w-3.5 h-3.5" />
+            Export Video
           </button>
         </div>
       </div>
@@ -1508,6 +1607,94 @@ export default function RemixEngine() {
           )}
         </div>
       </div>
+
+      {/* ── Video Export Progress Dialog ── */}
+      {exportDialogOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-card border border-border rounded-xl shadow-2xl p-6 w-96 max-w-[90vw]">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-foreground">
+                {exportStatus === "complete" ? "Export Complete" :
+                 exportStatus === "failed" ? "Export Failed" :
+                 "Exporting Video..."}
+              </h3>
+              {(exportStatus === "complete" || exportStatus === "failed") && (
+                <button
+                  onClick={() => {
+                    setExportDialogOpen(false);
+                    setExportJobId(null);
+                    setExportStatus(null);
+                    setExportProgress(0);
+                    setExportOutputUrl(null);
+                  }}
+                  className="p-1 rounded hover:bg-muted transition-colors"
+                >
+                  <XIcon className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+
+            {/* Progress bar */}
+            {exportStatus !== "failed" && (
+              <div className="mb-4">
+                <div className="flex items-center justify-between text-xs text-muted-foreground mb-1.5">
+                  <span>
+                    {exportProgress < 10 ? "Extracting frames..." :
+                     exportProgress < 90 ? "Compositing products..." :
+                     exportProgress < 100 ? "Encoding MP4..." :
+                     "Done!"}
+                  </span>
+                  <span className="tabular-nums font-medium">{exportProgress}%</span>
+                </div>
+                <div className="w-full bg-muted rounded-full h-2.5 overflow-hidden">
+                  <div
+                    className="bg-green-500 h-full rounded-full transition-all duration-500 ease-out"
+                    style={{ width: `${exportProgress}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Status-specific content */}
+            {exportStatus === "processing" || exportStatus === "queued" ? (
+              <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                <Loader2 className="w-4 h-4 animate-spin text-primary" />
+                <span>This may take a few minutes for longer videos...</span>
+              </div>
+            ) : exportStatus === "complete" && exportOutputUrl ? (
+              <div className="space-y-3">
+                <p className="text-sm text-green-500 font-medium">
+                  <CheckCircle className="w-4 h-4 inline mr-1.5" />
+                  Your remixed video is ready!
+                </p>
+                <a
+                  href={`/api/exports/${exportJobId}/download`}
+                  className="flex items-center justify-center gap-2 w-full px-4 py-2.5 rounded-lg text-sm font-medium bg-green-600 text-white hover:bg-green-700 transition-colors"
+                >
+                  <Download className="w-4 h-4" />
+                  Download Video
+                </a>
+              </div>
+            ) : exportStatus === "failed" ? (
+              <div className="space-y-3">
+                <p className="text-sm text-red-500">
+                  Export failed. Please try again.
+                </p>
+                <button
+                  onClick={() => {
+                    setExportDialogOpen(false);
+                    setExportJobId(null);
+                    setExportStatus(null);
+                  }}
+                  className="w-full px-4 py-2 rounded-lg text-sm font-medium bg-muted hover:bg-muted/80 transition-colors"
+                >
+                  Close
+                </button>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

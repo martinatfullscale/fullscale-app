@@ -10,6 +10,7 @@ import { processVideoScan, scanPendingVideos, addToLocalAssetMap, getYouTubeThum
 // import { queueVideoScan, getScanJobStatus, getQueueStatus, initializeScanWorker } from "./lib/scanWorker";
 // import { detectSurfacesFromVideo } from "./lib/surfaceDetector";
 import { extractThumbnailForVideo, extractAndUpdateThumbnails } from "./lib/thumbnailExtractor";
+import { processVideoExport } from "./lib/videoExporter";
 import { hashPassword, verifyPassword } from "./lib/password";
 import { addSignupToAirtable } from "./lib/airtable";
 import { setupPlatformAuth, importFacebookVideos, importInstagramMedia, importPersonalVideos } from "./lib/platformAuth";
@@ -4085,6 +4086,112 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("[Scene Groups] Error:", err.message);
       res.status(500).json({ error: "Failed to compute scene groups" });
+    }
+  });
+
+  // ── Video Export Pipeline ──
+
+  // Start a new video export job
+  app.post("/api/video/:videoId/export", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+
+      const { placements } = req.body;
+      if (!placements || !Array.isArray(placements) || placements.length === 0) {
+        return res.status(400).json({ error: "At least one placement is required" });
+      }
+
+      // Verify video exists and has a file path
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+      if (!video.filePath) return res.status(400).json({ error: "Video has no local file — only locally uploaded videos can be exported" });
+
+      // Verify video file exists on disk
+      const absolutePath = path.resolve(video.filePath);
+      if (!fs.existsSync(absolutePath)) {
+        return res.status(400).json({ error: "Video file not found on disk" });
+      }
+
+      const userId = req.authUserId || req.googleUser?.email || "anonymous";
+
+      // Create export job in DB
+      const exportJob = await storage.createVideoExport({
+        videoId,
+        requestedBy: userId,
+        status: "queued",
+        progress: 0,
+        placementData: placements,
+        outputPath: null,
+        outputUrl: null,
+        error: null,
+      });
+
+      console.log(`[Video Export] Created export job ${exportJob.id} for video ${videoId} (${placements.length} placements)`);
+
+      // Kick off async processing (don't await)
+      processVideoExport(exportJob.id, video.filePath, placements).catch((err) => {
+        console.error(`[Video Export] Background processing failed for export ${exportJob.id}:`, err.message);
+      });
+
+      res.json({ exportId: exportJob.id, status: "queued" });
+    } catch (err: any) {
+      console.error("[Video Export] Start error:", err.message);
+      res.status(500).json({ error: "Failed to start export" });
+    }
+  });
+
+  // Poll export job status
+  app.get("/api/exports/:exportId", async (req: any, res) => {
+    try {
+      const exportId = parseInt(req.params.exportId);
+      if (isNaN(exportId)) return res.status(400).json({ error: "Invalid export ID" });
+
+      const exportJob = await storage.getVideoExport(exportId);
+      if (!exportJob) return res.status(404).json({ error: "Export not found" });
+
+      res.json({
+        id: exportJob.id,
+        videoId: exportJob.videoId,
+        status: exportJob.status,
+        progress: exportJob.progress,
+        outputUrl: exportJob.outputUrl,
+        error: exportJob.error,
+        createdAt: exportJob.createdAt,
+        completedAt: exportJob.completedAt,
+      });
+    } catch (err: any) {
+      console.error("[Video Export] Status error:", err.message);
+      res.status(500).json({ error: "Failed to get export status" });
+    }
+  });
+
+  // Download completed export
+  app.get("/api/exports/:exportId/download", async (req: any, res) => {
+    try {
+      const exportId = parseInt(req.params.exportId);
+      if (isNaN(exportId)) return res.status(400).json({ error: "Invalid export ID" });
+
+      const exportJob = await storage.getVideoExport(exportId);
+      if (!exportJob) return res.status(404).json({ error: "Export not found" });
+      if (exportJob.status !== "complete" || !exportJob.outputPath) {
+        return res.status(400).json({ error: "Export not yet complete" });
+      }
+
+      const absolutePath = path.resolve(exportJob.outputPath);
+      if (!fs.existsSync(absolutePath)) {
+        return res.status(404).json({ error: "Export file not found on disk" });
+      }
+
+      const filename = `fullscale-remix-${exportJob.videoId}-${exportJob.id}.mp4`;
+      res.setHeader("Content-Type", "video/mp4");
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+
+      const stream = fs.createReadStream(absolutePath);
+      stream.pipe(res);
+    } catch (err: any) {
+      console.error("[Video Export] Download error:", err.message);
+      res.status(500).json({ error: "Failed to download export" });
     }
   });
 

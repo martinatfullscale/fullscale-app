@@ -222,3 +222,27 @@ export const insertSavedPlacementSchema = createInsertSchema(savedPlacements).om
 
 export type SavedPlacement = typeof savedPlacements.$inferSelect;
 export type InsertSavedPlacement = z.infer<typeof insertSavedPlacementSchema>;
+
+// Video Exports Table - tracks async video export jobs (composited videos with product placements)
+export const videoExports = pgTable("video_exports", {
+  id: serial("id").primaryKey(),
+  videoId: integer("video_id").notNull(), // Reference to video_index.id
+  requestedBy: varchar("requested_by").notNull(), // Email of user who requested export
+  status: varchar("status").notNull().default("queued"), // 'queued' | 'processing' | 'complete' | 'failed'
+  progress: integer("progress").default(0), // 0-100 percentage
+  placementData: jsonb("placement_data").notNull(), // Array of placement configs with keyframes
+  outputPath: text("output_path"), // Path to exported MP4 file
+  outputUrl: text("output_url"), // Relative URL for download
+  error: text("error"), // Error message if failed
+  createdAt: timestamp("created_at").defaultNow(),
+  completedAt: timestamp("completed_at"),
+});
+
+export const insertVideoExportSchema = createInsertSchema(videoExports).omit({
+  id: true,
+  createdAt: true,
+  completedAt: true,
+});
+
+export type VideoExport = typeof videoExports.$inferSelect;
+export type InsertVideoExport = z.infer<typeof insertVideoExportSchema>;
