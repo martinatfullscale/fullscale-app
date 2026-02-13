@@ -423,7 +423,9 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteVideoById(videoId: number): Promise<VideoIndex | undefined> {
-    // Delete related surfaces, placements, then the video itself
+    // Delete related records in order: shared links, exports, surfaces, placements, then video
+    await db.delete(sharedLinks).where(eq(sharedLinks.videoId, videoId));
+    await db.delete(videoExports).where(eq(videoExports.videoId, videoId));
     await db.delete(detectedSurfaces).where(eq(detectedSurfaces.videoId, videoId));
     await db.delete(savedPlacements).where(eq(savedPlacements.videoId, videoId));
     const [deleted] = await db.delete(videoIndex).where(eq(videoIndex.id, videoId)).returning();

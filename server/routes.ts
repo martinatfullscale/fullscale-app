@@ -1151,9 +1151,10 @@ export async function registerRoutes(
       const video = await storage.getVideoById(videoId);
       if (!video) return res.status(404).json({ error: "Video not found" });
 
-      // Verify ownership
+      // Verify ownership (admins can delete any video)
       const userId = req.authEmail || req.authUserId;
-      if (video.userId !== userId) {
+      if (video.userId !== userId && !req.isAdmin) {
+        console.log(`[Delete Video] Ownership mismatch: video.userId="${video.userId}" vs userId="${userId}", isAdmin=${req.isAdmin}`);
         return res.status(403).json({ error: "Not authorized to delete this video" });
       }
 
@@ -1956,6 +1957,71 @@ export async function registerRoutes(
   });
 
   // Get detected surfaces for a video (Ad Opportunities)
+  // On-demand frame extraction: generate a single frame thumbnail from a video if it doesn't exist
+  // This ensures the Scene Analysis Modal always has a frame to show
+  app.get("/api/video/:id/frame/:timestamp", async (req: any, res) => {
+    const videoId = parseInt(req.params.id);
+    const timestamp = parseInt(req.params.timestamp) || 0;
+    if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+
+    const video = await storage.getVideoById(videoId);
+    if (!video) return res.status(404).json({ error: "Video not found" });
+
+    const framesDir = path.join(process.cwd(), "public", "uploads", "frames", videoId.toString());
+    const frameFilename = `frame_${timestamp}s.jpg`;
+    const framePath = path.join(framesDir, frameFilename);
+
+    // If frame already exists, serve it
+    if (fs.existsSync(framePath)) {
+      return res.sendFile(framePath);
+    }
+
+    // Generate frame from video file using FFmpeg
+    const videoPath = video.filePath;
+    if (!videoPath) {
+      return res.status(404).json({ error: "No video file available for frame extraction" });
+    }
+
+    const absoluteVideoPath = path.resolve(videoPath);
+    if (!fs.existsSync(absoluteVideoPath)) {
+      return res.status(404).json({ error: "Video file not found on disk" });
+    }
+
+    fs.mkdirSync(framesDir, { recursive: true });
+
+    try {
+      const { spawn } = require("child_process");
+      await new Promise<void>((resolve, reject) => {
+        const ffmpeg = spawn("ffmpeg", [
+          "-nostdin", "-y",
+          "-ss", timestamp.toString(),
+          "-i", absoluteVideoPath,
+          "-frames:v", "1",
+          "-q:v", "2",
+          "-pix_fmt", "yuvj420p",
+          framePath,
+        ]);
+        let stderr = "";
+        ffmpeg.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
+        const timeout = setTimeout(() => { ffmpeg.kill("SIGKILL"); reject(new Error("FFmpeg timeout")); }, 15000);
+        ffmpeg.on("close", (code: number) => {
+          clearTimeout(timeout);
+          if (code === 0) resolve();
+          else reject(new Error(`FFmpeg exit code ${code}`));
+        });
+        ffmpeg.on("error", (err: Error) => { clearTimeout(timeout); reject(err); });
+      });
+
+      if (fs.existsSync(framePath)) {
+        return res.sendFile(framePath);
+      }
+      return res.status(500).json({ error: "Frame generation failed" });
+    } catch (err: any) {
+      console.error(`[Frame] Failed to extract frame:`, err.message);
+      return res.status(500).json({ error: "Frame extraction failed" });
+    }
+  });
+
   // PUBLIC endpoint - surfaces are viewable by brands on creator profiles
   app.get("/api/video/:id/surfaces", async (req: any, res) => {
     const videoId = parseInt(req.params.id);

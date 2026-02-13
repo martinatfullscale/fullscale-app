@@ -147,12 +147,14 @@ interface GeminiSurfaceDetectionResult {
 // GEMINI AI PROMPT
 // ============================================================================
 
-const SURFACE_DETECTION_PROMPT = `You are analyzing a video frame to identify REAL, PHYSICAL flat surfaces where a product could naturally be placed.
+const SURFACE_DETECTION_PROMPT = `You are analyzing a video frame to identify the SINGLE most prominent REAL, PHYSICAL flat surface where a product could naturally be placed.
 
-TASK: Find actual flat surfaces (tables, desks, countertops, shelves) visible in the frame where a small product like a beverage bottle, phone, or gadget could physically sit.
+TASK: Find the ONE best flat surface (table, desk, countertop, shelf) visible in the frame where a small product like a beverage bottle, phone, or gadget could physically sit. Return ONLY the single most prominent and clearly visible surface.
 
-CRITICAL RULES:
+CRITICAL RULES — RETURN MAXIMUM 1 SURFACE:
 - Only detect REAL physical surfaces that exist in the 3D scene
+- Return ONLY the single best surface — the largest, clearest, most prominent flat horizontal surface
+- If multiple surfaces exist, pick the ONE that is most suitable for product placement (largest visible area, best lit, most natural for a product)
 - The bounding box must tightly wrap ONLY the visible, FLAT, HORIZONTAL surface area
 - The surface must occupy at least 8% of the total frame area (width * height) to be valid
 - Do NOT flag roads, sidewalks, floors, or ground surfaces
@@ -164,7 +166,6 @@ CRITICAL RULES:
 - If a person occupies more than 50% of the frame (close-up, medium shot, or bust shot), return surfaces_found: false UNLESS a clear table/desk surface is ALSO prominently visible
 - If the frame is an exterior/outdoor shot with no furniture, return surfaces_found: false
 - If the frame is a close-up of a person with no visible surfaces, return surfaces_found: false
-- Maximum 2 surfaces per frame — only the most prominent and clearly visible ones
 
 BOUNDING BOX RULES:
 - x, y = top-left corner of the surface as percentage of frame (0-100)
@@ -177,11 +178,11 @@ BOUNDING BOX RULES:
 - A desk seen from slightly above might be: x:20, y:50, width:40, height:20
 - Do NOT make bounding boxes taller than 30% of frame height unless viewed from directly above (top-down)
 
-GOOD SURFACES (flag these):
+GOOD SURFACES (flag the single best one):
+- Studio desks in podcast/recording setups (HIGH PRIORITY)
 - Desks, tables, countertops with visible flat area
 - Shelves or ledges with clear space
 - Nightstands, side tables, coffee tables
-- Studio desks in podcast/recording setups
 - Kitchen counters with some clear space
 
 PODCAST / INTERVIEW / TALKING-HEAD RULES:
@@ -204,11 +205,11 @@ BAD "SURFACES" (do NOT flag):
 - Dark regions below a person's chest/torso (these are NOT desks)
 - Inferred/assumed surfaces that are not clearly visible in the frame
 
-For each suitable surface found, provide:
+For the surface found, provide:
 - **location**: Tight bounding box as {x, y, width, height} in percentages (0-100)
 - **surface_type**: desk, table, shelf, counter, nightstand, coffee_table, studio_desk
 - **confidence**: 0.0 to 1.0 — use >0.7 only if the surface is clearly, unambiguously visible. Use 0.4-0.6 if partially visible. Use <0.4 if uncertain (these will be filtered out).
-- **reasoning**: Brief explanation
+- **reasoning**: Brief explanation of why this is the best surface
 - **lighting_direction**: Where the main light source is coming from relative to the surface. One of: "left", "right", "top", "top-left", "top-right", "ambient" (if diffuse/even lighting)
 - **lighting_intensity**: 0.0 to 1.0 — how bright the scene is (0.0 = very dark, 0.5 = moderate, 1.0 = very bright/overexposed)
 - **camera_angle**: The camera's viewing angle relative to the surface. One of: "eye-level", "slightly-above", "top-down", "low-angle"
@@ -220,9 +221,9 @@ RESPOND IN THIS EXACT JSON FORMAT (no markdown, no code fences):
   "surfaces": [
     {
       "location": {"x": 20, "y": 55, "width": 30, "height": 20},
-      "surface_type": "desk",
+      "surface_type": "studio_desk",
       "confidence": 0.85,
-      "reasoning": "Clear wooden desk surface, well-lit, partially visible",
+      "reasoning": "Clear studio desk surface, well-lit, main placement area in podcast setup",
       "lighting_direction": "top-left",
       "lighting_intensity": 0.7,
       "camera_angle": "slightly-above"
@@ -809,9 +810,10 @@ async function analyzeFrameWithGemini(
       return { ...defaultResult, aiAnalyzed: true };
     }
 
-    // Map Gemini surfaces, filter low-confidence, sort by confidence, take top 2
+    // Map Gemini surfaces, filter low-confidence, sort by confidence, take ONLY top 1
+    // We want exactly 1 prominent surface per frame to avoid ghost/duplicate detections
     const allSurfaces: DetectedSurface[] = parsed.surfaces
-      .filter((s: GeminiDetectedSurface) => s.confidence >= 0.5) // Skip low/medium-confidence — only use high-quality detections
+      .filter((s: GeminiDetectedSurface) => s.confidence >= 0.6) // Higher threshold: only high-quality detections
       .map((s: GeminiDetectedSurface) => ({
         surfaceType: s.surface_type.charAt(0).toUpperCase() + s.surface_type.slice(1),
         confidence: s.confidence,
@@ -828,7 +830,7 @@ async function analyzeFrameWithGemini(
         cameraAngle: s.camera_angle || undefined,
       }))
       .sort((a: DetectedSurface, b: DetectedSurface) => b.confidence - a.confidence)
-      .slice(0, 2); // Max 2 surfaces per frame to avoid clutter
+      .slice(0, 1); // Max 1 surface per frame — only the single most prominent surface
 
     if (allSurfaces.length === 0) {
       return { ...defaultResult, aiAnalyzed: true };
@@ -1339,6 +1341,149 @@ async function normalizeSurfaceBoundingBoxes(videoId: number): Promise<void> {
 }
 
 // ============================================================================
+// TEMPORAL SURFACE GROUPING
+// ============================================================================
+
+/**
+ * Groups surfaces across frames into temporal tracks based on surface type
+ * and bounding box similarity. This identifies when a surface "starts" and
+ * "ends" in the video. Keeps only the single best track (longest duration,
+ * highest confidence) and marks the rest as Filtered.
+ *
+ * This prevents ghost/duplicate surfaces and ensures we show 1 prominent
+ * surface with clear start/end timestamps.
+ */
+async function groupSurfacesTemporally(videoId: number): Promise<void> {
+  console.log(`[Temporal] Starting temporal grouping for video ${videoId}`);
+
+  const surfaces = await storage.getDetectedSurfaces(videoId);
+  const validSurfaces = surfaces.filter(s => s.surfaceType !== "Filtered" && s.surfaceType !== "Potential Surface");
+
+  if (validSurfaces.length < 2) {
+    console.log(`[Temporal] Only ${validSurfaces.length} valid surface(s), skipping temporal grouping`);
+    return;
+  }
+
+  // Sort by timestamp
+  const sorted = [...validSurfaces].sort((a, b) => parseFloat(String(a.timestamp)) - parseFloat(String(b.timestamp)));
+
+  // Build tracks: consecutive frames with same surface type and overlapping bounding boxes
+  interface SurfaceTrack {
+    surfaceType: string;
+    surfaces: typeof sorted;
+    startTime: number;
+    endTime: number;
+    avgConfidence: number;
+  }
+
+  const tracks: SurfaceTrack[] = [];
+  let currentTrack: typeof sorted = [sorted[0]];
+
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = sorted[i - 1];
+    const curr = sorted[i];
+    const prevTs = parseFloat(String(prev.timestamp));
+    const currTs = parseFloat(String(curr.timestamp));
+    const timeDiff = currTs - prevTs;
+
+    // Check if surfaces are consecutive (within 1.5x frame interval) and same type
+    const isSameType = curr.surfaceType.toLowerCase() === prev.surfaceType.toLowerCase();
+    const isConsecutive = timeDiff <= CONFIG.FRAME_INTERVAL_SECONDS * 1.5;
+
+    // Check bounding box overlap (center Y within 15% tolerance)
+    const prevCenterY = parseFloat(String(prev.boundingBoxY)) + parseFloat(String(prev.boundingBoxHeight)) / 2;
+    const currCenterY = parseFloat(String(curr.boundingBoxY)) + parseFloat(String(curr.boundingBoxHeight)) / 2;
+    const isSimilarPosition = Math.abs(prevCenterY - currCenterY) < 0.15;
+
+    if (isConsecutive && (isSameType || isSimilarPosition)) {
+      currentTrack.push(curr);
+    } else {
+      // Close current track and start a new one
+      const timestamps = currentTrack.map(s => parseFloat(String(s.timestamp)));
+      tracks.push({
+        surfaceType: currentTrack[0].surfaceType,
+        surfaces: [...currentTrack],
+        startTime: Math.min(...timestamps),
+        endTime: Math.max(...timestamps),
+        avgConfidence: currentTrack.reduce((sum, s) => sum + parseFloat(String(s.confidence)), 0) / currentTrack.length,
+      });
+      currentTrack = [curr];
+    }
+  }
+
+  // Close the last track
+  const timestamps = currentTrack.map(s => parseFloat(String(s.timestamp)));
+  tracks.push({
+    surfaceType: currentTrack[0].surfaceType,
+    surfaces: [...currentTrack],
+    startTime: Math.min(...timestamps),
+    endTime: Math.max(...timestamps),
+    avgConfidence: currentTrack.reduce((sum, s) => sum + parseFloat(String(s.confidence)), 0) / currentTrack.length,
+  });
+
+  console.log(`[Temporal] Found ${tracks.length} surface track(s):`);
+  for (const track of tracks) {
+    const duration = track.endTime - track.startTime + CONFIG.FRAME_INTERVAL_SECONDS;
+    console.log(`[Temporal]   ${track.surfaceType}: ${track.startTime}s - ${track.endTime}s (${duration}s, ${track.surfaces.length} frames, ${(track.avgConfidence * 100).toFixed(0)}% avg confidence)`);
+  }
+
+  if (tracks.length <= 1) {
+    console.log(`[Temporal] Only 1 track, no filtering needed`);
+    // Store temporal range in scene_context for the surfaces in this track
+    if (tracks.length === 1) {
+      const track = tracks[0];
+      const duration = track.endTime - track.startTime + CONFIG.FRAME_INTERVAL_SECONDS;
+      const contextNote = `Visible: ${track.startTime}s - ${track.endTime + CONFIG.FRAME_INTERVAL_SECONDS}s (${duration}s)`;
+      for (const s of track.surfaces) {
+        try {
+          await storage.updateDetectedSurface(s.id, { sceneContext: contextNote });
+        } catch (err) { /* non-fatal */ }
+      }
+    }
+    return;
+  }
+
+  // Score tracks: prefer longer duration and higher confidence
+  const scoredTracks = tracks.map(track => {
+    const duration = track.endTime - track.startTime + CONFIG.FRAME_INTERVAL_SECONDS;
+    // Score = duration (in seconds) * average confidence
+    const score = duration * track.avgConfidence;
+    return { ...track, score, duration };
+  }).sort((a, b) => b.score - a.score);
+
+  // Keep only the best track
+  const bestTrack = scoredTracks[0];
+  const bestDuration = bestTrack.duration;
+  console.log(`[Temporal] Best track: ${bestTrack.surfaceType} (${bestTrack.startTime}s - ${bestTrack.endTime}s, ${bestDuration}s, score=${bestTrack.score.toFixed(2)})`);
+
+  // Store temporal range in the best track's surfaces
+  const contextNote = `Visible: ${bestTrack.startTime}s - ${bestTrack.endTime + CONFIG.FRAME_INTERVAL_SECONDS}s (${bestDuration}s)`;
+  for (const s of bestTrack.surfaces) {
+    try {
+      await storage.updateDetectedSurface(s.id, { sceneContext: contextNote });
+    } catch (err) { /* non-fatal */ }
+  }
+
+  // Filter out surfaces from non-best tracks
+  for (let i = 1; i < scoredTracks.length; i++) {
+    const track = scoredTracks[i];
+    console.log(`[Temporal] Filtering out track: ${track.surfaceType} (${track.startTime}s - ${track.endTime}s, score=${track.score.toFixed(2)})`);
+    for (const s of track.surfaces) {
+      try {
+        await storage.updateDetectedSurface(s.id, {
+          surfaceType: "Filtered",
+          sceneContext: `Removed: lower-priority track (${track.surfaceType}, ${track.duration}s) — best track is ${bestTrack.surfaceType} (${bestDuration}s)`,
+        });
+      } catch (err) {
+        console.warn(`[Temporal] Failed to filter surface ${s.id}:`, err);
+      }
+    }
+  }
+
+  console.log(`[Temporal] Kept ${bestTrack.surfaces.length} surfaces, filtered ${validSurfaces.length - bestTrack.surfaces.length} from weaker tracks`);
+}
+
+// ============================================================================
 // MAIN SCAN FUNCTIONS
 // ============================================================================
 
@@ -1581,6 +1726,14 @@ export async function processVideoScan(
       await normalizeSurfaceBoundingBoxes(videoId);
     } catch (normErr) {
       console.error(`[Scanner V2] Bounding box normalization failed (non-fatal):`, normErr);
+    }
+
+    // TEMPORAL SURFACE GROUPING — Group consecutive surfaces into tracks
+    // Keep only the best track (longest duration, highest confidence) and mark others as Filtered
+    try {
+      await groupSurfacesTemporally(videoId);
+    } catch (temporalErr) {
+      console.error(`[Scanner V2] Temporal grouping failed (non-fatal):`, temporalErr);
     }
 
     // Remove filtered/phantom surfaces from count

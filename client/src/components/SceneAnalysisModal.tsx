@@ -559,8 +559,15 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                     }}
                     onError={(e) => {
                       const img = e.currentTarget;
-                      // Try alternate frame URL before giving up
                       const currentSrc = img.src;
+                      // Retry 1: Try on-demand frame generation endpoint
+                      if (video?.id && currentScene?.timestamp && !currentSrc.includes('/api/video/')) {
+                        const [m, s] = (currentScene.timestamp || '0:00').split(':').map(Number);
+                        const ts = (m || 0) * 60 + (s || 0);
+                        img.src = `/api/video/${video.id}/frame/${ts}`;
+                        return;
+                      }
+                      // Retry 2: Try alternate static URL
                       if (video?.id && currentScene?.timestamp && !currentSrc.includes('_retry')) {
                         const [m, s] = (currentScene.timestamp || '0:00').split(':').map(Number);
                         const ts = (m || 0) * 60 + (s || 0);
@@ -570,17 +577,35 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                           return;
                         }
                       }
+                      // All retries failed — show fallback
                       img.style.display = 'none';
                       const fallback = img.parentElement?.querySelector('.main-frame-fallback') as HTMLElement;
                       if (fallback) fallback.style.display = 'flex';
                     }}
                   />
+                  {/* Fallback: use HTML5 video element for local files, or show "Frame not available" */}
                   <div className="main-frame-fallback w-full items-center justify-center bg-zinc-900 text-zinc-500" style={{ display: 'none', minHeight: '300px' }}>
-                    <div className="text-center">
-                      <Video className="w-12 h-12 mx-auto mb-2 opacity-50" />
-                      <p className="text-sm">Frame not available</p>
-                      <p className="text-xs mt-1">{currentScene?.timestamp || '0:00'}</p>
-                    </div>
+                    {video?.filePath ? (
+                      <video
+                        src={video.filePath.replace(/^\.\/public/, '')}
+                        className="max-w-full max-h-[70vh] object-contain"
+                        muted
+                        playsInline
+                        preload="metadata"
+                        onLoadedMetadata={(e) => {
+                          const vid = e.currentTarget;
+                          // Seek to the scene timestamp
+                          const [m, s] = (currentScene?.timestamp || '0:00').split(':').map(Number);
+                          vid.currentTime = (m || 0) * 60 + (s || 0);
+                        }}
+                      />
+                    ) : (
+                      <div className="text-center">
+                        <Video className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                        <p className="text-sm">Frame not available</p>
+                        <p className="text-xs mt-1">{currentScene?.timestamp || '0:00'}</p>
+                      </div>
+                    )}
                   </div>
                   
                   <canvas
@@ -827,6 +852,35 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                       </span>
                     </div>
                   </div>
+
+                  {/* Surface Timeline — shows when the surface is visible */}
+                  {hasDbSurfaces && dbSurfaces.filter(s => s.surfaceType !== "Filtered").length > 0 && (() => {
+                    const validSurfs = dbSurfaces.filter(s => s.surfaceType !== "Filtered");
+                    const timestamps = validSurfs.map(s => parseInt(s.timestamp) || 0).sort((a, b) => a - b);
+                    const startTs = timestamps[0];
+                    const endTs = timestamps[timestamps.length - 1] + 2; // Add frame interval
+                    const surfaceType = validSurfs[0]?.surfaceType || "Surface";
+                    // Parse temporal range from sceneContext if available
+                    const contextMatch = validSurfs[0]?.sceneContext?.match(/Visible: (\d+)s - (\d+)s \((\d+)s\)/);
+                    const formatTime = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+
+                    return (
+                      <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30">
+                        <div className="flex items-center gap-2 mb-2">
+                          <Clock className="w-4 h-4 text-emerald-400" />
+                          <span className="text-sm font-medium text-white">Surface Timeline</span>
+                        </div>
+                        <div className="text-sm text-emerald-300 mb-1">
+                          <span className="font-semibold">{surfaceType}</span>
+                        </div>
+                        <div className="text-xs text-emerald-400/80 space-y-0.5">
+                          <div>Appears: <span className="font-mono text-emerald-300">{formatTime(startTs)}</span></div>
+                          <div>Ends: <span className="font-mono text-emerald-300">{formatTime(endTs)}</span></div>
+                          <div>Duration: <span className="font-mono text-emerald-300">{endTs - startTs}s</span> across <span className="font-mono text-emerald-300">{timestamps.length}</span> frames</div>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 {hasDbSurfaces && dbSurfaces.length > 0 && (

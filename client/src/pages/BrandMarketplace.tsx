@@ -232,7 +232,7 @@ export default function BrandMarketplace() {
   console.log("[BrandMarketplace] isPitchMode:", isPitchMode, "opportunities.length:", allOpportunities.length, "isLoading:", isLoadingOpportunities);
 
   const categoryToGenreMap: Record<string, string> = {
-    "podcasts": "Lifestyle",
+    "podcasts": "Podcast",
     "tech": "Tech",
     "gaming": "Gaming",
     "lifestyle": "Lifestyle",
@@ -261,17 +261,21 @@ export default function BrandMarketplace() {
     const matchesGenre = genreFilter === "All" || opp.genre === genreFilter;
     const matchesSceneType = sceneTypeFilter === "All" || opp.sceneType === sceneTypeFilter;
     
+    // Category matching: Podcasts requires BOTH fullscale platform AND Podcast genre
+    // Other categories match by genre mapping or direct name match
     const matchesCategory = !selectedCategory ||
-      (selectedCategory === "podcasts" && opp.platform === "fullscale") ||
-      opp.genre === categoryToGenreMap[selectedCategory] ||
-      opp.genre?.toLowerCase() === selectedCategory.toLowerCase() ||
-      opp.context.toLowerCase().includes(selectedCategory.toLowerCase());
+      (selectedCategory === "podcasts" && opp.platform === "fullscale" && opp.genre === "Podcast") ||
+      (selectedCategory !== "podcasts" && (
+        opp.genre === categoryToGenreMap[selectedCategory] ||
+        opp.genre?.toLowerCase() === selectedCategory.toLowerCase() ||
+        opp.context.toLowerCase().includes(selectedCategory.toLowerCase())
+      ));
     
-    // Platform filter - check both primary platform and platforms array
+    // Platform filter - Podcasts requires fullscale platform + Podcast genre
     let matchesPlatform = true;
     if (platformFilter !== "All") {
       if (platformFilter === "Podcasts") {
-        matchesPlatform = opp.platform === "fullscale";
+        matchesPlatform = opp.platform === "fullscale" && opp.genre === "Podcast";
       } else {
         const filterValue = platformFilter.toLowerCase();
         matchesPlatform = opp.platform === filterValue ||

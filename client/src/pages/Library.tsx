@@ -1029,6 +1029,7 @@ export default function Library() {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["videos"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/brand/discovery"] });
       toast({ title: "Video deleted", description: data.deleted?.title || "Video removed from library" });
       setDeletingVideoId(null);
     },
