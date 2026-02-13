@@ -165,10 +165,13 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
   const buildScenesFromSurfaces = (surfaces: any[], videoId: number): Scene[] => {
     const normalizeFrameUrl = (url: string | null | undefined): string | null => {
       if (!url) return null;
-      if (url.startsWith('/home/runner/workspace/public/')) return '/' + url.replace('/home/runner/workspace/public/', '');
-      if (url.startsWith('./public/')) return url.replace('./public', '');
-      if (url.startsWith('/') || url.startsWith('http')) return url;
-      return null;
+      let src = url;
+      src = src.replace(/^\/home\/runner\/workspace\/public\//, '/');
+      src = src.replace(/^\.\/public\//, '/');
+      src = src.replace(/^public\//, '/');
+      src = src.replace(/\/\//g, '/');
+      if (!src.startsWith('/') && !src.startsWith('http')) src = '/' + src;
+      return src;
     };
     const buildFrameUrl = (ts: number): string => {
       const roundedTs = Math.floor(Number(ts));
@@ -557,7 +560,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                   {video?.filePath && (
                     <video
                       key={`video-base-${video.id}-${currentSceneIndex}`}
-                      src={video.filePath.replace(/^\.\/public/, '')}
+                      src={video.filePath.replace(/^\/home\/runner\/workspace\/public\//, '/').replace(/^\.\/public\//, '/').replace(/^public\//, '/').replace(/\/\//g, '/')}
                       className={`max-w-full max-h-[70vh] object-contain ${frameLoaded ? 'hidden' : ''}`}
                       muted
                       playsInline

@@ -46,16 +46,14 @@ export function VideoPreviewModal({ video, open, onClose, isScanning = false, st
 
   const getVideoSrc = () => {
     if (!video?.filePath) return null;
-    let path = video.filePath;
-    if (path.startsWith("/home/runner/workspace/public/")) {
-      path = "/" + path.replace("/home/runner/workspace/public/", "");
-    } else if (path.startsWith("./public/")) {
-      path = path.replace("./public", "");
-    } else if (path.startsWith("public/")) {
-      path = "/" + path.replace("public/", "");
-    }
-    console.log(`[VideoPreviewModal] Original filePath: ${video.filePath}, transformed: ${path}`);
-    return path;
+    let src = video.filePath;
+    src = src.replace(/^\/home\/runner\/workspace\/public\//, '/');
+    src = src.replace(/^\.\/public\//, '/');
+    src = src.replace(/^public\//, '/');
+    src = src.replace(/\/\//g, '/');
+    if (!src.startsWith('/') && !src.startsWith('http')) src = '/' + src;
+    console.log(`[VideoPreviewModal] Original filePath: ${video.filePath}, transformed: ${src}`);
+    return src;
   };
 
   const videoSrc = getVideoSrc();

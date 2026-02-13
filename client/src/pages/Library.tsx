@@ -630,10 +630,13 @@ export default function Library() {
           // Normalize frame URLs from DB (may have absolute Replit paths or ./public/ prefixes)
           const normalizeFrameUrl = (url: string | null | undefined): string | null => {
             if (!url) return null;
-            if (url.startsWith('/home/runner/workspace/public/')) return '/' + url.replace('/home/runner/workspace/public/', '');
-            if (url.startsWith('./public/')) return url.replace('./public', '');
-            if (url.startsWith('/') || url.startsWith('http')) return url;
-            return null;
+            let src = url;
+            src = src.replace(/^\/home\/runner\/workspace\/public\//, '/');
+            src = src.replace(/^\.\/public\//, '/');
+            src = src.replace(/^public\//, '/');
+            src = src.replace(/\/\//g, '/');
+            if (!src.startsWith('/') && !src.startsWith('http')) src = '/' + src;
+            return src;
           };
 
           // Build frame URL from timestamp when DB has no frameUrl (batch/admin inserts)

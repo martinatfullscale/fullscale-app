@@ -239,7 +239,23 @@ function formatTime(seconds: number): string {
 
 function resolveVideoSrc(filePath: string | null | undefined): string | null {
   if (!filePath) return null;
-  return filePath.replace("./public/", "/").replace("public/", "/");
+  let src = filePath;
+  // Handle all possible filePath formats from DB:
+  // "./public/uploads/file.mp4" → "/uploads/file.mp4"
+  // "public/uploads/file.mp4" → "/uploads/file.mp4"
+  // "/home/runner/workspace/public/uploads/file.mp4" → "/uploads/file.mp4"
+  // "/uploads/file.mp4" → "/uploads/file.mp4" (already correct)
+  // "/videos/file.mov" → "/videos/file.mov" (already correct)
+  src = src.replace(/^\.\/public\//, '/');
+  src = src.replace(/^public\//, '/');
+  src = src.replace(/^\/home\/runner\/workspace\/public\//, '/');
+  // Fix any double slashes
+  src = src.replace(/\/\//g, '/');
+  // Ensure starts with /
+  if (!src.startsWith('/') && !src.startsWith('http')) {
+    src = '/' + src;
+  }
+  return src;
 }
 
 function clamp(val: number, min: number, max: number) {

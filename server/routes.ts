@@ -1526,8 +1526,8 @@ export async function registerRoutes(
               view_count: video.viewCount || 0,
               thumbnailUrl: video.thumbnailUrl || "",
               thumbnail_url: video.thumbnailUrl || "",
-              videoUrl: video.filePath || "",
-              video_url: video.filePath || "",
+              videoUrl: video.filePath ? normalizeVideoUrl(video.filePath) : "",
+              video_url: video.filePath ? normalizeVideoUrl(video.filePath) : "",
               status: video.status || "Ready (0 Spots)",
               scan_status: count > 0 ? "completed" : "pending",
               priorityScore: video.priorityScore || 50,
@@ -2399,6 +2399,15 @@ export async function registerRoutes(
     res.json({ opportunities: STATIC_DEMO_CAMPAIGNS, total: STATIC_DEMO_CAMPAIGNS.length });
   });
 
+  // Normalize video file paths to browser-safe URLs
+  function normalizeVideoUrl(filePath: string): string {
+    return filePath
+      .replace(/^\.\/public\//, '/')
+      .replace(/^public\//, '/')
+      .replace(/^\/home\/runner\/workspace\/public\//, '/')
+      .replace(/\/\//g, '/');
+  }
+
   // BRAND MARKETPLACE: Get Ready videos for discovery (brand view)
   app.get("/api/brand/discovery", isGoogleAuthenticated, async (req: any, res) => {
     try {
@@ -2436,7 +2445,7 @@ export async function registerRoutes(
         duration: video.duration || "10:00",
         platform: video.platform === "fullscale" || video.filePath ? "fullscale" : (video.platform || "youtube"),
         filePath: video.filePath || null,
-        videoUrl: video.filePath ? video.filePath.replace(/^\.\/public/, '') : null,
+        videoUrl: video.filePath ? normalizeVideoUrl(video.filePath) : null,
       };
       });
 
