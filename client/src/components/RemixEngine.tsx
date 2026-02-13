@@ -474,6 +474,7 @@ export default function RemixEngine() {
   const surfaceTracks = useMemo(() => buildSurfaceTracks(surfaces), [surfaces]);
   const sceneTimestamps = useMemo(() => getUniqueTimestamps(surfaces), [surfaces]);
   const videoSrc = useMemo(() => resolveVideoSrc(video?.filePath), [video?.filePath]);
+  const [videoError, setVideoError] = useState<string | null>(null);
   const trackNames = useMemo(() => Array.from(surfaceTracks.keys()).sort(), [surfaceTracks]);
 
   const selectedAssignment = selectedTrack ? assignments.get(selectedTrack) : undefined;
@@ -1105,7 +1106,7 @@ export default function RemixEngine() {
           {/* Video + canvas container */}
           <div className="flex-1 flex items-center justify-center bg-black/90 p-4 relative">
             <div ref={containerRef} className="relative max-w-full max-h-full">
-              {videoSrc ? (
+              {videoSrc && !videoError ? (
                 <>
                   <video
                     ref={videoRef}
@@ -1116,6 +1117,10 @@ export default function RemixEngine() {
                     onPlay={() => setIsPlaying(true)}
                     onPause={() => setIsPlaying(false)}
                     onEnded={() => setIsPlaying(false)}
+                    onError={(e) => {
+                      console.error("[RemixEngine] Video load error:", e.currentTarget.error?.message);
+                      setVideoError(e.currentTarget.error?.message || "Video format not supported");
+                    }}
                     playsInline
                     preload="auto"
                   />
@@ -1133,7 +1138,17 @@ export default function RemixEngine() {
                 </>
               ) : (
                 <div className="w-[640px] h-[360px] bg-zinc-900 rounded-lg flex items-center justify-center">
-                  <p className="text-zinc-500 text-sm">No video file available</p>
+                  <div className="text-center">
+                    <p className="text-zinc-400 text-sm font-medium mb-1">
+                      {videoError ? "Video playback error" : "No video file available"}
+                    </p>
+                    {videoError && (
+                      <p className="text-zinc-500 text-xs">{videoError}</p>
+                    )}
+                    {videoSrc && (
+                      <p className="text-zinc-600 text-xs mt-2">Source: {videoSrc}</p>
+                    )}
+                  </div>
                 </div>
               )}
             </div>

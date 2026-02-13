@@ -2432,7 +2432,7 @@ export async function registerRoutes(
         context: video.contexts?.[0] || video.category || "General",
         genre: video.category || "Lifestyle",
         sceneType: video.surfaces?.[0]?.surfaceType || "Desk",
-        surfaces: video.surfaces?.map(s => s.surfaceType) || [],
+        surfaces: Array.from(new Set(video.surfaces?.filter(s => s.surfaceType !== "Filtered").map(s => s.surfaceType) || [])),
         duration: video.duration || "10:00",
         platform: video.platform === "fullscale" || video.filePath ? "fullscale" : (video.platform || "youtube"),
         filePath: video.filePath || null,

@@ -659,20 +659,30 @@ export default function BrandMarketplace() {
                 <div className="relative rounded-lg overflow-hidden bg-black flex items-center justify-center" style={{ minHeight: '200px', maxHeight: '60vh' }}>
                   {selectedOpportunity.videoUrl ? (
                     <video
+                      key={selectedOpportunity.id}
                       src={selectedOpportunity.videoUrl}
                       poster={selectedOpportunity.thumbnailUrl || undefined}
                       controls
                       className="w-full h-auto max-h-[60vh] object-contain"
                       playsInline
+                      muted
                       autoPlay
+                      onError={(e) => {
+                        console.warn("[Marketplace] Video error:", e.currentTarget.error?.message);
+                        // Hide video and show poster image instead
+                        e.currentTarget.style.display = 'none';
+                        const fallback = e.currentTarget.nextElementSibling as HTMLElement;
+                        if (fallback) fallback.style.display = 'block';
+                      }}
                     />
-                  ) : (
-                    <img
-                      src={selectedOpportunity.thumbnailUrl || `https://picsum.photos/seed/${selectedOpportunity.id}/1280/720`}
-                      alt={selectedOpportunity.title}
-                      className="w-full h-auto max-h-[60vh] object-contain"
-                    />
-                  )}
+                  ) : null}
+                  {/* Image fallback — shown if no video URL, or as hidden fallback if video fails */}
+                  <img
+                    src={selectedOpportunity.thumbnailUrl || `https://picsum.photos/seed/${selectedOpportunity.id}/1280/720`}
+                    alt={selectedOpportunity.title}
+                    className="w-full h-auto max-h-[60vh] object-contain"
+                    style={{ display: selectedOpportunity.videoUrl ? 'none' : 'block' }}
+                  />
                   <div className="absolute top-3 right-3 flex items-center gap-2">
                     {(selectedOpportunity.platforms || [selectedOpportunity.platform]).filter(Boolean).map((p) => (
                       <div
@@ -723,7 +733,8 @@ export default function BrandMarketplace() {
                     Placement Opportunities
                   </h3>
                   <div className="grid grid-cols-2 gap-3">
-                    {selectedOpportunity.surfaces.map((surface, idx) => (
+                    {/* Deduplicate surfaces — show unique types only */}
+                    {Array.from(new Set(selectedOpportunity.surfaces)).map((surface, idx) => (
                       <div key={idx} className="flex items-center justify-between p-3 bg-background rounded-lg border">
                         <div className="flex items-center gap-2">
                           <Monitor className="w-4 h-4 text-muted-foreground" />
