@@ -1190,26 +1190,36 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Not authorized to update this video" });
       }
 
-      const { title } = req.body;
-      if (!title) return res.status(400).json({ error: "title is required" });
+      const { title, category } = req.body;
+      if (!title && !category) return res.status(400).json({ error: "title or category is required" });
 
-      // Rename file on disk if local upload
-      let newFilePath = video.filePath;
-      if (video.filePath) {
-        const oldPath = path.resolve(video.filePath);
-        if (fs.existsSync(oldPath)) {
-          const ext = path.extname(oldPath);
-          const dir = path.dirname(oldPath);
-          const safeName = title.replace(/[^a-zA-Z0-9\s\-_]/g, "").replace(/\s+/g, "-");
-          const newPath = path.join(dir, `${safeName}${ext}`);
-          fs.renameSync(oldPath, newPath);
-          newFilePath = newPath;
-          console.log(`[Rename Video] Renamed file: ${oldPath} → ${newPath}`);
+      const updates: any = {};
+
+      // Rename file on disk if local upload and title changed
+      if (title) {
+        updates.title = title;
+        let newFilePath = video.filePath;
+        if (video.filePath) {
+          const oldPath = path.resolve(video.filePath);
+          if (fs.existsSync(oldPath)) {
+            const ext = path.extname(oldPath);
+            const dir = path.dirname(oldPath);
+            const safeName = title.replace(/[^a-zA-Z0-9\s\-_]/g, "").replace(/\s+/g, "-");
+            const newPath = path.join(dir, `${safeName}${ext}`);
+            fs.renameSync(oldPath, newPath);
+            newFilePath = newPath;
+            console.log(`[Update Video] Renamed file: ${oldPath} → ${newPath}`);
+          }
         }
+        updates.filePath = newFilePath;
       }
 
-      await storage.updateVideoIndex(videoId, { title, filePath: newFilePath });
-      res.json({ success: true, title, filePath: newFilePath });
+      if (category) {
+        updates.category = category;
+      }
+
+      await storage.updateVideoIndex(videoId, updates);
+      res.json({ success: true, title: title || video.title, category: category || video.category });
     } catch (err: any) {
       console.error("[Rename Video] Error:", err.message);
       res.status(500).json({ error: "Failed to rename video" });
@@ -1854,10 +1864,12 @@ export async function registerRoutes(
     const userId = req.authEmail || req.googleUser?.email;
     const file = req.file;
     const title = req.body.title || file.originalname.replace(/\.[^/.]+$/, "");
-    
+    const category = req.body.category || "Other";
+
     console.log(`[UPLOAD] File: ${file.originalname} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
     console.log(`[UPLOAD] Saved as: ${file.filename}`);
     console.log(`[UPLOAD] Title: ${title}`);
+    console.log(`[UPLOAD] Category: ${category}`);
 
     try {
       // Generate a unique video ID for LOCAL_ASSET_MAP
@@ -1880,7 +1892,7 @@ export async function registerRoutes(
         status: "Pending Scan",
         priorityScore: 80,
         platform: "fullscale",
-        category: "Uploaded",
+        category,
         isEvergreen: true,
         duration: "0:00",
         filePath, // Store file path in DB for persistence across server restarts

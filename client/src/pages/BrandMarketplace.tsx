@@ -262,6 +262,7 @@ export default function BrandMarketplace() {
     const matchesCategory = !selectedCategory ||
       (selectedCategory === "podcasts" && opp.platform === "fullscale") ||
       opp.genre === categoryToGenreMap[selectedCategory] ||
+      opp.genre?.toLowerCase() === selectedCategory.toLowerCase() ||
       opp.context.toLowerCase().includes(selectedCategory.toLowerCase());
     
     // Platform filter - check both primary platform and platforms array

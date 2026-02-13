@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import { UploadModal } from "@/components/UploadModal";
+import { UploadModal, CONTENT_CATEGORIES } from "@/components/UploadModal";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SceneAnalysisModal, VideoWithScenes } from "@/components/SceneAnalysisModal";
@@ -199,6 +199,7 @@ interface DisplayVideo {
   hasLocalFile: boolean;
   filePath?: string | null;
   thumbnailUrl?: string | null;
+  category?: string;
 }
 
 function getVideoStatusInfo(video: IndexedVideo): { status: string; statusColor: string; statusDot: string; aiStatus: string; aiText: string } {
@@ -296,6 +297,7 @@ function formatIndexedVideo(video: IndexedVideo): DisplayVideo {
     hasLocalFile: fileExists,
     filePath,
     thumbnailUrl,
+    category: video.category || undefined,
   };
 }
 
@@ -1009,8 +1011,9 @@ export default function Library() {
   });
 
   const [deletingVideoId, setDeletingVideoId] = useState<number | null>(null);
-  const [renamingVideo, setRenamingVideo] = useState<{ id: number; title: string } | null>(null);
+  const [renamingVideo, setRenamingVideo] = useState<{ id: number; title: string; category?: string } | null>(null);
   const [renameInput, setRenameInput] = useState("");
+  const [renameCategoryInput, setRenameCategoryInput] = useState("");
 
   const deleteVideoMutation = useMutation({
     mutationFn: async (videoId: number) => {
@@ -1036,7 +1039,7 @@ export default function Library() {
   });
 
   const renameVideoMutation = useMutation({
-    mutationFn: async ({ videoId, title }: { videoId: number; title: string }) => {
+    mutationFn: async ({ videoId, title, category }: { videoId: number; title?: string; category?: string }) => {
       const renameUrl = isAdminUser
         ? `/api/videos/${videoId}?admin_email=${encodeURIComponent(userEmail)}`
         : `/api/videos/${videoId}`;
@@ -1044,17 +1047,17 @@ export default function Library() {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ title }),
+        body: JSON.stringify({ title, category }),
       });
-      if (!res.ok) throw new Error("Failed to rename video");
+      if (!res.ok) throw new Error("Failed to update video");
       return res.json();
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["videos"] });
-      toast({ title: "Video renamed", description: `Title updated to "${data.title}"` });
+      toast({ title: "Video updated", description: `Updated: ${data.title}${data.category ? ` (${data.category})` : ""}` });
     },
     onError: (err: Error) => {
-      toast({ title: "Rename failed", description: err.message, variant: "destructive" });
+      toast({ title: "Update failed", description: err.message, variant: "destructive" });
     },
   });
 
@@ -1400,8 +1403,9 @@ export default function Library() {
                         title="Rename"
                         onClick={(e) => {
                           e.stopPropagation();
-                          setRenamingVideo({ id: video.id!, title: video.title });
+                          setRenamingVideo({ id: video.id!, title: video.title, category: video.category });
                           setRenameInput(video.title);
+                          setRenameCategoryInput(video.category || "Other");
                         }}
                       >
                         <Pencil className="w-3 h-3" />
@@ -1414,6 +1418,11 @@ export default function Library() {
                     <span className={`px-2 py-0.5 rounded-full ${video.statusColor} text-xs font-medium`}>
                       {video.status}
                     </span>
+                    {video.category && video.category !== "Uploaded" && video.category !== "Other" && (
+                      <span className="px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-400 text-xs font-medium">
+                        {video.category}
+                      </span>
+                    )}
                     {/* Global reach badge - shows MENA for Dubai/Saudi content */}
                     <span className="px-2 py-0.5 rounded-full bg-primary/20 text-primary text-xs font-medium flex items-center gap-1">
                       <Globe className="w-3 h-3" />
@@ -1550,33 +1559,55 @@ export default function Library() {
         </DialogContent>
       </Dialog>
 
-      {/* Rename dialog */}
+      {/* Edit video dialog (rename + category) */}
       <Dialog open={renamingVideo !== null} onOpenChange={(open) => { if (!open) setRenamingVideo(null); }}>
         <DialogContent className="sm:max-w-sm">
           <div className="space-y-4">
-            <h3 className="text-lg font-semibold">Rename Video</h3>
-            <Input
-              value={renameInput}
-              onChange={(e) => setRenameInput(e.target.value)}
-              placeholder="Enter new title"
-              autoFocus
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && renameInput.trim() && renamingVideo) {
-                  renameVideoMutation.mutate({ videoId: renamingVideo.id, title: renameInput.trim() });
-                  setRenamingVideo(null);
-                }
-              }}
-            />
+            <h3 className="text-lg font-semibold">Edit Video</h3>
+            <div>
+              <label className="text-sm text-muted-foreground mb-1.5 block">Title</label>
+              <Input
+                value={renameInput}
+                onChange={(e) => setRenameInput(e.target.value)}
+                placeholder="Enter new title"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && renameInput.trim() && renamingVideo) {
+                    renameVideoMutation.mutate({ videoId: renamingVideo.id, title: renameInput.trim(), category: renameCategoryInput });
+                    setRenamingVideo(null);
+                  }
+                }}
+              />
+            </div>
+            <div>
+              <label className="text-sm text-muted-foreground mb-1.5 block">Category</label>
+              <Select value={renameCategoryInput} onValueChange={setRenameCategoryInput}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select category" />
+                </SelectTrigger>
+                <SelectContent>
+                  {CONTENT_CATEGORIES.map((cat) => (
+                    <SelectItem key={cat.value} value={cat.value}>
+                      {cat.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             <div className="flex justify-end gap-2">
               <Button variant="outline" size="sm" onClick={() => setRenamingVideo(null)}>
                 Cancel
               </Button>
               <Button
                 size="sm"
-                disabled={!renameInput.trim() || renameInput === renamingVideo?.title || renameVideoMutation.isPending}
+                disabled={(!renameInput.trim() && !renameCategoryInput) || renameVideoMutation.isPending}
                 onClick={() => {
-                  if (renamingVideo && renameInput.trim()) {
-                    renameVideoMutation.mutate({ videoId: renamingVideo.id, title: renameInput.trim() });
+                  if (renamingVideo) {
+                    renameVideoMutation.mutate({
+                      videoId: renamingVideo.id,
+                      title: renameInput.trim() || undefined,
+                      category: renameCategoryInput || undefined,
+                    });
                     setRenamingVideo(null);
                   }
                 }}
