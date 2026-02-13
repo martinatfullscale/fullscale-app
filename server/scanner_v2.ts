@@ -156,16 +156,26 @@ CRITICAL RULES — RETURN MAXIMUM 1 SURFACE:
 - Return ONLY the single best surface — the largest, clearest, most prominent flat horizontal surface
 - If multiple surfaces exist, pick the ONE that is most suitable for product placement (largest visible area, best lit, most natural for a product)
 - The bounding box must tightly wrap ONLY the visible, FLAT, HORIZONTAL surface area
-- The surface must occupy at least 8% of the total frame area (width * height) to be valid
+- The surface must occupy at least 5% of the total frame area (width * height) to be valid
 - Do NOT flag roads, sidewalks, floors, or ground surfaces
 - Do NOT flag walls, ceilings, curtains, or vertical surfaces (unless it's a shelf)
 - Do NOT flag bridges, buildings, vehicles, or outdoor structures
 - Do NOT flag areas with heavy motion blur or out-of-focus regions
 - Do NOT flag surfaces blocked by people's bodies or hands
 - Do NOT flag surfaces that are too small to place a product on
-- If a person occupies more than 50% of the frame (close-up, medium shot, or bust shot), return surfaces_found: false UNLESS a clear table/desk surface is ALSO prominently visible
+- If a person occupies more than 50% of the frame (close-up, medium shot, or bust shot), return surfaces_found: false UNLESS a clear table/desk surface is ALSO prominently visible SEPARATE FROM the person's body
 - If the frame is an exterior/outdoor shot with no furniture, return surfaces_found: false
 - If the frame is a close-up of a person with no visible surfaces, return surfaces_found: false
+
+ANTI-HALLUCINATION RULES (CRITICAL — READ CAREFULLY):
+- You MUST be able to clearly see the physical surface material (wood, glass, metal, stone, etc.)
+- The bounding box MUST NOT overlap with any person's body, clothing, arms, hands, or lap
+- If a laptop is on someone's lap, that is NOT a desk surface — it is a laptop on a person
+- If someone is wearing dark clothing, the dark area is NOT a desk — it is clothing
+- A microphone boom arm, monitor arm, or equipment mount is NOT a surface
+- Do NOT draw a bounding box that covers a person's chest, torso, or lap area and call it a "desk"
+- The surface must be GEOMETRICALLY SEPARATE from any person in the frame — there must be clear visual separation between the person's body and the surface edge
+- If you are unsure whether something is a real surface or just a dark/shadowy region near a person, return surfaces_found: false
 
 BOUNDING BOX RULES:
 - x, y = top-left corner of the surface as percentage of frame (0-100)
@@ -177,10 +187,11 @@ BOUNDING BOX RULES:
 - A wide table seen at eye level might be: x:15, y:55, width:70, height:10 (THIN horizontal strip)
 - A desk seen from slightly above might be: x:20, y:50, width:40, height:20
 - Do NOT make bounding boxes taller than 30% of frame height unless viewed from directly above (top-down)
+- The bounding box center (y + height/2) should be in the LOWER portion of the frame (y > 40%) for tables/desks at eye level
 
 GOOD SURFACES (flag the single best one):
-- Studio desks in podcast/recording setups (HIGH PRIORITY)
-- Desks, tables, countertops with visible flat area
+- Studio desks in podcast/recording setups — but ONLY if you can see the actual desk surface (the flat top where objects sit), not just equipment or a person sitting
+- Desks, tables, countertops with visible flat area and clear surface material visible
 - Shelves or ledges with clear space
 - Nightstands, side tables, coffee tables
 - Kitchen counters with some clear space
@@ -194,6 +205,7 @@ PODCAST / INTERVIEW / TALKING-HEAD RULES:
 - A dark area below a person's torso is NOT a desk — it is clothing, lap, shadow, or dark background
 - Microphones, monitor stands, and equipment edges are NOT surfaces
 - Only flag a desk/table if you can clearly see: (1) the horizontal front edge of the table AND (2) some of the flat top surface behind that edge
+- If the desk is behind/below a person but you can only see a tiny sliver of it, return surfaces_found: false — the surface is not prominent enough
 
 BAD "SURFACES" (do NOT flag):
 - Roads, highways, pavement
@@ -204,6 +216,8 @@ BAD "SURFACES" (do NOT flag):
 - Any area where a product would look unnatural
 - Dark regions below a person's chest/torso (these are NOT desks)
 - Inferred/assumed surfaces that are not clearly visible in the frame
+- A person's lap, thighs, or clothing — even if a laptop or object is resting on them
+- Equipment surfaces like laptop screens, monitor backs, or camera housings
 
 For the surface found, provide:
 - **location**: Tight bounding box as {x, y, width, height} in percentages (0-100)
@@ -810,10 +824,49 @@ async function analyzeFrameWithGemini(
       return { ...defaultResult, aiAnalyzed: true };
     }
 
-    // Map Gemini surfaces, filter low-confidence, sort by confidence, take ONLY top 1
+    // Map Gemini surfaces, filter low-confidence, validate against ghost patterns
     // We want exactly 1 prominent surface per frame to avoid ghost/duplicate detections
     const allSurfaces: DetectedSurface[] = parsed.surfaces
       .filter((s: GeminiDetectedSurface) => s.confidence >= 0.6) // Higher threshold: only high-quality detections
+      .filter((s: GeminiDetectedSurface) => {
+        // GHOST SURFACE FILTER — reject bounding boxes that likely overlap a person's body
+        const bbX = s.location.x / 100;
+        const bbY = s.location.y / 100;
+        const bbW = s.location.width / 100;
+        const bbH = s.location.height / 100;
+        const centerX = bbX + bbW / 2;
+        const centerY = bbY + bbH / 2;
+        const area = bbW * bbH;
+
+        // Ghost pattern 1: Bounding box centered on person's torso area
+        // In podcast setups, person typically occupies frame center (x: 25-75%, y: 15-60%)
+        // A real desk/table surface should be BELOW the person (y > 55%) or to the SIDE
+        const isInPersonZone = centerX > 0.20 && centerX < 0.80 && centerY > 0.15 && centerY < 0.55;
+        const isSmallArea = area < 0.10; // Small surfaces in person zone are very suspect
+        if (isInPersonZone && isSmallArea) {
+          console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — bbox center (${(centerX*100).toFixed(0)}%, ${(centerY*100).toFixed(0)}%) is in person zone with small area ${(area*100).toFixed(1)}%`);
+          return false;
+        }
+
+        // Ghost pattern 2: Tall bounding box overlapping person center
+        // Real desk surfaces seen at eye level should be thin (height < 25%)
+        // A bbox that is both tall AND centered on person area is likely on the person
+        if (bbH > 0.25 && centerY < 0.55 && centerX > 0.25 && centerX < 0.75) {
+          console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — tall bbox (h=${(bbH*100).toFixed(0)}%) centered on person area`);
+          return false;
+        }
+
+        // Ghost pattern 3: Surface entirely in the upper half of frame
+        // Real tables/desks are almost always in the lower portion (y > 40%)
+        // unless it's a shelf (which is fine)
+        const isShelf = s.surface_type.toLowerCase().includes('shelf');
+        if (!isShelf && bbY + bbH < 0.40) {
+          console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — bbox entirely in upper frame (bottom edge at ${((bbY+bbH)*100).toFixed(0)}%)`);
+          return false;
+        }
+
+        return true;
+      })
       .map((s: GeminiDetectedSurface) => ({
         surfaceType: s.surface_type.charAt(0).toUpperCase() + s.surface_type.slice(1),
         confidence: s.confidence,
