@@ -83,6 +83,10 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
   const [serverScanError, setServerScanError] = useState<string | null>(null);
   const [isPlacementPreviewOpen, setIsPlacementPreviewOpen] = useState(false);
 
+  // Frame loading state — tracks whether the main frame image has loaded
+  const [frameLoaded, setFrameLoaded] = useState(false);
+  const [frameError, setFrameError] = useState(false);
+
   // Local scenes state — starts from video.scenes, rebuilt after server rescan
   const [localScenes, setLocalScenes] = useState<Scene[]>(video?.scenes || []);
 
@@ -91,6 +95,8 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
     if (video?.scenes && video.scenes.length > 0) {
       setLocalScenes(video.scenes);
       setCurrentSceneIndex(0);
+      setFrameLoaded(false);
+      setFrameError(false);
     }
   }, [video?.id, video?.scenes, open]);
   
@@ -113,6 +119,8 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
   useEffect(() => {
     setDetections([]);
     setHasScanned(false);
+    setFrameLoaded(false);
+    setFrameError(false);
     clearCanvas();
     // Redraw database surfaces when scene changes
     if (hasDbSurfaces && dbSurfaces.length > 0) {
@@ -545,13 +553,34 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
             <div className="flex flex-col lg:flex-row overflow-hidden">
               <div className="flex-1 min-w-0 relative overflow-hidden">
                 <div className="relative overflow-hidden bg-black flex items-center justify-center" style={{ minHeight: '300px', maxHeight: '70vh' }}>
+                  {/* Layer 1: For local videos, always show <video> as the reliable base layer */}
+                  {video?.filePath && (
+                    <video
+                      key={`video-base-${video.id}-${currentSceneIndex}`}
+                      src={video.filePath.replace(/^\.\/public/, '')}
+                      className={`max-w-full max-h-[70vh] object-contain ${frameLoaded ? 'hidden' : ''}`}
+                      muted
+                      playsInline
+                      preload="metadata"
+                      onLoadedMetadata={(e) => {
+                        const vid = e.currentTarget;
+                        const [m, s] = (currentScene?.timestamp || '0:00').split(':').map(Number);
+                        vid.currentTime = (m || 0) * 60 + (s || 0);
+                      }}
+                    />
+                  )}
+
+                  {/* Layer 2: Frame image (preferred when available — enables bounding box overlays) */}
                   <img
                     ref={imageRef}
+                    key={`frame-${video?.id}-${currentSceneIndex}`}
                     src={currentScene?.imageUrl || ''}
                     alt={`Scene at ${currentScene?.timestamp || '0:00'}`}
-                    className="max-w-full max-h-[70vh] object-contain"
+                    className={`max-w-full max-h-[70vh] object-contain ${frameLoaded ? '' : (video?.filePath ? 'absolute opacity-0' : '')}`}
                     data-testid="img-scene-main"
                     onLoad={() => {
+                      setFrameLoaded(true);
+                      setFrameError(false);
                       // Draw database surfaces after image loads
                       if (hasDbSurfaces && currentDbSurfaces.length > 0) {
                         setTimeout(drawDbSurfaces, 100);
@@ -567,46 +596,25 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                         img.src = `/api/video/${video.id}/frame/${ts}`;
                         return;
                       }
-                      // Retry 2: Try alternate static URL
-                      if (video?.id && currentScene?.timestamp && !currentSrc.includes('_retry')) {
-                        const [m, s] = (currentScene.timestamp || '0:00').split(':').map(Number);
-                        const ts = (m || 0) * 60 + (s || 0);
-                        const altUrl = `/uploads/frames/${video.id}/frame_${ts}s.jpg?_retry=1`;
-                        if (!currentSrc.includes(altUrl)) {
-                          img.src = altUrl;
-                          return;
-                        }
+                      // All retries failed — keep video fallback visible
+                      setFrameError(true);
+                      if (!video?.filePath) {
+                        // No video file available either — show static fallback
+                        img.style.display = 'none';
                       }
-                      // All retries failed — show fallback
-                      img.style.display = 'none';
-                      const fallback = img.parentElement?.querySelector('.main-frame-fallback') as HTMLElement;
-                      if (fallback) fallback.style.display = 'flex';
                     }}
                   />
-                  {/* Fallback: use HTML5 video element for local files, or show "Frame not available" */}
-                  <div className="main-frame-fallback w-full items-center justify-center bg-zinc-900 text-zinc-500" style={{ display: 'none', minHeight: '300px' }}>
-                    {video?.filePath ? (
-                      <video
-                        src={video.filePath.replace(/^\.\/public/, '')}
-                        className="max-w-full max-h-[70vh] object-contain"
-                        muted
-                        playsInline
-                        preload="metadata"
-                        onLoadedMetadata={(e) => {
-                          const vid = e.currentTarget;
-                          // Seek to the scene timestamp
-                          const [m, s] = (currentScene?.timestamp || '0:00').split(':').map(Number);
-                          vid.currentTime = (m || 0) * 60 + (s || 0);
-                        }}
-                      />
-                    ) : (
+
+                  {/* Layer 3: Static fallback only if no video file AND frame failed */}
+                  {frameError && !video?.filePath && (
+                    <div className="w-full flex items-center justify-center bg-zinc-900 text-zinc-500" style={{ minHeight: '300px' }}>
                       <div className="text-center">
                         <Video className="w-12 h-12 mx-auto mb-2 opacity-50" />
                         <p className="text-sm">Frame not available</p>
                         <p className="text-xs mt-1">{currentScene?.timestamp || '0:00'}</p>
                       </div>
-                    )}
-                  </div>
+                    </div>
+                  )}
                   
                   <canvas
                     ref={canvasRef}
