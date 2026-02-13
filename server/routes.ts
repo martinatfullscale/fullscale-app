@@ -1142,6 +1142,80 @@ export async function registerRoutes(
     res.json({ success: true, message: "All videos cleared from library" });
   });
 
+  // Delete a single video by ID (and its surfaces, placements, file on disk)
+  app.delete("/api/videos/:videoId", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+
+      // Verify ownership
+      const userId = req.authEmail || req.authUserId;
+      if (video.userId !== userId) {
+        return res.status(403).json({ error: "Not authorized to delete this video" });
+      }
+
+      // Delete file from disk if it's a local upload
+      if (video.filePath) {
+        const absolutePath = path.resolve(video.filePath);
+        if (fs.existsSync(absolutePath)) {
+          fs.unlinkSync(absolutePath);
+          console.log(`[Delete Video] Removed file: ${absolutePath}`);
+        }
+      }
+
+      // Delete DB records (surfaces, placements, then video)
+      const deleted = await storage.deleteVideoById(videoId);
+      console.log(`[Delete Video] Deleted video ID ${videoId}: ${deleted?.title}`);
+      res.json({ success: true, deleted: { id: videoId, title: deleted?.title } });
+    } catch (err: any) {
+      console.error("[Delete Video] Error:", err.message);
+      res.status(500).json({ error: "Failed to delete video" });
+    }
+  });
+
+  // Rename / update a video title (also renames local file on disk)
+  app.patch("/api/videos/:videoId", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+
+      const userId = req.authEmail || req.authUserId;
+      if (video.userId !== userId) {
+        return res.status(403).json({ error: "Not authorized to update this video" });
+      }
+
+      const { title } = req.body;
+      if (!title) return res.status(400).json({ error: "title is required" });
+
+      // Rename file on disk if local upload
+      let newFilePath = video.filePath;
+      if (video.filePath) {
+        const oldPath = path.resolve(video.filePath);
+        if (fs.existsSync(oldPath)) {
+          const ext = path.extname(oldPath);
+          const dir = path.dirname(oldPath);
+          const safeName = title.replace(/[^a-zA-Z0-9\s\-_]/g, "").replace(/\s+/g, "-");
+          const newPath = path.join(dir, `${safeName}${ext}`);
+          fs.renameSync(oldPath, newPath);
+          newFilePath = newPath;
+          console.log(`[Rename Video] Renamed file: ${oldPath} → ${newPath}`);
+        }
+      }
+
+      await storage.updateVideoIndex(videoId, { title, filePath: newFilePath });
+      res.json({ success: true, title, filePath: newFilePath });
+    } catch (err: any) {
+      console.error("[Rename Video] Error:", err.message);
+      res.status(500).json({ error: "Failed to rename video" });
+    }
+  });
+
   // Admin endpoint to add a video entry directly (for local files)
   app.post("/api/video-index/add-local", isFlexibleAuthenticated, async (req: any, res) => {
     const userEmail = req.authEmail;

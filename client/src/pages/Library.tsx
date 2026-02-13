@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { TopBar } from "@/components/TopBar";
-import { Upload, Eye, CheckCircle, Loader2, AlertTriangle, X, Shield, Sun, Tag, Box, DollarSign, Sparkles, RefreshCw, Play, Globe, HardDrive, Scan, Video, Wand2 } from "lucide-react";
+import { Upload, Eye, CheckCircle, Loader2, AlertTriangle, X, Shield, Sun, Tag, Box, DollarSign, Sparkles, RefreshCw, Play, Globe, HardDrive, Scan, Video, Wand2, Trash2, Pencil } from "lucide-react";
 import { useLocation } from "wouter";
 import { SiInstagram, SiYoutube, SiTwitch, SiFacebook } from "react-icons/si";
 import { motion } from "framer-motion";
@@ -1007,6 +1007,54 @@ export default function Library() {
     },
   });
 
+  const [deletingVideoId, setDeletingVideoId] = useState<number | null>(null);
+
+  const deleteVideoMutation = useMutation({
+    mutationFn: async (videoId: number) => {
+      const deleteUrl = isAdminUser
+        ? `/api/videos/${videoId}?admin_email=${encodeURIComponent(userEmail)}`
+        : `/api/videos/${videoId}`;
+      const res = await fetch(deleteUrl, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error("Failed to delete video");
+      return res.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["videos"] });
+      toast({ title: "Video deleted", description: data.deleted?.title || "Video removed from library" });
+      setDeletingVideoId(null);
+    },
+    onError: (err: Error) => {
+      toast({ title: "Delete failed", description: err.message, variant: "destructive" });
+      setDeletingVideoId(null);
+    },
+  });
+
+  const renameVideoMutation = useMutation({
+    mutationFn: async ({ videoId, title }: { videoId: number; title: string }) => {
+      const renameUrl = isAdminUser
+        ? `/api/videos/${videoId}?admin_email=${encodeURIComponent(userEmail)}`
+        : `/api/videos/${videoId}`;
+      const res = await fetch(renameUrl, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ title }),
+      });
+      if (!res.ok) throw new Error("Failed to rename video");
+      return res.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["videos"] });
+      toast({ title: "Video renamed", description: `Title updated to "${data.title}"` });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Rename failed", description: err.message, variant: "destructive" });
+    },
+  });
+
   // Unified video data - comes from either auth or demo endpoint based on mode
   const videos = videoData?.videos || [];
   const displayVideos: DisplayVideo[] = videos.map(formatIndexedVideo);
@@ -1183,12 +1231,25 @@ export default function Library() {
               >
                 {/* Local file indicator - shows when video has local file ready for scanning */}
                 {video.hasLocalFile && (
-                  <div className="absolute top-2 left-2 z-10">
+                  <div className="absolute top-2 left-2 z-10 flex items-center gap-1.5">
                     <div className="px-2 py-1 rounded-md bg-emerald-500/90 text-white text-xs font-medium flex items-center gap-1">
                       <HardDrive className="w-3 h-3" />
                       Local File
                     </div>
                   </div>
+                )}
+                {/* Delete button — visible on hover */}
+                {isRealMode && video.id && (
+                  <button
+                    className="absolute top-2 right-10 z-20 w-7 h-7 rounded-full bg-red-600/80 hover:bg-red-600 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                    title="Delete video"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setDeletingVideoId(video.id!);
+                    }}
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
                 )}
                 {/* Platform icon overlay for All view */}
                 {platformFilter === "all" && (
@@ -1328,7 +1389,24 @@ export default function Library() {
                   )}
                 </div>
                 <div className="p-4">
-                  <h3 className="font-semibold text-white mb-1 truncate">{video.title}</h3>
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <h3 className="font-semibold text-white truncate flex-1">{video.title}</h3>
+                    {isRealMode && video.id && (
+                      <button
+                        className="shrink-0 w-5 h-5 rounded text-muted-foreground hover:text-white hover:bg-white/10 flex items-center justify-center transition-colors"
+                        title="Rename"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const newTitle = window.prompt("Enter new title:", video.title);
+                          if (newTitle && newTitle !== video.title && video.id) {
+                            renameVideoMutation.mutate({ videoId: video.id, title: newTitle });
+                          }
+                        }}
+                      >
+                        <Pencil className="w-3 h-3" />
+                      </button>
+                    )}
+                  </div>
                   <p className="text-sm text-muted-foreground mb-2">{video.views}</p>
                   <div className="flex items-center gap-2 flex-wrap mb-2">
                     <span className={`w-2 h-2 rounded-full ${video.statusDot}`}></span>
@@ -1439,6 +1517,37 @@ export default function Library() {
         isScanning={previewVideo?.id ? scanningVideoIds.has(previewVideo.id) : false}
         startTime={previewStartTime}
       />
+
+      {/* Delete confirmation dialog */}
+      <Dialog open={deletingVideoId !== null} onOpenChange={(open) => { if (!open) setDeletingVideoId(null); }}>
+        <DialogContent className="sm:max-w-sm">
+          <div className="space-y-4">
+            <h3 className="text-lg font-semibold">Delete Video</h3>
+            <p className="text-sm text-muted-foreground">
+              This will permanently delete this video, its detected surfaces, and any saved placements. The uploaded file will also be removed.
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" size="sm" onClick={() => setDeletingVideoId(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={deleteVideoMutation.isPending}
+                onClick={() => {
+                  if (deletingVideoId) deleteVideoMutation.mutate(deletingVideoId);
+                }}
+              >
+                {deleteVideoMutation.isPending ? (
+                  <><Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> Deleting...</>
+                ) : (
+                  <><Trash2 className="w-3.5 h-3.5 mr-1.5" /> Delete</>
+                )}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

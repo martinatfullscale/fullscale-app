@@ -62,6 +62,7 @@ export interface IStorage {
   insertVideo(video: InsertVideoIndex): Promise<VideoIndex>;
   bulkUpsertVideoIndex(videos: InsertVideoIndex[]): Promise<void>;
   deleteVideoIndex(userId: string, userEmail?: string): Promise<void>;
+  deleteVideoById(videoId: number): Promise<VideoIndex | undefined>;
   getVideoById(id: number): Promise<VideoIndex | undefined>;
   getPendingVideos(userId: string, limit?: number): Promise<VideoIndex[]>;
   updateVideoStatus(videoId: number, status: string): Promise<void>;
@@ -419,6 +420,14 @@ export class DatabaseStorage implements IStorage {
     } else {
       await db.delete(videoIndex).where(eq(videoIndex.userId, userId));
     }
+  }
+
+  async deleteVideoById(videoId: number): Promise<VideoIndex | undefined> {
+    // Delete related surfaces, placements, then the video itself
+    await db.delete(detectedSurfaces).where(eq(detectedSurfaces.videoId, videoId));
+    await db.delete(savedPlacements).where(eq(savedPlacements.videoId, videoId));
+    const [deleted] = await db.delete(videoIndex).where(eq(videoIndex.id, videoId)).returning();
+    return deleted;
   }
 
   async getVideoById(id: number): Promise<VideoIndex | undefined> {
