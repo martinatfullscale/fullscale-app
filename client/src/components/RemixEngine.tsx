@@ -950,10 +950,18 @@ export default function RemixEngine() {
   const handleVideoExport = useCallback(async () => {
     if (!videoId || assignments.size === 0) return;
 
+    // Capture canvas display dimensions so server can scale offsets correctly
+    const canvas = canvasRef.current;
+    const canvasDisplayWidth = canvas?.width || 640;
+    const canvasDisplayHeight = canvas?.height || 360;
+
     const placementData = [];
     for (const [surfaceType, assignment] of assignments) {
       const track = surfaceTracks.get(surfaceType);
       if (!track || !assignment.imageElement) continue;
+
+      // Send product aspect ratio so server can match client-side fitting
+      const prodAspect = assignment.imageElement.naturalWidth / assignment.imageElement.naturalHeight;
 
       placementData.push({
         surfaceType,
@@ -961,6 +969,7 @@ export default function RemixEngine() {
         transform: assignment.transform,
         blend: assignment.blend,
         keyframes: track.keyframes,
+        productAspectRatio: prodAspect,
       });
     }
 
@@ -979,7 +988,11 @@ export default function RemixEngine() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ placements: placementData }),
+        body: JSON.stringify({
+          placements: placementData,
+          canvasWidth: canvasDisplayWidth,
+          canvasHeight: canvasDisplayHeight,
+        }),
       });
 
       if (!res.ok) {

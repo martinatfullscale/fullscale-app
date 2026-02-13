@@ -4287,7 +4287,7 @@ export async function registerRoutes(
       const videoId = parseInt(req.params.videoId);
       if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
 
-      const { placements } = req.body;
+      const { placements, canvasWidth, canvasHeight } = req.body;
       if (!placements || !Array.isArray(placements) || placements.length === 0) {
         return res.status(400).json({ error: "At least one placement is required" });
       }
@@ -4320,7 +4320,10 @@ export async function registerRoutes(
       console.log(`[Video Export] Created export job ${exportJob.id} for video ${videoId} (${placements.length} placements)`);
 
       // Kick off async processing (don't await)
-      processVideoExport(exportJob.id, video.filePath, placements).catch((err) => {
+      processVideoExport(exportJob.id, video.filePath, placements, {
+        canvasWidth: canvasWidth || 640,
+        canvasHeight: canvasHeight || 360,
+      }).catch((err) => {
         console.error(`[Video Export] Background processing failed for export ${exportJob.id}:`, err.message);
       });
 
