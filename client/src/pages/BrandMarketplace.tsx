@@ -509,19 +509,37 @@ export default function BrandMarketplace() {
                 transition={{ delay: idx * 0.05 }}
               >
                 <Card className="group overflow-visible hover-elevate cursor-pointer" data-testid={`card-opportunity-${opportunity.id}`}>
-                  <div 
-                    className="aspect-video relative overflow-hidden rounded-t-md cursor-pointer"
+                  <div
+                    className="relative overflow-hidden rounded-t-md cursor-pointer bg-black flex items-center justify-center"
+                    style={{ minHeight: '160px' }}
                     onClick={() => setSelectedOpportunity(opportunity)}
                     data-testid={`thumbnail-opportunity-${opportunity.id}`}
                   >
-                    <img
-                      src={(opportunity as any).thumbnailUrl || (opportunity as any).thumbnail_url || `https://picsum.photos/seed/${opportunity.id}/640/360`}
-                      alt={opportunity.title}
-                      className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).src = `https://picsum.photos/seed/${opportunity.id}/640/360`;
-                      }}
-                    />
+                    {/* For fullscale/local videos: show video element to display actual content */}
+                    {opportunity.videoUrl ? (
+                      <video
+                        src={opportunity.videoUrl}
+                        className="w-full h-auto max-h-[240px] object-contain"
+                        muted
+                        playsInline
+                        preload="metadata"
+                        poster={(opportunity as any).thumbnailUrl || undefined}
+                        onLoadedMetadata={(e) => {
+                          // Seek to 1 second to show a meaningful frame
+                          const vid = e.currentTarget;
+                          vid.currentTime = 1;
+                        }}
+                      />
+                    ) : (
+                      <img
+                        src={(opportunity as any).thumbnailUrl || (opportunity as any).thumbnail_url || `https://picsum.photos/seed/${opportunity.id}/640/360`}
+                        alt={opportunity.title}
+                        className="w-full h-auto max-h-[240px] object-contain"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).src = `https://picsum.photos/seed/${opportunity.id}/640/360`;
+                        }}
+                      />
+                    )}
                     {/* Overlay play icon on hover */}
                     <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200 bg-black/30">
                       <div className="w-12 h-12 rounded-full bg-white/90 flex items-center justify-center">
@@ -637,21 +655,22 @@ export default function BrandMarketplace() {
               </DialogHeader>
               
               <div className="space-y-6 py-4">
-                {/* Video player / thumbnail */}
-                <div className="aspect-video relative rounded-lg overflow-hidden bg-black">
+                {/* Video player / thumbnail — flex container for natural aspect ratio */}
+                <div className="relative rounded-lg overflow-hidden bg-black flex items-center justify-center" style={{ minHeight: '200px', maxHeight: '60vh' }}>
                   {selectedOpportunity.videoUrl ? (
                     <video
                       src={selectedOpportunity.videoUrl}
                       poster={selectedOpportunity.thumbnailUrl || undefined}
                       controls
-                      className="w-full h-full object-contain"
+                      className="w-full h-auto max-h-[60vh] object-contain"
                       playsInline
+                      autoPlay
                     />
                   ) : (
                     <img
                       src={selectedOpportunity.thumbnailUrl || `https://picsum.photos/seed/${selectedOpportunity.id}/1280/720`}
                       alt={selectedOpportunity.title}
-                      className="w-full h-full object-cover"
+                      className="w-full h-auto max-h-[60vh] object-contain"
                     />
                   )}
                   <div className="absolute top-3 right-3 flex items-center gap-2">

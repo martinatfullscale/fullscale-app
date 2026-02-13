@@ -2405,12 +2405,27 @@ export async function registerRoutes(
       const videos = await storage.getReadyVideosForMarketplace();
       
       // Transform videos into marketplace opportunities format
-      const opportunities = videos.map((video) => ({
+      const opportunities = videos.map((video) => {
+        // For local uploads, prefer extracted frame or on-demand frame endpoint over DB thumbnail (which may be a stock photo)
+        let thumbnailUrl = video.thumbnailUrl;
+        if (video.filePath || video.platform === "fullscale") {
+          // Check if a frame_0s.jpg exists for this video
+          const frameUrl = `/uploads/frames/${video.id}/frame_0s.jpg`;
+          const framePath = path.join(process.cwd(), "public", frameUrl);
+          if (fs.existsSync(framePath)) {
+            thumbnailUrl = frameUrl;
+          } else {
+            // Use on-demand frame endpoint as fallback
+            thumbnailUrl = `/api/video/${video.id}/frame/0`;
+          }
+        }
+
+        return {
         id: video.id,
         videoId: video.id,
         youtubeId: video.youtubeId,
         title: video.title,
-        thumbnailUrl: video.thumbnailUrl,
+        thumbnailUrl,
         creatorName: CREATOR_NAMES[video.category || ""] || video.category || "Pro Creator",
         viewCount: video.viewCount,
         sceneValue: Math.round(video.priorityScore * 1.2), // Derive value from priority
@@ -2422,7 +2437,8 @@ export async function registerRoutes(
         platform: video.platform === "fullscale" || video.filePath ? "fullscale" : (video.platform || "youtube"),
         filePath: video.filePath || null,
         videoUrl: video.filePath ? video.filePath.replace(/^\.\/public/, '') : null,
-      }));
+      };
+      });
 
       res.json({ opportunities, total: opportunities.length });
     } catch (err: any) {
