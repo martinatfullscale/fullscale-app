@@ -2354,6 +2354,8 @@ export async function registerRoutes(
         surfaces: video.surfaces?.map(s => s.surfaceType) || [],
         duration: video.duration || "10:00",
         platform: video.platform === "fullscale" || video.filePath ? "fullscale" : (video.platform || "youtube"),
+        filePath: video.filePath || null,
+        videoUrl: video.filePath ? video.filePath.replace(/^\.\/public/, '') : null,
       }));
 
       res.json({ opportunities, total: opportunities.length });

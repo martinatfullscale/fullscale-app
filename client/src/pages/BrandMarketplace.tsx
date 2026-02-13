@@ -50,6 +50,8 @@ interface MarketplaceOpportunity {
   duration: string;
   platform?: string;
   platforms?: string[];
+  videoUrl?: string | null;
+  filePath?: string | null;
 }
 
 // Static demo opportunities for pitch mode - 20 items with unique creator space images
@@ -631,13 +633,23 @@ export default function BrandMarketplace() {
               </DialogHeader>
               
               <div className="space-y-6 py-4">
-                {/* Video thumbnail with platform badges */}
+                {/* Video player / thumbnail */}
                 <div className="aspect-video relative rounded-lg overflow-hidden bg-black">
-                  <img
-                    src={(selectedOpportunity as any).thumbnailUrl || (selectedOpportunity as any).thumbnail_url || `https://picsum.photos/seed/${selectedOpportunity.id}/1280/720`}
-                    alt={selectedOpportunity.title}
-                    className="w-full h-full object-cover"
-                  />
+                  {selectedOpportunity.videoUrl ? (
+                    <video
+                      src={selectedOpportunity.videoUrl}
+                      poster={selectedOpportunity.thumbnailUrl || undefined}
+                      controls
+                      className="w-full h-full object-contain"
+                      playsInline
+                    />
+                  ) : (
+                    <img
+                      src={selectedOpportunity.thumbnailUrl || `https://picsum.photos/seed/${selectedOpportunity.id}/1280/720`}
+                      alt={selectedOpportunity.title}
+                      className="w-full h-full object-cover"
+                    />
+                  )}
                   <div className="absolute top-3 right-3 flex items-center gap-2">
                     {(selectedOpportunity.platforms || [selectedOpportunity.platform]).filter(Boolean).map((p) => (
                       <div
@@ -714,25 +726,41 @@ export default function BrandMarketplace() {
                   </div>
                 </div>
 
-                {/* Price and Buy */}
+                {/* Price and Actions */}
                 <div className="flex items-center justify-between p-4 bg-primary/5 rounded-lg border border-primary/20">
                   <div>
                     <p className="text-sm text-muted-foreground">Placement Value</p>
                     <p className="text-3xl font-bold text-emerald-500">${selectedOpportunity.sceneValue}</p>
                   </div>
-                  <Button 
-                    size="lg" 
-                    className="gap-2"
-                    onClick={() => {
-                      handleBuy(selectedOpportunity);
-                      setSelectedOpportunity(null);
-                    }}
-                    disabled={buyingId === selectedOpportunity.id}
-                    data-testid="button-buy-modal"
-                  >
-                    <ShoppingCart className="w-5 h-5" />
-                    {buyingId === selectedOpportunity.id ? "Processing..." : "Purchase Placement"}
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    {selectedOpportunity.videoUrl && (
+                      <Button
+                        size="lg"
+                        variant="outline"
+                        className="gap-2"
+                        onClick={() => {
+                          window.location.href = `/remix/${selectedOpportunity.videoId}`;
+                        }}
+                        data-testid="button-place-product"
+                      >
+                        <Palette className="w-5 h-5" />
+                        Place Product
+                      </Button>
+                    )}
+                    <Button
+                      size="lg"
+                      className="gap-2"
+                      onClick={() => {
+                        handleBuy(selectedOpportunity);
+                        setSelectedOpportunity(null);
+                      }}
+                      disabled={buyingId === selectedOpportunity.id}
+                      data-testid="button-buy-modal"
+                    >
+                      <ShoppingCart className="w-5 h-5" />
+                      {buyingId === selectedOpportunity.id ? "Processing..." : "Purchase Placement"}
+                    </Button>
+                  </div>
                 </div>
               </div>
             </>
