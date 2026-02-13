@@ -10,6 +10,7 @@ import { usePitchMode } from "@/contexts/pitch-mode-context";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { UploadModal } from "@/components/UploadModal";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -1008,6 +1009,8 @@ export default function Library() {
   });
 
   const [deletingVideoId, setDeletingVideoId] = useState<number | null>(null);
+  const [renamingVideo, setRenamingVideo] = useState<{ id: number; title: string } | null>(null);
+  const [renameInput, setRenameInput] = useState("");
 
   const deleteVideoMutation = useMutation({
     mutationFn: async (videoId: number) => {
@@ -1397,10 +1400,8 @@ export default function Library() {
                         title="Rename"
                         onClick={(e) => {
                           e.stopPropagation();
-                          const newTitle = window.prompt("Enter new title:", video.title);
-                          if (newTitle && newTitle !== video.title && video.id) {
-                            renameVideoMutation.mutate({ videoId: video.id, title: newTitle });
-                          }
+                          setRenamingVideo({ id: video.id!, title: video.title });
+                          setRenameInput(video.title);
                         }}
                       >
                         <Pencil className="w-3 h-3" />
@@ -1542,6 +1543,48 @@ export default function Library() {
                   <><Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> Deleting...</>
                 ) : (
                   <><Trash2 className="w-3.5 h-3.5 mr-1.5" /> Delete</>
+                )}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Rename dialog */}
+      <Dialog open={renamingVideo !== null} onOpenChange={(open) => { if (!open) setRenamingVideo(null); }}>
+        <DialogContent className="sm:max-w-sm">
+          <div className="space-y-4">
+            <h3 className="text-lg font-semibold">Rename Video</h3>
+            <Input
+              value={renameInput}
+              onChange={(e) => setRenameInput(e.target.value)}
+              placeholder="Enter new title"
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && renameInput.trim() && renamingVideo) {
+                  renameVideoMutation.mutate({ videoId: renamingVideo.id, title: renameInput.trim() });
+                  setRenamingVideo(null);
+                }
+              }}
+            />
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" size="sm" onClick={() => setRenamingVideo(null)}>
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                disabled={!renameInput.trim() || renameInput === renamingVideo?.title || renameVideoMutation.isPending}
+                onClick={() => {
+                  if (renamingVideo && renameInput.trim()) {
+                    renameVideoMutation.mutate({ videoId: renamingVideo.id, title: renameInput.trim() });
+                    setRenamingVideo(null);
+                  }
+                }}
+              >
+                {renameVideoMutation.isPending ? (
+                  <><Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> Saving...</>
+                ) : (
+                  "Save"
                 )}
               </Button>
             </div>
