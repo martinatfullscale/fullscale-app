@@ -1300,12 +1300,12 @@ export default function Library() {
                     )}
                   </div>
                 )}
-                <div className="relative overflow-hidden bg-zinc-900">
+                <div className="relative overflow-hidden bg-zinc-900 aspect-video">
                   {video.image ? (
                     <img
                       src={video.image}
                       alt={video.title}
-                      className="w-full block transition-transform duration-300 group-hover:scale-105"
+                      className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                       onError={(e) => {
                         const el = e.target as HTMLImageElement;
                         el.style.display = 'none';
@@ -1314,7 +1314,7 @@ export default function Library() {
                       }}
                     />
                   ) : null}
-                  <div className={`img-placeholder items-center justify-center gap-2 text-zinc-500 ${video.image ? 'hidden' : 'flex'}`} style={{ height: '200px' }}>
+                  <div className={`img-placeholder absolute inset-0 items-center justify-center gap-2 text-zinc-500 ${video.image ? 'hidden' : 'flex'}`}>
                     <Video className="w-10 h-10" />
                     <span className="text-xs">No thumbnail</span>
                   </div>
