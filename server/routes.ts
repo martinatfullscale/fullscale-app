@@ -4523,10 +4523,1172 @@ export async function registerRoutes(
     }
   });
 
+  // ============================================================================
+  // SCENE ANALYSIS & BRAND MATCHING (Claude Dense)
+  // ============================================================================
+
+  // Trigger Claude Dense narrative analysis for all surfaces on a video
+  app.post("/api/scenes/:videoId/analyze", isAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+
+      const surfaces = await storage.getDetectedSurfaces(videoId);
+      const validSurfaces = surfaces.filter(s => s.surfaceType !== "Filtered");
+      if (validSurfaces.length === 0) {
+        return res.status(400).json({ error: "No detected surfaces to analyze. Run a scan first." });
+      }
+
+      // Import dynamically to avoid loading Anthropic SDK at startup
+      const { analyzeNarrative } = await import("./lib/ai/claude-dense/narrativeAnalyzer");
+      const { analyzeCulturalRelevance } = await import("./lib/ai/claude-dense/culturalRelevance");
+
+      const results: any[] = [];
+
+      // Group surfaces by unique timestamp to avoid re-analyzing the same frame
+      const timestampMap = new Map<number, typeof validSurfaces>();
+      for (const surface of validSurfaces) {
+        const ts = Math.floor(Number(surface.timestamp));
+        if (!timestampMap.has(ts)) timestampMap.set(ts, []);
+        timestampMap.get(ts)!.push(surface);
+      }
+
+      for (const [timestamp, surfacesAtTime] of timestampMap) {
+        const frameFilename = `frame_${timestamp}s.jpg`;
+        const framePath = path.join(process.cwd(), "public", "uploads", "frames", videoId.toString(), frameFilename);
+
+        if (!fs.existsSync(framePath)) {
+          console.log(`[Scene Analysis] Frame not found: ${frameFilename}, skipping`);
+          continue;
+        }
+
+        const frameBuffer = fs.readFileSync(framePath);
+        const frameBase64 = frameBuffer.toString('base64');
+        const bestSurface = surfacesAtTime.reduce((a, b) =>
+          parseFloat(String(a.confidence)) > parseFloat(String(b.confidence)) ? a : b
+        );
+
+        // Parse scene context from existing surface data
+        const sceneContextParts = (bestSurface.sceneContext || '').split(' | ');
+
+        const narrativeInput = {
+          videoId,
+          frameIndex: timestamp,
+          frameBase64,
+          detectedSurfaces: surfacesAtTime.map(s => ({
+            id: s.id,
+            surfaceType: s.surfaceType,
+            confidence: parseFloat(String(s.confidence)),
+            boundingBox: {
+              x: parseFloat(String(s.boundingBoxX)),
+              y: parseFloat(String(s.boundingBoxY)),
+              width: parseFloat(String(s.boundingBoxWidth)),
+              height: parseFloat(String(s.boundingBoxHeight)),
+            },
+            lightingDirection: s.lightingDirection || undefined,
+            lightingIntensity: s.lightingIntensity ? parseFloat(String(s.lightingIntensity)) : undefined,
+            cameraAngle: s.cameraAngle || undefined,
+          })),
+          sceneContext: {
+            sceneType: sceneContextParts[0] || 'Unknown',
+            brightness: { overall: 128, top: 128, bottom: 128 },
+            edgeDensity: 0.1,
+            colorWarmth: 0,
+            surroundings: bestSurface.surroundings || [],
+            brandCategorySuggestions: sceneContextParts[2] ? sceneContextParts[2].replace('Brands: ', '').split(', ') : [],
+          },
+        };
+
+        const narrative = await analyzeNarrative(narrativeInput);
+        if (!narrative) continue;
+
+        const cultural = analyzeCulturalRelevance(narrative);
+
+        // Save to DB for each surface at this timestamp
+        for (const surface of surfacesAtTime) {
+          const saved = await storage.createSceneAnalysis({
+            videoId,
+            surfaceId: surface.id,
+            frameStart: timestamp,
+            frameEnd: timestamp + 2, // 2s frame interval
+            narrativeContext: narrative.narrativeContext,
+            emotionalTone: narrative.emotionalTone,
+            culturalTags: [...narrative.culturalTags, ...cultural.culturalMoments],
+            placementViability: narrative.placementViability,
+            suggestedCategories: narrative.suggestedProductCategories,
+            reasoning: narrative.reasoning,
+            claudeResponseRaw: { narrative, cultural },
+          });
+          results.push(saved);
+        }
+      }
+
+      res.json({ success: true, analyzed: results.length, results });
+    } catch (err: any) {
+      console.error("[Scene Analysis] Error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to analyze scenes" });
+    }
+  });
+
+  // Get all narrative analysis results for a video
+  app.get("/api/scenes/:videoId/analysis", isAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const analyses = await storage.getSceneAnalysisByVideo(videoId);
+      res.json(analyses);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Get analysis for a specific surface
+  app.get("/api/scenes/:videoId/analysis/:surfaceId", isAuthenticated, async (req: any, res) => {
+    try {
+      const surfaceId = parseInt(req.params.surfaceId);
+      const analysis = await storage.getSceneAnalysisBySurface(surfaceId);
+      if (!analysis) return res.status(404).json({ error: "No analysis found for this surface" });
+      res.json(analysis);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Run brand matching for a scene analysis
+  app.post("/api/scenes/:sceneId/match-brands", isAuthenticated, async (req: any, res) => {
+    try {
+      const sceneId = parseInt(req.params.sceneId);
+
+      // Get the scene analysis
+      const scenes = await storage.getSceneAnalysisByVideo(0); // We need to find by ID
+      // Actually get scene directly via DB
+      const allScenes = await db.select().from((await import("@shared/schema")).sceneAnalysis)
+        .where(eq((await import("@shared/schema")).sceneAnalysis.id, sceneId));
+      const scene = allScenes[0];
+      if (!scene) return res.status(404).json({ error: "Scene analysis not found" });
+
+      // Get all brand products
+      const brands = await storage.getAllBrandProducts();
+      if (brands.length === 0) {
+        return res.json({ matches: [], message: "No brand products available" });
+      }
+
+      // Get the surface for this scene
+      const surface = scene.surfaceId ? (await storage.getDetectedSurfaces(scene.videoId))
+        .find(s => s.id === scene.surfaceId) : null;
+
+      const { matchBrands } = await import("./lib/ai/claude-dense/brandMatcher");
+
+      const brandMatchResult = await matchBrands({
+        narrativeAnalysis: {
+          narrativeContext: scene.narrativeContext || '',
+          emotionalTone: scene.emotionalTone || 'neutral',
+          culturalTags: (scene.culturalTags as string[]) || [],
+          placementViability: scene.placementViability || 0,
+          suggestedProductCategories: (scene.suggestedCategories as string[]) || [],
+          reasoning: scene.reasoning || '',
+        },
+        availableBrands: brands.map(b => ({
+          id: b.id,
+          name: b.name,
+          category: b.category,
+          imageUrl: b.imageUrl,
+        })),
+        surfaceDetails: {
+          surfaceType: surface?.surfaceType || 'Table',
+          boundingBox: {
+            x: parseFloat(String(surface?.boundingBoxX || 0)),
+            y: parseFloat(String(surface?.boundingBoxY || 0)),
+            width: parseFloat(String(surface?.boundingBoxWidth || 0)),
+            height: parseFloat(String(surface?.boundingBoxHeight || 0)),
+          },
+          confidence: parseFloat(String(surface?.confidence || 0)),
+          lightingDirection: surface?.lightingDirection || 'ambient',
+        },
+      });
+
+      // Save matches to DB
+      const savedMatches = [];
+      for (const match of brandMatchResult.matches) {
+        const saved = await storage.createBrandMatchScore({
+          sceneAnalysisId: sceneId,
+          brandProductId: match.brandProductId,
+          compatibilityScore: match.compatibilityScore,
+          reasoning: match.reasoning,
+          suggestedPlacementStyle: match.suggestedPlacementStyle,
+        });
+        savedMatches.push(saved);
+      }
+
+      res.json({ matches: savedMatches });
+    } catch (err: any) {
+      console.error("[Brand Match] Error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to match brands" });
+    }
+  });
+
+  // Get ranked brand matches for a scene
+  app.get("/api/scenes/:sceneId/matches", isAuthenticated, async (req: any, res) => {
+    try {
+      const sceneId = parseInt(req.params.sceneId);
+      const matches = await storage.getBrandMatchesByScene(sceneId);
+      res.json(matches);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Approve a brand match
+  app.post("/api/scenes/:sceneId/matches/:matchId/approve", isAuthenticated, async (req: any, res) => {
+    try {
+      const matchId = parseInt(req.params.matchId);
+      const approvedBy = req.user?.email || req.body.approvedBy || 'system';
+      const updated = await storage.approveBrandMatch(matchId, approvedBy);
+      if (!updated) return res.status(404).json({ error: "Match not found" });
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Auto-generate placements from approved brand matches for a video
+  app.post("/api/scenes/:videoId/auto-place", isAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const userEmail = req.user?.email || '';
+
+      // Get all approved brand matches for this video
+      const matches = await storage.getBrandMatchesByVideo(videoId);
+      const approvedMatches = matches.filter(m => m.approved);
+
+      if (approvedMatches.length === 0) {
+        return res.status(400).json({ error: "No approved brand matches found. Approve matches first." });
+      }
+
+      const createdPlacements = [];
+
+      for (const match of approvedMatches) {
+        // Get the scene analysis to find the surface
+        const scenes = await db.select().from((await import("@shared/schema")).sceneAnalysis)
+          .where(eq((await import("@shared/schema")).sceneAnalysis.id, match.sceneAnalysisId));
+        const scene = scenes[0];
+        if (!scene || !scene.surfaceId) continue;
+
+        // Get the brand product
+        const product = await storage.getBrandProduct(match.brandProductId);
+        if (!product) continue;
+
+        // Get the surface for bbox data
+        const surfaces = await storage.getDetectedSurfaces(videoId);
+        const surface = surfaces.find(s => s.id === scene.surfaceId);
+        if (!surface) continue;
+
+        // Compute scene group ID (same logic as existing placement propagation)
+        const centerX = parseFloat(String(surface.boundingBoxX)) + parseFloat(String(surface.boundingBoxWidth)) / 2;
+        const centerY = parseFloat(String(surface.boundingBoxY)) + parseFloat(String(surface.boundingBoxHeight)) / 2;
+        const sceneGroupId = `video-${videoId}-${surface.surfaceType}-${centerX.toFixed(1)}-${centerY.toFixed(1)}`;
+
+        const placement = await storage.savePlacement({
+          videoId,
+          surfaceId: surface.id,
+          productId: product.id,
+          productImageUrl: product.imageUrl,
+          createdBy: userEmail,
+          role: 'system',
+          sceneGroupId,
+          transform: { offsetX: 0, offsetY: 0, scale: 1, rotation: 0, flipH: false },
+          blend: {
+            opacity: 0.9,
+            blendMode: 'source-over',
+            shadowEnabled: true,
+            shadowBlur: 8,
+            shadowOffsetX: 2,
+            shadowOffsetY: 4,
+            shadowColor: 'rgba(0,0,0,0.3)',
+            featherRadius: 0,
+            brightness: 1,
+            contrast: 1,
+          },
+          status: 'active',
+        });
+        createdPlacements.push(placement);
+      }
+
+      res.json({ success: true, created: createdPlacements.length, placements: createdPlacements });
+    } catch (err: any) {
+      console.error("[Auto-Place] Error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to auto-place" });
+    }
+  });
+
+  // ─── Image Generation (Seeddance 2.0) ───────────────────────────
+
+  // POST /api/generate/product-asset — Generate a product asset for a surface
+  app.post("/api/generate/product-asset", isAuthenticated, async (req: any, res) => {
+    try {
+      const { videoId, surfaceId, brandProductId } = req.body;
+      if (!videoId || !surfaceId || !brandProductId) {
+        return res.status(400).json({ error: "videoId, surfaceId, and brandProductId are required" });
+      }
+
+      // Get surface and scene analysis data
+      const surfaces = await storage.getSurfacesForVideo(videoId);
+      const surface = surfaces.find((s: any) => s.id === surfaceId);
+      if (!surface) return res.status(404).json({ error: "Surface not found" });
+
+      const analyses = await storage.getSceneAnalysisBySurface(surfaceId);
+      const analysis = analyses[0];
+      if (!analysis) return res.status(404).json({ error: "No scene analysis for this surface. Run analysis first." });
+
+      // Get brand product
+      const items = await storage.getMonetizationItems();
+      const brandProduct = items.find((i: any) => i.id === brandProductId);
+      if (!brandProduct) return res.status(404).json({ error: "Brand product not found" });
+
+      const { generateProductAsset } = await import("./lib/ai/image-gen/assetGenerator");
+      const result = await generateProductAsset({
+        videoId,
+        surfaceId,
+        brandProduct: { id: brandProduct.id, name: brandProduct.name, category: brandProduct.category || null },
+        sceneContext: {
+          narrativeContext: analysis.narrativeContext || "",
+          emotionalTone: analysis.emotionalTone || "neutral",
+          culturalTags: (analysis.culturalTags as string[]) || [],
+          suggestedProductCategories: (analysis.suggestedCategories as string[]) || [],
+        },
+        surfaceDimensions: {
+          width: Math.round((surface.bboxWidth || 0.2) * 1920),
+          height: Math.round((surface.bboxHeight || 0.2) * 1080),
+          aspectRatio: (surface.bboxWidth || 0.2) / Math.max(surface.bboxHeight || 0.2, 0.001),
+        },
+        sceneAesthetic: {
+          colorWarmth: surface.colorWarmth || 0,
+          brightness: { overall: surface.brightness || 128, top: 128, bottom: 128 },
+          dominantColors: [],
+        },
+      });
+
+      if (result.success && result.assetPath) {
+        // Save to DB
+        const asset = await storage.createGeneratedAsset({
+          videoId,
+          surfaceId,
+          brandProductId,
+          assetPath: result.assetPath,
+          prompt: result.prompt,
+          status: "pending_review",
+        });
+        res.json({ success: true, asset, prompt: result.prompt });
+      } else {
+        res.status(500).json({ success: false, error: result.error, prompt: result.prompt });
+      }
+    } catch (err: any) {
+      console.error("[Generate] Error:", err.message);
+      res.status(500).json({ error: err.message || "Asset generation failed" });
+    }
+  });
+
+  // POST /api/generate/composite-preview — Composite asset onto frame and evaluate
+  app.post("/api/generate/composite-preview", isAuthenticated, async (req: any, res) => {
+    try {
+      const { videoId, surfaceId, assetId } = req.body;
+      if (!videoId || !surfaceId || !assetId) {
+        return res.status(400).json({ error: "videoId, surfaceId, and assetId are required" });
+      }
+
+      const assets = await storage.getAssetsByVideo(videoId);
+      const asset = assets.find((a: any) => a.id === assetId);
+      if (!asset || !asset.assetPath) return res.status(404).json({ error: "Asset not found" });
+
+      const surfaces = await storage.getSurfacesForVideo(videoId);
+      const surface = surfaces.find((s: any) => s.id === surfaceId);
+      if (!surface) return res.status(404).json({ error: "Surface not found" });
+
+      // Build frame path from video's local file
+      const video = await storage.getVideoById(videoId);
+      if (!video || !video.localFilePath) return res.status(404).json({ error: "Video local file not found" });
+
+      const { compositeAssetOnFrame } = await import("./lib/ai/image-gen/compositing");
+      const path = await import("path");
+      const outputDir = path.join(process.cwd(), "public", "generated-assets", videoId.toString());
+      const fullAssetPath = path.join(process.cwd(), "public", asset.assetPath.replace(/^\//, ""));
+
+      const result = await compositeAssetOnFrame({
+        framePath: video.localFilePath,
+        assetPath: fullAssetPath,
+        surfaceBbox: {
+          x: surface.bboxX || 0,
+          y: surface.bboxY || 0,
+          width: surface.bboxWidth || 0.2,
+          height: surface.bboxHeight || 0.2,
+        },
+        frameDimensions: { width: 1920, height: 1080 },
+        outputDir,
+        videoId,
+        surfaceId,
+      });
+
+      res.json({
+        success: true,
+        compositePath: "/" + path.relative(path.join(process.cwd(), "public"), result.compositePath),
+        previewPath: "/" + path.relative(path.join(process.cwd(), "public"), result.previewPath),
+        placedRegion: result.placedRegion,
+      });
+    } catch (err: any) {
+      console.error("[Composite] Error:", err.message);
+      res.status(500).json({ error: err.message || "Compositing failed" });
+    }
+  });
+
+  // POST /api/generate/:assetId/approve — Approve a generated asset
+  app.post("/api/generate/:assetId/approve", isAuthenticated, async (req: any, res) => {
+    try {
+      const assetId = parseInt(req.params.assetId);
+      const approved = await storage.approveAsset(assetId, req.user?.username || "system");
+      if (!approved) return res.status(404).json({ error: "Asset not found" });
+      res.json(approved);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Approval failed" });
+    }
+  });
+
+  // GET /api/generate/video/:videoId/assets — List generated assets for a video
+  app.get("/api/generate/video/:videoId/assets", isAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const assets = await storage.getAssetsByVideo(videoId);
+      res.json(assets);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to fetch assets" });
+    }
+  });
+
+  // ─── CDense Content Synthesis ──────────────────────────────────
+
+  // POST /api/synthesize/:videoId — Run full synthesis pipeline for a video
+  app.post("/api/synthesize/:videoId", isAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const { surfaceId, brandProductId, skipEvaluation } = req.body;
+
+      if (!surfaceId || !brandProductId) {
+        return res.status(400).json({ error: "surfaceId and brandProductId are required" });
+      }
+
+      const surfaces = await storage.getSurfacesForVideo(videoId);
+      const surface = surfaces.find((s: any) => s.id === surfaceId);
+      if (!surface) return res.status(404).json({ error: "Surface not found" });
+
+      const analyses = await storage.getSceneAnalysisBySurface(surfaceId);
+      const analysis = analyses[0];
+      if (!analysis) return res.status(404).json({ error: "No scene analysis. Run analysis first." });
+
+      const items = await storage.getMonetizationItems();
+      const brandProduct = items.find((i: any) => i.id === brandProductId);
+      if (!brandProduct) return res.status(404).json({ error: "Brand product not found" });
+
+      const video = await storage.getVideoById(videoId);
+      if (!video || !video.localFilePath) return res.status(404).json({ error: "Video local file not found" });
+
+      const { synthesizeContent } = await import("./lib/ai/cdense/contentSynthesis");
+
+      const result = await synthesizeContent({
+        videoId,
+        surfaceId,
+        brandProduct: { id: brandProduct.id, name: brandProduct.name, category: brandProduct.category || null },
+        sceneContext: {
+          narrativeContext: analysis.narrativeContext || "",
+          emotionalTone: analysis.emotionalTone || "neutral",
+          culturalTags: (analysis.culturalTags as string[]) || [],
+          suggestedProductCategories: (analysis.suggestedCategories as string[]) || [],
+        },
+        surfaceBbox: {
+          x: surface.bboxX || 0,
+          y: surface.bboxY || 0,
+          width: surface.bboxWidth || 0.2,
+          height: surface.bboxHeight || 0.2,
+        },
+        sceneAesthetic: {
+          colorWarmth: surface.colorWarmth || 0,
+          brightness: { overall: surface.brightness || 128, top: 128, bottom: 128 },
+          dominantColors: [],
+        },
+        lightingDirection: surface.lightingDirection || "ambient",
+        framePath: video.localFilePath,
+        frameDimensions: { width: 1920, height: 1080 },
+        skipEvaluation: skipEvaluation || false,
+      });
+
+      if (result.success && result.assetPath) {
+        // Save the generated asset
+        await storage.createGeneratedAsset({
+          videoId,
+          surfaceId,
+          brandProductId,
+          assetPath: result.assetPath,
+          prompt: result.prompt,
+          status: result.evaluation?.needsManualReview ? "pending_review" : "approved",
+        });
+      }
+
+      res.json(result);
+    } catch (err: any) {
+      console.error("[Synthesize] Error:", err.message);
+      res.status(500).json({ error: err.message || "Synthesis failed" });
+    }
+  });
+
+  // POST /api/synthesize/:videoId/decide — Get placement decisions for all surfaces
+  app.post("/api/synthesize/:videoId/decide", isAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const scanMode = req.body.scanMode || "standard";
+
+      const surfaces = await storage.getSurfacesForVideo(videoId);
+      const allAnalyses = await storage.getSceneAnalysisByVideo(videoId);
+
+      if (allAnalyses.length === 0) {
+        return res.status(400).json({ error: "No scene analyses found. Run narrative analysis first." });
+      }
+
+      const { decidePlacement } = await import("./lib/ai/cdense/connector");
+
+      const decisions = [];
+      for (const analysis of allAnalyses) {
+        const surface = surfaces.find((s: any) => s.id === analysis.surfaceId);
+        if (!surface) continue;
+
+        const brandMatches = await storage.getBrandMatchesByScene(analysis.id);
+        const existingPlacements = await storage.getPlacementsForVideo(videoId);
+        const hasExisting = existingPlacements.some((p: any) => p.detectedSurfaceId === surface.id);
+
+        const decision = decidePlacement({
+          videoId,
+          surfaceId: surface.id,
+          narrativeAnalysis: {
+            narrativeContext: analysis.narrativeContext || "",
+            emotionalTone: analysis.emotionalTone || "neutral",
+            culturalTags: (analysis.culturalTags as string[]) || [],
+            placementViability: analysis.placementViability || 0,
+            suggestedProductCategories: (analysis.suggestedCategories as string[]) || [],
+            reasoning: analysis.reasoning || "",
+          },
+          brandMatches: {
+            matches: brandMatches.map((m: any) => ({
+              brandProductId: m.brandProductId,
+              compatibilityScore: m.compatibilityScore || 0,
+              reasoning: m.reasoning || "",
+              suggestedPlacementStyle: m.suggestedPlacementStyle || "natural tabletop",
+            })),
+          },
+          surfaceDetails: {
+            surfaceType: surface.surfaceType || "table",
+            boundingBox: {
+              x: surface.bboxX || 0,
+              y: surface.bboxY || 0,
+              width: surface.bboxWidth || 0.2,
+              height: surface.bboxHeight || 0.2,
+            },
+            confidence: surface.confidence || 0,
+            lightingDirection: surface.lightingDirection || "ambient",
+          },
+          sceneAesthetic: {
+            colorWarmth: surface.colorWarmth || 0,
+            brightness: { overall: surface.brightness || 128, top: 128, bottom: 128 },
+            dominantColors: [],
+          },
+          hasExistingPlacement: hasExisting,
+          scanMode,
+        });
+
+        decisions.push({ surfaceId: surface.id, analysisId: analysis.id, decision });
+      }
+
+      res.json({ decisions, total: decisions.length });
+    } catch (err: any) {
+      console.error("[Decide] Error:", err.message);
+      res.status(500).json({ error: err.message || "Decision failed" });
+    }
+  });
+
+  // ─── Auto-Remix Engine ──────────────────────────────────────────
+
+  // POST /api/remix/:videoId/start — Kick off a remix job
+  app.post("/api/remix/:videoId/start", isAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const userId = req.user?.id || 1;
+      const config = req.body || {};
+
+      // Validate video exists
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+
+      // Check for scene analyses
+      const analyses = await storage.getSceneAnalysisByVideo(videoId);
+      if (analyses.length === 0) {
+        return res.status(400).json({ error: "No scene analyses found. Run Claude Dense analysis first via Narrative Insights." });
+      }
+
+      // Start the remix pipeline in the background
+      const { runRemixPipeline } = await import("./lib/remix/remixOrchestrator");
+
+      // Return the job ID immediately, process async
+      const job = await storage.createRemixJob({
+        videoId,
+        userId,
+        status: "queued",
+        config: {
+          minClipDuration: config.minClipDuration || 15,
+          maxClipDuration: config.maxClipDuration || 60,
+          maxClips: config.maxClips || 5,
+          platformTargets: config.platformTargets || ["tiktok", "youtube_shorts"],
+          captionsEnabled: config.captionsEnabled !== false,
+        },
+        platformTargets: config.platformTargets || ["tiktok", "youtube_shorts"],
+      });
+
+      // Run pipeline asynchronously
+      runRemixPipeline(videoId, userId, config).catch(err => {
+        console.error(`[Remix] Background job ${job.id} failed:`, err);
+      });
+
+      res.json({ jobId: job.id, status: "queued", message: "Remix job started" });
+    } catch (err: any) {
+      console.error("[Remix Start] Error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to start remix" });
+    }
+  });
+
+  // GET /api/remix/jobs/:jobId — Get job status and clips
+  app.get("/api/remix/jobs/:jobId", isAuthenticated, async (req: any, res) => {
+    try {
+      const jobId = parseInt(req.params.jobId);
+      const job = await storage.getRemixJob(jobId);
+      if (!job) return res.status(404).json({ error: "Remix job not found" });
+
+      const clips = await storage.getClipsByJob(jobId);
+      res.json({ job, clips });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to fetch job" });
+    }
+  });
+
+  // GET /api/remix/video/:videoId/jobs — List all remix jobs for a video
+  app.get("/api/remix/video/:videoId/jobs", isAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const userId = req.user?.id || 1;
+      const jobs = await storage.getRemixJobsByUser(userId);
+      const videoJobs = jobs.filter(j => j.videoId === videoId);
+      res.json(videoJobs);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to fetch jobs" });
+    }
+  });
+
+  // GET /api/remix/clips/:videoId — List all generated clips for a video
+  app.get("/api/remix/clips/:videoId", isAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const clips = await storage.getClipsByVideo(videoId);
+      res.json(clips);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to fetch clips" });
+    }
+  });
+
+  // POST /api/remix/clips/:clipId/approve — Approve a clip for publishing
+  app.post("/api/remix/clips/:clipId/approve", isAuthenticated, async (req: any, res) => {
+    try {
+      const clipId = parseInt(req.params.clipId);
+      const updated = await storage.updateClipStatus(clipId, "ready");
+      if (!updated) return res.status(404).json({ error: "Clip not found" });
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Approval failed" });
+    }
+  });
+
+  // POST /api/remix/clips/:clipId/reject — Reject a clip
+  app.post("/api/remix/clips/:clipId/reject", isAuthenticated, async (req: any, res) => {
+    try {
+      const clipId = parseInt(req.params.clipId);
+      const updated = await storage.updateClipStatus(clipId, "rejected");
+      if (!updated) return res.status(404).json({ error: "Clip not found" });
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Rejection failed" });
+    }
+  });
+
+  // POST /api/remix/clips/:clipId/publish — Mark clip as published
+  app.post("/api/remix/clips/:clipId/publish", isAuthenticated, async (req: any, res) => {
+    try {
+      const clipId = parseInt(req.params.clipId);
+      const { platform, url } = req.body;
+      if (!platform) return res.status(400).json({ error: "platform is required" });
+
+      const published = await storage.publishClip(clipId, platform, url || "");
+      if (!published) return res.status(404).json({ error: "Clip not found" });
+      res.json(published);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Publishing failed" });
+    }
+  });
+
+  // GET /api/remix/clips/:clipId/download — Stream clip file
+  app.get("/api/remix/clips/:clipId/download", isAuthenticated, async (req: any, res) => {
+    try {
+      const clipId = parseInt(req.params.clipId);
+      const clips = await storage.getClipsByJob(0); // Need to find by ID
+      // Fallback: search across all videos
+      const allClips = await storage.getClipsByVideo(0);
+
+      // Direct approach: get the clip by iterating
+      // For now, use a direct DB query approach via the storage getTask pattern
+      const clip = await findClipById(clipId);
+      if (!clip || !clip.exportPath) {
+        return res.status(404).json({ error: "Clip not found or not exported" });
+      }
+
+      const fullPath = path.join(process.cwd(), "public", clip.exportPath.replace(/^\//, ""));
+      if (!fs.existsSync(fullPath)) {
+        return res.status(404).json({ error: "Clip file not found on disk" });
+      }
+
+      const filename = `fullscale-clip-${clip.videoId}-${clipId}.mp4`;
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      res.setHeader("Content-Type", "video/mp4");
+
+      const fileStream = fs.createReadStream(fullPath);
+      fileStream.pipe(res);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Download failed" });
+    }
+  });
+
+  // ─── Remix Templates ──────────────────────────────────────────
+
+  // GET /api/remix/templates — List user's remix templates
+  app.get("/api/remix/templates", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user?.id || 1;
+      const templates = await storage.getRemixTemplates(userId);
+      res.json(templates);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to fetch templates" });
+    }
+  });
+
+  // POST /api/remix/templates — Create a new remix template
+  app.post("/api/remix/templates", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user?.id || 1;
+      const { name, description, formatRules, transitionStyle, captionStyle } = req.body;
+      if (!name) return res.status(400).json({ error: "name is required" });
+
+      const template = await storage.createRemixTemplate({
+        userId,
+        name,
+        description: description || null,
+        formatRules: formatRules || null,
+        transitionStyle: transitionStyle || null,
+        captionStyle: captionStyle || null,
+      });
+      res.json(template);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to create template" });
+    }
+  });
+
+  // PUT /api/remix/templates/:id — Update a template
+  app.put("/api/remix/templates/:id", isAuthenticated, async (req: any, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const updated = await storage.updateRemixTemplate(id, req.body);
+      if (!updated) return res.status(404).json({ error: "Template not found" });
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Update failed" });
+    }
+  });
+
+  // DELETE /api/remix/templates/:id — Delete a template
+  app.delete("/api/remix/templates/:id", isAuthenticated, async (req: any, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      await storage.deleteRemixTemplate(id);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Delete failed" });
+    }
+  });
+
+  // ─── Distribution & Publishing ──────────────────────────────────
+
+  // Distribution Profiles (connected social accounts)
+
+  // GET /api/distribution/profiles — List user's connected platforms
+  app.get("/api/distribution/profiles", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user?.id || 1;
+      const profiles = await storage.getDistributionProfiles(userId);
+      // Strip sensitive tokens from response
+      const safe = profiles.map(p => ({
+        ...p,
+        accessToken: p.accessToken ? "••••••" : null,
+        refreshToken: undefined,
+      }));
+      res.json(safe);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to fetch profiles" });
+    }
+  });
+
+  // POST /api/distribution/profiles — Connect a platform
+  app.post("/api/distribution/profiles", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user?.id || 1;
+      const { platform, accountName, accountId, accessToken, refreshToken, tokenExpiresAt, metadata } = req.body;
+
+      if (!platform) return res.status(400).json({ error: "platform is required" });
+
+      const profile = await storage.createDistributionProfile({
+        userId,
+        platform,
+        accountName: accountName || null,
+        accountId: accountId || null,
+        accessToken: accessToken || null,
+        refreshToken: refreshToken || null,
+        tokenExpiresAt: tokenExpiresAt ? new Date(tokenExpiresAt) : null,
+        isActive: true,
+        metadata: metadata || null,
+      });
+
+      res.json({ ...profile, accessToken: "••••••", refreshToken: undefined });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to connect platform" });
+    }
+  });
+
+  // PUT /api/distribution/profiles/:id — Update a profile
+  app.put("/api/distribution/profiles/:id", isAuthenticated, async (req: any, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const updated = await storage.updateDistributionProfile(id, req.body);
+      if (!updated) return res.status(404).json({ error: "Profile not found" });
+      res.json({ ...updated, accessToken: "••••••", refreshToken: undefined });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Update failed" });
+    }
+  });
+
+  // DELETE /api/distribution/profiles/:id — Disconnect a platform
+  app.delete("/api/distribution/profiles/:id", isAuthenticated, async (req: any, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      await storage.deleteDistributionProfile(id);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Delete failed" });
+    }
+  });
+
+  // Publishing
+
+  // POST /api/distribution/publish — Publish a clip to a platform
+  app.post("/api/distribution/publish", isAuthenticated, async (req: any, res) => {
+    try {
+      const { clipId, profileId, caption, hashtags } = req.body;
+      if (!clipId || !profileId) {
+        return res.status(400).json({ error: "clipId and profileId are required" });
+      }
+
+      const profile = await storage.getDistributionProfile(profileId);
+      if (!profile || !profile.accessToken) {
+        return res.status(404).json({ error: "Distribution profile not found or no access token" });
+      }
+
+      // Find clip
+      const clip = await findClipById(clipId);
+      if (!clip || !clip.exportPath) {
+        return res.status(404).json({ error: "Clip not found or not exported" });
+      }
+
+      const clipPath = path.join(process.cwd(), "public", clip.exportPath.replace(/^\//, ""));
+      if (!fs.existsSync(clipPath)) {
+        return res.status(404).json({ error: "Clip file not found on disk" });
+      }
+
+      // Format caption if not provided
+      let finalCaption = caption || "";
+      let finalHashtags = hashtags || [];
+
+      if (!finalCaption) {
+        const { formatCaption } = await import("./lib/distribution/captionFormatter");
+        const analyses = await storage.getSceneAnalysisByVideo(clip.videoId);
+        const analysis = analyses[0];
+
+        const formatted = await formatCaption({
+          platform: profile.platform,
+          brandNames: [],
+          narrativeContext: analysis?.narrativeContext || "",
+          emotionalTone: analysis?.emotionalTone || "neutral",
+          culturalTags: (analysis?.culturalTags as string[]) || [],
+        });
+
+        finalCaption = formatted.captionText;
+        finalHashtags = formatted.hashtags;
+      }
+
+      // Publish
+      const { publishToPlaftorm } = await import("./lib/distribution/platformPublisher");
+      const result = await publishToPlaftorm(profile.platform, {
+        clipPath,
+        caption: finalCaption,
+        hashtags: finalHashtags,
+        accessToken: profile.accessToken,
+        accountId: profile.accountId || "",
+        metadata: profile.metadata as Record<string, any> || {},
+      });
+
+      if (result.success) {
+        const post = await storage.createPublishedPost({
+          clipId,
+          videoId: clip.videoId,
+          profileId,
+          platform: profile.platform,
+          platformPostId: result.platformPostId,
+          postUrl: result.postUrl,
+          caption: finalCaption,
+          hashtags: finalHashtags,
+          publishedAt: new Date(),
+          status: "published",
+        });
+        res.json({ success: true, post, postUrl: result.postUrl });
+      } else {
+        const post = await storage.createPublishedPost({
+          clipId,
+          videoId: clip.videoId,
+          profileId,
+          platform: profile.platform,
+          caption: finalCaption,
+          hashtags: finalHashtags,
+          status: "failed",
+          errorMessage: result.error,
+        });
+        res.status(500).json({ success: false, error: result.error, post });
+      }
+    } catch (err: any) {
+      console.error("[Publish] Error:", err.message);
+      res.status(500).json({ error: err.message || "Publishing failed" });
+    }
+  });
+
+  // Scheduling
+
+  // POST /api/distribution/schedule — Schedule a clip for future publishing
+  app.post("/api/distribution/schedule", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user?.id || 1;
+      const { clipId, profileId, platform, scheduledFor, caption, hashtags } = req.body;
+
+      if (!clipId || !profileId || !scheduledFor) {
+        return res.status(400).json({ error: "clipId, profileId, and scheduledFor are required" });
+      }
+
+      const { schedulePost } = await import("./lib/distribution/scheduler");
+      const schedule = await schedulePost({
+        userId,
+        clipId,
+        profileId,
+        platform: platform || "tiktok",
+        scheduledFor: new Date(scheduledFor),
+        caption,
+        hashtags,
+      });
+
+      res.json(schedule);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Scheduling failed" });
+    }
+  });
+
+  // POST /api/distribution/schedule/batch — Schedule across multiple platforms
+  app.post("/api/distribution/schedule/batch", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user?.id || 1;
+      const { clipId, platformProfiles, baseTime, staggerMinutes, caption, hashtags } = req.body;
+
+      if (!clipId || !platformProfiles || !baseTime) {
+        return res.status(400).json({ error: "clipId, platformProfiles, and baseTime are required" });
+      }
+
+      const { batchSchedule } = await import("./lib/distribution/scheduler");
+      const schedules = await batchSchedule({
+        userId,
+        clipId,
+        platformProfiles,
+        baseTime: new Date(baseTime),
+        staggerMinutes,
+        caption,
+        hashtags,
+      });
+
+      res.json(schedules);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Batch scheduling failed" });
+    }
+  });
+
+  // GET /api/distribution/schedules — List user's scheduled posts
+  app.get("/api/distribution/schedules", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user?.id || 1;
+      const schedules = await storage.getSchedulesByUser(userId);
+      res.json(schedules);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to fetch schedules" });
+    }
+  });
+
+  // DELETE /api/distribution/schedules/:id — Cancel a scheduled post
+  app.delete("/api/distribution/schedules/:id", isAuthenticated, async (req: any, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      await storage.cancelSchedule(id);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Cancel failed" });
+    }
+  });
+
+  // Caption Formatting
+
+  // POST /api/distribution/format-caption — Generate platform-specific caption
+  app.post("/api/distribution/format-caption", isAuthenticated, async (req: any, res) => {
+    try {
+      const { platform, clipId, brandNames, customCaption } = req.body;
+      if (!platform) return res.status(400).json({ error: "platform is required" });
+
+      let narrativeContext = "";
+      let emotionalTone = "neutral";
+      let culturalTags: string[] = [];
+
+      if (clipId) {
+        const clip = await findClipById(clipId);
+        if (clip) {
+          const analyses = await storage.getSceneAnalysisByVideo(clip.videoId);
+          const analysis = analyses[0];
+          if (analysis) {
+            narrativeContext = analysis.narrativeContext || "";
+            emotionalTone = analysis.emotionalTone || "neutral";
+            culturalTags = (analysis.culturalTags as string[]) || [];
+          }
+        }
+      }
+
+      const { formatCaption } = await import("./lib/distribution/captionFormatter");
+      const result = await formatCaption({
+        platform,
+        brandNames: brandNames || [],
+        narrativeContext,
+        emotionalTone,
+        culturalTags,
+        customCaption,
+      });
+
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Caption formatting failed" });
+    }
+  });
+
+  // Analytics
+
+  // GET /api/distribution/analytics/video/:videoId — Get aggregate analytics for a video
+  app.get("/api/distribution/analytics/video/:videoId", isAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const { computeAggregateMetrics } = await import("./lib/distribution/analyticsCollector");
+      const metrics = await computeAggregateMetrics(videoId);
+      res.json(metrics);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to fetch analytics" });
+    }
+  });
+
+  // POST /api/distribution/analytics/video/:videoId/refresh — Refresh analytics from platforms
+  app.post("/api/distribution/analytics/video/:videoId/refresh", isAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const { collectVideoAnalytics, computeAggregateMetrics } = await import("./lib/distribution/analyticsCollector");
+
+      await collectVideoAnalytics(videoId);
+      const metrics = await computeAggregateMetrics(videoId);
+      res.json(metrics);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Analytics refresh failed" });
+    }
+  });
+
+  // GET /api/distribution/analytics/clip/:clipId — Get analytics for a specific clip
+  app.get("/api/distribution/analytics/clip/:clipId", isAuthenticated, async (req: any, res) => {
+    try {
+      const clipId = parseInt(req.params.clipId);
+      const analytics = await storage.getAnalyticsByClip(clipId);
+      res.json(analytics);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to fetch clip analytics" });
+    }
+  });
+
+  // Published Posts
+
+  // GET /api/distribution/posts/video/:videoId — List published posts for a video
+  app.get("/api/distribution/posts/video/:videoId", isAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const posts = await storage.getPublishedPostsByVideo(videoId);
+      res.json(posts);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to fetch posts" });
+    }
+  });
+
+  // POST /api/distribution/suggest-time — Get optimal posting time for a platform
+  app.post("/api/distribution/suggest-time", isAuthenticated, async (req: any, res) => {
+    try {
+      const { platform, timezone } = req.body;
+      if (!platform) return res.status(400).json({ error: "platform is required" });
+
+      const { suggestPostingTime } = await import("./lib/distribution/scheduler");
+      const suggestedTime = suggestPostingTime(platform, timezone);
+      res.json({ platform, suggestedTime: suggestedTime.toISOString() });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to suggest time" });
+    }
+  });
+
   // Seed Data
   await seedDatabase();
 
   return httpServer;
+}
+
+// Helper to find a clip by ID across all jobs
+async function findClipById(clipId: number) {
+  // Get all videos, then search clips — not ideal but works without a dedicated storage method
+  try {
+    const { db } = await import("./db");
+    const { generatedClips } = await import("../shared/schema");
+    const { eq } = await import("drizzle-orm");
+    const [clip] = await db.select().from(generatedClips).where(eq(generatedClips.id, clipId)).limit(1);
+    return clip || null;
+  } catch {
+    return null;
+  }
 }
 
 async function seedDatabase() {

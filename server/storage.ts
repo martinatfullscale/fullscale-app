@@ -10,6 +10,12 @@ import {
   savedPlacements,
   videoExports,
   sharedLinks,
+  sceneAnalysis,
+  brandMatchScores,
+  remixJobs,
+  generatedClips,
+  remixTemplates,
+  generatedAssets,
   type MonetizationItem,
   type InsertMonetizationItem,
   type YoutubeConnection,
@@ -28,6 +34,30 @@ import {
   type InsertVideoExport,
   type SharedLink,
   type InsertSharedLink,
+  type SceneAnalysis,
+  type InsertSceneAnalysis,
+  type BrandMatchScore,
+  type InsertBrandMatchScore,
+  type RemixJob,
+  type InsertRemixJob,
+  type GeneratedClip,
+  type InsertGeneratedClip,
+  type RemixTemplate,
+  type InsertRemixTemplate,
+  type GeneratedAsset,
+  type InsertGeneratedAsset,
+  distributionProfiles,
+  publishedPosts,
+  clipAnalytics,
+  publishingSchedules,
+  type DistributionProfile,
+  type InsertDistributionProfile,
+  type PublishedPost,
+  type InsertPublishedPost,
+  type ClipAnalytics,
+  type InsertClipAnalytics,
+  type PublishingSchedule,
+  type InsertPublishingSchedule,
 } from "@shared/schema";
 import { users, type User, type UpsertUser } from "@shared/models/auth";
 import { encrypt, decrypt } from "./encryption";
@@ -110,6 +140,63 @@ export interface IStorage {
   incrementSharedLinkViews(slug: string): Promise<void>;
   getSharedLinksByUser(email: string): Promise<SharedLink[]>;
   deactivateSharedLink(id: number): Promise<void>;
+  // Scene analysis methods
+  createSceneAnalysis(data: InsertSceneAnalysis): Promise<SceneAnalysis>;
+  getSceneAnalysisByVideo(videoId: number): Promise<SceneAnalysis[]>;
+  getSceneAnalysisBySurface(surfaceId: number): Promise<SceneAnalysis | undefined>;
+  // Brand matching methods
+  createBrandMatchScore(data: InsertBrandMatchScore): Promise<BrandMatchScore>;
+  getBrandMatchesByScene(sceneAnalysisId: number): Promise<BrandMatchScore[]>;
+  getBrandMatchesByVideo(videoId: number): Promise<BrandMatchScore[]>;
+  approveBrandMatch(matchId: number, approvedBy: string): Promise<BrandMatchScore | undefined>;
+  // Remix job methods
+  createRemixJob(data: InsertRemixJob): Promise<RemixJob>;
+  getRemixJob(jobId: number): Promise<RemixJob | undefined>;
+  getRemixJobsByUser(userId: number): Promise<RemixJob[]>;
+  updateRemixJobStatus(jobId: number, status: string, errorMessage?: string): Promise<RemixJob | undefined>;
+  // Generated clip methods
+  createGeneratedClip(data: InsertGeneratedClip): Promise<GeneratedClip>;
+  getClipsByJob(jobId: number): Promise<GeneratedClip[]>;
+  getClipsByVideo(videoId: number): Promise<GeneratedClip[]>;
+  updateClipStatus(clipId: number, status: string): Promise<GeneratedClip | undefined>;
+  publishClip(clipId: number, platform: string, url: string): Promise<GeneratedClip | undefined>;
+  // Generated asset methods
+  createGeneratedAsset(data: InsertGeneratedAsset): Promise<GeneratedAsset>;
+  getAssetsByVideo(videoId: number): Promise<GeneratedAsset[]>;
+  approveAsset(assetId: number): Promise<GeneratedAsset | undefined>;
+  // Remix template methods
+  createRemixTemplate(data: InsertRemixTemplate): Promise<RemixTemplate>;
+  getRemixTemplates(userId: number): Promise<RemixTemplate[]>;
+  updateRemixTemplate(id: number, data: Partial<InsertRemixTemplate>): Promise<RemixTemplate | undefined>;
+  deleteRemixTemplate(id: number): Promise<void>;
+
+  // Distribution profile methods
+  createDistributionProfile(data: InsertDistributionProfile): Promise<DistributionProfile>;
+  getDistributionProfiles(userId: number): Promise<DistributionProfile[]>;
+  getDistributionProfile(id: number): Promise<DistributionProfile | undefined>;
+  updateDistributionProfile(id: number, data: Partial<InsertDistributionProfile>): Promise<DistributionProfile | undefined>;
+  deleteDistributionProfile(id: number): Promise<void>;
+
+  // Published posts methods
+  createPublishedPost(data: InsertPublishedPost): Promise<PublishedPost>;
+  getPublishedPost(id: number): Promise<PublishedPost | undefined>;
+  getPublishedPostsByClip(clipId: number): Promise<PublishedPost[]>;
+  getPublishedPostsByVideo(videoId: number): Promise<PublishedPost[]>;
+  getPublishedPostsByUser(userId: number): Promise<PublishedPost[]>;
+  updatePublishedPostStatus(postId: number, status: string, platformPostId?: string, postUrl?: string, errorMessage?: string): Promise<PublishedPost | undefined>;
+
+  // Clip analytics methods
+  upsertClipAnalytics(data: InsertClipAnalytics): Promise<ClipAnalytics>;
+  getAnalyticsByPost(postId: number): Promise<ClipAnalytics[]>;
+  getAnalyticsByClip(clipId: number): Promise<ClipAnalytics[]>;
+  getAnalyticsSummaryByVideo(videoId: number): Promise<ClipAnalytics[]>;
+
+  // Publishing schedule methods
+  createPublishingSchedule(data: InsertPublishingSchedule): Promise<PublishingSchedule>;
+  getSchedulesByUser(userId: number): Promise<PublishingSchedule[]>;
+  getPendingSchedules(): Promise<PublishingSchedule[]>;
+  updateScheduleStatus(scheduleId: number, status: string, postId?: number, errorMessage?: string): Promise<PublishingSchedule | undefined>;
+  cancelSchedule(scheduleId: number): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -865,6 +952,331 @@ export class DatabaseStorage implements IStorage {
       .update(sharedLinks)
       .set({ isActive: false })
       .where(eq(sharedLinks.id, id));
+  }
+
+  // ── Scene Analysis Methods ──
+
+  async createSceneAnalysis(data: InsertSceneAnalysis): Promise<SceneAnalysis> {
+    const [result] = await db.insert(sceneAnalysis).values(data).returning();
+    return result;
+  }
+
+  async getSceneAnalysisByVideo(videoId: number): Promise<SceneAnalysis[]> {
+    return db.select().from(sceneAnalysis)
+      .where(eq(sceneAnalysis.videoId, videoId))
+      .orderBy(sceneAnalysis.frameStart);
+  }
+
+  async getSceneAnalysisBySurface(surfaceId: number): Promise<SceneAnalysis | undefined> {
+    const [result] = await db.select().from(sceneAnalysis)
+      .where(eq(sceneAnalysis.surfaceId, surfaceId));
+    return result;
+  }
+
+  // ── Brand Matching Methods ──
+
+  async createBrandMatchScore(data: InsertBrandMatchScore): Promise<BrandMatchScore> {
+    const [result] = await db.insert(brandMatchScores).values(data).returning();
+    return result;
+  }
+
+  async getBrandMatchesByScene(sceneAnalysisId: number): Promise<BrandMatchScore[]> {
+    return db.select().from(brandMatchScores)
+      .where(eq(brandMatchScores.sceneAnalysisId, sceneAnalysisId))
+      .orderBy(desc(brandMatchScores.compatibilityScore));
+  }
+
+  async getBrandMatchesByVideo(videoId: number): Promise<BrandMatchScore[]> {
+    const scenes = await this.getSceneAnalysisByVideo(videoId);
+    if (scenes.length === 0) return [];
+    const sceneIds = scenes.map(s => s.id);
+    return db.select().from(brandMatchScores)
+      .where(sql`${brandMatchScores.sceneAnalysisId} IN (${sql.join(sceneIds.map(id => sql`${id}`), sql`, `)})`)
+      .orderBy(desc(brandMatchScores.compatibilityScore));
+  }
+
+  async approveBrandMatch(matchId: number, approvedBy: string): Promise<BrandMatchScore | undefined> {
+    const [result] = await db.update(brandMatchScores)
+      .set({ approved: true, approvedBy })
+      .where(eq(brandMatchScores.id, matchId))
+      .returning();
+    return result;
+  }
+
+  // ── Remix Job Methods ──
+
+  async createRemixJob(data: InsertRemixJob): Promise<RemixJob> {
+    const [result] = await db.insert(remixJobs).values(data).returning();
+    return result;
+  }
+
+  async getRemixJob(jobId: number): Promise<RemixJob | undefined> {
+    const [result] = await db.select().from(remixJobs)
+      .where(eq(remixJobs.id, jobId));
+    return result;
+  }
+
+  async getRemixJobsByUser(userId: number): Promise<RemixJob[]> {
+    return db.select().from(remixJobs)
+      .where(eq(remixJobs.userId, userId))
+      .orderBy(desc(remixJobs.createdAt));
+  }
+
+  async updateRemixJobStatus(jobId: number, status: string, errorMessage?: string): Promise<RemixJob | undefined> {
+    const updates: any = { status };
+    if (errorMessage) updates.errorMessage = errorMessage;
+    if (status === 'complete' || status === 'failed') updates.completedAt = new Date();
+    const [result] = await db.update(remixJobs)
+      .set(updates)
+      .where(eq(remixJobs.id, jobId))
+      .returning();
+    return result;
+  }
+
+  // ── Generated Clip Methods ──
+
+  async createGeneratedClip(data: InsertGeneratedClip): Promise<GeneratedClip> {
+    const [result] = await db.insert(generatedClips).values(data).returning();
+    return result;
+  }
+
+  async getClipsByJob(jobId: number): Promise<GeneratedClip[]> {
+    return db.select().from(generatedClips)
+      .where(eq(generatedClips.remixJobId, jobId))
+      .orderBy(generatedClips.clipStart);
+  }
+
+  async getClipsByVideo(videoId: number): Promise<GeneratedClip[]> {
+    return db.select().from(generatedClips)
+      .where(eq(generatedClips.videoId, videoId))
+      .orderBy(desc(generatedClips.createdAt));
+  }
+
+  async updateClipStatus(clipId: number, status: string): Promise<GeneratedClip | undefined> {
+    const [result] = await db.update(generatedClips)
+      .set({ status })
+      .where(eq(generatedClips.id, clipId))
+      .returning();
+    return result;
+  }
+
+  async publishClip(clipId: number, platform: string, url: string): Promise<GeneratedClip | undefined> {
+    const [result] = await db.update(generatedClips)
+      .set({
+        status: 'published',
+        publishedAt: new Date(),
+        publishedPlatform: platform,
+        publishedUrl: url,
+      })
+      .where(eq(generatedClips.id, clipId))
+      .returning();
+    return result;
+  }
+
+  // ── Generated Asset Methods ──
+
+  async createGeneratedAsset(data: InsertGeneratedAsset): Promise<GeneratedAsset> {
+    const [result] = await db.insert(generatedAssets).values(data).returning();
+    return result;
+  }
+
+  async getAssetsByVideo(videoId: number): Promise<GeneratedAsset[]> {
+    return db.select().from(generatedAssets)
+      .where(eq(generatedAssets.videoId, videoId))
+      .orderBy(desc(generatedAssets.createdAt));
+  }
+
+  async approveAsset(assetId: number): Promise<GeneratedAsset | undefined> {
+    const [result] = await db.update(generatedAssets)
+      .set({ approved: true })
+      .where(eq(generatedAssets.id, assetId))
+      .returning();
+    return result;
+  }
+
+  // ── Remix Template Methods ──
+
+  async createRemixTemplate(data: InsertRemixTemplate): Promise<RemixTemplate> {
+    const [result] = await db.insert(remixTemplates).values(data).returning();
+    return result;
+  }
+
+  async getRemixTemplates(userId: number): Promise<RemixTemplate[]> {
+    return db.select().from(remixTemplates)
+      .where(eq(remixTemplates.userId, userId))
+      .orderBy(desc(remixTemplates.createdAt));
+  }
+
+  async updateRemixTemplate(id: number, data: Partial<InsertRemixTemplate>): Promise<RemixTemplate | undefined> {
+    const [result] = await db.update(remixTemplates)
+      .set(data)
+      .where(eq(remixTemplates.id, id))
+      .returning();
+    return result;
+  }
+
+  async deleteRemixTemplate(id: number): Promise<void> {
+    await db.delete(remixTemplates).where(eq(remixTemplates.id, id));
+  }
+
+  // ── Distribution Profile Methods ──
+
+  async createDistributionProfile(data: InsertDistributionProfile): Promise<DistributionProfile> {
+    const [result] = await db.insert(distributionProfiles).values(data).returning();
+    return result;
+  }
+
+  async getDistributionProfiles(userId: number): Promise<DistributionProfile[]> {
+    return db.select().from(distributionProfiles)
+      .where(and(eq(distributionProfiles.userId, userId), eq(distributionProfiles.isActive, true)))
+      .orderBy(desc(distributionProfiles.createdAt));
+  }
+
+  async getDistributionProfile(id: number): Promise<DistributionProfile | undefined> {
+    const [result] = await db.select().from(distributionProfiles)
+      .where(eq(distributionProfiles.id, id)).limit(1);
+    return result;
+  }
+
+  async updateDistributionProfile(id: number, data: Partial<InsertDistributionProfile>): Promise<DistributionProfile | undefined> {
+    const [result] = await db.update(distributionProfiles)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(distributionProfiles.id, id))
+      .returning();
+    return result;
+  }
+
+  async deleteDistributionProfile(id: number): Promise<void> {
+    await db.update(distributionProfiles)
+      .set({ isActive: false, updatedAt: new Date() })
+      .where(eq(distributionProfiles.id, id));
+  }
+
+  // ── Published Post Methods ──
+
+  async createPublishedPost(data: InsertPublishedPost): Promise<PublishedPost> {
+    const [result] = await db.insert(publishedPosts).values(data).returning();
+    return result;
+  }
+
+  async getPublishedPost(id: number): Promise<PublishedPost | undefined> {
+    const [result] = await db.select().from(publishedPosts)
+      .where(eq(publishedPosts.id, id)).limit(1);
+    return result;
+  }
+
+  async getPublishedPostsByClip(clipId: number): Promise<PublishedPost[]> {
+    return db.select().from(publishedPosts)
+      .where(eq(publishedPosts.clipId, clipId))
+      .orderBy(desc(publishedPosts.createdAt));
+  }
+
+  async getPublishedPostsByVideo(videoId: number): Promise<PublishedPost[]> {
+    return db.select().from(publishedPosts)
+      .where(eq(publishedPosts.videoId, videoId))
+      .orderBy(desc(publishedPosts.createdAt));
+  }
+
+  async getPublishedPostsByUser(userId: number): Promise<PublishedPost[]> {
+    const profiles = await this.getDistributionProfiles(userId);
+    if (profiles.length === 0) return [];
+    const profileIds = profiles.map(p => p.id);
+    return db.select().from(publishedPosts)
+      .where(sql`${publishedPosts.profileId} IN (${sql.join(profileIds.map(id => sql`${id}`), sql`, `)})`)
+      .orderBy(desc(publishedPosts.createdAt));
+  }
+
+  async updatePublishedPostStatus(
+    postId: number,
+    status: string,
+    platformPostId?: string,
+    postUrl?: string,
+    errorMessage?: string
+  ): Promise<PublishedPost | undefined> {
+    const updateData: Record<string, any> = { status };
+    if (platformPostId) updateData.platformPostId = platformPostId;
+    if (postUrl) updateData.postUrl = postUrl;
+    if (errorMessage) updateData.errorMessage = errorMessage;
+    if (status === "published") updateData.publishedAt = new Date();
+
+    const [result] = await db.update(publishedPosts)
+      .set(updateData)
+      .where(eq(publishedPosts.id, postId))
+      .returning();
+    return result;
+  }
+
+  // ── Clip Analytics Methods ──
+
+  async upsertClipAnalytics(data: InsertClipAnalytics): Promise<ClipAnalytics> {
+    const [result] = await db.insert(clipAnalytics).values(data).returning();
+    return result;
+  }
+
+  async getAnalyticsByPost(postId: number): Promise<ClipAnalytics[]> {
+    return db.select().from(clipAnalytics)
+      .where(eq(clipAnalytics.postId, postId))
+      .orderBy(desc(clipAnalytics.fetchedAt));
+  }
+
+  async getAnalyticsByClip(clipId: number): Promise<ClipAnalytics[]> {
+    return db.select().from(clipAnalytics)
+      .where(eq(clipAnalytics.clipId, clipId))
+      .orderBy(desc(clipAnalytics.fetchedAt));
+  }
+
+  async getAnalyticsSummaryByVideo(videoId: number): Promise<ClipAnalytics[]> {
+    const clips = await this.getClipsByVideo(videoId);
+    if (clips.length === 0) return [];
+    const clipIds = clips.map(c => c.id);
+    return db.select().from(clipAnalytics)
+      .where(sql`${clipAnalytics.clipId} IN (${sql.join(clipIds.map(id => sql`${id}`), sql`, `)})`)
+      .orderBy(desc(clipAnalytics.fetchedAt));
+  }
+
+  // ── Publishing Schedule Methods ──
+
+  async createPublishingSchedule(data: InsertPublishingSchedule): Promise<PublishingSchedule> {
+    const [result] = await db.insert(publishingSchedules).values(data).returning();
+    return result;
+  }
+
+  async getSchedulesByUser(userId: number): Promise<PublishingSchedule[]> {
+    return db.select().from(publishingSchedules)
+      .where(eq(publishingSchedules.userId, userId))
+      .orderBy(desc(publishingSchedules.scheduledFor));
+  }
+
+  async getPendingSchedules(): Promise<PublishingSchedule[]> {
+    return db.select().from(publishingSchedules)
+      .where(and(
+        eq(publishingSchedules.status, "pending"),
+        sql`${publishingSchedules.scheduledFor} <= NOW()`
+      ))
+      .orderBy(publishingSchedules.scheduledFor);
+  }
+
+  async updateScheduleStatus(
+    scheduleId: number,
+    status: string,
+    postId?: number,
+    errorMessage?: string
+  ): Promise<PublishingSchedule | undefined> {
+    const updateData: Record<string, any> = { status };
+    if (postId) updateData.postId = postId;
+    if (errorMessage) updateData.errorMessage = errorMessage;
+
+    const [result] = await db.update(publishingSchedules)
+      .set(updateData)
+      .where(eq(publishingSchedules.id, scheduleId))
+      .returning();
+    return result;
+  }
+
+  async cancelSchedule(scheduleId: number): Promise<void> {
+    await db.update(publishingSchedules)
+      .set({ status: "cancelled" })
+      .where(eq(publishingSchedules.id, scheduleId));
   }
 
   private deriveContexts(surfaces: DetectedSurface[]): string[] {

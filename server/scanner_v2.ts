@@ -76,6 +76,40 @@ const CONFIG = {
 } as const;
 
 // ============================================================================
+// SCAN MODE CONFIGURATION
+// ============================================================================
+// Standard mode: strict rules for manual placement flow
+// AutoRemix mode: relaxed rules for narrative-first approach (auto-remix engine)
+
+export interface ScanModeConfig {
+  maxPersonOccupancy: number;
+  minSurfaceArea: number;
+  maxBboxHeight: number;
+  requireTableEdge: boolean;
+  allowBackgroundPlacements: boolean;
+  fallbackToGeneration: boolean;
+}
+
+export const scanModes: Record<string, ScanModeConfig> = {
+  standard: {
+    maxPersonOccupancy: 0.5,
+    minSurfaceArea: 0.08,
+    maxBboxHeight: 0.3,
+    requireTableEdge: true,
+    allowBackgroundPlacements: false,
+    fallbackToGeneration: false,
+  },
+  autoRemix: {
+    maxPersonOccupancy: 0.7,
+    minSurfaceArea: 0.05,
+    maxBboxHeight: 0.4,
+    requireTableEdge: false,
+    allowBackgroundPlacements: true,
+    fallbackToGeneration: true,
+  },
+};
+
+// ============================================================================
 // TYPES
 // ============================================================================
 
@@ -1542,7 +1576,8 @@ async function groupSurfacesTemporally(videoId: number): Promise<void> {
 
 export async function processVideoScan(
   videoId: number,
-  forceRescan: boolean = false
+  forceRescan: boolean = false,
+  scanMode: keyof typeof scanModes = "standard"
 ): Promise<ScanResult> {
   console.log(`[Scanner V2] ========== STARTING SCAN ==========`);
   console.log(`[Scanner V2] Video ID: ${videoId}, Force Rescan: ${forceRescan}`);
@@ -1800,6 +1835,117 @@ export async function processVideoScan(
       await enrichSurfacesWithContext(videoId, permanentFramesDir);
     } catch (enrichErr) {
       console.error(`[Scanner V2] Scene context enrichment failed (non-fatal):`, enrichErr);
+    }
+
+    // CLAUDE DENSE + GENERATION DECISION BRANCH
+    // If in autoRemix mode and ANTHROPIC_API_KEY is set, run narrative analysis
+    // and decide whether to generate assets for surfaces without natural product moments
+    if (scanMode === "autoRemix" && process.env.ANTHROPIC_API_KEY) {
+      try {
+        console.log(`[Scanner V2] Running Claude Dense narrative analysis (autoRemix mode)...`);
+        const enrichedSurfaces = await storage.getDetectedSurfaces(videoId);
+        const activeSurfaces = enrichedSurfaces.filter(s => s.surfaceType !== "Filtered");
+
+        if (activeSurfaces.length > 0) {
+          const { analyzeNarrative } = await import("./lib/ai/claude-dense/narrativeAnalyzer");
+          const { decidePlacement } = await import("./lib/ai/cdense/connector");
+
+          let analysisCount = 0;
+          let generateCount = 0;
+
+          for (const surface of activeSurfaces.slice(0, 10)) {
+            try {
+              // Build frame path for this surface's timestamp
+              const frameTimestamp = Math.round(surface.timestampStart || 0);
+              const framePath = path.join(permanentFramesDir, `frame_${frameTimestamp}s.jpg`);
+
+              const fs = await import("fs");
+              if (!fs.existsSync(framePath)) continue;
+
+              const frameBase64 = fs.readFileSync(framePath).toString("base64");
+
+              const narrativeResult = await analyzeNarrative({
+                videoId,
+                frameIndex: frameTimestamp,
+                frameBase64,
+                detectedSurfaces: [{
+                  id: surface.id,
+                  surfaceType: surface.surfaceType || "table",
+                  confidence: surface.confidence || 0.5,
+                  boundingBox: {
+                    x: surface.bboxX || 0,
+                    y: surface.bboxY || 0,
+                    width: surface.bboxWidth || 0.2,
+                    height: surface.bboxHeight || 0.2,
+                  },
+                  lightingDirection: surface.lightingDirection || undefined,
+                }],
+                sceneContext: {
+                  sceneType: surface.sceneType || "unknown",
+                  brightness: { overall: surface.brightness || 128, top: 128, bottom: 128 },
+                  edgeDensity: surface.edgeDensity || 0,
+                  colorWarmth: surface.colorWarmth || 0,
+                  surroundings: [],
+                  brandCategorySuggestions: [],
+                },
+              });
+
+              // Save analysis to DB
+              await storage.createSceneAnalysis({
+                videoId,
+                surfaceId: surface.id,
+                frameStart: frameTimestamp,
+                narrativeContext: narrativeResult.narrativeContext,
+                emotionalTone: narrativeResult.emotionalTone,
+                culturalTags: narrativeResult.culturalTags,
+                placementViability: narrativeResult.placementViability,
+                suggestedCategories: narrativeResult.suggestedProductCategories,
+                reasoning: narrativeResult.reasoning,
+              });
+              analysisCount++;
+
+              // Check placement decision
+              const existingPlacements = await storage.getPlacementsForVideo(videoId);
+              const hasExisting = existingPlacements.some(p => p.detectedSurfaceId === surface.id);
+
+              const decision = decidePlacement({
+                videoId,
+                surfaceId: surface.id,
+                narrativeAnalysis: narrativeResult,
+                brandMatches: { matches: [] }, // No brand matching during scan — done later via UI
+                surfaceDetails: {
+                  surfaceType: surface.surfaceType || "table",
+                  boundingBox: {
+                    x: surface.bboxX || 0,
+                    y: surface.bboxY || 0,
+                    width: surface.bboxWidth || 0.2,
+                    height: surface.bboxHeight || 0.2,
+                  },
+                  confidence: surface.confidence || 0.5,
+                  lightingDirection: surface.lightingDirection || "ambient",
+                },
+                sceneAesthetic: {
+                  colorWarmth: surface.colorWarmth || 0,
+                  brightness: { overall: surface.brightness || 128, top: 128, bottom: 128 },
+                  dominantColors: [],
+                },
+                hasExistingPlacement: hasExisting,
+                scanMode: "autoRemix",
+              });
+
+              if (decision.type === "generate_asset") generateCount++;
+              console.log(`[Scanner V2] Surface ${surface.id}: ${decision.type} — ${decision.reason}`);
+
+            } catch (surfaceErr) {
+              console.warn(`[Scanner V2] Claude Dense failed for surface ${surface.id} (non-fatal):`, surfaceErr);
+            }
+          }
+
+          console.log(`[Scanner V2] Claude Dense: analyzed ${analysisCount} surfaces, ${generateCount} flagged for generation`);
+        }
+      } catch (claudeErr) {
+        console.error(`[Scanner V2] Claude Dense pipeline failed (non-fatal):`, claudeErr);
+      }
     }
 
     // FINALIZE

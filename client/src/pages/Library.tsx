@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { TopBar } from "@/components/TopBar";
-import { Upload, Eye, CheckCircle, Loader2, AlertTriangle, X, Shield, Sun, Tag, Box, DollarSign, Sparkles, RefreshCw, Play, Globe, HardDrive, Scan, Video, Wand2, Trash2, Pencil } from "lucide-react";
+import { Upload, Eye, CheckCircle, Loader2, AlertTriangle, X, Shield, Sun, Tag, Box, DollarSign, Sparkles, RefreshCw, Play, Globe, HardDrive, Scan, Video, Wand2, Trash2, Pencil, Brain, Scissors, Send } from "lucide-react";
 import { useLocation } from "wouter";
 import { SiInstagram, SiYoutube, SiTwitch, SiFacebook } from "react-icons/si";
 import { motion } from "framer-motion";
@@ -16,6 +16,9 @@ import { UploadModal, CONTENT_CATEGORIES } from "@/components/UploadModal";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SceneAnalysisModal, VideoWithScenes } from "@/components/SceneAnalysisModal";
+import NarrativeInsights from "@/components/NarrativeInsights";
+import RemixStudio from "@/components/RemixStudio";
+import DistributionDashboard from "@/components/DistributionDashboard";
 import { VideoPreviewModal } from "@/components/VideoPreviewModal";
 
 interface IndexedVideo {
@@ -548,6 +551,12 @@ export default function Library() {
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
   const [previewVideo, setPreviewVideo] = useState<DisplayVideo | null>(null);
   const [previewStartTime, setPreviewStartTime] = useState(0);
+  const [narrativeInsightsOpen, setNarrativeInsightsOpen] = useState(false);
+  const [narrativeVideoId, setNarrativeVideoId] = useState<number | null>(null);
+  const [remixStudioOpen, setRemixStudioOpen] = useState(false);
+  const [remixVideoId, setRemixVideoId] = useState<number | null>(null);
+  const [distributionOpen, setDistributionOpen] = useState(false);
+  const [distributionVideoId, setDistributionVideoId] = useState<number | null>(null);
   
   // Admin emails for flexible auth fallback (supports URL param bypass in dev)
   const ADMIN_EMAILS = ['martin@gofullscale.co', 'martin@whtwrks.com', 'martincekechukwu@gmail.com'];
@@ -1372,18 +1381,59 @@ export default function Library() {
                             View Analysis
                           </Button>
                           {video.hasLocalFile && (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="gap-2 border-primary/50 text-primary hover:bg-primary/10"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setLocation(`/remix/${video.id}`);
-                              }}
-                            >
-                              <Wand2 className="w-4 h-4" />
-                              Remix
-                            </Button>
+                            <>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="gap-2 border-purple-500/50 text-purple-300 hover:bg-purple-500/10"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setNarrativeVideoId(video.id!);
+                                  setNarrativeInsightsOpen(true);
+                                }}
+                              >
+                                <Brain className="w-4 h-4" />
+                                Insights
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="gap-2 border-pink-500/50 text-pink-300 hover:bg-pink-500/10"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setRemixVideoId(video.id!);
+                                  setRemixStudioOpen(true);
+                                }}
+                              >
+                                <Scissors className="w-4 h-4" />
+                                Remix
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="gap-2 border-green-500/50 text-green-300 hover:bg-green-500/10"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setDistributionVideoId(video.id!);
+                                  setDistributionOpen(true);
+                                }}
+                              >
+                                <Send className="w-4 h-4" />
+                                Distribute
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="gap-2 border-primary/50 text-primary hover:bg-primary/10"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setLocation(`/remix/${video.id}`);
+                                }}
+                              >
+                                <Wand2 className="w-4 h-4" />
+                                Remix
+                              </Button>
+                            </>
                           )}
                         </div>
                       )}
@@ -1502,7 +1552,34 @@ export default function Library() {
         } : undefined}
       />
 
-      <UploadModal 
+      <NarrativeInsights
+        videoId={narrativeVideoId || 0}
+        open={narrativeInsightsOpen}
+        onClose={() => {
+          setNarrativeInsightsOpen(false);
+          setNarrativeVideoId(null);
+        }}
+      />
+
+      <RemixStudio
+        videoId={remixVideoId || 0}
+        open={remixStudioOpen}
+        onClose={() => {
+          setRemixStudioOpen(false);
+          setRemixVideoId(null);
+        }}
+      />
+
+      <DistributionDashboard
+        videoId={distributionVideoId || 0}
+        open={distributionOpen}
+        onClose={() => {
+          setDistributionOpen(false);
+          setDistributionVideoId(null);
+        }}
+      />
+
+      <UploadModal
         open={uploadModalOpen}
         onClose={() => setUploadModalOpen(false)}
         onUploadComplete={() => {
