@@ -1375,66 +1375,11 @@ export default function Library() {
                         </div>
                       )}
                       {video.aiStatus === "ready" && (
-                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
+                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
                           <Button variant="outline" size="sm" className="gap-2">
                             <Eye className="w-4 h-4" />
                             View Analysis
                           </Button>
-                          {video.hasLocalFile && (
-                            <>
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                className="gap-2 border-purple-500/50 text-purple-300 hover:bg-purple-500/10"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setNarrativeVideoId(video.id!);
-                                  setNarrativeInsightsOpen(true);
-                                }}
-                              >
-                                <Brain className="w-4 h-4" />
-                                Insights
-                              </Button>
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                className="gap-2 border-pink-500/50 text-pink-300 hover:bg-pink-500/10"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setRemixVideoId(video.id!);
-                                  setRemixStudioOpen(true);
-                                }}
-                              >
-                                <Scissors className="w-4 h-4" />
-                                Remix
-                              </Button>
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                className="gap-2 border-green-500/50 text-green-300 hover:bg-green-500/10"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setDistributionVideoId(video.id!);
-                                  setDistributionOpen(true);
-                                }}
-                              >
-                                <Send className="w-4 h-4" />
-                                Distribute
-                              </Button>
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                className="gap-2 border-primary/50 text-primary hover:bg-primary/10"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setLocation(`/remix/${video.id}`);
-                                }}
-                              >
-                                <Wand2 className="w-4 h-4" />
-                                Remix
-                              </Button>
-                            </>
-                          )}
                         </div>
                       )}
                     </>
@@ -1483,6 +1428,44 @@ export default function Library() {
                       {video.title.toLowerCase().includes('dubai') || video.title.toLowerCase().includes('saudi') ? 'MENA' : 'Global'}
                     </span>
                   </div>
+                  {/* Action buttons — show on hover for scanned local files */}
+                  {isRealMode && video.id && video.hasLocalFile && video.aiStatus === "ready" && (
+                    <div className="flex items-center gap-1.5 mb-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        className="flex items-center gap-1 px-2 py-1 rounded-md bg-purple-500/15 text-purple-400 hover:bg-purple-500/25 text-xs font-medium transition-colors"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setNarrativeVideoId(video.id!);
+                          setNarrativeInsightsOpen(true);
+                        }}
+                      >
+                        <Brain className="w-3 h-3" />
+                        Insights
+                      </button>
+                      <button
+                        className="flex items-center gap-1 px-2 py-1 rounded-md bg-pink-500/15 text-pink-400 hover:bg-pink-500/25 text-xs font-medium transition-colors"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setRemixVideoId(video.id!);
+                          setRemixStudioOpen(true);
+                        }}
+                      >
+                        <Scissors className="w-3 h-3" />
+                        Remix
+                      </button>
+                      <button
+                        className="flex items-center gap-1 px-2 py-1 rounded-md bg-green-500/15 text-green-400 hover:bg-green-500/25 text-xs font-medium transition-colors"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDistributionVideoId(video.id!);
+                          setDistributionOpen(true);
+                        }}
+                      >
+                        <Send className="w-3 h-3" />
+                        Distribute
+                      </button>
+                    </div>
+                  )}
                   {/* Sentiment and Cultural Context badges */}
                   {(video.sentiment || video.culturalContext) && (
                     <div className="flex flex-col gap-1.5 text-xs">
