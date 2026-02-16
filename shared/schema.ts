@@ -406,16 +406,25 @@ export const insertRemixTemplateSchema = createInsertSchema(remixTemplates).omit
 export type RemixTemplate = typeof remixTemplates.$inferSelect;
 export type InsertRemixTemplate = z.infer<typeof insertRemixTemplateSchema>;
 
-// Generated Assets Table — AI-generated product images from text-to-image
+// Generated Assets Table — AI-generated product assets (video clips via Seeddance 2.0 or images)
 export const generatedAssets = pgTable('generated_assets', {
   id: serial('id').primaryKey(),
   videoId: integer('video_id').references(() => videoIndex.id).notNull(),
   surfaceId: integer('surface_id').references(() => detectedSurfaces.id),
   brandProductId: integer('brand_product_id').references(() => brandProducts.id),
-  assetType: varchar('asset_type', { length: 30 }),
+  assetType: varchar('asset_type', { length: 30 }), // 'video', 'image', 'placeholder'
   generationPrompt: text('generation_prompt'),
   assetPath: varchar('asset_path', { length: 500 }),
   compositePath: varchar('composite_path', { length: 500 }),
+  // Video-specific fields (Seeddance 2.0)
+  seeddanceJobId: varchar('seeddance_job_id', { length: 200 }),
+  videoDuration: real('video_duration'), // seconds
+  videoAspectRatio: varchar('video_aspect_ratio', { length: 10 }), // e.g. "16:9", "9:16"
+  videoResolution: varchar('video_resolution', { length: 10 }), // e.g. "1080p", "720p"
+  targetPlatform: varchar('target_platform', { length: 30 }), // e.g. "tiktok", "youtube"
+  // Quality evaluation
+  qualityScore: real('quality_score'),
+  needsManualReview: boolean('needs_manual_review').default(true),
   approved: boolean('approved').default(false),
   createdAt: timestamp('created_at').defaultNow(),
 });

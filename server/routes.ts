@@ -4875,10 +4875,15 @@ export async function registerRoutes(
           surfaceId,
           brandProductId,
           assetPath: result.assetPath,
-          prompt: result.prompt,
-          status: "pending_review",
+          generationPrompt: result.prompt,
+          assetType: result.assetType,
+          seeddanceJobId: result.jobId || undefined,
+          videoDuration: result.duration || undefined,
+          videoAspectRatio: result.promptDetails?.aspectRatio || undefined,
+          videoResolution: result.promptDetails?.resolution || undefined,
+          needsManualReview: true,
         });
-        res.json({ success: true, asset, prompt: result.prompt });
+        res.json({ success: true, asset, prompt: result.prompt, assetType: result.assetType });
       } else {
         res.status(500).json({ success: false, error: result.error, prompt: result.prompt });
       }
@@ -5020,14 +5025,21 @@ export async function registerRoutes(
       });
 
       if (result.success && result.assetPath) {
-        // Save the generated asset
+        // Save the generated asset with video metadata
         await storage.createGeneratedAsset({
           videoId,
           surfaceId,
           brandProductId,
           assetPath: result.assetPath,
-          prompt: result.prompt,
-          status: result.evaluation?.needsManualReview ? "pending_review" : "approved",
+          compositePath: result.compositePath || undefined,
+          generationPrompt: result.prompt,
+          assetType: result.assetType,
+          seeddanceJobId: result.jobId || undefined,
+          videoDuration: result.videoDuration || undefined,
+          videoAspectRatio: result.videoAspectRatio || undefined,
+          qualityScore: result.evaluation?.qualityScore || undefined,
+          needsManualReview: result.evaluation?.needsManualReview ?? true,
+          approved: result.evaluation ? !result.evaluation.needsManualReview : false,
         });
       }
 
