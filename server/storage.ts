@@ -677,7 +677,12 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getReadyVideosForMarketplace(): Promise<VideoWithOpportunities[]> {
-    // Include videos with "Ready" or "Scan Complete" status
+    // Include videos with "Ready" or "Scan Complete" status,
+    // OR any video that has detected surfaces (covers migrated data with stale status)
+    const videoIdsWithSurfaces = db
+      .selectDistinct({ videoId: detectedSurfaces.videoId })
+      .from(detectedSurfaces);
+
     const videos = await db
       .select()
       .from(videoIndex)
@@ -685,15 +690,18 @@ export class DatabaseStorage implements IStorage {
         or(
           eq(videoIndex.status, "Ready"),
           eq(videoIndex.status, "Scan Complete"),
-          sql`${videoIndex.status} LIKE 'Ready%'`
+          sql`${videoIndex.status} LIKE 'Ready%'`,
+          sql`${videoIndex.id} IN (${videoIdsWithSurfaces})`
         )
       )
       .orderBy(desc(videoIndex.priorityScore));
-    
+
     const results: VideoWithOpportunities[] = [];
-    
+
     for (const video of videos) {
       const surfaces = await this.getDetectedSurfaces(video.id);
+      // Only include videos that actually have surfaces
+      if (surfaces.length === 0) continue;
       const contexts = this.deriveContexts(surfaces);
       results.push({
         ...video,
@@ -702,7 +710,7 @@ export class DatabaseStorage implements IStorage {
         contexts,
       });
     }
-    
+
     return results;
   }
 
