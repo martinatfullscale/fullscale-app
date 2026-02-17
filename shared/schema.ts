@@ -272,6 +272,81 @@ export type SharedLink = typeof sharedLinks.$inferSelect;
 export type InsertSharedLink = z.infer<typeof insertSharedLinkSchema>;
 
 // ============================================================================
+// EDITORIAL INTELLIGENCE: Transcript + Feedback Tables
+// ============================================================================
+
+// Video Transcripts Table — speech-to-text transcription with speaker diarization
+export const videoTranscripts = pgTable('video_transcripts', {
+  id: serial('id').primaryKey(),
+  videoId: integer('video_id').references(() => videoIndex.id).notNull(),
+  provider: varchar('provider', { length: 30 }).notNull(), // 'whisper', 'deepgram'
+  language: varchar('language', { length: 10 }).default('en'),
+  // Full transcript text (plain)
+  fullText: text('full_text'),
+  // Timestamped segments with speaker diarization
+  segments: jsonb('segments').$type<Array<{
+    start: number;      // seconds
+    end: number;        // seconds
+    text: string;
+    speaker?: string;   // speaker ID from diarization
+    confidence: number; // 0-1
+    words?: Array<{
+      word: string;
+      start: number;
+      end: number;
+      confidence: number;
+    }>;
+  }>>(),
+  // Speaker map (diarization labels → display names)
+  speakerMap: jsonb('speaker_map').$type<Record<string, string>>(),
+  // Processing metadata
+  audioDuration: real('audio_duration'),     // total audio length in seconds
+  wordCount: integer('word_count'),
+  segmentCount: integer('segment_count'),
+  status: varchar('status', { length: 20 }).default('pending'), // pending, processing, completed, failed
+  errorMessage: text('error_message'),
+  processingTimeMs: integer('processing_time_ms'),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at'),
+});
+
+export const insertVideoTranscriptSchema = createInsertSchema(videoTranscripts).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type VideoTranscript = typeof videoTranscripts.$inferSelect;
+export type InsertVideoTranscript = z.infer<typeof insertVideoTranscriptSchema>;
+
+// Clip Feedback Table — creator/brand approval + post-publish performance tracking
+export const clipFeedback = pgTable('clip_feedback', {
+  id: serial('id').primaryKey(),
+  generatedClipId: integer('generated_clip_id').references(() => generatedClips.id).notNull(),
+  feedbackType: varchar('feedback_type', { length: 20 }).notNull(), // 'creator', 'brand', 'performance'
+  approved: boolean('approved'),
+  rating: integer('rating'),                                        // 1-5
+  rejectionReason: varchar('rejection_reason', { length: 200 }),
+  // Performance metrics (post-publish, collected by analyticsCollector)
+  views: integer('views'),
+  engagementRate: real('engagement_rate'),
+  shareCount: integer('share_count'),
+  completionRate: real('completion_rate'),                          // % of viewers who watched to end
+  clickThroughRate: real('click_through_rate'),                    // % who clicked product link
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at'),
+});
+
+export const insertClipFeedbackSchema = createInsertSchema(clipFeedback).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type ClipFeedback = typeof clipFeedback.$inferSelect;
+export type InsertClipFeedback = z.infer<typeof insertClipFeedbackSchema>;
+
+// ============================================================================
 // PHASE 1: NARRATIVE INTELLIGENCE + AUTO-REMIX TABLES
 // ============================================================================
 

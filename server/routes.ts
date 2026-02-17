@@ -26,6 +26,9 @@ import { eq, sql } from "drizzle-orm";
 import crypto from "crypto";
 import sharp from "sharp";
 import { uploadFileToStorage, fileExistsInStorage, objectKeyFromServeUrl } from "./lib/objectStorage";
+import { runTranscriptPipeline } from "./lib/remix/transcriptPipeline";
+import { analyzeEditorial } from "./lib/ai/claude-dense/editorialAnalyzer";
+import { rankClips, deduplicateClips } from "./lib/remix/clipRanker";
 
 // Configure multer for video uploads (temp dir, then uploaded to Object Storage)
 const uploadStorage = multer.diskStorage({
@@ -5179,6 +5182,263 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("[Decide] Error:", err.message);
       res.status(500).json({ error: err.message || "Decision failed" });
+    }
+  });
+
+  // ─── Editorial Intelligence: Transcript Pipeline ────────────────
+
+  // POST /api/video/:videoId/transcribe — Run audio extraction + speech-to-text
+  app.post("/api/video/:videoId/transcribe", isAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const { language = "en", provider } = req.body || {};
+
+      // Validate video exists
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+      if (!video.filePath) return res.status(400).json({ error: "Video has no file path" });
+
+      // Check if transcript already exists
+      const existing = await storage.getVideoTranscript(videoId);
+      if (existing && existing.status === "completed") {
+        return res.json({
+          message: "Transcript already exists",
+          transcript: existing,
+        });
+      }
+
+      // Create pending transcript record
+      const transcriptRecord = await storage.createVideoTranscript({
+        videoId,
+        provider: provider || "auto",
+        language,
+        status: "processing",
+      });
+
+      console.log(`[API] Transcription started for video ${videoId} (transcript ID: ${transcriptRecord.id})`);
+
+      // Run pipeline asynchronously (don't block response)
+      res.json({
+        message: "Transcription started",
+        transcriptId: transcriptRecord.id,
+        status: "processing",
+      });
+
+      // Execute pipeline in background
+      try {
+        const result = await runTranscriptPipeline({
+          videoId,
+          filePath: video.filePath,
+          language,
+          provider: provider || undefined,
+        });
+
+        if (result.success) {
+          await storage.updateVideoTranscript(transcriptRecord.id, {
+            provider: result.provider,
+            fullText: result.fullText,
+            segments: result.segments,
+            speakerMap: result.speakerMap,
+            audioDuration: result.audioDuration,
+            wordCount: result.wordCount,
+            segmentCount: result.segmentCount,
+            status: "completed",
+            processingTimeMs: result.totalProcessingTimeMs,
+          });
+          console.log(`[API] Transcription completed for video ${videoId}: ${result.wordCount} words, ${result.segmentCount} segments`);
+        } else {
+          await storage.updateVideoTranscriptStatus(transcriptRecord.id, "failed", result.error);
+          console.error(`[API] Transcription failed for video ${videoId}: ${result.error}`);
+        }
+      } catch (err: any) {
+        await storage.updateVideoTranscriptStatus(transcriptRecord.id, "failed", err.message);
+        console.error(`[API] Transcription pipeline error for video ${videoId}:`, err.message);
+      }
+    } catch (err: any) {
+      console.error("[API] /api/video/:videoId/transcribe error:", err.message);
+      res.status(500).json({ error: err.message || "Transcription failed" });
+    }
+  });
+
+  // GET /api/video/:videoId/transcript — Get transcript for a video
+  app.get("/api/video/:videoId/transcript", isAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const transcript = await storage.getVideoTranscript(videoId);
+
+      if (!transcript) {
+        return res.status(404).json({ error: "No transcript found for this video" });
+      }
+
+      res.json(transcript);
+    } catch (err: any) {
+      console.error("[API] /api/video/:videoId/transcript error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to get transcript" });
+    }
+  });
+
+  // POST /api/scenes/:videoId/editorial-analysis — Run Claude Dense editorial clip analysis
+  app.post("/api/scenes/:videoId/editorial-analysis", isAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const { maxClips = 10 } = req.body || {};
+
+      // Validate video exists
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+
+      // Get transcript (required for editorial analysis)
+      const transcript = await storage.getVideoTranscript(videoId);
+      if (!transcript || transcript.status !== "completed" || !transcript.segments) {
+        return res.status(400).json({
+          error: "Completed transcript required. Run POST /api/video/:videoId/transcribe first.",
+        });
+      }
+
+      // Get detected surfaces for cross-reference
+      const surfaces = await storage.getDetectedSurfaces(videoId);
+
+      // Get brand products for matching
+      const brandProducts = await storage.getAllBrandProducts();
+
+      console.log(
+        `[API] Editorial analysis for video ${videoId}: ` +
+          `${transcript.segments.length} transcript segments, ` +
+          `${surfaces.length} surfaces, ${brandProducts.length} brand products`
+      );
+
+      // Run Claude Dense editorial analysis
+      const editorialMoments = await analyzeEditorial({
+        videoId,
+        transcript: transcript.segments,
+        surfaces: surfaces.map((s) => ({
+          id: s.id,
+          timestamp: parseFloat(String(s.timestamp)),
+          surfaceType: s.surfaceType,
+          confidence: parseFloat(String(s.confidence)),
+          boundingBox: {
+            x: parseFloat(String(s.boundingBoxX)),
+            y: parseFloat(String(s.boundingBoxY)),
+            width: parseFloat(String(s.boundingBoxWidth)),
+            height: parseFloat(String(s.boundingBoxHeight)),
+          },
+        })),
+        brandCatalog: brandProducts.map((b) => ({
+          id: b.id,
+          name: b.name,
+          category: b.category,
+          dominantColor: b.dominantColor,
+        })),
+        maxClips,
+      });
+
+      if (editorialMoments.length === 0) {
+        return res.json({
+          message: "No editorial clip moments found",
+          moments: [],
+          rankedClips: [],
+        });
+      }
+
+      // Get brand matches for surface cross-reference
+      const brandMatches = await storage.getBrandMatchesByVideo(videoId);
+
+      // Cross-reference with surfaces and rank clips
+      const rankedClips = deduplicateClips(
+        rankClips(
+          editorialMoments,
+          surfaces.map((s) => ({
+            id: s.id,
+            videoId: s.videoId,
+            timestamp: parseFloat(String(s.timestamp)),
+            surfaceType: s.surfaceType,
+            confidence: parseFloat(String(s.confidence)),
+          })),
+          brandMatches.map((bm) => ({
+            id: bm.id,
+            sceneAnalysisId: bm.sceneAnalysisId,
+            brandProductId: bm.brandProductId,
+            compatibilityScore: bm.compatibilityScore ?? 0,
+            reasoning: bm.reasoning ?? "",
+            suggestedPlacementStyle: bm.suggestedPlacementStyle ?? undefined,
+          })),
+          transcript.segments,
+          maxClips
+        )
+      );
+
+      console.log(
+        `[API] Editorial analysis complete for video ${videoId}: ` +
+          `${editorialMoments.length} moments → ${rankedClips.length} ranked clips`
+      );
+
+      res.json({
+        message: `Found ${rankedClips.length} editorial clip moments`,
+        moments: editorialMoments,
+        rankedClips,
+      });
+    } catch (err: any) {
+      console.error("[API] /api/scenes/:videoId/editorial-analysis error:", err.message);
+      res.status(500).json({ error: err.message || "Editorial analysis failed" });
+    }
+  });
+
+  // ─── Clip Feedback Endpoints ──────────────────────────────────
+
+  // POST /api/remix/clips/:clipId/feedback — Submit creator/brand feedback
+  app.post("/api/remix/clips/:clipId/feedback", isAuthenticated, async (req: any, res) => {
+    try {
+      const clipId = parseInt(req.params.clipId);
+      const { feedbackType, approved, rating, rejectionReason, views, engagementRate, shareCount, completionRate, clickThroughRate } = req.body;
+
+      if (!feedbackType || !["creator", "brand", "performance"].includes(feedbackType)) {
+        return res.status(400).json({ error: "feedbackType must be 'creator', 'brand', or 'performance'" });
+      }
+
+      const feedback = await storage.createClipFeedback({
+        generatedClipId: clipId,
+        feedbackType,
+        approved: approved ?? null,
+        rating: rating ?? null,
+        rejectionReason: rejectionReason ?? null,
+        views: views ?? null,
+        engagementRate: engagementRate ?? null,
+        shareCount: shareCount ?? null,
+        completionRate: completionRate ?? null,
+        clickThroughRate: clickThroughRate ?? null,
+      });
+
+      res.json(feedback);
+    } catch (err: any) {
+      console.error("[API] /api/remix/clips/:clipId/feedback error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to submit feedback" });
+    }
+  });
+
+  // GET /api/remix/clips/:clipId/feedback — Get feedback for a clip
+  app.get("/api/remix/clips/:clipId/feedback", isAuthenticated, async (req: any, res) => {
+    try {
+      const clipId = parseInt(req.params.clipId);
+      const feedback = await storage.getClipFeedback(clipId);
+      res.json(feedback);
+    } catch (err: any) {
+      console.error("[API] GET /api/remix/clips/:clipId/feedback error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to get feedback" });
+    }
+  });
+
+  // GET /api/remix/analytics/rubric-performance — Analyze rubric scores vs performance
+  app.get("/api/remix/analytics/rubric-performance", isAuthenticated, async (req: any, res) => {
+    try {
+      const performanceFeedback = await storage.getPerformanceFeedback();
+      // Return raw data — frontend or a future analyticsCollector will compute correlations
+      res.json({
+        feedbackCount: performanceFeedback.length,
+        feedback: performanceFeedback,
+      });
+    } catch (err: any) {
+      console.error("[API] /api/remix/analytics/rubric-performance error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to get analytics" });
     }
   });
 

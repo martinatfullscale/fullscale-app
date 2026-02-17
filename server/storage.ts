@@ -50,6 +50,8 @@ import {
   publishedPosts,
   clipAnalytics,
   publishingSchedules,
+  videoTranscripts,
+  clipFeedback,
   type DistributionProfile,
   type InsertDistributionProfile,
   type PublishedPost,
@@ -58,6 +60,10 @@ import {
   type InsertClipAnalytics,
   type PublishingSchedule,
   type InsertPublishingSchedule,
+  type VideoTranscript,
+  type InsertVideoTranscript,
+  type ClipFeedback,
+  type InsertClipFeedback,
 } from "@shared/schema";
 import { users, type User, type UpsertUser } from "@shared/models/auth";
 import { encrypt, decrypt } from "./encryption";
@@ -197,6 +203,17 @@ export interface IStorage {
   getPendingSchedules(): Promise<PublishingSchedule[]>;
   updateScheduleStatus(scheduleId: number, status: string, postId?: number, errorMessage?: string): Promise<PublishingSchedule | undefined>;
   cancelSchedule(scheduleId: number): Promise<void>;
+
+  // Video transcript methods
+  createVideoTranscript(data: InsertVideoTranscript): Promise<VideoTranscript>;
+  getVideoTranscript(videoId: number): Promise<VideoTranscript | undefined>;
+  updateVideoTranscriptStatus(transcriptId: number, status: string, errorMessage?: string): Promise<VideoTranscript | undefined>;
+  updateVideoTranscript(transcriptId: number, data: Partial<InsertVideoTranscript>): Promise<VideoTranscript | undefined>;
+
+  // Clip feedback methods
+  createClipFeedback(data: InsertClipFeedback): Promise<ClipFeedback>;
+  getClipFeedback(clipId: number): Promise<ClipFeedback[]>;
+  getPerformanceFeedback(): Promise<ClipFeedback[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -1279,6 +1296,69 @@ export class DatabaseStorage implements IStorage {
     await db.update(publishingSchedules)
       .set({ status: "cancelled" })
       .where(eq(publishingSchedules.id, scheduleId));
+  }
+
+  // ─── Video Transcript Methods ──────────────────────────────────
+
+  async createVideoTranscript(data: InsertVideoTranscript): Promise<VideoTranscript> {
+    const [result] = await db.insert(videoTranscripts).values(data).returning();
+    return result;
+  }
+
+  async getVideoTranscript(videoId: number): Promise<VideoTranscript | undefined> {
+    const [result] = await db.select()
+      .from(videoTranscripts)
+      .where(eq(videoTranscripts.videoId, videoId))
+      .orderBy(desc(videoTranscripts.createdAt))
+      .limit(1);
+    return result;
+  }
+
+  async updateVideoTranscriptStatus(
+    transcriptId: number,
+    status: string,
+    errorMessage?: string
+  ): Promise<VideoTranscript | undefined> {
+    const updateData: Record<string, any> = { status, updatedAt: new Date() };
+    if (errorMessage) updateData.errorMessage = errorMessage;
+
+    const [result] = await db.update(videoTranscripts)
+      .set(updateData)
+      .where(eq(videoTranscripts.id, transcriptId))
+      .returning();
+    return result;
+  }
+
+  async updateVideoTranscript(
+    transcriptId: number,
+    data: Partial<InsertVideoTranscript>
+  ): Promise<VideoTranscript | undefined> {
+    const [result] = await db.update(videoTranscripts)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(videoTranscripts.id, transcriptId))
+      .returning();
+    return result;
+  }
+
+  // ─── Clip Feedback Methods ───────────────────────────────────
+
+  async createClipFeedback(data: InsertClipFeedback): Promise<ClipFeedback> {
+    const [result] = await db.insert(clipFeedback).values(data).returning();
+    return result;
+  }
+
+  async getClipFeedback(clipId: number): Promise<ClipFeedback[]> {
+    return db.select()
+      .from(clipFeedback)
+      .where(eq(clipFeedback.generatedClipId, clipId))
+      .orderBy(desc(clipFeedback.createdAt));
+  }
+
+  async getPerformanceFeedback(): Promise<ClipFeedback[]> {
+    return db.select()
+      .from(clipFeedback)
+      .where(eq(clipFeedback.feedbackType, "performance"))
+      .orderBy(desc(clipFeedback.createdAt));
   }
 
   private deriveContexts(surfaces: DetectedSurface[]): string[] {
