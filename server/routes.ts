@@ -2470,18 +2470,29 @@ export async function registerRoutes(
   app.get("/api/brand/discovery", isGoogleAuthenticated, async (req: any, res) => {
     try {
       const videos = await storage.getReadyVideosForMarketplace();
-      
+
       // Transform videos into marketplace opportunities format
-      const opportunities = videos.map((video) => {
+      const opportunities = await Promise.all(videos.map(async (video) => {
         // For local uploads, prefer extracted frame or on-demand frame endpoint over DB thumbnail (which may be a stock photo)
         let thumbnailUrl = video.thumbnailUrl;
         if (video.filePath || video.platform === "fullscale") {
-          // Check if a frame_0s.jpg exists for this video
+          // Check if a frame exists — support both Object Storage and local filesystem
           const frameUrl = `/uploads/frames/${video.id}/frame_0s.jpg`;
-          const framePath = path.join(process.cwd(), "public", frameUrl);
-          if (fs.existsSync(framePath)) {
-            thumbnailUrl = frameUrl;
-          } else {
+          const storageFrameKey = `public/uploads/frames/${video.id}/frame_0s.jpg`;
+          let frameExists = false;
+          try {
+            if (await fileExistsInStorage(storageFrameKey)) {
+              thumbnailUrl = `/storage/uploads/frames/${video.id}/frame_0s.jpg`;
+              frameExists = true;
+            } else {
+              const framePath = path.join(process.cwd(), "public", frameUrl);
+              frameExists = fs.existsSync(framePath);
+              if (frameExists) thumbnailUrl = frameUrl;
+            }
+          } catch {
+            frameExists = false;
+          }
+          if (!frameExists) {
             // Use on-demand frame endpoint as fallback
             thumbnailUrl = `/api/video/${video.id}/frame/0`;
           }
@@ -2503,7 +2514,7 @@ export async function registerRoutes(
         duration: video.duration || "10:00",
         platform: video.platform === "fullscale" || video.filePath ? "fullscale" : (video.platform || "youtube"),
         filePath: video.filePath || null,
-        videoUrl: video.filePath ? normalizeVideoUrl(video.filePath) : null,
+        videoUrl: video.filePath ? (video.filePath.startsWith('/storage/') ? video.filePath : normalizeVideoUrl(video.filePath)) : null,
       };
       });
 

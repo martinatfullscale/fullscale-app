@@ -269,7 +269,9 @@ function formatIndexedVideo(video: IndexedVideo): DisplayVideo {
   // For local files, prefer the extracted frame (correct orientation) over YouTube thumbnail
   // YouTube thumbnails are always 16:9 landscape regardless of actual video orientation
   const hasLocalFile = !!(filePath && fileExists);
-  const extractedFrame = `/uploads/frames/${video.id}/frame_0s.jpg`;
+  // Object Storage frames use /storage/ prefix, legacy local frames use /uploads/
+  const extractedFrame = `/storage/uploads/frames/${video.id}/frame_0s.jpg`;
+  const legacyFrame = `/uploads/frames/${video.id}/frame_0s.jpg`;
   const thumbnailUrl = hasLocalFile
     ? extractedFrame
     : (rawThumbnailUrl && (rawThumbnailUrl.startsWith('http') || rawThumbnailUrl.startsWith('/')))
@@ -1313,6 +1315,11 @@ export default function Library() {
                       className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                       onError={(e) => {
                         const el = e.target as HTMLImageElement;
+                        // Try legacy /uploads/ path if /storage/ path failed
+                        if (el.src.includes('/storage/uploads/frames/')) {
+                          el.src = el.src.replace('/storage/uploads/frames/', '/uploads/frames/');
+                          return;
+                        }
                         el.style.display = 'none';
                         const placeholder = el.parentElement?.querySelector('.img-placeholder');
                         if (placeholder) (placeholder as HTMLElement).style.display = 'flex';
