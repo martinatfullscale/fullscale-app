@@ -28,7 +28,8 @@ const getOidcConfig = memoize(
 
 export function getSession() {
   console.log("[Session] Initializing session middleware...");
-  console.log("[Session] DATABASE_URL exists:", !!process.env.DATABASE_URL);
+  const dbUrl = process.env.DATABASE_URL_OVERRIDE || process.env.DATABASE_URL;
+  console.log("[Session] DATABASE_URL exists:", !!dbUrl);
   console.log("[Session] SESSION_SECRET exists:", !!process.env.SESSION_SECRET);
   
   if (!process.env.SESSION_SECRET) {
@@ -36,7 +37,7 @@ export function getSession() {
     throw new Error("SESSION_SECRET environment variable is required");
   }
   
-  if (!process.env.DATABASE_URL) {
+  if (!dbUrl) {
     console.error("[Session] CRITICAL: DATABASE_URL is not set!");
     throw new Error("DATABASE_URL environment variable is required");
   }
@@ -44,7 +45,7 @@ export function getSession() {
   const sessionTtl = 2 * 60 * 60 * 1000; // 2 hours
   const pgStore = connectPg(session);
   const sessionStore = new pgStore({
-    conString: process.env.DATABASE_URL,
+    conString: dbUrl,
     createTableIfMissing: true,
     ttl: sessionTtl,
     tableName: "sessions",

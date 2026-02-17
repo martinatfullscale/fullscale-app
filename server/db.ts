@@ -4,7 +4,8 @@ import * as schema from "@shared/schema";
 
 const { Pool } = pg;
 
-if (!process.env.DATABASE_URL) {
+const dbUrl = process.env.DATABASE_URL_OVERRIDE || process.env.DATABASE_URL;
+if (!dbUrl) {
   throw new Error(
     "DATABASE_URL must be set. Did you forget to provision a database?",
   );
@@ -12,7 +13,7 @@ if (!process.env.DATABASE_URL) {
 
 // Optimized connection pool configuration for Neon (handles connection drops)
 export const pool = new Pool({ 
-  connectionString: process.env.DATABASE_URL,
+  connectionString: dbUrl,
   max: 10,                    // Maximum 10 connections in pool
   min: 1,                     // Keep 1 connection warm (reduced for Neon)
   idleTimeoutMillis: 20000,   // Close idle connections after 20s (before Neon kills them)

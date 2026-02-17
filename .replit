@@ -46,3 +46,6 @@ integrations = ["javascript_log_in_with_replit:2.0.0", "javascript_gemini_ai_int
 
 [userenv.shared]
 VITE_GOOGLE_ANALYTICS_ID = "G-BBWVGBC782"
+
+[userenv.production]
+DATABASE_URL_OVERRIDE = "postgresql://postgres:password@helium/heliumdb?sslmode=disable"
