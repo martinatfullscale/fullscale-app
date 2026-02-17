@@ -1620,7 +1620,15 @@ export async function processVideoScan(
     // LOCATE VIDEO FILE
     let videoPath: string | undefined;
     
-    if ((video as any).filePath) {
+    if ((video as any).filePath?.startsWith('/storage/')) {
+      try {
+        const objectKey = (video as any).filePath.replace(/^\/storage\//, 'public/');
+        videoPath = await downloadToTempFile(objectKey, tempDir);
+        console.log(`[Scanner V2] Downloaded from Object Storage to: ${videoPath}`);
+      } catch (e: any) {
+        console.error(`[Scanner V2] Object Storage download failed:`, e.message);
+      }
+    } else if ((video as any).filePath) {
       videoPath = path.resolve(process.cwd(), (video as any).filePath);
       console.log(`[Scanner V2] Using DB filePath: ${videoPath}`);
     }
@@ -1635,16 +1643,6 @@ export async function processVideoScan(
       if (fileMatch) {
         videoPath = path.resolve(process.cwd(), `./public${fileMatch[1]}`);
         console.log(`[Scanner V2] Using description fallback: ${videoPath}`);
-      }
-    }
-    
-    if (!videoPath && (video as any).filePath?.startsWith('/storage/')) {
-      try {
-        const objectKey = (video as any).filePath.replace(/^\/storage\//, 'public/');
-        videoPath = await downloadToTempFile(objectKey);
-        console.log(`[Scanner V2] Downloaded from Object Storage: ${videoPath}`);
-      } catch (e: any) {
-        console.error(`[Scanner V2] Object Storage download failed:`, e.message);
       }
     }
 
