@@ -2516,7 +2516,7 @@ export async function registerRoutes(
         filePath: video.filePath || null,
         videoUrl: video.filePath ? (video.filePath.startsWith('/storage/') ? video.filePath : normalizeVideoUrl(video.filePath)) : null,
       };
-      });
+      }));
 
       res.json({ opportunities, total: opportunities.length });
     } catch (err: any) {
