@@ -739,7 +739,7 @@ export default function Library() {
   // Version key to force refetch when demo data changes - increment when adding new videos
   const DEMO_DATA_VERSION = 2;
   
-  const { data: videoData, isLoading: isLoadingVideos, isError: isVideosError } = useQuery<VideoIndexResponse>({
+  const { data: videoData, isLoading: isLoadingVideos, isError: isVideosError, isFetching: isFetchingVideos, refetch: refetchVideos } = useQuery<VideoIndexResponse>({
     queryKey: ["videos", isPitchMode, mode, DEMO_DATA_VERSION, isAdminUser, userEmail] as const,
     queryFn: async ({ queryKey }) => {
       // Extract isPitchMode and mode from queryKey to avoid stale closure
@@ -1136,17 +1136,22 @@ export default function Library() {
           </div>
           <div className="flex items-center gap-3">
             {isRealMode && (
-              <Button 
-                variant="outline" 
-                className="gap-2" 
+              <Button
+                variant="outline"
+                className="gap-2"
                 onClick={() => {
-                  console.log('[FRONTEND] Refresh button clicked - invalidating videos query');
-                  queryClient.invalidateQueries({ queryKey: ["videos"] });
+                  console.log('[FRONTEND] Refresh button clicked - refetching videos');
+                  refetchVideos();
                 }}
+                disabled={isFetchingVideos}
                 data-testid="button-refresh-library"
               >
-                <RefreshCw className="w-4 h-4" />
-                Refresh
+                {isFetchingVideos ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="w-4 h-4" />
+                )}
+                {isFetchingVideos ? "Refreshing..." : "Refresh"}
               </Button>
             )}
             {isRealMode && pendingCount > 0 && (
