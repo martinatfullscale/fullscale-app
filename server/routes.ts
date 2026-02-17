@@ -2225,7 +2225,7 @@ export async function registerRoutes(
     const authEmail = req.authEmail;
     console.log(`[VideoIndex] Fetching videos for userId: ${userId}, authEmail: ${authEmail}`);
     
-    const videos = await storage.getVideoIndex(userId);
+    const videos = await storage.getVideoIndex(userId, authEmail);
     console.log(`[VideoIndex] Found ${videos.length} videos for user`);
     
     const videosWithCounts = await Promise.all(

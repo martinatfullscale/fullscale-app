@@ -86,7 +86,7 @@ export interface IStorage {
   getAllowedUsers(): Promise<AllowedUser[]>;
   getAllowedUser(email: string): Promise<AllowedUser | undefined>;
   updateAllowedUserRole(email: string, userType: string): Promise<void>;
-  getVideoIndex(userId: string): Promise<VideoIndex[]>;
+  getVideoIndex(userId: string, authEmail?: string): Promise<VideoIndex[]>;
   getAllVideos(): Promise<VideoIndex[]>;
   upsertVideoIndex(video: InsertVideoIndex): Promise<VideoIndex>;
   insertVideo(video: InsertVideoIndex): Promise<VideoIndex>;
@@ -373,37 +373,31 @@ export class DatabaseStorage implements IStorage {
       .where(eq(monetizationItems.brandEmail, brandEmail));
   }
 
-  async getVideoIndex(userId: string): Promise<VideoIndex[]> {
-    console.log(`[Storage.getVideoIndex] Looking up user by ID: ${userId}`);
+  async getVideoIndex(userId: string, authEmail?: string): Promise<VideoIndex[]> {
+    console.log(`[Storage.getVideoIndex] Looking up user by ID: ${userId}, authEmail: ${authEmail}`);
     // First, try to get user by ID to also check by email
     const user = await this.getUserById(userId);
     const userEmail = user?.email;
     console.log(`[Storage.getVideoIndex] User found: ${!!user}, email: ${userEmail}`);
 
-    let videos: VideoIndex[];
+    // Collect all possible userId values to match against
+    const matchValues = new Set<string>([userId]);
+    if (userEmail) matchValues.add(userEmail);
+    if (authEmail) matchValues.add(authEmail);
 
-    // Query videos matching either the user ID or the user's email
-    // This handles legacy videos stored with email as userId
-    if (userEmail && userEmail !== userId) {
-      console.log(`[Storage.getVideoIndex] Querying by userId=${userId} OR userId=${userEmail}`);
-      videos = await db
-        .select()
-        .from(videoIndex)
-        .where(or(
-          eq(videoIndex.userId, userId),
-          eq(videoIndex.userId, userEmail)
-        ))
-        .orderBy(desc(videoIndex.priorityScore));
-      console.log(`[Storage.getVideoIndex] Found ${videos.length} videos (dual query)`);
-    } else {
-      console.log(`[Storage.getVideoIndex] Querying by userId=${userId} only`);
-      videos = await db
-        .select()
-        .from(videoIndex)
-        .where(eq(videoIndex.userId, userId))
-        .orderBy(desc(videoIndex.priorityScore));
-      console.log(`[Storage.getVideoIndex] Found ${videos.length} videos (single query)`);
-    }
+    const matchArray = Array.from(matchValues);
+    console.log(`[Storage.getVideoIndex] Querying by userId IN [${matchArray.join(', ')}]`);
+
+    const videos = await db
+      .select()
+      .from(videoIndex)
+      .where(
+        matchArray.length === 1
+          ? eq(videoIndex.userId, matchArray[0])
+          : sql`${videoIndex.userId} IN (${sql.join(matchArray.map(v => sql`${v}`), sql`, `)})`
+      )
+      .orderBy(desc(videoIndex.priorityScore));
+    console.log(`[Storage.getVideoIndex] Found ${videos.length} videos`);
 
     // Deduplicate by normalized title — keeps the entry with the most surfaces (best scan)
     // This handles duplicate uploads, re-imports, and mixed youtubeId formats
