@@ -270,12 +270,9 @@ export async function registerRoutes(
 
   app.post("/api/admin/migrate-surfaces", async (req: any, res) => {
     try {
-      const adminEmails = ['martin@gofullscale.co', 'martin@whtwrks.com', 'martincekechukwu@gmail.com'];
-      let email = req.session?.googleUser?.email || req.user?.claims?.email;
-      if (!email && req.query.admin_email) {
-        email = req.query.admin_email as string;
-      }
-      if (!email || !adminEmails.includes(email)) {
+      const adminEmails = ['martin@gofullscale.co', 'martin@whtwrks.com', 'martincekechukwu@gmail.com', 'thekimkwilson@gmail.com', 'tamara@whtwrks.com'];
+      const email = req.session?.googleUser?.email || req.user?.claims?.email;
+      if (!email || !adminEmails.map((e: string) => e.toLowerCase()).includes(email.toLowerCase())) {
         return res.status(403).json({ error: "Admin access required" });
       }
 
