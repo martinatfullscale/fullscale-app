@@ -268,6 +268,57 @@ export async function registerRoutes(
   const isVipEmail = (email: string) => 
     FOUNDING_MEMBERS.some(vip => vip.toLowerCase() === email.toLowerCase().trim());
 
+  app.post("/api/admin/migrate-surfaces", async (req: any, res) => {
+    try {
+      const adminEmails = ['martin@gofullscale.co', 'martin@whtwrks.com', 'martincekechukwu@gmail.com'];
+      let email = req.session?.googleUser?.email || req.user?.claims?.email;
+      if (!email && req.query.admin_email) {
+        email = req.query.admin_email as string;
+      }
+      if (!email || !adminEmails.includes(email)) {
+        return res.status(403).json({ error: "Admin access required" });
+      }
+
+      const migrationPath = path.join(process.cwd(), 'server', 'migration-detected-surfaces.json');
+      if (!fs.existsSync(migrationPath)) {
+        return res.status(404).json({ error: "Migration file not found" });
+      }
+
+      const rows = JSON.parse(fs.readFileSync(migrationPath, 'utf-8'));
+      let inserted = 0;
+      let skipped = 0;
+
+      for (const row of rows) {
+        try {
+          const result = await db.execute(sql`
+            INSERT INTO detected_surfaces (id, video_id, timestamp, surface_type, confidence, bounding_box_x, bounding_box_y, bounding_box_width, bounding_box_height, frame_url, created_at, surroundings, scene_context, lighting_direction, lighting_intensity, camera_angle)
+            VALUES (${row.id}, ${row.video_id}, ${row.timestamp}, ${row.surface_type}, ${row.confidence}, ${row.bounding_box_x}, ${row.bounding_box_y}, ${row.bounding_box_width}, ${row.bounding_box_height}, ${row.frame_url}, ${row.created_at}, ${row.surroundings ? sql`ARRAY[${sql.join(row.surroundings.map((s: string) => sql`${s}`), sql`, `)}]::text[]` : sql`NULL`}, ${row.scene_context}, ${row.lighting_direction}, ${row.lighting_intensity}, ${row.camera_angle})
+            ON CONFLICT (id) DO NOTHING
+          `);
+          inserted++;
+        } catch (e: any) {
+          if (e.code === '23505') {
+            skipped++;
+          } else {
+            console.error(`[Migration] Error inserting row ${row.id}:`, e.message);
+            skipped++;
+          }
+        }
+      }
+
+      const maxIdResult = await db.execute(sql`SELECT MAX(id) as max_id FROM detected_surfaces`);
+      const maxId = (maxIdResult as any).rows?.[0]?.max_id || 0;
+      if (maxId > 0) {
+        await db.execute(sql`SELECT setval('detected_surfaces_id_seq', ${maxId}, true)`);
+      }
+
+      res.json({ success: true, total: rows.length, inserted, skipped });
+    } catch (err: any) {
+      console.error("[Migration] Error:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Check Google login status (for hybrid mode)
   app.get("/api/auth/google/status", (req: any, res) => {
     const googleUser = req.session?.googleUser;
