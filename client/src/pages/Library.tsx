@@ -1433,8 +1433,8 @@ export default function Library() {
                       {video.title.toLowerCase().includes('dubai') || video.title.toLowerCase().includes('saudi') ? 'MENA' : 'Global'}
                     </span>
                   </div>
-                  {/* Action buttons — show on hover for scanned local files */}
-                  {isRealMode && video.id && video.hasLocalFile && video.aiStatus === "ready" && (
+                  {/* Action buttons — show on hover for any scanned video */}
+                  {isRealMode && video.id && video.aiStatus === "ready" && (
                     <div className="flex items-center gap-1.5 mb-2 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button
                         className="flex items-center gap-1 px-2 py-1 rounded-md bg-purple-500/15 text-purple-400 hover:bg-purple-500/25 text-xs font-medium transition-colors"
