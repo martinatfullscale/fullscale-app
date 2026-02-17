@@ -24,6 +24,7 @@ import sharp from "sharp";
 import { storage } from "./storage";
 import type { InsertDetectedSurface } from "@shared/schema";
 import { GoogleGenAI } from "@google/genai";
+import { uploadFileToStorage, downloadToTempFile, storageServeUrl } from "./lib/objectStorage";
 
 // ============================================================================
 // GEMINI AI CLIENT
@@ -1637,6 +1638,16 @@ export async function processVideoScan(
       }
     }
     
+    if (!videoPath && (video as any).filePath?.startsWith('/storage/')) {
+      try {
+        const objectKey = (video as any).filePath.replace(/^\/storage\//, 'public/');
+        videoPath = await downloadToTempFile(objectKey);
+        console.log(`[Scanner V2] Downloaded from Object Storage: ${videoPath}`);
+      } catch (e: any) {
+        console.error(`[Scanner V2] Object Storage download failed:`, e.message);
+      }
+    }
+
     // DEBUG LOGGING
     console.log('[Scanner V2] DEBUG - youtubeId:', video.youtubeId);
     console.log('[Scanner V2] DEBUG - LOCAL_ASSET_MAP keys:', Object.keys(LOCAL_ASSET_MAP));
@@ -1676,21 +1687,7 @@ export async function processVideoScan(
     const { isVertical } = await getFrameMetadata(frames[0]);
     console.log(`[Scanner V2] Video orientation: ${isVertical ? "VERTICAL (9:16)" : "HORIZONTAL (16:9)"}`);
     
-    const permanentFramesDir = path.join(process.cwd(), "public", "uploads", "frames", videoId.toString());
-    if (!fs.existsSync(permanentFramesDir)) {
-      fs.mkdirSync(permanentFramesDir, { recursive: true });
-    }
-    
-    // Clear old frames from permanent directory before re-extracting
-    try {
-      const existingFrames = fs.readdirSync(permanentFramesDir).filter(f => f.endsWith('.jpg'));
-      for (const f of existingFrames) {
-        safeUnlink(path.join(permanentFramesDir, f));
-      }
-      console.log(`[Scanner V2] Cleared ${existingFrames.length} old frames from permanent directory`);
-    } catch (clearErr) {
-      console.warn(`[Scanner V2] Could not clear old frames:`, clearErr);
-    }
+    // Frames uploaded to Object Storage instead of local disk
 
     // PROCESS FRAMES ONE BY ONE (with immediate cleanup)
     let totalSurfaces = 0;
@@ -1705,17 +1702,17 @@ export async function processVideoScan(
 
         // Save ALL valid frames to permanent directory for thumbnail strip
         const frameFilename = `frame_${timestamp}s.jpg`;
-        const permanentPath = path.join(permanentFramesDir, frameFilename);
 
         try {
           const frameSize = fs.statSync(framePath).size;
-          if (frameSize > 5000) { // Skip corrupt/blank frames under 5KB
-            fs.copyFileSync(framePath, permanentPath);
+          if (frameSize > 5000) {
+            const objectKey = `public/uploads/frames/${videoId}/${frameFilename}`;
+            await uploadFileToStorage(framePath, objectKey);
           } else {
             console.warn(`[Scanner V2] Skipping tiny frame ${frameFilename} (${frameSize} bytes)`);
           }
         } catch (copyErr) {
-          console.error(`[Scanner V2] Failed to save frame:`, copyErr);
+          console.error(`[Scanner V2] Failed to upload frame to storage:`, copyErr);
         }
 
         // Use Gemini AI or edge detection based on config
@@ -1739,7 +1736,7 @@ export async function processVideoScan(
         }
 
         if (analysis.hasSurface && analysis.surfaces.length > 0) {
-          const frameUrl = `/uploads/frames/${videoId}/${frameFilename}`;
+          const frameUrl = `/storage/uploads/frames/${videoId}/${frameFilename}`;
 
           for (const surface of analysis.surfaces) {
             const dbSurface: InsertDetectedSurface = {
@@ -1782,10 +1779,7 @@ export async function processVideoScan(
       for (let i = 0; i < frames.length && totalSurfaces < CONFIG.MIN_SURFACES_BEFORE_FALLBACK + 2; i++) {
         const timestamp = i * CONFIG.FRAME_INTERVAL_SECONDS;
         if (!framesWithSurfaces.has(timestamp)) {
-          // Only add fallback surface if the frame file actually exists on disk
           const fallbackFrameFilename = `frame_${timestamp}s.jpg`;
-          const fallbackFramePath = path.join(permanentFramesDir, fallbackFrameFilename);
-          const fallbackFrameExists = fs.existsSync(fallbackFramePath);
 
           const dbSurface = {
             videoId,
@@ -1796,13 +1790,13 @@ export async function processVideoScan(
             boundingBoxY: "0.6", // Bottom 40%
             boundingBoxWidth: "0.9",
             boundingBoxHeight: "0.35",
-            frameUrl: fallbackFrameExists ? `/uploads/frames/${videoId}/${fallbackFrameFilename}` : null,
+            frameUrl: `/storage/uploads/frames/${videoId}/${fallbackFrameFilename}`,
             surroundings: null,
             sceneContext: "Fallback detection - potential placement area",
           };
 
           await storage.insertDetectedSurface(dbSurface);
-          console.log(`[Scanner V2] *** FALLBACK SURFACE at ${timestamp}s (confidence: ${(CONFIG.FALLBACK_CONFIDENCE * 100).toFixed(1)}%, frameExists: ${fallbackFrameExists}) ***`);
+          console.log(`[Scanner V2] *** FALLBACK SURFACE at ${timestamp}s (confidence: ${(CONFIG.FALLBACK_CONFIDENCE * 100).toFixed(1)}%) ***`);
           totalSurfaces++;
         }
       }
@@ -1832,7 +1826,18 @@ export async function processVideoScan(
     // SCENE CONTEXT ENRICHMENT — FullScale Edge image analysis
     // Uses Sharp to analyze brightness, edges, and color to infer scene context
     try {
-      await enrichSurfacesWithContext(videoId, permanentFramesDir);
+      const enrichmentDir = path.join(tempDir, "enrichment_frames");
+      fs.mkdirSync(enrichmentDir, { recursive: true });
+      const enrichmentSurfaces = await storage.getDetectedSurfaces(videoId);
+      const enrichmentTimestamps = new Set(enrichmentSurfaces.map(s => Math.floor(Number(s.timestamp))));
+      for (const ts of enrichmentTimestamps) {
+        try {
+          const objKey = `public/uploads/frames/${videoId}/frame_${ts}s.jpg`;
+          const tempPath = await downloadToTempFile(objKey, enrichmentDir);
+          console.log(`[Scanner V2] Downloaded frame for enrichment: ${tempPath}`);
+        } catch { /* frame may not exist */ }
+      }
+      await enrichSurfacesWithContext(videoId, enrichmentDir);
     } catch (enrichErr) {
       console.error(`[Scanner V2] Scene context enrichment failed (non-fatal):`, enrichErr);
     }
@@ -1857,9 +1862,16 @@ export async function processVideoScan(
             try {
               // Build frame path for this surface's timestamp
               const frameTimestamp = Math.round(surface.timestampStart || 0);
-              const framePath = path.join(permanentFramesDir, `frame_${frameTimestamp}s.jpg`);
+              const claudeFrameDir = path.join(tempDir, "claude_frames");
+              if (!fs.existsSync(claudeFrameDir)) fs.mkdirSync(claudeFrameDir, { recursive: true });
+              let framePath: string;
+              try {
+                const claudeObjKey = `public/uploads/frames/${videoId}/frame_${frameTimestamp}s.jpg`;
+                framePath = await downloadToTempFile(claudeObjKey, claudeFrameDir);
+              } catch {
+                continue;
+              }
 
-              const fs = await import("fs");
               if (!fs.existsSync(framePath)) continue;
 
               const frameBase64 = fs.readFileSync(framePath).toString("base64");
@@ -2016,13 +2028,25 @@ export async function detectSurface(
   const framesDir = path.join(tempDir, "frames");
   
   try {
-    if (!fs.existsSync(videoPath)) {
+    let resolvedPath = videoPath;
+    if (videoPath.startsWith('/storage/')) {
+      try {
+        const objectKey = videoPath.replace(/^\/storage\//, 'public/');
+        resolvedPath = await downloadToTempFile(objectKey, tempDir);
+        console.log(`[Scanner V2] detectSurface: Downloaded from Object Storage: ${resolvedPath}`);
+      } catch (e: any) {
+        console.error(`[Scanner V2] detectSurface: Object Storage download failed:`, e.message);
+        return { hasSurface: false, confidence: 0 };
+      }
+    }
+
+    if (!fs.existsSync(resolvedPath)) {
       return { hasSurface: false, confidence: 0 };
     }
     
     fs.mkdirSync(framesDir, { recursive: true });
     
-    const frames = await extractFrames(videoPath, framesDir);
+    const frames = await extractFrames(resolvedPath, framesDir);
     
     if (frames.length === 0) {
       return { hasSurface: false, confidence: 0 };

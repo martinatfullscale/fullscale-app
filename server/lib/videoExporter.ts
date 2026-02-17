@@ -17,6 +17,7 @@ import * as fs from "fs";
 import * as path from "path";
 import sharp from "sharp";
 import { storage } from "../storage";
+import { uploadFileToStorage, downloadToTempFile } from "./objectStorage";
 
 // ── Types ──
 
@@ -421,10 +422,19 @@ export async function processVideoExport(
     fs.mkdirSync(framesDir, { recursive: true });
     fs.mkdirSync(compositedDir, { recursive: true });
 
-    // Resolve video path
-    const absoluteVideoPath = path.resolve(videoPath);
-    if (!fs.existsSync(absoluteVideoPath)) {
-      throw new Error(`Video file not found: ${absoluteVideoPath}`);
+    let absoluteVideoPath: string;
+    let tempVideoFile: string | null = null;
+
+    if (videoPath.startsWith('/storage/')) {
+      const objectKey = videoPath.replace(/^\/storage\//, 'public/');
+      tempVideoFile = await downloadToTempFile(objectKey, tempDir);
+      absoluteVideoPath = tempVideoFile;
+      console.log(`[VideoExporter] Downloaded from Object Storage: ${absoluteVideoPath}`);
+    } else {
+      absoluteVideoPath = path.resolve(videoPath);
+      if (!fs.existsSync(absoluteVideoPath)) {
+        throw new Error(`Video file not found: ${absoluteVideoPath}`);
+      }
     }
 
     // Get video duration
@@ -580,11 +590,13 @@ export async function processVideoExport(
       throw new Error(`Output file suspiciously small: ${stats.size} bytes`);
     }
 
-    console.log(`[VideoExporter] Export complete: ${outputMp4} (${(stats.size / 1024 / 1024).toFixed(1)}MB)`);
+    console.log(`[VideoExporter] Encoding complete: ${outputMp4} (${(stats.size / 1024 / 1024).toFixed(1)}MB)`);
 
-    // ── Step 5: Update export job ──
-    const outputUrl = `/exports/${outputFilename}`;
-    await storage.updateVideoExportComplete(exportId, outputMp4, outputUrl);
+    const objectKey = `public/exports/${outputFilename}`;
+    const storageUrl = await uploadFileToStorage(outputMp4, objectKey);
+    console.log(`[VideoExporter] Uploaded to Object Storage: ${storageUrl}`);
+
+    await storage.updateVideoExportComplete(exportId, storageUrl, storageUrl);
 
     // ── Step 6: Cleanup temp directories ──
     try {

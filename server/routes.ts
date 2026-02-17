@@ -11,6 +11,7 @@ import { processVideoScan, scanPendingVideos, addToLocalAssetMap, getYouTubeThum
 // import { detectSurfacesFromVideo } from "./lib/surfaceDetector";
 import { extractThumbnailForVideo, extractAndUpdateThumbnails } from "./lib/thumbnailExtractor";
 import { processVideoExport } from "./lib/videoExporter";
+import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 import { hashPassword, verifyPassword } from "./lib/password";
 import { addSignupToAirtable } from "./lib/airtable";
 import { setupPlatformAuth, importFacebookVideos, importInstagramMedia, importPersonalVideos } from "./lib/platformAuth";
@@ -24,15 +25,16 @@ import { users } from "@shared/schema";
 import { eq, sql } from "drizzle-orm";
 import crypto from "crypto";
 import sharp from "sharp";
+import { uploadFileToStorage } from "./lib/objectStorage";
 
-// Configure multer for video uploads
+// Configure multer for video uploads (temp dir, then uploaded to Object Storage)
 const uploadStorage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const uploadDir = path.join(process.cwd(), "public", "uploads");
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
+    const tmpDir = path.join(require("os").tmpdir(), "video-uploads");
+    if (!fs.existsSync(tmpDir)) {
+      fs.mkdirSync(tmpDir, { recursive: true });
     }
-    cb(null, uploadDir);
+    cb(null, tmpDir);
   },
   filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
@@ -259,6 +261,8 @@ export async function registerRoutes(
   } catch (platformError) {
     console.error("[Routes] Platform Auth setup failed (non-fatal):", platformError);
   }
+
+  registerObjectStorageRoutes(app);
 
   // ============================================
   // Google Login OAuth Routes (with Allowlist)
@@ -1921,21 +1925,20 @@ export async function registerRoutes(
     console.log(`[UPLOAD] Category: ${category}`);
 
     try {
-      // Generate a unique video ID for LOCAL_ASSET_MAP
       const uploadVideoId = `upload-${Date.now()}-${Math.random().toString(36).substring(7)}`;
-      const filePath = `./public/uploads/${file.filename}`;
-      const videoUrl = `/uploads/${file.filename}`;
 
-      // Add to LOCAL_ASSET_MAP so scanner can find it
-      addToLocalAssetMap(uploadVideoId, filePath);
+      const objectKey = `public/videos/${file.filename}`;
+      const storageUrl = await uploadFileToStorage(file.path, objectKey);
+      console.log(`[UPLOAD] Uploaded to Object Storage: ${storageUrl}`);
 
-      // Insert into video_index table with persistent file path
+      try { fs.unlinkSync(file.path); } catch {}
+
       const video = await storage.insertVideo({
         userId,
         youtubeId: uploadVideoId,
         title,
         description: `Uploaded video: ${file.originalname}`,
-        thumbnailUrl: "/uploads/default-thumbnail.png",
+        thumbnailUrl: "/storage/uploads/default-thumbnail.png",
         viewCount: 0,
         publishedAt: new Date(),
         status: "Pending Scan",
@@ -1944,13 +1947,12 @@ export async function registerRoutes(
         category,
         isEvergreen: true,
         duration: "0:00",
-        filePath, // Store file path in DB for persistence across server restarts
+        filePath: storageUrl,
       });
 
       console.log(`[UPLOAD] Video inserted with ID: ${video.id}`);
       console.log(`[UPLOAD] Starting auto-scan...`);
 
-      // AUTO-SCAN: Trigger scan immediately after upload (non-blocking)
       processVideoScan(video.id, true).then(result => {
         console.log(`[UPLOAD] Auto-scan complete for ${video.id}: ${result.surfacesDetected} surfaces`);
       }).catch(err => {
@@ -1963,18 +1965,15 @@ export async function registerRoutes(
           id: video.id,
           title: video.title,
           youtubeId: uploadVideoId,
-          videoUrl,
+          videoUrl: storageUrl,
           status: video.status,
           platform: "fullscale"
         },
         message: "Video uploaded successfully. Click 'Scan' to analyze for ad placements."
       });
     } catch (error: any) {
-      console.error(`[UPLOAD] Database error:`, error);
-      // Clean up uploaded file on error
-      try {
-        fs.unlinkSync(path.join(process.cwd(), "public", "uploads", file.filename));
-      } catch {}
+      console.error(`[UPLOAD] Error:`, error);
+      try { fs.unlinkSync(file.path); } catch {}
       res.status(500).json({ error: "Failed to save video record" });
     }
   });
@@ -3758,33 +3757,23 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Product name is required" });
       }
 
-      // Ensure uploads/products directory exists
-      const productsDir = "./public/uploads/products";
-      if (!fs.existsSync(productsDir)) {
-        fs.mkdirSync(productsDir, { recursive: true });
-      }
-
-      // Use Sharp to validate and extract metadata
       const imageBuffer = req.file.buffer;
       const metadata = await sharp(imageBuffer).metadata();
       const width = metadata.width || 0;
       const height = metadata.height || 0;
       const hasAlpha = metadata.hasAlpha || false;
 
-      // Save original image
       const timestamp = Date.now();
       const ext = metadata.format === "png" ? "png" : metadata.format === "webp" ? "webp" : "jpg";
       const filename = `product_${timestamp}.${ext}`;
-      const imagePath = path.join(productsDir, filename);
-      await sharp(imageBuffer).toFile(imagePath);
-
-      // Generate thumbnail (200px wide)
       const thumbFilename = `product_${timestamp}_thumb.${ext}`;
-      const thumbPath = path.join(productsDir, thumbFilename);
-      await sharp(imageBuffer).resize(200).toFile(thumbPath);
 
-      const imageUrl = `/uploads/products/${filename}`;
-      const thumbnailUrl = `/uploads/products/${thumbFilename}`;
+      const originalBuffer = await sharp(imageBuffer).toBuffer();
+      const thumbBuffer = await sharp(imageBuffer).resize(200).toBuffer();
+
+      const { uploadBufferToStorage } = await import("./lib/objectStorage");
+      const imageUrl = await uploadBufferToStorage(originalBuffer, `public/uploads/products/${filename}`);
+      const thumbnailUrl = await uploadBufferToStorage(thumbBuffer, `public/uploads/products/${thumbFilename}`);
 
       // ── Product Ingest Analysis ──
       let subjectBoundsX: number | null = null;

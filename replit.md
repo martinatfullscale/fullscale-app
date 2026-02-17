@@ -1,182 +1,90 @@
 # FullScale - Content Creator Dashboard
 
 ## Overview
-
-FullScale is a dual-portal content monetization platform with Google OAuth-gated access and YouTube integration. Features role-based views (creator/brand) with View Switcher for admins, a Brand Marketplace where brands purchase ad placements, and Campaign Tracker for monitoring bids. Built as a full-stack TypeScript application with React frontend and Express backend, using PostgreSQL for data persistence. Includes real-time AI object detection using TensorFlow.js COCO-SSD for product placement surface analysis.
-
-## Recent Changes (January 2026)
-- **Public Creator Profile Pages**: Brands can view creator content and request placements at /c/:slug
-  - GET /api/public/creator/:slug returns creator info and videos with detected surfaces
-  - POST /api/public/placement-request creates monetization items (derives creator from video ownership)
-  - CreatorProfile.tsx shows creator name, avatar, video grid with ad spot counts
-  - Placement modal collects brand contact info and message
-  - Currently hardcoded slug "martin" → martin@gofullscale.co for testing
-- **Scanner V2 Implementation**: New resource-safe video scanner replacing unstable Gemini AI scanner
-  - Uses Sharp edge detection instead of Gemini AI (faster, free, no timeouts)
-  - Deletes frames IMMEDIATELY after processing (disk-safe)
-  - Never throws - all errors caught and returned gracefully
-  - Pre-flight disk space check before extraction
-  - Processes one frame at a time (memory-safe)
-  - Located at server/scanner_v2.ts (original scanner.ts kept as fallback)
-  - Exports: processVideoScan, scanPendingVideos, addToLocalAssetMap, getYouTubeThumbnailWithFallback
-- **Platform Disconnect Persistence**: Fixed social platform disconnect to persist to database
-  - DELETE /api/auth/facebook clears Facebook and Instagram data (shared auth)
-  - DELETE /api/auth/twitch clears Twitch connection data
-  - DELETE /api/auth/youtube clears YouTube connection and video index
-  - Settings page now fetches real connection status on mount from /api/platform-auth/status and /api/youtube/videos
-  - Disconnect calls actual API endpoints instead of just updating local state
-- **Local File Badge in Demo Mode**: Demo videos endpoint now includes real videos with local files
-  - /api/demo/videos merges real local videos (with fileExists: true) with static demo videos
-  - Real local videos appear first in the list, showing "Local File" badge
-  - Hero Video (ID 52) with local file at ./public/hero_video.mp4 displays Local File badge
-- **Database Cleanup**: Removed orphaned demo videos - only 1 video (Hero Video ID 52) remains
-- **TensorFlow.js Surface Detection**: New background worker queue for AI-powered surface detection
-  - COCO-SSD model detects objects: tables, desks, laptops, keyboards, monitors, phones, etc.
-  - Returns JSON: `{surface: "desk", surroundings: ["laptop", "keyboard"]}` or "NO_SURFACES_EXIST"
-  - Background worker prevents 503 crashes - queues scan jobs for async processing
-  - API routes: POST /api/tf-scan/:id (queued), GET /api/tf-scan/job/:jobId (status), GET /api/tf-scan/queue (queue status)
-  - Model pre-warmed at server startup for faster first scan
-  - All routes require authentication; admin-only for direct detection endpoints
-- **FFmpeg Thumbnail Extraction**: Automatic thumbnail generation from local video files
-  - Extracts frame at 2-second mark with 480x270 resolution
-  - Saved to public/thumbnails/ directory, served from /thumbnails/ URL path
-  - API routes: POST /api/thumbnails/extract/:id, POST /api/thumbnails/extract-all (admin)
-  - Database updated with updateVideoThumbnail() - only updates thumbnail field, not full upsert
-- **Schema Updates**: detected_surfaces table extended with surroundings and sceneContext columns
-- **Local-File-Only Video Scanning**: Scanner workflow simplified to only scan videos with local files
-  - YouTube downloads disabled - videos must be uploaded locally or mapped in LOCAL_ASSET_MAP
-  - Returns "Pending Upload" status for videos without local files
-  - Removed Instagram/Facebook placeholder fallbacks
-- **Public YouTube Thumbnail Resolver**: Thumbnails fetched from public YouTube URLs (no OAuth required)
-  - `getYouTubeThumbnailWithFallback(videoId)` constructs https://i.ytimg.com/vi/{id}/hqdefault.jpg
-  - Used in `/api/youtube/videos` endpoint instead of OAuth API thumbnails
-- **Facebook/Instagram Content Import**: Full Graph API integration to import videos from connected Facebook Pages and Instagram Business Accounts
-  - New /api/sync/facebook-instagram endpoint with multi-auth user lookup (session, Google, Replit OIDC)
-  - Facebook Page videos imported with Graph API fields: title, description, views, thumbnails, permalink_url
-  - Instagram media imported (VIDEO, REELS) with fields: caption, thumbnail_url, media_url, permalink
-  - sourceUrl field added to video_index schema for storing canonical URLs to original content
-  - Separate "Connect Facebook Page" and "Connect Instagram Business" buttons in Dashboard
-  - React Query mutation for sync button with loading state and toast feedback
-  - Session cookie sameSite set to 'none' for cross-site OAuth redirect support
-- **Facebook Graph API Integration**: Real creator data fetched from Facebook Pages and Instagram Business Accounts
-  - Scopes: email, public_profile, pages_show_list, pages_read_engagement
-  - Graph API fetches: Page name, Page ID, follower count (fan_count), Instagram Business Account
-  - Instagram data: username (@handle) and followers_count from linked business accounts
-  - New database columns: facebook_page_id, facebook_page_name, facebook_followers, facebook_access_token (encrypted), instagram_business_id, instagram_handle, instagram_followers
-  - Security: Page access tokens encrypted with AES-256-GCM before storage; sensitive API logging sanitized
-  - Dashboard Total Reach now calculates from YouTube subscribers + Facebook followers + Instagram followers
-  - Settings page displays real Facebook Page and Instagram profile with follower counts
-- **Multi-Platform Auth Complete**: Passport.js strategies for Twitch and Facebook OAuth now support standalone login/signup AND account linking
-  - New columns in users table: twitch_id, facebook_id, instagram_id
-  - Auth routes: /auth/twitch, /auth/twitch/callback, /auth/facebook, /auth/facebook/callback
-  - Flow: Check if user exists by platform ID → check by email → create new user
-  - Status endpoint: /api/platform-auth/status shows configured/connected state
-  - server/lib/platformAuth.ts uses async dynamic imports for ES modules
-  - Settings page buttons wire to real OAuth routes (Facebook popup works when credentials set)
-  - Requires env vars: TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET, FACEBOOK_APP_ID, FACEBOOK_APP_SECRET
-- **YouTube Download Bypass**: Scanner and proxy use Safari mobile user agent spoofing
-  - User-Agent: `Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15...Safari/604.1`
-  - @distube/ytdl-core with mobile Safari UA, falls back to yt-dlp
-  - /api/proxy-video route streams YouTube videos with auth, rate limiting (5/min), 100MB limit
-  - NOTE: User agent spoofing may violate YouTube TOS - prefer direct video uploads for production
-- **Direct Video Upload**: Users can upload videos directly to bypass YouTube download restrictions
-  - File paths now stored in `file_path` database column (persistent across server restarts)
-  - Scanner priority: DB filePath → LOCAL_ASSET_MAP → legacy description fallback
-- Video scanning pipeline fully functional: ffmpeg frame extraction → Gemini 2.5 Flash analysis → surface detection → database storage
-- LOCAL_ASSET_MAP in scanner.ts maps demo video IDs to local files for testing without YouTube download
-- Test video (ID 52) successfully scanned with AI-detected placement surface (Desk) for martin@gofullscale.co
-- Added TensorFlow.js COCO-SSD integration for real-time object detection in SceneAnalysisModal
-- Added Social Integrations tab in Settings with simulated connect/disconnect for IG, Meta, X, TikTok, YouTube, Twitch
-- Brand Marketplace has 20 industry categories with tabbed interface and genre/budget/scene/platform filters
-- Multi-platform support: YouTube (red), Twitch (purple #9146FF), Facebook (blue #1877F2) platform badges on video cards
-- Platform filter dropdown in Brand Marketplace for filtering by YouTube/Twitch/Facebook
-- Linked Accounts card in Settings showing connected social profiles with follower counts
-- Demo videos expanded: 20 YouTube, 15 Instagram, 4 Twitch VODs, 4 Facebook videos in server/routes.ts
-- Settings connections renamed to be more specific (e.g., "Instagram Professional", "Facebook Page", "Twitch Channel")
-- Session timeout set to 2 hours for security (confirmed by user)
+FullScale is a dual-portal content monetization platform designed for content creators and brands. It features Google OAuth-gated access with YouTube integration, role-based views (creator/brand) with an admin View Switcher, a Brand Marketplace for purchasing ad placements, and a Campaign Tracker for monitoring bids. The platform uses real-time AI object detection (TensorFlow.js COCO-SSD) for product placement surface analysis within video content. The goal is to provide creators with tools to monetize their content and brands with a marketplace to find suitable ad placements.
 
 ## User Preferences
-
 Preferred communication style: Simple, everyday language.
 
 ## System Architecture
 
 ### Frontend Architecture
 - **Framework**: React 18 with TypeScript
-- **Routing**: Wouter for lightweight client-side routing
-- **State Management**: TanStack React Query for server state and caching
-- **Styling**: Tailwind CSS with CSS variables for theming (dark theme default)
-- **UI Components**: shadcn/ui component library with Radix UI primitives
-- **Animations**: Framer Motion for page transitions and micro-interactions
-- **Build Tool**: Vite with HMR support
+- **Routing**: Wouter
+- **State Management**: TanStack React Query
+- **Styling**: Tailwind CSS with CSS variables (dark theme default), shadcn/ui components with Radix UI primitives
+- **Animations**: Framer Motion
+- **Build Tool**: Vite
 
 ### Backend Architecture
 - **Runtime**: Node.js with Express
-- **Language**: TypeScript with tsx for development
-- **API Design**: REST API with typed route definitions in `shared/routes.ts`
-- **Session Management**: Express sessions with PostgreSQL session store (connect-pg-simple)
-- **Authentication**: Replit Auth integration with OpenID Connect (OIDC)
+- **Language**: TypeScript
+- **API Design**: REST API with typed route definitions (`shared/routes.ts`)
+- **Session Management**: Express sessions with PostgreSQL session store
+- **Authentication**: Replit Auth with OpenID Connect (OIDC)
 
 ### Data Storage
 - **Database**: PostgreSQL
 - **ORM**: Drizzle ORM with drizzle-zod for schema validation
-- **Schema Location**: `shared/schema.ts` contains all table definitions
-- **Migrations**: Drizzle Kit with `db:push` command for schema sync
+- **Schema Location**: `shared/schema.ts`
+- **Migrations**: Drizzle Kit
+- **Object Storage**: Replit Object Storage (GCS-backed) for all file storage (videos, thumbnails, frames, exports, product uploads). Files are served via a `/storage/*` route proxy.
 
 ### Authentication & Authorization
-- **Primary Auth**: Google OAuth 2.0 login with email allowlist gatekeeper
-- **Secondary Auth**: Replit OIDC Auth via Passport.js
-- **Flexible Auth Middleware**: `isFlexibleAuthenticated` in routes.ts supports both Google OAuth and Replit OIDC
-  - Checks `req.session.googleUser` for Google OAuth sessions
-  - Checks `req.isAuthenticated()` + `req.user.claims` for Replit OIDC sessions
-  - DEV ONLY: admin_email query param fallback for testing (disabled in production)
-- **Allowlist System**: `allowed_users` table controls founding cohort access with user_type (creator/brand)
-- **Default Role Assignment**: Users on allowlist without role default to 'creator'
-- **Role-Based Views**: Creators see Dashboard/Library/Opportunities; Brands see Marketplace/Campaigns
-- **View Switcher**: Admins can switch between creator/brand views for testing
-- **CSRF Protection**: OAuth state parameter generation and verification
-- **Admin Emails**: martin@gofullscale.co, martin@whtwrks.com, martincekechukwu@gmail.com
-- **OAuth Integration**: Google OAuth for YouTube API access
-- **Token Security**: AES-256-GCM encryption for storing OAuth tokens
-- **Session Storage**: PostgreSQL-backed sessions with 2-hour TTL
-- **Auth API Fix**: /api/auth/user-type returns {authenticated: false} for unauthenticated users (no 401 loops)
+- **Primary Auth**: Google OAuth 2.0 with email allowlist.
+- **Secondary Auth**: Replit OIDC Auth via Passport.js.
+- **Flexible Auth Middleware**: `isFlexibleAuthenticated` supports both Google OAuth and Replit OIDC sessions.
+- **Allowlist System**: `allowed_users` table defines user access and type (creator/brand).
+- **Role-Based Views**: Differentiates features for creators (Dashboard, Library, Opportunities) and brands (Marketplace, Campaigns).
+- **View Switcher**: Admins can toggle between creator/brand views.
+- **CSRF Protection**: OAuth state parameter generation and verification.
+- **OAuth Integration**: Google OAuth for YouTube API access; Passport.js strategies for Twitch and Facebook integration, supporting standalone login/signup and account linking.
+- **Token Security**: AES-256-GCM encryption for storing OAuth tokens.
+- **Session Storage**: PostgreSQL-backed sessions with a 2-hour TTL.
 
 ### Key Design Patterns
-- **Shared Types**: `shared/` directory contains schemas and types used by both client and server
-- **API Routes Contract**: `shared/routes.ts` defines API contracts with Zod validation
-- **Component Architecture**: Feature components in `client/src/components/`, pages in `client/src/pages/`
-- **Storage Abstraction**: `server/storage.ts` provides database access interface
-- **Hybrid Data Mode**: `client/src/hooks/use-hybrid-mode.ts` detects Google auth and returns `mode: 'demo' | 'real'`
-  - Demo mode: Unauthenticated visitors see simulated data, fake sync animations, hardcoded charts
-  - Real mode: Authenticated users (on allowlist) see live YouTube channel data and actual video library
+- **Shared Types**: `shared/` directory for common schemas and types.
+- **API Routes Contract**: `shared/routes.ts` defines API contracts with Zod validation.
+- **Component Architecture**: Feature components in `client/src/components/`, pages in `client/src/pages/`.
+- **Hybrid Data Mode**: `use-hybrid-mode.ts` detects Google auth, switching between 'demo' (simulated data for unauthenticated users) and 'real' (live data for authenticated users).
+- **Scanner V2**: Resource-safe video scanner using Sharp for edge detection, processing one frame at a time and deleting frames immediately.
+- **TensorFlow.js Surface Detection**: Background worker queue for AI-powered object detection (COCO-SSD model) to identify placement surfaces in videos.
+- **FFmpeg Thumbnail Extraction**: Automatic thumbnail generation from local video files.
+- **Multi-Platform Integrations**: Comprehensive integration with Facebook Graph API and Instagram Business Accounts for content import and data fetching. YouTube thumbnail resolution without OAuth.
+- **Direct Video Upload**: Users can upload videos directly; file paths are stored in the database.
 
 ## External Dependencies
 
 ### Third-Party Services
-- **YouTube Data API v3**: Channel info, video listings, and statistics
-- **Google OAuth 2.0**: Authentication for YouTube API access
-- **Replit Auth**: Primary user authentication via OIDC
+- **YouTube Data API v3**: For channel info, video listings, and statistics.
+- **Google OAuth 2.0**: For YouTube API access and user authentication.
+- **Replit Auth**: Primary user authentication via OIDC.
+- **Facebook Graph API**: For fetching Facebook Page and Instagram Business Account data and importing content.
+- **Twitch API**: For integrating Twitch channel data.
+- **TensorFlow.js COCO-SSD**: For real-time object detection in videos.
+- **FFmpeg**: For video processing tasks like thumbnail extraction.
+- **Sharp**: For image processing in Scanner V2.
 
 ### Required Environment Variables
-- `DATABASE_URL`: PostgreSQL connection string
-- `SESSION_SECRET`: Secret for session encryption
-- `ENCRYPTION_KEY`: Key for OAuth token encryption (falls back to SESSION_SECRET)
-- `GOOGLE_CLIENT_ID`: Google OAuth client ID for YouTube
-- `GOOGLE_CLIENT_SECRET`: Google OAuth client secret
-- `ISSUER_URL`: Replit OIDC issuer (defaults to https://replit.com/oidc)
-- `REPL_ID`: Replit environment identifier
+- `DATABASE_URL`
+- `SESSION_SECRET`
+- `ENCRYPTION_KEY`
+- `GOOGLE_CLIENT_ID`
+- `GOOGLE_CLIENT_SECRET`
+- `ISSUER_URL`
+- `REPL_ID`
+- `TWITCH_CLIENT_ID`
+- `TWITCH_CLIENT_SECRET`
+- `FACEBOOK_APP_ID`
+- `FACEBOOK_APP_SECRET`
 
 ### Database Tables
-- `users`: User accounts from Replit Auth
-- `sessions`: Session storage for authentication
-- `youtube_connections`: Encrypted OAuth tokens and channel info
-- `monetization_items`: Content monetization tracking (brand bids on creator content)
-- `allowed_users`: Email allowlist with user_type (creator/brand) for access control
-- `video_index`: Indexed videos with AI analysis status and priority scores
-- `detected_surfaces`: AI-detected placement surfaces in videos
-
-### AI Insertion Engine (server/lib/ai/engine/)
-- **types.ts**: PlacementSurface, InsertionOpportunity, SceneAnalysis types
-- **scene-analyzer.ts**: SceneAnalyzer class for Gemini 2.5 Flash frame analysis
-- **insertion-engine.ts**: Main orchestrator for video analysis pipeline
-- **Status**: Scaffold with TODOs - ready for implementation
+- `users`
+- `sessions`
+- `youtube_connections`
+- `monetization_items`
+- `allowed_users`
+- `video_index`
+- `detected_surfaces`
+- `twitch_connections` (implied by Twitch integration)
+- `facebook_connections` (implied by Facebook integration)

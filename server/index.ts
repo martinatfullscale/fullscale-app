@@ -8,6 +8,7 @@ import { seed } from "./db/seed";
 import { sql } from "drizzle-orm";
 import path from "path";
 import cookieParser from "cookie-parser";
+import { objectKeyFromServeUrl, getStorageStream } from "./lib/objectStorage";
 // DISABLED: TensorFlow scanner replaced by scanner_v2.ts which uses Sharp
 // import { initializeScanWorker } from "./lib/scanWorker";
 
@@ -50,6 +51,35 @@ app.use('/attached_assets', express.static(path.join(projectRoot, "attached_asse
   lastModified: true,
   immutable: true,
 }));
+
+app.get('/storage/*', async (req, res) => {
+  try {
+    const objectKey = objectKeyFromServeUrl(req.path);
+    const { file, stream } = getStorageStream(objectKey);
+    const [metadata] = await file.getMetadata();
+    
+    res.set({
+      'Content-Type': metadata.contentType || 'application/octet-stream',
+      'Content-Length': metadata.size?.toString(),
+      'Cache-Control': 'public, max-age=604800',
+      'Access-Control-Allow-Origin': '*',
+      'Cross-Origin-Resource-Policy': 'cross-origin',
+    });
+    
+    stream.on('error', (err: any) => {
+      console.error('[Storage] Stream error:', err.message);
+      if (!res.headersSent) {
+        res.status(404).json({ error: 'File not found' });
+      }
+    });
+    
+    stream.pipe(res);
+  } catch (err: any) {
+    if (!res.headersSent) {
+      res.status(404).json({ error: 'File not found' });
+    }
+  }
+});
 
 // ============================================
 // Body parsing middleware (after static files)
