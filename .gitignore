@@ -6,3 +6,7 @@ vite.config.ts.*
 *.tar.gz
 public/generated-assets/
 public/exported-clips/
+public/uploads/
+public/exports/
+public/videos/*.mov
+public/videos/*.mp4
