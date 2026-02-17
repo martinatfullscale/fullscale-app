@@ -25,7 +25,7 @@ import { users } from "@shared/schema";
 import { eq, sql } from "drizzle-orm";
 import crypto from "crypto";
 import sharp from "sharp";
-import { uploadFileToStorage } from "./lib/objectStorage";
+import { uploadFileToStorage, fileExistsInStorage, objectKeyFromServeUrl } from "./lib/objectStorage";
 
 // Configure multer for video uploads (temp dir, then uploaded to Object Storage)
 const uploadStorage = multer.diskStorage({
@@ -1558,7 +1558,12 @@ export async function registerRoutes(
           let fileExists = false;
           if (video.filePath) {
             try {
-              fileExists = fs.existsSync(video.filePath);
+              if (video.filePath.startsWith('/storage/')) {
+                const objectKey = objectKeyFromServeUrl(video.filePath);
+                fileExists = await fileExistsInStorage(objectKey);
+              } else {
+                fileExists = fs.existsSync(video.filePath);
+              }
             } catch {
               fileExists = false;
             }
@@ -2229,7 +2234,13 @@ export async function registerRoutes(
         let fileExists = false;
         if (video.filePath) {
           try {
-            fileExists = fs.existsSync(video.filePath);
+            if (video.filePath.startsWith('/storage/')) {
+              // Object Storage file — check async
+              const objectKey = objectKeyFromServeUrl(video.filePath);
+              fileExists = await fileExistsInStorage(objectKey);
+            } else {
+              fileExists = fs.existsSync(video.filePath);
+            }
           } catch {
             fileExists = false;
           }
