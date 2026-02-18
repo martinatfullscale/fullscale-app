@@ -13,6 +13,10 @@
  * Step 8: EXPORT — Write clips to disk and create DB records
  * Step 9: DISTRIBUTE — Mark clips ready for publishing (actual push is manual)
  *
+ * Supports two detection modes:
+ * - Legacy: Per-frame scene analysis via clipDetector.ts
+ * - Editorial: Transcript-first Claude Dense analysis via editorialAnalyzer + clipRanker
+ *
  * Called by POST /api/remix/:videoId/start route.
  */
 
@@ -23,6 +27,8 @@ import { detectClipCandidates, PLATFORM_CONFIGS, type ClipCandidate } from "./cl
 import { generateClip, type ClipPlacement } from "./clipGenerator";
 import { generateCaptions } from "./captionEngine";
 import { scoreClipQuality } from "./qualityScorer";
+import type { RankedClip } from "./clipRanker";
+import { objectKeyFromServeUrl, downloadToTempFile } from "../objectStorage";
 
 export interface RemixConfig {
   minClipDuration: number;
@@ -31,6 +37,10 @@ export interface RemixConfig {
   platformTargets: string[];
   captionsEnabled: boolean;
   captionStyle: "highlight" | "brand_callout" | "narrative";
+  /** When provided, skip detection and generate a single clip from this exact time range */
+  clipRange?: { start: number; end: number };
+  /** When true, use editorial intelligence pipeline instead of legacy per-frame detection */
+  editorialMode?: boolean;
 }
 
 export interface RemixResult {
@@ -61,6 +71,53 @@ const DEFAULT_CONFIG: RemixConfig = {
 };
 
 /**
+ * Convert a RankedClip (from editorial intelligence pipeline) to a ClipCandidate
+ * (expected by clipGenerator, captionEngine, qualityScorer).
+ */
+function rankedClipToCandidate(ranked: RankedClip, platform: string): ClipCandidate {
+  return {
+    startTime: ranked.clipStart,
+    endTime: ranked.clipEnd,
+    duration: ranked.duration,
+    score: ranked.finalScore,
+    sceneAnalysisIds: [],
+    surfaceIds: ranked.surfaces.map((s) => s.id),
+    brandProductIds: [...new Set(ranked.brandMatches.map((bm) => bm.brandProductId))],
+    primaryTone: ranked.monetizationTier, // Repurposed: "premium"/"standard"/"organic"
+    narrativeSummary: ranked.suggestedTitle,
+    platform,
+  };
+}
+
+/**
+ * Resolve a video's file path to a local path accessible by FFmpeg.
+ * - Object Storage paths (/storage/...) → download to temp file
+ * - Local paths → use directly
+ * Returns { localPath, isTempFile } so callers can clean up temp files.
+ */
+async function resolveVideoPath(
+  filePath: string
+): Promise<{ localPath: string; isTempFile: boolean }> {
+  if (filePath.startsWith("/storage/")) {
+    console.log(`[Remix] Resolving Object Storage path: ${filePath}`);
+    const objectKey = objectKeyFromServeUrl(filePath);
+    const localPath = await downloadToTempFile(objectKey, "/tmp/remix-videos");
+    console.log(`[Remix] Downloaded to temp file: ${localPath}`);
+    return { localPath, isTempFile: true };
+  }
+
+  // Try as a path relative to public dir
+  if (filePath.startsWith("/") && !fs.existsSync(filePath)) {
+    const publicPath = path.join(process.cwd(), "public", filePath);
+    if (fs.existsSync(publicPath)) {
+      return { localPath: publicPath, isTempFile: false };
+    }
+  }
+
+  return { localPath: filePath, isTempFile: false };
+}
+
+/**
  * Run the full 9-step Auto-Remix pipeline.
  */
 export async function runRemixPipeline(
@@ -84,14 +141,20 @@ export async function runRemixPipeline(
   console.log(`[Remix] ========== STARTING REMIX JOB ${jobId} ==========`);
   console.log(`[Remix] Video: ${videoId}, Platforms: ${mergedConfig.platformTargets.join(", ")}, Max clips: ${mergedConfig.maxClips}`);
 
+  let tempVideoPath: string | null = null;
+
   try {
     // Get video info
     const video = await storage.getVideoById(videoId);
-    if (!video || !video.localFilePath) {
-      throw new Error("Video not found or no local file path");
+    if (!video || !video.filePath) {
+      throw new Error("Video not found or no file path");
     }
 
-    const videoPath = video.localFilePath;
+    // Resolve video path (handles Object Storage download if needed)
+    const resolved = await resolveVideoPath(video.filePath);
+    const videoPath = resolved.localPath;
+    if (resolved.isTempFile) tempVideoPath = videoPath;
+
     if (!fs.existsSync(videoPath)) {
       throw new Error(`Video file not found: ${videoPath}`);
     }
@@ -100,59 +163,201 @@ export async function runRemixPipeline(
     const videoDuration = await getVideoDuration(videoPath);
     console.log(`[Remix] Video duration: ${videoDuration.toFixed(1)}s`);
 
-    // ─── STEP 1: IDENTIFY — Load narrative analyses ───────────────
-    await storage.updateRemixJobStatus(jobId, "step_1_identify");
-    console.log(`[Remix] Step 1/9: Identifying high-viability moments...`);
+    // Load transcript for editorial-mode captions
+    const transcript = await storage.getVideoTranscript(videoId);
+    const hasTranscript = transcript?.status === "completed" && transcript.segments;
 
-    const analyses = await storage.getSceneAnalysisByVideo(videoId);
-    if (analyses.length === 0) {
-      throw new Error("No scene analyses found. Run Claude Dense analysis first.");
-    }
+    let candidates: ClipCandidate[];
 
-    const surfaces = await storage.getSurfacesForVideo(videoId);
-    const surfaceMap = new Map(surfaces.map(s => [s.id, s]));
+    // ═══════════════════════════════════════════════════════════════
+    // EDITORIAL PATH — Use editorial intelligence pipeline
+    // ═══════════════════════════════════════════════════════════════
 
-    // Load brand matches for each analysis
-    const analysesWithBrands = await Promise.all(
-      analyses.map(async (analysis) => ({
-        analysis,
-        brandMatches: await storage.getBrandMatchesByScene(analysis.id),
-        surface: analysis.surfaceId ? surfaceMap.get(analysis.surfaceId) || null : null,
-      }))
-    );
+    if (mergedConfig.clipRange) {
+      // Direct clip range from editorial UI — skip Steps 1-3 entirely
+      await storage.updateRemixJobStatus(jobId, "step_2_extract");
+      console.log(`[Remix] Editorial mode: Direct clip range ${mergedConfig.clipRange.start.toFixed(1)}s-${mergedConfig.clipRange.end.toFixed(1)}s`);
 
-    // ─── STEP 2: EXTRACT — Detect clip candidates ────────────────
-    await storage.updateRemixJobStatus(jobId, "step_2_extract");
-    console.log(`[Remix] Step 2/9: Extracting clip candidates...`);
+      const { start, end } = mergedConfig.clipRange;
+      const duration = end - start;
+      const platform = mergedConfig.platformTargets[0] || "tiktok";
 
-    const candidates = detectClipCandidates(
-      analysesWithBrands,
-      mergedConfig.platformTargets,
-      mergedConfig.maxClips,
-      videoDuration
-    );
+      candidates = [{
+        startTime: start,
+        endTime: end,
+        duration,
+        score: 0.8, // Editorial clips are pre-scored — assume high quality
+        sceneAnalysisIds: [],
+        surfaceIds: [],
+        brandProductIds: [],
+        primaryTone: "editorial",
+        narrativeSummary: `Editorial clip ${start.toFixed(1)}s-${end.toFixed(1)}s`,
+        platform,
+      }];
 
-    if (candidates.length === 0) {
-      throw new Error("No viable clip candidates found. Scenes may not have high enough viability scores.");
-    }
+      // Try to enrich with surface data from that time range
+      const surfaces = await storage.getDetectedSurfaces(videoId);
+      const overlapping = surfaces.filter(
+        (s) => parseFloat(String(s.timestamp)) >= start && parseFloat(String(s.timestamp)) <= end
+      );
+      if (overlapping.length > 0) {
+        candidates[0].surfaceIds = overlapping.map((s) => s.id);
+      }
 
-    console.log(`[Remix] Found ${candidates.length} clip candidates`);
+      console.log(`[Remix] Single editorial clip with ${overlapping.length} surface(s)`);
 
-    // ─── STEP 3: ANALYZE — Score and rank candidates ─────────────
-    await storage.updateRemixJobStatus(jobId, "step_3_analyze");
-    console.log(`[Remix] Step 3/9: Analyzing and ranking candidates...`);
+    } else if (mergedConfig.editorialMode && hasTranscript) {
+      // Editorial mode: Use Claude Dense editorial analysis + clip ranker
+      await storage.updateRemixJobStatus(jobId, "step_1_identify");
+      console.log(`[Remix] Step 1/9: Loading editorial intelligence data...`);
 
-    // Already scored by clipDetector, just log rankings
-    for (const [i, clip] of candidates.entries()) {
-      console.log(`[Remix]   #${i + 1}: ${clip.platform} ${clip.startTime.toFixed(1)}s-${clip.endTime.toFixed(1)}s (score: ${(clip.score * 100).toFixed(0)}%)`);
+      // Dynamically import editorial pipeline
+      const { analyzeEditorial } = await import("../ai/claude-dense/editorialAnalyzer");
+      const { rankClips, deduplicateClips } = await import("./clipRanker");
+
+      const surfaces = await storage.getDetectedSurfaces(videoId);
+      const brandProducts = await storage.getAllBrandProducts();
+
+      console.log(`[Remix] Running editorial analysis: ${transcript.segments!.length} segments, ${surfaces.length} surfaces`);
+
+      const editorialMoments = await analyzeEditorial({
+        videoId,
+        transcript: transcript.segments!,
+        surfaces: surfaces.map((s) => ({
+          id: s.id,
+          timestamp: parseFloat(String(s.timestamp)),
+          surfaceType: s.surfaceType,
+          confidence: parseFloat(String(s.confidence)),
+          boundingBox: {
+            x: parseFloat(String(s.boundingBoxX)),
+            y: parseFloat(String(s.boundingBoxY)),
+            width: parseFloat(String(s.boundingBoxWidth)),
+            height: parseFloat(String(s.boundingBoxHeight)),
+          },
+        })),
+        brandCatalog: brandProducts.map((b) => ({
+          id: b.id,
+          name: b.name,
+          category: b.category,
+          dominantColor: b.dominantColor,
+        })),
+        maxClips: mergedConfig.maxClips,
+      });
+
+      if (editorialMoments.length === 0) {
+        throw new Error("Editorial analysis returned no clip moments.");
+      }
+
+      // Get brand matches for surface cross-reference
+      const brandMatches = await storage.getBrandMatchesByVideo(videoId);
+
+      // Rank and deduplicate
+      await storage.updateRemixJobStatus(jobId, "step_2_extract");
+      console.log(`[Remix] Step 2/9: Ranking ${editorialMoments.length} editorial moments...`);
+
+      const rankedClips = deduplicateClips(
+        rankClips(
+          editorialMoments,
+          surfaces.map((s) => ({
+            id: s.id,
+            videoId: s.videoId,
+            timestamp: parseFloat(String(s.timestamp)),
+            surfaceType: s.surfaceType,
+            confidence: parseFloat(String(s.confidence)),
+          })),
+          brandMatches.map((bm) => ({
+            id: bm.id,
+            sceneAnalysisId: bm.sceneAnalysisId,
+            brandProductId: bm.brandProductId,
+            compatibilityScore: bm.compatibilityScore ?? 0,
+            reasoning: bm.reasoning ?? "",
+            suggestedPlacementStyle: bm.suggestedPlacementStyle ?? undefined,
+          })),
+          transcript.segments!,
+          mergedConfig.maxClips
+        )
+      );
+
+      if (rankedClips.length === 0) {
+        throw new Error("No ranked clips met the minimum score threshold.");
+      }
+
+      // Convert RankedClip[] → ClipCandidate[]
+      const platform = mergedConfig.platformTargets[0] || "tiktok";
+      candidates = rankedClips.map((rc) => rankedClipToCandidate(rc, platform));
+
+      console.log(`[Remix] Editorial pipeline: ${rankedClips.length} ranked clips → ${candidates.length} candidates`);
+
+      // Step 3: Log rankings
+      await storage.updateRemixJobStatus(jobId, "step_3_analyze");
+      console.log(`[Remix] Step 3/9: Editorial ranking results:`);
+      for (const [i, clip] of candidates.entries()) {
+        console.log(`[Remix]   #${i + 1}: ${clip.platform} ${clip.startTime.toFixed(1)}s-${clip.endTime.toFixed(1)}s (score: ${(clip.score * 100).toFixed(0)}%) "${clip.narrativeSummary}"`);
+      }
+
+    } else {
+      // ═══════════════════════════════════════════════════════════════
+      // LEGACY PATH — Per-frame scene analysis via clipDetector
+      // ═══════════════════════════════════════════════════════════════
+
+      // ─── STEP 1: IDENTIFY — Load narrative analyses ───────────────
+      await storage.updateRemixJobStatus(jobId, "step_1_identify");
+      console.log(`[Remix] Step 1/9: Identifying high-viability moments (legacy mode)...`);
+
+      const analyses = await storage.getSceneAnalysisByVideo(videoId);
+      if (analyses.length === 0) {
+        throw new Error("No scene analyses found. Run Claude Dense analysis first.");
+      }
+
+      const surfaces = await storage.getDetectedSurfaces(videoId);
+      const surfaceMap = new Map(surfaces.map(s => [s.id, s]));
+
+      // Load brand matches for each analysis
+      const analysesWithBrands = await Promise.all(
+        analyses.map(async (analysis) => ({
+          analysis,
+          brandMatches: await storage.getBrandMatchesByScene(analysis.id),
+          surface: analysis.surfaceId ? surfaceMap.get(analysis.surfaceId) || null : null,
+        }))
+      );
+
+      // ─── STEP 2: EXTRACT — Detect clip candidates ────────────────
+      await storage.updateRemixJobStatus(jobId, "step_2_extract");
+      console.log(`[Remix] Step 2/9: Extracting clip candidates (legacy detector)...`);
+
+      candidates = detectClipCandidates(
+        analysesWithBrands,
+        mergedConfig.platformTargets,
+        mergedConfig.maxClips,
+        videoDuration
+      );
+
+      if (candidates.length === 0) {
+        throw new Error("No viable clip candidates found. Scenes may not have high enough viability scores.");
+      }
+
+      console.log(`[Remix] Found ${candidates.length} clip candidates`);
+
+      // ─── STEP 3: ANALYZE — Score and rank candidates ─────────────
+      await storage.updateRemixJobStatus(jobId, "step_3_analyze");
+      console.log(`[Remix] Step 3/9: Analyzing and ranking candidates...`);
+
+      for (const [i, clip] of candidates.entries()) {
+        console.log(`[Remix]   #${i + 1}: ${clip.platform} ${clip.startTime.toFixed(1)}s-${clip.endTime.toFixed(1)}s (score: ${(clip.score * 100).toFixed(0)}%)`);
+      }
     }
 
     // ─── STEP 4: INSERT — Attach product placements ──────────────
     await storage.updateRemixJobStatus(jobId, "step_4_insert");
     console.log(`[Remix] Step 4/9: Attaching product placements to clips...`);
 
-    const items = await storage.getMonetizationItems();
-    const itemMap = new Map(items.map(i => [i.id, i]));
+    // Load surfaces (may already be loaded in editorial path, but safe to reload)
+    const allSurfaces = await storage.getDetectedSurfaces(videoId);
+    const surfaceMap = new Map(allSurfaces.map(s => [s.id, s]));
+
+    // Load brand products (brandMatchScores.brandProductId references brandProducts, not monetizationItems)
+    const brandProductList = await storage.getAllBrandProducts();
+    const itemMap = new Map(brandProductList.map(i => [i.id, i]));
 
     const clipPlacements = new Map<number, ClipPlacement[]>();
     for (let i = 0; i < candidates.length; i++) {
@@ -164,35 +369,35 @@ export async function runRemixPipeline(
         if (!surface) continue;
 
         // Find the approved brand match for this surface
-        const surfaceAnalyses = analyses.filter(a => a.surfaceId === surfaceId);
-        for (const sa of surfaceAnalyses) {
-          const matches = await storage.getBrandMatchesByScene(sa.id);
-          const approved = matches.find(m => m.approved);
-          if (!approved) continue;
+        const surfaceAnalysis = await storage.getSceneAnalysisBySurface(surfaceId);
+        if (!surfaceAnalysis) continue;
 
-          const product = itemMap.get(approved.brandProductId);
-          if (!product || !product.imageUrl) continue;
+        const matches = await storage.getBrandMatchesByScene(surfaceAnalysis.id);
+        const approved = matches.find(m => m.approved);
+        if (!approved) continue;
 
-          // Resolve product image path
-          const imagePath = product.imageUrl.startsWith("/")
-            ? path.join(process.cwd(), "public", product.imageUrl)
-            : product.imageUrl;
+        const product = itemMap.get(approved.brandProductId);
+        if (!product || !product.imageUrl) continue;
 
-          if (!fs.existsSync(imagePath)) continue;
+        // Resolve product image path
+        const imagePath = product.imageUrl.startsWith("/")
+          ? path.join(process.cwd(), "public", product.imageUrl)
+          : product.imageUrl;
 
-          placements.push({
-            surfaceId,
-            brandProductId: approved.brandProductId,
-            productImagePath: imagePath,
-            bboxStart: {
-              x: surface.bboxX || 0,
-              y: surface.bboxY || 0,
-              width: surface.bboxWidth || 0.2,
-              height: surface.bboxHeight || 0.2,
-            },
-            opacity: 0.92,
-          });
-        }
+        if (!fs.existsSync(imagePath)) continue;
+
+        placements.push({
+          surfaceId,
+          brandProductId: approved.brandProductId,
+          productImagePath: imagePath,
+          bboxStart: {
+            x: parseFloat(String(surface.boundingBoxX)) || 0,
+            y: parseFloat(String(surface.boundingBoxY)) || 0,
+            width: parseFloat(String(surface.boundingBoxWidth)) || 0.2,
+            height: parseFloat(String(surface.boundingBoxHeight)) || 0.2,
+          },
+          opacity: 0.92,
+        });
       }
 
       clipPlacements.set(i, placements);
@@ -215,10 +420,18 @@ export async function runRemixPipeline(
 
       const placements = clipPlacements.get(i) || [];
 
-      // Step 6: Generate captions
+      // Step 6: Generate captions (prefer transcript-based when available)
       let captionSegments = undefined;
       if (mergedConfig.captionsEnabled) {
         try {
+          // Build transcript segments for this clip's time range
+          let clipTranscriptSegments = undefined;
+          if (transcript && transcript.status === "completed" && transcript.segments) {
+            clipTranscriptSegments = transcript.segments.filter(
+              (seg: any) => seg.start >= clip.startTime && seg.start <= clip.endTime
+            );
+          }
+
           const captionResult = await generateCaptions({
             clipStart: clip.startTime,
             clipEnd: clip.endTime,
@@ -230,9 +443,10 @@ export async function runRemixPipeline(
               return item?.name || `Product ${id}`;
             }),
             style: mergedConfig.captionStyle,
+            transcriptSegments: clipTranscriptSegments,
           });
           captionSegments = captionResult.segments;
-          console.log(`[Remix]   Clip #${i + 1}: ${captionSegments.length} caption segments`);
+          console.log(`[Remix]   Clip #${i + 1}: ${captionSegments.length} caption segments${clipTranscriptSegments ? " (transcript-based)" : ""}`);
         } catch (captionErr) {
           console.warn(`[Remix]   Clip #${i + 1}: Caption generation failed (non-fatal)`, captionErr);
         }
@@ -269,6 +483,7 @@ export async function runRemixPipeline(
         placementCount: placements.length,
         hasCaptions: mergedConfig.captionsEnabled && !!captionSegments,
         fileSize: clipResult.fileSize,
+        editorialScore: (mergedConfig.clipRange || mergedConfig.editorialMode) ? clip.score : undefined,
       });
 
       // ─── STEP 8: EXPORT — Save to DB ───────────────────────────
@@ -353,6 +568,16 @@ export async function runRemixPipeline(
       clips: [],
       error: err.message,
     };
+  } finally {
+    // Clean up temp video file if downloaded from Object Storage
+    if (tempVideoPath) {
+      try {
+        fs.unlinkSync(tempVideoPath);
+        console.log(`[Remix] Cleaned up temp video: ${tempVideoPath}`);
+      } catch {
+        // Non-fatal
+      }
+    }
   }
 }
 

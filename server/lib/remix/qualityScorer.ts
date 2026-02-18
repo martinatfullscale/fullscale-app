@@ -30,6 +30,8 @@ export interface QualityScorerInput {
   hasCaptions: boolean;
   /** File size in bytes */
   fileSize: number;
+  /** Editorial pipeline composite score — overrides clip.score for narrative strength when present */
+  editorialScore?: number;
 }
 
 export interface QualityScoreOutput {
@@ -75,7 +77,8 @@ export async function scoreClipQuality(input: QualityScorerInput): Promise<Quali
   const dimensions = {
     durationFit: scoreDurationFit(input.actualDuration, input.platform),
     placementQuality: scorePlacementQuality(input.clip, input.placementCount),
-    narrativeStrength: input.clip.score, // Already computed by clipDetector
+    // Editorial pipeline provides a more accurate composite score from 7-dimension rubric
+    narrativeStrength: input.editorialScore ?? input.clip.score,
     technicalQuality: scoreTechnicalQuality(input.fileSize, input.platform, input.actualDuration),
   };
 

@@ -30,6 +30,14 @@ export interface CaptionInput {
   existingTranscript?: string;
   /** Caption style */
   style: "highlight" | "brand_callout" | "narrative";
+  /** Transcript segments with word-level timing from editorial pipeline */
+  transcriptSegments?: Array<{
+    start: number;
+    end: number;
+    text: string;
+    speaker?: string;
+    words?: Array<{ word: string; start: number; end: number; confidence?: number }>;
+  }>;
 }
 
 export interface CaptionOutput {
@@ -50,8 +58,19 @@ function getClient(): Anthropic {
 
 /**
  * Generate captions for a clip based on its narrative content.
+ * When transcript segments with word-level timing are available, generates
+ * accurate captions directly from the transcript instead of using Claude.
  */
 export async function generateCaptions(input: CaptionInput): Promise<CaptionOutput> {
+  // If we have transcript segments with word-level timing, prefer those for accurate captions
+  if (input.transcriptSegments && input.transcriptSegments.length > 0) {
+    const transcriptCaptions = generateTranscriptCaptions(input);
+    if (transcriptCaptions.segments.length > 0) {
+      return transcriptCaptions;
+    }
+    // Fall through to AI-generated captions if transcript parsing fails
+  }
+
   switch (input.style) {
     case "brand_callout":
       return generateBrandCallouts(input);
@@ -61,6 +80,79 @@ export async function generateCaptions(input: CaptionInput): Promise<CaptionOutp
     default:
       return generateNarrativeCaptions(input);
   }
+}
+
+/**
+ * Generate captions from transcript segments with accurate word-level timing.
+ * Groups words into display-friendly segments of 4-8 words each.
+ */
+function generateTranscriptCaptions(input: CaptionInput): CaptionOutput {
+  const segments: CaptionSegment[] = [];
+  const { clipStart, duration, transcriptSegments } = input;
+
+  if (!transcriptSegments) return { segments: [], style: "transcript" };
+
+  // Collect all words with their timestamps, adjusted relative to clip start
+  const allWords: Array<{ word: string; start: number; end: number }> = [];
+
+  for (const seg of transcriptSegments) {
+    if (seg.words && seg.words.length > 0) {
+      // Use word-level timestamps
+      for (const w of seg.words) {
+        const relStart = w.start - clipStart;
+        const relEnd = w.end - clipStart;
+        if (relStart >= -0.5 && relStart <= duration + 0.5) {
+          allWords.push({
+            word: w.word,
+            start: Math.max(0, relStart),
+            end: Math.min(duration, relEnd),
+          });
+        }
+      }
+    } else {
+      // Fall back to segment-level timestamps with estimated word positions
+      const words = seg.text.split(/\s+/).filter(Boolean);
+      if (words.length === 0) continue;
+
+      const segDuration = seg.end - seg.start;
+      const wordDuration = segDuration / words.length;
+
+      for (let i = 0; i < words.length; i++) {
+        const relStart = (seg.start + i * wordDuration) - clipStart;
+        const relEnd = (seg.start + (i + 1) * wordDuration) - clipStart;
+        if (relStart >= -0.5 && relStart <= duration + 0.5) {
+          allWords.push({
+            word: words[i],
+            start: Math.max(0, relStart),
+            end: Math.min(duration, relEnd),
+          });
+        }
+      }
+    }
+  }
+
+  if (allWords.length === 0) return { segments: [], style: "transcript" };
+
+  // Group words into caption segments of 4-8 words
+  const WORDS_PER_SEGMENT = 6;
+  for (let i = 0; i < allWords.length; i += WORDS_PER_SEGMENT) {
+    const chunk = allWords.slice(i, i + WORDS_PER_SEGMENT);
+    if (chunk.length === 0) continue;
+
+    const text = chunk.map((w) => w.word).join(" ");
+    const startTime = Math.round(chunk[0].start * 100) / 100;
+    const endTime = Math.round(chunk[chunk.length - 1].end * 100) / 100;
+
+    // Ensure minimum display time of 1 second
+    segments.push({
+      text,
+      startTime,
+      endTime: Math.max(endTime, startTime + 1),
+    });
+  }
+
+  console.log(`[CaptionEngine] Generated ${segments.length} transcript-based caption segments from ${allWords.length} words`);
+  return { segments, style: "transcript" };
 }
 
 /**

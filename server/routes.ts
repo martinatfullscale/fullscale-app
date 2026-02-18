@@ -5445,6 +5445,7 @@ export async function registerRoutes(
   // ─── Auto-Remix Engine ──────────────────────────────────────────
 
   // POST /api/remix/:videoId/start — Kick off a remix job
+  // Supports: clipRange (direct editorial clip), editorialMode (full editorial pipeline), or legacy (per-frame)
   app.post("/api/remix/:videoId/start", isAuthenticated, async (req: any, res) => {
     try {
       const videoId = parseInt(req.params.videoId);
@@ -5455,36 +5456,47 @@ export async function registerRoutes(
       const video = await storage.getVideoById(videoId);
       if (!video) return res.status(404).json({ error: "Video not found" });
 
-      // Check for scene analyses
-      const analyses = await storage.getSceneAnalysisByVideo(videoId);
-      if (analyses.length === 0) {
-        return res.status(400).json({ error: "No scene analyses found. Run Claude Dense analysis first via Narrative Insights." });
+      // For editorial mode with clipRange, we don't require scene analyses
+      // For legacy mode, check for scene analyses
+      const isEditorial = !!config.clipRange || config.editorialMode;
+      if (!isEditorial) {
+        const analyses = await storage.getSceneAnalysisByVideo(videoId);
+        if (analyses.length === 0) {
+          return res.status(400).json({ error: "No scene analyses found. Run Claude Dense analysis first via Narrative Insights." });
+        }
       }
 
       // Start the remix pipeline in the background
       const { runRemixPipeline } = await import("./lib/remix/remixOrchestrator");
+
+      // Build pipeline config — pass through clipRange and editorialMode
+      const pipelineConfig = {
+        minClipDuration: config.minClipDuration || 15,
+        maxClipDuration: config.maxClipDuration || 60,
+        maxClips: config.maxClips || 5,
+        platformTargets: config.platformTargets || ["tiktok", "youtube_shorts"],
+        captionsEnabled: config.captionsEnabled !== false,
+        captionStyle: config.captionStyle || "highlight",
+        clipRange: config.clipRange || undefined,
+        editorialMode: isEditorial,
+      };
 
       // Return the job ID immediately, process async
       const job = await storage.createRemixJob({
         videoId,
         userId,
         status: "queued",
-        config: {
-          minClipDuration: config.minClipDuration || 15,
-          maxClipDuration: config.maxClipDuration || 60,
-          maxClips: config.maxClips || 5,
-          platformTargets: config.platformTargets || ["tiktok", "youtube_shorts"],
-          captionsEnabled: config.captionsEnabled !== false,
-        },
-        platformTargets: config.platformTargets || ["tiktok", "youtube_shorts"],
+        config: pipelineConfig,
+        platformTargets: pipelineConfig.platformTargets,
       });
 
       // Run pipeline asynchronously
-      runRemixPipeline(videoId, userId, config).catch(err => {
+      runRemixPipeline(videoId, userId, pipelineConfig).catch(err => {
         console.error(`[Remix] Background job ${job.id} failed:`, err);
       });
 
-      res.json({ jobId: job.id, status: "queued", message: "Remix job started" });
+      const mode = config.clipRange ? "editorial-clip" : isEditorial ? "editorial" : "legacy";
+      res.json({ jobId: job.id, status: "queued", mode, message: "Remix job started" });
     } catch (err: any) {
       console.error("[Remix Start] Error:", err.message);
       res.status(500).json({ error: err.message || "Failed to start remix" });
