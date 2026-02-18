@@ -3,7 +3,7 @@ import { TopBar } from "@/components/TopBar";
 import { Upload, Eye, CheckCircle, Loader2, AlertTriangle, X, Shield, Sun, Tag, Box, DollarSign, Sparkles, RefreshCw, Play, Globe, HardDrive, Scan, Video, Wand2, Trash2, Pencil, Brain, Scissors, Send } from "lucide-react";
 import { useLocation } from "wouter";
 import { SiInstagram, SiYoutube, SiTwitch, SiFacebook } from "react-icons/si";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "@/hooks/use-auth";
 import { useHybridMode } from "@/hooks/use-hybrid-mode";
 import { usePitchMode } from "@/contexts/pitch-mode-context";
@@ -17,6 +17,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SceneAnalysisModal, VideoWithScenes } from "@/components/SceneAnalysisModal";
 import NarrativeInsights from "@/components/NarrativeInsights";
+import EditorialClips from "@/components/EditorialClips";
 import RemixStudio from "@/components/RemixStudio";
 import DistributionDashboard from "@/components/DistributionDashboard";
 import { VideoPreviewModal } from "@/components/VideoPreviewModal";
@@ -1547,14 +1548,64 @@ export default function Library() {
         } : undefined}
       />
 
-      <NarrativeInsights
-        videoId={narrativeVideoId || 0}
-        open={narrativeInsightsOpen}
-        onClose={() => {
-          setNarrativeInsightsOpen(false);
-          setNarrativeVideoId(null);
-        }}
-      />
+      {/* Insights Modal — NarrativeInsights (surface analysis) + EditorialClips (transcript-first viral clips) */}
+      {narrativeInsightsOpen && narrativeVideoId && (
+        <AnimatePresence>
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
+            onClick={(e) => { if (e.target === e.currentTarget) { setNarrativeInsightsOpen(false); setNarrativeVideoId(null); } }}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-zinc-900 rounded-xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col border border-white/10"
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between p-5 border-b border-white/10">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center">
+                    <Brain className="w-5 h-5 text-white" />
+                  </div>
+                  <div>
+                    <h2 className="text-lg font-bold text-white">Editorial Intelligence</h2>
+                    <p className="text-xs text-muted-foreground">Transcript-based viral clip analysis + narrative surface insights</p>
+                  </div>
+                </div>
+                <button onClick={() => { setNarrativeInsightsOpen(false); setNarrativeVideoId(null); }} className="text-zinc-400 hover:text-white">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Content — Editorial Clips first, then Narrative Insights below */}
+              <div className="flex-1 overflow-y-auto p-5 space-y-6">
+                {/* Editorial Clips — transcript-first viral clip identification */}
+                <div>
+                  <h3 className="text-sm font-semibold text-zinc-300 mb-3 flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-yellow-400" />
+                    Viral Clip Analysis
+                  </h3>
+                  <EditorialClips videoId={narrativeVideoId} mode="creator" />
+                </div>
+
+                {/* Separator */}
+                <div className="border-t border-white/5 pt-4">
+                  <h3 className="text-sm font-semibold text-zinc-300 mb-3 flex items-center gap-2">
+                    <Brain className="w-4 h-4 text-purple-400" />
+                    Surface Narrative Analysis
+                  </h3>
+                  <p className="text-xs text-zinc-500 mb-3">
+                    Per-frame surface analysis with brand matching — complements the transcript-based editorial analysis above.
+                  </p>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        </AnimatePresence>
+      )}
 
       <RemixStudio
         videoId={remixVideoId || 0}

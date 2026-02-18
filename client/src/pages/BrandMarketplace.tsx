@@ -30,6 +30,7 @@ import { useHybridMode } from "@/hooks/use-hybrid-mode";
 import { usePitchMode } from "@/contexts/pitch-mode-context";
 import { apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/hooks/use-auth";
+import EditorialClips from "@/components/EditorialClips";
 
 const SUPER_ADMIN_EMAIL = "martin@gofullscale.co";
 
@@ -758,6 +759,34 @@ export default function BrandMarketplace() {
                     <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Scene Type</p>
                     <p className="font-medium">{selectedOpportunity.sceneType}</p>
                   </div>
+                </div>
+
+                {/* Viral Clips Section — Editorial Intelligence for brands */}
+                <div className="bg-card rounded-lg border p-4">
+                  <h3 className="font-semibold mb-3 flex items-center gap-2">
+                    <TrendingUp className="w-4 h-4 text-primary" />
+                    Viral Clips
+                  </h3>
+                  <p className="text-xs text-muted-foreground mb-3">
+                    AI-ranked clips with viral potential — buy placements in premium moments.
+                  </p>
+                  <EditorialClips
+                    videoId={selectedOpportunity.videoId}
+                    mode="brand"
+                    onBuyPlacement={(clip) => {
+                      toast({
+                        title: "Placement Request",
+                        description: `Requesting placement in "${clip.suggestedTitle}" (${clip.monetizationTier} tier)`,
+                      });
+                      // Use the existing buy mutation with clip context
+                      buyMutation.mutate({
+                        ...selectedOpportunity,
+                        sceneValue: clip.monetizationTier === "premium"
+                          ? selectedOpportunity.sceneValue * 1.5
+                          : selectedOpportunity.sceneValue,
+                      });
+                    }}
+                  />
                 </div>
 
                 {/* Price and Actions */}

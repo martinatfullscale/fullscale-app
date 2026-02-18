@@ -4,11 +4,12 @@ import {
   Film, Scissors, Play, Pause, Download, Send, Loader2, X,
   CheckCircle, AlertCircle, Clock, BarChart3, Sparkles,
   Tv, Smartphone, Globe, ThumbsUp, ThumbsDown, Settings,
-  RefreshCw
+  RefreshCw, Brain
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
+import EditorialClips from "@/components/EditorialClips";
 
 interface RemixJob {
   id: number;
@@ -104,6 +105,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
   const [maxClips, setMaxClips] = useState(5);
   const [captionsEnabled, setCaptionsEnabled] = useState(true);
   const [showConfig, setShowConfig] = useState(false);
+  const [activeTab, setActiveTab] = useState<"editorial" | "auto">("editorial");
 
   // Load existing jobs and clips
   const loadData = useCallback(async () => {
@@ -251,6 +253,84 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
           {/* Content */}
           <div className="flex-1 overflow-y-auto p-6 space-y-6">
 
+            {/* Tab Switcher — Editorial Clips vs Auto-Remix */}
+            <div className="flex items-center gap-2 bg-gray-800/50 rounded-lg p-1">
+              <button
+                onClick={() => setActiveTab("editorial")}
+                className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all ${
+                  activeTab === "editorial"
+                    ? "bg-purple-600 text-white"
+                    : "text-gray-400 hover:text-white"
+                }`}
+              >
+                <Brain className="w-4 h-4" />
+                Editorial Clips
+              </button>
+              <button
+                onClick={() => setActiveTab("auto")}
+                className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all ${
+                  activeTab === "auto"
+                    ? "bg-pink-600 text-white"
+                    : "text-gray-400 hover:text-white"
+                }`}
+              >
+                <Scissors className="w-4 h-4" />
+                Auto-Remix
+              </button>
+            </div>
+
+            {/* Editorial Clips Tab — transcript-first viral clip identification */}
+            {activeTab === "editorial" && (
+              <div>
+                <p className="text-xs text-gray-500 mb-3">
+                  AI-identified viral moments ranked by editorial quality. Click "Generate" to create a clip from any moment.
+                </p>
+                <EditorialClips
+                  videoId={videoId}
+                  mode="remix"
+                  onGenerateClip={(clip) => {
+                    toast({
+                      title: "Generating clip",
+                      description: `"${clip.suggestedTitle}" (${clip.clipStart.toFixed(1)}s - ${clip.clipEnd.toFixed(1)}s)`,
+                    });
+                    // Start a remix job targeting this specific clip's time range
+                    fetch(`/api/remix/${videoId}/start`, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      credentials: "include",
+                      body: JSON.stringify({
+                        platformTargets: platforms,
+                        maxClips: 1,
+                        captionsEnabled,
+                        clipRange: {
+                          start: clip.clipStart,
+                          end: clip.clipEnd,
+                        },
+                      }),
+                    })
+                      .then(async (res) => {
+                        if (res.ok) {
+                          const data = await res.json();
+                          setActiveJobId(data.jobId);
+                          setActiveTab("auto"); // Switch to auto tab to see progress
+                          toast({ title: "Remix Started", description: `Generating clip from editorial moment` });
+                          await loadData();
+                        } else {
+                          const err = await res.json();
+                          toast({ title: "Error", description: err.error || "Failed to start remix", variant: "destructive" });
+                        }
+                      })
+                      .catch((err) => {
+                        toast({ title: "Error", description: err.message, variant: "destructive" });
+                      });
+                  }}
+                />
+              </div>
+            )}
+
+            {/* Auto-Remix Tab — existing config + generation flow */}
+            {activeTab === "auto" && (
+            <>
             {/* Config Section */}
             <div className="bg-gray-800/50 rounded-xl p-4">
               <div className="flex items-center justify-between mb-3">
@@ -423,6 +503,8 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
                   Select your target platforms above and click "Start Auto-Remix" to generate clips
                 </p>
               </div>
+            )}
+            </>
             )}
           </div>
         </motion.div>
