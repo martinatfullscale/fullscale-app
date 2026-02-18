@@ -1223,7 +1223,7 @@ export default function Landing() {
               </h1>
               
               <p className="text-base md:text-2xl text-white/70 max-w-3xl mx-auto mb-6 md:mb-10 leading-relaxed">
-                AI-powered product placement that dreams products into your existing content with perfect lighting, occlusion, and tracking—scaling your reach for a global economy.
+                AI-powered product placement that places products into your existing content with perfect lighting, occlusion, and tracking—scaling your reach for a global economy.
               </p>
 
               <div className="flex flex-col sm:flex-row gap-3 md:gap-4 items-center justify-center">
