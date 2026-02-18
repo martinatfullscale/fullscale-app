@@ -5188,7 +5188,7 @@ export async function registerRoutes(
   // ─── Editorial Intelligence: Transcript Pipeline ────────────────
 
   // POST /api/video/:videoId/transcribe — Run audio extraction + speech-to-text
-  app.post("/api/video/:videoId/transcribe", isAuthenticated, async (req: any, res) => {
+  app.post("/api/video/:videoId/transcribe", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const videoId = parseInt(req.params.videoId);
       const { language = "en", provider } = req.body || {};
@@ -5261,7 +5261,7 @@ export async function registerRoutes(
   });
 
   // GET /api/video/:videoId/transcript — Get transcript for a video
-  app.get("/api/video/:videoId/transcript", isAuthenticated, async (req: any, res) => {
+  app.get("/api/video/:videoId/transcript", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const videoId = parseInt(req.params.videoId);
       const transcript = await storage.getVideoTranscript(videoId);
@@ -5278,7 +5278,7 @@ export async function registerRoutes(
   });
 
   // POST /api/scenes/:videoId/editorial-analysis — Run Claude Dense editorial clip analysis
-  app.post("/api/scenes/:videoId/editorial-analysis", isAuthenticated, async (req: any, res) => {
+  app.post("/api/scenes/:videoId/editorial-analysis", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const videoId = parseInt(req.params.videoId);
       const { maxClips = 10 } = req.body || {};
@@ -5386,7 +5386,7 @@ export async function registerRoutes(
   // ─── Clip Feedback Endpoints ──────────────────────────────────
 
   // POST /api/remix/clips/:clipId/feedback — Submit creator/brand feedback
-  app.post("/api/remix/clips/:clipId/feedback", isAuthenticated, async (req: any, res) => {
+  app.post("/api/remix/clips/:clipId/feedback", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const clipId = parseInt(req.params.clipId);
       const { feedbackType, approved, rating, rejectionReason, views, engagementRate, shareCount, completionRate, clickThroughRate } = req.body;
@@ -5416,7 +5416,7 @@ export async function registerRoutes(
   });
 
   // GET /api/remix/clips/:clipId/feedback — Get feedback for a clip
-  app.get("/api/remix/clips/:clipId/feedback", isAuthenticated, async (req: any, res) => {
+  app.get("/api/remix/clips/:clipId/feedback", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const clipId = parseInt(req.params.clipId);
       const feedback = await storage.getClipFeedback(clipId);
@@ -5428,7 +5428,7 @@ export async function registerRoutes(
   });
 
   // GET /api/remix/analytics/rubric-performance — Analyze rubric scores vs performance
-  app.get("/api/remix/analytics/rubric-performance", isAuthenticated, async (req: any, res) => {
+  app.get("/api/remix/analytics/rubric-performance", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const performanceFeedback = await storage.getPerformanceFeedback();
       // Return raw data — frontend or a future analyticsCollector will compute correlations
