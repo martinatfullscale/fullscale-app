@@ -5446,10 +5446,10 @@ export async function registerRoutes(
 
   // POST /api/remix/:videoId/start — Kick off a remix job
   // Supports: clipRange (direct editorial clip), editorialMode (full editorial pipeline), or legacy (per-frame)
-  app.post("/api/remix/:videoId/start", isAuthenticated, async (req: any, res) => {
+  app.post("/api/remix/:videoId/start", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const videoId = parseInt(req.params.videoId);
-      const userId = req.user?.id || 1;
+      const userId = req.authUserId || req.user?.id || 1;
       const config = req.body || {};
 
       // Validate video exists
@@ -5504,7 +5504,7 @@ export async function registerRoutes(
   });
 
   // GET /api/remix/jobs/:jobId — Get job status and clips
-  app.get("/api/remix/jobs/:jobId", isAuthenticated, async (req: any, res) => {
+  app.get("/api/remix/jobs/:jobId", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const jobId = parseInt(req.params.jobId);
       const job = await storage.getRemixJob(jobId);
@@ -5518,7 +5518,7 @@ export async function registerRoutes(
   });
 
   // GET /api/remix/video/:videoId/jobs — List all remix jobs for a video
-  app.get("/api/remix/video/:videoId/jobs", isAuthenticated, async (req: any, res) => {
+  app.get("/api/remix/video/:videoId/jobs", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const videoId = parseInt(req.params.videoId);
       const userId = req.user?.id || 1;
@@ -5531,7 +5531,7 @@ export async function registerRoutes(
   });
 
   // GET /api/remix/clips/:videoId — List all generated clips for a video
-  app.get("/api/remix/clips/:videoId", isAuthenticated, async (req: any, res) => {
+  app.get("/api/remix/clips/:videoId", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const videoId = parseInt(req.params.videoId);
       const clips = await storage.getClipsByVideo(videoId);
@@ -5542,7 +5542,7 @@ export async function registerRoutes(
   });
 
   // POST /api/remix/clips/:clipId/approve — Approve a clip for publishing
-  app.post("/api/remix/clips/:clipId/approve", isAuthenticated, async (req: any, res) => {
+  app.post("/api/remix/clips/:clipId/approve", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const clipId = parseInt(req.params.clipId);
       const updated = await storage.updateClipStatus(clipId, "ready");
@@ -5554,7 +5554,7 @@ export async function registerRoutes(
   });
 
   // POST /api/remix/clips/:clipId/reject — Reject a clip
-  app.post("/api/remix/clips/:clipId/reject", isAuthenticated, async (req: any, res) => {
+  app.post("/api/remix/clips/:clipId/reject", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const clipId = parseInt(req.params.clipId);
       const updated = await storage.updateClipStatus(clipId, "rejected");
@@ -5566,7 +5566,7 @@ export async function registerRoutes(
   });
 
   // POST /api/remix/clips/:clipId/publish — Mark clip as published
-  app.post("/api/remix/clips/:clipId/publish", isAuthenticated, async (req: any, res) => {
+  app.post("/api/remix/clips/:clipId/publish", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const clipId = parseInt(req.params.clipId);
       const { platform, url } = req.body;
@@ -5581,7 +5581,7 @@ export async function registerRoutes(
   });
 
   // GET /api/remix/clips/:clipId/download — Stream clip file
-  app.get("/api/remix/clips/:clipId/download", isAuthenticated, async (req: any, res) => {
+  app.get("/api/remix/clips/:clipId/download", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const clipId = parseInt(req.params.clipId);
       const clips = await storage.getClipsByJob(0); // Need to find by ID
@@ -5614,7 +5614,7 @@ export async function registerRoutes(
   // ─── Remix Templates ──────────────────────────────────────────
 
   // GET /api/remix/templates — List user's remix templates
-  app.get("/api/remix/templates", isAuthenticated, async (req: any, res) => {
+  app.get("/api/remix/templates", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user?.id || 1;
       const templates = await storage.getRemixTemplates(userId);
@@ -5625,7 +5625,7 @@ export async function registerRoutes(
   });
 
   // POST /api/remix/templates — Create a new remix template
-  app.post("/api/remix/templates", isAuthenticated, async (req: any, res) => {
+  app.post("/api/remix/templates", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user?.id || 1;
       const { name, description, formatRules, transitionStyle, captionStyle } = req.body;
@@ -5646,7 +5646,7 @@ export async function registerRoutes(
   });
 
   // PUT /api/remix/templates/:id — Update a template
-  app.put("/api/remix/templates/:id", isAuthenticated, async (req: any, res) => {
+  app.put("/api/remix/templates/:id", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const id = parseInt(req.params.id);
       const updated = await storage.updateRemixTemplate(id, req.body);
@@ -5658,7 +5658,7 @@ export async function registerRoutes(
   });
 
   // DELETE /api/remix/templates/:id — Delete a template
-  app.delete("/api/remix/templates/:id", isAuthenticated, async (req: any, res) => {
+  app.delete("/api/remix/templates/:id", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const id = parseInt(req.params.id);
       await storage.deleteRemixTemplate(id);

@@ -408,6 +408,9 @@ export const remixJobs = pgTable('remix_jobs', {
     maxClips: number;
     platformTargets: string[];
     captionsEnabled: boolean;
+    captionStyle?: string;
+    clipRange?: { start: number; end: number };
+    editorialMode?: boolean;
   }>(),
   clipCount: integer('clip_count').default(0),
   platformTargets: jsonb('platform_targets').$type<string[]>(),
