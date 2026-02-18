@@ -1069,7 +1069,7 @@ function GlassMetricCard({ icon: Icon, label, value, sublabel, color = "primary"
       whileInView={{ opacity: 1, y: 0 }}
       viewport={{ once: true }}
       transition={{ duration: 0.5 }}
-      className={`relative p-1.5 md:p-4 rounded-lg md:rounded-2xl backdrop-blur-xl border ${colorClasses[color]} shadow-lg max-[480px]:h-[55px] max-[480px]:flex max-[480px]:items-center`}
+      className={`relative p-2 md:p-4 rounded-lg md:rounded-2xl backdrop-blur-xl border ${colorClasses[color]} shadow-lg`}
       data-testid={testId}
     >
       <div className="absolute inset-0 rounded-xl md:rounded-2xl bg-gradient-to-br from-white/5 to-transparent pointer-events-none" />
@@ -1078,7 +1078,7 @@ function GlassMetricCard({ icon: Icon, label, value, sublabel, color = "primary"
           <Icon className={`w-3 h-3 md:w-4 md:h-4 ${color === 'primary' ? 'text-primary' : color === 'emerald' ? 'text-emerald-400' : 'text-yellow-400'}`} />
           <span className="text-[10px] md:text-xs uppercase tracking-wider text-muted-foreground font-medium">{label}</span>
         </div>
-        <p className={`text-lg md:text-2xl font-bold ${color === 'primary' ? 'text-primary' : color === 'emerald' ? 'text-emerald-400' : 'text-yellow-400'}`} data-testid={testId ? `${testId}-value` : undefined}>{value}</p>
+        <p className={`text-sm md:text-2xl font-bold ${color === 'primary' ? 'text-primary' : color === 'emerald' ? 'text-emerald-400' : 'text-yellow-400'}`} data-testid={testId ? `${testId}-value` : undefined}>{value}</p>
         <p className="text-[10px] md:text-xs text-muted-foreground mt-0.5 md:mt-1">{sublabel}</p>
       </div>
     </motion.div>
@@ -1244,8 +1244,8 @@ export default function Landing() {
                 </button>
               </div>
 
-              {/* Mobile Metric Cards - ultra-compact stacked layout on mobile only */}
-              <div className="lg:hidden flex flex-col gap-1 mt-4 w-full px-4">
+              {/* Mobile Metric Cards - horizontal row on mobile only */}
+              <div className="lg:hidden grid grid-cols-3 gap-2 mt-4 w-full px-6">
                 <GlassMetricCard icon={Eye} label="Lighting" value="98%" sublabel="Match" color="emerald" testId="metric-lighting-mobile" />
                 <GlassMetricCard icon={Timer} label="Latency" value="0.02ms" sublabel="Tracking" color="primary" testId="metric-latency-mobile" />
                 <GlassMetricCard icon={Cpu} label="Inpainting" value="Active" sublabel="AI" color="yellow" testId="metric-inpainting-mobile" />
