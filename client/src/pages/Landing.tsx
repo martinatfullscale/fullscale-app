@@ -1240,7 +1240,7 @@ export default function Landing() {
                   data-testid="button-view-demo"
                 >
                   <Eye className="w-4 h-4 md:w-5 md:h-5" />
-                  Interactive Tour
+                  Interactive Demo
                 </button>
               </div>
 
