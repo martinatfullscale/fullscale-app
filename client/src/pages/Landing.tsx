@@ -1121,7 +1121,7 @@ export default function Landing() {
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col relative">
       {/* Cinematic Hero Section */}
-      <section className="relative min-h-[500px] md:min-h-[700px] lg:h-screen overflow-hidden pb-8 md:pb-0">
+      <section className="relative min-h-[650px] md:min-h-[700px] lg:h-screen overflow-hidden pb-8 md:pb-0">
         <video
           ref={videoRef}
           src={heroVideo}
