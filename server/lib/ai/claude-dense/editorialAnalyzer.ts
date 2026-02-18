@@ -238,6 +238,7 @@ function parseEditorialResponse(text: string): EditorialAnalysisOutput[] {
       });
   } catch (err) {
     console.error("[EditorialAnalyzer] Failed to parse response:", err);
+    console.error("[EditorialAnalyzer] Raw text that failed to parse:", text.substring(0, 1000));
     return [];
   }
 }
@@ -302,6 +303,10 @@ export async function analyzeEditorial(
       return [];
     }
 
+    // Log raw response for debugging
+    console.log(`[EditorialAnalyzer] Raw response length: ${textBlock.text.length} chars`);
+    console.log(`[EditorialAnalyzer] Raw response preview: ${textBlock.text.substring(0, 500)}...`);
+
     const moments = parseEditorialResponse(textBlock.text);
 
     console.log(
@@ -320,6 +325,7 @@ export async function analyzeEditorial(
     return moments;
   } catch (err: any) {
     console.error(`[EditorialAnalyzer] Analysis error for video ${videoId}:`, err.message);
+    console.error(`[EditorialAnalyzer] Full error:`, err);
     return [];
   }
 }
