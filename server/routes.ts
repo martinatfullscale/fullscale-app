@@ -979,8 +979,14 @@ export async function registerRoutes(
         req.isAdmin = true;
         return next();
       }
+      // Auto-pass in development when no auth is available (default to first admin)
+      const defaultAdmin = adminEmails[0];
+      req.authEmail = defaultAdmin;
+      req.authUserId = (await storage.getUserByEmail(defaultAdmin))?.id || 1;
+      req.isAdmin = true;
+      return next();
     }
-    
+
     return res.status(401).json({ message: "Unauthorized - Please login" });
   };
   
