@@ -5588,32 +5588,40 @@ export async function registerRoutes(
     }
   });
 
-  // GET /api/remix/clips/:clipId/download — Stream clip file
+  // GET /api/remix/clips/:clipId/download — Stream clip file (Object Storage or local)
   app.get("/api/remix/clips/:clipId/download", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const clipId = parseInt(req.params.clipId);
-      const clips = await storage.getClipsByJob(0); // Need to find by ID
-      // Fallback: search across all videos
-      const allClips = await storage.getClipsByVideo(0);
-
-      // Direct approach: get the clip by iterating
-      // For now, use a direct DB query approach via the storage getTask pattern
       const clip = await findClipById(clipId);
       if (!clip || !clip.exportPath) {
         return res.status(404).json({ error: "Clip not found or not exported" });
-      }
-
-      const fullPath = path.join(process.cwd(), "public", clip.exportPath.replace(/^\//, ""));
-      if (!fs.existsSync(fullPath)) {
-        return res.status(404).json({ error: "Clip file not found on disk" });
       }
 
       const filename = `fullscale-clip-${clip.videoId}-${clipId}.mp4`;
       res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
       res.setHeader("Content-Type", "video/mp4");
 
-      const fileStream = fs.createReadStream(fullPath);
-      fileStream.pipe(res);
+      // Check if stored in Object Storage (/storage/... paths)
+      if (clip.exportPath.startsWith("/storage/")) {
+        const { getStorageStream } = await import("./lib/objectStorage");
+        const objectKey = clip.exportPath.replace(/^\/storage\//, "public/");
+        const { stream } = getStorageStream(objectKey);
+        stream.on("error", (err: any) => {
+          console.error(`[Remix Download] Object Storage stream error: ${err.message}`);
+          if (!res.headersSent) {
+            res.status(404).json({ error: "Clip file not found in storage" });
+          }
+        });
+        stream.pipe(res);
+      } else {
+        // Fallback: local file path
+        const fullPath = path.join(process.cwd(), "public", clip.exportPath.replace(/^\//, ""));
+        if (!fs.existsSync(fullPath)) {
+          return res.status(404).json({ error: "Clip file not found on disk" });
+        }
+        const fileStream = fs.createReadStream(fullPath);
+        fileStream.pipe(res);
+      }
     } catch (err: any) {
       res.status(500).json({ error: err.message || "Download failed" });
     }
