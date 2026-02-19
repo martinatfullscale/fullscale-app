@@ -5627,6 +5627,341 @@ export async function registerRoutes(
     }
   });
 
+  // ─── Phase 2C: Clip Re-Render ──────────────────────────────────
+
+  // POST /api/remix/clips/:clipId/re-render — Re-render an existing clip with modifications
+  app.post("/api/remix/clips/:clipId/re-render", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const clipId = parseInt(req.params.clipId);
+
+      // Validate clip exists
+      const clip = await storage.getClipById(clipId);
+      if (!clip) return res.status(404).json({ error: "Clip not found" });
+
+      const { newStart, newEnd, captionsEnabled, captionStyle, platformTarget } = req.body;
+
+      // Basic validation
+      if (newStart !== undefined && newEnd !== undefined && newEnd <= newStart) {
+        return res.status(400).json({ error: "newEnd must be greater than newStart" });
+      }
+
+      const { reRenderClip } = await import("./lib/remix/remixOrchestrator");
+
+      // Run re-render asynchronously
+      const modifications = {
+        newStart: newStart !== undefined ? parseFloat(newStart) : undefined,
+        newEnd: newEnd !== undefined ? parseFloat(newEnd) : undefined,
+        captionsEnabled: captionsEnabled !== undefined ? captionsEnabled : undefined,
+        captionStyle: captionStyle || undefined,
+        platformTarget: platformTarget || undefined,
+      };
+
+      res.json({
+        status: "rendering",
+        originalClipId: clipId,
+        modifications,
+        message: "Re-render started",
+      });
+
+      // Run in background after response
+      reRenderClip(clipId, modifications).catch(err => {
+        console.error(`[Re-Render] Background re-render for clip ${clipId} failed:`, err);
+      });
+    } catch (err: any) {
+      console.error("[Re-Render Route] Error:", err.message);
+      res.status(500).json({ error: err.message || "Re-render failed" });
+    }
+  });
+
+  // ─── Phase 2B: Multi-Segment Stitching ───────────────────────
+
+  // POST /api/remix/:videoId/narrative-thread — Run Claude narrative threading analysis
+  app.post("/api/remix/:videoId/narrative-thread", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+
+      // Validate video exists
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+
+      // Load transcript
+      const transcript = await storage.getVideoTranscript(videoId);
+      if (!transcript || transcript.status !== "completed" || !transcript.segments) {
+        return res.status(400).json({ error: "No completed transcript. Run transcript analysis first." });
+      }
+
+      // Load surfaces and brand catalog
+      const surfaces = await storage.getDetectedSurfaces(videoId);
+      const brandCatalog = await storage.getAllBrandProducts();
+
+      const { analyzeNarrativeThread } = await import("./lib/ai/claude-dense/editorialAnalyzer");
+
+      const targetDuration = req.body.targetDuration || 90;
+      const segmentCount = req.body.segmentCount || 4;
+
+      const result = await analyzeNarrativeThread({
+        videoId,
+        transcript: transcript.segments as any[],
+        surfaces: surfaces.map(s => ({
+          id: s.id,
+          timestamp: parseFloat(String(s.timestamp)),
+          surfaceType: s.surfaceType || "unknown",
+          confidence: parseFloat(String(s.confidence)) || 0,
+          boundingBox: {
+            x: parseFloat(String(s.boundingBoxX)) || 0,
+            y: parseFloat(String(s.boundingBoxY)) || 0,
+            width: parseFloat(String(s.boundingBoxWidth)) || 0,
+            height: parseFloat(String(s.boundingBoxHeight)) || 0,
+          },
+        })),
+        brandCatalog: brandCatalog.map(b => ({
+          id: b.id,
+          name: b.name,
+          category: b.category || null,
+          dominantColor: null,
+        })),
+        targetDuration,
+        segmentCount,
+      });
+
+      if (!result) {
+        return res.status(500).json({ error: "Narrative thread analysis returned no results" });
+      }
+
+      res.json(result);
+    } catch (err: any) {
+      console.error("[Narrative Thread Route] Error:", err.message, err.stack);
+      res.status(500).json({ error: err.message || "Narrative thread analysis failed" });
+    }
+  });
+
+  // POST /api/remix/:videoId/stitch — Generate a stitched highlight reel
+  app.post("/api/remix/:videoId/stitch", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const rawUserId = req.authUserId || req.user?.id || 1;
+      const userId = typeof rawUserId === "number" ? rawUserId : parseInt(rawUserId) || 1;
+
+      // Validate video exists
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+
+      const {
+        segments,
+        transitions = "crossfade",
+        platformTarget = "tiktok",
+        captionsEnabled = true,
+        narrativeArc,
+        suggestedTitle,
+      } = req.body;
+
+      if (!segments || !Array.isArray(segments) || segments.length < 2) {
+        return res.status(400).json({ error: "At least 2 segments required" });
+      }
+
+      // Validate segment structure
+      for (const seg of segments) {
+        if (typeof seg.start !== "number" || typeof seg.end !== "number" || seg.end <= seg.start) {
+          return res.status(400).json({ error: "Each segment must have valid start and end timestamps" });
+        }
+      }
+
+      // Create stitch plan record
+      const plan = await storage.createStitchPlan({
+        videoId,
+        userId,
+        status: "generating",
+        narrativeArc: narrativeArc || null,
+        suggestedTitle: suggestedTitle || null,
+        segments: segments.map((seg: any) => ({
+          start: seg.start,
+          end: seg.end,
+          role: seg.role || "development",
+          narrativePurpose: seg.narrativePurpose || "",
+          connectionToNext: seg.connectionToNext || undefined,
+          suggestedTransition: seg.suggestedTransition || transitions,
+          enabled: seg.enabled !== false,
+        })),
+        totalDuration: segments.reduce((sum: number, seg: any) => sum + (seg.end - seg.start), 0),
+        transitionStyle: transitions,
+        platformTarget,
+      });
+
+      // Return immediately with plan ID
+      res.json({
+        planId: plan.id,
+        status: "generating",
+        message: "Stitch job started",
+      });
+
+      // Run stitching in background
+      (async () => {
+        try {
+          const { PLATFORM_CONFIGS } = await import("./lib/remix/clipDetector");
+          const { stitchSegments } = await import("./lib/remix/clipStitcher");
+
+          const filePath = video.filePath;
+          if (!filePath) throw new Error("Video has no file path");
+
+          // Note: resolveVideoPath is not exported — inline the logic
+          const { objectKeyFromServeUrl, downloadToTempFile, uploadFileToStorage } = await import("./lib/objectStorage");
+
+          let videoPath: string;
+          let isTempFile = false;
+
+          if (filePath.startsWith("/storage/")) {
+            const objectKey = objectKeyFromServeUrl(filePath);
+            videoPath = await downloadToTempFile(objectKey, "/tmp/remix-videos");
+            isTempFile = true;
+          } else {
+            videoPath = filePath;
+            if (filePath.startsWith("/") && !fs.existsSync(filePath)) {
+              const publicPath = path.join(process.cwd(), "public", filePath);
+              if (fs.existsSync(publicPath)) videoPath = publicPath;
+            }
+          }
+
+          const platformConfig = PLATFORM_CONFIGS[platformTarget];
+          if (!platformConfig) throw new Error(`Unknown platform: ${platformTarget}`);
+
+          const outputDir = path.join(process.cwd(), "public", "exported-clips", `stitch_${plan.id}`);
+
+          // Build stitch segments with transition types
+          const stitchSegs = segments
+            .filter((_: any, i: number) => {
+              const planSeg = plan.segments?.[i];
+              return !planSeg || planSeg.enabled !== false;
+            })
+            .map((seg: any, i: number) => ({
+              start: seg.start,
+              end: seg.end,
+              transitionIn: i === 0 ? "cut" as const : (seg.suggestedTransition || transitions) as "cut" | "crossfade" | "branded_wipe",
+              transitionDuration: 0.5,
+            }));
+
+          const result = await stitchSegments({
+            videoPath,
+            videoId,
+            segments: stitchSegs,
+            platformConfig,
+            captionsEnabled,
+            outputDir,
+            planId: plan.id,
+          });
+
+          // Clean up temp video
+          if (isTempFile) {
+            try { fs.unlinkSync(videoPath); } catch { /* non-fatal */ }
+          }
+
+          if (!result.success) {
+            await storage.updateStitchPlanStatus(plan.id, "failed", {
+              errorMessage: result.error || "Stitching failed",
+            });
+            return;
+          }
+
+          // Upload to Object Storage
+          let storagePath: string | null = null;
+          let thumbStoragePath: string | null = null;
+
+          if (result.outputPath && fs.existsSync(result.outputPath)) {
+            try {
+              const filename = path.basename(result.outputPath);
+              const objectKey = `public/exported-clips/stitch_${plan.id}/${filename}`;
+              storagePath = await uploadFileToStorage(result.outputPath, objectKey);
+              fs.unlinkSync(result.outputPath);
+            } catch (uploadErr: any) {
+              console.warn(`[Stitch] Upload failed: ${uploadErr.message}`);
+              storagePath = "/" + path.relative(path.join(process.cwd(), "public"), result.outputPath);
+            }
+          }
+
+          if (result.thumbnailPath && fs.existsSync(result.thumbnailPath)) {
+            try {
+              const filename = path.basename(result.thumbnailPath);
+              const objectKey = `public/exported-clips/stitch_${plan.id}/${filename}`;
+              thumbStoragePath = await uploadFileToStorage(result.thumbnailPath, objectKey);
+              fs.unlinkSync(result.thumbnailPath);
+            } catch (uploadErr: any) {
+              thumbStoragePath = result.thumbnailPath ? "/" + path.relative(path.join(process.cwd(), "public"), result.thumbnailPath) : null;
+            }
+          }
+
+          // Create a remix job + generated clip record for the stitched output
+          const stitchJob = await storage.createRemixJob({
+            videoId,
+            userId,
+            status: "completed",
+            config: {
+              minClipDuration: 0,
+              maxClipDuration: 300,
+              maxClips: 1,
+              platformTargets: [platformTarget],
+              captionsEnabled,
+            },
+            platformTargets: [platformTarget],
+          });
+
+          const dbClip = await storage.createGeneratedClip({
+            remixJobId: stitchJob.id,
+            videoId,
+            clipStart: segments[0].start,
+            clipEnd: segments[segments.length - 1].end,
+            duration: result.duration,
+            format: "mp4",
+            platformTarget,
+            captionsEnabled,
+            qualityScore: 0.8, // Default for stitched content
+            exportPath: storagePath,
+            thumbnailPath: thumbStoragePath,
+            status: "ready",
+          });
+
+          await storage.updateStitchPlanStatus(plan.id, "completed", {
+            outputPath: storagePath || undefined,
+            thumbnailPath: thumbStoragePath || undefined,
+            qualityScore: 0.8,
+            generatedClipId: dbClip.id,
+          });
+
+          console.log(`[Stitch] Plan ${plan.id} complete — clip #${dbClip.id}`);
+        } catch (err: any) {
+          console.error(`[Stitch] Background stitch for plan ${plan.id} failed:`, err);
+          await storage.updateStitchPlanStatus(plan.id, "failed", {
+            errorMessage: err.message,
+          });
+        }
+      })();
+    } catch (err: any) {
+      console.error("[Stitch Route] Error:", err.message, err.stack);
+      res.status(500).json({ error: err.message || "Stitch failed" });
+    }
+  });
+
+  // GET /api/remix/:videoId/stitch-plans — List stitch plans for a video
+  app.get("/api/remix/:videoId/stitch-plans", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const plans = await storage.getStitchPlansByVideo(videoId);
+      res.json(plans);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to fetch stitch plans" });
+    }
+  });
+
+  // GET /api/remix/stitch-plans/:planId — Get a specific stitch plan
+  app.get("/api/remix/stitch-plans/:planId", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const planId = parseInt(req.params.planId);
+      const plan = await storage.getStitchPlan(planId);
+      if (!plan) return res.status(404).json({ error: "Stitch plan not found" });
+      res.json(plan);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to fetch stitch plan" });
+    }
+  });
+
   // ─── Remix Templates ──────────────────────────────────────────
 
   // GET /api/remix/templates — List user's remix templates

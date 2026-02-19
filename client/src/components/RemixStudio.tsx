@@ -4,7 +4,8 @@ import {
   Film, Scissors, Play, Pause, Download, Send, Loader2, X,
   CheckCircle, AlertCircle, Clock, BarChart3, Sparkles,
   Tv, Smartphone, Globe, ThumbsUp, ThumbsDown, Settings,
-  RefreshCw, Brain, Volume2, VolumeX, Maximize2
+  RefreshCw, Brain, Volume2, VolumeX, Maximize2,
+  Layers, ChevronDown, ChevronUp, Pencil, RotateCcw, Minus, Plus
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -51,6 +52,37 @@ interface GeneratedClip {
   publishedAt: string | null;
   publishedPlatform: string | null;
   publishedUrl: string | null;
+  createdAt: string;
+}
+
+interface NarrativeSegment {
+  start: number;
+  end: number;
+  role: "hook" | "development" | "climax" | "payoff" | "bridge";
+  narrativePurpose: string;
+  connectionToNext?: string;
+  suggestedTransition: "cut" | "crossfade" | "branded_wipe";
+  enabled: boolean;
+}
+
+interface NarrativeThreadResult {
+  segments: NarrativeSegment[];
+  narrativeArc: string;
+  totalDuration: number;
+  suggestedTitle: string;
+}
+
+interface StitchPlan {
+  id: number;
+  videoId: number;
+  status: string;
+  narrativeArc: string | null;
+  suggestedTitle: string | null;
+  segments: NarrativeSegment[] | null;
+  totalDuration: number | null;
+  outputPath: string | null;
+  thumbnailPath: string | null;
+  generatedClipId: number | null;
   createdAt: string;
 }
 
@@ -105,18 +137,28 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
   const [maxClips, setMaxClips] = useState(5);
   const [captionsEnabled, setCaptionsEnabled] = useState(true);
   const [showConfig, setShowConfig] = useState(false);
-  const [activeTab, setActiveTab] = useState<"editorial" | "auto">("editorial");
+  const [activeTab, setActiveTab] = useState<"editorial" | "auto" | "highlight">("editorial");
 
-  // Load existing jobs and clips
+  // Highlight Reel state (Phase 2B)
+  const [narrativeThread, setNarrativeThread] = useState<NarrativeThreadResult | null>(null);
+  const [isAnalyzingThread, setIsAnalyzingThread] = useState(false);
+  const [isStitching, setIsStitching] = useState(false);
+  const [stitchPlans, setStitchPlans] = useState<StitchPlan[]>([]);
+  const [editableSegments, setEditableSegments] = useState<NarrativeSegment[]>([]);
+  const [stitchPlatform, setStitchPlatform] = useState("tiktok");
+
+  // Load existing jobs, clips, and stitch plans
   const loadData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [jobsRes, clipsRes] = await Promise.all([
+      const [jobsRes, clipsRes, stitchRes] = await Promise.all([
         fetch(`/api/remix/video/${videoId}/jobs`, { credentials: "include" }),
         fetch(`/api/remix/clips/${videoId}`, { credentials: "include" }),
+        fetch(`/api/remix/${videoId}/stitch-plans`, { credentials: "include" }),
       ]);
       if (jobsRes.ok) setJobs(await jobsRes.json());
       if (clipsRes.ok) setClips(await clipsRes.json());
+      if (stitchRes.ok) setStitchPlans(await stitchRes.json());
     } catch (err) {
       console.error("Failed to load remix data:", err);
     }
@@ -212,6 +254,105 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
     } catch {}
   };
 
+  // Narrative thread analysis (Phase 2B)
+  const analyzeNarrativeThread = async () => {
+    setIsAnalyzingThread(true);
+    try {
+      const res = await fetch(`/api/remix/${videoId}/narrative-thread`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ targetDuration: 90, segmentCount: 4 }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Analysis failed");
+      }
+      const result = await res.json();
+      setNarrativeThread(result);
+      setEditableSegments(result.segments.map((seg: any) => ({ ...seg, enabled: true })));
+      toast({ title: "Thread Identified", description: `"${result.suggestedTitle}" — ${result.segments.length} segments` });
+    } catch (err: any) {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    }
+    setIsAnalyzingThread(false);
+  };
+
+  const startStitch = async () => {
+    if (editableSegments.filter(s => s.enabled).length < 2) {
+      toast({ title: "Error", description: "Need at least 2 enabled segments", variant: "destructive" });
+      return;
+    }
+    setIsStitching(true);
+    try {
+      const enabledSegments = editableSegments.filter(s => s.enabled);
+      const res = await fetch(`/api/remix/${videoId}/stitch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          segments: enabledSegments,
+          transitions: "crossfade",
+          platformTarget: stitchPlatform,
+          captionsEnabled,
+          narrativeArc: narrativeThread?.narrativeArc,
+          suggestedTitle: narrativeThread?.suggestedTitle,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Stitch failed");
+      }
+      const data = await res.json();
+      toast({ title: "Stitching Started", description: `Plan #${data.planId} — generating highlight reel` });
+      // Poll for completion
+      const pollStitch = setInterval(async () => {
+        try {
+          const planRes = await fetch(`/api/remix/stitch-plans/${data.planId}`, { credentials: "include" });
+          if (planRes.ok) {
+            const plan = await planRes.json();
+            if (plan.status === "completed" || plan.status === "failed") {
+              clearInterval(pollStitch);
+              setIsStitching(false);
+              await loadData();
+              if (plan.status === "completed") {
+                toast({ title: "Highlight Reel Ready", description: "Your stitched clip has been generated" });
+              } else {
+                toast({ title: "Stitch Failed", description: plan.errorMessage || "Generation failed", variant: "destructive" });
+              }
+            }
+          }
+        } catch {}
+      }, 3000);
+    } catch (err: any) {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+      setIsStitching(false);
+    }
+  };
+
+  // Re-render clip (Phase 2C)
+  const reRenderClip = async (clipId: number, mods: { newStart?: number; newEnd?: number; captionsEnabled?: boolean; captionStyle?: string; platformTarget?: string }) => {
+    try {
+      const res = await fetch(`/api/remix/clips/${clipId}/re-render`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(mods),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Re-render failed");
+      }
+      toast({ title: "Re-rendering", description: "Generating updated clip..." });
+      // Poll for new clips after a delay
+      setTimeout(() => loadData(), 5000);
+      setTimeout(() => loadData(), 10000);
+      setTimeout(() => loadData(), 20000);
+    } catch (err: any) {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    }
+  };
+
   if (!open) return null;
 
   const activeJob = jobs.find(j =>
@@ -276,6 +417,17 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
               >
                 <Scissors className="w-4 h-4" />
                 Auto-Remix
+              </button>
+              <button
+                onClick={() => setActiveTab("highlight")}
+                className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all ${
+                  activeTab === "highlight"
+                    ? "bg-amber-600 text-white"
+                    : "text-gray-400 hover:text-white"
+                }`}
+              >
+                <Layers className="w-4 h-4" />
+                Highlight Reel
               </button>
             </div>
 
@@ -462,6 +614,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
                       clip={clip}
                       onApprove={() => approveClip(clip.id)}
                       onReject={() => rejectClip(clip.id)}
+                      onReRender={reRenderClip}
                     />
                   ))}
                 </div>
@@ -506,6 +659,202 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
             )}
             </>
             )}
+
+            {/* Highlight Reel Tab — Phase 2B multi-segment stitching */}
+            {activeTab === "highlight" && (
+              <div className="space-y-4">
+                <p className="text-xs text-gray-500">
+                  AI identifies a narrative thread across your content and stitches non-contiguous moments into a highlight reel.
+                </p>
+
+                {/* Analyze button */}
+                {!narrativeThread && (
+                  <Button
+                    onClick={analyzeNarrativeThread}
+                    disabled={isAnalyzingThread}
+                    className="w-full bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white font-semibold"
+                  >
+                    {isAnalyzingThread ? (
+                      <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Analyzing Narrative Thread...</>
+                    ) : (
+                      <><Brain className="w-4 h-4 mr-2" /> Find Narrative Thread</>
+                    )}
+                  </Button>
+                )}
+
+                {/* Thread results */}
+                {narrativeThread && (
+                  <div className="space-y-4">
+                    <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4">
+                      <h4 className="text-sm font-semibold text-amber-300 mb-1">
+                        {narrativeThread.suggestedTitle}
+                      </h4>
+                      <p className="text-xs text-gray-400">{narrativeThread.narrativeArc}</p>
+                      <div className="flex items-center gap-3 mt-2">
+                        <span className="text-xs text-amber-400">
+                          {editableSegments.filter(s => s.enabled).length} segments
+                        </span>
+                        <span className="text-xs text-gray-500">
+                          {editableSegments.filter(s => s.enabled).reduce((sum, s) => sum + (s.end - s.start), 0).toFixed(1)}s total
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Segment cards */}
+                    <div className="space-y-2">
+                      {editableSegments.map((seg, i) => {
+                        const roleColors: Record<string, string> = {
+                          hook: "bg-red-500/20 text-red-400",
+                          development: "bg-blue-500/20 text-blue-400",
+                          climax: "bg-purple-500/20 text-purple-400",
+                          payoff: "bg-green-500/20 text-green-400",
+                          bridge: "bg-gray-500/20 text-gray-400",
+                        };
+                        return (
+                          <div
+                            key={i}
+                            className={`rounded-lg border p-3 transition-all ${
+                              seg.enabled
+                                ? "bg-gray-800/60 border-gray-700/50"
+                                : "bg-gray-800/20 border-gray-800 opacity-50"
+                            }`}
+                          >
+                            <div className="flex items-center justify-between mb-1">
+                              <div className="flex items-center gap-2">
+                                <Badge className={roleColors[seg.role] || roleColors.development}>
+                                  {seg.role}
+                                </Badge>
+                                <span className="text-xs text-gray-400">
+                                  {seg.start.toFixed(1)}s - {seg.end.toFixed(1)}s
+                                  <span className="text-gray-600 ml-1">
+                                    ({(seg.end - seg.start).toFixed(1)}s)
+                                  </span>
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                {i > 0 && (
+                                  <select
+                                    value={seg.suggestedTransition}
+                                    onChange={(e) => {
+                                      const updated = [...editableSegments];
+                                      updated[i] = { ...updated[i], suggestedTransition: e.target.value as any };
+                                      setEditableSegments(updated);
+                                    }}
+                                    className="bg-gray-700 text-gray-300 text-[10px] rounded px-1.5 py-0.5 border border-gray-600"
+                                  >
+                                    <option value="crossfade">Crossfade</option>
+                                    <option value="cut">Hard Cut</option>
+                                  </select>
+                                )}
+                                <button
+                                  onClick={() => {
+                                    const updated = [...editableSegments];
+                                    updated[i] = { ...updated[i], enabled: !updated[i].enabled };
+                                    setEditableSegments(updated);
+                                  }}
+                                  className={`w-8 h-4 rounded-full transition-colors ${
+                                    seg.enabled ? "bg-amber-500" : "bg-gray-600"
+                                  }`}
+                                >
+                                  <div className={`w-3 h-3 rounded-full bg-white transform transition-transform ${
+                                    seg.enabled ? "translate-x-4" : "translate-x-0.5"
+                                  }`} />
+                                </button>
+                              </div>
+                            </div>
+                            <p className="text-xs text-gray-400">{seg.narrativePurpose}</p>
+                            {seg.connectionToNext && (
+                              <p className="text-[10px] text-gray-600 mt-1 italic">
+                                Next: {seg.connectionToNext}
+                              </p>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Platform + generate */}
+                    <div className="flex items-center gap-3">
+                      <select
+                        value={stitchPlatform}
+                        onChange={(e) => setStitchPlatform(e.target.value)}
+                        className="bg-gray-700 text-white text-sm rounded-lg px-3 py-2 border border-gray-600"
+                      >
+                        {Object.entries(PLATFORM_LABELS).map(([key, label]) => (
+                          <option key={key} value={key}>{label}</option>
+                        ))}
+                      </select>
+                      <Button
+                        onClick={startStitch}
+                        disabled={isStitching || editableSegments.filter(s => s.enabled).length < 2}
+                        className="flex-1 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white font-semibold"
+                      >
+                        {isStitching ? (
+                          <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Stitching...</>
+                        ) : (
+                          <><Layers className="w-4 h-4 mr-2" /> Generate Highlight Reel</>
+                        )}
+                      </Button>
+                    </div>
+
+                    {/* Re-analyze button */}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => { setNarrativeThread(null); setEditableSegments([]); }}
+                      className="text-gray-500 hover:text-gray-300 text-xs"
+                    >
+                      <RefreshCw className="w-3 h-3 mr-1" /> Re-analyze
+                    </Button>
+                  </div>
+                )}
+
+                {/* Past stitch plans */}
+                {stitchPlans.length > 0 && (
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-300 mb-3 flex items-center gap-2">
+                      <Layers className="w-4 h-4" /> Highlight Reels ({stitchPlans.length})
+                    </h3>
+                    <div className="space-y-2">
+                      {stitchPlans.map(plan => (
+                        <div key={plan.id} className="bg-gray-800/50 rounded-lg p-3">
+                          <div className="flex items-center justify-between mb-1">
+                            <div className="flex items-center gap-2">
+                              <Badge className={
+                                plan.status === "completed" ? "bg-green-500/20 text-green-400" :
+                                plan.status === "failed" ? "bg-red-500/20 text-red-400" :
+                                "bg-amber-500/20 text-amber-400"
+                              }>
+                                {plan.status}
+                              </Badge>
+                              <span className="text-sm text-white">{plan.suggestedTitle || "Untitled"}</span>
+                            </div>
+                            <span className="text-xs text-gray-500">
+                              {plan.totalDuration ? `${plan.totalDuration.toFixed(0)}s` : ""}
+                            </span>
+                          </div>
+                          {plan.narrativeArc && (
+                            <p className="text-xs text-gray-500">{plan.narrativeArc}</p>
+                          )}
+                          {plan.status === "completed" && plan.generatedClipId && (
+                            <div className="mt-2">
+                              <a
+                                href={`/api/remix/clips/${plan.generatedClipId}/download`}
+                                download
+                              >
+                                <Button size="sm" variant="ghost" className="text-blue-400 hover:text-blue-300 text-xs">
+                                  <Download className="w-3 h-3 mr-1" /> Download
+                                </Button>
+                              </a>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </motion.div>
       </motion.div>
@@ -519,16 +868,25 @@ function ClipCard({
   clip,
   onApprove,
   onReject,
+  onReRender,
 }: {
   clip: GeneratedClip;
   onApprove: () => void;
   onReject: () => void;
+  onReRender?: (clipId: number, mods: any) => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(true);
   const [progress, setProgress] = useState(0);
   const [showPlayer, setShowPlayer] = useState(false);
+  const [showEditor, setShowEditor] = useState(false);
+  const [editStart, setEditStart] = useState(clip.clipStart);
+  const [editEnd, setEditEnd] = useState(clip.clipEnd);
+  const [editCaptions, setEditCaptions] = useState(clip.captionsEnabled ?? true);
+  const [editCaptionStyle, setEditCaptionStyle] = useState<string>("highlight");
+  const [editPlatform, setEditPlatform] = useState(clip.platformTarget || "tiktok");
+  const [isReRendering, setIsReRendering] = useState(false);
 
   const PlatformIcon = PLATFORM_ICONS[clip.platformTarget || ""] || Globe;
   const platformLabel = PLATFORM_LABELS[clip.platformTarget || ""] || clip.platformTarget;
@@ -710,6 +1068,17 @@ function ClipCard({
               </a>
             </>
           )}
+          {onReRender && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setShowEditor(!showEditor)}
+              className="text-amber-400 hover:text-amber-300 hover:bg-amber-500/10 text-xs"
+            >
+              <Pencil className="w-3.5 h-3.5 mr-1" />
+              Edit
+            </Button>
+          )}
           {clip.status === "pending_review" && (
             <>
               <Button size="sm" variant="ghost" onClick={onApprove} className="text-green-400 hover:text-green-300 hover:bg-green-500/10">
@@ -721,6 +1090,136 @@ function ClipCard({
             </>
           )}
         </div>
+
+        {/* Edit panel (Phase 2C) */}
+        {showEditor && onReRender && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            className="mt-3 pt-3 border-t border-gray-700/50 space-y-3"
+          >
+            {/* Trim controls */}
+            <div className="flex items-center gap-3">
+              <div className="flex-1">
+                <label className="text-[10px] text-gray-500 block mb-1">Start (s)</label>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => setEditStart(Math.max(0, editStart - 0.5))}
+                    className="text-gray-400 hover:text-white p-0.5"
+                  >
+                    <Minus className="w-3 h-3" />
+                  </button>
+                  <input
+                    type="number"
+                    step="0.5"
+                    value={editStart.toFixed(1)}
+                    onChange={(e) => setEditStart(parseFloat(e.target.value) || 0)}
+                    className="w-16 bg-gray-700 text-white text-xs rounded px-2 py-1 border border-gray-600 text-center"
+                  />
+                  <button
+                    onClick={() => setEditStart(editStart + 0.5)}
+                    className="text-gray-400 hover:text-white p-0.5"
+                  >
+                    <Plus className="w-3 h-3" />
+                  </button>
+                </div>
+              </div>
+              <div className="flex-1">
+                <label className="text-[10px] text-gray-500 block mb-1">End (s)</label>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => setEditEnd(Math.max(editStart + 1, editEnd - 0.5))}
+                    className="text-gray-400 hover:text-white p-0.5"
+                  >
+                    <Minus className="w-3 h-3" />
+                  </button>
+                  <input
+                    type="number"
+                    step="0.5"
+                    value={editEnd.toFixed(1)}
+                    onChange={(e) => setEditEnd(parseFloat(e.target.value) || 0)}
+                    className="w-16 bg-gray-700 text-white text-xs rounded px-2 py-1 border border-gray-600 text-center"
+                  />
+                  <button
+                    onClick={() => setEditEnd(editEnd + 0.5)}
+                    className="text-gray-400 hover:text-white p-0.5"
+                  >
+                    <Plus className="w-3 h-3" />
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Trim change indicator */}
+            {(editStart !== clip.clipStart || editEnd !== clip.clipEnd) && (
+              <div className="flex items-center gap-2 text-[10px]">
+                <span className="text-gray-600">Original: {clip.clipStart.toFixed(1)}s-{clip.clipEnd.toFixed(1)}s</span>
+                <span className="text-amber-400">
+                  {editStart < clip.clipStart ? `+${(clip.clipStart - editStart).toFixed(1)}s earlier` : editStart > clip.clipStart ? `-${(editStart - clip.clipStart).toFixed(1)}s trimmed` : ""}
+                  {editEnd !== clip.clipEnd ? ` / end ${editEnd > clip.clipEnd ? `+${(editEnd - clip.clipEnd).toFixed(1)}s` : `-${(clip.clipEnd - editEnd).toFixed(1)}s`}` : ""}
+                </span>
+              </div>
+            )}
+
+            {/* Caption + platform controls */}
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2">
+                <label className="text-[10px] text-gray-500">Captions</label>
+                <button
+                  onClick={() => setEditCaptions(!editCaptions)}
+                  className={`w-8 h-4 rounded-full transition-colors ${editCaptions ? "bg-purple-500" : "bg-gray-600"}`}
+                >
+                  <div className={`w-3 h-3 rounded-full bg-white transform transition-transform ${editCaptions ? "translate-x-4" : "translate-x-0.5"}`} />
+                </button>
+              </div>
+              {editCaptions && (
+                <select
+                  value={editCaptionStyle}
+                  onChange={(e) => setEditCaptionStyle(e.target.value)}
+                  className="bg-gray-700 text-gray-300 text-[10px] rounded px-2 py-1 border border-gray-600"
+                >
+                  <option value="highlight">Highlight</option>
+                  <option value="brand_callout">Brand Callout</option>
+                  <option value="narrative">Narrative</option>
+                </select>
+              )}
+              <select
+                value={editPlatform}
+                onChange={(e) => setEditPlatform(e.target.value)}
+                className="bg-gray-700 text-gray-300 text-[10px] rounded px-2 py-1 border border-gray-600"
+              >
+                {Object.entries(PLATFORM_LABELS).map(([key, label]) => (
+                  <option key={key} value={key}>{label}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Re-render button */}
+            <Button
+              size="sm"
+              onClick={async () => {
+                setIsReRendering(true);
+                await onReRender(clip.id, {
+                  newStart: editStart !== clip.clipStart ? editStart : undefined,
+                  newEnd: editEnd !== clip.clipEnd ? editEnd : undefined,
+                  captionsEnabled: editCaptions,
+                  captionStyle: editCaptionStyle,
+                  platformTarget: editPlatform !== clip.platformTarget ? editPlatform : undefined,
+                });
+                setIsReRendering(false);
+                setShowEditor(false);
+              }}
+              disabled={isReRendering}
+              className="w-full bg-amber-600 hover:bg-amber-500 text-white text-xs"
+            >
+              {isReRendering ? (
+                <><Loader2 className="w-3 h-3 mr-1 animate-spin" /> Re-rendering...</>
+              ) : (
+                <><RotateCcw className="w-3 h-3 mr-1" /> Re-render Clip</>
+              )}
+            </Button>
+          </motion.div>
+        )}
       </div>
     </motion.div>
   );

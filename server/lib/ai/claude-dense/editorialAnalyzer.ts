@@ -330,4 +330,306 @@ export async function analyzeEditorial(
   }
 }
 
+// ── Narrative Threading Types ─────────────────────────────────────
+
+export interface NarrativeThreadInput {
+  videoId: number;
+  transcript: TranscriptSegment[];
+  surfaces: EditorialAnalysisInput["surfaces"];
+  brandCatalog: EditorialAnalysisInput["brandCatalog"];
+  targetDuration?: number; // total highlight reel target in seconds (default: 90)
+  segmentCount?: number;   // number of segments (default: 3-5)
+}
+
+export interface NarrativeSegment {
+  start: number;
+  end: number;
+  role: "hook" | "development" | "climax" | "payoff" | "bridge";
+  narrativePurpose: string;
+  connectionToNext?: string;
+  suggestedTransition: "cut" | "crossfade" | "branded_wipe";
+  scores: RubricScores;
+}
+
+export interface NarrativeThreadOutput {
+  segments: NarrativeSegment[];
+  narrativeArc: string;
+  totalDuration: number;
+  suggestedTitle: string;
+}
+
+// ── Narrative Threading Prompt ────────────────────────────────────
+
+function buildNarrativeThreadPrompt(
+  transcript: TranscriptSegment[],
+  surfaces: EditorialAnalysisInput["surfaces"],
+  brandCatalog: EditorialAnalysisInput["brandCatalog"],
+  targetDuration: number = 90,
+  segmentCount: number = 4
+): string {
+  const compactTranscript = transcript.map((seg) => ({
+    start: seg.start,
+    end: seg.end,
+    text: seg.text,
+    speaker: seg.speaker || undefined,
+  }));
+
+  const compactSurfaces = surfaces.map((s) => ({
+    id: s.id,
+    timestamp: s.timestamp,
+    surfaceType: s.surfaceType,
+  }));
+
+  const compactBrands = brandCatalog.map((b) => ({
+    id: b.id,
+    name: b.name,
+    category: b.category,
+  }));
+
+  let transcriptStr = JSON.stringify(compactTranscript);
+  if (transcriptStr.length > EDITORIAL_CONFIG.maxTranscriptChars) {
+    transcriptStr = transcriptStr.substring(0, EDITORIAL_CONFIG.maxTranscriptChars) + "...]";
+  }
+
+  return `You are an expert short-form content editor creating a multi-segment highlight reel from a long-form video. Your job is to identify ${segmentCount} non-contiguous moments that, when stitched together, tell a coherent story.
+
+Here is the full transcript with timestamps:
+${transcriptStr}
+
+Here are the detected surfaces and their timestamps:
+${JSON.stringify(compactSurfaces)}
+
+Here are the available brand products:
+${JSON.stringify(compactBrands)}
+
+TASK:
+1. Identify exactly ${segmentCount} moments from this transcript that form a compelling narrative thread when placed in sequence. The total combined duration should be approximately ${targetDuration} seconds. Each segment should be 10-30 seconds long.
+
+2. Each moment must serve a specific narrative role:
+   - "hook": Opens with something attention-grabbing (bold claim, surprising fact, question). This MUST be the first segment.
+   - "development": Builds context, provides background, deepens the topic. Usually 1-2 segments.
+   - "climax": The peak moment — the most emotionally charged, insightful, or entertaining part.
+   - "payoff": Resolution, conclusion, call-to-action, or punchline. This MUST be the last segment.
+   - "bridge": Optional connective segment that smoothly transitions between major beats.
+
+3. For each segment provide:
+   - start/end: Exact timestamps in seconds. Clean entry/exit points (not mid-word).
+   - role: One of the narrative roles above.
+   - narrativePurpose: 1-2 sentences explaining WHY this segment was chosen and what it contributes to the story.
+   - connectionToNext: How this segment connects thematically to the next one (omit for last segment).
+   - suggestedTransition: How to transition INTO this segment from the previous:
+     - "cut": Hard cut for dramatic effect or when topics shift sharply
+     - "crossfade": Smooth dissolve for flowing topic continuation
+     - "branded_wipe": Brand transition card (for topic changes with brand integration opportunity)
+     The first segment should use "cut" (no previous segment to transition from).
+   - scores: Rate this individual segment on the 6-dimension rubric (0.0-1.0 each):
+     hookStrength, narrativeCompleteness, emotionalArc, speakerClarity, replayability, culturalRelevance
+
+4. Also provide:
+   - narrativeArc: A one-sentence description of the overall story thread
+   - suggestedTitle: A scroll-stopping title for the highlight reel (under 60 chars)
+   - totalDuration: Sum of all segment durations
+
+CRITICAL RULES:
+- Segments MUST NOT overlap in time
+- Segments should be ordered by their position in the narrative thread, NOT by timestamp
+- The combined story must make sense to someone who hasn't seen the full video
+- Avoid segments that require context from parts not included
+- Prefer segments where brand surfaces are visible (check surface timestamps)
+
+Return as JSON object. No markdown, no code fences, just raw JSON:
+{
+  "segments": [
+    {
+      "start": 12.5,
+      "end": 28.0,
+      "role": "hook",
+      "narrativePurpose": "Opens with the host's shocking revelation about...",
+      "connectionToNext": "Sets up the deeper exploration that follows",
+      "suggestedTransition": "cut",
+      "scores": {
+        "hookStrength": 0.9,
+        "narrativeCompleteness": 0.7,
+        "emotionalArc": 0.8,
+        "speakerClarity": 0.95,
+        "replayability": 0.85,
+        "culturalRelevance": 0.75
+      }
+    }
+  ],
+  "narrativeArc": "A journey from shock to understanding to actionable advice",
+  "suggestedTitle": "The Truth Nobody Tells You About...",
+  "totalDuration": 88.5
+}`;
+}
+
+// ── Narrative Threading Parser ────────────────────────────────────
+
+function parseNarrativeThreadResponse(text: string): NarrativeThreadOutput | null {
+  try {
+    let jsonStr = text.trim();
+
+    // Remove markdown code fences if present
+    if (jsonStr.startsWith("```json")) jsonStr = jsonStr.slice(7);
+    else if (jsonStr.startsWith("```")) jsonStr = jsonStr.slice(3);
+    if (jsonStr.endsWith("```")) jsonStr = jsonStr.slice(0, -3);
+
+    const parsed = JSON.parse(jsonStr.trim());
+
+    if (!parsed.segments || !Array.isArray(parsed.segments)) {
+      console.error("[NarrativeThread] Response missing segments array");
+      return null;
+    }
+
+    const validSegments: NarrativeSegment[] = parsed.segments
+      .filter((seg: any) => {
+        if (typeof seg.start !== "number" || typeof seg.end !== "number") {
+          console.warn("[NarrativeThread] Skipping segment with missing timestamps");
+          return false;
+        }
+        if (seg.end <= seg.start) {
+          console.warn("[NarrativeThread] Skipping segment with invalid time range");
+          return false;
+        }
+        return true;
+      })
+      .map((seg: any) => {
+        const validatedScores = validateScores({
+          hookStrength: seg.scores?.hookStrength,
+          narrativeCompleteness: seg.scores?.narrativeCompleteness,
+          emotionalArc: seg.scores?.emotionalArc,
+          speakerClarity: seg.scores?.speakerClarity,
+          surfaceCompatibility: 0,
+          culturalRelevance: seg.scores?.culturalRelevance,
+          replayability: seg.scores?.replayability,
+        });
+
+        const validRoles = ["hook", "development", "climax", "payoff", "bridge"];
+        const role = validRoles.includes(seg.role) ? seg.role : "development";
+
+        const validTransitions = ["cut", "crossfade", "branded_wipe"];
+        const transition = validTransitions.includes(seg.suggestedTransition)
+          ? seg.suggestedTransition
+          : "crossfade";
+
+        return {
+          start: seg.start,
+          end: seg.end,
+          role,
+          narrativePurpose: seg.narrativePurpose || "",
+          connectionToNext: seg.connectionToNext || undefined,
+          suggestedTransition: transition,
+          scores: validatedScores,
+        } as NarrativeSegment;
+      });
+
+    if (validSegments.length === 0) {
+      console.error("[NarrativeThread] No valid segments after parsing");
+      return null;
+    }
+
+    const totalDuration = validSegments.reduce((sum, seg) => sum + (seg.end - seg.start), 0);
+
+    return {
+      segments: validSegments,
+      narrativeArc: parsed.narrativeArc || "Highlight reel",
+      totalDuration: parsed.totalDuration || totalDuration,
+      suggestedTitle: parsed.suggestedTitle || "Highlight Reel",
+    };
+  } catch (err) {
+    console.error("[NarrativeThread] Failed to parse response:", err);
+    return null;
+  }
+}
+
+// ── Main Narrative Threading Function ─────────────────────────────
+
+/**
+ * Analyze a video transcript to identify a narrative thread for a highlight reel.
+ *
+ * Uses Claude to find 3-5 non-contiguous moments that form a coherent story
+ * when stitched together (OpusClip-style). Each segment gets a narrative role
+ * (hook, development, climax, payoff) and transition suggestion.
+ */
+export async function analyzeNarrativeThread(
+  input: NarrativeThreadInput
+): Promise<NarrativeThreadOutput | null> {
+  const {
+    videoId,
+    transcript,
+    surfaces,
+    brandCatalog,
+    targetDuration = 90,
+    segmentCount = 4,
+  } = input;
+
+  if (!transcript || transcript.length === 0) {
+    console.warn(`[NarrativeThread] No transcript for video ${videoId}`);
+    return null;
+  }
+
+  console.log(
+    `[NarrativeThread] Analyzing video ${videoId}: ` +
+      `${transcript.length} segments, target ${targetDuration}s, ${segmentCount} segments`
+  );
+
+  try {
+    const client = getClient();
+
+    const prompt = buildNarrativeThreadPrompt(
+      transcript,
+      surfaces,
+      brandCatalog,
+      targetDuration,
+      segmentCount
+    );
+
+    const timeoutPromise = new Promise<null>((_, reject) => {
+      setTimeout(() => reject(new Error("Narrative thread analysis timeout")), EDITORIAL_CONFIG.timeout);
+    });
+
+    const analysisPromise = client.messages.create({
+      model: EDITORIAL_CONFIG.model,
+      max_tokens: EDITORIAL_CONFIG.maxTokens,
+      messages: [{ role: "user", content: prompt }],
+    });
+
+    const response = await Promise.race([analysisPromise, timeoutPromise]);
+
+    if (!response) {
+      console.error("[NarrativeThread] Request timed out");
+      return null;
+    }
+
+    const textBlock = (response as Anthropic.Message).content.find(
+      (block: Anthropic.ContentBlock) => block.type === "text"
+    );
+    if (!textBlock || textBlock.type !== "text") {
+      console.error("[NarrativeThread] No text in response");
+      return null;
+    }
+
+    console.log(`[NarrativeThread] Raw response length: ${textBlock.text.length} chars`);
+
+    const result = parseNarrativeThreadResponse(textBlock.text);
+
+    if (result) {
+      console.log(
+        `[NarrativeThread] Found ${result.segments.length} segments for video ${videoId}: ` +
+          `"${result.suggestedTitle}" (${result.totalDuration.toFixed(1)}s)`
+      );
+      for (const [i, seg] of result.segments.entries()) {
+        console.log(
+          `[NarrativeThread]   #${i + 1} [${seg.role}] ${seg.start.toFixed(1)}s-${seg.end.toFixed(1)}s → ${seg.suggestedTransition}`
+        );
+      }
+    }
+
+    return result;
+  } catch (err: any) {
+    console.error(`[NarrativeThread] Analysis error for video ${videoId}:`, err.message);
+    return null;
+  }
+}
+
 export { EDITORIAL_CONFIG };

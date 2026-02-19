@@ -486,6 +486,44 @@ export const insertGeneratedClipSchema = createInsertSchema(generatedClips).omit
 export type GeneratedClip = typeof generatedClips.$inferSelect;
 export type InsertGeneratedClip = z.infer<typeof insertGeneratedClipSchema>;
 
+// Stitch Plans Table — multi-segment highlight reel plans (OpusClip-style)
+export const stitchPlans = pgTable('stitch_plans', {
+  id: serial('id').primaryKey(),
+  videoId: integer('video_id').references(() => videoIndex.id).notNull(),
+  userId: integer('user_id').notNull(),
+  status: varchar('status', { length: 30 }).default('draft'), // draft, generating, completed, failed
+  narrativeArc: text('narrative_arc'),
+  suggestedTitle: varchar('suggested_title', { length: 200 }),
+  segments: jsonb('segments').$type<Array<{
+    start: number;
+    end: number;
+    role: 'hook' | 'development' | 'climax' | 'payoff' | 'bridge';
+    narrativePurpose: string;
+    connectionToNext?: string;
+    suggestedTransition: 'cut' | 'crossfade' | 'branded_wipe';
+    enabled: boolean;
+  }>>(),
+  totalDuration: real('total_duration'),
+  transitionStyle: varchar('transition_style', { length: 30 }).default('crossfade'),
+  platformTarget: varchar('platform_target', { length: 30 }).default('tiktok'),
+  outputPath: varchar('output_path', { length: 500 }),
+  thumbnailPath: varchar('thumbnail_path', { length: 500 }),
+  qualityScore: real('quality_score'),
+  generatedClipId: integer('generated_clip_id').references(() => generatedClips.id),
+  errorMessage: text('error_message'),
+  createdAt: timestamp('created_at').defaultNow(),
+  completedAt: timestamp('completed_at'),
+});
+
+export const insertStitchPlanSchema = createInsertSchema(stitchPlans).omit({
+  id: true,
+  createdAt: true,
+  completedAt: true,
+});
+
+export type StitchPlan = typeof stitchPlans.$inferSelect;
+export type InsertStitchPlan = z.infer<typeof insertStitchPlanSchema>;
+
 // Remix Templates Table — brand-specific formatting templates
 export const remixTemplates = pgTable('remix_templates', {
   id: serial('id').primaryKey(),

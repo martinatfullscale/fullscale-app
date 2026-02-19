@@ -67,6 +67,9 @@ import {
   surfaceKeyframes,
   type SurfaceKeyframe,
   type InsertSurfaceKeyframe,
+  stitchPlans,
+  type StitchPlan,
+  type InsertStitchPlan,
 } from "@shared/schema";
 import { users, type User, type UpsertUser } from "@shared/models/auth";
 import { encrypt, decrypt } from "./encryption";
@@ -165,10 +168,16 @@ export interface IStorage {
   updateRemixJobStatus(jobId: number, status: string, errorMessage?: string): Promise<RemixJob | undefined>;
   // Generated clip methods
   createGeneratedClip(data: InsertGeneratedClip): Promise<GeneratedClip>;
+  getClipById(clipId: number): Promise<GeneratedClip | undefined>;
   getClipsByJob(jobId: number): Promise<GeneratedClip[]>;
   getClipsByVideo(videoId: number): Promise<GeneratedClip[]>;
   updateClipStatus(clipId: number, status: string): Promise<GeneratedClip | undefined>;
   publishClip(clipId: number, platform: string, url: string): Promise<GeneratedClip | undefined>;
+  // Stitch plan methods
+  createStitchPlan(data: InsertStitchPlan): Promise<StitchPlan>;
+  getStitchPlan(planId: number): Promise<StitchPlan | undefined>;
+  getStitchPlansByVideo(videoId: number): Promise<StitchPlan[]>;
+  updateStitchPlanStatus(planId: number, status: string, updates?: { outputPath?: string; thumbnailPath?: string; qualityScore?: number; generatedClipId?: number; errorMessage?: string }): Promise<StitchPlan | undefined>;
   // Generated asset methods
   createGeneratedAsset(data: InsertGeneratedAsset): Promise<GeneratedAsset>;
   getAssetsByVideo(videoId: number): Promise<GeneratedAsset[]>;
@@ -1062,6 +1071,12 @@ export class DatabaseStorage implements IStorage {
     return result;
   }
 
+  async getClipById(clipId: number): Promise<GeneratedClip | undefined> {
+    const [result] = await db.select().from(generatedClips)
+      .where(eq(generatedClips.id, clipId));
+    return result;
+  }
+
   async getClipsByJob(jobId: number): Promise<GeneratedClip[]> {
     return db.select().from(generatedClips)
       .where(eq(generatedClips.remixJobId, jobId))
@@ -1091,6 +1106,45 @@ export class DatabaseStorage implements IStorage {
         publishedUrl: url,
       })
       .where(eq(generatedClips.id, clipId))
+      .returning();
+    return result;
+  }
+
+  // ── Stitch Plan Methods ──
+
+  async createStitchPlan(data: InsertStitchPlan): Promise<StitchPlan> {
+    const [result] = await db.insert(stitchPlans).values(data).returning();
+    return result;
+  }
+
+  async getStitchPlan(planId: number): Promise<StitchPlan | undefined> {
+    const [result] = await db.select().from(stitchPlans)
+      .where(eq(stitchPlans.id, planId));
+    return result;
+  }
+
+  async getStitchPlansByVideo(videoId: number): Promise<StitchPlan[]> {
+    return db.select().from(stitchPlans)
+      .where(eq(stitchPlans.videoId, videoId))
+      .orderBy(desc(stitchPlans.createdAt));
+  }
+
+  async updateStitchPlanStatus(
+    planId: number,
+    status: string,
+    updates?: { outputPath?: string; thumbnailPath?: string; qualityScore?: number; generatedClipId?: number; errorMessage?: string }
+  ): Promise<StitchPlan | undefined> {
+    const setData: Record<string, any> = { status };
+    if (updates?.outputPath) setData.outputPath = updates.outputPath;
+    if (updates?.thumbnailPath) setData.thumbnailPath = updates.thumbnailPath;
+    if (updates?.qualityScore !== undefined) setData.qualityScore = updates.qualityScore;
+    if (updates?.generatedClipId !== undefined) setData.generatedClipId = updates.generatedClipId;
+    if (updates?.errorMessage) setData.errorMessage = updates.errorMessage;
+    if (status === 'completed') setData.completedAt = new Date();
+
+    const [result] = await db.update(stitchPlans)
+      .set(setData)
+      .where(eq(stitchPlans.id, planId))
       .returning();
     return result;
   }

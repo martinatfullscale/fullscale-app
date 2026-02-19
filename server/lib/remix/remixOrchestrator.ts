@@ -629,6 +629,357 @@ export async function runRemixPipeline(
   }
 }
 
+// ── Phase 2C: Re-Render Clip (Steps 4-8 only) ────────────────────
+
+export interface ReRenderModifications {
+  newStart?: number;
+  newEnd?: number;
+  captionsEnabled?: boolean;
+  captionStyle?: "highlight" | "brand_callout" | "narrative";
+  platformTarget?: string;
+}
+
+/**
+ * Re-render an existing generated clip with modifications.
+ * Runs Steps 4-8 only (INSERT → FORMAT → CAPTION → SCORE → EXPORT).
+ * Creates a NEW generatedClip record (does not overwrite the original).
+ */
+export async function reRenderClip(
+  clipId: number,
+  modifications: ReRenderModifications
+): Promise<RemixResult> {
+  console.log(`[Remix Re-Render] Starting re-render for clip ${clipId}`);
+
+  // Load the original clip
+  const originalClip = await storage.getClipById(clipId);
+  if (!originalClip) {
+    return {
+      jobId: 0,
+      success: false,
+      clipsGenerated: 0,
+      clipsPublishReady: 0,
+      clipsNeedReview: 0,
+      clips: [],
+      error: `Clip ${clipId} not found`,
+    };
+  }
+
+  // Load the video
+  const video = await storage.getVideoById(originalClip.videoId);
+  if (!video) {
+    return {
+      jobId: 0,
+      success: false,
+      clipsGenerated: 0,
+      clipsPublishReady: 0,
+      clipsNeedReview: 0,
+      clips: [],
+      error: `Video ${originalClip.videoId} not found`,
+    };
+  }
+
+  // Resolve video path
+  const filePath = video.filePath;
+  if (!filePath) {
+    return {
+      jobId: 0,
+      success: false,
+      clipsGenerated: 0,
+      clipsPublishReady: 0,
+      clipsNeedReview: 0,
+      clips: [],
+      error: "Video has no file path",
+    };
+  }
+
+  let tempVideoPath: string | null = null;
+  let videoPath: string;
+
+  try {
+    const resolved = await resolveVideoPath(filePath);
+    videoPath = resolved.localPath;
+    if (resolved.isTempFile) tempVideoPath = resolved.localPath;
+  } catch (err: any) {
+    return {
+      jobId: 0,
+      success: false,
+      clipsGenerated: 0,
+      clipsPublishReady: 0,
+      clipsNeedReview: 0,
+      clips: [],
+      error: `Failed to resolve video path: ${err.message}`,
+    };
+  }
+
+  // Determine modified clip boundaries
+  const clipStart = modifications.newStart ?? originalClip.clipStart;
+  const clipEnd = modifications.newEnd ?? originalClip.clipEnd;
+  const duration = clipEnd - clipStart;
+  const platform = modifications.platformTarget ?? originalClip.platformTarget ?? "tiktok";
+  const captionsEnabled = modifications.captionsEnabled ?? originalClip.captionsEnabled ?? true;
+  const captionStyle = modifications.captionStyle ?? "highlight";
+
+  try {
+    // Build a ClipCandidate from the modified boundaries
+    const clip: ClipCandidate = {
+      startTime: clipStart,
+      endTime: clipEnd,
+      duration,
+      score: originalClip.qualityScore ?? 0.5,
+      sceneAnalysisIds: [],
+      surfaceIds: (originalClip.productPlacements || []).map((p: any) => p.surfaceId).filter(Boolean),
+      brandProductIds: (originalClip.productPlacements || []).map((p: any) => p.brandProductId).filter(Boolean),
+      primaryTone: "standard",
+      narrativeSummary: "",
+      platform,
+    };
+
+    const platformConfig = PLATFORM_CONFIGS[platform];
+    if (!platformConfig) {
+      return {
+        jobId: originalClip.remixJobId,
+        success: false,
+        clipsGenerated: 0,
+        clipsPublishReady: 0,
+        clipsNeedReview: 0,
+        clips: [],
+        error: `Unknown platform: ${platform}`,
+      };
+    }
+
+    // ─── Step 4: INSERT — Attach product placements ────────────
+    console.log(`[Re-Render] Step 4: Attaching product placements...`);
+
+    const allSurfaces = await storage.getDetectedSurfaces(originalClip.videoId);
+    const surfaceMap = new Map(allSurfaces.map(s => [s.id, s]));
+
+    const brandProductList = await storage.getAllBrandProducts();
+    const itemMap = new Map(brandProductList.map(i => [i.id, i]));
+
+    const placements: ClipPlacement[] = [];
+    for (const surfaceId of clip.surfaceIds) {
+      const surface = surfaceMap.get(surfaceId);
+      if (!surface) continue;
+
+      const surfaceAnalysis = await storage.getSceneAnalysisBySurface(surfaceId);
+      if (!surfaceAnalysis) continue;
+
+      const matches = await storage.getBrandMatchesByScene(surfaceAnalysis.id);
+      const approved = matches.find(m => m.approved);
+      if (!approved) continue;
+
+      const product = itemMap.get(approved.brandProductId);
+      if (!product || !product.imageUrl) continue;
+
+      const imagePath = product.imageUrl.startsWith("/")
+        ? path.join(process.cwd(), "public", product.imageUrl)
+        : product.imageUrl;
+
+      if (!fs.existsSync(imagePath)) continue;
+
+      // Load motion keyframes
+      const keyframeRecords = await storage.getSurfaceKeyframesInRange(
+        surfaceId, clip.startTime, clip.endTime
+      );
+      const keyframes = keyframeRecords.map((kf) => ({
+        time: parseFloat(String(kf.timestamp)) - clip.startTime,
+        x: parseFloat(String(kf.boundingBoxX)),
+        y: parseFloat(String(kf.boundingBoxY)),
+        width: parseFloat(String(kf.boundingBoxWidth)),
+        height: parseFloat(String(kf.boundingBoxHeight)),
+      }));
+
+      const bboxStart = {
+        x: parseFloat(String(surface.boundingBoxX)) || 0,
+        y: parseFloat(String(surface.boundingBoxY)) || 0,
+        width: parseFloat(String(surface.boundingBoxWidth)) || 0.2,
+        height: parseFloat(String(surface.boundingBoxHeight)) || 0.2,
+      };
+
+      placements.push({
+        surfaceId,
+        brandProductId: approved.brandProductId,
+        productImagePath: imagePath,
+        keyframes,
+        bboxStart,
+        opacity: 0.92,
+      });
+    }
+
+    console.log(`[Re-Render]   ${placements.length} placement(s)`);
+
+    // ─── Step 5+6: FORMAT + CAPTION ────────────────────────────
+    console.log(`[Re-Render] Steps 5-6: Generating clip with captions...`);
+
+    const outputDir = path.join(process.cwd(), "public", "exported-clips", `rerender_${Date.now()}`);
+    fs.mkdirSync(outputDir, { recursive: true });
+
+    // Step 6: Generate captions
+    let captionSegments = undefined;
+    if (captionsEnabled) {
+      try {
+        // Load transcript for this video's clip range
+        const transcript = await storage.getVideoTranscript(originalClip.videoId);
+        let clipTranscriptSegments = undefined;
+        if (transcript && transcript.status === "completed" && transcript.segments) {
+          clipTranscriptSegments = (transcript.segments as any[]).filter(
+            (seg: any) => seg.start >= clip.startTime && seg.start <= clip.endTime
+          );
+        }
+
+        const captionResult = await generateCaptions({
+          clipStart: clip.startTime,
+          clipEnd: clip.endTime,
+          duration: clip.duration,
+          narrativeContext: clip.narrativeSummary || "",
+          emotionalTone: clip.primaryTone,
+          brandNames: clip.brandProductIds.map(id => {
+            const item = itemMap.get(id);
+            return item?.name || `Product ${id}`;
+          }),
+          style: captionStyle,
+          transcriptSegments: clipTranscriptSegments,
+        });
+        captionSegments = captionResult.segments;
+        console.log(`[Re-Render]   ${captionSegments.length} caption segments`);
+      } catch (captionErr) {
+        console.warn(`[Re-Render] Caption generation failed (non-fatal)`, captionErr);
+      }
+    }
+
+    // Step 5: Generate clip
+    const clipResult = await generateClip({
+      videoPath,
+      videoId: originalClip.videoId,
+      clip,
+      platformConfig,
+      placements,
+      captionsEnabled: captionsEnabled && !!captionSegments,
+      captionSegments,
+      outputDir,
+      jobId: originalClip.remixJobId,
+    });
+
+    if (!clipResult.success) {
+      return {
+        jobId: originalClip.remixJobId,
+        success: false,
+        clipsGenerated: 0,
+        clipsPublishReady: 0,
+        clipsNeedReview: 0,
+        clips: [],
+        error: `Re-render failed: ${clipResult.error}`,
+      };
+    }
+
+    // ─── Step 7: SCORE ─────────────────────────────────────────
+    console.log(`[Re-Render] Step 7: Scoring re-rendered clip...`);
+
+    const qualityResult = await scoreClipQuality({
+      thumbnailPath: clipResult.thumbnailPath,
+      clip,
+      platform,
+      actualDuration: clipResult.duration,
+      placementCount: placements.length,
+      hasCaptions: captionsEnabled && !!captionSegments,
+      fileSize: clipResult.fileSize,
+    });
+
+    // ─── Step 8: EXPORT ────────────────────────────────────────
+    console.log(`[Re-Render] Step 8: Uploading to Object Storage...`);
+
+    let storagePath: string | null = null;
+    let thumbStoragePath: string | null = null;
+
+    if (clipResult.clipPath && fs.existsSync(clipResult.clipPath)) {
+      try {
+        const clipFilename = path.basename(clipResult.clipPath);
+        const objectKey = `public/exported-clips/rerender/${clipFilename}`;
+        storagePath = await uploadFileToStorage(clipResult.clipPath, objectKey);
+        fs.unlinkSync(clipResult.clipPath);
+      } catch (uploadErr: any) {
+        console.warn(`[Re-Render] Upload failed (keeping local): ${uploadErr.message}`);
+        storagePath = "/" + path.relative(path.join(process.cwd(), "public"), clipResult.clipPath!);
+      }
+    }
+
+    if (clipResult.thumbnailPath && fs.existsSync(clipResult.thumbnailPath)) {
+      try {
+        const thumbFilename = path.basename(clipResult.thumbnailPath);
+        const objectKey = `public/exported-clips/rerender/${thumbFilename}`;
+        thumbStoragePath = await uploadFileToStorage(clipResult.thumbnailPath, objectKey);
+        fs.unlinkSync(clipResult.thumbnailPath);
+      } catch (uploadErr: any) {
+        console.warn(`[Re-Render] Thumbnail upload failed: ${uploadErr.message}`);
+        thumbStoragePath = "/" + path.relative(path.join(process.cwd(), "public"), clipResult.thumbnailPath!);
+      }
+    }
+
+    const clipStatus = qualityResult.recommendation === "publish"
+      ? "ready"
+      : qualityResult.recommendation === "review"
+        ? "pending_review"
+        : "rejected";
+
+    // Create NEW clip record (preserves original)
+    const dbClip = await storage.createGeneratedClip({
+      remixJobId: originalClip.remixJobId,
+      videoId: originalClip.videoId,
+      clipStart,
+      clipEnd,
+      duration: clipResult.duration,
+      format: "mp4",
+      platformTarget: platform,
+      productPlacements: placements.map(p => ({
+        surfaceId: p.surfaceId,
+        brandProductId: p.brandProductId,
+        placementId: 0,
+      })),
+      captionsEnabled,
+      qualityScore: qualityResult.overallScore,
+      exportPath: storagePath,
+      thumbnailPath: thumbStoragePath,
+      status: clipStatus,
+    });
+
+    console.log(`[Re-Render] Complete — new clip #${dbClip.id} (${qualityResult.recommendation})`);
+
+    return {
+      jobId: originalClip.remixJobId,
+      success: true,
+      clipsGenerated: 1,
+      clipsPublishReady: qualityResult.recommendation === "publish" ? 1 : 0,
+      clipsNeedReview: qualityResult.recommendation === "review" ? 1 : 0,
+      clips: [{
+        clipId: dbClip.id,
+        platform,
+        duration: clipResult.duration,
+        qualityScore: qualityResult.overallScore,
+        recommendation: qualityResult.recommendation,
+        exportPath: storagePath,
+        thumbnailPath: thumbStoragePath,
+      }],
+    };
+  } catch (err: any) {
+    console.error(`[Re-Render] Failed: ${err.message}`);
+    return {
+      jobId: originalClip.remixJobId,
+      success: false,
+      clipsGenerated: 0,
+      clipsPublishReady: 0,
+      clipsNeedReview: 0,
+      clips: [],
+      error: err.message,
+    };
+  } finally {
+    if (tempVideoPath) {
+      try {
+        fs.unlinkSync(tempVideoPath);
+      } catch { /* non-fatal */ }
+    }
+  }
+}
+
 /** Get video duration using ffprobe */
 async function getVideoDuration(videoPath: string): Promise<number> {
   const { spawn } = await import("child_process");
