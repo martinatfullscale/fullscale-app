@@ -386,22 +386,43 @@ export async function runRemixPipeline(
 
         if (!fs.existsSync(imagePath)) continue;
 
+        // Phase 2A: Load motion keyframes for this surface within the clip's time range
+        const keyframeRecords = await storage.getSurfaceKeyframesInRange(
+          surfaceId,
+          clip.startTime,
+          clip.endTime
+        );
+
+        // Convert to ClipPlacement keyframes (times relative to clip start)
+        const keyframes = keyframeRecords.map((kf) => ({
+          time: parseFloat(String(kf.timestamp)) - clip.startTime,
+          x: parseFloat(String(kf.boundingBoxX)),
+          y: parseFloat(String(kf.boundingBoxY)),
+          width: parseFloat(String(kf.boundingBoxWidth)),
+          height: parseFloat(String(kf.boundingBoxHeight)),
+        }));
+
+        // Static fallback bbox from the normalized surface record
+        const bboxStart = {
+          x: parseFloat(String(surface.boundingBoxX)) || 0,
+          y: parseFloat(String(surface.boundingBoxY)) || 0,
+          width: parseFloat(String(surface.boundingBoxWidth)) || 0.2,
+          height: parseFloat(String(surface.boundingBoxHeight)) || 0.2,
+        };
+
         placements.push({
           surfaceId,
           brandProductId: approved.brandProductId,
           productImagePath: imagePath,
-          bboxStart: {
-            x: parseFloat(String(surface.boundingBoxX)) || 0,
-            y: parseFloat(String(surface.boundingBoxY)) || 0,
-            width: parseFloat(String(surface.boundingBoxWidth)) || 0.2,
-            height: parseFloat(String(surface.boundingBoxHeight)) || 0.2,
-          },
+          keyframes,
+          bboxStart,
           opacity: 0.92,
         });
       }
 
       clipPlacements.set(i, placements);
-      console.log(`[Remix]   Clip #${i + 1}: ${placements.length} product placement(s)`);
+      const kfCounts = placements.map((p) => p.keyframes.length);
+      console.log(`[Remix]   Clip #${i + 1}: ${placements.length} placement(s) [keyframes: ${kfCounts.join(", ") || "none"}]`);
     }
 
     // ─── STEP 5+6: FORMAT + CAPTION — Generate clips ─────────────

@@ -40,13 +40,24 @@ export interface ClipGeneratorInput {
   jobId: number;
 }
 
+export interface PlacementKeyframe {
+  /** Time in seconds relative to clip start */
+  time: number;
+  x: number;      // 0-1 normalized
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface ClipPlacement {
   surfaceId: number;
   brandProductId: number;
   productImagePath: string;
-  /** Bounding box at clip start (normalized 0-1) */
+  /** Multi-point keyframes for smooth motion tracking (Phase 2A) */
+  keyframes: PlacementKeyframe[];
+  /** Legacy: Bounding box at clip start (used as fallback if keyframes empty) */
   bboxStart: { x: number; y: number; width: number; height: number };
-  /** Bounding box at clip end (normalized 0-1) — for motion interpolation */
+  /** Legacy: Bounding box at clip end — for 2-point linear interpolation */
   bboxEnd?: { x: number; y: number; width: number; height: number };
   opacity: number;
 }
@@ -220,13 +231,15 @@ async function generateWithPlacements(
     // Step 2: Composite placements onto each frame
     const frames = fs.readdirSync(framesDir).filter(f => f.endsWith(".jpg")).sort();
     const totalFrames = frames.length;
+    const clipDuration = clip.duration;
 
     for (let i = 0; i < totalFrames; i++) {
       const framePath = path.join(framesDir, frames[i]);
       const outputFrame = path.join(compositedDir, frames[i]);
-      const progress = totalFrames > 1 ? i / (totalFrames - 1) : 0;
+      // Current time in seconds relative to clip start
+      const currentTime = totalFrames > 1 ? (i / (totalFrames - 1)) * clipDuration : 0;
 
-      await compositeFrameWithPlacements(framePath, outputFrame, placements, progress, platformConfig);
+      await compositeFrameWithPlacements(framePath, outputFrame, placements, currentTime, clipDuration, platformConfig);
     }
 
     // Step 3: Re-encode composited frames with audio
@@ -262,7 +275,8 @@ async function compositeFrameWithPlacements(
   framePath: string,
   outputPath: string,
   placements: ClipPlacement[],
-  progress: number,  // 0-1 through the clip
+  currentTime: number,  // seconds relative to clip start
+  clipDuration: number,
   config: PlatformConfig
 ): Promise<void> {
   let pipeline = sharp(framePath);
@@ -283,12 +297,8 @@ async function compositeFrameWithPlacements(
     try {
       if (!fs.existsSync(placement.productImagePath)) continue;
 
-      // Interpolate bounding box position through the clip
-      const bbox = interpolateBbox(
-        placement.bboxStart,
-        placement.bboxEnd || placement.bboxStart,
-        progress
-      );
+      // Interpolate bounding box position using multi-keyframe spline (Phase 2A)
+      const bbox = interpolatePlacement(placement, currentTime, clipDuration);
 
       // Convert normalized coords to pixel coords
       const px = Math.round(bbox.x * config.targetWidth);
@@ -332,16 +342,96 @@ async function compositeFrameWithPlacements(
   await pipeline.jpeg({ quality: 92 }).toFile(outputPath);
 }
 
-function interpolateBbox(
-  start: { x: number; y: number; width: number; height: number },
-  end: { x: number; y: number; width: number; height: number },
-  t: number
-) {
+/**
+ * Catmull-Rom spline scalar interpolation.
+ * Given 4 control points p0,p1,p2,p3 and parameter t (0-1 between p1 and p2),
+ * returns the smoothly interpolated value.
+ */
+function catmullRom(p0: number, p1: number, p2: number, p3: number, t: number): number {
+  const t2 = t * t;
+  const t3 = t2 * t;
+  return 0.5 * (
+    (2 * p1) +
+    (-p0 + p2) * t +
+    (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 +
+    (-p0 + 3 * p1 - 3 * p2 + p3) * t3
+  );
+}
+
+/**
+ * Interpolate bounding box position at a given time using available keyframes.
+ *
+ * - 0 keyframes: falls back to bboxStart
+ * - 1 keyframe: static position
+ * - 2 keyframes: linear interpolation
+ * - 3+ keyframes: Catmull-Rom spline for smooth curves
+ */
+function interpolatePlacement(
+  placement: ClipPlacement,
+  currentTime: number, // seconds relative to clip start
+  clipDuration: number,
+): { x: number; y: number; width: number; height: number } {
+  const kfs = placement.keyframes;
+
+  // Fallback: no keyframes → use legacy bboxStart/bboxEnd
+  if (!kfs || kfs.length === 0) {
+    const t = clipDuration > 0 ? Math.min(1, Math.max(0, currentTime / clipDuration)) : 0;
+    const start = placement.bboxStart;
+    const end = placement.bboxEnd || start;
+    return {
+      x: start.x + (end.x - start.x) * t,
+      y: start.y + (end.y - start.y) * t,
+      width: start.width + (end.width - start.width) * t,
+      height: start.height + (end.height - start.height) * t,
+    };
+  }
+
+  // 1 keyframe: static
+  if (kfs.length === 1) {
+    return { x: kfs[0].x, y: kfs[0].y, width: kfs[0].width, height: kfs[0].height };
+  }
+
+  // Clamp to keyframe time range
+  if (currentTime <= kfs[0].time) {
+    return { x: kfs[0].x, y: kfs[0].y, width: kfs[0].width, height: kfs[0].height };
+  }
+  if (currentTime >= kfs[kfs.length - 1].time) {
+    const last = kfs[kfs.length - 1];
+    return { x: last.x, y: last.y, width: last.width, height: last.height };
+  }
+
+  // Find the segment: kfs[i] <= currentTime < kfs[i+1]
+  let i = 0;
+  for (; i < kfs.length - 1; i++) {
+    if (currentTime >= kfs[i].time && currentTime < kfs[i + 1].time) break;
+  }
+
+  const segDuration = kfs[i + 1].time - kfs[i].time;
+  const t = segDuration > 0 ? (currentTime - kfs[i].time) / segDuration : 0;
+
+  // 2 keyframes: linear
+  if (kfs.length === 2) {
+    return {
+      x: kfs[0].x + (kfs[1].x - kfs[0].x) * t,
+      y: kfs[0].y + (kfs[1].y - kfs[0].y) * t,
+      width: kfs[0].width + (kfs[1].width - kfs[0].width) * t,
+      height: kfs[0].height + (kfs[1].height - kfs[0].height) * t,
+    };
+  }
+
+  // 3+ keyframes: Catmull-Rom spline
+  // Get 4 control points: p0, p1 (current), p2 (next), p3
+  // Mirror endpoints for boundary segments
+  const p0 = kfs[Math.max(0, i - 1)];
+  const p1 = kfs[i];
+  const p2 = kfs[i + 1];
+  const p3 = kfs[Math.min(kfs.length - 1, i + 2)];
+
   return {
-    x: start.x + (end.x - start.x) * t,
-    y: start.y + (end.y - start.y) * t,
-    width: start.width + (end.width - start.width) * t,
-    height: start.height + (end.height - start.height) * t,
+    x: catmullRom(p0.x, p1.x, p2.x, p3.x, t),
+    y: catmullRom(p0.y, p1.y, p2.y, p3.y, t),
+    width: Math.max(0.01, catmullRom(p0.width, p1.width, p2.width, p3.width, t)),
+    height: Math.max(0.01, catmullRom(p0.height, p1.height, p2.height, p3.height, t)),
   };
 }
 

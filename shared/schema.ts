@@ -145,6 +145,29 @@ export const insertDetectedSurfaceSchema = createInsertSchema(detectedSurfaces).
 export type DetectedSurface = typeof detectedSurfaces.$inferSelect;
 export type InsertDetectedSurface = z.infer<typeof insertDetectedSurfaceSchema>;
 
+// Surface Keyframes Table — stores per-frame bounding box positions for motion tracking
+// Preserves the raw bbox before normalization overwrites it, enabling smooth interpolation
+export const surfaceKeyframes = pgTable("surface_keyframes", {
+  id: serial("id").primaryKey(),
+  surfaceId: integer("surface_id").notNull(), // References detected_surfaces.id (canonical surface)
+  videoId: integer("video_id").notNull(), // References video_index.id
+  timestamp: numeric("timestamp").notNull(), // Seconds into video
+  boundingBoxX: numeric("bounding_box_x").notNull(), // 0-1 normalized
+  boundingBoxY: numeric("bounding_box_y").notNull(),
+  boundingBoxWidth: numeric("bounding_box_width").notNull(),
+  boundingBoxHeight: numeric("bounding_box_height").notNull(),
+  confidence: numeric("confidence").notNull(), // Detection confidence at this frame
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertSurfaceKeyframeSchema = createInsertSchema(surfaceKeyframes).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type SurfaceKeyframe = typeof surfaceKeyframes.$inferSelect;
+export type InsertSurfaceKeyframe = z.infer<typeof insertSurfaceKeyframeSchema>;
+
 // Brand Products Table - stores product images uploaded by brands for placement previews
 export const brandProducts = pgTable("brand_products", {
   id: serial("id").primaryKey(),

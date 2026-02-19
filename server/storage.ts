@@ -64,6 +64,9 @@ import {
   type InsertVideoTranscript,
   type ClipFeedback,
   type InsertClipFeedback,
+  surfaceKeyframes,
+  type SurfaceKeyframe,
+  type InsertSurfaceKeyframe,
 } from "@shared/schema";
 import { users, type User, type UpsertUser } from "@shared/models/auth";
 import { encrypt, decrypt } from "./encryption";
@@ -1386,6 +1389,54 @@ export class DatabaseStorage implements IStorage {
     }
     
     return Array.from(contexts);
+  }
+
+  // ─── Surface Keyframe Methods (Phase 2A Motion Tracking) ─────
+
+  async insertSurfaceKeyframe(data: InsertSurfaceKeyframe): Promise<SurfaceKeyframe> {
+    const [result] = await db.insert(surfaceKeyframes).values(data).returning();
+    return result;
+  }
+
+  async bulkInsertSurfaceKeyframes(data: InsertSurfaceKeyframe[]): Promise<void> {
+    if (data.length === 0) return;
+    await db.insert(surfaceKeyframes).values(data);
+  }
+
+  async getSurfaceKeyframes(surfaceId: number): Promise<SurfaceKeyframe[]> {
+    return db.select()
+      .from(surfaceKeyframes)
+      .where(eq(surfaceKeyframes.surfaceId, surfaceId))
+      .orderBy(surfaceKeyframes.timestamp);
+  }
+
+  async getSurfaceKeyframesInRange(
+    surfaceId: number,
+    startTime: number,
+    endTime: number
+  ): Promise<SurfaceKeyframe[]> {
+    return db.select()
+      .from(surfaceKeyframes)
+      .where(
+        and(
+          eq(surfaceKeyframes.surfaceId, surfaceId),
+          sql`${surfaceKeyframes.timestamp}::numeric >= ${startTime}`,
+          sql`${surfaceKeyframes.timestamp}::numeric <= ${endTime}`,
+        )
+      )
+      .orderBy(surfaceKeyframes.timestamp);
+  }
+
+  async getKeyframesByVideo(videoId: number): Promise<SurfaceKeyframe[]> {
+    return db.select()
+      .from(surfaceKeyframes)
+      .where(eq(surfaceKeyframes.videoId, videoId))
+      .orderBy(surfaceKeyframes.timestamp);
+  }
+
+  async deleteKeyframesBySurface(surfaceId: number): Promise<void> {
+    await db.delete(surfaceKeyframes)
+      .where(eq(surfaceKeyframes.surfaceId, surfaceId));
   }
 }
 

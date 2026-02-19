@@ -1267,6 +1267,87 @@ async function enrichSurfacesWithContext(
 }
 
 // ============================================================================
+// PHASE 2A: SURFACE KEYFRAME CAPTURE — Preserve Raw Per-Frame Bounding Boxes
+// ============================================================================
+//
+// Before normalization overwrites all bboxes with the median, we capture each
+// surface's raw per-frame position as a "keyframe". During remix clip generation,
+// these keyframes are used for smooth spline interpolation so placed products
+// follow natural camera movement instead of sitting static.
+//
+// Keyframes are linked to the canonical surface ID from each cluster, enabling
+// N-point motion tracking per surface across the clip's time range.
+
+async function captureSurfaceKeyframes(videoId: number): Promise<void> {
+  console.log(`[Keyframes] Capturing raw per-frame bounding boxes for video ${videoId}`);
+
+  const surfaces = await storage.getDetectedSurfaces(videoId);
+  const validSurfaces = surfaces.filter(
+    (s) => s.surfaceType !== "Filtered" && s.surfaceType !== "Potential Surface"
+  );
+
+  if (validSurfaces.length === 0) {
+    console.log(`[Keyframes] No valid surfaces to capture`);
+    return;
+  }
+
+  // Cluster surfaces to identify which ones represent the same physical surface
+  // Use the same clustering logic as normalization
+  const clusters = clusterSurfaces(validSurfaces as any);
+  console.log(`[Keyframes] Found ${clusters.length} cluster(s) across ${validSurfaces.length} surfaces`);
+
+  const keyframeBatch: Array<{
+    surfaceId: number;
+    videoId: number;
+    timestamp: string;
+    boundingBoxX: string;
+    boundingBoxY: string;
+    boundingBoxWidth: string;
+    boundingBoxHeight: string;
+    confidence: string;
+  }> = [];
+
+  for (const cluster of clusters) {
+    if (cluster.surfaces.length === 0) continue;
+
+    // The canonical surface is the highest-confidence one in the cluster
+    const canonical = cluster.surfaces.reduce((best, s) =>
+      s.confidence > best.confidence ? s : best
+    );
+    const canonicalId = canonical.id;
+
+    // Create a keyframe for EVERY surface in the cluster, linked to the canonical ID
+    // Each surface entry represents a different timestamp (frame)
+    for (const member of cluster.surfaces) {
+      // Find the original surface record to get the timestamp
+      const original = validSurfaces.find((s) => s.id === member.id);
+      if (!original) continue;
+
+      keyframeBatch.push({
+        surfaceId: canonicalId,
+        videoId,
+        timestamp: String(original.timestamp),
+        boundingBoxX: member.bbX.toFixed(6),
+        boundingBoxY: member.bbY.toFixed(6),
+        boundingBoxWidth: member.bbW.toFixed(6),
+        boundingBoxHeight: member.bbH.toFixed(6),
+        confidence: member.confidence.toFixed(4),
+      });
+    }
+
+    console.log(
+      `[Keyframes] Cluster "${cluster.surfaceType}" → ${cluster.surfaces.length} keyframe(s) linked to surface #${canonicalId}`
+    );
+  }
+
+  // Bulk insert all keyframes
+  if (keyframeBatch.length > 0) {
+    await storage.bulkInsertSurfaceKeyframes(keyframeBatch);
+    console.log(`[Keyframes] Saved ${keyframeBatch.length} keyframes for video ${videoId}`);
+  }
+}
+
+// ============================================================================
 // POST-SCAN NORMALIZATION — Cluster & Normalize Bounding Boxes
 // ============================================================================
 //
@@ -1800,6 +1881,14 @@ export async function processVideoScan(
       }
     }
     
+    // PHASE 2A: CAPTURE SURFACE KEYFRAMES — Save raw per-frame bboxes for motion tracking
+    // Must happen BEFORE normalization overwrites bboxes with the median
+    try {
+      await captureSurfaceKeyframes(videoId);
+    } catch (kfErr) {
+      console.error(`[Scanner V2] Keyframe capture failed (non-fatal):`, kfErr);
+    }
+
     // POST-SCAN NORMALIZATION — Cluster similar surfaces and normalize bounding boxes
     // This ensures consistent product placement across frames of the same camera angle
     try {
@@ -2036,6 +2125,153 @@ export async function processVideoScan(
     
   } finally {
     // CLEANUP - Always runs, even on error
+    safeRmdir(tempDir);
+  }
+}
+
+/**
+ * Phase 2A: Dense re-scan for a specific time range at higher frame density.
+ * Used before remix clip generation to get smoother motion tracking keyframes.
+ *
+ * Extracts frames at 0.5s intervals (4x denser than standard 2s scan),
+ * runs Gemini surface detection on each, and creates keyframe entries
+ * linked to existing surface IDs.
+ *
+ * @param videoId - The video to re-scan
+ * @param startTime - Clip start time in seconds
+ * @param endTime - Clip end time in seconds
+ * @param surfaceIds - Which surfaces to track (only create keyframes for matching surfaces)
+ * @param intervalSeconds - Frame interval (default 0.5s)
+ */
+export async function denseScanRange(
+  videoId: number,
+  startTime: number,
+  endTime: number,
+  surfaceIds: number[],
+  intervalSeconds: number = 0.5
+): Promise<{ keyframesCreated: number }> {
+  console.log(`[DenseScan] Starting dense scan for video ${videoId}: ${startTime.toFixed(1)}s-${endTime.toFixed(1)}s @ ${intervalSeconds}s intervals`);
+
+  const video = await storage.getVideoById(videoId);
+  if (!video || !(video as any).filePath) {
+    console.error(`[DenseScan] Video not found or no file path`);
+    return { keyframesCreated: 0 };
+  }
+
+  const tempDir = path.join(os.tmpdir(), `dense-scan-${videoId}-${Date.now()}`);
+  const framesDir = path.join(tempDir, "frames");
+  fs.mkdirSync(framesDir, { recursive: true });
+
+  let videoPath: string | undefined;
+  try {
+    // Resolve video path (Object Storage or local)
+    const filePath = (video as any).filePath;
+    if (filePath.startsWith("/storage/")) {
+      const objectKey = filePath.replace(/^\/storage\//, "public/");
+      videoPath = await downloadToTempFile(objectKey, tempDir);
+    } else {
+      videoPath = path.resolve(process.cwd(), filePath);
+    }
+
+    if (!videoPath || !fs.existsSync(videoPath)) {
+      console.error(`[DenseScan] Video file not found: ${videoPath}`);
+      return { keyframesCreated: 0 };
+    }
+
+    // Load reference surfaces to match against
+    const refSurfaces = await storage.getDetectedSurfaces(videoId);
+    const targetSurfaces = refSurfaces.filter((s) => surfaceIds.includes(s.id));
+    if (targetSurfaces.length === 0) {
+      console.warn(`[DenseScan] No matching surfaces found for IDs: ${surfaceIds.join(", ")}`);
+      return { keyframesCreated: 0 };
+    }
+
+    // Extract frames at dense interval for the specified range
+    const duration = endTime - startTime;
+    const fpsFilter = `fps=1/${intervalSeconds}`;
+    const framePattern = path.join(framesDir, "frame_%05d.jpg");
+
+    await new Promise<void>((resolve, reject) => {
+      const proc = spawn("ffmpeg", [
+        "-nostdin", "-y",
+        "-ss", startTime.toString(),
+        "-i", videoPath!,
+        "-t", duration.toString(),
+        "-vf", `${fpsFilter},scale='min(1280,iw)':'min(1280,ih)':force_original_aspect_ratio=decrease`,
+        "-q:v", "3",
+        framePattern,
+      ]);
+      proc.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`FFmpeg exited ${code}`))));
+      proc.on("error", reject);
+    });
+
+    const frames = fs.readdirSync(framesDir).filter((f) => f.endsWith(".jpg")).sort();
+    console.log(`[DenseScan] Extracted ${frames.length} frames`);
+
+    const CLUSTER_TOLERANCE = 0.20;
+    const keyframeBatch: Array<{
+      surfaceId: number;
+      videoId: number;
+      timestamp: string;
+      boundingBoxX: string;
+      boundingBoxY: string;
+      boundingBoxWidth: string;
+      boundingBoxHeight: string;
+      confidence: string;
+    }> = [];
+
+    for (let i = 0; i < frames.length; i++) {
+      const framePath = path.join(framesDir, frames[i]);
+      const timestamp = startTime + i * intervalSeconds;
+
+      try {
+        const analysis = await analyzeFrameWithGemini(framePath, timestamp, false);
+
+        if (analysis.hasSurface && analysis.surfaces.length > 0) {
+          // Match detected surfaces to our target surfaces by type + spatial proximity
+          for (const detected of analysis.surfaces) {
+            const centerX = detected.boundingBox.x + detected.boundingBox.width / 2;
+            const centerY = detected.boundingBox.y + detected.boundingBox.height / 2;
+
+            for (const target of targetSurfaces) {
+              const targetCX = parseFloat(String(target.boundingBoxX)) + parseFloat(String(target.boundingBoxWidth)) / 2;
+              const targetCY = parseFloat(String(target.boundingBoxY)) + parseFloat(String(target.boundingBoxHeight)) / 2;
+
+              const typeMatch = detected.surfaceType.toLowerCase() === target.surfaceType.toLowerCase();
+              const posMatch = Math.abs(centerX - targetCX) < CLUSTER_TOLERANCE && Math.abs(centerY - targetCY) < CLUSTER_TOLERANCE;
+
+              if (typeMatch || posMatch) {
+                keyframeBatch.push({
+                  surfaceId: target.id,
+                  videoId,
+                  timestamp: timestamp.toFixed(2),
+                  boundingBoxX: detected.boundingBox.x.toFixed(6),
+                  boundingBoxY: detected.boundingBox.y.toFixed(6),
+                  boundingBoxWidth: detected.boundingBox.width.toFixed(6),
+                  boundingBoxHeight: detected.boundingBox.height.toFixed(6),
+                  confidence: detected.confidence.toFixed(4),
+                });
+                break; // matched, move to next detected surface
+              }
+            }
+          }
+        }
+      } finally {
+        safeUnlink(framePath);
+      }
+    }
+
+    // Bulk insert keyframes
+    if (keyframeBatch.length > 0) {
+      await storage.bulkInsertSurfaceKeyframes(keyframeBatch);
+    }
+
+    console.log(`[DenseScan] Created ${keyframeBatch.length} keyframes for ${targetSurfaces.length} surface(s)`);
+    return { keyframesCreated: keyframeBatch.length };
+  } catch (err: any) {
+    console.error(`[DenseScan] Failed: ${err.message}`);
+    return { keyframesCreated: 0 };
+  } finally {
     safeRmdir(tempDir);
   }
 }
