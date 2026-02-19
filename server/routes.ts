@@ -5449,7 +5449,9 @@ export async function registerRoutes(
   app.post("/api/remix/:videoId/start", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const videoId = parseInt(req.params.videoId);
-      const userId = req.authUserId || req.user?.id || 1;
+      // authUserId can be an email string or numeric ID — ensure we have a numeric userId
+      const rawUserId = req.authUserId || req.user?.id || 1;
+      const userId = typeof rawUserId === "number" ? rawUserId : parseInt(rawUserId) || 1;
       const config = req.body || {};
 
       // Validate video exists
@@ -5498,7 +5500,7 @@ export async function registerRoutes(
       const mode = config.clipRange ? "editorial-clip" : isEditorial ? "editorial" : "legacy";
       res.json({ jobId: job.id, status: "queued", mode, message: "Remix job started" });
     } catch (err: any) {
-      console.error("[Remix Start] Error:", err.message);
+      console.error("[Remix Start] Error:", err.message, err.stack);
       res.status(500).json({ error: err.message || "Failed to start remix" });
     }
   });
