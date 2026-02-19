@@ -1,10 +1,10 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Film, Scissors, Play, Pause, Download, Send, Loader2, X,
   CheckCircle, AlertCircle, Clock, BarChart3, Sparkles,
   Tv, Smartphone, Globe, ThumbsUp, ThumbsDown, Settings,
-  RefreshCw, Brain
+  RefreshCw, Brain, Volume2, VolumeX, Maximize2
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -455,7 +455,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
                 <h3 className="text-sm font-semibold text-gray-300 mb-3 flex items-center gap-2">
                   <Film className="w-4 h-4" /> Generated Clips ({clips.length})
                 </h3>
-                <div className="space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {clips.map((clip) => (
                     <ClipCard
                       key={clip.id}
@@ -524,6 +524,12 @@ function ClipCard({
   onApprove: () => void;
   onReject: () => void;
 }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isMuted, setIsMuted] = useState(true);
+  const [progress, setProgress] = useState(0);
+  const [showPlayer, setShowPlayer] = useState(false);
+
   const PlatformIcon = PLATFORM_ICONS[clip.platformTarget || ""] || Globe;
   const platformLabel = PLATFORM_LABELS[clip.platformTarget || ""] || clip.platformTarget;
   const qualityPct = ((clip.qualityScore || 0) * 100).toFixed(0);
@@ -539,67 +545,180 @@ function ClipCard({
         ? "bg-blue-500/20 text-blue-400"
         : "bg-yellow-500/20 text-yellow-400";
 
+  // Resolve clip source URL: Object Storage paths served via /storage/* proxy,
+  // otherwise use the download endpoint as a stream fallback
+  const clipSrc = clip.exportPath
+    ? clip.exportPath.startsWith("/storage/")
+      ? clip.exportPath
+      : `/api/remix/clips/${clip.id}/download`
+    : null;
+
+  const togglePlay = () => {
+    if (!videoRef.current) return;
+    if (isPlaying) {
+      videoRef.current.pause();
+    } else {
+      videoRef.current.play();
+    }
+    setIsPlaying(!isPlaying);
+  };
+
+  const handleTimeUpdate = () => {
+    if (!videoRef.current) return;
+    const pct = (videoRef.current.currentTime / videoRef.current.duration) * 100;
+    setProgress(pct);
+  };
+
+  const handleProgressClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!videoRef.current) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const pct = (e.clientX - rect.left) / rect.width;
+    videoRef.current.currentTime = pct * videoRef.current.duration;
+  };
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      className="bg-gray-800/60 rounded-xl p-4 border border-gray-700/50"
+      className="bg-gray-800/60 rounded-xl border border-gray-700/50 overflow-hidden"
     >
-      <div className="flex items-start gap-4">
-        {/* Thumbnail */}
-        <div className="w-24 h-16 rounded-lg bg-gray-700 overflow-hidden flex-shrink-0">
+      {/* Video Player / Thumbnail area */}
+      {clipSrc && showPlayer ? (
+        <div className="relative bg-black">
+          <video
+            ref={videoRef}
+            src={clipSrc}
+            muted={isMuted}
+            onTimeUpdate={handleTimeUpdate}
+            onEnded={() => { setIsPlaying(false); setProgress(0); }}
+            onPlay={() => setIsPlaying(true)}
+            onPause={() => setIsPlaying(false)}
+            className="w-full max-h-[360px] object-contain"
+            playsInline
+            preload="metadata"
+          />
+
+          {/* Video controls overlay */}
+          <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-3">
+            {/* Progress bar */}
+            <div
+              className="w-full h-1 bg-gray-600 rounded-full mb-2 cursor-pointer group"
+              onClick={handleProgressClick}
+            >
+              <div
+                className="h-full bg-purple-500 rounded-full relative group-hover:bg-purple-400 transition-colors"
+                style={{ width: `${progress}%` }}
+              >
+                <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2.5 h-2.5 bg-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity" />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <button onClick={togglePlay} className="text-white hover:text-purple-300 transition-colors">
+                  {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5" />}
+                </button>
+                <button onClick={() => setIsMuted(!isMuted)} className="text-white/70 hover:text-white transition-colors">
+                  {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                </button>
+              </div>
+              <button
+                onClick={() => { setShowPlayer(false); setIsPlaying(false); videoRef.current?.pause(); }}
+                className="text-white/70 hover:text-white text-xs"
+              >
+                Collapse
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : (
+        /* Thumbnail with play overlay */
+        <div
+          className={`relative h-40 bg-gray-900 flex items-center justify-center ${clipSrc ? "cursor-pointer group" : ""}`}
+          onClick={() => clipSrc && setShowPlayer(true)}
+        >
           {clip.thumbnailPath ? (
             <img src={clip.thumbnailPath} alt="Clip thumbnail" className="w-full h-full object-cover" />
           ) : (
-            <div className="w-full h-full flex items-center justify-center">
-              <Film className="w-6 h-6 text-gray-500" />
+            <Film className="w-10 h-10 text-gray-600" />
+          )}
+          {clipSrc && (
+            <div className="absolute inset-0 flex items-center justify-center bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity">
+              <div className="w-12 h-12 rounded-full bg-purple-600/90 flex items-center justify-center">
+                <Play className="w-6 h-6 text-white ml-0.5" />
+              </div>
             </div>
           )}
+          {/* Platform badge on thumbnail */}
+          <div className="absolute top-2 left-2">
+            <Badge className="bg-gray-900/80 text-gray-200 text-[10px] border-0">
+              <PlatformIcon className="w-3 h-3 mr-1" />
+              {platformLabel}
+            </Badge>
+          </div>
         </div>
+      )}
 
-        {/* Info */}
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1">
-            <PlatformIcon className="w-3.5 h-3.5 text-gray-400" />
-            <span className="text-sm font-medium text-white">{platformLabel}</span>
+      {/* Info + Actions bar */}
+      <div className="p-4">
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-2">
             <Badge className={statusBadge}>
               {clip.status || "pending"}
             </Badge>
+            <span className={`text-xs font-medium ${qualityColor}`}>{qualityPct}% quality</span>
           </div>
-          <div className="flex items-center gap-3 text-xs text-gray-400">
-            <span>{clip.duration.toFixed(1)}s</span>
-            <span>•</span>
-            <span>{clip.clipStart.toFixed(1)}s → {clip.clipEnd.toFixed(1)}s</span>
-            <span>•</span>
-            <span className={qualityColor}>{qualityPct}% quality</span>
-            {clip.productPlacements && clip.productPlacements.length > 0 && (
-              <>
-                <span>•</span>
-                <span>{clip.productPlacements.length} placement{clip.productPlacements.length !== 1 ? "s" : ""}</span>
-              </>
-            )}
-          </div>
+          <span className="text-xs text-gray-500">{clip.duration.toFixed(1)}s</span>
         </div>
 
-        {/* Actions */}
-        <div className="flex items-center gap-1.5 flex-shrink-0">
+        <div className="flex items-center gap-3 text-xs text-gray-400 mb-3">
+          <span>{clip.clipStart.toFixed(1)}s → {clip.clipEnd.toFixed(1)}s</span>
+          {clip.productPlacements && clip.productPlacements.length > 0 && (
+            <>
+              <span>•</span>
+              <span>{clip.productPlacements.length} placement{clip.productPlacements.length !== 1 ? "s" : ""}</span>
+            </>
+          )}
+        </div>
+
+        {/* Action buttons */}
+        <div className="flex items-center gap-2">
+          {clipSrc && (
+            <>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setShowPlayer(!showPlayer)}
+                className="flex-1 text-purple-400 hover:text-purple-300 hover:bg-purple-500/10 text-xs"
+              >
+                <Play className="w-3.5 h-3.5 mr-1.5" />
+                {showPlayer ? "Hide Player" : "Play Clip"}
+              </Button>
+              <a
+                href={`/api/remix/clips/${clip.id}/download`}
+                download
+                className="flex-1"
+              >
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="w-full text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 text-xs"
+                >
+                  <Download className="w-3.5 h-3.5 mr-1.5" />
+                  Download
+                </Button>
+              </a>
+            </>
+          )}
           {clip.status === "pending_review" && (
             <>
               <Button size="sm" variant="ghost" onClick={onApprove} className="text-green-400 hover:text-green-300 hover:bg-green-500/10">
-                <ThumbsUp className="w-4 h-4" />
+                <ThumbsUp className="w-3.5 h-3.5" />
               </Button>
               <Button size="sm" variant="ghost" onClick={onReject} className="text-red-400 hover:text-red-300 hover:bg-red-500/10">
-                <ThumbsDown className="w-4 h-4" />
+                <ThumbsDown className="w-3.5 h-3.5" />
               </Button>
             </>
-          )}
-          {clip.exportPath && (
-            <a
-              href={`/api/remix/clips/${clip.id}/download`}
-              className="text-gray-400 hover:text-white p-1.5 rounded-lg hover:bg-gray-700 transition-colors"
-            >
-              <Download className="w-4 h-4" />
-            </a>
           )}
         </div>
       </div>

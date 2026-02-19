@@ -28,7 +28,7 @@ import { generateClip, type ClipPlacement } from "./clipGenerator";
 import { generateCaptions } from "./captionEngine";
 import { scoreClipQuality } from "./qualityScorer";
 import type { RankedClip } from "./clipRanker";
-import { objectKeyFromServeUrl, downloadToTempFile } from "../objectStorage";
+import { objectKeyFromServeUrl, downloadToTempFile, uploadFileToStorage } from "../objectStorage";
 
 export interface RemixConfig {
   minClipDuration: number;
@@ -486,15 +486,42 @@ export async function runRemixPipeline(
         editorialScore: (mergedConfig.clipRange || mergedConfig.editorialMode) ? clip.score : undefined,
       });
 
-      // ─── STEP 8: EXPORT — Save to DB ───────────────────────────
-      console.log(`[Remix] Step 8/9: Saving clip #${i + 1} to database...`);
+      // ─── STEP 8: EXPORT — Upload to Object Storage + Save to DB ─
+      await storage.updateRemixJobStatus(jobId, "step_7_score");
+      console.log(`[Remix] Step 8/9: Uploading clip #${i + 1} to Object Storage...`);
 
-      const relativePath = clipResult.clipPath
-        ? "/" + path.relative(path.join(process.cwd(), "public"), clipResult.clipPath)
-        : null;
-      const relativeThumb = clipResult.thumbnailPath
-        ? "/" + path.relative(path.join(process.cwd(), "public"), clipResult.thumbnailPath)
-        : null;
+      let storagePath: string | null = null;
+      let thumbStoragePath: string | null = null;
+
+      // Upload clip MP4 to Object Storage for permanent persistence
+      if (clipResult.clipPath && fs.existsSync(clipResult.clipPath)) {
+        try {
+          const clipFilename = path.basename(clipResult.clipPath);
+          const objectKey = `public/exported-clips/${jobId}/${clipFilename}`;
+          storagePath = await uploadFileToStorage(clipResult.clipPath, objectKey);
+          console.log(`[Remix]   Clip uploaded to Object Storage: ${storagePath}`);
+          // Clean up local file after successful upload
+          fs.unlinkSync(clipResult.clipPath);
+        } catch (uploadErr: any) {
+          console.warn(`[Remix]   Clip upload failed (keeping local): ${uploadErr.message}`);
+          // Fallback to local relative path if upload fails
+          storagePath = "/" + path.relative(path.join(process.cwd(), "public"), clipResult.clipPath);
+        }
+      }
+
+      // Upload thumbnail to Object Storage
+      if (clipResult.thumbnailPath && fs.existsSync(clipResult.thumbnailPath)) {
+        try {
+          const thumbFilename = path.basename(clipResult.thumbnailPath);
+          const objectKey = `public/exported-clips/${jobId}/${thumbFilename}`;
+          thumbStoragePath = await uploadFileToStorage(clipResult.thumbnailPath, objectKey);
+          console.log(`[Remix]   Thumbnail uploaded to Object Storage: ${thumbStoragePath}`);
+          fs.unlinkSync(clipResult.thumbnailPath);
+        } catch (uploadErr: any) {
+          console.warn(`[Remix]   Thumbnail upload failed (keeping local): ${uploadErr.message}`);
+          thumbStoragePath = "/" + path.relative(path.join(process.cwd(), "public"), clipResult.thumbnailPath);
+        }
+      }
 
       const clipStatus = qualityResult.recommendation === "publish"
         ? "ready"
@@ -517,8 +544,8 @@ export async function runRemixPipeline(
         })),
         captionsEnabled: mergedConfig.captionsEnabled,
         qualityScore: qualityResult.overallScore,
-        exportPath: relativePath,
-        thumbnailPath: relativeThumb,
+        exportPath: storagePath,
+        thumbnailPath: thumbStoragePath,
         status: clipStatus,
       });
 
@@ -528,8 +555,8 @@ export async function runRemixPipeline(
         duration: clipResult.duration,
         qualityScore: qualityResult.overallScore,
         recommendation: qualityResult.recommendation,
-        exportPath: relativePath,
-        thumbnailPath: relativeThumb,
+        exportPath: storagePath,
+        thumbnailPath: thumbStoragePath,
       });
     }
 
