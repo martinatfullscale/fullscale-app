@@ -4472,10 +4472,13 @@ export async function registerRoutes(
       if (!video) return res.status(404).json({ error: "Video not found" });
       if (!video.filePath) return res.status(400).json({ error: "Video has no local file — only locally uploaded videos can be exported" });
 
-      // Verify video file exists on disk
-      const absolutePath = path.resolve(video.filePath);
-      if (!fs.existsSync(absolutePath)) {
-        return res.status(400).json({ error: "Video file not found on disk" });
+      // Verify video file is accessible (Object Storage or local disk)
+      // Object Storage paths (/storage/...) are downloaded at export time by processVideoExport
+      if (!video.filePath.startsWith('/storage/')) {
+        const absolutePath = path.resolve(video.filePath);
+        if (!fs.existsSync(absolutePath)) {
+          return res.status(400).json({ error: "Video file not found on disk" });
+        }
       }
 
       const userId = req.authUserId || req.googleUser?.email || "anonymous";
@@ -4546,17 +4549,30 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Export not yet complete" });
       }
 
-      const absolutePath = path.resolve(exportJob.outputPath);
-      if (!fs.existsSync(absolutePath)) {
-        return res.status(404).json({ error: "Export file not found on disk" });
-      }
-
       const filename = `fullscale-remix-${exportJob.videoId}-${exportJob.id}.mp4`;
       res.setHeader("Content-Type", "video/mp4");
       res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
 
-      const stream = fs.createReadStream(absolutePath);
-      stream.pipe(res);
+      // Handle Object Storage paths vs local disk
+      if (exportJob.outputPath.startsWith('/storage/')) {
+        const { objectKeyFromServeUrl, getStorageStream } = await import("./lib/objectStorage");
+        const objectKey = objectKeyFromServeUrl(exportJob.outputPath);
+        const { stream } = getStorageStream(objectKey);
+        stream.on("error", (err: any) => {
+          console.error("[Video Export] Storage stream error:", err.message);
+          if (!res.headersSent) {
+            res.status(404).json({ error: "Export file not found in storage" });
+          }
+        });
+        stream.pipe(res);
+      } else {
+        const absolutePath = path.resolve(exportJob.outputPath);
+        if (!fs.existsSync(absolutePath)) {
+          return res.status(404).json({ error: "Export file not found on disk" });
+        }
+        const stream = fs.createReadStream(absolutePath);
+        stream.pipe(res);
+      }
     } catch (err: any) {
       console.error("[Video Export] Download error:", err.message);
       res.status(500).json({ error: "Failed to download export" });
