@@ -6339,8 +6339,8 @@ export async function registerRoutes(
         confidence: s.confidence || 0.5,
       }));
 
-      // Load brand catalog
-      const userId = String(req.user?.id || 1);
+      // Load brand catalog — use authUserId from flexible auth (not req.user which is Passport-only)
+      const userId = String(req.authUserId || req.user?.id || 1);
       const allBrands = await storage.getBrandProducts(userId);
       const brandCatalog = allBrands.map((b: any) => ({
         id: b.id,
@@ -6391,6 +6391,12 @@ export async function registerRoutes(
         editHistory: [],
       };
 
+      // Verify Anthropic API key is available before starting SSE stream
+      if (!process.env.ANTHROPIC_API_KEY) {
+        console.error("[CopilotRoute] ANTHROPIC_API_KEY is not set");
+        return res.status(500).json({ error: "AI Co-Pilot is not configured. Missing API key." });
+      }
+
       // Set up SSE headers
       res.writeHead(200, {
         "Content-Type": "text/event-stream",
@@ -6413,10 +6419,13 @@ export async function registerRoutes(
       res.write("data: [DONE]\n\n");
       res.end();
     } catch (err: any) {
-      console.error("[CopilotRoute] SSE Error:", err.message);
+      console.error("[CopilotRoute] SSE Error:", err.message, err.stack);
       // If headers already sent, end the stream with error
       if (res.headersSent) {
-        res.write(`data: ${JSON.stringify({ type: "done", data: JSON.stringify({ message: "An error occurred.", suggestions: [], followUpQuestions: [] }) })}\n\n`);
+        const errorMsg = err.message?.includes("API")
+          ? "AI service temporarily unavailable. Please try again in a moment."
+          : "Something went wrong. Please try again.";
+        res.write(`data: ${JSON.stringify({ type: "done", data: JSON.stringify({ message: errorMsg, suggestions: [], followUpQuestions: ["Can you retry?"] }) })}\n\n`);
         res.write("data: [DONE]\n\n");
         res.end();
       } else {
@@ -6454,7 +6463,7 @@ export async function registerRoutes(
         confidence: s.confidence || 0.5,
       }));
 
-      const userId = String(req.user?.id || 1);
+      const userId = String(req.authUserId || req.user?.id || 1);
       const allBrands = await storage.getBrandProducts(userId);
       const brandCatalog = allBrands.map((b: any) => ({
         id: b.id,

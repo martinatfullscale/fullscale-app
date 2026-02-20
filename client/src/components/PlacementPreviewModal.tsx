@@ -21,6 +21,8 @@ import {
   Droplets,
   Blend,
   Eye,
+  Play,
+  Pause,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -188,6 +190,20 @@ const BLEND_MODES: { value: GlobalCompositeOperation; label: string }[] = [
 
 function clamp(val: number, min: number, max: number) {
   return Math.min(Math.max(val, min), max);
+}
+
+/** Resolve video file path from DB into a usable URL */
+function resolveVideoSrc(filePath: string | null | undefined): string | null {
+  if (!filePath) return null;
+  let src = filePath;
+  src = src.replace(/^\.\/public\//, '/');
+  src = src.replace(/^public\//, '/');
+  src = src.replace(/^\/home\/runner\/workspace\/public\//, '/');
+  src = src.replace(/\/\//g, '/');
+  if (!src.startsWith('/') && !src.startsWith('http')) {
+    src = '/' + src;
+  }
+  return src;
 }
 
 /** Apply brightness/contrast filter string for canvas */
@@ -360,6 +376,13 @@ export default function PlacementPreviewModal({
   const [saveSuccess, setSaveSuccess] = useState(false);
   const { toast } = useToast();
 
+  // Video playback state
+  const [isVideoMode, setIsVideoMode] = useState(false);
+  const [isVideoPlaying, setIsVideoPlaying] = useState(false);
+  const [videoCurrentTime, setVideoCurrentTime] = useState(0);
+  const [videoDuration, setVideoDuration] = useState(0);
+  const videoRef = useRef<HTMLVideoElement>(null);
+
   // Refs
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -367,6 +390,18 @@ export default function PlacementPreviewModal({
   const productImgRef = useRef<HTMLImageElement | null>(null);
   const animFrameRef = useRef<number>(0);
   const canvasContainerRef = useRef<HTMLDivElement>(null);
+
+  // Fetch video details to get file path for playback
+  const { data: videoDetails } = useQuery<{ filePath: string | null }>({
+    queryKey: [`/api/video/${videoId}/details`],
+    queryFn: async () => {
+      const res = await fetch(`/api/video/${videoId}/details`);
+      if (!res.ok) return { filePath: null };
+      return res.json();
+    },
+    enabled: open,
+  });
+  const videoSrc = resolveVideoSrc(videoDetails?.filePath);
 
   // Fetch product catalog
   const { data: catalogProducts } = useQuery<CatalogProduct[]>({
@@ -457,6 +492,15 @@ export default function PlacementPreviewModal({
       setSaveSuccess(false);
       frameImgRef.current = null;
       productImgRef.current = null;
+      // Reset video playback state
+      setIsVideoMode(false);
+      setIsVideoPlaying(false);
+      setVideoCurrentTime(0);
+      setVideoDuration(0);
+      if (videoRef.current) {
+        videoRef.current.pause();
+        videoRef.current.currentTime = 0;
+      }
     }
   }, [open]);
 
@@ -543,17 +587,30 @@ export default function PlacementPreviewModal({
       return;
     }
 
+    // Determine frame source: video element (when playing) or static frame image
+    const videoEl = videoRef.current;
+    const useVideo = isVideoMode && videoEl && videoEl.readyState >= 2;
     const frameImg = frameImgRef.current;
-    if (!frameImg || !frameImg.complete) {
-      // Clear canvas if no frame
+
+    if (!useVideo && (!frameImg || !frameImg.complete)) {
+      // Clear canvas if no frame source
       ctx.clearRect(0, 0, canvas.width, canvas.height);
+      animFrameRef.current = requestAnimationFrame(renderFrame);
+      return;
+    }
+
+    // Get the natural dimensions of the source
+    const sourceWidth = useVideo ? videoEl!.videoWidth : frameImg!.naturalWidth;
+    const sourceHeight = useVideo ? videoEl!.videoHeight : frameImg!.naturalHeight;
+
+    if (sourceWidth === 0 || sourceHeight === 0) {
       animFrameRef.current = requestAnimationFrame(renderFrame);
       return;
     }
 
     // Size canvas to container while maintaining frame aspect ratio
     const containerRect = container.getBoundingClientRect();
-    const frameAspect = frameImg.naturalWidth / frameImg.naturalHeight;
+    const frameAspect = sourceWidth / sourceHeight;
     let displayW = containerRect.width;
     let displayH = containerRect.width / frameAspect;
 
@@ -568,9 +625,15 @@ export default function PlacementPreviewModal({
       canvas.height = Math.round(displayH);
     }
 
-    // Draw frame
+    // Draw frame (from video or static image)
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(frameImg, 0, 0, canvas.width, canvas.height);
+    if (useVideo) {
+      ctx.drawImage(videoEl!, 0, 0, canvas.width, canvas.height);
+      // Update time display
+      setVideoCurrentTime(videoEl!.currentTime);
+    } else {
+      ctx.drawImage(frameImg!, 0, 0, canvas.width, canvas.height);
+    }
 
     // Draw bounding box
     if (selectedSurface) {
@@ -653,7 +716,7 @@ export default function PlacementPreviewModal({
     }
 
     animFrameRef.current = requestAnimationFrame(renderFrame);
-  }, [selectedSurface, transform, blend]);
+  }, [selectedSurface, transform, blend, isVideoMode]);
 
   // Start/stop render loop
   useEffect(() => {
@@ -664,6 +727,46 @@ export default function PlacementPreviewModal({
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     };
   }, [open, renderFrame]);
+
+  // ============================================================================
+  // VIDEO PLAYBACK CONTROLS
+  // ============================================================================
+
+  const toggleVideoPlayback = useCallback(() => {
+    const videoEl = videoRef.current;
+    if (!videoEl) return;
+
+    if (!isVideoMode) {
+      // Enter video mode
+      setIsVideoMode(true);
+      videoEl.currentTime = 0;
+      videoEl.play().then(() => {
+        setIsVideoPlaying(true);
+      }).catch(err => {
+        console.error("[PlacementPreview] Video play failed:", err);
+      });
+    } else if (isVideoPlaying) {
+      videoEl.pause();
+      setIsVideoPlaying(false);
+    } else {
+      videoEl.play().then(() => {
+        setIsVideoPlaying(true);
+      }).catch(err => {
+        console.error("[PlacementPreview] Video play failed:", err);
+      });
+    }
+  }, [isVideoMode, isVideoPlaying]);
+
+  const stopVideoPlayback = useCallback(() => {
+    const videoEl = videoRef.current;
+    if (videoEl) {
+      videoEl.pause();
+      videoEl.currentTime = 0;
+    }
+    setIsVideoMode(false);
+    setIsVideoPlaying(false);
+    setVideoCurrentTime(0);
+  }, []);
 
   // ============================================================================
   // CANVAS MOUSE INTERACTION
@@ -1011,8 +1114,87 @@ export default function PlacementPreviewModal({
                     onMouseLeave={handleCanvasMouseUp}
                   />
 
+                    {/* Hidden video element for playback mode */}
+                  {videoSrc && (
+                    <video
+                      ref={videoRef}
+                      src={videoSrc}
+                      className="hidden"
+                      muted
+                      playsInline
+                      onLoadedMetadata={(e) => {
+                        setVideoDuration((e.target as HTMLVideoElement).duration);
+                      }}
+                      onEnded={() => {
+                        setIsVideoPlaying(false);
+                      }}
+                      onError={() => {
+                        console.error("[PlacementPreview] Video failed to load:", videoSrc);
+                      }}
+                    />
+                  )}
+
+                  {/* Video playback controls overlay */}
+                  {hasProduct && videoSrc && (
+                    <div className="absolute bottom-3 left-3 right-3 flex items-center gap-2 z-10">
+                      <Button
+                        size="sm"
+                        variant={isVideoPlaying ? "default" : "secondary"}
+                        className="gap-1.5 h-8 px-3 bg-black/70 hover:bg-black/90 border border-white/20 text-white"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleVideoPlayback();
+                        }}
+                      >
+                        {isVideoPlaying ? (
+                          <><Pause className="w-3.5 h-3.5" /> Pause</>
+                        ) : (
+                          <><Play className="w-3.5 h-3.5" /> {isVideoMode ? "Resume" : "Play Video"}</>
+                        )}
+                      </Button>
+                      {isVideoMode && (
+                        <>
+                          {/* Seek bar */}
+                          <input
+                            type="range"
+                            min={0}
+                            max={videoDuration || 1}
+                            step={0.1}
+                            value={videoCurrentTime}
+                            onChange={(e) => {
+                              const time = parseFloat(e.target.value);
+                              if (videoRef.current) {
+                                videoRef.current.currentTime = time;
+                                setVideoCurrentTime(time);
+                              }
+                            }}
+                            onClick={(e) => e.stopPropagation()}
+                            className="flex-1 h-1 accent-primary cursor-pointer"
+                          />
+                          <span className="text-[10px] text-white/70 tabular-nums min-w-[60px] text-right">
+                            {Math.floor(videoCurrentTime / 60)}:{String(Math.floor(videoCurrentTime % 60)).padStart(2, "0")}
+                            {" / "}
+                            {Math.floor(videoDuration / 60)}:{String(Math.floor(videoDuration % 60)).padStart(2, "0")}
+                          </span>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 px-1.5 text-white/60 hover:text-white"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              stopVideoPlayback();
+                            }}
+                            title="Stop and return to frame view"
+                          >
+                            <X className="w-3 h-3" />
+                          </Button>
+                        </>
+                      )}
+                    </div>
+                  )}
+
                   {/* Overlay hint when no frame */}
-                  {!selectedSurface?.frameUrl && (
+                  {!selectedSurface?.frameUrl && !isVideoMode && (
                     <div className="absolute inset-0 flex items-center justify-center">
                       <div className="text-center text-muted-foreground">
                         <ImageIcon className="w-12 h-12 mx-auto mb-2 opacity-50" />
@@ -1061,7 +1243,10 @@ export default function PlacementPreviewModal({
                 {hasProduct && (
                   <div className="mt-2 text-center">
                     <p className="text-[10px] text-muted-foreground">
-                      Drag to move | Corner handles to resize | Orange dot to rotate
+                      {isVideoMode
+                        ? "Playing video with product placement overlay — verify tracking is working"
+                        : "Drag to move | Corner handles to resize | Orange dot to rotate | Play to preview tracking"
+                      }
                     </p>
                   </div>
                 )}
