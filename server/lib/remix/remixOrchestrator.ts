@@ -526,6 +526,42 @@ export async function runRemixPipeline(
       console.log(`[Remix]   Clip #${i + 1}: ${placements.length} placement(s) [keyframes: ${kfCounts.join(", ") || "none"}]`);
     }
 
+    // ─── STEP 4B: MOTION ANALYSIS — VFX Camera Tracking ────────────
+    // Run vidstab camera motion analysis for clips that have product placements.
+    // This gives us per-frame camera transforms so products stay locked to the
+    // scene like real objects, instead of jittering from frame-to-frame re-detection.
+    const clipMotionData = new Map<number, import("./motionTracker").CameraMotionData>();
+
+    for (let i = 0; i < candidates.length; i++) {
+      const clip = candidates[i];
+      const placements = clipPlacements.get(i) || [];
+      if (placements.length === 0) continue; // No placements = no need for motion tracking
+
+      const platformConfig = PLATFORM_CONFIGS[clip.platform];
+      if (!platformConfig) continue;
+
+      try {
+        const { analyzeClipMotion } = await import("./motionTracker");
+        console.log(`[Remix]   Running VFX motion analysis for clip #${i + 1} (${clip.duration.toFixed(1)}s)...`);
+
+        const motionData = await analyzeClipMotion(
+          videoPath,
+          clip.startTime,
+          clip.duration,
+          platformConfig.targetFps
+        );
+
+        if (motionData && motionData.transforms.length > 0) {
+          clipMotionData.set(i, motionData);
+          console.log(`[Remix]   Motion analysis: ${motionData.transforms.length} frame transforms — products will be scene-locked`);
+        } else {
+          console.log(`[Remix]   Motion analysis unavailable — using keyframe interpolation fallback`);
+        }
+      } catch (motionErr: any) {
+        console.warn(`[Remix]   Motion analysis failed (non-fatal): ${motionErr.message}`);
+      }
+    }
+
     // ─── STEP 5+6: FORMAT + CAPTION — Generate clips ─────────────
     await storage.updateRemixJobStatus(jobId, "step_5_format");
     console.log(`[Remix] Steps 5-6/9: Generating and captioning clips...`);
@@ -574,7 +610,7 @@ export async function runRemixPipeline(
         }
       }
 
-      // Step 5: Generate the clip
+      // Step 5: Generate the clip (with VFX motion tracking if available)
       console.log(`[Remix]   Generating clip #${i + 1}/${candidates.length} (${clip.platform})...`);
 
       const clipResult = await generateClip({
@@ -587,6 +623,7 @@ export async function runRemixPipeline(
         captionSegments,
         outputDir,
         jobId,
+        cameraMotion: clipMotionData.get(i),
       });
 
       if (!clipResult.success) {
@@ -930,6 +967,24 @@ export async function reRenderClip(
 
     console.log(`[Re-Render]   ${placements.length} placement(s)`);
 
+    // ─── Step 4B: VFX Motion Analysis ─────────────────────────
+    let reRenderMotionData: import("./motionTracker").CameraMotionData | undefined;
+    if (placements.length > 0) {
+      try {
+        const { analyzeClipMotion } = await import("./motionTracker");
+        console.log(`[Re-Render] Running VFX motion analysis (${duration.toFixed(1)}s)...`);
+        const motionResult = await analyzeClipMotion(videoPath, clipStart, duration, platformConfig.targetFps);
+        if (motionResult && motionResult.transforms.length > 0) {
+          reRenderMotionData = motionResult;
+          console.log(`[Re-Render]   Motion tracking: ${motionResult.transforms.length} frame transforms`);
+        } else {
+          console.log(`[Re-Render]   Motion tracking unavailable — using keyframe fallback`);
+        }
+      } catch (motionErr: any) {
+        console.warn(`[Re-Render]   Motion analysis failed (non-fatal): ${motionErr.message}`);
+      }
+    }
+
     // ─── Step 5+6: FORMAT + CAPTION ────────────────────────────
     console.log(`[Re-Render] Steps 5-6: Generating clip with captions...`);
 
@@ -969,7 +1024,7 @@ export async function reRenderClip(
       }
     }
 
-    // Step 5: Generate clip
+    // Step 5: Generate clip (with VFX motion tracking if available)
     const clipResult = await generateClip({
       videoPath,
       videoId: originalClip.videoId,
@@ -980,6 +1035,7 @@ export async function reRenderClip(
       captionSegments,
       outputDir,
       jobId: originalClip.remixJobId,
+      cameraMotion: reRenderMotionData,
     });
 
     if (!clipResult.success) {

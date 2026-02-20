@@ -18,6 +18,7 @@ import * as path from "path";
 import sharp from "sharp";
 import { storage } from "../../storage";
 import type { ClipCandidate, PlatformConfig, PLATFORM_CONFIGS } from "./clipDetector";
+import type { CameraMotionData, CumulativeTransform } from "./motionTracker";
 
 export interface ClipGeneratorInput {
   /** Source video path */
@@ -38,6 +39,8 @@ export interface ClipGeneratorInput {
   outputDir: string;
   /** Remix job ID for file naming */
   jobId: number;
+  /** Camera motion data from vidstab analysis (VFX matchmoving) */
+  cameraMotion?: CameraMotionData;
 }
 
 export interface PlacementKeyframe {
@@ -231,7 +234,36 @@ async function generateWithPlacements(
       framePattern,
     ]);
 
-    // Step 2: Composite placements onto each frame
+    // Step 2: Prepare motion tracking data (VFX matchmoving)
+    let cumulativeTransforms: CumulativeTransform[] | null = null;
+    let motionRefPositions: Map<number, { x: number; y: number; width: number; height: number }> | null = null;
+    let motionData: CameraMotionData | null = input.cameraMotion || null;
+
+    if (motionData && motionData.transforms.length > 0) {
+      const { getCumulativeTransforms, selectReferencePosition } = await import("./motionTracker");
+
+      // Pre-compute cumulative transforms once for the entire clip
+      cumulativeTransforms = getCumulativeTransforms(
+        motionData.transforms,
+        motionData.referenceFrameIndex
+      );
+
+      // For each placement, determine its reference position (the "anchor")
+      motionRefPositions = new Map();
+      for (const placement of placements) {
+        const ref = selectReferencePosition(
+          placement.keyframes,
+          placement.bboxStart,
+          clip.duration,
+          motionData.fps
+        );
+        motionRefPositions.set(placement.surfaceId, ref.position);
+      }
+
+      console.log(`[ClipGenerator] Using VFX motion tracking for ${placements.length} placement(s) (${cumulativeTransforms.length} frames)`);
+    }
+
+    // Step 3: Composite placements onto each frame
     const frames = fs.readdirSync(framesDir).filter(f => f.endsWith(".jpg")).sort();
     const totalFrames = frames.length;
     const clipDuration = clip.duration;
@@ -242,7 +274,10 @@ async function generateWithPlacements(
       // Current time in seconds relative to clip start
       const currentTime = totalFrames > 1 ? (i / (totalFrames - 1)) * clipDuration : 0;
 
-      await compositeFrameWithPlacements(framePath, outputFrame, placements, currentTime, clipDuration, platformConfig);
+      await compositeFrameWithPlacements(
+        framePath, outputFrame, placements, currentTime, clipDuration, platformConfig,
+        i, cumulativeTransforms, motionRefPositions, motionData
+      );
     }
 
     // Step 3: Re-encode composited frames with audio
@@ -273,6 +308,12 @@ async function generateWithPlacements(
 
 /**
  * Composite product placements onto a single frame with aspect ratio handling.
+ *
+ * Supports two positioning modes:
+ * 1. MOTION TRACKED (VFX matchmoving): Uses vidstab camera transforms to compute
+ *    exact position from a reference frame. Product moves in lockstep with the scene.
+ * 2. KEYFRAME INTERPOLATION (fallback): Uses stabilized Gemini keyframes with
+ *    Catmull-Rom spline interpolation. Less precise but works without vidstab.
  */
 async function compositeFrameWithPlacements(
   framePath: string,
@@ -280,7 +321,12 @@ async function compositeFrameWithPlacements(
   placements: ClipPlacement[],
   currentTime: number,  // seconds relative to clip start
   clipDuration: number,
-  config: PlatformConfig
+  config: PlatformConfig,
+  // Motion tracking parameters (optional — null = use keyframe fallback)
+  frameIndex?: number,
+  cumulativeTransforms?: CumulativeTransform[] | null,
+  motionRefPositions?: Map<number, { x: number; y: number; width: number; height: number }> | null,
+  cameraMotion?: CameraMotionData | null,
 ): Promise<void> {
   let pipeline = sharp(framePath);
 
@@ -300,8 +346,34 @@ async function compositeFrameWithPlacements(
     try {
       if (!fs.existsSync(placement.productImagePath)) continue;
 
-      // Interpolate bounding box position using multi-keyframe spline (Phase 2A)
-      const bbox = interpolatePlacement(placement, currentTime, clipDuration);
+      let bbox: { x: number; y: number; width: number; height: number };
+
+      // Try motion-tracked positioning first (VFX matchmoving)
+      if (
+        cumulativeTransforms &&
+        motionRefPositions &&
+        cameraMotion &&
+        frameIndex !== undefined &&
+        frameIndex < cumulativeTransforms.length
+      ) {
+        const refPos = motionRefPositions.get(placement.surfaceId);
+        if (refPos) {
+          // Use camera transform to compute exact position relative to reference
+          const { applyTransformToPosition } = await import("./motionTracker");
+          bbox = applyTransformToPosition(
+            refPos,
+            cumulativeTransforms[frameIndex],
+            cameraMotion.analysisWidth,
+            cameraMotion.analysisHeight
+          );
+        } else {
+          // No reference position for this surface — fall back to keyframe interpolation
+          bbox = interpolatePlacement(placement, currentTime, clipDuration);
+        }
+      } else {
+        // No motion data — use existing keyframe interpolation (stabilized + Catmull-Rom)
+        bbox = interpolatePlacement(placement, currentTime, clipDuration);
+      }
 
       // Convert normalized coords to pixel coords
       const px = Math.round(bbox.x * config.targetWidth);
