@@ -377,12 +377,68 @@ export async function runRemixPipeline(
         if (!approved) continue;
 
         const product = itemMap.get(approved.brandProductId);
-        if (!product || !product.imageUrl) continue;
+        if (!product) continue;
+
+        // Phase 3: Auto-generate product asset via Seeddance if no image exists
+        let resolvedImageUrl = product.imageUrl;
+        if (!resolvedImageUrl) {
+          try {
+            console.log(`[Remix]   No image for product "${product.name}" — attempting Seeddance generation...`);
+            const { generateProductAsset } = await import("../ai/image-gen/assetGenerator");
+            const genResult = await generateProductAsset({
+              videoId,
+              surfaceId,
+              brandProduct: { id: product.id, name: product.name, category: product.category || null },
+              sceneContext: {
+                narrativeContext: surfaceAnalysis.narrativeContext || "",
+                emotionalTone: surfaceAnalysis.emotionalTone || "neutral",
+                culturalTags: (surfaceAnalysis as any).culturalTags || [],
+                suggestedProductCategories: [],
+              },
+              surfaceDimensions: {
+                width: parseFloat(String(surface.boundingBoxWidth)) || 0.2,
+                height: parseFloat(String(surface.boundingBoxHeight)) || 0.2,
+                aspectRatio: (parseFloat(String(surface.boundingBoxWidth)) || 0.2) / (parseFloat(String(surface.boundingBoxHeight)) || 0.2),
+              },
+              sceneAesthetic: {
+                colorWarmth: 0.5,
+                brightness: { overall: 0.5, top: 0.5, bottom: 0.5 },
+                dominantColors: [],
+              },
+              targetPlatform: clip.platform,
+            });
+
+            if (genResult.success && genResult.assetPath) {
+              console.log(`[Remix]   Seeddance generated: ${genResult.assetPath} (${genResult.assetType})`);
+              // Save the generated asset record
+              await storage.createGeneratedAsset({
+                videoId,
+                surfaceId,
+                brandProductId: product.id,
+                assetType: genResult.assetType,
+                generationPrompt: genResult.prompt,
+                assetPath: genResult.assetPath,
+                seeddanceJobId: genResult.jobId,
+                videoDuration: genResult.duration,
+                targetPlatform: clip.platform,
+                approved: false,
+                needsManualReview: true,
+              });
+              resolvedImageUrl = genResult.assetPath;
+            } else {
+              console.warn(`[Remix]   Seeddance generation failed: ${genResult.error || "unknown"}`);
+              continue;
+            }
+          } catch (genErr: any) {
+            console.warn(`[Remix]   Asset generation error: ${genErr.message}`);
+            continue;
+          }
+        }
 
         // Resolve product image path
-        const imagePath = product.imageUrl.startsWith("/")
-          ? path.join(process.cwd(), "public", product.imageUrl)
-          : product.imageUrl;
+        const imagePath = resolvedImageUrl!.startsWith("/")
+          ? path.join(process.cwd(), "public", resolvedImageUrl!)
+          : resolvedImageUrl!;
 
         if (!fs.existsSync(imagePath)) continue;
 

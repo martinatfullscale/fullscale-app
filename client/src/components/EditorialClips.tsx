@@ -120,12 +120,21 @@ function ScoreBar({ label, value, icon: Icon }: { label: string; value: number; 
 export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPlacement }: EditorialClipsProps) {
   const { toast } = useToast();
 
-  // State
+  // State — clips are cached in sessionStorage so they persist across tab switches
+  const cacheKey = `editorial_clips_v1_${videoId}`;
+  const cachedClips = (() => {
+    try {
+      const cached = sessionStorage.getItem(cacheKey);
+      if (cached) return JSON.parse(cached) as RankedClip[];
+    } catch {}
+    return null;
+  })();
+
   const [transcriptStatus, setTranscriptStatus] = useState<TranscriptStatus>({ status: "none" });
-  const [clips, setClips] = useState<RankedClip[]>([]);
+  const [clips, setClips] = useState<RankedClip[]>(cachedClips || []);
   const [isLoadingTranscript, setIsLoadingTranscript] = useState(false);
   const [isLoadingAnalysis, setIsLoadingAnalysis] = useState(false);
-  const [analysisComplete, setAnalysisComplete] = useState(false);
+  const [analysisComplete, setAnalysisComplete] = useState(cachedClips ? cachedClips.length > 0 : false);
   const [expandedClip, setExpandedClip] = useState<number | null>(null);
   const [sortBy, setSortBy] = useState<"score" | "time" | "duration">("score");
   const [tierFilter, setTierFilter] = useState<"all" | "premium" | "standard" | "organic">("all");
@@ -228,6 +237,10 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
       if (res.ok && data.rankedClips) {
         setClips(data.rankedClips);
         setAnalysisComplete(true);
+        // Cache results in sessionStorage so they persist across tab switches
+        try {
+          sessionStorage.setItem(cacheKey, JSON.stringify(data.rankedClips));
+        } catch {}
         toast({
           title: `Found ${data.rankedClips.length} viral clips`,
           description: `${data.moments?.length || 0} moments analyzed`,

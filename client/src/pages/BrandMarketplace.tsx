@@ -77,11 +77,36 @@ const STATIC_DEMO_OPPORTUNITIES: MarketplaceOpportunity[] = [
   { id: 18, videoId: 118, youtubeId: "demo18", title: "4K Monitor Comparison", thumbnailUrl: "https://images.unsplash.com/photo-1527443224154-c4a3942d3acf?w=640&h=360&fit=crop", creatorName: "DisplayMasters", viewCount: 934000, sceneValue: 110, context: "Comparison", genre: "Tech", sceneType: "Product", surfaces: ["Monitors", "Desk", "Wall"], duration: "21:50", platform: "youtube", platforms: ["youtube", "twitch"] },
   { id: 19, videoId: 119, youtubeId: "demo19", title: "Day in My Creative Life", thumbnailUrl: "https://images.unsplash.com/photo-1600494603989-9650cf6ddd3d?w=640&h=360&fit=crop", creatorName: "CreatorLife", viewCount: 1340000, sceneValue: 90, context: "Vlog", genre: "Lifestyle", sceneType: "Interior", surfaces: ["Camera", "Room", "Equipment"], duration: "15:40", platform: "youtube", platforms: ["youtube"] },
   { id: 20, videoId: 120, youtubeId: "demo20", title: "Webcam Setup for Streamers", thumbnailUrl: "https://images.unsplash.com/photo-1587825140708-dfaf72ae4b04?w=640&h=360&fit=crop", creatorName: "WebcamReview", viewCount: 567000, sceneValue: 70, context: "Comparison", genre: "Tech", sceneType: "Product", surfaces: ["Webcams", "Desk", "Screen"], duration: "18:20", platform: "youtube", platforms: ["youtube", "twitch"] },
+  // Gaming — expanded for "Gaming Hardware" category
+  { id: 21, videoId: 121, youtubeId: "demo21", title: "Gaming Setup RGB Tour", thumbnailUrl: "https://images.unsplash.com/photo-1542751371-adc38448a05e?w=640&h=360&fit=crop", creatorName: "RGBMaster", viewCount: 1890000, sceneValue: 105, context: "Gaming Setup", genre: "Gaming", sceneType: "Desk", surfaces: ["Gaming PC", "Monitors", "RGB Lighting"], duration: "14:22", platform: "twitch", platforms: ["twitch", "youtube"] },
+  { id: 22, videoId: 122, youtubeId: "demo22", title: "Esports Arena Tour", thumbnailUrl: "https://images.unsplash.com/photo-1612287230202-1ff1d85d1bdf?w=640&h=360&fit=crop", creatorName: "EsportsDaily", viewCount: 2400000, sceneValue: 140, context: "Gaming Arena", genre: "Gaming", sceneType: "Interior", surfaces: ["Gaming Chairs", "Monitors", "Banners"], duration: "22:10", platform: "youtube", platforms: ["youtube", "twitch"] },
+  { id: 23, videoId: 123, youtubeId: "demo23", title: "Console vs PC Showdown", thumbnailUrl: "https://images.unsplash.com/photo-1593305841991-05c297ba4575?w=640&h=360&fit=crop", creatorName: "GameDebate", viewCount: 1350000, sceneValue: 90, context: "Gaming Comparison", genre: "Gaming", sceneType: "Product", surfaces: ["Console", "Gaming PC", "Controllers"], duration: "19:45", platform: "youtube", platforms: ["youtube"] },
+  // Beauty — expanded
+  { id: 24, videoId: 124, youtubeId: "demo24", title: "Full Glam Transformation", thumbnailUrl: "https://images.unsplash.com/photo-1596462502278-27bfdc403348?w=640&h=360&fit=crop", creatorName: "GlamByLisa", viewCount: 2100000, sceneValue: 115, context: "Beauty Studio", genre: "Beauty", sceneType: "Interior", surfaces: ["Vanity", "Products", "Mirror"], duration: "16:30", platform: "youtube", platforms: ["youtube"] },
+  { id: 25, videoId: 125, youtubeId: "demo25", title: "Skincare Routine Night Edition", thumbnailUrl: "https://images.unsplash.com/photo-1556228578-0d85b1a4d571?w=640&h=360&fit=crop", creatorName: "SkinCareSarah", viewCount: 890000, sceneValue: 80, context: "Beauty Bathroom", genre: "Beauty", sceneType: "Interior", surfaces: ["Counter", "Products", "Mirror"], duration: "12:15", platform: "youtube", platforms: ["youtube", "facebook"] },
+  // Fitness
+  { id: 26, videoId: 126, youtubeId: "demo26", title: "Home Gym Setup Tour", thumbnailUrl: "https://images.unsplash.com/photo-1534438327276-14e5300c3a48?w=640&h=360&fit=crop", creatorName: "FitLife", viewCount: 1560000, sceneValue: 95, context: "Fitness Gym", genre: "Fitness", sceneType: "Interior", surfaces: ["Equipment", "Mat", "Mirror"], duration: "13:40", platform: "youtube", platforms: ["youtube"] },
+  { id: 27, videoId: 127, youtubeId: "demo27", title: "Morning Yoga Flow", thumbnailUrl: "https://images.unsplash.com/photo-1544367567-0f2fcb009e0b?w=640&h=360&fit=crop", creatorName: "YogaWithJen", viewCount: 2800000, sceneValue: 125, context: "Fitness Yoga", genre: "Fitness", sceneType: "Interior", surfaces: ["Yoga Mat", "Props", "Wall"], duration: "28:00", platform: "youtube", platforms: ["youtube", "facebook"] },
+  // Food
+  { id: 28, videoId: 128, youtubeId: "demo28", title: "Kitchen Gadgets Ranked", thumbnailUrl: "https://images.unsplash.com/photo-1556909114-f6e7ad7d3136?w=640&h=360&fit=crop", creatorName: "FoodTechReview", viewCount: 1200000, sceneValue: 85, context: "Food Kitchen", genre: "Food", sceneType: "Interior", surfaces: ["Counter", "Appliances", "Gadgets"], duration: "17:50", platform: "youtube", platforms: ["youtube"] },
+  { id: 29, videoId: 129, youtubeId: "demo29", title: "Meal Prep Sunday", thumbnailUrl: "https://images.unsplash.com/photo-1490645935967-10de6ba17061?w=640&h=360&fit=crop", creatorName: "PrepWithMike", viewCount: 780000, sceneValue: 60, context: "Food Prep", genre: "Food", sceneType: "Interior", surfaces: ["Cutting Board", "Containers", "Ingredients"], duration: "21:30", platform: "youtube", platforms: ["youtube", "facebook"] },
+  // Fashion
+  { id: 30, videoId: 130, youtubeId: "demo30", title: "Streetwear Haul 2026", thumbnailUrl: "https://images.unsplash.com/photo-1558171813-4c088753af8f?w=640&h=360&fit=crop", creatorName: "StreetStyleKing", viewCount: 1900000, sceneValue: 110, context: "Fashion Haul", genre: "Fashion", sceneType: "Interior", surfaces: ["Closet", "Mirror", "Clothing"], duration: "15:20", platform: "youtube", platforms: ["youtube"] },
+  { id: 31, videoId: 131, youtubeId: "demo31", title: "Sneaker Collection Tour", thumbnailUrl: "https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=640&h=360&fit=crop", creatorName: "SneakerHeadz", viewCount: 3100000, sceneValue: 160, context: "Fashion Sneakers", genre: "Fashion", sceneType: "Product", surfaces: ["Shoe Wall", "Display", "Boxes"], duration: "18:45", platform: "youtube", platforms: ["youtube", "twitch"] },
+  // Travel
+  { id: 32, videoId: 132, youtubeId: "demo32", title: "Bali Travel Vlog", thumbnailUrl: "https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=640&h=360&fit=crop", creatorName: "TravelWithTom", viewCount: 4500000, sceneValue: 180, context: "Travel Destination", genre: "Travel", sceneType: "Interior", surfaces: ["Hotel Room", "Pool", "Beach"], duration: "25:40", platform: "youtube", platforms: ["youtube", "facebook"] },
+  // Automotive
+  { id: 33, videoId: 133, youtubeId: "demo33", title: "Dream Garage Tour", thumbnailUrl: "https://images.unsplash.com/photo-1492144534655-ae79c964c9d7?w=640&h=360&fit=crop", creatorName: "AutoReviewsPro", viewCount: 1780000, sceneValue: 200, context: "Automotive Garage", genre: "Automotive", sceneType: "Interior", surfaces: ["Car Hood", "Garage Wall", "Tools"], duration: "20:15", platform: "youtube", platforms: ["youtube"] },
+  // Finance / Education
+  { id: 34, videoId: 134, youtubeId: "demo34", title: "Trading Setup Explained", thumbnailUrl: "https://images.unsplash.com/photo-1554224155-6726b3ff858f?w=640&h=360&fit=crop", creatorName: "FinanceGuru", viewCount: 920000, sceneValue: 130, context: "Finance Trading", genre: "Finance", sceneType: "Desk", surfaces: ["Multi-Monitor", "Desk", "Whiteboard"], duration: "16:30", platform: "youtube", platforms: ["youtube"] },
+  // Podcast
+  { id: 35, videoId: 135, youtubeId: "demo35", title: "The Deep Dive - Episode 42", thumbnailUrl: "https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?w=640&h=360&fit=crop", creatorName: "DeepDivePod", viewCount: 560000, sceneValue: 75, context: "Podcast Studio", genre: "Podcast", sceneType: "Interior", surfaces: ["Microphone", "Acoustic Panel", "Logo Wall"], duration: "1:12:00", platform: "fullscale", platforms: ["fullscale", "youtube"] },
+  { id: 36, videoId: 136, youtubeId: "demo36", title: "Tech Talk Weekly", thumbnailUrl: "https://images.unsplash.com/photo-1478737270239-2f02b77fc618?w=640&h=360&fit=crop", creatorName: "TechTalkPod", viewCount: 340000, sceneValue: 65, context: "Podcast Studio", genre: "Podcast", sceneType: "Interior", surfaces: ["Desk", "Microphone", "Camera"], duration: "0:58:00", platform: "fullscale", platforms: ["fullscale"] },
 ];
 
 const PLATFORMS = ["All", "Podcasts", "YouTube", "Twitch", "Facebook"];
 
-const GENRES = ["All", "Tech", "Gaming", "Lifestyle", "DIY", "Education", "Entertainment", "Fashion", "Beauty", "Fitness", "Food", "Travel", "Vlog", "Productivity", "Finance", "Sports", "Music", "Art", "Science", "Health"];
+const GENRES = ["All", "Tech", "Gaming", "Lifestyle", "DIY", "Education", "Entertainment", "Fashion", "Beauty", "Fitness", "Food", "Travel", "Vlog", "Productivity", "Finance", "Automotive", "Podcast", "Sports", "Music", "Art", "Science", "Health"];
 const BUDGETS = ["All", "Under $50", "$50-$100", "$100-$200", "Over $200"];
 const SCENE_TYPES = ["All", "Desk", "Wall", "Interior", "Product"];
 
@@ -232,28 +257,28 @@ export default function BrandMarketplace() {
   // Debug logging
   console.log("[BrandMarketplace] isPitchMode:", isPitchMode, "opportunities.length:", allOpportunities.length, "isLoading:", isLoadingOpportunities);
 
-  const categoryToGenreMap: Record<string, string> = {
-    "podcasts": "Podcast",
-    "tech": "Tech",
-    "gaming": "Gaming",
-    "lifestyle": "Lifestyle",
-    "education": "Education",
-    "software": "Tech",
-    "streaming": "Gaming",
-    "fitness": "Lifestyle",
-    "beauty": "Lifestyle",
-    "fashion": "Lifestyle",
-    "food": "Lifestyle",
-    "beverage": "Lifestyle",
-    "snack": "Lifestyle",
-    "health": "Lifestyle",
-    "home-improvement": "DIY",
-    "automotive": "Tech",
-    "pet": "Lifestyle",
-    "travel": "Lifestyle",
-    "finance": "Education",
-    "luxury": "Lifestyle",
-    "crypto": "Tech",
+  const categoryToGenreMap: Record<string, string[]> = {
+    "podcasts": ["Podcast"],
+    "tech": ["Tech"],
+    "gaming": ["Gaming"],
+    "lifestyle": ["Lifestyle", "DIY", "Vlog"],
+    "education": ["Education"],
+    "software": ["Tech"],
+    "streaming": ["Gaming", "Tech"],
+    "fitness": ["Fitness", "Lifestyle"],
+    "beauty": ["Beauty", "Lifestyle"],
+    "fashion": ["Fashion", "Lifestyle"],
+    "food": ["Food", "Lifestyle"],
+    "beverage": ["Food", "Lifestyle"],
+    "snack": ["Food", "Lifestyle"],
+    "health": ["Fitness", "Lifestyle"],
+    "home-improvement": ["DIY", "Lifestyle"],
+    "automotive": ["Automotive", "Tech"],
+    "pet": ["Lifestyle"],
+    "travel": ["Travel", "Lifestyle"],
+    "finance": ["Finance", "Education"],
+    "luxury": ["Fashion", "Lifestyle"],
+    "crypto": ["Tech", "Finance"],
   };
 
   const filteredOpportunities = allOpportunities.filter((opp: MarketplaceOpportunity) => {
@@ -267,7 +292,7 @@ export default function BrandMarketplace() {
     const matchesCategory = !selectedCategory ||
       (selectedCategory === "podcasts" && opp.platform === "fullscale" && opp.genre === "Podcast") ||
       (selectedCategory !== "podcasts" && (
-        opp.genre === categoryToGenreMap[selectedCategory] ||
+        (categoryToGenreMap[selectedCategory]?.includes(opp.genre)) ||
         opp.genre?.toLowerCase() === selectedCategory.toLowerCase() ||
         opp.context.toLowerCase().includes(selectedCategory.toLowerCase())
       ));

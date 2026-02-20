@@ -2,7 +2,7 @@
 ## From Remix Engine to Agentic Content Studio
 
 **Last updated**: 2026-02-19
-**Status**: Phase 1 P0 complete, Phase 2 partially wired, everything else ahead
+**Status**: Phases 1-4 complete. All remix pipeline, stitching, editor, Seeddance integration, and AI Co-Pilot built.
 
 ---
 
@@ -22,9 +22,23 @@
 | Object Storage persistence for clips | Done | `remixOrchestrator.ts` Step 8 |
 | Video player + download UI | Done | `client/src/components/RemixStudio.tsx` |
 | Remix Studio (Editorial + Auto tabs) | Done | `RemixStudio.tsx`, `EditorialClips.tsx` |
-| Seeddance 2.0 API client | Scaffolded | `server/lib/ai/image-gen/assetGenerator.ts` |
+| Seeddance 2.0 API client | Done | `server/lib/ai/image-gen/assetGenerator.ts` |
 | Chat infrastructure (Gemini SSE) | Done | `server/replit_integrations/chat/routes.ts` |
 | Generated assets DB schema | Done | `shared/schema.ts` (`generatedAssets` table) |
+| Phase 2A: Motion tracking keyframes | Done | `shared/schema.ts` (`surfaceKeyframes`), `storage.ts` |
+| Phase 2B: Narrative threading (Claude) | Done | `editorialAnalyzer.ts` (`analyzeNarrativeThread`) |
+| Phase 2B: Multi-segment clip stitcher | Done | `server/lib/remix/clipStitcher.ts` |
+| Phase 2B: Stitch plans DB + routes | Done | `shared/schema.ts`, `storage.ts`, `routes.ts` |
+| Phase 2B: Highlight Reel UI tab | Done | `RemixStudio.tsx` (Highlight Reel tab) |
+| Phase 2C: Re-render endpoint | Done | `remixOrchestrator.ts` (`reRenderClip`), `routes.ts` |
+| Phase 2C: Clip edit controls | Done | `RemixStudio.tsx` (ClipCard edit panel) |
+| Phase 3: Seeddance auto-generation in pipeline | Done | `remixOrchestrator.ts` Step 4, `assetGenerator.ts` |
+| Phase 3: Transition + outro card generation | Done | `assetGenerator.ts` (generateTransitionCard, generateOutroCard) |
+| Phase 3: Branded wipe in stitcher | Done | `clipStitcher.ts` (branded_wipe → card gen) |
+| Phase 4: AI Co-Pilot engine | Done | `server/lib/ai/remixCopilot.ts` |
+| Phase 4: Co-Pilot SSE routes | Done | `routes.ts` (copilot/ask, copilot/suggestions) |
+| Phase 4: Co-Pilot chat panel UI | Done | `client/src/components/RemixCopilot.tsx` |
+| Phase 4: Co-Pilot integration | Done | `RemixStudio.tsx` (toggle + suggestion apply) |
 
 ---
 

@@ -1556,6 +1556,105 @@ export async function registerRoutes(
     { id: 4004, userId: "demo-creator", user_id: "demo-creator", youtubeId: "fb-4", youtube_id: "fb-4", title: "Behind the Scenes Vlog", description: "A day in the life of a content creator.", viewCount: 540000, view_count: 540000, thumbnailUrl: "https://images.unsplash.com/photo-1600494603989-9650cf6ddd3d?w=480&h=270&fit=crop", thumbnail_url: "https://images.unsplash.com/photo-1600494603989-9650cf6ddd3d?w=480&h=270&fit=crop", videoUrl: "/hero_video.mp4", video_url: "/hero_video.mp4", status: "Scan Complete", scan_status: "completed", priorityScore: 68, priority_score: 68, publishedAt: "2025-12-28T10:00:00Z", published_at: "2025-12-28T10:00:00Z", category: "Vlog", isEvergreen: false, is_evergreen: false, duration: "0:15:45", adOpportunities: 4, opportunities_count: 4, surfaceCount: 4, surface_count: 4, platform: "facebook", brandName: "Canon", brand_name: "Canon", createdAt: "2025-12-28T10:00:00Z", created_at: "2025-12-28T10:00:00Z", updatedAt: "2025-12-28T10:00:00Z", updated_at: "2025-12-28T10:00:00Z" },
   ];
 
+  // Generate realistic mock surfaces for demo/pitch mode videos
+  function generateDemoSurfaces(videoId: number, demoVideo: { title: string; category: string; thumbnailUrl: string; surfaceCount: number; adOpportunities: number }) {
+    const surfaceCount = demoVideo.surfaceCount || demoVideo.adOpportunities || 5;
+    if (surfaceCount === 0) return []; // "Scanning" status videos have 0 surfaces
+
+    // Category-specific surface types and scene context
+    const CATEGORY_SURFACES: Record<string, Array<{ type: string; context: string; confidence: number }>> = {
+      Tech: [
+        { type: "Monitor/Screen", context: "Large display visible on desk — ideal for digital product overlay", confidence: 0.94 },
+        { type: "Desk Surface", context: "Clean desk surface with good lighting — great for product placement", confidence: 0.91 },
+        { type: "Laptop", context: "Laptop visible in frame — screen replacement opportunity", confidence: 0.88 },
+        { type: "Keyboard/Peripheral", context: "Mechanical keyboard visible — peripheral brand placement", confidence: 0.85 },
+        { type: "Wall Space", context: "Wall behind setup — poster or brand signage placement", confidence: 0.82 },
+        { type: "Shelf/Display", context: "Shelf with items — product staging opportunity", confidence: 0.79 },
+        { type: "Mouse/Mousepad", context: "Mouse pad area — subtle accessory placement", confidence: 0.76 },
+        { type: "Cable Area", context: "Cable management visible — cable brand opportunity", confidence: 0.72 },
+      ],
+      Gaming: [
+        { type: "Gaming Monitor", context: "Ultra-wide gaming display — dynamic ad overlay opportunity", confidence: 0.95 },
+        { type: "Gaming Chair", context: "Gaming chair visible — chair brand placement", confidence: 0.92 },
+        { type: "RGB Setup", context: "RGB lighting visible — peripheral brand integration", confidence: 0.89 },
+        { type: "Desk Mat", context: "Large desk mat surface — custom brand mat placement", confidence: 0.86 },
+        { type: "Headset Stand", context: "Headset on stand — audio brand opportunity", confidence: 0.83 },
+        { type: "Console/PC", context: "Gaming system visible — hardware brand placement", confidence: 0.80 },
+        { type: "Controller", context: "Controller in frame — controller skin/brand opportunity", confidence: 0.77 },
+        { type: "Poster/Banner", context: "Gaming poster on wall — brand poster replacement", confidence: 0.73 },
+      ],
+      Lifestyle: [
+        { type: "Coffee Table", context: "Coffee table surface — product staging area", confidence: 0.93 },
+        { type: "Sofa/Seating", context: "Furniture visible — home brand placement", confidence: 0.90 },
+        { type: "Wall Art", context: "Wall art frame — digital art replacement opportunity", confidence: 0.87 },
+        { type: "Shelf/Bookcase", context: "Bookshelf visible — product display staging", confidence: 0.84 },
+        { type: "Plant/Decor", context: "Decorative item — lifestyle brand integration", confidence: 0.81 },
+        { type: "Window Area", context: "Window with natural light — outdoor brand overlay", confidence: 0.78 },
+      ],
+      Fitness: [
+        { type: "Gym Equipment", context: "Exercise equipment visible — fitness brand placement", confidence: 0.94 },
+        { type: "Yoga Mat", context: "Yoga/exercise mat — mat brand replacement", confidence: 0.91 },
+        { type: "Water Bottle", context: "Water bottle in frame — beverage brand opportunity", confidence: 0.88 },
+        { type: "Activewear", context: "Athletic clothing visible — apparel brand placement", confidence: 0.85 },
+        { type: "Mirror/Wall", context: "Gym mirror or wall — signage placement area", confidence: 0.82 },
+      ],
+      Beauty: [
+        { type: "Vanity/Mirror", context: "Vanity area visible — beauty brand staging", confidence: 0.94 },
+        { type: "Product Display", context: "Beauty products arranged — product swap opportunity", confidence: 0.92 },
+        { type: "Skin Surface", context: "Close-up skin visible — skincare brand overlay", confidence: 0.89 },
+        { type: "Countertop", context: "Clean counter surface — product staging area", confidence: 0.85 },
+        { type: "Lighting Setup", context: "Ring light/studio light — lighting brand placement", confidence: 0.80 },
+      ],
+      Food: [
+        { type: "Countertop", context: "Kitchen counter — ingredient/product staging", confidence: 0.94 },
+        { type: "Plate/Bowl", context: "Serving ware visible — kitchenware brand opportunity", confidence: 0.91 },
+        { type: "Appliance", context: "Kitchen appliance in frame — appliance brand placement", confidence: 0.88 },
+        { type: "Cutting Board", context: "Prep surface — brand-name cutting board placement", confidence: 0.84 },
+        { type: "Ingredient Display", context: "Ingredients laid out — grocery/brand placement", confidence: 0.80 },
+      ],
+      Fashion: [
+        { type: "Outfit Display", context: "Full outfit visible — clothing brand placement", confidence: 0.95 },
+        { type: "Accessory", context: "Watch/jewelry/bag visible — accessory brand opportunity", confidence: 0.91 },
+        { type: "Footwear", context: "Shoes visible — footwear brand placement", confidence: 0.88 },
+        { type: "Background Wall", context: "Clean background — brand backdrop opportunity", confidence: 0.83 },
+        { type: "Mirror", context: "Full-length mirror — fashion overlay opportunity", confidence: 0.80 },
+      ],
+      default: [
+        { type: "Flat Surface", context: "Flat surface detected — product placement opportunity", confidence: 0.88 },
+        { type: "Wall Space", context: "Wall area visible — signage or poster placement", confidence: 0.85 },
+        { type: "Table/Counter", context: "Horizontal surface — product staging area", confidence: 0.82 },
+        { type: "Screen/Display", context: "Screen visible — digital overlay opportunity", confidence: 0.79 },
+        { type: "Background Area", context: "Open background — brand integration area", confidence: 0.75 },
+      ],
+    };
+
+    const category = demoVideo.category || "default";
+    const templates = CATEGORY_SURFACES[category] || CATEGORY_SURFACES["default"];
+    const surfaces = [];
+
+    for (let i = 0; i < Math.min(surfaceCount, templates.length); i++) {
+      const tmpl = templates[i % templates.length];
+      surfaces.push({
+        id: videoId * 100 + i + 1,
+        videoId,
+        timestamp: (i * 15) + Math.floor(Math.random() * 10),
+        surfaceType: tmpl.type,
+        confidence: tmpl.confidence,
+        sceneContext: tmpl.context,
+        surroundings: [demoVideo.title, category, "Well-lit scene"],
+        frameUrl: demoVideo.thumbnailUrl,
+        boundingBoxX: (0.1 + (i * 0.15) % 0.6).toFixed(3),
+        boundingBoxY: (0.15 + (i * 0.1) % 0.5).toFixed(3),
+        boundingBoxWidth: (0.2 + Math.random() * 0.15).toFixed(3),
+        boundingBoxHeight: (0.15 + Math.random() * 0.1).toFixed(3),
+        frameExists: true,
+        createdAt: new Date().toISOString(),
+      });
+    }
+
+    return surfaces;
+  }
+
   // Public demo endpoint - returns STATIC demo videos + real videos with local files
   // Shows Local File badge for videos that have actual local files
   app.get("/api/demo/videos", async (req, res) => {
@@ -2088,6 +2187,14 @@ export async function registerRoutes(
     const videoId = parseInt(req.params.id);
     if (isNaN(videoId)) {
       return res.status(400).json({ error: "Invalid video ID" });
+    }
+
+    // Demo video IDs (1000+) — return realistic mock surfaces for pitch mode
+    if (videoId >= 1000) {
+      const demoVideo = STATIC_DEMO_VIDEOS.find((v: any) => v.id === videoId);
+      if (!demoVideo) return res.status(404).json({ error: "Video not found" });
+      const mockSurfaces = generateDemoSurfaces(videoId, demoVideo as any);
+      return res.json({ surfaces: mockSurfaces, count: mockSurfaces.length });
     }
 
     const video = await storage.getVideoById(videoId);
@@ -5017,7 +5124,7 @@ export async function registerRoutes(
   app.post("/api/generate/:assetId/approve", isAuthenticated, async (req: any, res) => {
     try {
       const assetId = parseInt(req.params.assetId);
-      const approved = await storage.approveAsset(assetId, req.user?.username || "system");
+      const approved = await storage.approveAsset(assetId);
       if (!approved) return res.status(404).json({ error: "Asset not found" });
       res.json(approved);
     } catch (err: any) {
@@ -5934,6 +6041,11 @@ export async function registerRoutes(
         }
       })();
     } catch (err: any) {
+      // Gracefully handle missing stitch_plans table
+      if (err.message?.includes("stitch_plans") && err.message?.includes("does not exist")) {
+        console.warn("[Stitch] Table not yet created — run `npm run db:push` to migrate");
+        return res.status(503).json({ error: "Stitch plans feature requires database migration. Run `npm run db:push` on Replit." });
+      }
       console.error("[Stitch Route] Error:", err.message, err.stack);
       res.status(500).json({ error: err.message || "Stitch failed" });
     }
@@ -5946,6 +6058,11 @@ export async function registerRoutes(
       const plans = await storage.getStitchPlansByVideo(videoId);
       res.json(plans);
     } catch (err: any) {
+      // Gracefully handle missing stitch_plans table (needs db:push migration)
+      if (err.message?.includes("stitch_plans") && err.message?.includes("does not exist")) {
+        console.warn("[StitchPlans] Table not yet created — run `npm run db:push` to migrate");
+        return res.json([]);
+      }
       res.status(500).json({ error: err.message || "Failed to fetch stitch plans" });
     }
   });
@@ -5959,6 +6076,207 @@ export async function registerRoutes(
       res.json(plan);
     } catch (err: any) {
       res.status(500).json({ error: err.message || "Failed to fetch stitch plan" });
+    }
+  });
+
+  // ─── AI Co-Pilot (Phase 4) ───────────────────────────────────
+
+  // POST /api/remix/:videoId/copilot/ask — Ask the co-pilot (SSE streaming)
+  app.post("/api/remix/:videoId/copilot/ask", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const { trigger, userMessage, clipId } = req.body;
+
+      if (!trigger || !["post_generation", "post_trim", "low_score", "user_question"].includes(trigger)) {
+        return res.status(400).json({ error: "Invalid trigger. Must be one of: post_generation, post_trim, low_score, user_question" });
+      }
+
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+
+      // Build session context from DB
+      const { streamCopilot } = await import("./lib/ai/remixCopilot");
+
+      // Load transcript
+      const videoTranscript = await storage.getVideoTranscript(videoId);
+      const transcript = videoTranscript?.segments
+        ? (videoTranscript.segments as any[])
+        : [];
+
+      // Load surfaces
+      const allSurfaces = await storage.getDetectedSurfaces(videoId);
+      const surfaces = allSurfaces.map((s: any) => ({
+        id: s.id,
+        timestamp: s.timestamp || 0,
+        surfaceType: s.surfaceType || "unknown",
+        confidence: s.confidence || 0.5,
+      }));
+
+      // Load brand catalog
+      const userId = String(req.user?.id || 1);
+      const allBrands = await storage.getBrandProducts(userId);
+      const brandCatalog = allBrands.map((b: any) => ({
+        id: b.id,
+        name: b.name,
+        category: b.category || null,
+      }));
+
+      // Load current clip if specified
+      let currentClip: any = undefined;
+      if (clipId) {
+        const clip = await storage.getClipById(parseInt(clipId));
+        if (clip) {
+          currentClip = {
+            clipId: clip.id,
+            start: clip.clipStart || 0,
+            end: clip.clipEnd || 0,
+            duration: clip.duration || 0,
+            platform: clip.platformTarget || "tiktok",
+            qualityScore: clip.qualityScore || 0,
+            scores: (clip as any).qualityBreakdown || undefined,
+            placements: [],
+            captions: undefined,
+            exportPath: clip.exportPath || undefined,
+          };
+        }
+      }
+
+      // Load existing clips for this video (for stitch suggestions)
+      const allClips = await storage.getClipsByVideo(videoId);
+      const existingClips = allClips.slice(0, 20).map((c: any) => ({
+        clipId: c.id,
+        start: c.clipStart || 0,
+        end: c.clipEnd || 0,
+        platform: c.platformTarget || "tiktok",
+        qualityScore: c.qualityScore || 0,
+      }));
+
+      const sessionContext = {
+        videoId,
+        videoTitle: video.title || `Video ${videoId}`,
+        videoDuration: video.duration || 0,
+        transcript,
+        currentClip,
+        surfaces,
+        brandCatalog,
+        existingClips,
+        editorialAnalysis: undefined,
+        editHistory: [],
+      };
+
+      // Set up SSE headers
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+      });
+
+      // Stream the response
+      const generator = streamCopilot({
+        sessionContext,
+        trigger,
+        userMessage: userMessage || undefined,
+      });
+
+      for await (const chunk of generator) {
+        res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+      }
+
+      res.write("data: [DONE]\n\n");
+      res.end();
+    } catch (err: any) {
+      console.error("[CopilotRoute] SSE Error:", err.message);
+      // If headers already sent, end the stream with error
+      if (res.headersSent) {
+        res.write(`data: ${JSON.stringify({ type: "done", data: JSON.stringify({ message: "An error occurred.", suggestions: [], followUpQuestions: [] }) })}\n\n`);
+        res.write("data: [DONE]\n\n");
+        res.end();
+      } else {
+        res.status(500).json({ error: err.message || "Co-pilot request failed" });
+      }
+    }
+  });
+
+  // POST /api/remix/:videoId/copilot/suggestions — Get suggestions (non-streaming)
+  app.post("/api/remix/:videoId/copilot/suggestions", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const { trigger, userMessage, clipId } = req.body;
+
+      if (!trigger || !["post_generation", "post_trim", "low_score", "user_question"].includes(trigger)) {
+        return res.status(400).json({ error: "Invalid trigger" });
+      }
+
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+
+      const { askCopilot } = await import("./lib/ai/remixCopilot");
+
+      // Load context (same as SSE route but more concise)
+      const videoTranscript = await storage.getVideoTranscript(videoId);
+      const transcript = videoTranscript?.segments
+        ? (videoTranscript.segments as any[])
+        : [];
+
+      const allSurfaces = await storage.getDetectedSurfaces(videoId);
+      const surfaces = allSurfaces.map((s: any) => ({
+        id: s.id,
+        timestamp: s.timestamp || 0,
+        surfaceType: s.surfaceType || "unknown",
+        confidence: s.confidence || 0.5,
+      }));
+
+      const userId = String(req.user?.id || 1);
+      const allBrands = await storage.getBrandProducts(userId);
+      const brandCatalog = allBrands.map((b: any) => ({
+        id: b.id,
+        name: b.name,
+        category: b.category || null,
+      }));
+
+      let currentClip: any = undefined;
+      if (clipId) {
+        const clip = await storage.getClipById(parseInt(clipId));
+        if (clip) {
+          currentClip = {
+            clipId: clip.id,
+            start: clip.clipStart || 0,
+            end: clip.clipEnd || 0,
+            duration: clip.duration || 0,
+            platform: clip.platformTarget || "tiktok",
+            qualityScore: clip.qualityScore || 0,
+            scores: (clip as any).qualityBreakdown || undefined,
+            placements: [],
+            captions: undefined,
+            exportPath: clip.exportPath || undefined,
+          };
+        }
+      }
+
+      const sessionContext = {
+        videoId,
+        videoTitle: video.title || `Video ${videoId}`,
+        videoDuration: video.duration || 0,
+        transcript,
+        currentClip,
+        surfaces,
+        brandCatalog,
+        existingClips: [],
+        editorialAnalysis: undefined,
+        editHistory: [],
+      };
+
+      const response = await askCopilot({
+        sessionContext,
+        trigger,
+        userMessage: userMessage || undefined,
+      });
+
+      res.json(response);
+    } catch (err: any) {
+      console.error("[CopilotRoute] Error:", err.message);
+      res.status(500).json({ error: err.message || "Co-pilot request failed" });
     }
   });
 

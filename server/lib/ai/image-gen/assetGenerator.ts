@@ -429,4 +429,145 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// ── Phase 3: Transition Card + Outro Card Generation ───────────
+
+export interface TransitionCardInput {
+  videoId: number;
+  brandProduct: {
+    id: number;
+    name: string;
+    category: string | null;
+    dominantColor?: string | null;
+    logoUrl?: string | null;
+  };
+  targetPlatform?: string;
+  style?: "minimal" | "bold" | "gradient";
+}
+
+export interface OutroCardInput {
+  videoId: number;
+  brandProduct: {
+    id: number;
+    name: string;
+    category: string | null;
+    dominantColor?: string | null;
+    logoUrl?: string | null;
+  };
+  ctaText?: string;
+  targetPlatform?: string;
+}
+
+export interface CardGenerationOutput {
+  success: boolean;
+  assetPath: string | null;
+  prompt: string;
+  assetType: "transition_card" | "outro_card";
+  duration: number;
+  error?: string;
+}
+
+/**
+ * Generate a branded transition card for multi-segment stitching.
+ * When Seeddance is available: generates a 1-2s animated brand wipe.
+ * When not available: creates a placeholder with brand metadata.
+ */
+export async function generateTransitionCard(
+  input: TransitionCardInput
+): Promise<CardGenerationOutput> {
+  const config = getApiConfig();
+
+  const prompt = `Minimal elegant transition card: brand name "${input.brandProduct.name}" centered on a ${
+    input.brandProduct.dominantColor || "dark gradient"
+  } background with subtle particle animation, cinematic 4K quality, smooth fade, ${
+    input.style === "bold" ? "bold modern typography" : input.style === "gradient" ? "flowing gradient animation" : "clean minimal design"
+  }`;
+
+  console.log(`[Seeddance] Generating transition card for "${input.brandProduct.name}"`);
+
+  if (!config.apiKey) {
+    return createCardPlaceholder(input.videoId, input.brandProduct, prompt, "transition_card", 1.5);
+  }
+
+  try {
+    const jobId = await submitVideoJob(prompt, "16:9", 2, "1080p", config);
+    if (!jobId) return { success: false, assetPath: null, prompt, assetType: "transition_card", duration: 0, error: "Job submission failed" };
+
+    const videoUrl = await pollJobUntilDone(jobId, config);
+    if (!videoUrl) return { success: false, assetPath: null, prompt, assetType: "transition_card", duration: 0, error: "Job polling failed" };
+
+    const assetPath = await downloadAndSaveVideo(videoUrl, input.videoId, `transition_${input.brandProduct.id}`);
+    if (!assetPath) return { success: false, assetPath: null, prompt, assetType: "transition_card", duration: 0, error: "Download failed" };
+
+    return { success: true, assetPath, prompt, assetType: "transition_card", duration: 1.5 };
+  } catch (err: any) {
+    return { success: false, assetPath: null, prompt, assetType: "transition_card", duration: 0, error: err.message };
+  }
+}
+
+/**
+ * Generate a branded outro card with product hero shot + CTA.
+ * When Seeddance is available: generates a 2-3s animated product showcase.
+ * When not available: creates a placeholder with brand metadata.
+ */
+export async function generateOutroCard(
+  input: OutroCardInput
+): Promise<CardGenerationOutput> {
+  const config = getApiConfig();
+
+  const cta = input.ctaText || `Discover ${input.brandProduct.name}`;
+  const prompt = `Product showcase outro card: "${input.brandProduct.name}" product hero shot centered, "${cta}" text below in elegant typography, ${
+    input.brandProduct.dominantColor || "rich dark"
+  } background with subtle brand color accents, call-to-action design, cinematic 4K quality, professional advertising aesthetic`;
+
+  console.log(`[Seeddance] Generating outro card for "${input.brandProduct.name}"`);
+
+  if (!config.apiKey) {
+    return createCardPlaceholder(input.videoId, input.brandProduct, prompt, "outro_card", 3);
+  }
+
+  try {
+    const jobId = await submitVideoJob(prompt, "9:16", 3, "1080p", config);
+    if (!jobId) return { success: false, assetPath: null, prompt, assetType: "outro_card", duration: 0, error: "Job submission failed" };
+
+    const videoUrl = await pollJobUntilDone(jobId, config);
+    if (!videoUrl) return { success: false, assetPath: null, prompt, assetType: "outro_card", duration: 0, error: "Job polling failed" };
+
+    const assetPath = await downloadAndSaveVideo(videoUrl, input.videoId, `outro_${input.brandProduct.id}`);
+    if (!assetPath) return { success: false, assetPath: null, prompt, assetType: "outro_card", duration: 0, error: "Download failed" };
+
+    return { success: true, assetPath, prompt, assetType: "outro_card", duration: 3 };
+  } catch (err: any) {
+    return { success: false, assetPath: null, prompt, assetType: "outro_card", duration: 0, error: err.message };
+  }
+}
+
+function createCardPlaceholder(
+  videoId: number,
+  brandProduct: { id: number; name: string; dominantColor?: string | null },
+  prompt: string,
+  assetType: "transition_card" | "outro_card",
+  duration: number
+): CardGenerationOutput {
+  const outputDir = path.join(process.cwd(), "public", "generated-assets", videoId.toString());
+  fs.mkdirSync(outputDir, { recursive: true });
+
+  const filename = `${assetType}_p${brandProduct.id}_${Date.now()}.json`;
+  const placeholderPath = path.join(outputDir, filename);
+  fs.writeFileSync(placeholderPath, JSON.stringify({
+    type: `seeddance_${assetType}_placeholder`,
+    status: "api_not_available",
+    prompt,
+    brandName: brandProduct.name,
+    brandColor: brandProduct.dominantColor,
+    duration,
+    videoId,
+    createdAt: new Date().toISOString(),
+  }, null, 2));
+
+  const relativePath = `/generated-assets/${videoId}/${filename}`;
+  console.log(`[Seeddance] ${assetType} placeholder saved: ${relativePath}`);
+
+  return { success: true, assetPath: relativePath, prompt, assetType, duration };
+}
+
 export { VIDEO_GEN_TIMEOUT_MS, ASSET_GEN_MAX_PER_VIDEO };

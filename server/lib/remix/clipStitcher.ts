@@ -32,6 +32,13 @@ export interface StitchInput {
   captionSegments?: CaptionSegment[]; // timestamps relative to final output start
   outputDir: string;
   planId: number;
+  /** Brand product for transition card generation (Phase 3) */
+  brandProduct?: {
+    id: number;
+    name: string;
+    category: string | null;
+    dominantColor?: string | null;
+  };
 }
 
 export interface StitchOutput {
@@ -85,7 +92,29 @@ export async function stitchSegments(input: StitchInput): Promise<StitchOutput> 
     const tempDir = path.join(outputDir, `temp_stitch_${Date.now()}`);
     fs.mkdirSync(tempDir, { recursive: true });
 
+    // Phase 3: Generate transition card placeholders for branded_wipe segments
+    const hasBrandedWipe = segments.some((seg, i) => i > 0 && seg.transitionIn === "branded_wipe");
+    if (hasBrandedWipe && input.brandProduct) {
+      try {
+        const { generateTransitionCard } = await import("../ai/image-gen/assetGenerator");
+        const cardResult = await generateTransitionCard({
+          videoId,
+          brandProduct: input.brandProduct,
+          targetPlatform: platformConfig.name.toLowerCase(),
+          style: "minimal",
+        });
+        if (cardResult.success) {
+          console.log(`[ClipStitcher] Transition card generated: ${cardResult.assetPath}`);
+          // Note: When Seeddance API is live, this card MP4 will be inserted between segments.
+          // For now, branded_wipe falls back to crossfade with the placeholder recorded.
+        }
+      } catch (err: any) {
+        console.warn(`[ClipStitcher] Transition card generation failed: ${err.message}`);
+      }
+    }
+
     // Determine if we need crossfade or can do simple concat
+    // branded_wipe falls back to crossfade until Seeddance transition cards produce real video
     const hasCrossfade = segments.some(
       (seg, i) => i > 0 && (seg.transitionIn === "crossfade" || seg.transitionIn === "branded_wipe")
     );
@@ -97,7 +126,7 @@ export async function stitchSegments(input: StitchInput): Promise<StitchOutput> 
       // All cuts — use fast concat demuxer
       await stitchWithConcatDemuxer(videoPath, segments, platformConfig, tempDir, outputPath);
     } else {
-      // Has crossfades — use filter_complex
+      // Has crossfades (or branded_wipe fallback) — use filter_complex
       await stitchWithXfade(videoPath, segments, platformConfig, tempDir, outputPath);
     }
 

@@ -5,12 +5,14 @@ import {
   CheckCircle, AlertCircle, Clock, BarChart3, Sparkles,
   Tv, Smartphone, Globe, ThumbsUp, ThumbsDown, Settings,
   RefreshCw, Brain, Volume2, VolumeX, Maximize2,
-  Layers, ChevronDown, ChevronUp, Pencil, RotateCcw, Minus, Plus
+  Layers, ChevronDown, ChevronUp, Pencil, RotateCcw, Minus, Plus,
+  MessageSquare
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import EditorialClips from "@/components/EditorialClips";
+import RemixCopilot from "@/components/RemixCopilot";
 
 interface RemixJob {
   id: number;
@@ -147,6 +149,10 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
   const [editableSegments, setEditableSegments] = useState<NarrativeSegment[]>([]);
   const [stitchPlatform, setStitchPlatform] = useState("tiktok");
 
+  // AI Co-Pilot state (Phase 4)
+  const [copilotOpen, setCopilotOpen] = useState(false);
+  const [copilotClipId, setCopilotClipId] = useState<number | undefined>(undefined);
+
   // Load existing jobs, clips, and stitch plans
   const loadData = useCallback(async () => {
     setIsLoading(true);
@@ -164,6 +170,74 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
     }
     setIsLoading(false);
   }, [videoId]);
+
+  // Handle co-pilot suggestion application (Phase 4)
+  const handleApplySuggestion = useCallback((suggestion: any) => {
+    const { type, data } = suggestion;
+    switch (type) {
+      case "trim":
+      case "hook_improvement": {
+        const newStart = type === "trim" ? data.newStart : data.alternativeStart;
+        const newEnd = type === "trim" ? data.newEnd : undefined;
+        if (copilotClipId) {
+          fetch(`/api/remix/clips/${copilotClipId}/re-render`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({
+              newStart,
+              ...(newEnd !== undefined ? { newEnd } : {}),
+            }),
+          }).then((res) => {
+            if (res.ok) {
+              toast({ title: "Re-rendering", description: "Clip is being re-rendered with suggested changes" });
+              setTimeout(loadData, 3000);
+            }
+          });
+        }
+        break;
+      }
+      case "caption_edit": {
+        if (copilotClipId) {
+          fetch(`/api/remix/clips/${copilotClipId}/re-render`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({
+              captionsEnabled: true,
+              captionStyle: data.suggestedStyle,
+            }),
+          }).then((res) => {
+            if (res.ok) {
+              toast({ title: "Re-rendering", description: `Applying ${data.suggestedStyle} caption style` });
+              setTimeout(loadData, 3000);
+            }
+          });
+        }
+        break;
+      }
+      case "platform_switch": {
+        if (copilotClipId) {
+          fetch(`/api/remix/clips/${copilotClipId}/re-render`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({
+              platformTarget: data.betterPlatform,
+            }),
+          }).then((res) => {
+            if (res.ok) {
+              toast({ title: "Re-rendering", description: `Re-targeting clip for ${data.betterPlatform}` });
+              setTimeout(loadData, 3000);
+            }
+          });
+        }
+        break;
+      }
+      default:
+        toast({ title: "Suggestion noted", description: suggestion.reason });
+    }
+  }, [copilotClipId, toast, loadData]);
 
   useEffect(() => {
     if (open) loadData();
@@ -370,7 +444,9 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
         onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
       >
         <motion.div
-          className="bg-gray-900 rounded-2xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col"
+          className={`bg-gray-900 rounded-2xl w-full max-h-[90vh] overflow-hidden flex flex-col transition-all duration-300 ${
+            copilotOpen ? "max-w-6xl" : "max-w-4xl"
+          }`}
           initial={{ scale: 0.95, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
           exit={{ scale: 0.95, opacity: 0 }}
@@ -386,13 +462,30 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
                 <p className="text-sm text-gray-400">Auto-generate platform-ready clips with product placements</p>
               </div>
             </div>
-            <Button variant="ghost" size="icon" onClick={onClose}>
-              <X className="w-5 h-5" />
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setCopilotOpen(!copilotOpen)}
+                className={`text-xs gap-1.5 ${copilotOpen ? "bg-violet-600/20 text-violet-400" : "text-gray-400 hover:text-white"}`}
+              >
+                <MessageSquare className="w-4 h-4" />
+                AI Co-Pilot
+                {copilotOpen && <span className="w-1.5 h-1.5 rounded-full bg-violet-400 animate-pulse" />}
+              </Button>
+              <Button variant="ghost" size="icon" onClick={onClose}>
+                <X className="w-5 h-5" />
+              </Button>
+            </div>
           </div>
 
-          {/* Content */}
-          <div className="flex-1 overflow-y-auto p-6 space-y-6">
+          {/* Two-panel layout: Main content + Co-Pilot side panel */}
+          <div className="flex-1 flex overflow-hidden">
+
+          {/* Main Content */}
+          <div className={`flex-1 overflow-y-auto p-6 space-y-6 transition-all duration-300 ${
+            copilotOpen ? "border-r border-gray-800" : ""
+          }`}>
 
             {/* Tab Switcher — Editorial Clips vs Auto-Remix */}
             <div className="flex items-center gap-2 bg-gray-800/50 rounded-lg p-1">
@@ -432,56 +525,55 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
             </div>
 
             {/* Editorial Clips Tab — transcript-first viral clip identification */}
-            {activeTab === "editorial" && (
-              <div>
-                <p className="text-xs text-gray-500 mb-3">
-                  AI-identified viral moments ranked by editorial quality. Click "Generate" to create a clip from any moment.
-                </p>
-                <EditorialClips
-                  videoId={videoId}
-                  mode="remix"
-                  onGenerateClip={(clip) => {
-                    toast({
-                      title: "Generating clip",
-                      description: `"${clip.suggestedTitle}" (${clip.clipStart.toFixed(1)}s - ${clip.clipEnd.toFixed(1)}s)`,
-                    });
-                    // Start a remix job targeting this specific clip's time range
-                    fetch(`/api/remix/${videoId}/start`, {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      credentials: "include",
-                      body: JSON.stringify({
-                        platformTargets: platforms,
-                        maxClips: 1,
-                        captionsEnabled,
-                        clipRange: {
-                          start: clip.clipStart,
-                          end: clip.clipEnd,
-                        },
-                      }),
+            {/* Always rendered, hidden via CSS to preserve state across tab switches */}
+            <div className={activeTab === "editorial" ? "block" : "hidden"}>
+              <p className="text-xs text-gray-500 mb-3">
+                AI-identified viral moments ranked by editorial quality. Click "Generate" to create a clip from any moment.
+              </p>
+              <EditorialClips
+                videoId={videoId}
+                mode="remix"
+                onGenerateClip={(clip) => {
+                  toast({
+                    title: "Generating clip",
+                    description: `"${clip.suggestedTitle}" (${clip.clipStart.toFixed(1)}s - ${clip.clipEnd.toFixed(1)}s)`,
+                  });
+                  // Start a remix job targeting this specific clip's time range
+                  fetch(`/api/remix/${videoId}/start`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    credentials: "include",
+                    body: JSON.stringify({
+                      platformTargets: platforms,
+                      maxClips: 1,
+                      captionsEnabled,
+                      clipRange: {
+                        start: clip.clipStart,
+                        end: clip.clipEnd,
+                      },
+                    }),
+                  })
+                    .then(async (res) => {
+                      if (res.ok) {
+                        const data = await res.json();
+                        setActiveJobId(data.jobId);
+                        setActiveTab("auto"); // Switch to auto tab to see progress
+                        toast({ title: "Remix Started", description: `Generating clip from editorial moment` });
+                        await loadData();
+                      } else {
+                        const err = await res.json();
+                        toast({ title: "Error", description: err.error || "Failed to start remix", variant: "destructive" });
+                      }
                     })
-                      .then(async (res) => {
-                        if (res.ok) {
-                          const data = await res.json();
-                          setActiveJobId(data.jobId);
-                          setActiveTab("auto"); // Switch to auto tab to see progress
-                          toast({ title: "Remix Started", description: `Generating clip from editorial moment` });
-                          await loadData();
-                        } else {
-                          const err = await res.json();
-                          toast({ title: "Error", description: err.error || "Failed to start remix", variant: "destructive" });
-                        }
-                      })
-                      .catch((err) => {
-                        toast({ title: "Error", description: err.message, variant: "destructive" });
-                      });
-                  }}
-                />
-              </div>
-            )}
+                    .catch((err) => {
+                      toast({ title: "Error", description: err.message, variant: "destructive" });
+                    });
+                }}
+              />
+            </div>
 
             {/* Auto-Remix Tab — existing config + generation flow */}
-            {activeTab === "auto" && (
+            <div className={activeTab === "auto" ? "block" : "hidden"}>
             <>
             {/* Config Section */}
             <div className="bg-gray-800/50 rounded-xl p-4">
@@ -658,11 +750,10 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
               </div>
             )}
             </>
-            )}
+            </div>{/* end auto-remix tab */}
 
             {/* Highlight Reel Tab — Phase 2B multi-segment stitching */}
-            {activeTab === "highlight" && (
-              <div className="space-y-4">
+            <div className={`space-y-4 ${activeTab === "highlight" ? "block" : "hidden"}`}>
                 <p className="text-xs text-gray-500">
                   AI identifies a narrative thread across your content and stitches non-contiguous moments into a highlight reel.
                 </p>
@@ -815,47 +906,37 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
                     <h3 className="text-sm font-semibold text-gray-300 mb-3 flex items-center gap-2">
                       <Layers className="w-4 h-4" /> Highlight Reels ({stitchPlans.length})
                     </h3>
-                    <div className="space-y-2">
+                    <div className="space-y-3">
                       {stitchPlans.map(plan => (
-                        <div key={plan.id} className="bg-gray-800/50 rounded-lg p-3">
-                          <div className="flex items-center justify-between mb-1">
-                            <div className="flex items-center gap-2">
-                              <Badge className={
-                                plan.status === "completed" ? "bg-green-500/20 text-green-400" :
-                                plan.status === "failed" ? "bg-red-500/20 text-red-400" :
-                                "bg-amber-500/20 text-amber-400"
-                              }>
-                                {plan.status}
-                              </Badge>
-                              <span className="text-sm text-white">{plan.suggestedTitle || "Untitled"}</span>
-                            </div>
-                            <span className="text-xs text-gray-500">
-                              {plan.totalDuration ? `${plan.totalDuration.toFixed(0)}s` : ""}
-                            </span>
-                          </div>
-                          {plan.narrativeArc && (
-                            <p className="text-xs text-gray-500">{plan.narrativeArc}</p>
-                          )}
-                          {plan.status === "completed" && plan.generatedClipId && (
-                            <div className="mt-2">
-                              <a
-                                href={`/api/remix/clips/${plan.generatedClipId}/download`}
-                                download
-                              >
-                                <Button size="sm" variant="ghost" className="text-blue-400 hover:text-blue-300 text-xs">
-                                  <Download className="w-3 h-3 mr-1" /> Download
-                                </Button>
-                              </a>
-                            </div>
-                          )}
-                        </div>
+                        <HighlightReelCard key={plan.id} plan={plan} />
                       ))}
                     </div>
                   </div>
                 )}
-              </div>
-            )}
+              </div>{/* end highlight reel tab */}
           </div>
+
+          {/* AI Co-Pilot Side Panel — built into the modal */}
+          {copilotOpen && (
+            <motion.div
+              initial={{ width: 0, opacity: 0 }}
+              animate={{ width: 380, opacity: 1 }}
+              exit={{ width: 0, opacity: 0 }}
+              transition={{ type: "spring", stiffness: 300, damping: 30 }}
+              className="h-full flex-shrink-0 overflow-hidden"
+            >
+              <RemixCopilot
+                videoId={videoId}
+                clipId={copilotClipId}
+                open={copilotOpen}
+                onClose={() => setCopilotOpen(false)}
+                onApplySuggestion={handleApplySuggestion}
+                inline={true}
+              />
+            </motion.div>
+          )}
+
+          </div>{/* end two-panel layout */}
         </motion.div>
       </motion.div>
     </AnimatePresence>
@@ -863,6 +944,180 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
 }
 
 // ─── Sub-components ──────────────────────────────────────────────
+
+function HighlightReelCard({ plan }: { plan: StitchPlan }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isMuted, setIsMuted] = useState(true);
+  const [progress, setProgress] = useState(0);
+  const [showPlayer, setShowPlayer] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+
+  const videoSrc = plan.generatedClipId
+    ? `/api/remix/clips/${plan.generatedClipId}/download`
+    : null;
+
+  const formatDuration = (secs: number) => {
+    const m = Math.floor(secs / 60);
+    const s = Math.floor(secs % 60);
+    return `${m}:${s.toString().padStart(2, "0")}`;
+  };
+
+  const togglePlay = () => {
+    if (!videoRef.current) return;
+    if (isPlaying) {
+      videoRef.current.pause();
+    } else {
+      videoRef.current.play();
+    }
+    setIsPlaying(!isPlaying);
+  };
+
+  const handleTimeUpdate = () => {
+    if (!videoRef.current) return;
+    setCurrentTime(videoRef.current.currentTime);
+    setDuration(videoRef.current.duration || 0);
+    setProgress((videoRef.current.currentTime / (videoRef.current.duration || 1)) * 100);
+  };
+
+  const handleProgressClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!videoRef.current) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const pct = (e.clientX - rect.left) / rect.width;
+    videoRef.current.currentTime = pct * videoRef.current.duration;
+  };
+
+  return (
+    <div className="bg-gray-800/50 rounded-xl border border-gray-700/50 overflow-hidden">
+      {/* Video player area */}
+      {plan.status === "completed" && videoSrc && showPlayer && (
+        <div className="relative bg-black">
+          <video
+            ref={videoRef}
+            src={videoSrc}
+            muted={isMuted}
+            onTimeUpdate={handleTimeUpdate}
+            onEnded={() => { setIsPlaying(false); setProgress(0); setCurrentTime(0); }}
+            onPlay={() => setIsPlaying(true)}
+            onPause={() => setIsPlaying(false)}
+            onLoadedMetadata={() => { if (videoRef.current) setDuration(videoRef.current.duration); }}
+            className="w-full max-h-[300px] object-contain"
+            playsInline
+            preload="metadata"
+          />
+          {/* Controls overlay */}
+          <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-3">
+            <div
+              className="w-full h-1 bg-gray-600 rounded-full mb-2 cursor-pointer group"
+              onClick={handleProgressClick}
+            >
+              <div
+                className="h-full bg-amber-500 rounded-full relative group-hover:bg-amber-400 transition-colors"
+                style={{ width: `${progress}%` }}
+              >
+                <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2.5 h-2.5 bg-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity" />
+              </div>
+            </div>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <button onClick={togglePlay} className="text-white hover:text-amber-300 transition-colors">
+                  {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5" />}
+                </button>
+                <button onClick={() => setIsMuted(!isMuted)} className="text-white/70 hover:text-white transition-colors">
+                  {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                </button>
+                <span className="text-xs text-gray-400">
+                  {formatDuration(currentTime)} / {formatDuration(duration)}
+                </span>
+              </div>
+              <button
+                onClick={() => { setShowPlayer(false); setIsPlaying(false); videoRef.current?.pause(); }}
+                className="text-white/70 hover:text-white text-xs"
+              >
+                Collapse
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Info section */}
+      <div className="p-4">
+        <div className="flex items-center justify-between mb-1.5">
+          <div className="flex items-center gap-2">
+            <Badge className={
+              plan.status === "completed" ? "bg-green-500/20 text-green-400" :
+              plan.status === "failed" ? "bg-red-500/20 text-red-400" :
+              plan.status === "generating" ? "bg-blue-500/20 text-blue-400" :
+              "bg-amber-500/20 text-amber-400"
+            }>
+              {plan.status === "generating" && <Loader2 className="w-3 h-3 mr-1 animate-spin" />}
+              {plan.status}
+            </Badge>
+            <span className="text-sm font-medium text-white">{plan.suggestedTitle || "Untitled Reel"}</span>
+          </div>
+          <span className="text-xs text-gray-500">
+            {plan.totalDuration ? `${plan.totalDuration.toFixed(0)}s` : ""}
+          </span>
+        </div>
+
+        {plan.narrativeArc && (
+          <p className="text-xs text-gray-500 mb-3">{plan.narrativeArc}</p>
+        )}
+
+        {/* Action buttons */}
+        {plan.status === "completed" && videoSrc && (
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setShowPlayer(!showPlayer);
+                if (!showPlayer) {
+                  // Auto-play when opening
+                  setTimeout(() => videoRef.current?.play(), 100);
+                } else {
+                  videoRef.current?.pause();
+                  setIsPlaying(false);
+                }
+              }}
+              className="flex-1 text-amber-400 hover:text-amber-300 hover:bg-amber-500/10 text-xs"
+            >
+              <Play className="w-3.5 h-3.5 mr-1.5" />
+              {showPlayer ? "Hide Player" : "Play Reel"}
+            </Button>
+            <a
+              href={`/api/remix/clips/${plan.generatedClipId}/download`}
+              download
+              className="flex-1"
+            >
+              <Button
+                size="sm"
+                variant="ghost"
+                className="w-full text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 text-xs"
+              >
+                <Download className="w-3.5 h-3.5 mr-1.5" />
+                Download
+              </Button>
+            </a>
+          </div>
+        )}
+
+        {plan.status === "generating" && (
+          <div className="flex items-center gap-2 text-xs text-blue-400">
+            <Loader2 className="w-3 h-3 animate-spin" />
+            <span>Stitching segments into highlight reel...</span>
+          </div>
+        )}
+
+        {plan.status === "failed" && (
+          <p className="text-xs text-red-400">Generation failed. Try generating again.</p>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function ClipCard({
   clip,
