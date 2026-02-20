@@ -541,7 +541,7 @@ function EmptyLibrary({ onSync, isSyncing }: { onSync: () => void; isSyncing: bo
 
 export default function Library() {
   const { user } = useAuth();
-  const { mode: hybridMode } = useHybridMode();
+  const { mode: hybridMode, isLoading: isAuthLoading } = useHybridMode();
   const { isPitchMode } = usePitchMode();
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -775,6 +775,9 @@ export default function Library() {
     },
     retry: 2,
     staleTime: 0,
+    // Don't fetch until auth state is resolved — prevents briefly hitting /api/demo/videos
+    // when hybridMode is "demo" while auth is still loading after a hard redirect
+    enabled: !isAuthLoading || isPitchMode || isUrlAdminBypass,
   });
 
   const syncMutation = useMutation({
