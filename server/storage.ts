@@ -233,6 +233,15 @@ export interface IStorage {
   createClipFeedback(data: InsertClipFeedback): Promise<ClipFeedback>;
   getClipFeedback(clipId: number): Promise<ClipFeedback[]>;
   getPerformanceFeedback(): Promise<ClipFeedback[]>;
+
+  // Surface keyframe methods
+  createSurfaceKeyframe(data: InsertSurfaceKeyframe): Promise<SurfaceKeyframe>;
+  bulkInsertSurfaceKeyframes(data: InsertSurfaceKeyframe[]): Promise<void>;
+  getSurfaceKeyframes(surfaceId: number): Promise<SurfaceKeyframe[]>;
+  getSurfaceKeyframesInRange(surfaceId: number, startTime: number, endTime: number): Promise<SurfaceKeyframe[]>;
+  getKeyframesByVideo(videoId: number): Promise<SurfaceKeyframe[]>;
+  deleteKeyframesBySurface(surfaceId: number): Promise<void>;
+  deleteSurfaceKeyframesInRange(surfaceId: number, startTime: number, endTime: number): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -1541,6 +1550,21 @@ export class DatabaseStorage implements IStorage {
   async deleteKeyframesBySurface(surfaceId: number): Promise<void> {
     await db.delete(surfaceKeyframes)
       .where(eq(surfaceKeyframes.surfaceId, surfaceId));
+  }
+
+  async deleteSurfaceKeyframesInRange(
+    surfaceId: number,
+    startTime: number,
+    endTime: number
+  ): Promise<void> {
+    await db.delete(surfaceKeyframes)
+      .where(
+        and(
+          eq(surfaceKeyframes.surfaceId, surfaceId),
+          sql`${surfaceKeyframes.timestamp}::numeric >= ${startTime}`,
+          sql`${surfaceKeyframes.timestamp}::numeric <= ${endTime}`,
+        )
+      );
   }
 }
 

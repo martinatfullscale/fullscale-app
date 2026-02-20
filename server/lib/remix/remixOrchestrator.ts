@@ -359,6 +359,50 @@ export async function runRemixPipeline(
     const brandProductList = await storage.getAllBrandProducts();
     const itemMap = new Map(brandProductList.map(i => [i.id, i]));
 
+    // ── Phase 2A Enhancement: Dense Keyframe Pre-scan ──────────────
+    // Check if existing keyframes are too sparse for smooth motion tracking.
+    // If a clip has surfaces with < 4 keyframes per second of clip duration,
+    // trigger a dense re-scan at 0.5s intervals before building placements.
+    const MIN_KEYFRAMES_PER_SECOND = 1.5; // Need at least 1.5 kf/s for smooth tracking
+
+    for (const clip of candidates) {
+      if (clip.surfaceIds.length === 0) continue;
+
+      const clipDuration = clip.endTime - clip.startTime;
+      const minKeyframes = Math.ceil(clipDuration * MIN_KEYFRAMES_PER_SECOND);
+
+      // Check keyframe density for each surface in this clip
+      const sparseSurfaces: number[] = [];
+
+      for (const surfaceId of clip.surfaceIds) {
+        const existingKfs = await storage.getSurfaceKeyframesInRange(
+          surfaceId, clip.startTime, clip.endTime
+        );
+        if (existingKfs.length < minKeyframes) {
+          sparseSurfaces.push(surfaceId);
+          console.log(`[Remix]   Surface ${surfaceId}: only ${existingKfs.length} keyframes for ${clipDuration.toFixed(1)}s clip (need ~${minKeyframes})`);
+        }
+      }
+
+      // Run dense scan for sparse surfaces
+      if (sparseSurfaces.length > 0) {
+        try {
+          console.log(`[Remix]   Running dense keyframe scan for ${sparseSurfaces.length} surface(s) in clip ${clip.startTime.toFixed(1)}s-${clip.endTime.toFixed(1)}s...`);
+          const { denseScanRange } = await import("../../scanner_v2");
+          const denseScanResult = await denseScanRange(
+            videoId,
+            clip.startTime,
+            clip.endTime,
+            sparseSurfaces,
+            0.5 // 0.5s interval = 2 keyframes/second
+          );
+          console.log(`[Remix]   Dense scan created ${denseScanResult.keyframesCreated} additional keyframes`);
+        } catch (denseErr: any) {
+          console.warn(`[Remix]   Dense scan failed (non-fatal, using existing keyframes): ${denseErr.message}`);
+        }
+      }
+    }
+
     const clipPlacements = new Map<number, ClipPlacement[]>();
     for (let i = 0; i < candidates.length; i++) {
       const clip = candidates[i];
@@ -443,6 +487,7 @@ export async function runRemixPipeline(
         if (!fs.existsSync(imagePath)) continue;
 
         // Phase 2A: Load motion keyframes for this surface within the clip's time range
+        // (Now includes dense-scanned keyframes from the pre-scan above)
         const keyframeRecords = await storage.getSurfaceKeyframesInRange(
           surfaceId,
           clip.startTime,
@@ -811,6 +856,27 @@ export async function reRenderClip(
 
     const brandProductList = await storage.getAllBrandProducts();
     const itemMap = new Map(brandProductList.map(i => [i.id, i]));
+
+    // Dense keyframe pre-scan for sparse surfaces (same as main pipeline)
+    const MIN_KFS_PER_SEC = 1.5;
+    if (clip.surfaceIds.length > 0) {
+      const minKfs = Math.ceil(duration * MIN_KFS_PER_SEC);
+      const sparseSurfaces: number[] = [];
+      for (const sid of clip.surfaceIds) {
+        const existing = await storage.getSurfaceKeyframesInRange(sid, clipStart, clipEnd);
+        if (existing.length < minKfs) sparseSurfaces.push(sid);
+      }
+      if (sparseSurfaces.length > 0) {
+        try {
+          console.log(`[Re-Render]   Running dense scan for ${sparseSurfaces.length} sparse surface(s)...`);
+          const { denseScanRange } = await import("../../scanner_v2");
+          const dsr = await denseScanRange(originalClip.videoId, clipStart, clipEnd, sparseSurfaces, 0.5);
+          console.log(`[Re-Render]   Dense scan created ${dsr.keyframesCreated} keyframes`);
+        } catch (e: any) {
+          console.warn(`[Re-Render]   Dense scan failed (non-fatal): ${e.message}`);
+        }
+      }
+    }
 
     const placements: ClipPlacement[] = [];
     for (const surfaceId of clip.surfaceIds) {

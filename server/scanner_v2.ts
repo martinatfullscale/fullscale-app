@@ -2240,7 +2240,10 @@ export async function denseScanRange(
               const typeMatch = detected.surfaceType.toLowerCase() === target.surfaceType.toLowerCase();
               const posMatch = Math.abs(centerX - targetCX) < CLUSTER_TOLERANCE && Math.abs(centerY - targetCY) < CLUSTER_TOLERANCE;
 
-              if (typeMatch || posMatch) {
+              // Require BOTH type match AND spatial proximity for reliable tracking.
+              // Type-only matches risk picking up wrong surfaces of the same type.
+              // Position-only has a wide tolerance (0.20) and may match wrong surfaces.
+              if (typeMatch && posMatch) {
                 keyframeBatch.push({
                   surfaceId: target.id,
                   videoId,
@@ -2261,8 +2264,16 @@ export async function denseScanRange(
       }
     }
 
-    // Bulk insert keyframes
+    // Remove existing keyframes in this time range to prevent duplicates
+    // (if dense scan runs twice for the same range, old keyframes are replaced)
     if (keyframeBatch.length > 0) {
+      for (const surfaceId of surfaceIds) {
+        try {
+          await storage.deleteSurfaceKeyframesInRange(surfaceId, startTime, endTime);
+        } catch (delErr: any) {
+          console.warn(`[DenseScan] Failed to clear old keyframes for surface ${surfaceId}: ${delErr.message}`);
+        }
+      }
       await storage.bulkInsertSurfaceKeyframes(keyframeBatch);
     }
 

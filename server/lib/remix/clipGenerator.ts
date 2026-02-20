@@ -211,6 +211,9 @@ async function generateWithPlacements(
   const framesDir = path.join(tempDir, "frames");
   const compositedDir = path.join(tempDir, "composited");
 
+  // Clear the keyframe stabilization cache for this new clip
+  clearStabilizationCache();
+
   fs.mkdirSync(framesDir, { recursive: true });
   fs.mkdirSync(compositedDir, { recursive: true });
 
@@ -358,20 +361,185 @@ function catmullRom(p0: number, p1: number, p2: number, p3: number, t: number): 
   );
 }
 
+// ── Keyframe Stabilization Pipeline ─────────────────────────────────
+// Eliminates bounding box jitter from noisy frame-by-frame Gemini detections.
+// Applied once per placement before interpolation begins.
+
 /**
- * Interpolate bounding box position at a given time using available keyframes.
+ * Remove outlier keyframes that jump too far from their neighbors.
+ * A keyframe is an outlier if its position is more than `threshold` (normalized)
+ * away from the median of its immediate neighborhood.
+ */
+function rejectOutlierKeyframes(
+  kfs: PlacementKeyframe[],
+  threshold: number = 0.12
+): PlacementKeyframe[] {
+  if (kfs.length <= 3) return kfs; // Too few to filter
+
+  const result: PlacementKeyframe[] = [kfs[0]]; // Always keep first
+
+  for (let i = 1; i < kfs.length - 1; i++) {
+    const prev = kfs[i - 1];
+    const curr = kfs[i];
+    const next = kfs[i + 1];
+
+    // Expected position = midpoint between prev and next
+    const expectedX = (prev.x + next.x) / 2;
+    const expectedY = (prev.y + next.y) / 2;
+
+    const dx = Math.abs(curr.x - expectedX);
+    const dy = Math.abs(curr.y - expectedY);
+
+    // If this keyframe deviates too far from expected, skip it
+    if (dx > threshold || dy > threshold) {
+      console.log(`[ClipGenerator] Rejected outlier keyframe at t=${curr.time.toFixed(2)}s (dx=${dx.toFixed(4)}, dy=${dy.toFixed(4)})`);
+      continue;
+    }
+    result.push(curr);
+  }
+
+  result.push(kfs[kfs.length - 1]); // Always keep last
+  return result;
+}
+
+/**
+ * Apply exponential moving average (EMA) smoothing to keyframe positions.
+ * This acts as a low-pass filter to eliminate frame-to-frame detection noise
+ * while preserving genuine camera/object motion.
  *
- * - 0 keyframes: falls back to bboxStart
+ * alpha = 0.3 → heavy smoothing (slower to react, very stable)
+ * alpha = 0.5 → moderate smoothing (good balance)
+ * alpha = 0.7 → light smoothing (responsive, less stable)
+ */
+function smoothKeyframes(
+  kfs: PlacementKeyframe[],
+  alpha: number = 0.4
+): PlacementKeyframe[] {
+  if (kfs.length <= 1) return kfs;
+
+  const smoothed: PlacementKeyframe[] = [{ ...kfs[0] }]; // First keyframe unchanged
+
+  for (let i = 1; i < kfs.length; i++) {
+    const prev = smoothed[i - 1];
+    smoothed.push({
+      time: kfs[i].time,
+      x: alpha * kfs[i].x + (1 - alpha) * prev.x,
+      y: alpha * kfs[i].y + (1 - alpha) * prev.y,
+      width: alpha * kfs[i].width + (1 - alpha) * prev.width,
+      height: alpha * kfs[i].height + (1 - alpha) * prev.height,
+    });
+  }
+
+  // Second pass: reverse EMA to reduce phase delay (bidirectional smoothing)
+  const biSmoothed: PlacementKeyframe[] = new Array(smoothed.length);
+  biSmoothed[smoothed.length - 1] = { ...smoothed[smoothed.length - 1] };
+
+  for (let i = smoothed.length - 2; i >= 0; i--) {
+    const next = biSmoothed[i + 1];
+    biSmoothed[i] = {
+      time: smoothed[i].time,
+      x: alpha * smoothed[i].x + (1 - alpha) * next.x,
+      y: alpha * smoothed[i].y + (1 - alpha) * next.y,
+      width: alpha * smoothed[i].width + (1 - alpha) * next.width,
+      height: alpha * smoothed[i].height + (1 - alpha) * next.height,
+    };
+  }
+
+  // Blend forward and reverse passes (average)
+  return smoothed.map((fwd, i) => ({
+    time: fwd.time,
+    x: (fwd.x + biSmoothed[i].x) / 2,
+    y: (fwd.y + biSmoothed[i].y) / 2,
+    width: (fwd.width + biSmoothed[i].width) / 2,
+    height: (fwd.height + biSmoothed[i].height) / 2,
+  }));
+}
+
+/**
+ * Lock bounding box dimensions to the median size across all keyframes.
+ * Prevents the product image from visibly resizing frame-to-frame
+ * due to noisy width/height detections.
+ */
+function stabilizeDimensions(kfs: PlacementKeyframe[]): PlacementKeyframe[] {
+  if (kfs.length <= 1) return kfs;
+
+  // Use median dimensions as the "true" surface size
+  const widths = kfs.map((k) => k.width).sort((a, b) => a - b);
+  const heights = kfs.map((k) => k.height).sort((a, b) => a - b);
+
+  const medianW = widths[Math.floor(widths.length / 2)];
+  const medianH = heights[Math.floor(heights.length / 2)];
+
+  // Allow minor dimension changes (< 15% from median), but clamp wild swings
+  const maxDrift = 0.15;
+  return kfs.map((k) => ({
+    ...k,
+    width: Math.abs(k.width - medianW) / medianW > maxDrift ? medianW : k.width,
+    height: Math.abs(k.height - medianH) / medianH > maxDrift ? medianH : k.height,
+  }));
+}
+
+/**
+ * Full stabilization pipeline: outlier rejection → dimension lock → EMA smoothing.
+ * Call this once per placement's keyframes before interpolation.
+ */
+function stabilizeKeyframes(kfs: PlacementKeyframe[]): PlacementKeyframe[] {
+  if (!kfs || kfs.length <= 2) return kfs;
+
+  // Step 1: Remove spatial outliers (bad detections that jump wildly)
+  let result = rejectOutlierKeyframes(kfs, 0.12);
+
+  // Step 2: Lock dimensions to median (prevents product resize flicker)
+  result = stabilizeDimensions(result);
+
+  // Step 3: Apply bidirectional EMA smoothing (eliminates remaining noise)
+  result = smoothKeyframes(result, 0.4);
+
+  return result;
+}
+
+// Cache stabilized keyframes per surfaceId to avoid re-processing per frame
+const _stabilizedCache = new Map<number, PlacementKeyframe[]>();
+
+function getStabilizedKeyframes(placement: ClipPlacement): PlacementKeyframe[] {
+  const cached = _stabilizedCache.get(placement.surfaceId);
+  if (cached) return cached;
+
+  const stabilized = stabilizeKeyframes(placement.keyframes);
+  _stabilizedCache.set(placement.surfaceId, stabilized);
+
+  if (placement.keyframes.length > 0) {
+    console.log(`[ClipGenerator] Surface ${placement.surfaceId}: ${placement.keyframes.length} raw → ${stabilized.length} stabilized keyframes`);
+  }
+
+  return stabilized;
+}
+
+/**
+ * Clear the stabilization cache. Call at the start of each clip generation.
+ */
+function clearStabilizationCache(): void {
+  _stabilizedCache.clear();
+}
+
+/**
+ * Interpolate bounding box position at a given time using stabilized keyframes.
+ *
+ * - 0 keyframes: falls back to bboxStart (static)
  * - 1 keyframe: static position
  * - 2 keyframes: linear interpolation
  * - 3+ keyframes: Catmull-Rom spline for smooth curves
+ *
+ * Edge behavior: Uses velocity extrapolation at clip boundaries instead of
+ * hard-clamping, so products don't "snap" to a fixed position at edges.
  */
 function interpolatePlacement(
   placement: ClipPlacement,
   currentTime: number, // seconds relative to clip start
   clipDuration: number,
 ): { x: number; y: number; width: number; height: number } {
-  const kfs = placement.keyframes;
+  // Use stabilized keyframes (outlier rejected + smoothed)
+  const kfs = getStabilizedKeyframes(placement);
 
   // Fallback: no keyframes → use legacy bboxStart/bboxEnd
   if (!kfs || kfs.length === 0) {
@@ -391,12 +559,43 @@ function interpolatePlacement(
     return { x: kfs[0].x, y: kfs[0].y, width: kfs[0].width, height: kfs[0].height };
   }
 
-  // Clamp to keyframe time range
+  // Edge extrapolation: smoothly extend motion beyond keyframe boundaries
+  // instead of hard-clamping (which causes visible snapping)
   if (currentTime <= kfs[0].time) {
+    if (kfs.length >= 2) {
+      // Extrapolate backwards using velocity from first two keyframes
+      const dt = kfs[1].time - kfs[0].time;
+      if (dt > 0) {
+        const timeBefore = kfs[0].time - currentTime;
+        // Decay the extrapolation so it doesn't drift too far (max 0.5s of motion)
+        const extFactor = Math.min(timeBefore / dt, 0.5);
+        return {
+          x: kfs[0].x - (kfs[1].x - kfs[0].x) * extFactor,
+          y: kfs[0].y - (kfs[1].y - kfs[0].y) * extFactor,
+          width: Math.max(0.01, kfs[0].width),
+          height: Math.max(0.01, kfs[0].height),
+        };
+      }
+    }
     return { x: kfs[0].x, y: kfs[0].y, width: kfs[0].width, height: kfs[0].height };
   }
   if (currentTime >= kfs[kfs.length - 1].time) {
     const last = kfs[kfs.length - 1];
+    if (kfs.length >= 2) {
+      // Extrapolate forward using velocity from last two keyframes
+      const prev = kfs[kfs.length - 2];
+      const dt = last.time - prev.time;
+      if (dt > 0) {
+        const timeAfter = currentTime - last.time;
+        const extFactor = Math.min(timeAfter / dt, 0.5);
+        return {
+          x: last.x + (last.x - prev.x) * extFactor,
+          y: last.y + (last.y - prev.y) * extFactor,
+          width: Math.max(0.01, last.width),
+          height: Math.max(0.01, last.height),
+        };
+      }
+    }
     return { x: last.x, y: last.y, width: last.width, height: last.height };
   }
 
