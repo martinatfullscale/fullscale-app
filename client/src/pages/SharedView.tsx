@@ -21,7 +21,21 @@ import {
   Loader2,
   Image as ImageIcon,
   ArrowLeft,
+  CheckCircle,
+  MessageSquare,
+  AlertTriangle,
+  ThumbsUp,
+  RotateCcw,
 } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
 
 interface SharedData {
   slug: string;
@@ -78,6 +92,15 @@ interface SharedData {
   }>;
 }
 
+interface ReviewContext {
+  bidId: number | null;
+  bidStatus: string | null;
+  brandEmail: string | null;
+  brandName: string | null;
+  bidAmount: number | null;
+  reviewNote: string | null;
+}
+
 export default function SharedView() {
   const params = useParams<{ slug: string }>();
   const [, setLocation] = useLocation();
@@ -86,6 +109,15 @@ export default function SharedView() {
   const [error, setError] = useState<string | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [composited, setComposited] = useState(false);
+
+  // Review context & state
+  const [reviewCtx, setReviewCtx] = useState<ReviewContext | null>(null);
+  const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null);
+  const [reviewAction, setReviewAction] = useState<"approve" | "request_revision" | null>(null);
+  const [revisionNote, setRevisionNote] = useState("");
+  const [submittingReview, setSubmittingReview] = useState(false);
+  const [reviewComplete, setReviewComplete] = useState<"approved" | "revision" | null>(null);
+  const [showRevisionDialog, setShowRevisionDialog] = useState(false);
 
   // Fetch shared data
   useEffect(() => {
@@ -106,6 +138,72 @@ export default function SharedView() {
     }
     if (params.slug) fetchShared();
   }, [params.slug]);
+
+  // Fetch review context (is this a review link for a brand bid?)
+  useEffect(() => {
+    async function fetchReviewContext() {
+      try {
+        const res = await fetch(`/api/share/${params.slug}/review-context`);
+        if (res.ok) {
+          const ctx = await res.json();
+          setReviewCtx(ctx);
+        }
+      } catch (err) {
+        console.error("[SharedView] Failed to fetch review context:", err);
+      }
+    }
+    if (params.slug) fetchReviewContext();
+  }, [params.slug]);
+
+  // Fetch current user email for brand matching
+  useEffect(() => {
+    async function fetchUserEmail() {
+      try {
+        const res = await fetch("/api/auth/user-type", { credentials: "include" });
+        if (res.ok) {
+          const data = await res.json();
+          setCurrentUserEmail(data.email || null);
+        }
+      } catch (err) {
+        // Not logged in — that's fine for public views
+      }
+    }
+    fetchUserEmail();
+  }, []);
+
+  // Submit review (approve or request revision)
+  const handleReviewSubmit = async (action: "approve" | "request_revision") => {
+    if (!reviewCtx?.bidId) return;
+    setSubmittingReview(true);
+    try {
+      const res = await fetch(`/api/bids/${reviewCtx.bidId}/review`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          action,
+          note: action === "request_revision" ? revisionNote : undefined,
+        }),
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || "Review failed");
+      }
+      setReviewComplete(action === "approve" ? "approved" : "revision");
+      setShowRevisionDialog(false);
+      // Update the local review context to reflect the new status
+      setReviewCtx(prev => prev ? {
+        ...prev,
+        bidStatus: action === "approve" ? "accepted" : "revision_requested",
+        reviewNote: action === "request_revision" ? revisionNote : prev.reviewNote,
+      } : null);
+    } catch (err: any) {
+      console.error("[SharedView] Review submit error:", err);
+      alert(err.message || "Failed to submit review");
+    } finally {
+      setSubmittingReview(false);
+    }
+  };
 
   // Composite the placement onto the frame canvas
   const renderComposite = useCallback(async () => {
@@ -370,6 +468,115 @@ export default function SharedView() {
               </Card>
             )}
 
+            {/* Brand Review Card — shown when this is a review link */}
+            {reviewCtx && reviewCtx.bidId && (() => {
+              const isBrandReviewer = currentUserEmail && reviewCtx.brandEmail &&
+                currentUserEmail.toLowerCase() === reviewCtx.brandEmail.toLowerCase();
+              const canReview = isBrandReviewer && reviewCtx.bidStatus === "placed" && !reviewComplete;
+
+              return (
+                <Card className={
+                  reviewComplete === "approved" ? "border-emerald-500/30 bg-emerald-500/5" :
+                  reviewComplete === "revision" ? "border-orange-500/30 bg-orange-500/5" :
+                  reviewCtx.bidStatus === "accepted" ? "border-emerald-500/30 bg-emerald-500/5" :
+                  reviewCtx.bidStatus === "revision_requested" ? "border-orange-500/30 bg-orange-500/5" :
+                  "border-blue-500/30 bg-blue-500/5"
+                }>
+                  <CardContent className="p-4">
+                    <h3 className="font-semibold mb-3 flex items-center gap-2">
+                      {reviewComplete === "approved" || reviewCtx.bidStatus === "accepted" ? (
+                        <><CheckCircle className="w-4 h-4 text-emerald-500" /> Placement Approved</>
+                      ) : reviewComplete === "revision" || reviewCtx.bidStatus === "revision_requested" ? (
+                        <><RotateCcw className="w-4 h-4 text-orange-500" /> Revision Requested</>
+                      ) : (
+                        <><Eye className="w-4 h-4 text-blue-500" /> Placement Review</>
+                      )}
+                    </h3>
+
+                    {/* Bid info */}
+                    <div className="space-y-2 text-sm mb-4">
+                      {reviewCtx.brandName && (
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Brand</span>
+                          <span className="font-medium">{reviewCtx.brandName}</span>
+                        </div>
+                      )}
+                      {reviewCtx.bidAmount && (
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Bid Amount</span>
+                          <span className="font-medium text-green-400">
+                            ${Number(reviewCtx.bidAmount).toLocaleString()}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Review note (visible to both creator and brand) */}
+                    {reviewCtx.reviewNote && reviewCtx.bidStatus === "revision_requested" && (
+                      <div className="rounded-lg bg-orange-500/10 border border-orange-500/20 p-3 mb-4">
+                        <p className="text-xs font-medium text-orange-400 mb-1 flex items-center gap-1">
+                          <MessageSquare className="w-3 h-3" /> Revision Feedback
+                        </p>
+                        <p className="text-sm text-orange-300">{reviewCtx.reviewNote}</p>
+                      </div>
+                    )}
+
+                    {/* Approved confirmation */}
+                    {(reviewComplete === "approved" || (!reviewComplete && reviewCtx.bidStatus === "accepted")) && (
+                      <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/20 p-3 text-center">
+                        <ThumbsUp className="w-5 h-5 text-emerald-500 mx-auto mb-1" />
+                        <p className="text-sm text-emerald-400 font-medium">This placement has been approved</p>
+                      </div>
+                    )}
+
+                    {/* Revision sent confirmation */}
+                    {reviewComplete === "revision" && (
+                      <div className="rounded-lg bg-orange-500/10 border border-orange-500/20 p-3 text-center">
+                        <RotateCcw className="w-5 h-5 text-orange-500 mx-auto mb-1" />
+                        <p className="text-sm text-orange-400 font-medium">Revision request sent to creator</p>
+                      </div>
+                    )}
+
+                    {/* Action buttons — only for brand reviewer when status is "placed" */}
+                    {canReview && (
+                      <div className="flex gap-2">
+                        <Button
+                          className="flex-1 gap-1"
+                          size="sm"
+                          onClick={() => handleReviewSubmit("approve")}
+                          disabled={submittingReview}
+                        >
+                          {submittingReview ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <ThumbsUp className="w-3.5 h-3.5" />
+                          )}
+                          Approve
+                        </Button>
+                        <Button
+                          variant="outline"
+                          className="flex-1 gap-1 border-orange-500/30 text-orange-400 hover:bg-orange-500/10"
+                          size="sm"
+                          onClick={() => setShowRevisionDialog(true)}
+                          disabled={submittingReview}
+                        >
+                          <MessageSquare className="w-3.5 h-3.5" />
+                          Request Changes
+                        </Button>
+                      </div>
+                    )}
+
+                    {/* Not the reviewer message */}
+                    {!isBrandReviewer && reviewCtx.bidStatus === "placed" && currentUserEmail && (
+                      <div className="text-xs text-muted-foreground text-center">
+                        Only the brand reviewer can approve this placement
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              );
+            })()}
+
             {/* Export info */}
             {hasExport && (
               <Card>
@@ -425,6 +632,47 @@ export default function SharedView() {
           </div>
         </div>
       </main>
+
+      {/* Revision Request Dialog */}
+      <Dialog open={showRevisionDialog} onOpenChange={setShowRevisionDialog}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Request Changes</DialogTitle>
+            <DialogDescription>
+              Describe what changes you'd like the creator to make to this placement.
+            </DialogDescription>
+          </DialogHeader>
+          <Textarea
+            placeholder="e.g., Please adjust the product position to be more centered on the surface, and increase the opacity slightly."
+            value={revisionNote}
+            onChange={(e) => setRevisionNote(e.target.value)}
+            rows={4}
+            className="resize-none"
+          />
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setShowRevisionDialog(false)}
+              disabled={submittingReview}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="default"
+              className="gap-1"
+              onClick={() => handleReviewSubmit("request_revision")}
+              disabled={submittingReview || !revisionNote.trim()}
+            >
+              {submittingReview ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <MessageSquare className="w-3.5 h-3.5" />
+              )}
+              Send Feedback
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

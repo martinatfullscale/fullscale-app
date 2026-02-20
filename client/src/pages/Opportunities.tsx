@@ -1,19 +1,22 @@
+import { useState } from "react";
 import { TopBar } from "@/components/TopBar";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { useHybridMode } from "@/hooks/use-hybrid-mode";
 import { usePitchMode } from "@/contexts/pitch-mode-context";
-import { 
-  Briefcase, 
-  DollarSign, 
-  TrendingUp, 
-  Monitor, 
-  Laptop, 
+import {
+  Briefcase,
+  DollarSign,
+  TrendingUp,
+  Monitor,
+  Laptop,
   Coffee,
   Video,
   Eye,
   Loader2,
-  Sparkles
+  Sparkles,
+  X as XIcon,
+  Package,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -144,18 +147,28 @@ export default function Opportunities() {
     queryKey: ["/api/monetization/items"],
   });
 
+  const [selectedOffer, setSelectedOffer] = useState<any | null>(null);
+
   const brandOffers = (dbCampaigns || []).map((item) => {
     const { statusColor, displayStatus } = getStatusStyle(item.status);
     return {
+      bidId: item.id,
+      videoId: item.videoId,
       brand: item.brandName || "Unknown Brand",
       brandColor: getBrandColor(item.brandName || "Unknown"),
       campaign: item.title,
       targetSurfaces: item.sceneType ? [item.sceneType] : ["Various"],
       bidAmount: item.bidAmount ? `$${Number(item.bidAmount).toLocaleString()}` : "$0",
+      rawBidAmount: item.bidAmount,
       status: displayStatus,
+      rawStatus: item.status,
       statusColor,
       description: `${item.brandName} is looking for creators in the ${item.genre || "general"} space`,
       category: getCategoryFromGenre(item.genre || null),
+      sceneType: item.sceneType,
+      genre: item.genre,
+      thumbnailUrl: item.thumbnailUrl,
+      reviewNote: (item as any).reviewNote || null,
     };
   });
 
@@ -355,7 +368,12 @@ export default function Opportunities() {
                         <DollarSign className="w-4 h-4" />
                         <span className="font-bold">{offer.bidAmount}</span>
                       </div>
-                      <Button size="sm" variant="default" className="gap-1">
+                      <Button
+                        size="sm"
+                        variant="default"
+                        className="gap-1"
+                        onClick={() => setSelectedOffer(offer)}
+                      >
                         View Offer
                       </Button>
                     </div>
@@ -366,6 +384,108 @@ export default function Opportunities() {
           </div>
         </div>
       </main>
+
+      {/* ── Offer Detail Dialog ── */}
+      {selectedOffer && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-card border border-border rounded-xl shadow-2xl p-6 w-[420px] max-w-[90vw]"
+          >
+            <div className="flex items-center justify-between mb-5">
+              <h3 className="text-lg font-semibold text-foreground">Brand Offer</h3>
+              <button
+                onClick={() => setSelectedOffer(null)}
+                className="p-1 rounded hover:bg-muted transition-colors"
+              >
+                <XIcon className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Brand info */}
+            <div className="flex items-center gap-3 mb-4">
+              <div className={`w-12 h-12 rounded-lg flex items-center justify-center ${selectedOffer.brandColor}`}>
+                <span className="text-white font-bold text-lg">{selectedOffer.brand.charAt(0)}</span>
+              </div>
+              <div>
+                <h4 className="font-semibold text-white">{selectedOffer.brand}</h4>
+                <p className="text-sm text-muted-foreground">{selectedOffer.campaign}</p>
+              </div>
+            </div>
+
+            {/* Offer details */}
+            <div className="space-y-3 mb-5">
+              <div className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
+                <span className="text-sm text-muted-foreground">Bid Amount</span>
+                <span className="text-lg font-bold text-emerald-400">{selectedOffer.bidAmount}</span>
+              </div>
+              <div className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
+                <span className="text-sm text-muted-foreground">Target Surface</span>
+                <Badge variant="outline">{selectedOffer.sceneType || "Any"}</Badge>
+              </div>
+              <div className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
+                <span className="text-sm text-muted-foreground">Category</span>
+                <Badge variant="secondary">{selectedOffer.category}</Badge>
+              </div>
+              <div className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
+                <span className="text-sm text-muted-foreground">Status</span>
+                <Badge className={selectedOffer.statusColor}>{selectedOffer.status}</Badge>
+              </div>
+            </div>
+
+            {/* Thumbnail preview if available */}
+            {selectedOffer.thumbnailUrl && (
+              <div className="mb-5 rounded-lg overflow-hidden border border-border">
+                <img
+                  src={selectedOffer.thumbnailUrl}
+                  alt="Video thumbnail"
+                  className="w-full h-32 object-cover"
+                />
+              </div>
+            )}
+
+            {/* Actions */}
+            <div className="flex gap-3">
+              {selectedOffer.videoId && (selectedOffer.rawStatus === "pending" || selectedOffer.rawStatus === "revision_requested") && (
+                <Button
+                  className="flex-1 gap-2"
+                  onClick={() => {
+                    window.location.href = `/remix/${selectedOffer.videoId}?bidId=${selectedOffer.bidId}`;
+                  }}
+                >
+                  <Package className="w-4 h-4" />
+                  Place Product
+                </Button>
+              )}
+              {selectedOffer.rawStatus === "placed" && (
+                <div className="flex-1 text-center py-2.5 rounded-lg bg-blue-500/10 text-blue-400 text-sm font-medium">
+                  Awaiting brand review
+                </div>
+              )}
+              {selectedOffer.rawStatus === "accepted" && (
+                <div className="flex-1 text-center py-2.5 rounded-lg bg-emerald-500/10 text-emerald-400 text-sm font-medium">
+                  Approved by brand
+                </div>
+              )}
+              <Button
+                variant="outline"
+                onClick={() => setSelectedOffer(null)}
+              >
+                Close
+              </Button>
+            </div>
+
+            {/* Revision note */}
+            {selectedOffer.rawStatus === "revision_requested" && (
+              <div className="mt-4 p-3 bg-orange-500/10 border border-orange-500/20 rounded-lg">
+                <p className="text-xs text-orange-400 font-medium mb-1">Brand requested changes:</p>
+                <p className="text-sm text-orange-300">{selectedOffer.reviewNote || "No specific note provided"}</p>
+              </div>
+            )}
+          </motion.div>
+        </div>
+      )}
     </div>
   );
 }

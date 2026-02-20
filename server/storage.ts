@@ -126,6 +126,9 @@ export interface IStorage {
   createBid(bid: InsertMonetizationItem): Promise<MonetizationItem>;
   getActiveBidsForCreator(creatorUserId: string): Promise<MonetizationItem[]>;
   getBrandCampaigns(brandEmail: string): Promise<MonetizationItem[]>;
+  getBidById(bidId: number): Promise<MonetizationItem | undefined>;
+  updateBidStatus(bidId: number, status: string, updates?: { placementId?: number; reviewSlug?: string; reviewNote?: string }): Promise<MonetizationItem | undefined>;
+  getPlacementsByBidId(bidId: number): Promise<SavedPlacement[]>;
   // YouTube stats methods
   getYoutubeConnectionByEmail(email: string): Promise<YoutubeConnection | undefined>;
   updateYoutubeStats(connectionId: number, stats: { subscriberCount: number; totalViewCount: number }): Promise<void>;
@@ -416,6 +419,40 @@ export class DatabaseStorage implements IStorage {
       .select()
       .from(monetizationItems)
       .where(eq(monetizationItems.brandEmail, brandEmail));
+  }
+
+  async getBidById(bidId: number): Promise<MonetizationItem | undefined> {
+    const [bid] = await db
+      .select()
+      .from(monetizationItems)
+      .where(eq(monetizationItems.id, bidId));
+    return bid;
+  }
+
+  async updateBidStatus(
+    bidId: number,
+    status: string,
+    updates?: { placementId?: number; reviewSlug?: string; reviewNote?: string }
+  ): Promise<MonetizationItem | undefined> {
+    const setValues: Record<string, any> = { status };
+    if (updates?.placementId !== undefined) setValues.placementId = updates.placementId;
+    if (updates?.reviewSlug !== undefined) setValues.reviewSlug = updates.reviewSlug;
+    if (updates?.reviewNote !== undefined) setValues.reviewNote = updates.reviewNote;
+
+    const [updated] = await db
+      .update(monetizationItems)
+      .set(setValues)
+      .where(eq(monetizationItems.id, bidId))
+      .returning();
+    return updated;
+  }
+
+  async getPlacementsByBidId(bidId: number): Promise<SavedPlacement[]> {
+    return await db
+      .select()
+      .from(savedPlacements)
+      .where(eq(savedPlacements.bidId, bidId))
+      .orderBy(savedPlacements.createdAt);
   }
 
   async getVideoIndex(userId: string, authEmail?: string): Promise<VideoIndex[]> {

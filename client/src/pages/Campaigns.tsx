@@ -21,11 +21,16 @@ interface Campaign {
   sceneType: string | null;
   genre: string | null;
   viewCount: number;
+  placementId: number | null;
+  reviewSlug: string | null;
+  reviewNote: string | null;
 }
 
 const statusColors: Record<string, string> = {
   pending: "bg-amber-500/20 text-amber-400",
+  placed: "bg-blue-500/20 text-blue-400",
   accepted: "bg-emerald-500/20 text-emerald-400",
+  revision_requested: "bg-orange-500/20 text-orange-400",
   live: "bg-blue-500/20 text-blue-400",
   rejected: "bg-red-500/20 text-red-400",
   expired: "bg-gray-500/20 text-gray-400",
@@ -33,7 +38,9 @@ const statusColors: Record<string, string> = {
 
 const statusLabels: Record<string, string> = {
   pending: "Pending",
+  placed: "Ready for Review",
   accepted: "Approved",
+  revision_requested: "Revision Requested",
   live: "Live",
   rejected: "Declined",
   expired: "Expired",
@@ -197,13 +204,29 @@ export default function Campaigns() {
                         : campaign.viewCount} views
                     </Badge>
                   </div>
-                  <div className="text-right min-w-[100px]">
+                  <div className="text-right min-w-[100px] flex flex-col items-end gap-1.5">
                     <p className="font-bold text-lg" data-testid={`text-campaign-cost-${campaign.id}`}>
                       ${parseFloat(campaign.bidAmount || "0").toLocaleString()}
                     </p>
                     <Badge className={statusColors[campaign.status] || statusColors.pending} data-testid={`badge-status-${campaign.id}`}>
                       {statusLabels[campaign.status] || campaign.status}
                     </Badge>
+                    {campaign.status === "placed" && campaign.reviewSlug && (
+                      <Button
+                        size="sm"
+                        variant="default"
+                        className="gap-1 text-xs h-7 mt-1"
+                        onClick={() => window.location.href = `/s/${campaign.reviewSlug}`}
+                      >
+                        <Eye className="w-3 h-3" />
+                        Review Placement
+                      </Button>
+                    )}
+                    {campaign.status === "revision_requested" && (
+                      <span className="text-xs text-orange-400 max-w-[140px] truncate" title={campaign.reviewNote || ""}>
+                        {campaign.reviewNote || "Changes requested"}
+                      </span>
+                    )}
                   </div>
                 </Card>
               ))}

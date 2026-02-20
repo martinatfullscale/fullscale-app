@@ -424,6 +424,20 @@ export default function RemixEngine() {
   });
   const isBrand = userTypeData?.userType === "brand";
 
+  // ── Bid context (when creator is fulfilling a brand offer) ──
+  const urlParams = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
+  const bidId = urlParams?.get("bidId") ? parseInt(urlParams.get("bidId")!) : undefined;
+
+  const { data: bidData } = useQuery<any>({
+    queryKey: ["/api/bids", bidId],
+    queryFn: async () => {
+      const res = await fetch(`/api/bids/${bidId}`, { credentials: "include" });
+      if (!res.ok) return null;
+      return res.json();
+    },
+    enabled: !!bidId,
+  });
+
   // Refs
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -914,6 +928,63 @@ export default function RemixEngine() {
   }, [selectedTrack]);
 
   // ============================================================================
+  // SAVE PLACEMENT FOR BRAND REVIEW (when fulfilling a bid)
+  // ============================================================================
+
+  const [savingForBrand, setSavingForBrand] = useState(false);
+
+  const handleSaveForBrandReview = useCallback(async () => {
+    if (!videoId || !selectedTrack || assignments.size === 0) return;
+    setSavingForBrand(true);
+
+    try {
+      // Save each assignment as a placement linked to the bid
+      for (const [surfaceType, assignment] of assignments) {
+        const track = surfaceTracks.get(surfaceType);
+        if (!track) continue;
+
+        const anchorSurface = surfacesData?.surfaces?.find(
+          (s: any) => s.surfaceType === surfaceType || `${s.surfaceType} (${s.id})` === surfaceType
+        );
+        if (!anchorSurface) continue;
+
+        const res = await fetch("/api/placements", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            videoId,
+            surfaceId: anchorSurface.id,
+            productId: assignment.productId || null,
+            productImageUrl: assignment.imageUrl,
+            transform: assignment.transform,
+            blend: assignment.blend,
+            role: "creator",
+            bidId: bidId || undefined,
+          }),
+        });
+
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.error || "Failed to save placement");
+        }
+
+        const data = await res.json();
+        if (data.reviewSlug) {
+          toast({
+            title: "Placement submitted for brand review",
+            description: `${bidData?.brandName || "Brand"} will be notified to review your placement.`,
+          });
+        }
+        break; // Save the first assignment linked to bid — additional placements are propagated server-side
+      }
+    } catch (err: any) {
+      toast({ title: "Save failed", description: err.message, variant: "destructive" });
+    }
+    setSavingForBrand(false);
+  }, [videoId, selectedTrack, assignments, surfaceTracks, surfacesData, bidId, bidData, toast]);
+
+  // ============================================================================
   // EXPORT
   // ============================================================================
 
@@ -1139,8 +1210,36 @@ export default function RemixEngine() {
               Export Video
             </button>
           )}
+
+          {/* Submit to brand — shown when fulfilling a bid */}
+          {bidId && !isBrand && (
+            <button
+              onClick={handleSaveForBrandReview}
+              disabled={assignments.size === 0 || savingForBrand}
+              className="flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              {savingForBrand ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle className="w-3.5 h-3.5" />}
+              Submit to Brand
+            </button>
+          )}
         </div>
       </div>
+
+      {/* Bid context banner — when creator is fulfilling a brand offer */}
+      {bidId && bidData && !isBrand && (
+        <div className="bg-blue-500/10 border-b border-blue-500/20 px-6 py-2 flex items-center gap-3">
+          <Package className="w-4 h-4 text-blue-400" />
+          <span className="text-sm text-blue-300">
+            Placing product for <strong className="text-blue-200">{bidData.brandName || "brand"}</strong>'s offer
+            {bidData.bidAmount && <span className="text-blue-400 ml-1">(${Number(bidData.bidAmount).toLocaleString()})</span>}
+          </span>
+          {bidData.status === "revision_requested" && bidData.reviewNote && (
+            <span className="text-xs text-orange-400 ml-4">
+              Revision requested: {bidData.reviewNote}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Main content */}
       <div className="flex h-[calc(100vh-57px)]">

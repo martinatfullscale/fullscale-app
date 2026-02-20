@@ -16,6 +16,7 @@ import {
   Share2,
   Copy,
   Check,
+  Download,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -169,6 +170,17 @@ export default function SavedPlacements() {
       setSharingId(null);
     }
   };
+
+  // Detect user role — creators can export video
+  const { data: userTypeData } = useQuery<{ userType?: "creator" | "brand" | null }>({
+    queryKey: ["/api/auth/user-type"],
+    queryFn: async () => {
+      const res = await fetch("/api/auth/user-type", { credentials: "include" });
+      if (!res.ok) return { userType: null };
+      return res.json();
+    },
+  });
+  const isCreator = userTypeData?.userType === "creator";
 
   const placements = data?.placements || [];
 
@@ -347,6 +359,20 @@ export default function SavedPlacements() {
                                 <Video className="w-3 h-3" />
                                 Full Editor
                               </Button>
+                              {isCreator && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="gap-1 text-[10px] h-7 px-2"
+                                  title="Export Video"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    window.location.href = `/remix/${placement.videoId}`;
+                                  }}
+                                >
+                                  <Download className="w-3 h-3" />
+                                </Button>
+                              )}
                               <Button
                                 variant="outline"
                                 size="sm"
@@ -462,6 +488,19 @@ export default function SavedPlacements() {
                   <Video className="w-3.5 h-3.5" />
                   Full Editor
                 </Button>
+                {isCreator && (
+                  <Button
+                    variant="default"
+                    size="sm"
+                    className="gap-1"
+                    onClick={() => {
+                      window.location.href = `/remix/${previewPlacement.videoId}`;
+                    }}
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    Export Video
+                  </Button>
+                )}
                 <Button
                   variant="outline"
                   size="sm"

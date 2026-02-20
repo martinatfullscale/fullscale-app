@@ -2527,6 +2527,149 @@ export async function registerRoutes(
     }
   });
 
+  // ── BID REVIEW LIFECYCLE ──
+
+  // Get bid details (creator viewing an offer)
+  app.get("/api/bids/:bidId", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const bidId = parseInt(req.params.bidId);
+      if (isNaN(bidId)) return res.status(400).json({ error: "Invalid bid ID" });
+
+      const bid = await storage.getBidById(bidId);
+      if (!bid) return res.status(404).json({ error: "Bid not found" });
+
+      // Enrich with video data
+      let videoData = null;
+      if (bid.videoId) {
+        const video = await storage.getVideoById(bid.videoId);
+        if (video) {
+          const surfaceCount = await storage.getSurfaceCountByVideo(video.id);
+          videoData = {
+            id: video.id,
+            title: video.title,
+            thumbnailUrl: video.thumbnailUrl,
+            viewCount: video.viewCount,
+            surfaceCount,
+          };
+        }
+      }
+
+      res.json({ ...bid, video: videoData });
+    } catch (err: any) {
+      console.error("[Bids] Error fetching bid:", err.message);
+      res.status(500).json({ error: "Failed to fetch bid" });
+    }
+  });
+
+  // Link a saved placement to a bid (creator fulfilling an offer)
+  app.post("/api/bids/:bidId/link-placement", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const bidId = parseInt(req.params.bidId);
+      if (isNaN(bidId)) return res.status(400).json({ error: "Invalid bid ID" });
+
+      const { placementId } = req.body;
+      if (!placementId) return res.status(400).json({ error: "placementId is required" });
+
+      const bid = await storage.getBidById(bidId);
+      if (!bid) return res.status(404).json({ error: "Bid not found" });
+      if (bid.status !== "pending" && bid.status !== "revision_requested") {
+        return res.status(400).json({ error: `Bid is in '${bid.status}' state and cannot be linked to a placement` });
+      }
+
+      const placement = await storage.getPlacement(placementId);
+      if (!placement) return res.status(404).json({ error: "Placement not found" });
+
+      // Auto-create a shared link for the brand to review
+      const slug = generateSlug();
+      await storage.createSharedLink({
+        slug,
+        placementId: placement.id,
+        exportId: null,
+        videoId: placement.videoId,
+        createdBy: req.authEmail || "system",
+        title: `Placement review for ${bid.brandName || "brand"}`,
+        isActive: true,
+        expiresAt: null,
+      });
+
+      // Update the bid to "placed" status with the review link
+      const updatedBid = await storage.updateBidStatus(bidId, "placed", {
+        placementId: placement.id,
+        reviewSlug: slug,
+      });
+
+      console.log(`[Bids] Linked placement ${placementId} to bid ${bidId}, review slug: ${slug}`);
+      res.json({ success: true, reviewSlug: slug, bid: updatedBid });
+    } catch (err: any) {
+      console.error("[Bids] Error linking placement:", err.message);
+      res.status(500).json({ error: "Failed to link placement to bid" });
+    }
+  });
+
+  // Brand reviews a placement (approve or request changes)
+  app.post("/api/bids/:bidId/review", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const bidId = parseInt(req.params.bidId);
+      if (isNaN(bidId)) return res.status(400).json({ error: "Invalid bid ID" });
+
+      const { action, note } = req.body;
+      if (!action || !["approve", "request_revision"].includes(action)) {
+        return res.status(400).json({ error: "action must be 'approve' or 'request_revision'" });
+      }
+
+      const bid = await storage.getBidById(bidId);
+      if (!bid) return res.status(404).json({ error: "Bid not found" });
+      if (bid.status !== "placed") {
+        return res.status(400).json({ error: `Bid must be in 'placed' state to review (current: '${bid.status}')` });
+      }
+
+      // Verify the caller is the brand who owns this bid
+      const callerEmail = req.authEmail;
+      if (callerEmail !== bid.brandEmail) {
+        return res.status(403).json({ error: "Only the brand who placed this bid can review it" });
+      }
+
+      const newStatus = action === "approve" ? "accepted" : "revision_requested";
+      const updatedBid = await storage.updateBidStatus(bidId, newStatus, {
+        reviewNote: action === "request_revision" ? (note || "Changes requested") : undefined,
+      });
+
+      console.log(`[Bids] Bid ${bidId} reviewed: ${action} by ${callerEmail}`);
+      res.json({ success: true, bid: updatedBid });
+    } catch (err: any) {
+      console.error("[Bids] Error reviewing bid:", err.message);
+      res.status(500).json({ error: "Failed to review bid" });
+    }
+  });
+
+  // Get review context for a shared link (public — used by SharedView to show approve/reject UI)
+  app.get("/api/share/:slug/review-context", async (req: any, res) => {
+    try {
+      const { slug } = req.params;
+      if (!slug) return res.status(400).json({ error: "Slug is required" });
+
+      // Find the monetization item that uses this slug as its review link
+      const allBids = await storage.getMonetizationItems();
+      const bid = allBids.find((b: any) => b.reviewSlug === slug);
+
+      if (!bid) {
+        return res.json({ bidId: null });
+      }
+
+      res.json({
+        bidId: bid.id,
+        bidStatus: bid.status,
+        brandEmail: bid.brandEmail,
+        brandName: bid.brandName,
+        bidAmount: bid.bidAmount,
+        reviewNote: bid.reviewNote || null,
+      });
+    } catch (err: any) {
+      console.error("[Share] Error fetching review context:", err.message);
+      res.status(500).json({ error: "Failed to fetch review context" });
+    }
+  });
+
   // Map category to creator display names for demo
   const CREATOR_NAMES: Record<string, string> = {
     "Tech Guru": "TechVision Pro",
@@ -4134,7 +4277,7 @@ export async function registerRoutes(
   app.post("/api/placements", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const userEmail = req.authEmail || "unknown";
-      const { videoId, surfaceId, productId, productImageUrl, transform, blend, sceneGroupId, role } = req.body;
+      const { videoId, surfaceId, productId, productImageUrl, transform, blend, sceneGroupId, role, bidId } = req.body;
 
       if (!videoId || !surfaceId || !productImageUrl || !transform || !blend) {
         return res.status(400).json({ error: "Missing required fields: videoId, surfaceId, productImageUrl, transform, blend" });
@@ -4160,6 +4303,7 @@ export async function registerRoutes(
         productImageUrl,
         createdBy: userEmail,
         role: role || "creator",
+        bidId: bidId || null,
         sceneGroupId: computedGroupId,
         transform,
         blend,
@@ -4215,8 +4359,37 @@ export async function registerRoutes(
         }
       }
 
+      // Auto-link to bid if bidId was provided (creator fulfilling a brand offer)
+      let reviewSlug: string | null = null;
+      if (bidId) {
+        try {
+          const bid = await storage.getBidById(bidId);
+          if (bid && (bid.status === "pending" || bid.status === "revision_requested")) {
+            const slug = generateSlug();
+            await storage.createSharedLink({
+              slug,
+              placementId: placement.id,
+              exportId: null,
+              videoId,
+              createdBy: userEmail,
+              title: `Placement review for ${bid.brandName || "brand"}`,
+              isActive: true,
+              expiresAt: null,
+            });
+            await storage.updateBidStatus(bidId, "placed", {
+              placementId: placement.id,
+              reviewSlug: slug,
+            });
+            reviewSlug = slug;
+            console.log(`[Placements] Auto-linked placement ${placement.id} to bid ${bidId}, review slug: ${slug}`);
+          }
+        } catch (linkErr: any) {
+          console.warn(`[Placements] Failed to auto-link bid ${bidId}:`, linkErr.message);
+        }
+      }
+
       console.log(`[Placements] Saved placement ${placement.id} for video ${videoId} surface ${surfaceId} by ${userEmail} (propagated to ${propagatedCount} additional surfaces)`);
-      res.json({ placement, propagatedCount });
+      res.json({ placement, propagatedCount, reviewSlug });
     } catch (err: any) {
       console.error("[Placements] Save error:", err.message);
       res.status(500).json({ error: "Failed to save placement" });

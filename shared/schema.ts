@@ -65,7 +65,7 @@ export const monetizationItems = pgTable("monetization_items", {
   title: text("title").notNull(),
   thumbnailUrl: text("thumbnail_url"),
   date: timestamp("date").defaultNow(),
-  status: text("status").notNull(), // 'pending', 'accepted', 'rejected', 'expired'
+  status: text("status").notNull(), // 'pending', 'placed', 'accepted', 'revision_requested', 'rejected', 'expired'
   videoId: integer("video_id"), // Reference to video_index.id
   creatorUserId: varchar("creator_user_id"), // Creator who owns the video
   brandEmail: varchar("brand_email"), // Brand who placed the bid
@@ -73,6 +73,10 @@ export const monetizationItems = pgTable("monetization_items", {
   bidAmount: numeric("bid_amount"), // Bid amount in dollars
   sceneType: varchar("scene_type"), // e.g., 'Desk', 'Wall', 'Product'
   genre: varchar("genre"), // e.g., 'Tech', 'Lifestyle', 'Gaming'
+  // Placement review lifecycle
+  placementId: integer("placement_id"), // Reference to saved_placements.id (placement that fulfills this bid)
+  reviewSlug: varchar("review_slug"), // Shared link slug for brand to review the placement
+  reviewNote: text("review_note"), // Brand's note when requesting revision
 });
 
 export const insertMonetizationItemSchema = createInsertSchema(monetizationItems).omit({ 
@@ -209,6 +213,7 @@ export const savedPlacements = pgTable("saved_placements", {
   productImageUrl: text("product_image_url").notNull(), // URL of product image used
   createdBy: varchar("created_by").notNull(), // Email of user who created placement
   role: varchar("role").notNull().default("creator"), // 'creator' or 'brand'
+  bidId: integer("bid_id"), // Reference to monetization_items.id (null for organic placements)
   // Scene continuity: group ID links surfaces that share the same placement
   sceneGroupId: varchar("scene_group_id"), // e.g., "video-5-Desk-0.3-0.5" — surfaces with matching group share placements
   // Transform settings (JSON blob)
