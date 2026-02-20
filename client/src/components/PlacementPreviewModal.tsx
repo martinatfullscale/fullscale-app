@@ -23,6 +23,7 @@ import {
   Eye,
   Play,
   Pause,
+  Film,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -383,6 +384,13 @@ export default function PlacementPreviewModal({
   const [videoDuration, setVideoDuration] = useState(0);
   const videoRef = useRef<HTMLVideoElement>(null);
 
+  // Video export state
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState(0);
+  const [exportStatus, setExportStatus] = useState<string | null>(null);
+  const [exportJobId, setExportJobId] = useState<number | null>(null);
+  const [exportOutputUrl, setExportOutputUrl] = useState<string | null>(null);
+
   // Refs
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -501,6 +509,12 @@ export default function PlacementPreviewModal({
         videoRef.current.pause();
         videoRef.current.currentTime = 0;
       }
+      // Reset export state
+      setIsExporting(false);
+      setExportProgress(0);
+      setExportStatus(null);
+      setExportJobId(null);
+      setExportOutputUrl(null);
     }
   }, [open]);
 
@@ -767,6 +781,121 @@ export default function PlacementPreviewModal({
     setIsVideoPlaying(false);
     setVideoCurrentTime(0);
   }, []);
+
+  // ============================================================================
+  // VIDEO EXPORT
+  // ============================================================================
+
+  const handleVideoExport = useCallback(async () => {
+    if (!selectedSurface || !productImage) return;
+
+    // Build keyframes from all surfaces of the same type
+    const surfaceType = selectedSurface.surfaceType;
+    const matchingSurfaces = surfaces.filter(s => s.surfaceType === surfaceType);
+
+    const keyframes = matchingSurfaces.map(s => {
+      const rawX = s.boundingBoxX;
+      const rawY = s.boundingBoxY;
+      const rawW = s.boundingBoxWidth;
+      const rawH = s.boundingBoxHeight;
+      // Auto-detect: if all values are <=1, they're 0-1 normalized → scale to 0-100
+      const isNormalized = rawX <= 1 && rawY <= 1 && rawW <= 1 && rawH <= 1;
+      const scale = isNormalized ? 100 : 1;
+
+      return {
+        timestamp: s.timestamp,
+        bbox: {
+          x: rawX * scale,
+          y: rawY * scale,
+          w: rawW * scale,
+          h: rawH * scale,
+        },
+        confidence: s.confidence,
+      };
+    }).sort((a, b) => a.timestamp - b.timestamp);
+
+    // Get product aspect ratio
+    const prodImg = productImgRef.current;
+    const productAspectRatio = prodImg ? prodImg.naturalWidth / prodImg.naturalHeight : 1;
+
+    // Canvas dimensions for server-side scaling
+    const canvas = canvasRef.current;
+    const canvasWidth = canvas?.width || 640;
+    const canvasHeight = canvas?.height || 360;
+
+    const placementData = [{
+      surfaceType,
+      productImageUrl: productImage,
+      transform,
+      blend,
+      keyframes,
+      productAspectRatio,
+    }];
+
+    try {
+      setIsExporting(true);
+      setExportStatus("queued");
+      setExportProgress(0);
+      setExportOutputUrl(null);
+
+      const res = await fetch(`/api/video/${videoId}/export`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          placements: placementData,
+          canvasWidth,
+          canvasHeight,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "Export failed" }));
+        throw new Error(err.error || "Export failed to start");
+      }
+
+      const { exportId } = await res.json();
+      setExportJobId(exportId);
+      setExportStatus("processing");
+      toast({ title: "Video export started", description: "This may take a few minutes..." });
+    } catch (err: any) {
+      setIsExporting(false);
+      setExportStatus("failed");
+      toast({ title: "Export failed", description: err.message, variant: "destructive" });
+    }
+  }, [selectedSurface, productImage, surfaces, transform, blend, videoId, toast]);
+
+  // Poll export progress
+  useEffect(() => {
+    if (!exportJobId || !isExporting) return;
+    if (exportStatus === "complete" || exportStatus === "failed") return;
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/exports/${exportJobId}`, { credentials: "include" });
+        if (!res.ok) return;
+        const data = await res.json();
+
+        setExportProgress(data.progress || 0);
+        setExportStatus(data.status);
+
+        if (data.status === "complete") {
+          setExportOutputUrl(data.outputUrl);
+          setIsExporting(false);
+          toast({ title: "Video export complete!", description: "Your video with product placement is ready to download." });
+          clearInterval(interval);
+        } else if (data.status === "failed") {
+          setIsExporting(false);
+          toast({ title: "Export failed", description: data.error || "Unknown error", variant: "destructive" });
+          clearInterval(interval);
+        }
+      } catch (err) {
+        console.error("[PlacementPreview] Export poll error:", err);
+      }
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [exportJobId, isExporting, exportStatus, toast]);
 
   // ============================================================================
   // CANVAS MOUSE INTERACTION
@@ -1074,12 +1203,38 @@ export default function PlacementPreviewModal({
                     </Button>
                     <Button
                       size="sm"
+                      variant="secondary"
                       className="gap-2"
                       onClick={downloadPreview}
                     >
                       <Download className="w-4 h-4" />
-                      Export
+                      Export Frame
                     </Button>
+                    {videoSrc && (
+                      exportStatus === "complete" && exportOutputUrl ? (
+                        <a href={`/api/exports/${exportJobId}/download`} download>
+                          <Button size="sm" className="gap-2 bg-emerald-600 hover:bg-emerald-700">
+                            <Download className="w-4 h-4" />
+                            Download MP4
+                          </Button>
+                        </a>
+                      ) : isExporting ? (
+                        <Button size="sm" className="gap-2" disabled>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Exporting {exportProgress}%
+                        </Button>
+                      ) : (
+                        <Button
+                          size="sm"
+                          className="gap-2 bg-green-600 hover:bg-green-700"
+                          onClick={handleVideoExport}
+                          disabled={exportStatus === "failed"}
+                        >
+                          <Film className="w-4 h-4" />
+                          Export Video
+                        </Button>
+                      )
+                    )}
                   </>
                 )}
                 <button
