@@ -276,88 +276,111 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
   };
 
   // ── Render ───────────────────────────────────────────────────────
+
+  // Brand mode: read-only — brands can only view clips the creator has already generated
+  const isBrandMode = mode === "brand";
+
   return (
     <div className="space-y-4">
-      {/* Transcript Status Bar */}
-      <div className="bg-gray-800/60 rounded-xl p-4 border border-gray-700/50">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Mic className="w-4 h-4 text-purple-400" />
-            <div>
-              <span className="text-sm font-medium text-white">Transcript</span>
-              {transcriptStatus.status === "completed" && (
-                <span className="text-xs text-gray-400 ml-2">
-                  {transcriptStatus.wordCount} words | {transcriptStatus.segmentCount} segments | {transcriptStatus.speakerCount} speakers
-                </span>
-              )}
-              {transcriptStatus.status === "processing" && (
-                <span className="text-xs text-yellow-400 ml-2">Processing...</span>
-              )}
-              {transcriptStatus.status === "failed" && (
-                <span className="text-xs text-red-400 ml-2">Failed</span>
-              )}
-              {transcriptStatus.status === "none" && !isLoadingSavedClips && (
-                <span className="text-xs text-gray-500 ml-2">Not yet transcribed</span>
-              )}
+      {/* Transcript Status Bar — only shown for creators/remix, never for brands */}
+      {!isBrandMode && (
+        <div className="bg-gray-800/60 rounded-xl p-4 border border-gray-700/50">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <Mic className="w-4 h-4 text-purple-400" />
+              <div>
+                <span className="text-sm font-medium text-white">Transcript</span>
+                {transcriptStatus.status === "completed" && (
+                  <span className="text-xs text-gray-400 ml-2">
+                    {transcriptStatus.wordCount} words | {transcriptStatus.segmentCount} segments | {transcriptStatus.speakerCount} speakers
+                  </span>
+                )}
+                {transcriptStatus.status === "processing" && (
+                  <span className="text-xs text-yellow-400 ml-2">Processing...</span>
+                )}
+                {transcriptStatus.status === "failed" && (
+                  <span className="text-xs text-red-400 ml-2">Failed</span>
+                )}
+                {transcriptStatus.status === "none" && !isLoadingSavedClips && (
+                  <span className="text-xs text-gray-500 ml-2">Not yet transcribed</span>
+                )}
+              </div>
             </div>
+
+            {transcriptStatus.status === "none" && !isLoadingSavedClips && (
+              <Button
+                size="sm"
+                onClick={handleTranscribe}
+                disabled={isLoadingTranscript}
+                className="bg-purple-600 hover:bg-purple-500 text-white text-xs"
+              >
+                {isLoadingTranscript ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <Mic className="w-3 h-3 mr-1" />}
+                Transcribe
+              </Button>
+            )}
+            {transcriptStatus.status === "processing" && (
+              <Loader2 className="w-4 h-4 text-purple-400 animate-spin" />
+            )}
+            {isLoadingSavedClips && (
+              <Loader2 className="w-4 h-4 text-purple-400 animate-spin" />
+            )}
+            {transcriptStatus.status === "completed" && !analysisComplete && !isLoadingSavedClips && (
+              <Button
+                size="sm"
+                onClick={handleAnalyze}
+                disabled={isLoadingAnalysis}
+                className="bg-blue-600 hover:bg-blue-500 text-white text-xs"
+              >
+                {isLoadingAnalysis ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <Brain className="w-3 h-3 mr-1" />}
+                Find Viral Clips
+              </Button>
+            )}
+            {transcriptStatus.status === "completed" && analysisComplete && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={handleAnalyze}
+                disabled={isLoadingAnalysis}
+                className="text-gray-400 hover:text-white text-xs"
+              >
+                <RefreshCw className={`w-3 h-3 mr-1 ${isLoadingAnalysis ? "animate-spin" : ""}`} />
+                Re-analyze
+              </Button>
+            )}
+            {transcriptStatus.status === "failed" && (
+              <Button
+                size="sm"
+                onClick={handleTranscribe}
+                disabled={isLoadingTranscript}
+                className="bg-red-600 hover:bg-red-500 text-white text-xs"
+              >
+                <RefreshCw className="w-3 h-3 mr-1" />
+                Retry
+              </Button>
+            )}
           </div>
-
-          {transcriptStatus.status === "none" && !isLoadingSavedClips && (
-            <Button
-              size="sm"
-              onClick={handleTranscribe}
-              disabled={isLoadingTranscript}
-              className="bg-purple-600 hover:bg-purple-500 text-white text-xs"
-            >
-              {isLoadingTranscript ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <Mic className="w-3 h-3 mr-1" />}
-              Transcribe
-            </Button>
-          )}
-          {transcriptStatus.status === "processing" && (
-            <Loader2 className="w-4 h-4 text-purple-400 animate-spin" />
-          )}
-          {isLoadingSavedClips && (
-            <Loader2 className="w-4 h-4 text-purple-400 animate-spin" />
-          )}
-          {transcriptStatus.status === "completed" && !analysisComplete && !isLoadingSavedClips && (
-            <Button
-              size="sm"
-              onClick={handleAnalyze}
-              disabled={isLoadingAnalysis}
-              className="bg-blue-600 hover:bg-blue-500 text-white text-xs"
-            >
-              {isLoadingAnalysis ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <Brain className="w-3 h-3 mr-1" />}
-              Find Viral Clips
-            </Button>
-          )}
-          {transcriptStatus.status === "completed" && analysisComplete && (
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={handleAnalyze}
-              disabled={isLoadingAnalysis}
-              className="text-gray-400 hover:text-white text-xs"
-            >
-              <RefreshCw className={`w-3 h-3 mr-1 ${isLoadingAnalysis ? "animate-spin" : ""}`} />
-              Re-analyze
-            </Button>
-          )}
-          {transcriptStatus.status === "failed" && (
-            <Button
-              size="sm"
-              onClick={handleTranscribe}
-              disabled={isLoadingTranscript}
-              className="bg-red-600 hover:bg-red-500 text-white text-xs"
-            >
-              <RefreshCw className="w-3 h-3 mr-1" />
-              Retry
-            </Button>
-          )}
         </div>
-      </div>
+      )}
 
-      {/* Loading Analysis */}
-      {isLoadingAnalysis && (
+      {/* Brand mode: loading state while checking for creator-generated clips */}
+      {isBrandMode && isLoadingSavedClips && (
+        <div className="bg-gray-800/60 rounded-xl p-6 border border-gray-700/50 text-center">
+          <Loader2 className="w-6 h-6 text-purple-400 animate-spin mx-auto mb-2" />
+          <p className="text-sm text-gray-400">Loading viral clips...</p>
+        </div>
+      )}
+
+      {/* Brand mode: empty state when creator hasn't generated clips yet */}
+      {isBrandMode && !isLoadingSavedClips && !analysisComplete && (
+        <div className="bg-gray-800/60 rounded-xl p-6 border border-gray-700/50 text-center">
+          <Sparkles className="w-8 h-8 text-gray-600 mx-auto mb-3" />
+          <p className="text-sm text-gray-400 font-medium">No viral clips available yet</p>
+          <p className="text-xs text-gray-500 mt-1">The creator hasn't generated editorial clips for this video yet.</p>
+        </div>
+      )}
+
+      {/* Loading Analysis — only for creators actively running analysis */}
+      {!isBrandMode && isLoadingAnalysis && (
         <div className="bg-gray-800/60 rounded-xl p-8 border border-gray-700/50 text-center">
           <Loader2 className="w-8 h-8 text-blue-400 animate-spin mx-auto mb-3" />
           <p className="text-sm text-white font-medium">Analyzing transcript for viral moments...</p>
