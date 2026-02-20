@@ -7,7 +7,7 @@
  * - BrandMarketplace — read-only view with "Buy Placement" action
  */
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Sparkles, Clock, TrendingUp, Tag, ChevronDown, ChevronUp,
@@ -120,59 +120,67 @@ function ScoreBar({ label, value, icon: Icon }: { label: string; value: number; 
 export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPlacement }: EditorialClipsProps) {
   const { toast } = useToast();
 
-  // State — clips are cached in sessionStorage so they persist across tab switches
-  const cacheKey = `editorial_clips_v1_${videoId}`;
-  const cachedClips = (() => {
-    try {
-      const cached = sessionStorage.getItem(cacheKey);
-      if (cached) return JSON.parse(cached) as RankedClip[];
-    } catch {}
-    return null;
-  })();
-
   const [transcriptStatus, setTranscriptStatus] = useState<TranscriptStatus>({ status: "none" });
-  const [clips, setClips] = useState<RankedClip[]>(cachedClips || []);
+  const [clips, setClips] = useState<RankedClip[]>([]);
   const [isLoadingTranscript, setIsLoadingTranscript] = useState(false);
   const [isLoadingAnalysis, setIsLoadingAnalysis] = useState(false);
-  const [analysisComplete, setAnalysisComplete] = useState(cachedClips ? cachedClips.length > 0 : false);
+  const [isLoadingSavedClips, setIsLoadingSavedClips] = useState(true);
+  const [analysisComplete, setAnalysisComplete] = useState(false);
   const [expandedClip, setExpandedClip] = useState<number | null>(null);
   const [sortBy, setSortBy] = useState<"score" | "time" | "duration">("score");
   const [tierFilter, setTierFilter] = useState<"all" | "premium" | "standard" | "organic">("all");
-  const [hasCheckedTranscript, setHasCheckedTranscript] = useState(false);
 
-  // ── Check transcript status on mount ─────────────────────────────
-  const checkTranscript = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/video/${videoId}/transcript`, { credentials: "include" });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.status === "completed") {
-          setTranscriptStatus({
-            status: "completed",
-            wordCount: data.wordCount,
-            segmentCount: data.segmentCount,
-            speakerCount: data.speakerMap ? Object.keys(data.speakerMap).length : 0,
-          });
-        } else if (data.status === "processing") {
-          setTranscriptStatus({ status: "processing" });
-          // Poll for completion
-          setTimeout(checkTranscript, 5000);
-        } else if (data.status === "failed") {
-          setTranscriptStatus({ status: "failed" });
+  // ── Load saved clips + transcript status on mount ─────────────────
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSavedData() {
+      // Load both transcript status and saved editorial clips in parallel
+      try {
+        const [transcriptRes, clipsRes] = await Promise.all([
+          fetch(`/api/video/${videoId}/transcript`, { credentials: "include" }),
+          fetch(`/api/scenes/${videoId}/editorial-clips`, { credentials: "include" }),
+        ]);
+
+        if (cancelled) return;
+
+        // Process transcript
+        if (transcriptRes.ok) {
+          const data = await transcriptRes.json();
+          if (data.status === "completed") {
+            setTranscriptStatus({
+              status: "completed",
+              wordCount: data.wordCount,
+              segmentCount: data.segmentCount,
+              speakerCount: data.speakerMap ? Object.keys(data.speakerMap).length : 0,
+            });
+          } else if (data.status === "processing") {
+            setTranscriptStatus({ status: "processing" });
+          } else if (data.status === "failed") {
+            setTranscriptStatus({ status: "failed" });
+          } else {
+            setTranscriptStatus({ status: "none" });
+          }
         }
-      } else {
-        setTranscriptStatus({ status: "none" });
-      }
-    } catch {
-      setTranscriptStatus({ status: "none" });
-    }
-    setHasCheckedTranscript(true);
-  }, [videoId]);
 
-  // Check on first render
-  if (!hasCheckedTranscript) {
-    checkTranscript();
-  }
+        // Process saved editorial clips
+        if (clipsRes.ok) {
+          const data = await clipsRes.json();
+          if (data.clips && data.clips.length > 0) {
+            setClips(data.clips);
+            setAnalysisComplete(true);
+          }
+        }
+      } catch {
+        // Non-fatal — component will still work for fresh analysis
+      }
+
+      if (!cancelled) setIsLoadingSavedClips(false);
+    }
+
+    loadSavedData();
+    return () => { cancelled = true; };
+  }, [videoId]);
 
   // ── Transcribe Video ─────────────────────────────────────────────
   const handleTranscribe = async () => {
@@ -237,10 +245,7 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
       if (res.ok && data.rankedClips) {
         setClips(data.rankedClips);
         setAnalysisComplete(true);
-        // Cache results in sessionStorage so they persist across tab switches
-        try {
-          sessionStorage.setItem(cacheKey, JSON.stringify(data.rankedClips));
-        } catch {}
+        // Clips are now saved to the DB by the server — no sessionStorage needed
         toast({
           title: `Found ${data.rankedClips.length} viral clips`,
           description: `${data.moments?.length || 0} moments analyzed`,
@@ -291,13 +296,13 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
               {transcriptStatus.status === "failed" && (
                 <span className="text-xs text-red-400 ml-2">Failed</span>
               )}
-              {transcriptStatus.status === "none" && hasCheckedTranscript && (
+              {transcriptStatus.status === "none" && !isLoadingSavedClips && (
                 <span className="text-xs text-gray-500 ml-2">Not yet transcribed</span>
               )}
             </div>
           </div>
 
-          {transcriptStatus.status === "none" && (
+          {transcriptStatus.status === "none" && !isLoadingSavedClips && (
             <Button
               size="sm"
               onClick={handleTranscribe}
@@ -311,7 +316,10 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
           {transcriptStatus.status === "processing" && (
             <Loader2 className="w-4 h-4 text-purple-400 animate-spin" />
           )}
-          {transcriptStatus.status === "completed" && !analysisComplete && (
+          {isLoadingSavedClips && (
+            <Loader2 className="w-4 h-4 text-purple-400 animate-spin" />
+          )}
+          {transcriptStatus.status === "completed" && !analysisComplete && !isLoadingSavedClips && (
             <Button
               size="sm"
               onClick={handleAnalyze}

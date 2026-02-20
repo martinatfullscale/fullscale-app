@@ -5485,6 +5485,16 @@ export async function registerRoutes(
           `${editorialMoments.length} moments → ${rankedClips.length} ranked clips`
       );
 
+      // Persist editorial clips to the database so they survive page reloads
+      const userId = req.user?.id || 1;
+      try {
+        await storage.saveEditorialClips(videoId, userId, rankedClips);
+        console.log(`[API] Saved ${rankedClips.length} editorial clips to DB for video ${videoId}`);
+      } catch (saveErr: any) {
+        // Non-fatal — still return the results even if DB save fails (table may not exist yet)
+        console.warn(`[API] Failed to persist editorial clips: ${saveErr.message}`);
+      }
+
       res.json({
         message: `Found ${rankedClips.length} editorial clip moments`,
         moments: editorialMoments,
@@ -5493,6 +5503,24 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("[API] /api/scenes/:videoId/editorial-analysis error:", err.message);
       res.status(500).json({ error: err.message || "Editorial analysis failed" });
+    }
+  });
+
+  // GET /api/scenes/:videoId/editorial-clips — Load previously saved editorial clips
+  app.get("/api/scenes/:videoId/editorial-clips", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+
+      const clips = await storage.getEditorialClipsByVideo(videoId);
+      res.json({ clips });
+    } catch (err: any) {
+      // Gracefully handle table not existing yet
+      if (err.message?.includes("editorial_clips") && err.message?.includes("does not exist")) {
+        return res.json({ clips: [] });
+      }
+      console.error("[API] /api/scenes/:videoId/editorial-clips error:", err.message);
+      res.status(500).json({ error: err.message });
     }
   });
 

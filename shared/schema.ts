@@ -524,6 +524,47 @@ export const insertStitchPlanSchema = createInsertSchema(stitchPlans).omit({
 export type StitchPlan = typeof stitchPlans.$inferSelect;
 export type InsertStitchPlan = z.infer<typeof insertStitchPlanSchema>;
 
+// Editorial Clips Table — persisted AI-identified viral moments for each video
+export const editorialClips = pgTable('editorial_clips', {
+  id: serial('id').primaryKey(),
+  videoId: integer('video_id').references(() => videoIndex.id).notNull(),
+  userId: integer('user_id').notNull(),
+  clipStart: real('clip_start').notNull(),
+  clipEnd: real('clip_end').notNull(),
+  duration: real('duration').notNull(),
+  editorialScore: real('editorial_score'),
+  surfaceScore: real('surface_score'),
+  brandMatchScore: real('brand_match_score'),
+  finalScore: real('final_score'),
+  monetizationTier: varchar('monetization_tier', { length: 20 }), // premium, standard, organic
+  scores: jsonb('scores').$type<{
+    hookStrength: number;
+    narrativeCompleteness: number;
+    emotionalArc: number;
+    speakerClarity: number;
+    surfaceCompatibility: number;
+    culturalRelevance: number;
+    replayability: number;
+  }>(),
+  surfaces: jsonb('surfaces'),
+  brandMatches: jsonb('brand_matches'),
+  editPoints: jsonb('edit_points').$type<{ start: number; end: number; adjustments: string[] }>(),
+  suggestedTitle: varchar('suggested_title', { length: 300 }),
+  topicTags: jsonb('topic_tags').$type<string[]>(),
+  reasoning: text('reasoning'),
+  rawClipStart: real('raw_clip_start'),
+  rawClipEnd: real('raw_clip_end'),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const insertEditorialClipSchema = createInsertSchema(editorialClips).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type EditorialClip = typeof editorialClips.$inferSelect;
+export type InsertEditorialClip = z.infer<typeof insertEditorialClipSchema>;
+
 // Remix Templates Table — brand-specific formatting templates
 export const remixTemplates = pgTable('remix_templates', {
   id: serial('id').primaryKey(),

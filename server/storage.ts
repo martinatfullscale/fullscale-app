@@ -70,6 +70,9 @@ import {
   stitchPlans,
   type StitchPlan,
   type InsertStitchPlan,
+  editorialClips,
+  type EditorialClip,
+  type InsertEditorialClip,
 } from "@shared/schema";
 import { users, type User, type UpsertUser } from "@shared/models/auth";
 import { encrypt, decrypt } from "./encryption";
@@ -178,6 +181,10 @@ export interface IStorage {
   getStitchPlan(planId: number): Promise<StitchPlan | undefined>;
   getStitchPlansByVideo(videoId: number): Promise<StitchPlan[]>;
   updateStitchPlanStatus(planId: number, status: string, updates?: { outputPath?: string; thumbnailPath?: string; qualityScore?: number; generatedClipId?: number; errorMessage?: string }): Promise<StitchPlan | undefined>;
+  // Editorial clips methods
+  saveEditorialClips(videoId: number, userId: number, clips: any[]): Promise<EditorialClip[]>;
+  getEditorialClipsByVideo(videoId: number): Promise<EditorialClip[]>;
+  deleteEditorialClipsByVideo(videoId: number): Promise<void>;
   // Generated asset methods
   createGeneratedAsset(data: InsertGeneratedAsset): Promise<GeneratedAsset>;
   getAssetsByVideo(videoId: number): Promise<GeneratedAsset[]>;
@@ -1147,6 +1154,49 @@ export class DatabaseStorage implements IStorage {
       .where(eq(stitchPlans.id, planId))
       .returning();
     return result;
+  }
+
+  // ── Editorial Clips Methods ──
+
+  async saveEditorialClips(videoId: number, userId: number, clips: any[]): Promise<EditorialClip[]> {
+    // Delete existing clips for this video first (re-analysis replaces old results)
+    await db.delete(editorialClips).where(eq(editorialClips.videoId, videoId));
+
+    if (clips.length === 0) return [];
+
+    const rows = clips.map((clip: any) => ({
+      videoId,
+      userId,
+      clipStart: clip.clipStart,
+      clipEnd: clip.clipEnd,
+      duration: clip.duration,
+      editorialScore: clip.editorialScore ?? null,
+      surfaceScore: clip.surfaceScore ?? null,
+      brandMatchScore: clip.brandMatchScore ?? null,
+      finalScore: clip.finalScore ?? null,
+      monetizationTier: clip.monetizationTier ?? null,
+      scores: clip.scores ?? null,
+      surfaces: clip.surfaces ?? null,
+      brandMatches: clip.brandMatches ?? null,
+      editPoints: clip.editPoints ?? null,
+      suggestedTitle: clip.suggestedTitle ?? null,
+      topicTags: clip.topicTags ?? null,
+      reasoning: clip.reasoning ?? null,
+      rawClipStart: clip.rawClipStart ?? null,
+      rawClipEnd: clip.rawClipEnd ?? null,
+    }));
+
+    return db.insert(editorialClips).values(rows).returning();
+  }
+
+  async getEditorialClipsByVideo(videoId: number): Promise<EditorialClip[]> {
+    return db.select().from(editorialClips)
+      .where(eq(editorialClips.videoId, videoId))
+      .orderBy(desc(editorialClips.finalScore));
+  }
+
+  async deleteEditorialClipsByVideo(videoId: number): Promise<void> {
+    await db.delete(editorialClips).where(eq(editorialClips.videoId, videoId));
   }
 
   // ── Generated Asset Methods ──
