@@ -4462,6 +4462,16 @@ export async function registerRoutes(
       const videoId = parseInt(req.params.videoId);
       if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
 
+      // Brand users cannot export videos — only creators can
+      if (req.authEmail) {
+        const viewRole = (req.session as any)?.viewRole;
+        const allowedUser = await storage.getAllowedUser(req.authEmail);
+        const effectiveRole = viewRole || allowedUser?.userType || "creator";
+        if (effectiveRole === "brand") {
+          return res.status(403).json({ error: "Video export is not available for brand accounts. Please contact the creator for exported content." });
+        }
+      }
+
       const { placements, canvasWidth, canvasHeight } = req.body;
       if (!placements || !Array.isArray(placements) || placements.length === 0) {
         return res.status(400).json({ error: "At least one placement is required" });

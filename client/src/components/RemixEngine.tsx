@@ -413,6 +413,17 @@ export default function RemixEngine() {
   const { toast } = useToast();
   const videoId = params?.videoId ? parseInt(params.videoId) : null;
 
+  // ── User role detection (brands cannot export video) ──
+  const { data: userTypeData } = useQuery<{ userType?: "creator" | "brand" | null }>({
+    queryKey: ["/api/auth/user-type"],
+    queryFn: async () => {
+      const res = await fetch("/api/auth/user-type", { credentials: "include" });
+      if (!res.ok) return { userType: null };
+      return res.json();
+    },
+  });
+  const isBrand = userTypeData?.userType === "brand";
+
   // Refs
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -1117,14 +1128,17 @@ export default function RemixEngine() {
             Export Frame
           </button>
 
-          <button
-            onClick={handleVideoExport}
-            disabled={assignments.size === 0}
-            className="flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-medium bg-green-600 text-white hover:bg-green-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          >
-            <Film className="w-3.5 h-3.5" />
-            Export Video
-          </button>
+          {/* Video export — only available to creators, not brands */}
+          {!isBrand && (
+            <button
+              onClick={handleVideoExport}
+              disabled={assignments.size === 0}
+              className="flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-medium bg-green-600 text-white hover:bg-green-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              <Film className="w-3.5 h-3.5" />
+              Export Video
+            </button>
+          )}
         </div>
       </div>
 
