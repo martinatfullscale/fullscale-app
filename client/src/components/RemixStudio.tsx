@@ -5,8 +5,7 @@ import {
   CheckCircle, AlertCircle, Clock, BarChart3, Sparkles,
   Tv, Smartphone, Globe, ThumbsUp, ThumbsDown, Settings,
   RefreshCw, Brain, Volume2, VolumeX, Maximize2,
-  Layers, ChevronDown, ChevronUp, Pencil, RotateCcw, Minus, Plus,
-  MessageSquare
+  Layers, ChevronDown, ChevronUp, Pencil, RotateCcw, Minus, Plus
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -150,7 +149,6 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
   const [stitchPlatform, setStitchPlatform] = useState("tiktok");
 
   // AI Co-Pilot state (Phase 4)
-  const [copilotOpen, setCopilotOpen] = useState(false);
   const [copilotClipId, setCopilotClipId] = useState<number | undefined>(undefined);
 
   // Load existing jobs, clips, and stitch plans
@@ -444,9 +442,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
         onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
       >
         <motion.div
-          className={`bg-gray-900 rounded-2xl w-full max-h-[90vh] overflow-hidden flex flex-col transition-all duration-300 ${
-            copilotOpen ? "max-w-6xl" : "max-w-4xl"
-          }`}
+          className="bg-gray-900 rounded-2xl w-full max-w-6xl max-h-[90vh] overflow-hidden flex flex-col"
           initial={{ scale: 0.95, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
           exit={{ scale: 0.95, opacity: 0 }}
@@ -462,30 +458,16 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
                 <p className="text-sm text-gray-400">Auto-generate platform-ready clips with product placements</p>
               </div>
             </div>
-            <div className="flex items-center gap-2">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setCopilotOpen(!copilotOpen)}
-                className={`text-xs gap-1.5 ${copilotOpen ? "bg-violet-600/20 text-violet-400" : "text-gray-400 hover:text-white"}`}
-              >
-                <MessageSquare className="w-4 h-4" />
-                AI Co-Pilot
-                {copilotOpen && <span className="w-1.5 h-1.5 rounded-full bg-violet-400 animate-pulse" />}
-              </Button>
-              <Button variant="ghost" size="icon" onClick={onClose}>
-                <X className="w-5 h-5" />
-              </Button>
-            </div>
+            <Button variant="ghost" size="icon" onClick={onClose}>
+              <X className="w-5 h-5" />
+            </Button>
           </div>
 
           {/* Two-panel layout: Main content + Co-Pilot side panel */}
           <div className="flex-1 flex overflow-hidden">
 
           {/* Main Content */}
-          <div className={`flex-1 overflow-y-auto p-6 space-y-6 transition-all duration-300 ${
-            copilotOpen ? "border-r border-gray-800" : ""
-          }`}>
+          <div className="flex-1 overflow-y-auto p-6 space-y-6 border-r border-gray-800">
 
             {/* Tab Switcher — Editorial Clips vs Auto-Remix */}
             <div className="flex items-center gap-2 bg-gray-800/50 rounded-lg p-1">
@@ -916,25 +898,17 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
               </div>{/* end highlight reel tab */}
           </div>
 
-          {/* AI Co-Pilot Side Panel — built into the modal */}
-          {copilotOpen && (
-            <motion.div
-              initial={{ width: 0, opacity: 0 }}
-              animate={{ width: 380, opacity: 1 }}
-              exit={{ width: 0, opacity: 0 }}
-              transition={{ type: "spring", stiffness: 300, damping: 30 }}
-              className="h-full flex-shrink-0 overflow-hidden"
-            >
-              <RemixCopilot
-                videoId={videoId}
-                clipId={copilotClipId}
-                open={copilotOpen}
-                onClose={() => setCopilotOpen(false)}
-                onApplySuggestion={handleApplySuggestion}
-                inline={true}
-              />
-            </motion.div>
-          )}
+          {/* AI Co-Pilot Side Panel — always visible */}
+          <div className="w-[380px] flex-shrink-0 h-full overflow-hidden">
+            <RemixCopilot
+              videoId={videoId}
+              clipId={copilotClipId}
+              open={true}
+              onClose={() => {}}
+              onApplySuggestion={handleApplySuggestion}
+              inline={true}
+            />
+          </div>
 
           </div>{/* end two-panel layout */}
         </motion.div>
