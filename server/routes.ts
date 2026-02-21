@@ -2199,6 +2199,14 @@ export async function registerRoutes(
 
     const video = await storage.getVideoById(videoId);
     if (!video) {
+      console.error(`[Surfaces] Video ${videoId} not found by getVideoById — checking if surfaces exist directly...`);
+      // Bypass video check — try to get surfaces directly since video exists in index but getVideoById fails
+      const directSurfaces = await storage.getDetectedSurfaces(videoId);
+      if (directSurfaces.length > 0) {
+        console.warn(`[Surfaces] Found ${directSurfaces.length} surfaces for video ${videoId} despite getVideoById returning null — serving them anyway`);
+        const surfaces = directSurfaces.filter(s => s.surfaceType !== "Filtered");
+        return res.json({ surfaces, count: surfaces.length });
+      }
       return res.status(404).json({ error: "Video not found" });
     }
 
