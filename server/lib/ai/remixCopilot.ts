@@ -404,7 +404,7 @@ RULES:
 - Consider platform-specific best practices (TikTok hooks < 3s, YouTube Shorts < 60s, etc.)
 - Only suggest placements on surfaces that exist in the video
 - Only suggest brand products from the available catalog
-- All timestamps must be within the video's duration (0 to ${typeof ctx.videoDuration === "number" ? ctx.videoDuration : parseFloat(String(ctx.videoDuration)) || 0}s)
+- All timestamps must be within the video's duration (0 to ${parseFloat(String(ctx.videoDuration)) || 0}s)
 
 PLATFORM BEST PRACTICES:
 - TikTok: Hook in first 1-2 seconds, 15-60s optimal, vertical 9:16, text captions boost 40%
@@ -426,8 +426,15 @@ function buildUserPrompt(request: CopilotRequest): string {
   const ctx = request.sessionContext;
   const parts: string[] = [];
 
-  // Ensure videoDuration is a number (schema stores as varchar, could arrive as string)
-  const duration = typeof ctx.videoDuration === "number" ? ctx.videoDuration : parseFloat(String(ctx.videoDuration)) || 0;
+  // Safe number coercion — many DB fields are stored as varchar/text and arrive as strings.
+  // This prevents "x.toFixed is not a function" crashes throughout prompt building.
+  const n = (v: any, fallback = 0): number => {
+    if (typeof v === "number" && !isNaN(v)) return v;
+    const parsed = parseFloat(String(v));
+    return isNaN(parsed) ? fallback : parsed;
+  };
+
+  const duration = n(ctx.videoDuration);
 
   // Video context
   parts.push(`VIDEO: "${ctx.videoTitle}" (${duration.toFixed(1)}s)`);
@@ -435,7 +442,7 @@ function buildUserPrompt(request: CopilotRequest): string {
   // Transcript (truncated)
   if (ctx.transcript.length > 0) {
     const transcriptText = ctx.transcript
-      .map((seg) => `[${(typeof seg.start === "number" ? seg.start : parseFloat(String(seg.start)) || 0).toFixed(1)}s] ${seg.speaker || "?"}: ${seg.text}`)
+      .map((seg) => `[${n(seg.start).toFixed(1)}s] ${seg.speaker || "?"}: ${seg.text}`)
       .join("\n");
     const truncated = transcriptText.slice(0, COPILOT_CONFIG.MAX_TRANSCRIPT_CHARS);
     parts.push(`\nTRANSCRIPT:\n${truncated}${transcriptText.length > COPILOT_CONFIG.MAX_TRANSCRIPT_CHARS ? "\n... (truncated)" : ""}`);
@@ -445,19 +452,21 @@ function buildUserPrompt(request: CopilotRequest): string {
   if (ctx.currentClip) {
     const clip = ctx.currentClip;
     parts.push(`\nCURRENT CLIP (ID: ${clip.clipId}):`);
-    parts.push(`  Time: ${clip.start.toFixed(1)}s → ${clip.end.toFixed(1)}s (${clip.duration.toFixed(1)}s)`);
+    parts.push(`  Time: ${n(clip.start).toFixed(1)}s → ${n(clip.end).toFixed(1)}s (${n(clip.duration).toFixed(1)}s)`);
     parts.push(`  Platform: ${clip.platform}`);
-    parts.push(`  Quality Score: ${(clip.qualityScore * 100).toFixed(0)}%`);
+    parts.push(`  Quality Score: ${(n(clip.qualityScore) * 100).toFixed(0)}%`);
     if (clip.scores) {
-      parts.push(`  Scores: Hook=${(clip.scores.hookStrength * 100).toFixed(0)}%, Narrative=${(clip.scores.narrativeCompleteness * 100).toFixed(0)}%, Emotion=${(clip.scores.emotionalArc * 100).toFixed(0)}%, Speaker=${(clip.scores.speakerClarity * 100).toFixed(0)}%, Surface=${(clip.scores.surfaceCompatibility * 100).toFixed(0)}%, Cultural=${(clip.scores.culturalRelevance * 100).toFixed(0)}%, Replay=${(clip.scores.replayability * 100).toFixed(0)}%`);
+      parts.push(`  Scores: Hook=${(n(clip.scores.hookStrength) * 100).toFixed(0)}%, Narrative=${(n(clip.scores.narrativeCompleteness) * 100).toFixed(0)}%, Emotion=${(n(clip.scores.emotionalArc) * 100).toFixed(0)}%, Speaker=${(n(clip.scores.speakerClarity) * 100).toFixed(0)}%, Surface=${(n(clip.scores.surfaceCompatibility) * 100).toFixed(0)}%, Cultural=${(n(clip.scores.culturalRelevance) * 100).toFixed(0)}%, Replay=${(n(clip.scores.replayability) * 100).toFixed(0)}%`);
     }
     if (clip.placements.length > 0) {
-      parts.push(`  Placements: ${clip.placements.map((p) => `${p.productName} @ ${p.timestamp.toFixed(1)}s (surface #${p.surfaceId})`).join(", ")}`);
+      parts.push(`  Placements: ${clip.placements.map((p) => `${p.productName} @ ${n(p.timestamp).toFixed(1)}s (surface #${p.surfaceId})`).join(", ")}`);
     }
 
     // Transcript snippet for the clip's time range
+    const clipStart = n(clip.start);
+    const clipEnd = n(clip.end);
     const clipTranscript = ctx.transcript.filter(
-      (seg) => seg.start >= clip.start && seg.end <= clip.end
+      (seg) => n(seg.start) >= clipStart && n(seg.end) <= clipEnd
     );
     if (clipTranscript.length > 0) {
       parts.push(`  Clip Transcript: "${clipTranscript.map((s) => s.text).join(" ")}"`);
@@ -468,7 +477,7 @@ function buildUserPrompt(request: CopilotRequest): string {
   if (ctx.surfaces.length > 0) {
     parts.push(`\nAVAILABLE SURFACES (${ctx.surfaces.length}):`);
     ctx.surfaces.slice(0, 20).forEach((s) => {
-      parts.push(`  #${s.id}: ${s.surfaceType} @ ${s.timestamp.toFixed(1)}s (confidence: ${(s.confidence * 100).toFixed(0)}%)`);
+      parts.push(`  #${s.id}: ${s.surfaceType} @ ${n(s.timestamp).toFixed(1)}s (confidence: ${(n(s.confidence) * 100).toFixed(0)}%)`);
     });
   }
 
@@ -484,7 +493,7 @@ function buildUserPrompt(request: CopilotRequest): string {
   if (ctx.existingClips.length > 0) {
     parts.push(`\nEXISTING CLIPS FOR THIS VIDEO (${ctx.existingClips.length}):`);
     ctx.existingClips.forEach((c) => {
-      parts.push(`  Clip #${c.clipId}: ${c.start.toFixed(1)}s → ${c.end.toFixed(1)}s, ${c.platform}, score: ${(c.qualityScore * 100).toFixed(0)}%`);
+      parts.push(`  Clip #${c.clipId}: ${n(c.start).toFixed(1)}s → ${n(c.end).toFixed(1)}s, ${c.platform}, score: ${(n(c.qualityScore) * 100).toFixed(0)}%`);
     });
   }
 
@@ -492,7 +501,7 @@ function buildUserPrompt(request: CopilotRequest): string {
   if (ctx.editorialAnalysis && ctx.editorialAnalysis.length > 0) {
     parts.push(`\nEDITORIAL ANALYSIS — TOP MOMENTS:`);
     ctx.editorialAnalysis.slice(0, 5).forEach((e) => {
-      parts.push(`  ${e.clipStart.toFixed(1)}s → ${e.clipEnd.toFixed(1)}s: "${e.suggestedTitle}" (score: ${(e.compositeScore * 100).toFixed(0)}%) — ${e.reasoning}`);
+      parts.push(`  ${n(e.clipStart).toFixed(1)}s → ${n(e.clipEnd).toFixed(1)}s: "${e.suggestedTitle}" (score: ${(n(e.compositeScore) * 100).toFixed(0)}%) — ${e.reasoning}`);
     });
   }
 
@@ -514,7 +523,7 @@ function buildUserPrompt(request: CopilotRequest): string {
       parts.push("TASK: The creator just trimmed this clip. Evaluate the new boundaries — is the hook better? Is the payoff intact? Suggest any further refinements or complementary changes.");
       break;
     case "low_score":
-      parts.push(`TASK: This clip scored ${ctx.currentClip ? (ctx.currentClip.qualityScore * 100).toFixed(0) : "?"}% which is below the quality threshold (70%). Identify the weakest dimensions and provide specific, fixable suggestions to bring the score up.`);
+      parts.push(`TASK: This clip scored ${ctx.currentClip ? (n(ctx.currentClip.qualityScore) * 100).toFixed(0) : "?"}% which is below the quality threshold (70%). Identify the weakest dimensions and provide specific, fixable suggestions to bring the score up.`);
       break;
     case "user_question":
       parts.push(`TASK: The creator asks: "${request.userMessage || "How can I improve this clip?"}"\n\nProvide a helpful answer with specific, actionable suggestions where relevant.`);
