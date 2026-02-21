@@ -582,9 +582,17 @@ export default function PlacementPreviewModal({
     refCenterY: number;                // Top-left Y of reference patch in canvas pixels
     patchWidth: number;                // Patch size in canvas pixels
     patchHeight: number;
-    lastOffsetX: number;               // Current tracked offset in canvas pixels
-    lastOffsetY: number;
-    lastGoodOffsetX: number;           // Last offset with high confidence (held when tracking degrades)
+    // Smoothed display position (what's actually rendered — smoothly interpolated)
+    displayOffsetX: number;
+    displayOffsetY: number;
+    // Target position from tracking (raw measurement, may jump)
+    targetOffsetX: number;
+    targetOffsetY: number;
+    // Velocity for momentum-based interpolation
+    velocityX: number;
+    velocityY: number;
+    // Last confident position (held when tracking degrades)
+    lastGoodOffsetX: number;
     lastGoodOffsetY: number;
     searchCanvas: HTMLCanvasElement;    // Off-screen canvas for pixel sampling
     initialized: boolean;
@@ -598,8 +606,12 @@ export default function PlacementPreviewModal({
     refCenterY: 0,
     patchWidth: 0,
     patchHeight: 0,
-    lastOffsetX: 0,
-    lastOffsetY: 0,
+    displayOffsetX: 0,
+    displayOffsetY: 0,
+    targetOffsetX: 0,
+    targetOffsetY: 0,
+    velocityX: 0,
+    velocityY: 0,
     lastGoodOffsetX: 0,
     lastGoodOffsetY: 0,
     searchCanvas: typeof document !== "undefined" ? document.createElement("canvas") : null as any,
@@ -930,11 +942,10 @@ export default function PlacementPreviewModal({
       const baseBY = selectedSurface.boundingBoxY * canvas.height;
 
       if (useVideo && videoEl) {
-        // CLIENT-SIDE VISUAL TRACKING — template matching on the surface region
-        // Strategy: capture a reference patch from the first frame, then search for it
-        // in each subsequent frame. When confidence is high, smoothly blend offsets.
-        // When confidence drops, HOLD the last good position (don't snap back to zero).
-        // Periodically update the reference patch so it adapts to gradual scene changes.
+        // CLIENT-SIDE VISUAL TRACKING with spring-damped interpolation.
+        // Template matching runs every 4th frame (expensive), but the DISPLAY
+        // position is interpolated every frame using spring physics, giving
+        // buttery-smooth motion even when measurements are sparse.
         const tracking = trackingRef.current;
 
         // Step 1: Capture reference patch from the first frame if not done yet
@@ -951,8 +962,12 @@ export default function PlacementPreviewModal({
             tracking.refCenterY = Math.max(0, Math.floor(baseBY - baseBH * patchMargin));
             tracking.patchWidth = refPatch.width;
             tracking.patchHeight = refPatch.height;
-            tracking.lastOffsetX = 0;
-            tracking.lastOffsetY = 0;
+            tracking.displayOffsetX = 0;
+            tracking.displayOffsetY = 0;
+            tracking.targetOffsetX = 0;
+            tracking.targetOffsetY = 0;
+            tracking.velocityX = 0;
+            tracking.velocityY = 0;
             tracking.lastGoodOffsetX = 0;
             tracking.lastGoodOffsetY = 0;
             tracking.refUpdateCounter = 0;
@@ -962,68 +977,60 @@ export default function PlacementPreviewModal({
           }
         }
 
-        // Step 2: Track the reference patch in the current frame
-        // Run template matching every 2nd frame (more responsive than every 3rd)
+        // Step 2: Track + interpolate
         if (tracking.initialized && tracking.referenceData) {
           tracking.frameCounter++;
-          if (tracking.frameCounter % 2 === 0) {
-            // Search centered on last known offset position (not always from reference origin)
-            // This gives us a moving search window that follows the surface
-            const searchFromX = tracking.refCenterX + Math.round(tracking.lastOffsetX);
-            const searchFromY = tracking.refCenterY + Math.round(tracking.lastOffsetY);
+
+          // Run expensive template matching only every 4th frame
+          if (tracking.frameCounter % 4 === 0) {
+            const searchFromX = tracking.refCenterX + Math.round(tracking.targetOffsetX);
+            const searchFromY = tracking.refCenterY + Math.round(tracking.targetOffsetY);
 
             const { dx, dy, confidence, frameData } = trackPatchInFrame(
               videoEl, canvas.width, canvas.height,
               tracking.referenceData,
               searchFromX, searchFromY,
               tracking.searchCanvas,
-              120 // generous search radius for camera pans
+              80 // tighter search radius — reduces false far-away matches
             );
-
-            // Actual offset from the ORIGINAL reference position
-            const newOffsetX = tracking.lastOffsetX + dx;
-            const newOffsetY = tracking.lastOffsetY + dy;
 
             tracking.lastConfidence = confidence;
 
-            if (confidence > 0.35) {
-              // Good match — smooth blend toward the new offset
-              // Higher confidence → more responsive (less smoothing)
-              const alpha = 0.3 + confidence * 0.4; // 0.44 to 0.70
-              tracking.lastOffsetX = tracking.lastOffsetX * (1 - alpha) + newOffsetX * alpha;
-              tracking.lastOffsetY = tracking.lastOffsetY * (1 - alpha) + newOffsetY * alpha;
+            if (confidence > 0.3) {
+              // Update the TARGET position (not the display position)
+              tracking.targetOffsetX += dx;
+              tracking.targetOffsetY += dy;
               tracking.consecutiveLowConf = 0;
+              tracking.lastGoodOffsetX = tracking.targetOffsetX;
+              tracking.lastGoodOffsetY = tracking.targetOffsetY;
 
-              // Save as last good offset
-              tracking.lastGoodOffsetX = tracking.lastOffsetX;
-              tracking.lastGoodOffsetY = tracking.lastOffsetY;
-
-              // Adaptive reference update: every ~45 matched frames, refresh the
-              // reference patch from the current frame so it stays relevant as
-              // lighting/perspective changes gradually.
+              // Adaptive reference update every ~60 confident frames
               tracking.refUpdateCounter++;
-              if (tracking.refUpdateCounter >= 45 && confidence > 0.55 && frameData) {
+              if (tracking.refUpdateCounter >= 60 && confidence > 0.5 && frameData) {
                 tracking.referenceData = frameData;
-                // Update reference position to match current tracked position
                 tracking.refCenterX = searchFromX;
                 tracking.refCenterY = searchFromY;
-                tracking.lastOffsetX = 0;
-                tracking.lastOffsetY = 0;
+                // Reset all offsets — the new reference IS the current position,
+                // so target and display are both at 0 relative to it.
+                // The spring will hold steady since target == display.
+                tracking.targetOffsetX = 0;
+                tracking.targetOffsetY = 0;
+                tracking.displayOffsetX = 0;
+                tracking.displayOffsetY = 0;
+                tracking.velocityX = 0;
+                tracking.velocityY = 0;
                 tracking.lastGoodOffsetX = 0;
                 tracking.lastGoodOffsetY = 0;
                 tracking.refUpdateCounter = 0;
               }
             } else {
-              // Low confidence — HOLD the last good offset instead of decaying to zero.
-              // This prevents the bbox from snapping back to original position
-              // when the scene temporarily changes (motion blur, occlusion, etc.)
+              // Low confidence — hold target at last good position
               tracking.consecutiveLowConf++;
-              tracking.lastOffsetX = tracking.lastGoodOffsetX;
-              tracking.lastOffsetY = tracking.lastGoodOffsetY;
+              tracking.targetOffsetX = tracking.lastGoodOffsetX;
+              tracking.targetOffsetY = tracking.lastGoodOffsetY;
 
-              // If we've lost tracking for a long time (60+ low-conf frames in a row),
-              // try re-capturing a reference patch from the current frame
-              if (tracking.consecutiveLowConf > 60) {
+              // Re-capture after long tracking loss
+              if (tracking.consecutiveLowConf > 90) {
                 const newRef = captureReferencePatch(
                   videoEl, canvas.width, canvas.height,
                   baseBX + tracking.lastGoodOffsetX,
@@ -1033,15 +1040,17 @@ export default function PlacementPreviewModal({
                 );
                 if (newRef) {
                   tracking.referenceData = newRef;
-                  const patchMargin = 0.3;
+                  const pm = 0.3;
                   tracking.refCenterX = Math.max(0, Math.floor(
-                    (baseBX + tracking.lastGoodOffsetX) - baseBW * patchMargin
+                    (baseBX + tracking.lastGoodOffsetX) - baseBW * pm
                   ));
                   tracking.refCenterY = Math.max(0, Math.floor(
-                    (baseBY + tracking.lastGoodOffsetY) - baseBH * patchMargin
+                    (baseBY + tracking.lastGoodOffsetY) - baseBH * pm
                   ));
-                  tracking.lastOffsetX = 0;
-                  tracking.lastOffsetY = 0;
+                  tracking.targetOffsetX = 0;
+                  tracking.targetOffsetY = 0;
+                  tracking.displayOffsetX = 0;
+                  tracking.displayOffsetY = 0;
                   tracking.lastGoodOffsetX = 0;
                   tracking.lastGoodOffsetY = 0;
                   tracking.refUpdateCounter = 0;
@@ -1051,15 +1060,30 @@ export default function PlacementPreviewModal({
             }
           }
 
-          // Apply total offset = baseBX is the original position, plus tracked offset
-          // When reference has been updated, lastGoodOffset is relative to the updated ref,
-          // so we reconstruct the absolute position differently:
-          // absolute = refCenterX (current reference origin) + lastOffset + patch margin shift
+          // EVERY frame: spring-damped interpolation toward target.
+          // This is what makes the motion smooth — the display position
+          // "chases" the target with inertia, like a physical object.
+          const springStiffness = 0.08;  // How fast display catches up to target (lower = smoother)
+          const damping = 0.75;          // Velocity decay (lower = more damping, less overshoot)
+
+          // Spring force: pull display toward target
+          const forceX = (tracking.targetOffsetX - tracking.displayOffsetX) * springStiffness;
+          const forceY = (tracking.targetOffsetY - tracking.displayOffsetY) * springStiffness;
+
+          // Update velocity with spring force + damping
+          tracking.velocityX = tracking.velocityX * damping + forceX;
+          tracking.velocityY = tracking.velocityY * damping + forceY;
+
+          // Apply velocity to display position
+          tracking.displayOffsetX += tracking.velocityX;
+          tracking.displayOffsetY += tracking.velocityY;
+
+          // Compute final screen position
           const patchMargin = 0.3;
           const marginX = baseBW * patchMargin;
           const marginY = baseBH * patchMargin;
-          bx = tracking.refCenterX + tracking.lastOffsetX + marginX;
-          by = tracking.refCenterY + tracking.lastOffsetY + marginY;
+          bx = tracking.refCenterX + tracking.displayOffsetX + marginX;
+          by = tracking.refCenterY + tracking.displayOffsetY + marginY;
         } else {
           bx = baseBX;
           by = baseBY;
@@ -1173,8 +1197,12 @@ export default function PlacementPreviewModal({
       const tracking = trackingRef.current;
       tracking.initialized = false;
       tracking.referenceData = null;
-      tracking.lastOffsetX = 0;
-      tracking.lastOffsetY = 0;
+      tracking.displayOffsetX = 0;
+      tracking.displayOffsetY = 0;
+      tracking.targetOffsetX = 0;
+      tracking.targetOffsetY = 0;
+      tracking.velocityX = 0;
+      tracking.velocityY = 0;
       tracking.lastGoodOffsetX = 0;
       tracking.lastGoodOffsetY = 0;
       tracking.frameCounter = 0;
@@ -1215,8 +1243,12 @@ export default function PlacementPreviewModal({
     const tracking = trackingRef.current;
     tracking.initialized = false;
     tracking.referenceData = null;
-    tracking.lastOffsetX = 0;
-    tracking.lastOffsetY = 0;
+    tracking.displayOffsetX = 0;
+    tracking.displayOffsetY = 0;
+    tracking.targetOffsetX = 0;
+    tracking.targetOffsetY = 0;
+    tracking.velocityX = 0;
+    tracking.velocityY = 0;
     tracking.lastGoodOffsetX = 0;
     tracking.lastGoodOffsetY = 0;
     tracking.frameCounter = 0;
