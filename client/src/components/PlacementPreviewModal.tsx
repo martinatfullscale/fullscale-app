@@ -193,6 +193,128 @@ function clamp(val: number, min: number, max: number) {
   return Math.min(Math.max(val, min), max);
 }
 
+/**
+ * Client-side template matching for surface tracking.
+ * Captures a small grayscale patch from the reference frame around the surface,
+ * then searches for it in subsequent frames to estimate camera motion.
+ * Returns the (dx, dy) offset in normalized coordinates (0-1).
+ */
+function captureReferencePatch(
+  videoEl: HTMLVideoElement,
+  canvasW: number,
+  canvasH: number,
+  bboxX: number, bboxY: number, bboxW: number, bboxH: number,
+  searchCanvas: HTMLCanvasElement
+): ImageData | null {
+  try {
+    searchCanvas.width = canvasW;
+    searchCanvas.height = canvasH;
+    const ctx = searchCanvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return null;
+
+    ctx.drawImage(videoEl, 0, 0, canvasW, canvasH);
+
+    // Sample a patch centered on the bbox — use a region slightly larger than the bbox
+    // to capture surrounding context (edges of furniture, etc.) for better matching
+    const patchMargin = 0.3; // 30% extra margin around bbox
+    const px = Math.max(0, Math.floor(bboxX - bboxW * patchMargin));
+    const py = Math.max(0, Math.floor(bboxY - bboxH * patchMargin));
+    const pw = Math.min(canvasW - px, Math.floor(bboxW * (1 + patchMargin * 2)));
+    const ph = Math.min(canvasH - py, Math.floor(bboxH * (1 + patchMargin * 2)));
+
+    if (pw <= 4 || ph <= 4) return null;
+
+    // Sample at lower resolution for speed (every 2nd pixel)
+    return ctx.getImageData(px, py, pw, ph);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Find the best match for the reference patch in the current frame.
+ * Uses Sum of Absolute Differences (SAD) on grayscale, sampled sparsely for speed.
+ * Returns offset from reference position in canvas pixel coordinates.
+ */
+function trackPatchInFrame(
+  videoEl: HTMLVideoElement,
+  canvasW: number,
+  canvasH: number,
+  refData: ImageData,
+  refX: number, refY: number,
+  searchCanvas: HTMLCanvasElement,
+  searchRadius: number = 60 // pixels to search in each direction
+): { dx: number; dy: number } {
+  try {
+    searchCanvas.width = canvasW;
+    searchCanvas.height = canvasH;
+    const ctx = searchCanvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return { dx: 0, dy: 0 };
+
+    ctx.drawImage(videoEl, 0, 0, canvasW, canvasH);
+
+    const pw = refData.width;
+    const ph = refData.height;
+
+    // Search area: reference position ± searchRadius
+    const searchLeft = Math.max(0, refX - searchRadius);
+    const searchTop = Math.max(0, refY - searchRadius);
+    const searchRight = Math.min(canvasW - pw, refX + searchRadius);
+    const searchBottom = Math.min(canvasH - ph, refY + searchRadius);
+
+    if (searchRight <= searchLeft || searchBottom <= searchTop) return { dx: 0, dy: 0 };
+
+    // Get full search area pixels in one call (much faster than many small getImageData calls)
+    const searchW = searchRight - searchLeft + pw;
+    const searchH = searchBottom - searchTop + ph;
+    const searchData = ctx.getImageData(searchLeft, searchTop, searchW, searchH);
+
+    const refPx = refData.data;
+    const searchPx = searchData.data;
+
+    let bestDx = 0, bestDy = 0, bestSAD = Infinity;
+    const step = 4; // Check every 4th pixel position for speed
+    const sampleStep = 6; // Sample every 6th pixel in patch for speed
+
+    for (let sy = 0; sy <= searchBottom - searchTop; sy += step) {
+      for (let sx = 0; sx <= searchRight - searchLeft; sx += step) {
+        let sad = 0;
+        let samples = 0;
+
+        // Compare patch at this offset using grayscale SAD
+        for (let py2 = 0; py2 < ph; py2 += sampleStep) {
+          for (let px2 = 0; px2 < pw; px2 += sampleStep) {
+            const refIdx = (py2 * pw + px2) * 4;
+            const searchIdx = ((sy + py2) * searchW + (sx + px2)) * 4;
+
+            // Grayscale approximation: (R + G + B) / 3
+            const refGray = (refPx[refIdx] + refPx[refIdx + 1] + refPx[refIdx + 2]) / 3;
+            const srcGray = (searchPx[searchIdx] + searchPx[searchIdx + 1] + searchPx[searchIdx + 2]) / 3;
+            sad += Math.abs(refGray - srcGray);
+            samples++;
+          }
+        }
+
+        sad /= samples; // Normalize
+
+        if (sad < bestSAD) {
+          bestSAD = sad;
+          bestDx = sx + searchLeft - refX;
+          bestDy = sy + searchTop - refY;
+        }
+      }
+    }
+
+    // Only trust the match if it's reasonably good (low SAD means good match)
+    // Threshold: average per-pixel difference < 30 (out of 255)
+    if (bestSAD > 30) return { dx: 0, dy: 0 };
+
+    return { dx: bestDx, dy: bestDy };
+  } catch {
+    return { dx: 0, dy: 0 };
+  }
+}
+
 /** Resolve video file path from DB into a usable URL */
 function resolveVideoSrc(filePath: string | null | undefined): string | null {
   if (!filePath) return null;
@@ -398,6 +520,32 @@ export default function PlacementPreviewModal({
   const productImgRef = useRef<HTMLImageElement | null>(null);
   const animFrameRef = useRef<number>(0);
   const canvasContainerRef = useRef<HTMLDivElement>(null);
+
+  // Client-side surface tracking state
+  // Captures a reference patch from the first frame and tracks it via template matching
+  const trackingRef = useRef<{
+    referenceData: ImageData | null;   // Pixel patch from reference frame around surface
+    refCenterX: number;                // Top-left X of reference patch in canvas pixels
+    refCenterY: number;                // Top-left Y of reference patch in canvas pixels
+    patchWidth: number;                // Patch size in canvas pixels
+    patchHeight: number;
+    lastOffsetX: number;               // Current tracked offset in canvas pixels
+    lastOffsetY: number;
+    searchCanvas: HTMLCanvasElement;    // Off-screen canvas for pixel sampling
+    initialized: boolean;
+    frameCounter: number;              // Only run tracking every Nth frame
+  }>({
+    referenceData: null,
+    refCenterX: 0,
+    refCenterY: 0,
+    patchWidth: 0,
+    patchHeight: 0,
+    lastOffsetX: 0,
+    lastOffsetY: 0,
+    searchCanvas: typeof document !== "undefined" ? document.createElement("canvas") : null as any,
+    initialized: false,
+    frameCounter: 0,
+  });
 
   // Fetch video details to get file path for playback
   const { data: videoDetails } = useQuery<{ filePath: string | null }>({
@@ -706,73 +854,73 @@ export default function PlacementPreviewModal({
       ctx.drawImage(frameImg!, 0, 0, canvas.width, canvas.height);
     }
 
-    // Draw bounding box — during video playback, interpolate using dense keyframes
-    // so the bounding box tracks with the surface as the camera moves
+    // Draw bounding box — during video playback, use client-side visual tracking
+    // to follow the surface as the camera moves. The product stays "placed" on the
+    // physical surface, just like a real object would.
     if (selectedSurface) {
       let bx: number, by: number, bw: number, bh: number;
 
-      // The product's screen-space SIZE comes from the initial surface detection
-      // (locked dimensions — a physical object doesn't change size when camera pans).
-      // Only the POSITION (center x,y) is interpolated from dense keyframes
-      // so the product tracks with the surface as the camera moves.
+      // Locked bbox dimensions from initial surface detection
       const baseBW = selectedSurface.boundingBoxWidth * canvas.width;
       const baseBH = selectedSurface.boundingBoxHeight * canvas.height;
+      const baseBX = selectedSurface.boundingBoxX * canvas.width;
+      const baseBY = selectedSurface.boundingBoxY * canvas.height;
 
-      // Check if we have dense keyframes for this surface type and video is playing
-      const surfaceKfs = denseKeyframesData?.keyframes?.[selectedSurface.surfaceType];
-      if (useVideo && surfaceKfs && surfaceKfs.length > 1) {
-        // Interpolate surface CENTER position from dense keyframes
-        const time = videoEl!.currentTime;
-        const kfs = surfaceKfs;
+      if (useVideo && videoEl) {
+        // CLIENT-SIDE VISUAL TRACKING — template matching on the surface region
+        const tracking = trackingRef.current;
 
-        // Find bracketing keyframes
-        let prevKf = kfs[0];
-        let nextKf: typeof kfs[0] | null = null;
-        let progress = 0;
-
-        if (time <= kfs[0].timestamp) {
-          prevKf = kfs[0];
-        } else if (time >= kfs[kfs.length - 1].timestamp) {
-          prevKf = kfs[kfs.length - 1];
-        } else {
-          for (let i = 0; i < kfs.length - 1; i++) {
-            if (time >= kfs[i].timestamp && time <= kfs[i + 1].timestamp) {
-              prevKf = kfs[i];
-              nextKf = kfs[i + 1];
-              const range = kfs[i + 1].timestamp - kfs[i].timestamp;
-              progress = range > 0 ? (time - kfs[i].timestamp) / range : 0;
-              break;
-            }
+        // Step 1: Capture reference patch from the first frame if not done yet
+        if (!tracking.initialized && videoEl.currentTime < 0.5) {
+          const refPatch = captureReferencePatch(
+            videoEl, canvas.width, canvas.height,
+            baseBX, baseBY, baseBW, baseBH,
+            tracking.searchCanvas
+          );
+          if (refPatch) {
+            tracking.referenceData = refPatch;
+            // Store the top-left of the patch in canvas pixel coords
+            const patchMargin = 0.3;
+            tracking.refCenterX = Math.max(0, Math.floor(baseBX - baseBW * patchMargin));
+            tracking.refCenterY = Math.max(0, Math.floor(baseBY - baseBH * patchMargin));
+            tracking.patchWidth = refPatch.width;
+            tracking.patchHeight = refPatch.height;
+            tracking.lastOffsetX = 0;
+            tracking.lastOffsetY = 0;
+            tracking.initialized = true;
           }
         }
 
-        // Compute center of the keyframe bbox (percentage 0-100)
-        const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+        // Step 2: Track the reference patch in the current frame
+        // Only run template matching every 3rd frame for performance
+        if (tracking.initialized && tracking.referenceData) {
+          tracking.frameCounter++;
+          if (tracking.frameCounter % 3 === 0) {
+            const { dx, dy } = trackPatchInFrame(
+              videoEl, canvas.width, canvas.height,
+              tracking.referenceData,
+              tracking.refCenterX, tracking.refCenterY,
+              tracking.searchCanvas,
+              80 // search radius in pixels
+            );
 
-        let centerXPct: number, centerYPct: number;
-        if (nextKf) {
-          const prevCX = prevKf.bbox.x + prevKf.bbox.w / 2;
-          const prevCY = prevKf.bbox.y + prevKf.bbox.h / 2;
-          const nextCX = nextKf.bbox.x + nextKf.bbox.w / 2;
-          const nextCY = nextKf.bbox.y + nextKf.bbox.h / 2;
-          centerXPct = lerp(prevCX, nextCX, progress);
-          centerYPct = lerp(prevCY, nextCY, progress);
+            // Apply EMA smoothing to reduce jitter (alpha = 0.4 = responsive but smooth)
+            tracking.lastOffsetX = tracking.lastOffsetX * 0.6 + dx * 0.4;
+            tracking.lastOffsetY = tracking.lastOffsetY * 0.6 + dy * 0.4;
+          }
+
+          bx = baseBX + tracking.lastOffsetX;
+          by = baseBY + tracking.lastOffsetY;
         } else {
-          centerXPct = prevKf.bbox.x + prevKf.bbox.w / 2;
-          centerYPct = prevKf.bbox.y + prevKf.bbox.h / 2;
+          bx = baseBX;
+          by = baseBY;
         }
-
-        // Convert center to canvas pixels and derive top-left from locked dimensions
-        const centerXPx = (centerXPct / 100) * canvas.width;
-        const centerYPx = (centerYPct / 100) * canvas.height;
-        bx = centerXPx - baseBW / 2;
-        by = centerYPx - baseBH / 2;
         bw = baseBW;
         bh = baseBH;
       } else {
-        // Static mode or no dense keyframes — use the surface's original position
-        bx = selectedSurface.boundingBoxX * canvas.width;
-        by = selectedSurface.boundingBoxY * canvas.height;
+        // Static mode — use the surface's original position
+        bx = baseBX;
+        by = baseBY;
         bw = baseBW;
         bh = baseBH;
       }
@@ -851,7 +999,7 @@ export default function PlacementPreviewModal({
     }
 
     animFrameRef.current = requestAnimationFrame(renderFrame);
-  }, [selectedSurface, transform, blend, isVideoMode, denseKeyframesData]);
+  }, [selectedSurface, transform, blend, isVideoMode]);
 
   // Start/stop render loop
   useEffect(() => {
@@ -872,9 +1020,16 @@ export default function PlacementPreviewModal({
     if (!videoEl) return;
 
     if (!isVideoMode) {
-      // Enter video mode — also trigger dense scan for camera tracking
+      // Enter video mode — reset tracking state and start from beginning
+      const tracking = trackingRef.current;
+      tracking.initialized = false;
+      tracking.referenceData = null;
+      tracking.lastOffsetX = 0;
+      tracking.lastOffsetY = 0;
+      tracking.frameCounter = 0;
+
       setIsVideoMode(true);
-      triggerDenseScan(); // Fire-and-forget: generates dense keyframes in background
+      triggerDenseScan(); // Fire-and-forget: generates dense keyframes in background (for export)
       videoEl.currentTime = 0;
       videoEl.play().then(() => {
         setIsVideoPlaying(true);
@@ -902,6 +1057,13 @@ export default function PlacementPreviewModal({
     setIsVideoMode(false);
     setIsVideoPlaying(false);
     setVideoCurrentTime(0);
+    // Reset visual tracking
+    const tracking = trackingRef.current;
+    tracking.initialized = false;
+    tracking.referenceData = null;
+    tracking.lastOffsetX = 0;
+    tracking.lastOffsetY = 0;
+    tracking.frameCounter = 0;
   }, []);
 
   // ============================================================================
