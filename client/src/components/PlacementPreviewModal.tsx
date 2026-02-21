@@ -667,59 +667,13 @@ export default function PlacementPreviewModal({
       ctx.drawImage(frameImg!, 0, 0, canvas.width, canvas.height);
     }
 
-    // Draw bounding box — interpolate position from dense keyframes when playing video
+    // Draw bounding box — keep product at the user's placed position during preview
+    // Dense keyframes are only used for server-side video export (with smoothing applied)
     if (selectedSurface) {
-      let bboxX = selectedSurface.boundingBoxX;
-      let bboxY = selectedSurface.boundingBoxY;
-      let bboxW = selectedSurface.boundingBoxWidth;
-      let bboxH = selectedSurface.boundingBoxHeight;
-
-      // When in video mode, use dense keyframes to track the surface position over time
-      if (useVideo && denseKeyframesData?.keyframes) {
-        const surfaceType = selectedSurface.surfaceType;
-        const denseKfs = denseKeyframesData.keyframes[surfaceType];
-        if (denseKfs && denseKfs.length > 0) {
-          const currentTime = videoEl!.currentTime;
-          // Find bracketing keyframes and interpolate
-          let prev = denseKfs[0];
-          let next: typeof prev | null = null;
-          let progress = 0;
-
-          if (currentTime <= denseKfs[0].timestamp) {
-            prev = denseKfs[0];
-          } else if (currentTime >= denseKfs[denseKfs.length - 1].timestamp) {
-            prev = denseKfs[denseKfs.length - 1];
-          } else {
-            for (let k = 0; k < denseKfs.length - 1; k++) {
-              if (currentTime >= denseKfs[k].timestamp && currentTime <= denseKfs[k + 1].timestamp) {
-                prev = denseKfs[k];
-                next = denseKfs[k + 1];
-                const range = next.timestamp - prev.timestamp;
-                progress = range > 0 ? (currentTime - prev.timestamp) / range : 0;
-                break;
-              }
-            }
-          }
-
-          // Dense keyframes use 0-100 scale; convert to 0-1 for canvas
-          if (next) {
-            bboxX = (prev.bbox.x + (next.bbox.x - prev.bbox.x) * progress) / 100;
-            bboxY = (prev.bbox.y + (next.bbox.y - prev.bbox.y) * progress) / 100;
-            bboxW = (prev.bbox.w + (next.bbox.w - prev.bbox.w) * progress) / 100;
-            bboxH = (prev.bbox.h + (next.bbox.h - prev.bbox.h) * progress) / 100;
-          } else {
-            bboxX = prev.bbox.x / 100;
-            bboxY = prev.bbox.y / 100;
-            bboxW = prev.bbox.w / 100;
-            bboxH = prev.bbox.h / 100;
-          }
-        }
-      }
-
-      const bx = bboxX * canvas.width;
-      const by = bboxY * canvas.height;
-      const bw = bboxW * canvas.width;
-      const bh = bboxH * canvas.height;
+      const bx = selectedSurface.boundingBoxX * canvas.width;
+      const by = selectedSurface.boundingBoxY * canvas.height;
+      const bw = selectedSurface.boundingBoxWidth * canvas.width;
+      const bh = selectedSurface.boundingBoxHeight * canvas.height;
 
       const hasProduct = !!productImgRef.current;
 
@@ -795,7 +749,7 @@ export default function PlacementPreviewModal({
     }
 
     animFrameRef.current = requestAnimationFrame(renderFrame);
-  }, [selectedSurface, transform, blend, isVideoMode, denseKeyframesData]);
+  }, [selectedSurface, transform, blend, isVideoMode]);
 
   // Start/stop render loop
   useEffect(() => {

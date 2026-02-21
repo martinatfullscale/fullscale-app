@@ -4718,9 +4718,10 @@ export async function registerRoutes(
         }
       }
 
-      // ── Enrich placements with dense surface keyframes for motion tracking ──
-      // The client may only send sparse keyframes (1-2 from detected_surfaces).
-      // Replace with dense per-frame keyframes from surface_keyframes table for smooth tracking.
+      // ── Enrich placements with smoothed dense surface keyframes for motion tracking ──
+      // Raw Gemini detections have frame-to-frame noise (±2-5% bbox shift). We apply
+      // exponential moving average (EMA) smoothing to stabilize the bounding boxes so
+      // the product stays anchored to the surface instead of drifting/jittering.
       const denseKeyframes = await storage.getKeyframesByVideo(videoId);
       if (denseKeyframes.length > 0) {
         // Map surfaceId → surfaceType from detected_surfaces
@@ -4748,18 +4749,41 @@ export async function registerRoutes(
           });
         }
 
-        // Sort each group by timestamp
+        // Sort each group by timestamp, then apply EMA smoothing
         for (const key of Object.keys(denseByType)) {
           denseByType[key].sort((a, b) => a.timestamp - b.timestamp);
+
+          // Apply EMA smoothing: alpha=0.15 means 85% from previous smoothed value, 15% from new
+          // This heavily dampens frame-to-frame Gemini detection noise while preserving
+          // genuine camera movement trends over multiple seconds
+          const alpha = 0.15;
+          const kfs = denseByType[key];
+          if (kfs.length > 1) {
+            let smoothX = kfs[0].bbox.x;
+            let smoothY = kfs[0].bbox.y;
+            let smoothW = kfs[0].bbox.w;
+            let smoothH = kfs[0].bbox.h;
+            for (let i = 1; i < kfs.length; i++) {
+              smoothX = alpha * kfs[i].bbox.x + (1 - alpha) * smoothX;
+              smoothY = alpha * kfs[i].bbox.y + (1 - alpha) * smoothY;
+              smoothW = alpha * kfs[i].bbox.w + (1 - alpha) * smoothW;
+              smoothH = alpha * kfs[i].bbox.h + (1 - alpha) * smoothH;
+              kfs[i].bbox.x = smoothX;
+              kfs[i].bbox.y = smoothY;
+              kfs[i].bbox.w = smoothW;
+              kfs[i].bbox.h = smoothH;
+            }
+            console.log(`[Video Export] Smoothed "${key}" keyframes (${kfs.length} frames, alpha=${alpha})`);
+          }
         }
 
-        // Replace sparse keyframes with dense ones for each placement
+        // Replace sparse keyframes with smoothed dense ones for each placement
         for (const placement of placements) {
           const denseKfs = denseByType[placement.surfaceType];
           if (denseKfs && denseKfs.length > 0) {
             const sparseCount = placement.keyframes?.length || 0;
             placement.keyframes = denseKfs;
-            console.log(`[Video Export] Enriched "${placement.surfaceType}" keyframes: ${sparseCount} sparse → ${denseKfs.length} dense`);
+            console.log(`[Video Export] Enriched "${placement.surfaceType}" keyframes: ${sparseCount} sparse → ${denseKfs.length} dense (smoothed)`);
           }
         }
       }
@@ -6493,9 +6517,12 @@ export async function registerRoutes(
 
       // Verify Anthropic API key is available before starting SSE stream
       if (!process.env.ANTHROPIC_API_KEY) {
-        console.error("[CopilotRoute] ANTHROPIC_API_KEY is not set");
-        return res.status(500).json({ error: "AI Co-Pilot is not configured. Missing API key." });
+        console.error("[CopilotRoute] ANTHROPIC_API_KEY is not set. Set it in Secrets/Environment.");
+        return res.status(500).json({ error: "AI Co-Pilot is not configured. Please add ANTHROPIC_API_KEY to your environment secrets." });
       }
+
+      console.log(`[CopilotRoute] Starting SSE stream for video ${videoId}, trigger="${trigger}", user="${userId}", clipId=${clipId || "none"}`);
+      console.log(`[CopilotRoute] Context: transcript=${transcript.length} segs, surfaces=${surfaces.length}, brands=${brandCatalog.length}, clips=${existingClips.length}`);
 
       // Set up SSE headers
       res.writeHead(200, {
@@ -6519,17 +6546,30 @@ export async function registerRoutes(
       res.write("data: [DONE]\n\n");
       res.end();
     } catch (err: any) {
-      console.error("[CopilotRoute] SSE Error:", err.message, err.stack);
+      const errorDetail = err.message || "Unknown error";
+      const errorType = err.constructor?.name || "Error";
+      console.error(`[CopilotRoute] SSE Error (${errorType}):`, errorDetail);
+      if (err.stack) console.error("[CopilotRoute] Stack:", err.stack);
+
+      // Check for specific Anthropic API errors
+      let userMessage = "Something went wrong. Please try again.";
+      if (errorDetail.includes("401") || errorDetail.includes("authentication") || errorDetail.includes("invalid x-api-key")) {
+        userMessage = "AI service authentication failed. The API key may be invalid.";
+      } else if (errorDetail.includes("429") || errorDetail.includes("rate")) {
+        userMessage = "AI service rate limited. Please wait a moment and try again.";
+      } else if (errorDetail.includes("timeout") || errorDetail.includes("ECONNREFUSED")) {
+        userMessage = "AI service is temporarily unreachable. Please try again in a moment.";
+      } else if (errorDetail.includes("model")) {
+        userMessage = "AI model is unavailable. Please try again later.";
+      }
+
       // If headers already sent, end the stream with error
       if (res.headersSent) {
-        const errorMsg = err.message?.includes("API")
-          ? "AI service temporarily unavailable. Please try again in a moment."
-          : "Something went wrong. Please try again.";
-        res.write(`data: ${JSON.stringify({ type: "done", data: JSON.stringify({ message: errorMsg, suggestions: [], followUpQuestions: ["Can you retry?"] }) })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: "done", data: JSON.stringify({ message: userMessage, suggestions: [], followUpQuestions: ["Can you retry?"] }) })}\n\n`);
         res.write("data: [DONE]\n\n");
         res.end();
       } else {
-        res.status(500).json({ error: err.message || "Co-pilot request failed" });
+        res.status(500).json({ error: userMessage });
       }
     }
   });

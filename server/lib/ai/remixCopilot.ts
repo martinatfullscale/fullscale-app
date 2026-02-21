@@ -291,13 +291,28 @@ export async function* streamCopilot(
     const parsed = parseCopilotResponse(fullText, request);
     yield { type: "done", data: JSON.stringify(parsed) };
   } catch (err: any) {
-    console.error("[RemixCopilot] Stream error:", err.message);
+    const errorType = err.constructor?.name || "Error";
+    console.error(`[RemixCopilot] Stream error (${errorType}):`, err.message);
+    if (err.status) console.error(`[RemixCopilot] HTTP Status: ${err.status}`);
+    if (err.error) console.error(`[RemixCopilot] API Error:`, JSON.stringify(err.error));
+    if (err.stack) console.error(`[RemixCopilot] Stack:`, err.stack);
+
+    // Provide more specific error messages
+    let errorMsg = "I encountered an error analyzing this clip. Please try again.";
+    if (err.status === 401 || err.message?.includes("invalid x-api-key")) {
+      errorMsg = "AI authentication failed. The Anthropic API key may be invalid or expired. Please check your ANTHROPIC_API_KEY in environment secrets.";
+    } else if (err.status === 429) {
+      errorMsg = "AI rate limit reached. Please wait a moment before trying again.";
+    } else if (err.status === 500 || err.status === 503) {
+      errorMsg = "The AI service is temporarily unavailable. Please try again in a minute.";
+    }
+
     yield {
       type: "done",
       data: JSON.stringify({
-        message: "I encountered an error analyzing this clip. Please try again.",
+        message: errorMsg,
         suggestions: [],
-        followUpQuestions: [],
+        followUpQuestions: ["Can you retry?"],
       }),
     };
   }
