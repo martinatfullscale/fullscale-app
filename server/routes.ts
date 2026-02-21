@@ -6644,12 +6644,17 @@ export async function registerRoutes(
 
       // Verify Anthropic API key is available before starting SSE stream
       const apiKey = process.env.ANTHROPIC_API_KEY;
+      const anthropicBaseURL = process.env.AI_INTEGRATIONS_ANTHROPIC_BASE_URL || process.env.ANTHROPIC_BASE_URL;
       if (!apiKey) {
         console.error("[CopilotRoute] ANTHROPIC_API_KEY is not set. Set it in Secrets/Environment.");
+        // Log all env vars that start with ANTHROPIC or AI_INTEGRATIONS for debugging
+        const relevantVars = Object.keys(process.env).filter(k => k.includes('ANTHROPIC') || k.includes('AI_INTEGRATIONS'));
+        console.error(`[CopilotRoute] Relevant env vars found: ${relevantVars.join(', ') || 'NONE'}`);
         return res.status(500).json({ error: "AI Co-Pilot is not configured. Please add ANTHROPIC_API_KEY to your environment secrets." });
       }
       // Log key prefix for debugging (safe: only first 8 chars)
       console.log(`[CopilotRoute] API key present: ${apiKey.substring(0, 8)}... (${apiKey.length} chars)`);
+      if (anthropicBaseURL) console.log(`[CopilotRoute] Custom base URL: ${anthropicBaseURL}`);
       console.log(`[CopilotRoute] Starting SSE stream for video ${videoId}, trigger="${trigger}", user="${userId}", clipId=${clipId || "none"}`);
       console.log(`[CopilotRoute] Context: transcript=${transcript.length} segs, surfaces=${surfaces.length}, brands=${brandCatalog.length}, clips=${existingClips.length}`);
 
@@ -6677,26 +6682,38 @@ export async function registerRoutes(
     } catch (err: any) {
       const errorDetail = err.message || "Unknown error";
       const errorType = err.constructor?.name || "Error";
+      const httpStatus = err.status || err.statusCode || null;
       console.error(`[CopilotRoute] SSE Error (${errorType}):`, errorDetail);
+      if (httpStatus) console.error(`[CopilotRoute] HTTP Status: ${httpStatus}`);
+      if (err.error) console.error(`[CopilotRoute] API Error body:`, JSON.stringify(err.error));
       if (err.stack) console.error("[CopilotRoute] Stack:", err.stack);
 
-      // Check for specific Anthropic API errors
-      let userMessage = "Something went wrong. Please try again.";
-      if (errorDetail.includes("401") || errorDetail.includes("authentication") || errorDetail.includes("invalid x-api-key")) {
-        userMessage = "AI service authentication failed. The API key may be invalid.";
-      } else if (errorDetail.includes("429") || errorDetail.includes("rate")) {
+      // Check for specific Anthropic API errors — match both HTTP status codes and error text
+      let userMessage = `Something went wrong (${errorType}). Please try again.`;
+      if (httpStatus === 401 || errorDetail.includes("401") || errorDetail.includes("authentication") || errorDetail.includes("invalid x-api-key") || errorDetail.includes("api_key")) {
+        userMessage = "AI service authentication failed. The Anthropic API key may be invalid or expired. Check ANTHROPIC_API_KEY in your environment secrets.";
+      } else if (httpStatus === 429 || errorDetail.includes("429") || errorDetail.includes("rate")) {
         userMessage = "AI service rate limited. Please wait a moment and try again.";
-      } else if (errorDetail.includes("timeout") || errorDetail.includes("ECONNREFUSED")) {
+      } else if (errorDetail.includes("timeout") || errorDetail.includes("ECONNREFUSED") || errorDetail.includes("ENOTFOUND") || errorDetail.includes("fetch failed")) {
         userMessage = "AI service is temporarily unreachable. Please try again in a moment.";
+      } else if (httpStatus === 500 || httpStatus === 503 || errorDetail.includes("overloaded")) {
+        userMessage = "AI service is temporarily unavailable. Please try again in a moment.";
       } else if (errorDetail.includes("model")) {
         userMessage = "AI model is unavailable. Please try again later.";
+      } else if (errorDetail.includes("ANTHROPIC_API_KEY") || errorDetail.includes("api key")) {
+        userMessage = "AI Co-Pilot is not configured. Please add ANTHROPIC_API_KEY to your environment secrets.";
       }
 
       // If headers already sent, end the stream with error
       if (res.headersSent) {
-        res.write(`data: ${JSON.stringify({ type: "done", data: JSON.stringify({ message: userMessage, suggestions: [], followUpQuestions: ["Can you retry?"] }) })}\n\n`);
-        res.write("data: [DONE]\n\n");
-        res.end();
+        try {
+          res.write(`data: ${JSON.stringify({ type: "done", data: JSON.stringify({ message: userMessage, suggestions: [], followUpQuestions: ["Can you retry?"] }) })}\n\n`);
+          res.write("data: [DONE]\n\n");
+          res.end();
+        } catch (writeErr) {
+          console.error("[CopilotRoute] Failed to write SSE error:", writeErr);
+          try { res.end(); } catch {}
+        }
       } else {
         res.status(500).json({ error: userMessage });
       }

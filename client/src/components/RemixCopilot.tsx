@@ -156,7 +156,13 @@ export default function RemixCopilot({
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+        // Try to extract error message from response body
+        let errorMsg = `HTTP ${response.status}`;
+        try {
+          const errBody = await response.json();
+          errorMsg = errBody.error || errorMsg;
+        } catch {}
+        throw new Error(errorMsg);
       }
 
       const reader = response.body?.getReader();
@@ -216,10 +222,15 @@ export default function RemixCopilot({
       }
     } catch (err: any) {
       console.error("[RemixCopilot] Error:", err);
+      const errMsg = err.message || "Unknown error";
+      // Show the specific error from the server if available
+      const displayMsg = errMsg.includes("API key") || errMsg.includes("not configured")
+        ? errMsg
+        : `Sorry, I encountered an error: ${errMsg}. Please try again.`;
       setMessages((prev) =>
         prev.map((msg) =>
           msg.id === assistantId
-            ? { ...msg, content: "Sorry, I encountered an error. Please try again." }
+            ? { ...msg, content: displayMsg }
             : msg
         )
       );

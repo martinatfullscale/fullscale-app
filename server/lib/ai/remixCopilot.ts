@@ -210,7 +210,17 @@ let anthropicClient: Anthropic | null = null;
 
 function getClient(): Anthropic {
   if (!anthropicClient) {
-    anthropicClient = new Anthropic();
+    // Support Replit AI Integrations sidecar if available
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const baseURL = process.env.AI_INTEGRATIONS_ANTHROPIC_BASE_URL || process.env.ANTHROPIC_BASE_URL;
+
+    const config: Record<string, any> = {};
+    if (apiKey) config.apiKey = apiKey;
+    if (baseURL) config.baseURL = baseURL;
+
+    console.log(`[RemixCopilot] Creating Anthropic client — key: ${apiKey ? apiKey.substring(0, 8) + '...' : 'NOT SET'}, baseURL: ${baseURL || '(default)'}`);
+
+    anthropicClient = new Anthropic(config);
   }
   return anthropicClient;
 }
@@ -222,13 +232,15 @@ function getClient(): Anthropic {
  * Returns a structured response with conversational text + actionable suggestions.
  */
 export async function askCopilot(request: CopilotRequest): Promise<CopilotResponse> {
-  const client = getClient();
-  const systemPrompt = buildSystemPrompt(request.sessionContext);
-  const userPrompt = buildUserPrompt(request);
-
   console.log(`[RemixCopilot] Trigger: ${request.trigger}, Video: ${request.sessionContext.videoId}`);
 
   try {
+    const client = getClient();
+    const systemPrompt = buildSystemPrompt(request.sessionContext);
+    const userPrompt = buildUserPrompt(request);
+
+    console.log(`[RemixCopilot] System prompt length: ${systemPrompt.length}, User prompt length: ${userPrompt.length}`);
+
     const response = await client.messages.create({
       model: COPILOT_CONFIG.MODEL,
       max_tokens: COPILOT_CONFIG.MAX_TOKENS,
@@ -260,13 +272,14 @@ export async function askCopilot(request: CopilotRequest): Promise<CopilotRespon
 export async function* streamCopilot(
   request: CopilotRequest
 ): AsyncGenerator<{ type: "text" | "done"; data: string }, void, unknown> {
-  const client = getClient();
-  const systemPrompt = buildSystemPrompt(request.sessionContext);
-  const userPrompt = buildUserPrompt(request);
-
-  console.log(`[RemixCopilot] Streaming — Trigger: ${request.trigger}, Video: ${request.sessionContext.videoId}`);
-
   try {
+    const client = getClient();
+    const systemPrompt = buildSystemPrompt(request.sessionContext);
+    const userPrompt = buildUserPrompt(request);
+
+    console.log(`[RemixCopilot] Streaming — Trigger: ${request.trigger}, Video: ${request.sessionContext.videoId}`);
+    console.log(`[RemixCopilot] System prompt length: ${systemPrompt.length}, User prompt length: ${userPrompt.length}`);
+
     const stream = client.messages.stream({
       model: COPILOT_CONFIG.MODEL,
       max_tokens: COPILOT_CONFIG.MAX_TOKENS,
