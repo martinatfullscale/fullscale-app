@@ -6516,11 +6516,13 @@ export async function registerRoutes(
       };
 
       // Verify Anthropic API key is available before starting SSE stream
-      if (!process.env.ANTHROPIC_API_KEY) {
+      const apiKey = process.env.ANTHROPIC_API_KEY;
+      if (!apiKey) {
         console.error("[CopilotRoute] ANTHROPIC_API_KEY is not set. Set it in Secrets/Environment.");
         return res.status(500).json({ error: "AI Co-Pilot is not configured. Please add ANTHROPIC_API_KEY to your environment secrets." });
       }
-
+      // Log key prefix for debugging (safe: only first 8 chars)
+      console.log(`[CopilotRoute] API key present: ${apiKey.substring(0, 8)}... (${apiKey.length} chars)`);
       console.log(`[CopilotRoute] Starting SSE stream for video ${videoId}, trigger="${trigger}", user="${userId}", clipId=${clipId || "none"}`);
       console.log(`[CopilotRoute] Context: transcript=${transcript.length} segs, surfaces=${surfaces.length}, brands=${brandCatalog.length}, clips=${existingClips.length}`);
 

@@ -50,8 +50,12 @@ export function getSession() {
     ttl: sessionTtl,
     tableName: "sessions",
     pruneSessionInterval: 60,
-    errorLog: (err: Error) => {
-      console.error("[Session Store] PostgreSQL error:", err.message);
+    errorLog: (err: any) => {
+      if (err && typeof err === 'object') {
+        console.error("[Session Store] PostgreSQL error:", err.message || err.code || JSON.stringify(err).slice(0, 200));
+      } else {
+        console.error("[Session Store] PostgreSQL error:", String(err));
+      }
     },
   });
   
