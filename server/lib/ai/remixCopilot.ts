@@ -311,13 +311,18 @@ export async function* streamCopilot(
     if (err.stack) console.error(`[RemixCopilot] Stack:`, err.stack);
 
     // Provide more specific error messages
-    let errorMsg = "I encountered an error analyzing this clip. Please try again.";
-    if (err.status === 401 || err.message?.includes("invalid x-api-key")) {
+    const errStr = (err.message || "").toLowerCase();
+    let errorMsg = `I encountered an error (${errorType}: ${err.message || 'unknown'}). Please try again.`;
+    if (err.status === 401 || errStr.includes("invalid x-api-key") || errStr.includes("api_key") || errStr.includes("authentication")) {
       errorMsg = "AI authentication failed. The Anthropic API key may be invalid or expired. Please check your ANTHROPIC_API_KEY in environment secrets.";
-    } else if (err.status === 429) {
+    } else if (err.status === 429 || errStr.includes("rate")) {
       errorMsg = "AI rate limit reached. Please wait a moment before trying again.";
-    } else if (err.status === 500 || err.status === 503) {
+    } else if (err.status === 500 || err.status === 503 || errStr.includes("overloaded")) {
       errorMsg = "The AI service is temporarily unavailable. Please try again in a minute.";
+    } else if (errStr.includes("econnrefused") || errStr.includes("enotfound") || errStr.includes("fetch failed") || errStr.includes("timeout") || errStr.includes("network")) {
+      errorMsg = "Cannot reach the AI service. Check your network connection and ANTHROPIC_API_KEY.";
+    } else if (errStr.includes("could not resolve") || errStr.includes("api key")) {
+      errorMsg = "ANTHROPIC_API_KEY is missing or invalid. Please set it in your environment secrets.";
     }
 
     yield {

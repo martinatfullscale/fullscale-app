@@ -201,11 +201,31 @@ async function compositeFrame(
     const { prev, next, progress } = findKeyframes(placement.keyframes, currentTime);
     if (!prev) continue;
 
-    const bbox = next ? lerpBBox(prev.bbox, next.bbox, progress) : prev.bbox;
-    const px = (bbox.x / 100) * width;
-    const py = (bbox.y / 100) * height;
-    const pw = (bbox.w / 100) * width;
-    const ph = (bbox.h / 100) * height;
+    // Lock bbox dimensions from the FIRST keyframe — a physical product doesn't change
+    // size when the camera pans. Only the CENTER POSITION is interpolated across keyframes.
+    const firstKf = placement.keyframes[0];
+    const lockedW = firstKf.bbox.w;
+    const lockedH = firstKf.bbox.h;
+
+    // Interpolate the center position only
+    let centerX: number, centerY: number;
+    if (next) {
+      const prevCX = prev.bbox.x + prev.bbox.w / 2;
+      const prevCY = prev.bbox.y + prev.bbox.h / 2;
+      const nextCX = next.bbox.x + next.bbox.w / 2;
+      const nextCY = next.bbox.y + next.bbox.h / 2;
+      centerX = lerp(prevCX, nextCX, progress);
+      centerY = lerp(prevCY, nextCY, progress);
+    } else {
+      centerX = prev.bbox.x + prev.bbox.w / 2;
+      centerY = prev.bbox.y + prev.bbox.h / 2;
+    }
+
+    // Derive top-left from interpolated center and locked dimensions
+    const px = ((centerX - lockedW / 2) / 100) * width;
+    const py = ((centerY - lockedH / 2) / 100) * height;
+    const pw = (lockedW / 100) * width;
+    const ph = (lockedH / 100) * height;
 
     // Get cached product image with dimensions
     const productInfo = productImageCache.get(placement.productImageUrl);

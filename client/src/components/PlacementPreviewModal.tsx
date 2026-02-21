@@ -711,10 +711,17 @@ export default function PlacementPreviewModal({
     if (selectedSurface) {
       let bx: number, by: number, bw: number, bh: number;
 
+      // The product's screen-space SIZE comes from the initial surface detection
+      // (locked dimensions — a physical object doesn't change size when camera pans).
+      // Only the POSITION (center x,y) is interpolated from dense keyframes
+      // so the product tracks with the surface as the camera moves.
+      const baseBW = selectedSurface.boundingBoxWidth * canvas.width;
+      const baseBH = selectedSurface.boundingBoxHeight * canvas.height;
+
       // Check if we have dense keyframes for this surface type and video is playing
       const surfaceKfs = denseKeyframesData?.keyframes?.[selectedSurface.surfaceType];
       if (useVideo && surfaceKfs && surfaceKfs.length > 1) {
-        // Interpolate bounding box position from dense keyframes based on current time
+        // Interpolate surface CENTER position from dense keyframes
         const time = videoEl!.currentTime;
         const kfs = surfaceKfs;
 
@@ -739,25 +746,35 @@ export default function PlacementPreviewModal({
           }
         }
 
-        // Interpolate bbox (values are 0-100 percentage from server)
+        // Compute center of the keyframe bbox (percentage 0-100)
         const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+
+        let centerXPct: number, centerYPct: number;
         if (nextKf) {
-          bx = lerp(prevKf.bbox.x, nextKf.bbox.x, progress) / 100 * canvas.width;
-          by = lerp(prevKf.bbox.y, nextKf.bbox.y, progress) / 100 * canvas.height;
-          bw = lerp(prevKf.bbox.w, nextKf.bbox.w, progress) / 100 * canvas.width;
-          bh = lerp(prevKf.bbox.h, nextKf.bbox.h, progress) / 100 * canvas.height;
+          const prevCX = prevKf.bbox.x + prevKf.bbox.w / 2;
+          const prevCY = prevKf.bbox.y + prevKf.bbox.h / 2;
+          const nextCX = nextKf.bbox.x + nextKf.bbox.w / 2;
+          const nextCY = nextKf.bbox.y + nextKf.bbox.h / 2;
+          centerXPct = lerp(prevCX, nextCX, progress);
+          centerYPct = lerp(prevCY, nextCY, progress);
         } else {
-          bx = prevKf.bbox.x / 100 * canvas.width;
-          by = prevKf.bbox.y / 100 * canvas.height;
-          bw = prevKf.bbox.w / 100 * canvas.width;
-          bh = prevKf.bbox.h / 100 * canvas.height;
+          centerXPct = prevKf.bbox.x + prevKf.bbox.w / 2;
+          centerYPct = prevKf.bbox.y + prevKf.bbox.h / 2;
         }
+
+        // Convert center to canvas pixels and derive top-left from locked dimensions
+        const centerXPx = (centerXPct / 100) * canvas.width;
+        const centerYPx = (centerYPct / 100) * canvas.height;
+        bx = centerXPx - baseBW / 2;
+        by = centerYPx - baseBH / 2;
+        bw = baseBW;
+        bh = baseBH;
       } else {
         // Static mode or no dense keyframes — use the surface's original position
         bx = selectedSurface.boundingBoxX * canvas.width;
         by = selectedSurface.boundingBoxY * canvas.height;
-        bw = selectedSurface.boundingBoxWidth * canvas.width;
-        bh = selectedSurface.boundingBoxHeight * canvas.height;
+        bw = baseBW;
+        bh = baseBH;
       }
 
       const hasProduct = !!productImgRef.current;
