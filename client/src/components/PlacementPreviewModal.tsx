@@ -411,6 +411,24 @@ export default function PlacementPreviewModal({
   });
   const videoSrc = resolveVideoSrc(videoDetails?.filePath);
 
+  // Fetch dense surface keyframes for accurate motion tracking
+  const { data: denseKeyframesData } = useQuery<{
+    keyframes: Record<string, Array<{
+      timestamp: number;
+      bbox: { x: number; y: number; w: number; h: number };
+      confidence: number;
+      surfaceId: number;
+    }>>;
+  }>({
+    queryKey: [`/api/video/${videoId}/surface-keyframes`],
+    queryFn: async () => {
+      const res = await fetch(`/api/video/${videoId}/surface-keyframes`);
+      if (!res.ok) return { keyframes: {} };
+      return res.json();
+    },
+    enabled: open,
+  });
+
   // Fetch product catalog
   const { data: catalogProducts } = useQuery<CatalogProduct[]>({
     queryKey: ["/api/brand-products/catalog"],
@@ -649,12 +667,59 @@ export default function PlacementPreviewModal({
       ctx.drawImage(frameImg!, 0, 0, canvas.width, canvas.height);
     }
 
-    // Draw bounding box
+    // Draw bounding box — interpolate position from dense keyframes when playing video
     if (selectedSurface) {
-      const bx = selectedSurface.boundingBoxX * canvas.width;
-      const by = selectedSurface.boundingBoxY * canvas.height;
-      const bw = selectedSurface.boundingBoxWidth * canvas.width;
-      const bh = selectedSurface.boundingBoxHeight * canvas.height;
+      let bboxX = selectedSurface.boundingBoxX;
+      let bboxY = selectedSurface.boundingBoxY;
+      let bboxW = selectedSurface.boundingBoxWidth;
+      let bboxH = selectedSurface.boundingBoxHeight;
+
+      // When in video mode, use dense keyframes to track the surface position over time
+      if (useVideo && denseKeyframesData?.keyframes) {
+        const surfaceType = selectedSurface.surfaceType;
+        const denseKfs = denseKeyframesData.keyframes[surfaceType];
+        if (denseKfs && denseKfs.length > 0) {
+          const currentTime = videoEl!.currentTime;
+          // Find bracketing keyframes and interpolate
+          let prev = denseKfs[0];
+          let next: typeof prev | null = null;
+          let progress = 0;
+
+          if (currentTime <= denseKfs[0].timestamp) {
+            prev = denseKfs[0];
+          } else if (currentTime >= denseKfs[denseKfs.length - 1].timestamp) {
+            prev = denseKfs[denseKfs.length - 1];
+          } else {
+            for (let k = 0; k < denseKfs.length - 1; k++) {
+              if (currentTime >= denseKfs[k].timestamp && currentTime <= denseKfs[k + 1].timestamp) {
+                prev = denseKfs[k];
+                next = denseKfs[k + 1];
+                const range = next.timestamp - prev.timestamp;
+                progress = range > 0 ? (currentTime - prev.timestamp) / range : 0;
+                break;
+              }
+            }
+          }
+
+          // Dense keyframes use 0-100 scale; convert to 0-1 for canvas
+          if (next) {
+            bboxX = (prev.bbox.x + (next.bbox.x - prev.bbox.x) * progress) / 100;
+            bboxY = (prev.bbox.y + (next.bbox.y - prev.bbox.y) * progress) / 100;
+            bboxW = (prev.bbox.w + (next.bbox.w - prev.bbox.w) * progress) / 100;
+            bboxH = (prev.bbox.h + (next.bbox.h - prev.bbox.h) * progress) / 100;
+          } else {
+            bboxX = prev.bbox.x / 100;
+            bboxY = prev.bbox.y / 100;
+            bboxW = prev.bbox.w / 100;
+            bboxH = prev.bbox.h / 100;
+          }
+        }
+      }
+
+      const bx = bboxX * canvas.width;
+      const by = bboxY * canvas.height;
+      const bw = bboxW * canvas.width;
+      const bh = bboxH * canvas.height;
 
       const hasProduct = !!productImgRef.current;
 
@@ -730,7 +795,7 @@ export default function PlacementPreviewModal({
     }
 
     animFrameRef.current = requestAnimationFrame(renderFrame);
-  }, [selectedSurface, transform, blend, isVideoMode]);
+  }, [selectedSurface, transform, blend, isVideoMode, denseKeyframesData]);
 
   // Start/stop render loop
   useEffect(() => {
@@ -789,30 +854,43 @@ export default function PlacementPreviewModal({
   const handleVideoExport = useCallback(async () => {
     if (!selectedSurface || !productImage) return;
 
-    // Build keyframes from all surfaces of the same type
+    // Build keyframes — prefer dense keyframes from surface_keyframes table
     const surfaceType = selectedSurface.surfaceType;
-    const matchingSurfaces = surfaces.filter(s => s.surfaceType === surfaceType);
+    let keyframes: Array<{ timestamp: number; bbox: { x: number; y: number; w: number; h: number }; confidence: number }>;
 
-    const keyframes = matchingSurfaces.map(s => {
-      const rawX = s.boundingBoxX;
-      const rawY = s.boundingBoxY;
-      const rawW = s.boundingBoxWidth;
-      const rawH = s.boundingBoxHeight;
-      // Auto-detect: if all values are <=1, they're 0-1 normalized → scale to 0-100
-      const isNormalized = rawX <= 1 && rawY <= 1 && rawW <= 1 && rawH <= 1;
-      const scale = isNormalized ? 100 : 1;
-
-      return {
-        timestamp: s.timestamp,
-        bbox: {
-          x: rawX * scale,
-          y: rawY * scale,
-          w: rawW * scale,
-          h: rawH * scale,
-        },
-        confidence: s.confidence,
-      };
-    }).sort((a, b) => a.timestamp - b.timestamp);
+    const denseKfs = denseKeyframesData?.keyframes?.[surfaceType];
+    if (denseKfs && denseKfs.length > 0) {
+      // Use dense per-frame keyframes for accurate motion tracking
+      keyframes = denseKfs.map(kf => ({
+        timestamp: kf.timestamp,
+        bbox: kf.bbox,
+        confidence: kf.confidence,
+      }));
+      console.log(`[PlacementPreview] Using ${keyframes.length} dense keyframes for "${surfaceType}" export`);
+    } else {
+      // Fallback: build from sparse detected surfaces
+      const matchingSurfaces = surfaces.filter(s => s.surfaceType === surfaceType);
+      keyframes = matchingSurfaces.map(s => {
+        const rawX = s.boundingBoxX;
+        const rawY = s.boundingBoxY;
+        const rawW = s.boundingBoxWidth;
+        const rawH = s.boundingBoxHeight;
+        // Auto-detect: if all values are <=1, they're 0-1 normalized → scale to 0-100
+        const isNormalized = rawX <= 1 && rawY <= 1 && rawW <= 1 && rawH <= 1;
+        const scale = isNormalized ? 100 : 1;
+        return {
+          timestamp: s.timestamp,
+          bbox: {
+            x: rawX * scale,
+            y: rawY * scale,
+            w: rawW * scale,
+            h: rawH * scale,
+          },
+          confidence: s.confidence,
+        };
+      }).sort((a, b) => a.timestamp - b.timestamp);
+      console.log(`[PlacementPreview] Using ${keyframes.length} sparse keyframes for "${surfaceType}" export (no dense data available)`);
+    }
 
     // Get product aspect ratio
     const prodImg = productImgRef.current;
@@ -863,7 +941,7 @@ export default function PlacementPreviewModal({
       setExportStatus("failed");
       toast({ title: "Export failed", description: err.message, variant: "destructive" });
     }
-  }, [selectedSurface, productImage, surfaces, transform, blend, videoId, toast]);
+  }, [selectedSurface, productImage, surfaces, transform, blend, videoId, toast, denseKeyframesData]);
 
   // Poll export progress
   useEffect(() => {

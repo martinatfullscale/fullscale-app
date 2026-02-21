@@ -4630,6 +4630,60 @@ export async function registerRoutes(
   // ── Video Export Pipeline ──
 
   // Start a new video export job
+  // Get dense surface keyframes for a video (used by PlacementPreviewModal for accurate tracking)
+  app.get("/api/video/:videoId/surface-keyframes", async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+
+      // Get all dense keyframes for this video
+      const keyframes = await storage.getKeyframesByVideo(videoId);
+
+      // Also get detected surfaces to map surfaceId → surfaceType
+      const detectedSurfs = await storage.getDetectedSurfaces(videoId);
+      const surfaceTypeMap = new Map<number, string>();
+      for (const s of detectedSurfs) {
+        surfaceTypeMap.set(s.id, s.surfaceType);
+      }
+
+      // Group keyframes by surfaceType and format for client
+      const grouped: Record<string, Array<{
+        timestamp: number;
+        bbox: { x: number; y: number; w: number; h: number };
+        confidence: number;
+        surfaceId: number;
+      }>> = {};
+
+      for (const kf of keyframes) {
+        const surfaceType = surfaceTypeMap.get(kf.surfaceId) || "unknown";
+        if (!grouped[surfaceType]) grouped[surfaceType] = [];
+        // Keyframes are stored as 0-1 normalized; convert to 0-100 for video exporter
+        grouped[surfaceType].push({
+          timestamp: parseFloat(String(kf.timestamp)),
+          bbox: {
+            x: parseFloat(String(kf.boundingBoxX)) * 100,
+            y: parseFloat(String(kf.boundingBoxY)) * 100,
+            w: parseFloat(String(kf.boundingBoxWidth)) * 100,
+            h: parseFloat(String(kf.boundingBoxHeight)) * 100,
+          },
+          confidence: parseFloat(String(kf.confidence)),
+          surfaceId: kf.surfaceId,
+        });
+      }
+
+      // Sort each group by timestamp
+      for (const key of Object.keys(grouped)) {
+        grouped[key].sort((a, b) => a.timestamp - b.timestamp);
+      }
+
+      console.log(`[Surface Keyframes] Video ${videoId}: ${keyframes.length} keyframes across ${Object.keys(grouped).length} surface types`);
+      res.json({ keyframes: grouped });
+    } catch (err: any) {
+      console.error("[Surface Keyframes] Error:", err.message);
+      res.status(500).json({ error: "Failed to fetch surface keyframes" });
+    }
+  });
+
   app.post("/api/video/:videoId/export", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const videoId = parseInt(req.params.videoId);
@@ -4661,6 +4715,52 @@ export async function registerRoutes(
         const absolutePath = path.resolve(video.filePath);
         if (!fs.existsSync(absolutePath)) {
           return res.status(400).json({ error: "Video file not found on disk" });
+        }
+      }
+
+      // ── Enrich placements with dense surface keyframes for motion tracking ──
+      // The client may only send sparse keyframes (1-2 from detected_surfaces).
+      // Replace with dense per-frame keyframes from surface_keyframes table for smooth tracking.
+      const denseKeyframes = await storage.getKeyframesByVideo(videoId);
+      if (denseKeyframes.length > 0) {
+        // Map surfaceId → surfaceType from detected_surfaces
+        const detectedSurfs = await storage.getDetectedSurfaces(videoId);
+        const surfaceTypeMap = new Map<number, string>();
+        for (const s of detectedSurfs) {
+          surfaceTypeMap.set(s.id, s.surfaceType);
+        }
+
+        // Group dense keyframes by surfaceType
+        const denseByType: Record<string, Array<{ timestamp: number; bbox: { x: number; y: number; w: number; h: number }; confidence: number }>> = {};
+        for (const kf of denseKeyframes) {
+          const surfaceType = surfaceTypeMap.get(kf.surfaceId) || "unknown";
+          if (!denseByType[surfaceType]) denseByType[surfaceType] = [];
+          denseByType[surfaceType].push({
+            timestamp: parseFloat(String(kf.timestamp)),
+            bbox: {
+              // surface_keyframes stores 0-1 normalized values; video exporter expects 0-100
+              x: parseFloat(String(kf.boundingBoxX)) * 100,
+              y: parseFloat(String(kf.boundingBoxY)) * 100,
+              w: parseFloat(String(kf.boundingBoxWidth)) * 100,
+              h: parseFloat(String(kf.boundingBoxHeight)) * 100,
+            },
+            confidence: parseFloat(String(kf.confidence)),
+          });
+        }
+
+        // Sort each group by timestamp
+        for (const key of Object.keys(denseByType)) {
+          denseByType[key].sort((a, b) => a.timestamp - b.timestamp);
+        }
+
+        // Replace sparse keyframes with dense ones for each placement
+        for (const placement of placements) {
+          const denseKfs = denseByType[placement.surfaceType];
+          if (denseKfs && denseKfs.length > 0) {
+            const sparseCount = placement.keyframes?.length || 0;
+            placement.keyframes = denseKfs;
+            console.log(`[Video Export] Enriched "${placement.surfaceType}" keyframes: ${sparseCount} sparse → ${denseKfs.length} dense`);
+          }
         }
       }
 
