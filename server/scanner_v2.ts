@@ -30,8 +30,15 @@ import { uploadFileToStorage, downloadToTempFile, storageServeUrl } from "./lib/
 // GEMINI AI CLIENT
 // ============================================================================
 
+// Startup diagnostics — logs once at module load time so you can see the config in Replit logs
+console.log(`[Scanner V2] =============================================`);
+console.log(`[Scanner V2] AI_INTEGRATIONS_GEMINI_API_KEY exists: ${!!process.env.AI_INTEGRATIONS_GEMINI_API_KEY}`);
+console.log(`[Scanner V2] AI_INTEGRATIONS_GEMINI_API_KEY length: ${process.env.AI_INTEGRATIONS_GEMINI_API_KEY?.length || 0}`);
+console.log(`[Scanner V2] AI_INTEGRATIONS_GEMINI_BASE_URL: ${process.env.AI_INTEGRATIONS_GEMINI_BASE_URL || '(NOT SET — will use Google default)'}`);
+console.log(`[Scanner V2] =============================================`);
+
 const ai = new GoogleGenAI({
-  apiKey: process.env.AI_INTEGRATIONS_GEMINI_API_KEY || "dummy-key",
+  apiKey: process.env.AI_INTEGRATIONS_GEMINI_API_KEY,
   httpOptions: {
     apiVersion: "",
     baseUrl: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL,
@@ -935,8 +942,14 @@ async function analyzeFrameWithGemini(
       aiAnalyzed: true,
     };
     
-  } catch (err) {
-    console.error(`[Gemini] Frame analysis error:`, err);
+  } catch (err: any) {
+    // Log detailed error info to diagnose production issues (API key, base URL, connectivity)
+    const errMsg = err?.message || String(err);
+    const errStatus = err?.status || err?.statusCode || 'unknown';
+    const errBody = err?.body || err?.response?.data || '';
+    console.error(`[Gemini] Frame analysis error at ${timestamp}s: ${errMsg}`);
+    console.error(`[Gemini] Error details — status: ${errStatus}, body: ${typeof errBody === 'string' ? errBody.substring(0, 300) : JSON.stringify(errBody).substring(0, 300)}`);
+    console.error(`[Gemini] Base URL: ${process.env.AI_INTEGRATIONS_GEMINI_BASE_URL || '(not set)'}, API key set: ${!!process.env.AI_INTEGRATIONS_GEMINI_API_KEY}`);
     return defaultResult;
   }
 }
@@ -1810,10 +1823,10 @@ export async function processVideoScan(
         let analysis: FrameAnalysisResult;
         if (useGemini) {
           analysis = await analyzeFrameWithGemini(framePath, timestamp, isVertical);
-          // Only fall back to edge if Gemini API actually failed (not if it found no surfaces)
+          // Only fall back to edge if Gemini API actually failed (not if it just found no surfaces)
           // If aiAnalyzed=true, Gemini worked fine — it just said "no surfaces here"
           if (!analysis.aiAnalyzed && !analysis.hasSurface) {
-            console.log(`[Scanner V2] Gemini API failed for frame ${timestamp}s, trying edge detection fallback...`);
+            console.warn(`[Scanner V2] ⚠️  Gemini API FAILED for frame ${timestamp}s (aiAnalyzed=false). This likely means the API request failed (wrong base URL, auth error, or timeout). Falling back to edge detection...`);
             analysis = await analyzeFrameForSurfaces(framePath, timestamp, isVertical);
           }
         } else {
