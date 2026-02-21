@@ -412,7 +412,7 @@ export default function PlacementPreviewModal({
   const videoSrc = resolveVideoSrc(videoDetails?.filePath);
 
   // Fetch dense surface keyframes for accurate motion tracking
-  const { data: denseKeyframesData } = useQuery<{
+  const { data: denseKeyframesData, refetch: refetchKeyframes } = useQuery<{
     keyframes: Record<string, Array<{
       timestamp: number;
       bbox: { x: number; y: number; w: number; h: number };
@@ -428,6 +428,43 @@ export default function PlacementPreviewModal({
     },
     enabled: open,
   });
+
+  // Dense scan state — triggers Gemini per-frame tracking when user plays video
+  const [isDenseScanning, setIsDenseScanning] = useState(false);
+  const [denseScanDone, setDenseScanDone] = useState(false);
+
+  // Trigger dense scan when user first enters video playback mode
+  const triggerDenseScan = useCallback(async () => {
+    if (isDenseScanning || denseScanDone) return;
+
+    // Check if we already have enough keyframes for the selected surface
+    const surfaceType = selectedSurface?.surfaceType;
+    const existingKfs = surfaceType ? denseKeyframesData?.keyframes?.[surfaceType] : null;
+    if (existingKfs && existingKfs.length >= 10) {
+      setDenseScanDone(true);
+      return;
+    }
+
+    setIsDenseScanning(true);
+    try {
+      console.log(`[PlacementPreview] Triggering dense scan for video ${videoId}...`);
+      const res = await fetch(`/api/video/${videoId}/dense-scan`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (res.ok) {
+        const data = await res.json();
+        console.log(`[PlacementPreview] Dense scan result:`, data);
+        // Refetch keyframes now that dense scan is complete
+        await refetchKeyframes();
+      }
+      setDenseScanDone(true);
+    } catch (err) {
+      console.error("[PlacementPreview] Dense scan failed:", err);
+    } finally {
+      setIsDenseScanning(false);
+    }
+  }, [videoId, isDenseScanning, denseScanDone, selectedSurface?.surfaceType, denseKeyframesData, refetchKeyframes]);
 
   // Fetch product catalog
   const { data: catalogProducts } = useQuery<CatalogProduct[]>({
@@ -518,8 +555,10 @@ export default function PlacementPreviewModal({
       setSaveSuccess(false);
       frameImgRef.current = null;
       productImgRef.current = null;
-      // Reset video playback state
+      // Reset video playback + dense scan state
       setIsVideoMode(false);
+      setIsDenseScanning(false);
+      setDenseScanDone(false);
       setIsVideoPlaying(false);
       setVideoCurrentTime(0);
       setVideoDuration(0);
@@ -667,13 +706,59 @@ export default function PlacementPreviewModal({
       ctx.drawImage(frameImg!, 0, 0, canvas.width, canvas.height);
     }
 
-    // Draw bounding box — keep product at the user's placed position during preview
-    // Dense keyframes are only used for server-side video export (with smoothing applied)
+    // Draw bounding box — during video playback, interpolate using dense keyframes
+    // so the bounding box tracks with the surface as the camera moves
     if (selectedSurface) {
-      const bx = selectedSurface.boundingBoxX * canvas.width;
-      const by = selectedSurface.boundingBoxY * canvas.height;
-      const bw = selectedSurface.boundingBoxWidth * canvas.width;
-      const bh = selectedSurface.boundingBoxHeight * canvas.height;
+      let bx: number, by: number, bw: number, bh: number;
+
+      // Check if we have dense keyframes for this surface type and video is playing
+      const surfaceKfs = denseKeyframesData?.keyframes?.[selectedSurface.surfaceType];
+      if (useVideo && surfaceKfs && surfaceKfs.length > 1) {
+        // Interpolate bounding box position from dense keyframes based on current time
+        const time = videoEl!.currentTime;
+        const kfs = surfaceKfs;
+
+        // Find bracketing keyframes
+        let prevKf = kfs[0];
+        let nextKf: typeof kfs[0] | null = null;
+        let progress = 0;
+
+        if (time <= kfs[0].timestamp) {
+          prevKf = kfs[0];
+        } else if (time >= kfs[kfs.length - 1].timestamp) {
+          prevKf = kfs[kfs.length - 1];
+        } else {
+          for (let i = 0; i < kfs.length - 1; i++) {
+            if (time >= kfs[i].timestamp && time <= kfs[i + 1].timestamp) {
+              prevKf = kfs[i];
+              nextKf = kfs[i + 1];
+              const range = kfs[i + 1].timestamp - kfs[i].timestamp;
+              progress = range > 0 ? (time - kfs[i].timestamp) / range : 0;
+              break;
+            }
+          }
+        }
+
+        // Interpolate bbox (values are 0-100 percentage from server)
+        const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+        if (nextKf) {
+          bx = lerp(prevKf.bbox.x, nextKf.bbox.x, progress) / 100 * canvas.width;
+          by = lerp(prevKf.bbox.y, nextKf.bbox.y, progress) / 100 * canvas.height;
+          bw = lerp(prevKf.bbox.w, nextKf.bbox.w, progress) / 100 * canvas.width;
+          bh = lerp(prevKf.bbox.h, nextKf.bbox.h, progress) / 100 * canvas.height;
+        } else {
+          bx = prevKf.bbox.x / 100 * canvas.width;
+          by = prevKf.bbox.y / 100 * canvas.height;
+          bw = prevKf.bbox.w / 100 * canvas.width;
+          bh = prevKf.bbox.h / 100 * canvas.height;
+        }
+      } else {
+        // Static mode or no dense keyframes — use the surface's original position
+        bx = selectedSurface.boundingBoxX * canvas.width;
+        by = selectedSurface.boundingBoxY * canvas.height;
+        bw = selectedSurface.boundingBoxWidth * canvas.width;
+        bh = selectedSurface.boundingBoxHeight * canvas.height;
+      }
 
       const hasProduct = !!productImgRef.current;
 
@@ -749,7 +834,7 @@ export default function PlacementPreviewModal({
     }
 
     animFrameRef.current = requestAnimationFrame(renderFrame);
-  }, [selectedSurface, transform, blend, isVideoMode]);
+  }, [selectedSurface, transform, blend, isVideoMode, denseKeyframesData]);
 
   // Start/stop render loop
   useEffect(() => {
@@ -770,8 +855,9 @@ export default function PlacementPreviewModal({
     if (!videoEl) return;
 
     if (!isVideoMode) {
-      // Enter video mode
+      // Enter video mode — also trigger dense scan for camera tracking
       setIsVideoMode(true);
+      triggerDenseScan(); // Fire-and-forget: generates dense keyframes in background
       videoEl.currentTime = 0;
       videoEl.play().then(() => {
         setIsVideoPlaying(true);
@@ -788,7 +874,7 @@ export default function PlacementPreviewModal({
         console.error("[PlacementPreview] Video play failed:", err);
       });
     }
-  }, [isVideoMode, isVideoPlaying]);
+  }, [isVideoMode, isVideoPlaying, triggerDenseScan]);
 
   const stopVideoPlayback = useCallback(() => {
     const videoEl = videoRef.current;
@@ -808,10 +894,9 @@ export default function PlacementPreviewModal({
   const handleVideoExport = useCallback(async () => {
     if (!selectedSurface || !productImage) return;
 
-    // Use the user's placed surface position as a SINGLE stable keyframe.
-    // The product stays at the exact position where the user placed it for every frame.
-    // The server will also stabilize using median bbox, but sending the user's chosen
-    // position is the most accurate representation of intent.
+    // Send the user's placed position as a fallback keyframe.
+    // The server will run denseScanRange() to get per-frame surface tracking data
+    // so the product follows the surface as the camera moves.
     const surfaceType = selectedSurface.surfaceType;
     const rawX = selectedSurface.boundingBoxX;
     const rawY = selectedSurface.boundingBoxY;
@@ -830,7 +915,7 @@ export default function PlacementPreviewModal({
       },
       confidence: selectedSurface.confidence,
     }];
-    console.log(`[PlacementPreview] Exporting "${surfaceType}" with stable single-position keyframe`);
+    console.log(`[PlacementPreview] Exporting "${surfaceType}" — server will run dense tracking`);
 
     // Get product aspect ratio
     const prodImg = productImgRef.current;
@@ -1416,11 +1501,19 @@ export default function PlacementPreviewModal({
                 {hasProduct && (
                   <div className="mt-2 text-center">
                     <p className="text-[10px] text-muted-foreground">
-                      {isVideoMode
-                        ? "Playing video with product placement overlay — verify tracking is working"
+                      {isDenseScanning
+                        ? "Generating surface tracking data... Product will track with camera once complete."
+                        : isVideoMode
+                        ? "Playing video with camera-tracking placement — product follows the surface"
                         : "Drag to move | Corner handles to resize | Orange dot to rotate | Play to preview tracking"
                       }
                     </p>
+                    {isDenseScanning && (
+                      <div className="flex items-center justify-center gap-1.5 mt-1">
+                        <Loader2 className="w-3 h-3 animate-spin text-primary" />
+                        <span className="text-[10px] text-primary">Scanning frames for surface tracking...</span>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

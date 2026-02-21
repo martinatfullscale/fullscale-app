@@ -4629,6 +4629,66 @@ export async function registerRoutes(
 
   // ── Video Export Pipeline ──
 
+  // Trigger dense surface scanning for accurate camera-tracking keyframes
+  // Called when user plays the video preview — generates 0.5s-interval Gemini detections
+  app.post("/api/video/:videoId/dense-scan", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+      if (!video.filePath) return res.status(400).json({ error: "Video has no local file" });
+
+      // Get all detected surfaces for this video
+      const detectedSurfs = await storage.getDetectedSurfaces(videoId);
+      if (detectedSurfs.length === 0) {
+        return res.status(400).json({ error: "No surfaces detected for this video" });
+      }
+
+      // Check if dense keyframes already exist (>= 10 keyframes total)
+      const existingKfs = await storage.getKeyframesByVideo(videoId);
+      if (existingKfs.length >= 10) {
+        console.log(`[Dense Scan] Video ${videoId} already has ${existingKfs.length} keyframes, skipping`);
+        return res.json({ status: "already_scanned", keyframesCount: existingKfs.length });
+      }
+
+      const surfaceIds = detectedSurfs.map(s => s.id);
+
+      // Get video duration
+      const { spawn: spawnProbe } = await import("child_process");
+      const videoDuration = await new Promise<number>((resolve) => {
+        if (video.filePath!.startsWith('/storage/')) {
+          resolve(60); // Default for Object Storage files
+          return;
+        }
+        const videoFilePath = path.resolve(video.filePath!);
+        const proc = spawnProbe("ffprobe", [
+          "-v", "quiet", "-print_format", "json", "-show_format", videoFilePath,
+        ]);
+        let stdout = "";
+        proc.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
+        proc.on("close", () => {
+          try { resolve(parseFloat(JSON.parse(stdout).format.duration) || 30); }
+          catch { resolve(30); }
+        });
+        proc.on("error", () => resolve(30));
+      });
+
+      console.log(`[Dense Scan] Starting for video ${videoId}: ${videoDuration.toFixed(1)}s, ${surfaceIds.length} surfaces`);
+
+      // Run dense scan (this is expensive — ~1 Gemini call per 0.5s of video)
+      const { denseScanRange } = await import("./scanner_v2");
+      const result = await denseScanRange(videoId, 0, videoDuration, surfaceIds, 0.5);
+
+      console.log(`[Dense Scan] Complete: ${result.keyframesCreated} keyframes created for video ${videoId}`);
+      res.json({ status: "complete", keyframesCreated: result.keyframesCreated });
+    } catch (err: any) {
+      console.error("[Dense Scan] Error:", err.message);
+      res.status(500).json({ error: "Dense scan failed" });
+    }
+  });
+
   // Start a new video export job
   // Get dense surface keyframes for a video (used by PlacementPreviewModal for accurate tracking)
   app.get("/api/video/:videoId/surface-keyframes", async (req: any, res) => {
@@ -4718,80 +4778,138 @@ export async function registerRoutes(
         }
       }
 
-      // ── Stabilize placement keyframes for video export ──
-      // Problem: The initial scan detects surfaces every 2 seconds, producing sparse
-      // keyframes with slightly different bounding boxes per frame (Gemini noise).
-      // When the video exporter interpolates between these, the product visibly drifts.
+      // ── Dense surface tracking for video export ──
+      // Problem: The product must FOLLOW the surface as the camera moves.
+      // Bounding boxes are in screen coordinates — when the camera pans, the surface
+      // moves across the screen. A static bbox keeps the product anchored to a fixed
+      // screen position while the surface moves away.
       //
-      // Solution: Use a SINGLE stable bounding box position for the entire video.
-      // The user placed the product on a specific surface at a specific position —
-      // that's where it should stay for every frame. We take the median bbox across
-      // all keyframes for that surface type to get the most stable position.
-      //
-      // For future: dense scanning (0.5s intervals via Gemini) + EMA smoothing could
-      // enable real camera-tracking, but that requires expensive per-frame AI calls.
-      const allKeyframes = await storage.getKeyframesByVideo(videoId);
+      // Solution: Run denseScanRange() to get Gemini surface detections at 0.5s intervals
+      // across the full video. This gives us per-half-second bbox positions that track
+      // where the surface actually is as the camera moves. Apply EMA smoothing to reduce
+      // Gemini detection noise while preserving genuine camera motion.
       const detectedSurfs = await storage.getDetectedSurfaces(videoId);
       const surfaceTypeMap = new Map<number, string>();
+      const surfaceIdsByType = new Map<string, number[]>();
       for (const s of detectedSurfs) {
         surfaceTypeMap.set(s.id, s.surfaceType);
+        if (!surfaceIdsByType.has(s.surfaceType)) surfaceIdsByType.set(s.surfaceType, []);
+        surfaceIdsByType.get(s.surfaceType)!.push(s.id);
       }
 
+      // Determine which surface types need dense tracking
+      const surfaceTypesNeeded = new Set<string>();
+      const surfaceIdsNeeded: number[] = [];
       for (const placement of placements) {
-        // Collect all bounding boxes for this surface type (from keyframes or detected surfaces)
-        const bboxes: Array<{ x: number; y: number; w: number; h: number }> = [];
+        surfaceTypesNeeded.add(placement.surfaceType);
+        const ids = surfaceIdsByType.get(placement.surfaceType) || [];
+        for (const id of ids) {
+          if (!surfaceIdsNeeded.includes(id)) surfaceIdsNeeded.push(id);
+        }
+      }
 
-        // From surface_keyframes table
+      // Check if we already have enough dense keyframes (>= 10 per surface type)
+      const existingKeyframes = await storage.getKeyframesByVideo(videoId);
+      const kfCountByType = new Map<string, number>();
+      for (const kf of existingKeyframes) {
+        const type = surfaceTypeMap.get(kf.surfaceId) || "unknown";
+        kfCountByType.set(type, (kfCountByType.get(type) || 0) + 1);
+      }
+
+      const needsDenseScan = Array.from(surfaceTypesNeeded).some(
+        type => (kfCountByType.get(type) || 0) < 10
+      );
+
+      if (needsDenseScan && surfaceIdsNeeded.length > 0) {
+        // Run dense scan for the full video to get per-frame surface tracking
+        console.log(`[Video Export] Running dense scan for ${surfaceIdsNeeded.length} surfaces (need camera tracking)...`);
+        try {
+          const { denseScanRange } = await import("./scanner_v2");
+          // Get video duration via ffprobe
+          const { spawn: spawnProbe } = await import("child_process");
+          const videoDuration = await new Promise<number>((resolve) => {
+            let videoFilePath = video.filePath!;
+            if (!videoFilePath.startsWith('/storage/')) {
+              videoFilePath = path.resolve(videoFilePath);
+            }
+            // For Object Storage paths, we can't probe directly — use a generous default
+            if (video.filePath!.startsWith('/storage/')) {
+              resolve(60); // Default to 60s, dense scan handles shorter videos gracefully
+              return;
+            }
+            const proc = spawnProbe("ffprobe", [
+              "-v", "quiet", "-print_format", "json", "-show_format", videoFilePath,
+            ]);
+            let stdout = "";
+            proc.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
+            proc.on("close", () => {
+              try { resolve(parseFloat(JSON.parse(stdout).format.duration) || 30); }
+              catch { resolve(30); }
+            });
+            proc.on("error", () => resolve(30));
+          });
+
+          const denseScanResult = await denseScanRange(
+            videoId, 0, videoDuration, surfaceIdsNeeded, 0.5
+          );
+          console.log(`[Video Export] Dense scan complete: ${denseScanResult.keyframesCreated} keyframes created`);
+        } catch (denseScanErr: any) {
+          console.warn(`[Video Export] Dense scan failed (will use sparse data): ${denseScanErr.message}`);
+        }
+      }
+
+      // Now fetch all keyframes (including newly created dense ones) and build smoothed tracks
+      const allKeyframes = await storage.getKeyframesByVideo(videoId);
+
+      // EMA smoothing helper — reduces Gemini detection noise while preserving camera motion
+      const smoothKeyframes = (kfs: Array<{ timestamp: number; bbox: { x: number; y: number; w: number; h: number }; confidence: number }>, alpha: number = 0.3) => {
+        if (kfs.length <= 1) return kfs;
+        const sorted = [...kfs].sort((a, b) => a.timestamp - b.timestamp);
+        const smoothed = [sorted[0]];
+        for (let i = 1; i < sorted.length; i++) {
+          const prev = smoothed[i - 1];
+          const curr = sorted[i];
+          smoothed.push({
+            timestamp: curr.timestamp,
+            bbox: {
+              x: prev.bbox.x + alpha * (curr.bbox.x - prev.bbox.x),
+              y: prev.bbox.y + alpha * (curr.bbox.y - prev.bbox.y),
+              w: prev.bbox.w + alpha * (curr.bbox.w - prev.bbox.w),
+              h: prev.bbox.h + alpha * (curr.bbox.h - prev.bbox.h),
+            },
+            confidence: curr.confidence,
+          });
+        }
+        return smoothed;
+      };
+
+      for (const placement of placements) {
+        // Collect all keyframes for this surface type
+        const rawKfs: Array<{ timestamp: number; bbox: { x: number; y: number; w: number; h: number }; confidence: number }> = [];
+
         for (const kf of allKeyframes) {
           if (surfaceTypeMap.get(kf.surfaceId) === placement.surfaceType) {
-            bboxes.push({
-              x: parseFloat(String(kf.boundingBoxX)) * 100,
-              y: parseFloat(String(kf.boundingBoxY)) * 100,
-              w: parseFloat(String(kf.boundingBoxWidth)) * 100,
-              h: parseFloat(String(kf.boundingBoxHeight)) * 100,
+            rawKfs.push({
+              timestamp: parseFloat(String(kf.timestamp)),
+              bbox: {
+                x: parseFloat(String(kf.boundingBoxX)) * 100,
+                y: parseFloat(String(kf.boundingBoxY)) * 100,
+                w: parseFloat(String(kf.boundingBoxWidth)) * 100,
+                h: parseFloat(String(kf.boundingBoxHeight)) * 100,
+              },
+              confidence: parseFloat(String(kf.confidence)),
             });
           }
         }
 
-        // Also from detected_surfaces as fallback
-        for (const ds of detectedSurfs) {
-          if (ds.surfaceType === placement.surfaceType) {
-            const rawX = parseFloat(String(ds.boundingBoxX));
-            const rawY = parseFloat(String(ds.boundingBoxY));
-            const rawW = parseFloat(String(ds.boundingBoxWidth));
-            const rawH = parseFloat(String(ds.boundingBoxHeight));
-            const isNormalized = rawX <= 1 && rawY <= 1 && rawW <= 1 && rawH <= 1;
-            const scale = isNormalized ? 100 : 1;
-            bboxes.push({
-              x: rawX * scale, y: rawY * scale,
-              w: rawW * scale, h: rawH * scale,
-            });
-          }
-        }
-
-        if (bboxes.length > 0) {
-          // Compute median bbox for maximum stability (outlier-resistant)
-          const median = (arr: number[]) => {
-            const sorted = [...arr].sort((a, b) => a - b);
-            const mid = Math.floor(sorted.length / 2);
-            return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-          };
-
-          const stableBbox = {
-            x: median(bboxes.map(b => b.x)),
-            y: median(bboxes.map(b => b.y)),
-            w: median(bboxes.map(b => b.w)),
-            h: median(bboxes.map(b => b.h)),
-          };
-
-          // Use a single keyframe at t=0 with the stable bbox — product stays in one place
-          placement.keyframes = [{
-            timestamp: 0,
-            bbox: stableBbox,
-            confidence: 1.0,
-          }];
-
-          console.log(`[Video Export] Stabilized "${placement.surfaceType}" → single bbox from ${bboxes.length} samples: (${stableBbox.x.toFixed(1)}, ${stableBbox.y.toFixed(1)}, ${stableBbox.w.toFixed(1)}, ${stableBbox.h.toFixed(1)})`);
+        if (rawKfs.length > 0) {
+          // Apply EMA smoothing to reduce detection noise
+          const smoothed = smoothKeyframes(rawKfs, 0.3);
+          placement.keyframes = smoothed;
+          console.log(`[Video Export] "${placement.surfaceType}" → ${smoothed.length} smoothed tracking keyframes (camera-following)`);
+        } else {
+          // Fallback: use the client-sent keyframes (user's placed position)
+          console.log(`[Video Export] "${placement.surfaceType}" → using client-sent keyframes (no dense data available)`);
         }
       }
 
