@@ -62,8 +62,9 @@ const CONFIG = {
   HORIZONTAL_LINE_MIN_LENGTH: 0.20,
   SURFACE_CONFIDENCE_THRESHOLD: 0.25, // Require reasonable confidence
 
-  // Fallback detection - only add if Gemini found ZERO surfaces in entire video
-  MIN_SURFACES_BEFORE_FALLBACK: 0,
+  // Fallback detection - add placeholder surfaces when Gemini finds fewer than this count
+  // Set to 1 so that videos scanned without Gemini (missing API key) still get placeholders
+  MIN_SURFACES_BEFORE_FALLBACK: 1,
   FALLBACK_CONFIDENCE: 0.15,
   
   // Timeouts
@@ -1770,7 +1771,13 @@ export async function processVideoScan(
 
     // PROCESS FRAMES ONE BY ONE (with immediate cleanup)
     let totalSurfaces = 0;
+    const geminiKeyPresent = !!process.env.AI_INTEGRATIONS_GEMINI_API_KEY
+      && process.env.AI_INTEGRATIONS_GEMINI_API_KEY !== 'dummy-key';
     console.log(`[Scanner V2] Detection method: ${CONFIG.DETECTION_METHOD.toUpperCase()}`);
+    console.log(`[Scanner V2] Gemini API key: ${geminiKeyPresent ? 'CONFIGURED (' + process.env.AI_INTEGRATIONS_GEMINI_API_KEY!.substring(0, 8) + '...)' : 'NOT SET — will use edge detection fallback (less accurate)'}`);
+    if (!geminiKeyPresent) {
+      console.warn(`[Scanner V2] ⚠️  AI_INTEGRATIONS_GEMINI_API_KEY not set. Surface detection will be limited. Set this env var for accurate AI-powered scanning.`);
+    }
 
     for (let i = 0; i < frames.length; i++) {
       const framePath = frames[i];
@@ -2048,11 +2055,20 @@ export async function processVideoScan(
     }
 
     // FINALIZE
-    const finalStatus = totalSurfaces > 0 ? `Ready (${totalSurfaces} Spots)` : "Ready (0 Spots)";
+    let finalStatus: string;
+    if (totalSurfaces > 0) {
+      finalStatus = `Ready (${totalSurfaces} Spots)`;
+    } else if (!geminiKeyPresent) {
+      finalStatus = "Ready (0 Spots)";
+      console.warn(`[Scanner V2] ⚠️  0 surfaces found — Gemini API key is NOT configured. Set AI_INTEGRATIONS_GEMINI_API_KEY for AI-powered surface detection.`);
+    } else {
+      finalStatus = "Ready (0 Spots)";
+      console.warn(`[Scanner V2] 0 surfaces found despite Gemini being available. The video may not contain clear flat surfaces, or ghost filters may be too aggressive.`);
+    }
     await storage.updateVideoStatus(videoId, finalStatus);
-    
+
     console.log(`[Scanner V2] ========== SCAN COMPLETE ==========`);
-    console.log(`[Scanner V2] Video ID: ${videoId}, Surfaces: ${totalSurfaces}`);
+    console.log(`[Scanner V2] Video ID: ${videoId}, Surfaces: ${totalSurfaces}, Gemini: ${geminiKeyPresent ? 'YES' : 'NO'}`);
 
     // AUTO-TRIGGER TRANSCRIPTION — kick off transcript pipeline in background after scan
     // This ensures editorial clips are ready when the creator opens the video
@@ -2208,7 +2224,10 @@ export async function denseScanRange(
     const frames = fs.readdirSync(framesDir).filter((f) => f.endsWith(".jpg")).sort();
     console.log(`[DenseScan] Extracted ${frames.length} frames`);
 
-    const CLUSTER_TOLERANCE = 0.20;
+    // For dense tracking, we need a wider spatial tolerance because the camera can move
+    // the surface significantly across the frame. When there's only one target surface of
+    // a given type, we rely on type matching alone (the surface is unique).
+    const CLUSTER_TOLERANCE = 0.40; // 40% tolerance for camera movement
     const keyframeBatch: Array<{
       surfaceId: number;
       videoId: number;
@@ -2220,6 +2239,13 @@ export async function denseScanRange(
       confidence: string;
     }> = [];
 
+    // Count how many target surfaces share each type (for matching strategy)
+    const typeCounts = new Map<string, number>();
+    for (const t of targetSurfaces) {
+      const key = t.surfaceType.toLowerCase();
+      typeCounts.set(key, (typeCounts.get(key) || 0) + 1);
+    }
+
     for (let i = 0; i < frames.length; i++) {
       const framePath = path.join(framesDir, frames[i]);
       const timestamp = startTime + i * intervalSeconds;
@@ -2228,22 +2254,33 @@ export async function denseScanRange(
         const analysis = await analyzeFrameWithGemini(framePath, timestamp, false);
 
         if (analysis.hasSurface && analysis.surfaces.length > 0) {
-          // Match detected surfaces to our target surfaces by type + spatial proximity
+          // Match detected surfaces to our target surfaces
           for (const detected of analysis.surfaces) {
             const centerX = detected.boundingBox.x + detected.boundingBox.width / 2;
             const centerY = detected.boundingBox.y + detected.boundingBox.height / 2;
 
             for (const target of targetSurfaces) {
-              const targetCX = parseFloat(String(target.boundingBoxX)) + parseFloat(String(target.boundingBoxWidth)) / 2;
-              const targetCY = parseFloat(String(target.boundingBoxY)) + parseFloat(String(target.boundingBoxHeight)) / 2;
-
               const typeMatch = detected.surfaceType.toLowerCase() === target.surfaceType.toLowerCase();
-              const posMatch = Math.abs(centerX - targetCX) < CLUSTER_TOLERANCE && Math.abs(centerY - targetCY) < CLUSTER_TOLERANCE;
+              if (!typeMatch) continue;
 
-              // Require BOTH type match AND spatial proximity for reliable tracking.
-              // Type-only matches risk picking up wrong surfaces of the same type.
-              // Position-only has a wide tolerance (0.20) and may match wrong surfaces.
-              if (typeMatch && posMatch) {
+              // If this is the only surface of its type, match by type alone —
+              // the surface is unique so spatial proximity is unnecessary
+              // (and would reject valid matches when camera moves significantly)
+              const typeCount = typeCounts.get(target.surfaceType.toLowerCase()) || 1;
+              let shouldMatch = false;
+
+              if (typeCount === 1) {
+                // Unique surface type → type match is sufficient
+                shouldMatch = true;
+              } else {
+                // Multiple surfaces of same type → also require spatial proximity
+                const targetCX = parseFloat(String(target.boundingBoxX)) + parseFloat(String(target.boundingBoxWidth)) / 2;
+                const targetCY = parseFloat(String(target.boundingBoxY)) + parseFloat(String(target.boundingBoxHeight)) / 2;
+                const posMatch = Math.abs(centerX - targetCX) < CLUSTER_TOLERANCE && Math.abs(centerY - targetCY) < CLUSTER_TOLERANCE;
+                shouldMatch = posMatch;
+              }
+
+              if (shouldMatch) {
                 keyframeBatch.push({
                   surfaceId: target.id,
                   videoId,
