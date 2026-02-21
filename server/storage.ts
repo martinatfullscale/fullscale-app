@@ -600,11 +600,6 @@ export class DatabaseStorage implements IStorage {
       .select()
       .from(videoIndex)
       .where(eq(videoIndex.id, id));
-    if (!video) {
-      // Diagnostic: check if video exists with a raw count query
-      const allVideos = await db.select({ id: videoIndex.id }).from(videoIndex).limit(10);
-      console.warn(`[Storage.getVideoById] Video ${id} not found. Sample IDs in table: [${allVideos.map(v => v.id).join(', ')}]`);
-    }
     return video;
   }
 

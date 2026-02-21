@@ -2189,24 +2189,18 @@ export async function registerRoutes(
       return res.status(400).json({ error: "Invalid video ID" });
     }
 
-    // Demo video IDs (1000+) — return realistic mock surfaces for pitch mode
-    if (videoId >= 1000) {
+    // Demo video IDs (1001-1099) — return realistic mock surfaces for pitch mode
+    // IMPORTANT: Only check the specific demo range, NOT all IDs >= 1000,
+    // because real production videos can have IDs in the tens of thousands
+    if (videoId >= 1001 && videoId <= 1099) {
       const demoVideo = STATIC_DEMO_VIDEOS.find((v: any) => v.id === videoId);
-      if (!demoVideo) return res.status(404).json({ error: "Video not found" });
+      if (!demoVideo) return res.status(404).json({ error: "Demo video not found" });
       const mockSurfaces = generateDemoSurfaces(videoId, demoVideo as any);
       return res.json({ surfaces: mockSurfaces, count: mockSurfaces.length });
     }
 
     const video = await storage.getVideoById(videoId);
     if (!video) {
-      console.error(`[Surfaces] Video ${videoId} not found by getVideoById — checking if surfaces exist directly...`);
-      // Bypass video check — try to get surfaces directly since video exists in index but getVideoById fails
-      const directSurfaces = await storage.getDetectedSurfaces(videoId);
-      if (directSurfaces.length > 0) {
-        console.warn(`[Surfaces] Found ${directSurfaces.length} surfaces for video ${videoId} despite getVideoById returning null — serving them anyway`);
-        const surfaces = directSurfaces.filter(s => s.surfaceType !== "Filtered");
-        return res.json({ surfaces, count: surfaces.length });
-      }
       return res.status(404).json({ error: "Video not found" });
     }
 
