@@ -404,7 +404,7 @@ RULES:
 - Consider platform-specific best practices (TikTok hooks < 3s, YouTube Shorts < 60s, etc.)
 - Only suggest placements on surfaces that exist in the video
 - Only suggest brand products from the available catalog
-- All timestamps must be within the video's duration (0 to ${ctx.videoDuration}s)
+- All timestamps must be within the video's duration (0 to ${typeof ctx.videoDuration === "number" ? ctx.videoDuration : parseFloat(String(ctx.videoDuration)) || 0}s)
 
 PLATFORM BEST PRACTICES:
 - TikTok: Hook in first 1-2 seconds, 15-60s optimal, vertical 9:16, text captions boost 40%
@@ -426,13 +426,16 @@ function buildUserPrompt(request: CopilotRequest): string {
   const ctx = request.sessionContext;
   const parts: string[] = [];
 
+  // Ensure videoDuration is a number (schema stores as varchar, could arrive as string)
+  const duration = typeof ctx.videoDuration === "number" ? ctx.videoDuration : parseFloat(String(ctx.videoDuration)) || 0;
+
   // Video context
-  parts.push(`VIDEO: "${ctx.videoTitle}" (${ctx.videoDuration.toFixed(1)}s)`);
+  parts.push(`VIDEO: "${ctx.videoTitle}" (${duration.toFixed(1)}s)`);
 
   // Transcript (truncated)
   if (ctx.transcript.length > 0) {
     const transcriptText = ctx.transcript
-      .map((seg) => `[${seg.start.toFixed(1)}s] ${seg.speaker || "?"}: ${seg.text}`)
+      .map((seg) => `[${(typeof seg.start === "number" ? seg.start : parseFloat(String(seg.start)) || 0).toFixed(1)}s] ${seg.speaker || "?"}: ${seg.text}`)
       .join("\n");
     const truncated = transcriptText.slice(0, COPILOT_CONFIG.MAX_TRANSCRIPT_CHARS);
     parts.push(`\nTRANSCRIPT:\n${truncated}${transcriptText.length > COPILOT_CONFIG.MAX_TRANSCRIPT_CHARS ? "\n... (truncated)" : ""}`);
@@ -593,6 +596,11 @@ function validateSuggestion(raw: any, ctx: CopilotSessionContext): CopilotSugges
   if (!validTypes.includes(raw.type)) return null;
   if (typeof raw.reason !== "string") return null;
 
+  // Ensure videoDuration is a number (schema stores as varchar)
+  const vidDuration = typeof ctx.videoDuration === "number"
+    ? ctx.videoDuration
+    : parseFloat(String(ctx.videoDuration)) || 0;
+
   const confidence = typeof raw.confidence === "number"
     ? Math.max(0, Math.min(1, raw.confidence))
     : 0.5;
@@ -605,7 +613,7 @@ function validateSuggestion(raw: any, ctx: CopilotSessionContext): CopilotSugges
       const newStart = typeof data.newStart === "number" ? data.newStart : null;
       const newEnd = typeof data.newEnd === "number" ? data.newEnd : null;
       if (newStart === null || newEnd === null) return null;
-      if (newStart < 0 || newEnd > ctx.videoDuration || newStart >= newEnd) return null;
+      if (newStart < 0 || newEnd > vidDuration || newStart >= newEnd) return null;
       const currentStart = ctx.currentClip?.start ?? 0;
       const currentEnd = ctx.currentClip?.end ?? 0;
       return {
@@ -626,7 +634,7 @@ function validateSuggestion(raw: any, ctx: CopilotSessionContext): CopilotSugges
 
     case "hook_improvement": {
       const altStart = typeof data.alternativeStart === "number" ? data.alternativeStart : null;
-      if (altStart === null || altStart < 0 || altStart > ctx.videoDuration) return null;
+      if (altStart === null || altStart < 0 || altStart > vidDuration) return null;
       return {
         type: "hook_improvement",
         reason: raw.reason,
@@ -683,7 +691,7 @@ function validateSuggestion(raw: any, ctx: CopilotSessionContext): CopilotSugges
             .filter((s: any) => typeof s.start === "number" && typeof s.end === "number")
             .map((s: any) => ({
               start: Math.max(0, s.start),
-              end: Math.min(ctx.videoDuration, s.end),
+              end: Math.min(vidDuration, s.end),
               reason: typeof s.reason === "string" ? s.reason : "Complementary segment",
             }))
         : [];

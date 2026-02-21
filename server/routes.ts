@@ -6632,7 +6632,7 @@ export async function registerRoutes(
       const sessionContext = {
         videoId,
         videoTitle: video.title || `Video ${videoId}`,
-        videoDuration: video.duration || 0,
+        videoDuration: parseFloat(video.duration as string) || 0,
         transcript,
         currentClip,
         surfaces,
@@ -6779,7 +6779,7 @@ export async function registerRoutes(
       const sessionContext = {
         videoId,
         videoTitle: video.title || `Video ${videoId}`,
-        videoDuration: video.duration || 0,
+        videoDuration: parseFloat(video.duration as string) || 0,
         transcript,
         currentClip,
         surfaces,
