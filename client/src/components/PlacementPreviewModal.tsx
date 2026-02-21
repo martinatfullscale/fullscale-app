@@ -234,7 +234,11 @@ function captureReferencePatch(
 /**
  * Find the best match for the reference patch in the current frame.
  * Uses Sum of Absolute Differences (SAD) on grayscale, sampled sparsely for speed.
- * Returns offset from reference position in canvas pixel coordinates.
+ * Returns offset from reference position in canvas pixel coordinates,
+ * plus a confidence score (0-1) indicating match quality.
+ *
+ * Key improvement: returns `confidence` so the caller can decide what to do
+ * when the match degrades (hold last good offset vs. blend).
  */
 function trackPatchInFrame(
   videoEl: HTMLVideoElement,
@@ -243,26 +247,26 @@ function trackPatchInFrame(
   refData: ImageData,
   refX: number, refY: number,
   searchCanvas: HTMLCanvasElement,
-  searchRadius: number = 60 // pixels to search in each direction
-): { dx: number; dy: number } {
+  searchRadius: number = 120 // generous search radius for camera pans
+): { dx: number; dy: number; confidence: number; frameData?: ImageData } {
   try {
     searchCanvas.width = canvasW;
     searchCanvas.height = canvasH;
     const ctx = searchCanvas.getContext("2d", { willReadFrequently: true });
-    if (!ctx) return { dx: 0, dy: 0 };
+    if (!ctx) return { dx: 0, dy: 0, confidence: 0 };
 
     ctx.drawImage(videoEl, 0, 0, canvasW, canvasH);
 
     const pw = refData.width;
     const ph = refData.height;
 
-    // Search area: reference position ± searchRadius
+    // Search area: reference position ± searchRadius, biased toward last known offset
     const searchLeft = Math.max(0, refX - searchRadius);
     const searchTop = Math.max(0, refY - searchRadius);
     const searchRight = Math.min(canvasW - pw, refX + searchRadius);
     const searchBottom = Math.min(canvasH - ph, refY + searchRadius);
 
-    if (searchRight <= searchLeft || searchBottom <= searchTop) return { dx: 0, dy: 0 };
+    if (searchRight <= searchLeft || searchBottom <= searchTop) return { dx: 0, dy: 0, confidence: 0 };
 
     // Get full search area pixels in one call (much faster than many small getImageData calls)
     const searchW = searchRight - searchLeft + pw;
@@ -273,21 +277,21 @@ function trackPatchInFrame(
     const searchPx = searchData.data;
 
     let bestDx = 0, bestDy = 0, bestSAD = Infinity;
-    const step = 4; // Check every 4th pixel position for speed
-    const sampleStep = 6; // Sample every 6th pixel in patch for speed
+    // Two-pass search: coarse (step=6) then fine (step=2) around best coarse match
+    const coarseStep = 6;
+    const sampleStep = 4; // Sample every 4th pixel in patch (denser than before for better accuracy)
 
-    for (let sy = 0; sy <= searchBottom - searchTop; sy += step) {
-      for (let sx = 0; sx <= searchRight - searchLeft; sx += step) {
+    // Coarse pass
+    for (let sy = 0; sy <= searchBottom - searchTop; sy += coarseStep) {
+      for (let sx = 0; sx <= searchRight - searchLeft; sx += coarseStep) {
         let sad = 0;
         let samples = 0;
 
-        // Compare patch at this offset using grayscale SAD
         for (let py2 = 0; py2 < ph; py2 += sampleStep) {
           for (let px2 = 0; px2 < pw; px2 += sampleStep) {
             const refIdx = (py2 * pw + px2) * 4;
             const searchIdx = ((sy + py2) * searchW + (sx + px2)) * 4;
 
-            // Grayscale approximation: (R + G + B) / 3
             const refGray = (refPx[refIdx] + refPx[refIdx + 1] + refPx[refIdx + 2]) / 3;
             const srcGray = (searchPx[searchIdx] + searchPx[searchIdx + 1] + searchPx[searchIdx + 2]) / 3;
             sad += Math.abs(refGray - srcGray);
@@ -295,23 +299,72 @@ function trackPatchInFrame(
           }
         }
 
-        sad /= samples; // Normalize
+        sad /= samples;
 
         if (sad < bestSAD) {
           bestSAD = sad;
-          bestDx = sx + searchLeft - refX;
-          bestDy = sy + searchTop - refY;
+          bestDx = sx;
+          bestDy = sy;
         }
       }
     }
 
-    // Only trust the match if it's reasonably good (low SAD means good match)
-    // Threshold: average per-pixel difference < 30 (out of 255)
-    if (bestSAD > 30) return { dx: 0, dy: 0 };
+    // Fine pass: refine around the coarse best match
+    const fineStep = 2;
+    const fineRadius = coarseStep + 2;
+    const fineLeft = Math.max(0, bestDx - fineRadius);
+    const fineTop = Math.max(0, bestDy - fineRadius);
+    const fineRight = Math.min(searchRight - searchLeft, bestDx + fineRadius);
+    const fineBottom = Math.min(searchBottom - searchTop, bestDy + fineRadius);
 
-    return { dx: bestDx, dy: bestDy };
+    for (let sy = fineTop; sy <= fineBottom; sy += fineStep) {
+      for (let sx = fineLeft; sx <= fineRight; sx += fineStep) {
+        let sad = 0;
+        let samples = 0;
+
+        for (let py2 = 0; py2 < ph; py2 += sampleStep) {
+          for (let px2 = 0; px2 < pw; px2 += sampleStep) {
+            const refIdx = (py2 * pw + px2) * 4;
+            const searchIdx = ((sy + py2) * searchW + (sx + px2)) * 4;
+
+            const refGray = (refPx[refIdx] + refPx[refIdx + 1] + refPx[refIdx + 2]) / 3;
+            const srcGray = (searchPx[searchIdx] + searchPx[searchIdx + 1] + searchPx[searchIdx + 2]) / 3;
+            sad += Math.abs(refGray - srcGray);
+            samples++;
+          }
+        }
+
+        sad /= samples;
+
+        if (sad < bestSAD) {
+          bestSAD = sad;
+          bestDx = sx;
+          bestDy = sy;
+        }
+      }
+    }
+
+    const finalDx = bestDx + searchLeft - refX;
+    const finalDy = bestDy + searchTop - refY;
+
+    // Convert SAD to confidence: 0 SAD = 1.0 confidence, 60+ SAD = 0.0
+    // SAD of 20 = excellent match (~0.67), SAD of 40 = mediocre (~0.33)
+    const confidence = Math.max(0, Math.min(1, 1 - bestSAD / 60));
+
+    // Also grab the current frame data at the matched position so caller can
+    // update reference patch when confidence is high
+    let frameData: ImageData | undefined;
+    if (confidence > 0.6) {
+      const matchX = bestDx + searchLeft;
+      const matchY = bestDy + searchTop;
+      if (matchX >= 0 && matchY >= 0 && matchX + pw <= canvasW && matchY + ph <= canvasH) {
+        frameData = ctx.getImageData(matchX, matchY, pw, ph);
+      }
+    }
+
+    return { dx: finalDx, dy: finalDy, confidence, frameData };
   } catch {
-    return { dx: 0, dy: 0 };
+    return { dx: 0, dy: 0, confidence: 0 };
   }
 }
 
@@ -531,9 +584,14 @@ export default function PlacementPreviewModal({
     patchHeight: number;
     lastOffsetX: number;               // Current tracked offset in canvas pixels
     lastOffsetY: number;
+    lastGoodOffsetX: number;           // Last offset with high confidence (held when tracking degrades)
+    lastGoodOffsetY: number;
     searchCanvas: HTMLCanvasElement;    // Off-screen canvas for pixel sampling
     initialized: boolean;
     frameCounter: number;              // Only run tracking every Nth frame
+    refUpdateCounter: number;          // Counter for adaptive reference updates
+    consecutiveLowConf: number;        // How many frames in a row had low confidence
+    lastConfidence: number;            // Most recent confidence score
   }>({
     referenceData: null,
     refCenterX: 0,
@@ -542,9 +600,14 @@ export default function PlacementPreviewModal({
     patchHeight: 0,
     lastOffsetX: 0,
     lastOffsetY: 0,
+    lastGoodOffsetX: 0,
+    lastGoodOffsetY: 0,
     searchCanvas: typeof document !== "undefined" ? document.createElement("canvas") : null as any,
     initialized: false,
     frameCounter: 0,
+    refUpdateCounter: 0,
+    consecutiveLowConf: 0,
+    lastConfidence: 1,
   });
 
   // Fetch video details to get file path for playback
@@ -868,6 +931,10 @@ export default function PlacementPreviewModal({
 
       if (useVideo && videoEl) {
         // CLIENT-SIDE VISUAL TRACKING — template matching on the surface region
+        // Strategy: capture a reference patch from the first frame, then search for it
+        // in each subsequent frame. When confidence is high, smoothly blend offsets.
+        // When confidence drops, HOLD the last good position (don't snap back to zero).
+        // Periodically update the reference patch so it adapts to gradual scene changes.
         const tracking = trackingRef.current;
 
         // Step 1: Capture reference patch from the first frame if not done yet
@@ -879,7 +946,6 @@ export default function PlacementPreviewModal({
           );
           if (refPatch) {
             tracking.referenceData = refPatch;
-            // Store the top-left of the patch in canvas pixel coords
             const patchMargin = 0.3;
             tracking.refCenterX = Math.max(0, Math.floor(baseBX - baseBW * patchMargin));
             tracking.refCenterY = Math.max(0, Math.floor(baseBY - baseBH * patchMargin));
@@ -887,30 +953,113 @@ export default function PlacementPreviewModal({
             tracking.patchHeight = refPatch.height;
             tracking.lastOffsetX = 0;
             tracking.lastOffsetY = 0;
+            tracking.lastGoodOffsetX = 0;
+            tracking.lastGoodOffsetY = 0;
+            tracking.refUpdateCounter = 0;
+            tracking.consecutiveLowConf = 0;
+            tracking.lastConfidence = 1;
             tracking.initialized = true;
           }
         }
 
         // Step 2: Track the reference patch in the current frame
-        // Only run template matching every 3rd frame for performance
+        // Run template matching every 2nd frame (more responsive than every 3rd)
         if (tracking.initialized && tracking.referenceData) {
           tracking.frameCounter++;
-          if (tracking.frameCounter % 3 === 0) {
-            const { dx, dy } = trackPatchInFrame(
+          if (tracking.frameCounter % 2 === 0) {
+            // Search centered on last known offset position (not always from reference origin)
+            // This gives us a moving search window that follows the surface
+            const searchFromX = tracking.refCenterX + Math.round(tracking.lastOffsetX);
+            const searchFromY = tracking.refCenterY + Math.round(tracking.lastOffsetY);
+
+            const { dx, dy, confidence, frameData } = trackPatchInFrame(
               videoEl, canvas.width, canvas.height,
               tracking.referenceData,
-              tracking.refCenterX, tracking.refCenterY,
+              searchFromX, searchFromY,
               tracking.searchCanvas,
-              80 // search radius in pixels
+              120 // generous search radius for camera pans
             );
 
-            // Apply EMA smoothing to reduce jitter (alpha = 0.4 = responsive but smooth)
-            tracking.lastOffsetX = tracking.lastOffsetX * 0.6 + dx * 0.4;
-            tracking.lastOffsetY = tracking.lastOffsetY * 0.6 + dy * 0.4;
+            // Actual offset from the ORIGINAL reference position
+            const newOffsetX = tracking.lastOffsetX + dx;
+            const newOffsetY = tracking.lastOffsetY + dy;
+
+            tracking.lastConfidence = confidence;
+
+            if (confidence > 0.35) {
+              // Good match — smooth blend toward the new offset
+              // Higher confidence → more responsive (less smoothing)
+              const alpha = 0.3 + confidence * 0.4; // 0.44 to 0.70
+              tracking.lastOffsetX = tracking.lastOffsetX * (1 - alpha) + newOffsetX * alpha;
+              tracking.lastOffsetY = tracking.lastOffsetY * (1 - alpha) + newOffsetY * alpha;
+              tracking.consecutiveLowConf = 0;
+
+              // Save as last good offset
+              tracking.lastGoodOffsetX = tracking.lastOffsetX;
+              tracking.lastGoodOffsetY = tracking.lastOffsetY;
+
+              // Adaptive reference update: every ~45 matched frames, refresh the
+              // reference patch from the current frame so it stays relevant as
+              // lighting/perspective changes gradually.
+              tracking.refUpdateCounter++;
+              if (tracking.refUpdateCounter >= 45 && confidence > 0.55 && frameData) {
+                tracking.referenceData = frameData;
+                // Update reference position to match current tracked position
+                tracking.refCenterX = searchFromX;
+                tracking.refCenterY = searchFromY;
+                tracking.lastOffsetX = 0;
+                tracking.lastOffsetY = 0;
+                tracking.lastGoodOffsetX = 0;
+                tracking.lastGoodOffsetY = 0;
+                tracking.refUpdateCounter = 0;
+              }
+            } else {
+              // Low confidence — HOLD the last good offset instead of decaying to zero.
+              // This prevents the bbox from snapping back to original position
+              // when the scene temporarily changes (motion blur, occlusion, etc.)
+              tracking.consecutiveLowConf++;
+              tracking.lastOffsetX = tracking.lastGoodOffsetX;
+              tracking.lastOffsetY = tracking.lastGoodOffsetY;
+
+              // If we've lost tracking for a long time (60+ low-conf frames in a row),
+              // try re-capturing a reference patch from the current frame
+              if (tracking.consecutiveLowConf > 60) {
+                const newRef = captureReferencePatch(
+                  videoEl, canvas.width, canvas.height,
+                  baseBX + tracking.lastGoodOffsetX,
+                  baseBY + tracking.lastGoodOffsetY,
+                  baseBW, baseBH,
+                  tracking.searchCanvas
+                );
+                if (newRef) {
+                  tracking.referenceData = newRef;
+                  const patchMargin = 0.3;
+                  tracking.refCenterX = Math.max(0, Math.floor(
+                    (baseBX + tracking.lastGoodOffsetX) - baseBW * patchMargin
+                  ));
+                  tracking.refCenterY = Math.max(0, Math.floor(
+                    (baseBY + tracking.lastGoodOffsetY) - baseBH * patchMargin
+                  ));
+                  tracking.lastOffsetX = 0;
+                  tracking.lastOffsetY = 0;
+                  tracking.lastGoodOffsetX = 0;
+                  tracking.lastGoodOffsetY = 0;
+                  tracking.refUpdateCounter = 0;
+                  tracking.consecutiveLowConf = 0;
+                }
+              }
+            }
           }
 
-          bx = baseBX + tracking.lastOffsetX;
-          by = baseBY + tracking.lastOffsetY;
+          // Apply total offset = baseBX is the original position, plus tracked offset
+          // When reference has been updated, lastGoodOffset is relative to the updated ref,
+          // so we reconstruct the absolute position differently:
+          // absolute = refCenterX (current reference origin) + lastOffset + patch margin shift
+          const patchMargin = 0.3;
+          const marginX = baseBW * patchMargin;
+          const marginY = baseBH * patchMargin;
+          bx = tracking.refCenterX + tracking.lastOffsetX + marginX;
+          by = tracking.refCenterY + tracking.lastOffsetY + marginY;
         } else {
           bx = baseBX;
           by = baseBY;
@@ -1026,7 +1175,12 @@ export default function PlacementPreviewModal({
       tracking.referenceData = null;
       tracking.lastOffsetX = 0;
       tracking.lastOffsetY = 0;
+      tracking.lastGoodOffsetX = 0;
+      tracking.lastGoodOffsetY = 0;
       tracking.frameCounter = 0;
+      tracking.refUpdateCounter = 0;
+      tracking.consecutiveLowConf = 0;
+      tracking.lastConfidence = 1;
 
       setIsVideoMode(true);
       triggerDenseScan(); // Fire-and-forget: generates dense keyframes in background (for export)
@@ -1063,7 +1217,12 @@ export default function PlacementPreviewModal({
     tracking.referenceData = null;
     tracking.lastOffsetX = 0;
     tracking.lastOffsetY = 0;
+    tracking.lastGoodOffsetX = 0;
+    tracking.lastGoodOffsetY = 0;
     tracking.frameCounter = 0;
+    tracking.refUpdateCounter = 0;
+    tracking.consecutiveLowConf = 0;
+    tracking.lastConfidence = 1;
   }, []);
 
   // ============================================================================
