@@ -4718,73 +4718,80 @@ export async function registerRoutes(
         }
       }
 
-      // ── Enrich placements with smoothed dense surface keyframes for motion tracking ──
-      // Raw Gemini detections have frame-to-frame noise (±2-5% bbox shift). We apply
-      // exponential moving average (EMA) smoothing to stabilize the bounding boxes so
-      // the product stays anchored to the surface instead of drifting/jittering.
-      const denseKeyframes = await storage.getKeyframesByVideo(videoId);
-      if (denseKeyframes.length > 0) {
-        // Map surfaceId → surfaceType from detected_surfaces
-        const detectedSurfs = await storage.getDetectedSurfaces(videoId);
-        const surfaceTypeMap = new Map<number, string>();
-        for (const s of detectedSurfs) {
-          surfaceTypeMap.set(s.id, s.surfaceType);
-        }
+      // ── Stabilize placement keyframes for video export ──
+      // Problem: The initial scan detects surfaces every 2 seconds, producing sparse
+      // keyframes with slightly different bounding boxes per frame (Gemini noise).
+      // When the video exporter interpolates between these, the product visibly drifts.
+      //
+      // Solution: Use a SINGLE stable bounding box position for the entire video.
+      // The user placed the product on a specific surface at a specific position —
+      // that's where it should stay for every frame. We take the median bbox across
+      // all keyframes for that surface type to get the most stable position.
+      //
+      // For future: dense scanning (0.5s intervals via Gemini) + EMA smoothing could
+      // enable real camera-tracking, but that requires expensive per-frame AI calls.
+      const allKeyframes = await storage.getKeyframesByVideo(videoId);
+      const detectedSurfs = await storage.getDetectedSurfaces(videoId);
+      const surfaceTypeMap = new Map<number, string>();
+      for (const s of detectedSurfs) {
+        surfaceTypeMap.set(s.id, s.surfaceType);
+      }
 
-        // Group dense keyframes by surfaceType
-        const denseByType: Record<string, Array<{ timestamp: number; bbox: { x: number; y: number; w: number; h: number }; confidence: number }>> = {};
-        for (const kf of denseKeyframes) {
-          const surfaceType = surfaceTypeMap.get(kf.surfaceId) || "unknown";
-          if (!denseByType[surfaceType]) denseByType[surfaceType] = [];
-          denseByType[surfaceType].push({
-            timestamp: parseFloat(String(kf.timestamp)),
-            bbox: {
-              // surface_keyframes stores 0-1 normalized values; video exporter expects 0-100
+      for (const placement of placements) {
+        // Collect all bounding boxes for this surface type (from keyframes or detected surfaces)
+        const bboxes: Array<{ x: number; y: number; w: number; h: number }> = [];
+
+        // From surface_keyframes table
+        for (const kf of allKeyframes) {
+          if (surfaceTypeMap.get(kf.surfaceId) === placement.surfaceType) {
+            bboxes.push({
               x: parseFloat(String(kf.boundingBoxX)) * 100,
               y: parseFloat(String(kf.boundingBoxY)) * 100,
               w: parseFloat(String(kf.boundingBoxWidth)) * 100,
               h: parseFloat(String(kf.boundingBoxHeight)) * 100,
-            },
-            confidence: parseFloat(String(kf.confidence)),
-          });
-        }
-
-        // Sort each group by timestamp, then apply EMA smoothing
-        for (const key of Object.keys(denseByType)) {
-          denseByType[key].sort((a, b) => a.timestamp - b.timestamp);
-
-          // Apply EMA smoothing: alpha=0.15 means 85% from previous smoothed value, 15% from new
-          // This heavily dampens frame-to-frame Gemini detection noise while preserving
-          // genuine camera movement trends over multiple seconds
-          const alpha = 0.15;
-          const kfs = denseByType[key];
-          if (kfs.length > 1) {
-            let smoothX = kfs[0].bbox.x;
-            let smoothY = kfs[0].bbox.y;
-            let smoothW = kfs[0].bbox.w;
-            let smoothH = kfs[0].bbox.h;
-            for (let i = 1; i < kfs.length; i++) {
-              smoothX = alpha * kfs[i].bbox.x + (1 - alpha) * smoothX;
-              smoothY = alpha * kfs[i].bbox.y + (1 - alpha) * smoothY;
-              smoothW = alpha * kfs[i].bbox.w + (1 - alpha) * smoothW;
-              smoothH = alpha * kfs[i].bbox.h + (1 - alpha) * smoothH;
-              kfs[i].bbox.x = smoothX;
-              kfs[i].bbox.y = smoothY;
-              kfs[i].bbox.w = smoothW;
-              kfs[i].bbox.h = smoothH;
-            }
-            console.log(`[Video Export] Smoothed "${key}" keyframes (${kfs.length} frames, alpha=${alpha})`);
+            });
           }
         }
 
-        // Replace sparse keyframes with smoothed dense ones for each placement
-        for (const placement of placements) {
-          const denseKfs = denseByType[placement.surfaceType];
-          if (denseKfs && denseKfs.length > 0) {
-            const sparseCount = placement.keyframes?.length || 0;
-            placement.keyframes = denseKfs;
-            console.log(`[Video Export] Enriched "${placement.surfaceType}" keyframes: ${sparseCount} sparse → ${denseKfs.length} dense (smoothed)`);
+        // Also from detected_surfaces as fallback
+        for (const ds of detectedSurfs) {
+          if (ds.surfaceType === placement.surfaceType) {
+            const rawX = parseFloat(String(ds.boundingBoxX));
+            const rawY = parseFloat(String(ds.boundingBoxY));
+            const rawW = parseFloat(String(ds.boundingBoxWidth));
+            const rawH = parseFloat(String(ds.boundingBoxHeight));
+            const isNormalized = rawX <= 1 && rawY <= 1 && rawW <= 1 && rawH <= 1;
+            const scale = isNormalized ? 100 : 1;
+            bboxes.push({
+              x: rawX * scale, y: rawY * scale,
+              w: rawW * scale, h: rawH * scale,
+            });
           }
+        }
+
+        if (bboxes.length > 0) {
+          // Compute median bbox for maximum stability (outlier-resistant)
+          const median = (arr: number[]) => {
+            const sorted = [...arr].sort((a, b) => a - b);
+            const mid = Math.floor(sorted.length / 2);
+            return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+          };
+
+          const stableBbox = {
+            x: median(bboxes.map(b => b.x)),
+            y: median(bboxes.map(b => b.y)),
+            w: median(bboxes.map(b => b.w)),
+            h: median(bboxes.map(b => b.h)),
+          };
+
+          // Use a single keyframe at t=0 with the stable bbox — product stays in one place
+          placement.keyframes = [{
+            timestamp: 0,
+            bbox: stableBbox,
+            confidence: 1.0,
+          }];
+
+          console.log(`[Video Export] Stabilized "${placement.surfaceType}" → single bbox from ${bboxes.length} samples: (${stableBbox.x.toFixed(1)}, ${stableBbox.y.toFixed(1)}, ${stableBbox.w.toFixed(1)}, ${stableBbox.h.toFixed(1)})`);
         }
       }
 

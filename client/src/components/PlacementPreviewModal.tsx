@@ -808,43 +808,29 @@ export default function PlacementPreviewModal({
   const handleVideoExport = useCallback(async () => {
     if (!selectedSurface || !productImage) return;
 
-    // Build keyframes — prefer dense keyframes from surface_keyframes table
+    // Use the user's placed surface position as a SINGLE stable keyframe.
+    // The product stays at the exact position where the user placed it for every frame.
+    // The server will also stabilize using median bbox, but sending the user's chosen
+    // position is the most accurate representation of intent.
     const surfaceType = selectedSurface.surfaceType;
-    let keyframes: Array<{ timestamp: number; bbox: { x: number; y: number; w: number; h: number }; confidence: number }>;
+    const rawX = selectedSurface.boundingBoxX;
+    const rawY = selectedSurface.boundingBoxY;
+    const rawW = selectedSurface.boundingBoxWidth;
+    const rawH = selectedSurface.boundingBoxHeight;
+    const isNormalized = rawX <= 1 && rawY <= 1 && rawW <= 1 && rawH <= 1;
+    const scale = isNormalized ? 100 : 1;
 
-    const denseKfs = denseKeyframesData?.keyframes?.[surfaceType];
-    if (denseKfs && denseKfs.length > 0) {
-      // Use dense per-frame keyframes for accurate motion tracking
-      keyframes = denseKfs.map(kf => ({
-        timestamp: kf.timestamp,
-        bbox: kf.bbox,
-        confidence: kf.confidence,
-      }));
-      console.log(`[PlacementPreview] Using ${keyframes.length} dense keyframes for "${surfaceType}" export`);
-    } else {
-      // Fallback: build from sparse detected surfaces
-      const matchingSurfaces = surfaces.filter(s => s.surfaceType === surfaceType);
-      keyframes = matchingSurfaces.map(s => {
-        const rawX = s.boundingBoxX;
-        const rawY = s.boundingBoxY;
-        const rawW = s.boundingBoxWidth;
-        const rawH = s.boundingBoxHeight;
-        // Auto-detect: if all values are <=1, they're 0-1 normalized → scale to 0-100
-        const isNormalized = rawX <= 1 && rawY <= 1 && rawW <= 1 && rawH <= 1;
-        const scale = isNormalized ? 100 : 1;
-        return {
-          timestamp: s.timestamp,
-          bbox: {
-            x: rawX * scale,
-            y: rawY * scale,
-            w: rawW * scale,
-            h: rawH * scale,
-          },
-          confidence: s.confidence,
-        };
-      }).sort((a, b) => a.timestamp - b.timestamp);
-      console.log(`[PlacementPreview] Using ${keyframes.length} sparse keyframes for "${surfaceType}" export (no dense data available)`);
-    }
+    const keyframes = [{
+      timestamp: 0,
+      bbox: {
+        x: rawX * scale,
+        y: rawY * scale,
+        w: rawW * scale,
+        h: rawH * scale,
+      },
+      confidence: selectedSurface.confidence,
+    }];
+    console.log(`[PlacementPreview] Exporting "${surfaceType}" with stable single-position keyframe`);
 
     // Get product aspect ratio
     const prodImg = productImgRef.current;
@@ -895,7 +881,7 @@ export default function PlacementPreviewModal({
       setExportStatus("failed");
       toast({ title: "Export failed", description: err.message, variant: "destructive" });
     }
-  }, [selectedSurface, productImage, surfaces, transform, blend, videoId, toast, denseKeyframesData]);
+  }, [selectedSurface, productImage, transform, blend, videoId, toast]);
 
   // Poll export progress
   useEffect(() => {
