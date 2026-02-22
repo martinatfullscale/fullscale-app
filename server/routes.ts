@@ -4691,6 +4691,115 @@ export async function registerRoutes(
     }
   });
 
+  // ── Motion Tracking (vidstab) ──
+  // Runs FFmpeg vidstab analysis on the full video and returns per-frame
+  // camera transforms. The client uses these for smooth product placement
+  // during video preview — the product "sits" on the surface naturally.
+  //
+  // Returns: { transforms: [{frame, dx, dy}...], fps, refFrame, width, height }
+  // Client simply looks up transforms[frameIndex] during playback.
+  app.post("/api/video/:videoId/motion-track", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+      if (!video.filePath) return res.status(400).json({ error: "Video has no local file" });
+
+      // Resolve video path
+      let videoPath = video.filePath;
+      if (!videoPath.startsWith('/storage/')) {
+        videoPath = path.resolve(videoPath);
+      }
+
+      // Get video duration via ffprobe
+      const { spawn: spawnProbe } = await import("child_process");
+      const videoDuration = await new Promise<number>((resolve) => {
+        if (video.filePath!.startsWith('/storage/')) {
+          resolve(60);
+          return;
+        }
+        const proc = spawnProbe("ffprobe", [
+          "-v", "quiet", "-print_format", "json", "-show_format", videoPath,
+        ]);
+        let stdout = "";
+        proc.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
+        proc.on("close", () => {
+          try { resolve(parseFloat(JSON.parse(stdout).format.duration) || 30); }
+          catch { resolve(30); }
+        });
+        proc.on("error", () => resolve(30));
+      });
+
+      // Surface reference position (use first detected surface's bbox)
+      const surfaceId = req.body.surfaceId ? parseInt(req.body.surfaceId) : undefined;
+      let refPos = { x: 0.3, y: 0.3, width: 0.3, height: 0.3 }; // fallback
+
+      if (surfaceId) {
+        const allSurfaces = await storage.getDetectedSurfaces(videoId);
+        const surface = allSurfaces.find(s => s.id === surfaceId);
+        if (surface) {
+          refPos = {
+            x: parseFloat(String(surface.boundingBoxX)) || 0.3,
+            y: parseFloat(String(surface.boundingBoxY)) || 0.3,
+            width: parseFloat(String(surface.boundingBoxWidth)) || 0.3,
+            height: parseFloat(String(surface.boundingBoxHeight)) || 0.3,
+          };
+        }
+      }
+
+      console.log(`[MotionTrack] Analyzing video ${videoId}: ${videoDuration.toFixed(1)}s`);
+
+      const { analyzeClipMotion, getCumulativeTransforms, selectReferencePosition, applyTransformToPosition } = await import("./lib/remix/motionTracker");
+
+      // Run vidstab analysis on the full video at 30fps
+      const fps = 30;
+      const motionData = await analyzeClipMotion(videoPath, 0, videoDuration, fps);
+
+      if (!motionData) {
+        // vidstab not available — return empty transforms so client falls back gracefully
+        console.warn("[MotionTrack] vidstab not available, returning empty transforms");
+        return res.json({ transforms: [], fps, duration: videoDuration, available: false });
+      }
+
+      console.log(`[MotionTrack] Got ${motionData.transforms.length} raw transforms, computing positions...`);
+
+      // Compute cumulative transforms from first frame
+      const refFrameIndex = 0; // Use frame 0 as reference (where the surface was detected)
+      const cumulative = getCumulativeTransforms(motionData.transforms, refFrameIndex);
+
+      // Pre-compute the surface position for every frame so the client
+      // just does a simple lookup with zero computation
+      const framePositions: Array<{ x: number; y: number; w: number; h: number }> = [];
+      for (let i = 0; i < cumulative.length; i++) {
+        const pos = applyTransformToPosition(
+          refPos, cumulative[i],
+          motionData.analysisWidth, motionData.analysisHeight
+        );
+        framePositions.push({
+          x: pos.x,
+          y: pos.y,
+          w: pos.width,
+          h: pos.height,
+        });
+      }
+
+      console.log(`[MotionTrack] Computed ${framePositions.length} frame positions for video ${videoId}`);
+
+      res.json({
+        transforms: framePositions,
+        fps,
+        duration: videoDuration,
+        refPos,
+        available: true,
+      });
+    } catch (err: any) {
+      console.error("[MotionTrack] Error:", err.message);
+      res.status(500).json({ error: "Motion analysis failed", message: err.message });
+    }
+  });
+
   // Start a new video export job
   // Get dense surface keyframes for a video (used by PlacementPreviewModal for accurate tracking)
   app.get("/api/video/:videoId/surface-keyframes", async (req: any, res) => {

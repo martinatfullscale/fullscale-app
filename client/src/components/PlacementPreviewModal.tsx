@@ -559,6 +559,16 @@ export default function PlacementPreviewModal({
   const [videoDuration, setVideoDuration] = useState(0);
   const videoRef = useRef<HTMLVideoElement>(null);
 
+  // Pre-computed motion tracking data from server (vidstab)
+  // When available, this gives perfectly smooth camera-locked placement
+  const [motionData, setMotionData] = useState<{
+    transforms: Array<{ x: number; y: number; w: number; h: number }>;
+    fps: number;
+    duration: number;
+    available: boolean;
+  } | null>(null);
+  const [isMotionLoading, setIsMotionLoading] = useState(false);
+
   // Video export state
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState(0);
@@ -689,6 +699,38 @@ export default function PlacementPreviewModal({
     }
   }, [videoId, isDenseScanning, denseScanDone, selectedSurface?.surfaceType, denseKeyframesData, refetchKeyframes]);
 
+  // Trigger server-side motion analysis (vidstab) for smooth product placement
+  const triggerMotionTrack = useCallback(async () => {
+    if (isMotionLoading || motionData) return; // Already loaded or loading
+    if (!selectedSurface) return;
+
+    setIsMotionLoading(true);
+    try {
+      console.log(`[PlacementPreview] Requesting motion tracking for video ${videoId}, surface ${selectedSurface.id}...`);
+      const res = await fetch(`/api/video/${videoId}/motion-track`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ surfaceId: selectedSurface.id }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.available && data.transforms?.length > 0) {
+          setMotionData(data);
+          console.log(`[PlacementPreview] Got ${data.transforms.length} motion frames at ${data.fps}fps`);
+        } else {
+          console.log("[PlacementPreview] Motion tracking not available (vidstab not installed), using client-side fallback");
+          setMotionData({ transforms: [], fps: 30, duration: 0, available: false });
+        }
+      }
+    } catch (err) {
+      console.error("[PlacementPreview] Motion track request failed:", err);
+      setMotionData({ transforms: [], fps: 30, duration: 0, available: false });
+    } finally {
+      setIsMotionLoading(false);
+    }
+  }, [videoId, isMotionLoading, motionData, selectedSurface]);
+
   // Fetch product catalog
   const { data: catalogProducts } = useQuery<CatalogProduct[]>({
     queryKey: ["/api/brand-products/catalog"],
@@ -778,10 +820,12 @@ export default function PlacementPreviewModal({
       setSaveSuccess(false);
       frameImgRef.current = null;
       productImgRef.current = null;
-      // Reset video playback + dense scan state
+      // Reset video playback + dense scan + motion tracking state
       setIsVideoMode(false);
       setIsDenseScanning(false);
       setDenseScanDone(false);
+      setMotionData(null);
+      setIsMotionLoading(false);
       setIsVideoPlaying(false);
       setVideoCurrentTime(0);
       setVideoDuration(0);
@@ -942,154 +986,158 @@ export default function PlacementPreviewModal({
       const baseBY = selectedSurface.boundingBoxY * canvas.height;
 
       if (useVideo && videoEl) {
-        // CLIENT-SIDE VISUAL TRACKING with spring-damped interpolation.
-        // Template matching runs every 4th frame (expensive), but the DISPLAY
-        // position is interpolated every frame using spring physics, giving
-        // buttery-smooth motion even when measurements are sparse.
         const tracking = trackingRef.current;
 
-        // Step 1: Capture reference patch from the first frame if not done yet
-        if (!tracking.initialized && videoEl.currentTime < 0.5) {
-          const refPatch = captureReferencePatch(
-            videoEl, canvas.width, canvas.height,
-            baseBX, baseBY, baseBW, baseBH,
-            tracking.searchCanvas
-          );
-          if (refPatch) {
-            tracking.referenceData = refPatch;
-            const patchMargin = 0.3;
-            tracking.refCenterX = Math.max(0, Math.floor(baseBX - baseBW * patchMargin));
-            tracking.refCenterY = Math.max(0, Math.floor(baseBY - baseBH * patchMargin));
-            tracking.patchWidth = refPatch.width;
-            tracking.patchHeight = refPatch.height;
-            tracking.displayOffsetX = 0;
-            tracking.displayOffsetY = 0;
-            tracking.targetOffsetX = 0;
-            tracking.targetOffsetY = 0;
+        // ── STRATEGY A: Pre-computed vidstab motion data (server-side) ──
+        // When available, gives perfectly smooth tracking with zero client-side
+        // computation. The server ran FFmpeg vidstab analysis and pre-computed
+        // the exact surface position for every frame.
+        if (motionData?.available && motionData.transforms.length > 0) {
+          const currentTime = videoEl.currentTime;
+          const frameIndex = Math.round(currentTime * motionData.fps);
+          const clampedIndex = Math.min(frameIndex, motionData.transforms.length - 1);
+
+          // Get the pre-computed position (normalized 0-1) for this frame
+          const pos = motionData.transforms[clampedIndex];
+
+          // Set target from pre-computed data
+          const targetBX = pos.x * canvas.width;
+          const targetBY = pos.y * canvas.height;
+          const targetBW = pos.w * canvas.width;
+          const targetBH = pos.h * canvas.height;
+
+          // Spring-damped interpolation for sub-frame smoothness.
+          // Even with per-frame data, interpolating prevents steppiness
+          // between discrete frame lookups.
+          if (!tracking.initialized) {
+            // First frame — snap directly, no spring
+            tracking.displayOffsetX = targetBX;
+            tracking.displayOffsetY = targetBY;
+            tracking.targetOffsetX = targetBX;
+            tracking.targetOffsetY = targetBY;
             tracking.velocityX = 0;
             tracking.velocityY = 0;
-            tracking.lastGoodOffsetX = 0;
-            tracking.lastGoodOffsetY = 0;
-            tracking.refUpdateCounter = 0;
-            tracking.consecutiveLowConf = 0;
-            tracking.lastConfidence = 1;
             tracking.initialized = true;
+          } else {
+            tracking.targetOffsetX = targetBX;
+            tracking.targetOffsetY = targetBY;
           }
+
+          // Spring physics: display smoothly chases target
+          const stiffness = 0.15;  // Higher than fallback — vidstab data is clean
+          const damping = 0.70;
+
+          const forceX = (tracking.targetOffsetX - tracking.displayOffsetX) * stiffness;
+          const forceY = (tracking.targetOffsetY - tracking.displayOffsetY) * stiffness;
+          tracking.velocityX = tracking.velocityX * damping + forceX;
+          tracking.velocityY = tracking.velocityY * damping + forceY;
+          tracking.displayOffsetX += tracking.velocityX;
+          tracking.displayOffsetY += tracking.velocityY;
+
+          bx = tracking.displayOffsetX;
+          by = tracking.displayOffsetY;
+          bw = targetBW;
+          bh = targetBH;
         }
-
-        // Step 2: Track + interpolate
-        if (tracking.initialized && tracking.referenceData) {
-          tracking.frameCounter++;
-
-          // Run expensive template matching only every 4th frame
-          if (tracking.frameCounter % 4 === 0) {
-            const searchFromX = tracking.refCenterX + Math.round(tracking.targetOffsetX);
-            const searchFromY = tracking.refCenterY + Math.round(tracking.targetOffsetY);
-
-            const { dx, dy, confidence, frameData } = trackPatchInFrame(
+        // ── STRATEGY B: Client-side template matching (fallback) ──
+        // Used when vidstab is not available. Less smooth but functional.
+        else {
+          // Initialize reference patch from first frame
+          if (!tracking.initialized && videoEl.currentTime < 0.5) {
+            const refPatch = captureReferencePatch(
               videoEl, canvas.width, canvas.height,
-              tracking.referenceData,
-              searchFromX, searchFromY,
-              tracking.searchCanvas,
-              80 // tighter search radius — reduces false far-away matches
+              baseBX, baseBY, baseBW, baseBH,
+              tracking.searchCanvas
             );
-
-            tracking.lastConfidence = confidence;
-
-            if (confidence > 0.3) {
-              // Update the TARGET position (not the display position)
-              tracking.targetOffsetX += dx;
-              tracking.targetOffsetY += dy;
+            if (refPatch) {
+              tracking.referenceData = refPatch;
+              const patchMargin = 0.3;
+              tracking.refCenterX = Math.max(0, Math.floor(baseBX - baseBW * patchMargin));
+              tracking.refCenterY = Math.max(0, Math.floor(baseBY - baseBH * patchMargin));
+              tracking.patchWidth = refPatch.width;
+              tracking.patchHeight = refPatch.height;
+              tracking.displayOffsetX = 0;
+              tracking.displayOffsetY = 0;
+              tracking.targetOffsetX = 0;
+              tracking.targetOffsetY = 0;
+              tracking.velocityX = 0;
+              tracking.velocityY = 0;
+              tracking.lastGoodOffsetX = 0;
+              tracking.lastGoodOffsetY = 0;
+              tracking.refUpdateCounter = 0;
               tracking.consecutiveLowConf = 0;
-              tracking.lastGoodOffsetX = tracking.targetOffsetX;
-              tracking.lastGoodOffsetY = tracking.targetOffsetY;
+              tracking.lastConfidence = 1;
+              tracking.initialized = true;
+            }
+          }
 
-              // Adaptive reference update every ~60 confident frames
-              tracking.refUpdateCounter++;
-              if (tracking.refUpdateCounter >= 60 && confidence > 0.5 && frameData) {
-                tracking.referenceData = frameData;
-                tracking.refCenterX = searchFromX;
-                tracking.refCenterY = searchFromY;
-                // Reset all offsets — the new reference IS the current position,
-                // so target and display are both at 0 relative to it.
-                // The spring will hold steady since target == display.
-                tracking.targetOffsetX = 0;
-                tracking.targetOffsetY = 0;
-                tracking.displayOffsetX = 0;
-                tracking.displayOffsetY = 0;
-                tracking.velocityX = 0;
-                tracking.velocityY = 0;
-                tracking.lastGoodOffsetX = 0;
-                tracking.lastGoodOffsetY = 0;
-                tracking.refUpdateCounter = 0;
-              }
-            } else {
-              // Low confidence — hold target at last good position
-              tracking.consecutiveLowConf++;
-              tracking.targetOffsetX = tracking.lastGoodOffsetX;
-              tracking.targetOffsetY = tracking.lastGoodOffsetY;
+          if (tracking.initialized && tracking.referenceData) {
+            tracking.frameCounter++;
 
-              // Re-capture after long tracking loss
-              if (tracking.consecutiveLowConf > 90) {
-                const newRef = captureReferencePatch(
-                  videoEl, canvas.width, canvas.height,
-                  baseBX + tracking.lastGoodOffsetX,
-                  baseBY + tracking.lastGoodOffsetY,
-                  baseBW, baseBH,
-                  tracking.searchCanvas
-                );
-                if (newRef) {
-                  tracking.referenceData = newRef;
-                  const pm = 0.3;
-                  tracking.refCenterX = Math.max(0, Math.floor(
-                    (baseBX + tracking.lastGoodOffsetX) - baseBW * pm
-                  ));
-                  tracking.refCenterY = Math.max(0, Math.floor(
-                    (baseBY + tracking.lastGoodOffsetY) - baseBH * pm
-                  ));
+            // Template matching every 4th frame
+            if (tracking.frameCounter % 4 === 0) {
+              const searchFromX = tracking.refCenterX + Math.round(tracking.targetOffsetX);
+              const searchFromY = tracking.refCenterY + Math.round(tracking.targetOffsetY);
+
+              const { dx, dy, confidence, frameData } = trackPatchInFrame(
+                videoEl, canvas.width, canvas.height,
+                tracking.referenceData,
+                searchFromX, searchFromY,
+                tracking.searchCanvas,
+                80
+              );
+
+              tracking.lastConfidence = confidence;
+
+              if (confidence > 0.3) {
+                tracking.targetOffsetX += dx;
+                tracking.targetOffsetY += dy;
+                tracking.consecutiveLowConf = 0;
+                tracking.lastGoodOffsetX = tracking.targetOffsetX;
+                tracking.lastGoodOffsetY = tracking.targetOffsetY;
+
+                tracking.refUpdateCounter++;
+                if (tracking.refUpdateCounter >= 60 && confidence > 0.5 && frameData) {
+                  tracking.referenceData = frameData;
+                  tracking.refCenterX = searchFromX;
+                  tracking.refCenterY = searchFromY;
                   tracking.targetOffsetX = 0;
                   tracking.targetOffsetY = 0;
                   tracking.displayOffsetX = 0;
                   tracking.displayOffsetY = 0;
+                  tracking.velocityX = 0;
+                  tracking.velocityY = 0;
                   tracking.lastGoodOffsetX = 0;
                   tracking.lastGoodOffsetY = 0;
                   tracking.refUpdateCounter = 0;
-                  tracking.consecutiveLowConf = 0;
                 }
+              } else {
+                tracking.consecutiveLowConf++;
+                tracking.targetOffsetX = tracking.lastGoodOffsetX;
+                tracking.targetOffsetY = tracking.lastGoodOffsetY;
               }
             }
+
+            // Spring interpolation every frame
+            const stiffness = 0.08;
+            const damping = 0.75;
+            const forceX = (tracking.targetOffsetX - tracking.displayOffsetX) * stiffness;
+            const forceY = (tracking.targetOffsetY - tracking.displayOffsetY) * stiffness;
+            tracking.velocityX = tracking.velocityX * damping + forceX;
+            tracking.velocityY = tracking.velocityY * damping + forceY;
+            tracking.displayOffsetX += tracking.velocityX;
+            tracking.displayOffsetY += tracking.velocityY;
+
+            const patchMargin = 0.3;
+            bx = tracking.refCenterX + tracking.displayOffsetX + patchMargin * baseBW;
+            by = tracking.refCenterY + tracking.displayOffsetY + patchMargin * baseBH;
+          } else {
+            bx = baseBX;
+            by = baseBY;
           }
-
-          // EVERY frame: spring-damped interpolation toward target.
-          // This is what makes the motion smooth — the display position
-          // "chases" the target with inertia, like a physical object.
-          const springStiffness = 0.08;  // How fast display catches up to target (lower = smoother)
-          const damping = 0.75;          // Velocity decay (lower = more damping, less overshoot)
-
-          // Spring force: pull display toward target
-          const forceX = (tracking.targetOffsetX - tracking.displayOffsetX) * springStiffness;
-          const forceY = (tracking.targetOffsetY - tracking.displayOffsetY) * springStiffness;
-
-          // Update velocity with spring force + damping
-          tracking.velocityX = tracking.velocityX * damping + forceX;
-          tracking.velocityY = tracking.velocityY * damping + forceY;
-
-          // Apply velocity to display position
-          tracking.displayOffsetX += tracking.velocityX;
-          tracking.displayOffsetY += tracking.velocityY;
-
-          // Compute final screen position
-          const patchMargin = 0.3;
-          const marginX = baseBW * patchMargin;
-          const marginY = baseBH * patchMargin;
-          bx = tracking.refCenterX + tracking.displayOffsetX + marginX;
-          by = tracking.refCenterY + tracking.displayOffsetY + marginY;
-        } else {
-          bx = baseBX;
-          by = baseBY;
+          bw = baseBW;
+          bh = baseBH;
         }
-        bw = baseBW;
-        bh = baseBH;
       } else {
         // Static mode — use the surface's original position
         bx = baseBX;
@@ -1172,7 +1220,7 @@ export default function PlacementPreviewModal({
     }
 
     animFrameRef.current = requestAnimationFrame(renderFrame);
-  }, [selectedSurface, transform, blend, isVideoMode]);
+  }, [selectedSurface, transform, blend, isVideoMode, motionData]);
 
   // Start/stop render loop
   useEffect(() => {
@@ -1212,6 +1260,7 @@ export default function PlacementPreviewModal({
 
       setIsVideoMode(true);
       triggerDenseScan(); // Fire-and-forget: generates dense keyframes in background (for export)
+      triggerMotionTrack(); // Fire-and-forget: runs vidstab analysis for smooth placement preview
       videoEl.currentTime = 0;
       videoEl.play().then(() => {
         setIsVideoPlaying(true);
@@ -1228,7 +1277,7 @@ export default function PlacementPreviewModal({
         console.error("[PlacementPreview] Video play failed:", err);
       });
     }
-  }, [isVideoMode, isVideoPlaying, triggerDenseScan]);
+  }, [isVideoMode, isVideoPlaying, triggerDenseScan, triggerMotionTrack]);
 
   const stopVideoPlayback = useCallback(() => {
     const videoEl = videoRef.current;
