@@ -4691,112 +4691,232 @@ export async function registerRoutes(
     }
   });
 
-  // ── Motion Tracking (vidstab) ──
-  // Runs FFmpeg vidstab analysis on the full video and returns per-frame
-  // camera transforms. The client uses these for smooth product placement
-  // during video preview — the product "sits" on the surface naturally.
+  // ── Motion Tracking (Gemini-anchored) ──
+  // Uses the dense Gemini surface keyframes (actual surface detections at 0.5s intervals)
+  // as anchor points, applies the same stabilization pipeline used for video export
+  // (outlier rejection → dimension lock → bidirectional EMA smoothing → Catmull-Rom spline),
+  // then pre-computes the exact surface position at 30fps.
   //
-  // Returns: { transforms: [{frame, dx, dy}...], fps, refFrame, width, height }
-  // Client simply looks up transforms[frameIndex] during playback.
+  // This is fundamentally different from vidstab (global camera motion) — Gemini
+  // actually SEES the table/surface in each frame, so the product is anchored to
+  // a real physical feature, not just compensating for camera movement.
+  //
+  // Returns: { transforms: [{x, y, w, h}...], fps, duration, available }
   app.post("/api/video/:videoId/motion-track", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const videoId = parseInt(req.params.videoId);
       if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
 
+      const surfaceId = req.body.surfaceId ? parseInt(req.body.surfaceId) : undefined;
+      if (!surfaceId) return res.status(400).json({ error: "surfaceId required" });
+
+      // Get video duration
       const video = await storage.getVideoById(videoId);
       if (!video) return res.status(404).json({ error: "Video not found" });
-      if (!video.filePath) return res.status(400).json({ error: "Video has no local file" });
 
-      // Resolve video path
-      let videoPath = video.filePath;
-      if (!videoPath.startsWith('/storage/')) {
-        videoPath = path.resolve(videoPath);
-      }
+      const videoDuration = parseFloat(video.duration as string) || 30;
+      const fps = 30;
 
-      // Get video duration via ffprobe
-      const { spawn: spawnProbe } = await import("child_process");
-      const videoDuration = await new Promise<number>((resolve) => {
-        if (video.filePath!.startsWith('/storage/')) {
-          resolve(60);
-          return;
-        }
-        const proc = spawnProbe("ffprobe", [
-          "-v", "quiet", "-print_format", "json", "-show_format", videoPath,
-        ]);
-        let stdout = "";
-        proc.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
-        proc.on("close", () => {
-          try { resolve(parseFloat(JSON.parse(stdout).format.duration) || 30); }
-          catch { resolve(30); }
-        });
-        proc.on("error", () => resolve(30));
-      });
+      // Get dense keyframes for this specific surface
+      const allKeyframes = await storage.getKeyframesByVideo(videoId);
+      const surfaceKeyframes = allKeyframes.filter(kf => kf.surfaceId === surfaceId);
 
-      // Surface reference position (use first detected surface's bbox)
-      const surfaceId = req.body.surfaceId ? parseInt(req.body.surfaceId) : undefined;
-      let refPos = { x: 0.3, y: 0.3, width: 0.3, height: 0.3 }; // fallback
+      if (surfaceKeyframes.length < 2) {
+        // Not enough keyframes — tell client to wait for dense scan to complete
+        console.log(`[MotionTrack] Only ${surfaceKeyframes.length} keyframes for surface ${surfaceId}, need at least 2`);
 
-      if (surfaceId) {
+        // Fall back to the static surface detection position
         const allSurfaces = await storage.getDetectedSurfaces(videoId);
         const surface = allSurfaces.find(s => s.id === surfaceId);
         if (surface) {
-          refPos = {
+          const staticPos = {
             x: parseFloat(String(surface.boundingBoxX)) || 0.3,
             y: parseFloat(String(surface.boundingBoxY)) || 0.3,
-            width: parseFloat(String(surface.boundingBoxWidth)) || 0.3,
-            height: parseFloat(String(surface.boundingBoxHeight)) || 0.3,
+            w: parseFloat(String(surface.boundingBoxWidth)) || 0.3,
+            h: parseFloat(String(surface.boundingBoxHeight)) || 0.3,
           };
+          // Return static position for every frame
+          const totalFrames = Math.ceil(videoDuration * fps);
+          const transforms = new Array(totalFrames).fill(staticPos);
+          return res.json({ transforms, fps, duration: videoDuration, available: true, source: "static" });
         }
-      }
-
-      console.log(`[MotionTrack] Analyzing video ${videoId}: ${videoDuration.toFixed(1)}s`);
-
-      const { analyzeClipMotion, getCumulativeTransforms, selectReferencePosition, applyTransformToPosition } = await import("./lib/remix/motionTracker");
-
-      // Run vidstab analysis on the full video at 30fps
-      const fps = 30;
-      const motionData = await analyzeClipMotion(videoPath, 0, videoDuration, fps);
-
-      if (!motionData) {
-        // vidstab not available — return empty transforms so client falls back gracefully
-        console.warn("[MotionTrack] vidstab not available, returning empty transforms");
         return res.json({ transforms: [], fps, duration: videoDuration, available: false });
       }
 
-      console.log(`[MotionTrack] Got ${motionData.transforms.length} raw transforms, computing positions...`);
+      console.log(`[MotionTrack] Processing ${surfaceKeyframes.length} Gemini keyframes for surface ${surfaceId}`);
 
-      // Compute cumulative transforms from first frame
-      const refFrameIndex = 0; // Use frame 0 as reference (where the surface was detected)
-      const cumulative = getCumulativeTransforms(motionData.transforms, refFrameIndex);
+      // Convert DB keyframes to the format expected by the stabilization pipeline
+      // Keyframes are stored as 0-1 normalized coordinates
+      type PlacementKeyframe = { time: number; x: number; y: number; width: number; height: number };
 
-      // Pre-compute the surface position for every frame so the client
-      // just does a simple lookup with zero computation
-      const framePositions: Array<{ x: number; y: number; w: number; h: number }> = [];
-      for (let i = 0; i < cumulative.length; i++) {
-        const pos = applyTransformToPosition(
-          refPos, cumulative[i],
-          motionData.analysisWidth, motionData.analysisHeight
-        );
-        framePositions.push({
-          x: pos.x,
-          y: pos.y,
-          w: pos.width,
-          h: pos.height,
-        });
+      const rawKfs: PlacementKeyframe[] = surfaceKeyframes
+        .map(kf => ({
+          time: parseFloat(String(kf.timestamp)),
+          x: parseFloat(String(kf.boundingBoxX)),
+          y: parseFloat(String(kf.boundingBoxY)),
+          width: parseFloat(String(kf.boundingBoxWidth)),
+          height: parseFloat(String(kf.boundingBoxHeight)),
+        }))
+        .filter(kf => !isNaN(kf.time) && !isNaN(kf.x) && !isNaN(kf.y))
+        .sort((a, b) => a.time - b.time);
+
+      if (rawKfs.length < 2) {
+        return res.json({ transforms: [], fps, duration: videoDuration, available: false });
       }
 
-      console.log(`[MotionTrack] Computed ${framePositions.length} frame positions for video ${videoId}`);
+      // ── Stabilization Pipeline (same as clipGenerator.ts) ──
+      // Step 1: Outlier rejection
+      let kfs = rawKfs;
+      if (kfs.length > 3) {
+        const filtered: PlacementKeyframe[] = [kfs[0]];
+        for (let i = 1; i < kfs.length - 1; i++) {
+          const expectedX = (kfs[i - 1].x + kfs[i + 1].x) / 2;
+          const expectedY = (kfs[i - 1].y + kfs[i + 1].y) / 2;
+          if (Math.abs(kfs[i].x - expectedX) > 0.12 || Math.abs(kfs[i].y - expectedY) > 0.12) {
+            continue; // Skip outlier
+          }
+          filtered.push(kfs[i]);
+        }
+        filtered.push(kfs[kfs.length - 1]);
+        kfs = filtered;
+      }
+
+      // Step 2: Lock dimensions to median
+      const widths = kfs.map(k => k.width).sort((a, b) => a - b);
+      const heights = kfs.map(k => k.height).sort((a, b) => a - b);
+      const medianW = widths[Math.floor(widths.length / 2)];
+      const medianH = heights[Math.floor(heights.length / 2)];
+      kfs = kfs.map(k => ({
+        ...k,
+        width: Math.abs(k.width - medianW) / medianW > 0.15 ? medianW : k.width,
+        height: Math.abs(k.height - medianH) / medianH > 0.15 ? medianH : k.height,
+      }));
+
+      // Step 3: Bidirectional EMA smoothing (eliminates detection noise)
+      const alpha = 0.4;
+      const fwd: PlacementKeyframe[] = [{ ...kfs[0] }];
+      for (let i = 1; i < kfs.length; i++) {
+        fwd.push({
+          time: kfs[i].time,
+          x: alpha * kfs[i].x + (1 - alpha) * fwd[i - 1].x,
+          y: alpha * kfs[i].y + (1 - alpha) * fwd[i - 1].y,
+          width: alpha * kfs[i].width + (1 - alpha) * fwd[i - 1].width,
+          height: alpha * kfs[i].height + (1 - alpha) * fwd[i - 1].height,
+        });
+      }
+      const bwd: PlacementKeyframe[] = new Array(fwd.length);
+      bwd[fwd.length - 1] = { ...fwd[fwd.length - 1] };
+      for (let i = fwd.length - 2; i >= 0; i--) {
+        bwd[i] = {
+          time: fwd[i].time,
+          x: alpha * fwd[i].x + (1 - alpha) * bwd[i + 1].x,
+          y: alpha * fwd[i].y + (1 - alpha) * bwd[i + 1].y,
+          width: alpha * fwd[i].width + (1 - alpha) * bwd[i + 1].width,
+          height: alpha * fwd[i].height + (1 - alpha) * bwd[i + 1].height,
+        };
+      }
+      kfs = fwd.map((f, i) => ({
+        time: f.time,
+        x: (f.x + bwd[i].x) / 2,
+        y: (f.y + bwd[i].y) / 2,
+        width: (f.width + bwd[i].width) / 2,
+        height: (f.height + bwd[i].height) / 2,
+      }));
+
+      // ── Catmull-Rom spline interpolation to 30fps ──
+      function catmullRom(p0: number, p1: number, p2: number, p3: number, t: number): number {
+        const t2 = t * t, t3 = t2 * t;
+        return 0.5 * ((2 * p1) + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 + (-p0 + 3 * p1 - 3 * p2 + p3) * t3);
+      }
+
+      const totalFrames = Math.ceil(videoDuration * fps);
+      const framePositions: Array<{ x: number; y: number; w: number; h: number }> = [];
+
+      for (let f = 0; f < totalFrames; f++) {
+        const t = f / fps; // current time in seconds
+
+        // Before first keyframe: extrapolate
+        if (t <= kfs[0].time) {
+          if (kfs.length >= 2) {
+            const dt = kfs[1].time - kfs[0].time;
+            const extFactor = dt > 0 ? Math.min((kfs[0].time - t) / dt, 0.5) : 0;
+            framePositions.push({
+              x: kfs[0].x - (kfs[1].x - kfs[0].x) * extFactor,
+              y: kfs[0].y - (kfs[1].y - kfs[0].y) * extFactor,
+              w: kfs[0].width,
+              h: kfs[0].height,
+            });
+          } else {
+            framePositions.push({ x: kfs[0].x, y: kfs[0].y, w: kfs[0].width, h: kfs[0].height });
+          }
+          continue;
+        }
+
+        // After last keyframe: extrapolate
+        if (t >= kfs[kfs.length - 1].time) {
+          const last = kfs[kfs.length - 1];
+          if (kfs.length >= 2) {
+            const prev = kfs[kfs.length - 2];
+            const dt = last.time - prev.time;
+            const extFactor = dt > 0 ? Math.min((t - last.time) / dt, 0.5) : 0;
+            framePositions.push({
+              x: last.x + (last.x - prev.x) * extFactor,
+              y: last.y + (last.y - prev.y) * extFactor,
+              w: last.width,
+              h: last.height,
+            });
+          } else {
+            framePositions.push({ x: last.x, y: last.y, w: last.width, h: last.height });
+          }
+          continue;
+        }
+
+        // Find segment
+        let seg = 0;
+        for (; seg < kfs.length - 1; seg++) {
+          if (t >= kfs[seg].time && t < kfs[seg + 1].time) break;
+        }
+
+        const segDur = kfs[seg + 1].time - kfs[seg].time;
+        const segT = segDur > 0 ? (t - kfs[seg].time) / segDur : 0;
+
+        if (kfs.length === 2) {
+          // Linear interpolation
+          framePositions.push({
+            x: kfs[0].x + (kfs[1].x - kfs[0].x) * segT,
+            y: kfs[0].y + (kfs[1].y - kfs[0].y) * segT,
+            w: kfs[0].width + (kfs[1].width - kfs[0].width) * segT,
+            h: kfs[0].height + (kfs[1].height - kfs[0].height) * segT,
+          });
+        } else {
+          // Catmull-Rom spline
+          const p0 = kfs[Math.max(0, seg - 1)];
+          const p1 = kfs[seg];
+          const p2 = kfs[seg + 1];
+          const p3 = kfs[Math.min(kfs.length - 1, seg + 2)];
+
+          framePositions.push({
+            x: catmullRom(p0.x, p1.x, p2.x, p3.x, segT),
+            y: catmullRom(p0.y, p1.y, p2.y, p3.y, segT),
+            w: Math.max(0.01, catmullRom(p0.width, p1.width, p2.width, p3.width, segT)),
+            h: Math.max(0.01, catmullRom(p0.height, p1.height, p2.height, p3.height, segT)),
+          });
+        }
+      }
+
+      console.log(`[MotionTrack] Interpolated ${surfaceKeyframes.length} Gemini keyframes → ${framePositions.length} frames at ${fps}fps for video ${videoId}`);
 
       res.json({
         transforms: framePositions,
         fps,
         duration: videoDuration,
-        refPos,
         available: true,
+        source: "gemini-keyframes",
+        keyframeCount: surfaceKeyframes.length,
       });
     } catch (err: any) {
       console.error("[MotionTrack] Error:", err.message);
-      res.status(500).json({ error: "Motion analysis failed", message: err.message });
+      res.status(500).json({ error: "Motion tracking failed", message: err.message });
     }
   });
 

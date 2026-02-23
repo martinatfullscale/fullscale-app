@@ -692,12 +692,14 @@ export default function PlacementPreviewModal({
         await refetchKeyframes();
       }
       setDenseScanDone(true);
+      // Dense scan is done — now request Gemini-anchored motion data
+      triggerMotionTrack();
     } catch (err) {
       console.error("[PlacementPreview] Dense scan failed:", err);
     } finally {
       setIsDenseScanning(false);
     }
-  }, [videoId, isDenseScanning, denseScanDone, selectedSurface?.surfaceType, denseKeyframesData, refetchKeyframes]);
+  }, [videoId, isDenseScanning, denseScanDone, selectedSurface?.surfaceType, denseKeyframesData, refetchKeyframes, triggerMotionTrack]);
 
   // Trigger server-side motion analysis (vidstab) for smooth product placement
   const triggerMotionTrack = useCallback(async () => {
