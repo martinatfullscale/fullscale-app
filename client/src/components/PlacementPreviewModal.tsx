@@ -559,13 +559,14 @@ export default function PlacementPreviewModal({
   const [videoDuration, setVideoDuration] = useState(0);
   const videoRef = useRef<HTMLVideoElement>(null);
 
-  // Pre-computed motion tracking data from server (vidstab)
-  // When available, this gives perfectly smooth camera-locked placement
+  // Pre-computed motion tracking data from server (Gemini keyframes or static fallback)
+  // When available, this gives smooth camera-locked placement
   const [motionData, setMotionData] = useState<{
     transforms: Array<{ x: number; y: number; w: number; h: number }>;
     fps: number;
     duration: number;
     available: boolean;
+    source?: string; // "gemini-keyframes" | "static" | undefined
   } | null>(null);
   const [isMotionLoading, setIsMotionLoading] = useState(false);
 
@@ -668,13 +669,16 @@ export default function PlacementPreviewModal({
 
   // Trigger server-side motion analysis for smooth product placement
   // (must be defined before triggerDenseScan which calls it)
-  const triggerMotionTrack = useCallback(async () => {
-    if (isMotionLoading || motionData) return; // Already loaded or loading
+  // `force` parameter allows re-triggering after dense scan completes to get real Gemini data
+  const triggerMotionTrack = useCallback(async (force = false) => {
+    if (isMotionLoading) return; // Already loading
+    // Skip if we already have real (non-static) data, unless forced
+    if (!force && motionData && motionData.source !== "static") return;
     if (!selectedSurface) return;
 
     setIsMotionLoading(true);
     try {
-      console.log(`[PlacementPreview] Requesting motion tracking for video ${videoId}, surface ${selectedSurface.id}...`);
+      console.log(`[PlacementPreview] Requesting motion tracking for video ${videoId}, surface ${selectedSurface.id}${force ? " (forced re-fetch)" : ""}...`);
       const res = await fetch(`/api/video/${videoId}/motion-track`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -684,16 +688,21 @@ export default function PlacementPreviewModal({
       if (res.ok) {
         const data = await res.json();
         if (data.available && data.transforms?.length > 0) {
-          setMotionData(data);
-          console.log(`[PlacementPreview] Got ${data.transforms.length} motion frames at ${data.fps}fps`);
+          setMotionData({ ...data, source: data.source || "unknown" });
+          console.log(`[PlacementPreview] Got ${data.transforms.length} motion frames at ${data.fps}fps (source: ${data.source})`);
+          // If we got real Gemini keyframe data, reset tracking so spring snaps to new data
+          if (data.source === "gemini-keyframes") {
+            const tracking = trackingRef.current;
+            tracking.initialized = false;
+          }
         } else {
           console.log("[PlacementPreview] Motion tracking not available, using client-side fallback");
-          setMotionData({ transforms: [], fps: 30, duration: 0, available: false });
+          setMotionData({ transforms: [], fps: 30, duration: 0, available: false, source: "none" });
         }
       }
     } catch (err) {
       console.error("[PlacementPreview] Motion track request failed:", err);
-      setMotionData({ transforms: [], fps: 30, duration: 0, available: false });
+      setMotionData({ transforms: [], fps: 30, duration: 0, available: false, source: "none" });
     } finally {
       setIsMotionLoading(false);
     }
@@ -725,8 +734,9 @@ export default function PlacementPreviewModal({
         await refetchKeyframes();
       }
       setDenseScanDone(true);
-      // Dense scan is done — now request Gemini-anchored motion data
-      triggerMotionTrack();
+      // Dense scan is done — force re-fetch motion data to get real Gemini keyframes
+      // (replaces the static fallback that may have been loaded earlier)
+      triggerMotionTrack(true);
     } catch (err) {
       console.error("[PlacementPreview] Dense scan failed:", err);
     } finally {
@@ -991,10 +1001,10 @@ export default function PlacementPreviewModal({
       if (useVideo && videoEl) {
         const tracking = trackingRef.current;
 
-        // ── STRATEGY A: Pre-computed vidstab motion data (server-side) ──
-        // When available, gives perfectly smooth tracking with zero client-side
-        // computation. The server ran FFmpeg vidstab analysis and pre-computed
-        // the exact surface position for every frame.
+        // ── STRATEGY A: Pre-computed motion data from server (Gemini keyframes) ──
+        // Two sub-modes:
+        //   source="gemini-keyframes" → real per-frame tracking from Gemini AI detections
+        //   source="static" → same static bbox repeated (fallback when keyframes aren't ready)
         if (motionData?.available && motionData.transforms.length > 0) {
           const currentTime = videoEl.currentTime;
           const frameIndex = Math.round(currentTime * motionData.fps);
@@ -1003,47 +1013,64 @@ export default function PlacementPreviewModal({
           // Get the pre-computed position (normalized 0-1) for this frame
           const pos = motionData.transforms[clampedIndex];
 
-          // Set target from pre-computed data
           const targetBX = pos.x * canvas.width;
           const targetBY = pos.y * canvas.height;
           const targetBW = pos.w * canvas.width;
           const targetBH = pos.h * canvas.height;
 
-          // Spring-damped interpolation for sub-frame smoothness.
-          // Even with per-frame data, interpolating prevents steppiness
-          // between discrete frame lookups.
-          if (!tracking.initialized) {
-            // First frame — snap directly, no spring
-            tracking.displayOffsetX = targetBX;
-            tracking.displayOffsetY = targetBY;
-            tracking.targetOffsetX = targetBX;
-            tracking.targetOffsetY = targetBY;
-            tracking.velocityX = 0;
-            tracking.velocityY = 0;
-            tracking.initialized = true;
+          if (motionData.source === "static") {
+            // Static fallback: just use the original surface bbox directly.
+            // No spring animation — it would look like the product is "drifting"
+            // and then "locking in" to an arbitrary spot, which confuses users.
+            bx = baseBX;
+            by = baseBY;
+            bw = baseBW;
+            bh = baseBH;
           } else {
-            tracking.targetOffsetX = targetBX;
-            tracking.targetOffsetY = targetBY;
+            // Real Gemini keyframe data: use spring-damped interpolation
+            // for sub-frame smoothness between discrete frame lookups.
+
+            // Sanity check: if Gemini data diverges wildly from the original
+            // surface position, constrain it. This prevents the product from
+            // flying to a completely wrong area of the frame.
+            const maxDrift = Math.max(baseBW, baseBH) * 2; // Allow up to 2x bbox-size drift
+            const constrainedBX = clamp(targetBX, baseBX - maxDrift, baseBX + maxDrift);
+            const constrainedBY = clamp(targetBY, baseBY - maxDrift, baseBY + maxDrift);
+
+            if (!tracking.initialized) {
+              // First frame — snap directly, no spring
+              tracking.displayOffsetX = constrainedBX;
+              tracking.displayOffsetY = constrainedBY;
+              tracking.targetOffsetX = constrainedBX;
+              tracking.targetOffsetY = constrainedBY;
+              tracking.velocityX = 0;
+              tracking.velocityY = 0;
+              tracking.initialized = true;
+            } else {
+              tracking.targetOffsetX = constrainedBX;
+              tracking.targetOffsetY = constrainedBY;
+            }
+
+            // Spring physics: display smoothly chases target
+            const stiffness = 0.15;
+            const damping = 0.70;
+
+            const forceX = (tracking.targetOffsetX - tracking.displayOffsetX) * stiffness;
+            const forceY = (tracking.targetOffsetY - tracking.displayOffsetY) * stiffness;
+            tracking.velocityX = tracking.velocityX * damping + forceX;
+            tracking.velocityY = tracking.velocityY * damping + forceY;
+            tracking.displayOffsetX += tracking.velocityX;
+            tracking.displayOffsetY += tracking.velocityY;
+
+            bx = tracking.displayOffsetX;
+            by = tracking.displayOffsetY;
+            bw = targetBW;
+            bh = targetBH;
           }
-
-          // Spring physics: display smoothly chases target
-          const stiffness = 0.15;  // Higher than fallback — vidstab data is clean
-          const damping = 0.70;
-
-          const forceX = (tracking.targetOffsetX - tracking.displayOffsetX) * stiffness;
-          const forceY = (tracking.targetOffsetY - tracking.displayOffsetY) * stiffness;
-          tracking.velocityX = tracking.velocityX * damping + forceX;
-          tracking.velocityY = tracking.velocityY * damping + forceY;
-          tracking.displayOffsetX += tracking.velocityX;
-          tracking.displayOffsetY += tracking.velocityY;
-
-          bx = tracking.displayOffsetX;
-          by = tracking.displayOffsetY;
-          bw = targetBW;
-          bh = targetBH;
         }
         // ── STRATEGY B: Client-side template matching (fallback) ──
-        // Used when vidstab is not available. Less smooth but functional.
+        // Used when server motion data is not available. Less smooth but functional.
+        // If tracking confidence degrades for too long, falls back to static position.
         else {
           // Initialize reference patch from first frame
           if (!tracking.initialized && videoEl.currentTime < 0.5) {
@@ -1077,8 +1104,12 @@ export default function PlacementPreviewModal({
           if (tracking.initialized && tracking.referenceData) {
             tracking.frameCounter++;
 
-            // Template matching every 4th frame
-            if (tracking.frameCounter % 4 === 0) {
+            // If tracking has been lost for too many consecutive frames,
+            // give up and hold at static position instead of drifting arbitrarily
+            const trackingLost = tracking.consecutiveLowConf > 15;
+
+            // Template matching every 4th frame (skip if tracking is lost)
+            if (!trackingLost && tracking.frameCounter % 4 === 0) {
               const searchFromX = tracking.refCenterX + Math.round(tracking.targetOffsetX);
               const searchFromY = tracking.refCenterY + Math.round(tracking.targetOffsetY);
 
@@ -1092,9 +1123,14 @@ export default function PlacementPreviewModal({
 
               tracking.lastConfidence = confidence;
 
-              if (confidence > 0.3) {
-                tracking.targetOffsetX += dx;
-                tracking.targetOffsetY += dy;
+              if (confidence > 0.35) { // Slightly higher threshold for more reliable matches
+                // Limit per-frame jump to prevent large erratic jumps
+                const maxJump = 20; // pixels
+                const clampedDx = clamp(dx, -maxJump, maxJump);
+                const clampedDy = clamp(dy, -maxJump, maxJump);
+
+                tracking.targetOffsetX += clampedDx;
+                tracking.targetOffsetY += clampedDy;
                 tracking.consecutiveLowConf = 0;
                 tracking.lastGoodOffsetX = tracking.targetOffsetX;
                 tracking.lastGoodOffsetY = tracking.targetOffsetY;
@@ -1121,19 +1157,25 @@ export default function PlacementPreviewModal({
               }
             }
 
-            // Spring interpolation every frame
-            const stiffness = 0.08;
-            const damping = 0.75;
-            const forceX = (tracking.targetOffsetX - tracking.displayOffsetX) * stiffness;
-            const forceY = (tracking.targetOffsetY - tracking.displayOffsetY) * stiffness;
-            tracking.velocityX = tracking.velocityX * damping + forceX;
-            tracking.velocityY = tracking.velocityY * damping + forceY;
-            tracking.displayOffsetX += tracking.velocityX;
-            tracking.displayOffsetY += tracking.velocityY;
+            if (trackingLost) {
+              // Tracking confidence collapsed — hold at original bbox position
+              bx = baseBX;
+              by = baseBY;
+            } else {
+              // Spring interpolation every frame
+              const stiffness = 0.08;
+              const damping = 0.75;
+              const forceX = (tracking.targetOffsetX - tracking.displayOffsetX) * stiffness;
+              const forceY = (tracking.targetOffsetY - tracking.displayOffsetY) * stiffness;
+              tracking.velocityX = tracking.velocityX * damping + forceX;
+              tracking.velocityY = tracking.velocityY * damping + forceY;
+              tracking.displayOffsetX += tracking.velocityX;
+              tracking.displayOffsetY += tracking.velocityY;
 
-            const patchMargin = 0.3;
-            bx = tracking.refCenterX + tracking.displayOffsetX + patchMargin * baseBW;
-            by = tracking.refCenterY + tracking.displayOffsetY + patchMargin * baseBH;
+              const patchMargin = 0.3;
+              bx = tracking.refCenterX + tracking.displayOffsetX + patchMargin * baseBW;
+              by = tracking.refCenterY + tracking.displayOffsetY + patchMargin * baseBH;
+            }
           } else {
             bx = baseBX;
             by = baseBY;
@@ -1701,62 +1743,65 @@ export default function PlacementPreviewModal({
             className="relative w-full max-w-6xl max-h-[90vh] bg-card border border-white/10 rounded-2xl overflow-hidden shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Header */}
-            <div className="flex items-center justify-between px-6 py-3 border-b border-white/10">
-              <div>
-                <h2 className="text-lg font-bold text-white">Placement Preview</h2>
-                <p className="text-sm text-muted-foreground line-clamp-1">{videoTitle}</p>
+            {/* Header — responsive: stacks on narrow screens */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between px-3 sm:px-6 py-2 sm:py-3 border-b border-white/10 gap-2">
+              <div className="min-w-0">
+                <h2 className="text-base sm:text-lg font-bold text-white truncate">Placement Preview</h2>
+                <p className="text-xs sm:text-sm text-muted-foreground line-clamp-1">{videoTitle}</p>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1.5 sm:gap-3 flex-wrap shrink-0">
                 {hasProduct && (
                   <>
                     <Button
                       size="sm"
                       variant={saveSuccess ? "default" : "secondary"}
-                      className={cn("gap-2", saveSuccess && "bg-emerald-600 hover:bg-emerald-700")}
+                      className={cn("gap-1.5 text-xs sm:text-sm h-8", saveSuccess && "bg-emerald-600 hover:bg-emerald-700")}
                       onClick={savePlacement}
                       disabled={isSaving}
                     >
                       {isSaving ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
                       ) : saveSuccess ? (
-                        <CheckCircle className="w-4 h-4" />
+                        <CheckCircle className="w-3.5 h-3.5" />
                       ) : (
-                        <Save className="w-4 h-4" />
+                        <Save className="w-3.5 h-3.5" />
                       )}
-                      {isSaving ? "Saving..." : saveSuccess ? "Saved" : "Save"}
+                      <span className="hidden sm:inline">{isSaving ? "Saving..." : saveSuccess ? "Saved" : "Save"}</span>
+                      <span className="sm:hidden">{isSaving ? "..." : saveSuccess ? "✓" : "Save"}</span>
                     </Button>
                     <Button
                       size="sm"
                       variant="secondary"
-                      className="gap-2"
+                      className="gap-1.5 text-xs sm:text-sm h-8"
                       onClick={downloadPreview}
                     >
-                      <Download className="w-4 h-4" />
-                      Export Frame
+                      <Download className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline">Export Frame</span>
                     </Button>
                     {videoSrc && (
                       exportStatus === "complete" && exportOutputUrl ? (
                         <a href={`/api/exports/${exportJobId}/download`} download>
-                          <Button size="sm" className="gap-2 bg-emerald-600 hover:bg-emerald-700">
-                            <Download className="w-4 h-4" />
-                            Download MP4
+                          <Button size="sm" className="gap-1.5 text-xs sm:text-sm h-8 bg-emerald-600 hover:bg-emerald-700">
+                            <Download className="w-3.5 h-3.5" />
+                            <span className="hidden sm:inline">Download MP4</span>
+                            <span className="sm:hidden">MP4</span>
                           </Button>
                         </a>
                       ) : isExporting ? (
-                        <Button size="sm" className="gap-2" disabled>
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                          Exporting {exportProgress}%
+                        <Button size="sm" className="gap-1.5 text-xs h-8" disabled>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          {exportProgress}%
                         </Button>
                       ) : (
                         <Button
                           size="sm"
-                          className="gap-2 bg-green-600 hover:bg-green-700"
+                          className="gap-1.5 text-xs sm:text-sm h-8 bg-green-600 hover:bg-green-700"
                           onClick={handleVideoExport}
                           disabled={exportStatus === "failed"}
                         >
-                          <Film className="w-4 h-4" />
-                          Export Video
+                          <Film className="w-3.5 h-3.5" />
+                          <span className="hidden sm:inline">Export Video</span>
+                          <span className="sm:hidden">Video</span>
                         </Button>
                       )
                     )}
@@ -1764,20 +1809,20 @@ export default function PlacementPreviewModal({
                 )}
                 <button
                   onClick={onClose}
-                  className="p-2 rounded-full bg-black/50 hover:bg-black/70 text-white transition-colors"
+                  className="p-1.5 sm:p-2 rounded-full bg-black/50 hover:bg-black/70 text-white transition-colors"
                 >
-                  <X className="w-5 h-5" />
+                  <X className="w-4 h-4 sm:w-5 sm:h-5" />
                 </button>
               </div>
             </div>
 
-            <div className="flex flex-col lg:flex-row overflow-hidden" style={{ height: "calc(90vh - 60px)" }}>
+            <div className="flex flex-col md:flex-row overflow-hidden" style={{ height: "calc(90vh - 70px)" }}>
               {/* Main canvas area */}
-              <div className="flex-1 min-w-0 flex flex-col p-4">
+              <div className="flex-1 min-w-0 flex flex-col p-2 sm:p-4">
                 <div
                   ref={canvasContainerRef}
                   className="relative flex-1 bg-black rounded-lg overflow-hidden flex items-center justify-center"
-                  style={{ minHeight: "300px" }}
+                  style={{ minHeight: "200px" }}
                   onDragOver={(e) => e.preventDefault()}
                   onDrop={handleDrop}
                 >
@@ -1816,20 +1861,20 @@ export default function PlacementPreviewModal({
 
                   {/* Video playback controls overlay */}
                   {hasProduct && videoSrc && (
-                    <div className="absolute bottom-3 left-3 right-3 flex items-center gap-2 z-10">
+                    <div className="absolute bottom-2 sm:bottom-3 left-2 sm:left-3 right-2 sm:right-3 flex items-center gap-1.5 sm:gap-2 z-10">
                       <Button
                         size="sm"
                         variant={isVideoPlaying ? "default" : "secondary"}
-                        className="gap-1.5 h-8 px-3 bg-black/70 hover:bg-black/90 border border-white/20 text-white"
+                        className="gap-1 sm:gap-1.5 h-7 sm:h-8 px-2 sm:px-3 text-xs bg-black/70 hover:bg-black/90 border border-white/20 text-white"
                         onClick={(e) => {
                           e.stopPropagation();
                           toggleVideoPlayback();
                         }}
                       >
                         {isVideoPlaying ? (
-                          <><Pause className="w-3.5 h-3.5" /> Pause</>
+                          <><Pause className="w-3 h-3 sm:w-3.5 sm:h-3.5" /> <span className="hidden sm:inline">Pause</span></>
                         ) : (
-                          <><Play className="w-3.5 h-3.5" /> {isVideoMode ? "Resume" : "Play Video"}</>
+                          <><Play className="w-3 h-3 sm:w-3.5 sm:h-3.5" /> <span className="hidden sm:inline">{isVideoMode ? "Resume" : "Play Video"}</span></>
                         )}
                       </Button>
                       {isVideoMode && (
@@ -1921,13 +1966,15 @@ export default function PlacementPreviewModal({
 
                 {/* Interaction hint */}
                 {hasProduct && (
-                  <div className="mt-2 text-center">
+                  <div className="mt-2 text-center px-2">
                     <p className="text-[10px] text-muted-foreground">
                       {isDenseScanning
-                        ? "Generating surface tracking data... Product will track with camera once complete."
+                        ? "Analyzing video frames... Product tracking will improve once complete."
+                        : isVideoMode && motionData?.source === "static"
+                        ? "Playing preview — surface tracking data loading..."
                         : isVideoMode
                         ? "Playing video with camera-tracking placement — product follows the surface"
-                        : "Drag to move | Corner handles to resize | Orange dot to rotate | Play to preview tracking"
+                        : "Drag to move | Corner handles to resize | Orange dot to rotate | Play to preview"
                       }
                     </p>
                     {isDenseScanning && (
@@ -1941,7 +1988,7 @@ export default function PlacementPreviewModal({
               </div>
 
               {/* Right panel — Tool panels */}
-              <div className="lg:w-80 flex-shrink-0 bg-gradient-to-b from-card to-secondary/20 border-l border-white/10 flex flex-col overflow-hidden">
+              <div className="md:w-72 lg:w-80 flex-shrink-0 bg-gradient-to-b from-card to-secondary/20 border-t md:border-t-0 md:border-l border-white/10 flex flex-col overflow-hidden max-h-[40vh] md:max-h-none">
                 {/* Panel tabs */}
                 <div className="flex border-b border-white/10">
                   {[
