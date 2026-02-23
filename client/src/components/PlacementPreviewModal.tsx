@@ -665,7 +665,12 @@ export default function PlacementPreviewModal({
     }
   }, [videoId, isMotionLoading, motionData, selectedSurface]);
 
-  // Trigger dense scan when user first enters video playback mode
+  // Trigger dense scan when user first enters video playback mode.
+  // Two-phase approach for fast results:
+  //   Phase 1: Quick scan at 2-second intervals (~13 Gemini calls for 25s video ≈ 1 min)
+  //            → gives sparse but usable keyframes for Catmull-Rom interpolation
+  //   Phase 2: Dense scan at 0.5-second intervals (runs in background after Phase 1)
+  //            → refines tracking accuracy with 4x more keyframes
   const triggerDenseScan = useCallback(async () => {
     if (isDenseScanning || denseScanDone) return;
 
@@ -674,26 +679,48 @@ export default function PlacementPreviewModal({
     const existingKfs = surfaceType ? denseKeyframesData?.keyframes?.[surfaceType] : null;
     if (existingKfs && existingKfs.length >= 10) {
       setDenseScanDone(true);
+      // Already have good data — just make sure motion track uses it
+      triggerMotionTrack(true);
       return;
     }
 
     setIsDenseScanning(true);
     try {
-      console.log(`[PlacementPreview] Triggering dense scan for video ${videoId}...`);
-      const res = await fetch(`/api/video/${videoId}/dense-scan`, {
+      // ── Phase 1: Quick sparse scan (interval=2s) ──
+      // Gets ~13 keyframes in ~1 minute → enough for spline interpolation
+      console.log(`[PlacementPreview] Phase 1: Quick scan for video ${videoId} (interval=2s)...`);
+      const quickRes = await fetch(`/api/video/${videoId}/dense-scan`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         credentials: "include",
+        body: JSON.stringify({ interval: 2.0 }),
       });
-      if (res.ok) {
-        const data = await res.json();
-        console.log(`[PlacementPreview] Dense scan result:`, data);
-        // Refetch keyframes now that dense scan is complete
+      if (quickRes.ok) {
+        const quickData = await quickRes.json();
+        console.log(`[PlacementPreview] Phase 1 result:`, quickData);
         await refetchKeyframes();
+        // Immediately trigger motion track with sparse keyframes — gives anchored tracking fast
+        triggerMotionTrack(true);
       }
+
+      // ── Phase 2: Dense refine scan (interval=0.5s, fire-and-forget) ──
+      // Runs in background to improve tracking accuracy with 4x more keyframes
+      console.log(`[PlacementPreview] Phase 2: Dense scan for video ${videoId} (interval=0.5s)...`);
+      const denseRes = await fetch(`/api/video/${videoId}/dense-scan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ interval: 0.5 }),
+      });
+      if (denseRes.ok) {
+        const denseData = await denseRes.json();
+        console.log(`[PlacementPreview] Phase 2 result:`, denseData);
+        await refetchKeyframes();
+        // Re-trigger motion track with full dense keyframes for maximum accuracy
+        triggerMotionTrack(true);
+      }
+
       setDenseScanDone(true);
-      // Dense scan is done — force re-fetch motion data to get real Gemini keyframes
-      // (replaces the static fallback that may have been loaded earlier)
-      triggerMotionTrack(true);
     } catch (err) {
       console.error("[PlacementPreview] Dense scan failed:", err);
     } finally {
@@ -979,8 +1006,13 @@ export default function PlacementPreviewModal({
           const constrainedBY = clamp(targetBY, baseBY - maxDrift, baseBY + maxDrift);
 
           if (!tracking.initialized) {
-            tracking.displayOffsetX = constrainedBX;
-            tracking.displayOffsetY = constrainedBY;
+            // If displayOffset is already set (transitioning from optical flow),
+            // keep it so the spring interpolates smoothly to Gemini position.
+            // Only snap if this is the very first frame (display at 0,0).
+            if (tracking.displayOffsetX === 0 && tracking.displayOffsetY === 0) {
+              tracking.displayOffsetX = constrainedBX;
+              tracking.displayOffsetY = constrainedBY;
+            }
             tracking.cumulativeOffsetX = constrainedBX;
             tracking.cumulativeOffsetY = constrainedBY;
             tracking.velocityX = 0;

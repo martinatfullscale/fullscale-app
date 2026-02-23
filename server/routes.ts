@@ -4632,11 +4632,17 @@ export async function registerRoutes(
   // ── Video Export Pipeline ──
 
   // Trigger dense surface scanning for accurate camera-tracking keyframes
-  // Called when user plays the video preview — generates 0.5s-interval Gemini detections
+  // Called when user plays the video preview — generates Gemini detections at specified interval.
+  // Supports `interval` body param (default 0.5). Client calls with interval=2 first for fast
+  // sparse keyframes (~13 calls for 25s video = ~1 min), then optionally refines with interval=0.5.
   app.post("/api/video/:videoId/dense-scan", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const videoId = parseInt(req.params.videoId);
       if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+
+      // Support configurable interval: 2.0 = fast/sparse, 0.5 = dense/slow
+      const interval = parseFloat(req.body?.interval) || 0.5;
+      const clampedInterval = Math.max(0.5, Math.min(5.0, interval));
 
       const video = await storage.getVideoById(videoId);
       if (!video) return res.status(404).json({ error: "Video not found" });
@@ -4648,10 +4654,14 @@ export async function registerRoutes(
         return res.status(400).json({ error: "No surfaces detected for this video" });
       }
 
-      // Check if dense keyframes already exist (>= 10 keyframes total)
+      // Determine minimum keyframes needed based on interval:
+      // - Quick scan (interval≥1.5): need ≥4 keyframes to be useful (Catmull-Rom)
+      // - Dense scan (interval<1.5): need ≥30 keyframes for smooth frame-by-frame tracking
+      //   (a 25s video at 0.5s intervals should produce ~50 keyframes)
+      const minKeyframes = clampedInterval >= 1.5 ? 4 : 30;
       const existingKfs = await storage.getKeyframesByVideo(videoId);
-      if (existingKfs.length >= 10) {
-        console.log(`[Dense Scan] Video ${videoId} already has ${existingKfs.length} keyframes, skipping`);
+      if (existingKfs.length >= minKeyframes) {
+        console.log(`[Dense Scan] Video ${videoId} already has ${existingKfs.length} keyframes (need ${minKeyframes} for interval=${clampedInterval}s), skipping`);
         return res.json({ status: "already_scanned", keyframesCount: existingKfs.length });
       }
 
@@ -4677,11 +4687,13 @@ export async function registerRoutes(
         proc.on("error", () => resolve(30));
       });
 
-      console.log(`[Dense Scan] Starting for video ${videoId}: ${videoDuration.toFixed(1)}s, ${surfaceIds.length} surfaces`);
+      console.log(`[Dense Scan] Starting for video ${videoId}: ${videoDuration.toFixed(1)}s, ${surfaceIds.length} surfaces, interval=${clampedInterval}s`);
 
-      // Run dense scan (this is expensive — ~1 Gemini call per 0.5s of video)
+      // Run dense scan — interval controls cost vs accuracy:
+      // interval=2.0: ~13 Gemini calls for 25s video (~1 min) — sparse but fast
+      // interval=0.5: ~50 Gemini calls for 25s video (~4 min) — dense and accurate
       const { denseScanRange } = await import("./scanner_v2");
-      const result = await denseScanRange(videoId, 0, videoDuration, surfaceIds, 0.5);
+      const result = await denseScanRange(videoId, 0, videoDuration, surfaceIds, clampedInterval);
 
       console.log(`[Dense Scan] Complete: ${result.keyframesCreated} keyframes created for video ${videoId}`);
       res.json({ status: "complete", keyframesCreated: result.keyframesCreated });
