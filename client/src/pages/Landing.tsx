@@ -5,7 +5,7 @@ import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 import logoBlackAmbition from "@assets/logo-black-ambition_1767712118620.png";
 import logoMayDavis from "@assets/logo-may-davis_1767712118621.png";
 import logoElementa from "@assets/logo-elementa_1767712118620.png";
-import logoNue from "@assets/logo-nue_1767712118621.png";
+import { SmithFamilyCircleLogo } from "@/components/SmithFamilyCircleLogo";
 import heroVideo from "@assets/generated_videos/creator_studio_cinematic_loop.mp4";
 import realityImg from "@assets/unnamed_1769147394407.JPEG";
 import aiAugmentedImg from "@assets/Gemini_Generated_Image_rykd4crykd4crykd_1769147394406.PNG";
@@ -1162,7 +1162,14 @@ export default function Landing() {
           
           {/* Desktop Navigation - visible at 600px and above */}
           <div className="hidden min-[600px]:flex items-center gap-3">
-            <a 
+            <a
+              href="/creates"
+              className="px-4 py-2 rounded-lg font-medium text-sm text-white/70 hover:text-white transition-colors min-h-[44px] flex items-center"
+              data-testid="link-nav-creates"
+            >
+              FullScale Creates
+            </a>
+            <a
               href="/auth?mode=signup"
               className="px-5 py-2 rounded-lg font-medium text-sm border border-primary text-primary bg-black/20 backdrop-blur-sm hover:bg-primary/10 transition-colors min-h-[44px] flex items-center"
               data-testid="button-nav-apply"
@@ -1327,7 +1334,7 @@ export default function Landing() {
                   <img src={logoElementa} alt="Elementa" loading="lazy" className="h-8 md:h-12 w-auto opacity-70 hover:opacity-100 transition-opacity" />
                 </div>
                 <div className="p-3 md:p-4 rounded-xl backdrop-blur-md bg-white/5 border border-white/10 hover:bg-white/10 hover:scale-105 hover:shadow-lg hover:shadow-white/5 transition-all duration-300">
-                  <img src={logoNue} alt="Nue Agency" loading="lazy" className="h-6 md:h-10 w-auto opacity-70 hover:opacity-100 transition-opacity" />
+                  <SmithFamilyCircleLogo className="h-6 md:h-10 w-auto opacity-70 hover:opacity-100 transition-opacity" />
                 </div>
               </div>
             ))}

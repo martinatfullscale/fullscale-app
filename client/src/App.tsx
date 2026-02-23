@@ -31,6 +31,7 @@ import BrandProducts from "@/pages/BrandProducts";
 import SavedPlacements from "@/pages/SavedPlacements";
 import RemixEngine from "@/components/RemixEngine";
 import SharedView from "@/pages/SharedView";
+import ComingSoon from "@/pages/ComingSoon";
 
 interface AuthStatusResponse {
   authenticated: boolean;
@@ -147,6 +148,8 @@ function Router() {
         <Route path="/signup" component={AuthPage} />
         <Route path="/privacy" component={Privacy} />
         <Route path="/terms" component={Terms} />
+        <Route path="/creates" component={ComingSoon} />
+        <Route path="/about" component={ComingSoon} />
         <Route path="/waitlist" component={WaitlistPage} />
         <Route path="/c/:slug" component={CreatorProfile} />
         <Route path="/s/:slug" component={SharedView} />
@@ -192,6 +195,8 @@ function Router() {
   return (
     <Switch>
       <Route path="/home" component={Landing} />
+      <Route path="/creates" component={ComingSoon} />
+      <Route path="/about" component={ComingSoon} />
       <Route path="/c/:slug" component={CreatorProfile} />
       <Route path="/s/:slug" component={SharedView} />
       <Route path="/remix/:videoId" component={RemixEngine} />
