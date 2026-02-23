@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link } from "wouter";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 import { SiInstagram } from "react-icons/si";
-import { Mail } from "lucide-react";
+import { Mail, Users } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 export function Footer() {
@@ -75,9 +75,10 @@ export function Footer() {
               <li>
                 <a
                   href="/about"
-                  className="text-sm text-muted-foreground/60 hover:text-white transition-colors"
+                  className="text-sm text-muted-foreground/60 hover:text-white transition-colors inline-flex items-center gap-2"
                   data-testid="link-about"
                 >
+                  <Users className="w-4 h-4" />
                   About Us
                 </a>
               </li>

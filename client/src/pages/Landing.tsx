@@ -1164,7 +1164,7 @@ export default function Landing() {
           <div className="hidden min-[600px]:flex items-center gap-3">
             <a
               href="/content"
-              className="px-4 py-2 rounded-lg font-medium text-sm text-white/70 hover:text-white transition-colors min-h-[44px] flex items-center"
+              className="px-5 py-2 rounded-lg font-medium text-sm border border-white/20 bg-white/10 backdrop-blur-sm hover:bg-white/20 transition-colors text-white min-h-[44px] flex items-center"
               data-testid="link-nav-creates"
             >
               FullScale Creates
