@@ -194,177 +194,148 @@ function clamp(val: number, min: number, max: number) {
 }
 
 /**
- * Client-side template matching for surface tracking.
- * Captures a small grayscale patch from the reference frame around the surface,
- * then searches for it in subsequent frames to estimate camera motion.
- * Returns the (dx, dy) offset in normalized coordinates (0-1).
+ * Global optical flow tracking — estimates camera motion by comparing
+ * small blocks distributed across the entire frame between consecutive frames.
+ *
+ * Why this works better than surface-patch template matching:
+ * - Template matching tries to find a specific surface (e.g. marble counter) which
+ *   is often uniform/reflective and gets confused by nearby high-contrast objects (laptops).
+ * - Optical flow measures HOW MUCH THE WHOLE FRAME MOVED. For camera pans/tilts,
+ *   the entire frame shifts together, so the median motion vector across many blocks
+ *   gives a very reliable estimate of camera movement.
+ *
+ * Algorithm:
+ * 1. Divide frame into a grid of small blocks (e.g. 6x5 = 30 blocks)
+ * 2. For each block, search for its best match in the new frame within a small radius
+ * 3. Compute median dx/dy across all blocks (median rejects outliers from occluded areas)
+ * 4. Apply that motion to the product position
  */
-function captureReferencePatch(
-  videoEl: HTMLVideoElement,
-  canvasW: number,
-  canvasH: number,
-  bboxX: number, bboxY: number, bboxW: number, bboxH: number,
-  searchCanvas: HTMLCanvasElement
-): ImageData | null {
-  try {
-    searchCanvas.width = canvasW;
-    searchCanvas.height = canvasH;
-    const ctx = searchCanvas.getContext("2d", { willReadFrequently: true });
-    if (!ctx) return null;
+function computeOpticalFlowBlock(
+  prevData: ImageData,
+  currData: ImageData,
+  width: number,
+  height: number,
+): { dx: number; dy: number; confidence: number } {
+  const prevPx = prevData.data;
+  const currPx = currData.data;
 
-    ctx.drawImage(videoEl, 0, 0, canvasW, canvasH);
+  // Grid of blocks for motion estimation
+  const gridCols = 6;
+  const gridRows = 5;
+  const blockW = 24; // pixel size of each comparison block
+  const blockH = 24;
+  const searchR = 30; // search radius per block (pixels)
+  const sampleStep = 3; // sample every 3rd pixel for speed
 
-    // Sample a patch centered on the bbox — use a region slightly larger than the bbox
-    // to capture surrounding context (edges of furniture, etc.) for better matching
-    const patchMargin = 0.3; // 30% extra margin around bbox
-    const px = Math.max(0, Math.floor(bboxX - bboxW * patchMargin));
-    const py = Math.max(0, Math.floor(bboxY - bboxH * patchMargin));
-    const pw = Math.min(canvasW - px, Math.floor(bboxW * (1 + patchMargin * 2)));
-    const ph = Math.min(canvasH - py, Math.floor(bboxH * (1 + patchMargin * 2)));
+  const dxValues: number[] = [];
+  const dyValues: number[] = [];
+  const sadValues: number[] = [];
 
-    if (pw <= 4 || ph <= 4) return null;
+  for (let gy = 0; gy < gridRows; gy++) {
+    for (let gx = 0; gx < gridCols; gx++) {
+      // Block center position, distributed evenly across frame
+      const cx = Math.floor(((gx + 0.5) / gridCols) * width);
+      const cy = Math.floor(((gy + 0.5) / gridRows) * height);
 
-    // Sample at lower resolution for speed (every 2nd pixel)
-    return ctx.getImageData(px, py, pw, ph);
-  } catch {
-    return null;
+      // Block top-left in previous frame
+      const bx0 = cx - Math.floor(blockW / 2);
+      const by0 = cy - Math.floor(blockH / 2);
+      if (bx0 < 0 || by0 < 0 || bx0 + blockW >= width || by0 + blockH >= height) continue;
+
+      // Search for best match in current frame
+      let bestDx = 0, bestDy = 0, bestSAD = Infinity;
+
+      // Coarse pass (step=4)
+      for (let sy = -searchR; sy <= searchR; sy += 4) {
+        for (let sx = -searchR; sx <= searchR; sx += 4) {
+          const tx = bx0 + sx;
+          const ty = by0 + sy;
+          if (tx < 0 || ty < 0 || tx + blockW >= width || ty + blockH >= height) continue;
+
+          let sad = 0;
+          let n = 0;
+          for (let py = 0; py < blockH; py += sampleStep) {
+            for (let px = 0; px < blockW; px += sampleStep) {
+              const pi = ((by0 + py) * width + (bx0 + px)) * 4;
+              const ci = ((ty + py) * width + (tx + px)) * 4;
+              const pg = (prevPx[pi] + prevPx[pi + 1] + prevPx[pi + 2]);
+              const cg = (currPx[ci] + currPx[ci + 1] + currPx[ci + 2]);
+              sad += Math.abs(pg - cg);
+              n++;
+            }
+          }
+          sad /= n;
+          if (sad < bestSAD) { bestSAD = sad; bestDx = sx; bestDy = sy; }
+        }
+      }
+
+      // Fine pass around coarse best
+      const cdx = bestDx, cdy = bestDy;
+      for (let sy = cdy - 3; sy <= cdy + 3; sy += 1) {
+        for (let sx = cdx - 3; sx <= cdx + 3; sx += 1) {
+          const tx = bx0 + sx;
+          const ty = by0 + sy;
+          if (tx < 0 || ty < 0 || tx + blockW >= width || ty + blockH >= height) continue;
+
+          let sad = 0;
+          let n = 0;
+          for (let py = 0; py < blockH; py += sampleStep) {
+            for (let px = 0; px < blockW; px += sampleStep) {
+              const pi = ((by0 + py) * width + (bx0 + px)) * 4;
+              const ci = ((ty + py) * width + (tx + px)) * 4;
+              const pg = (prevPx[pi] + prevPx[pi + 1] + prevPx[pi + 2]);
+              const cg = (currPx[ci] + currPx[ci + 1] + currPx[ci + 2]);
+              sad += Math.abs(pg - cg);
+              n++;
+            }
+          }
+          sad /= n;
+          if (sad < bestSAD) { bestSAD = sad; bestDx = sx; bestDy = sy; }
+        }
+      }
+
+      dxValues.push(bestDx);
+      dyValues.push(bestDy);
+      sadValues.push(bestSAD);
+    }
   }
+
+  if (dxValues.length === 0) return { dx: 0, dy: 0, confidence: 0 };
+
+  // Use median to reject outliers (e.g. occluded blocks, moving objects)
+  dxValues.sort((a, b) => a - b);
+  dyValues.sort((a, b) => a - b);
+  sadValues.sort((a, b) => a - b);
+  const mid = Math.floor(dxValues.length / 2);
+  const medianDx = dxValues[mid];
+  const medianDy = dyValues[mid];
+  const medianSAD = sadValues[mid];
+
+  // Confidence based on SAD and agreement between blocks
+  const confidence = Math.max(0, Math.min(1, 1 - medianSAD / 200));
+
+  return { dx: medianDx, dy: medianDy, confidence };
 }
 
 /**
- * Find the best match for the reference patch in the current frame.
- * Uses Sum of Absolute Differences (SAD) on grayscale, sampled sparsely for speed.
- * Returns offset from reference position in canvas pixel coordinates,
- * plus a confidence score (0-1) indicating match quality.
- *
- * Key improvement: returns `confidence` so the caller can decide what to do
- * when the match degrades (hold last good offset vs. blend).
+ * Capture the full frame as ImageData for optical flow comparison.
+ * Downscales to a fixed size for consistent and fast processing.
  */
-function trackPatchInFrame(
+function captureFrameForFlow(
   videoEl: HTMLVideoElement,
-  canvasW: number,
-  canvasH: number,
-  refData: ImageData,
-  refX: number, refY: number,
-  searchCanvas: HTMLCanvasElement,
-  searchRadius: number = 120 // generous search radius for camera pans
-): { dx: number; dy: number; confidence: number; frameData?: ImageData } {
+  flowCanvas: HTMLCanvasElement,
+  flowW: number,
+  flowH: number,
+): ImageData | null {
   try {
-    searchCanvas.width = canvasW;
-    searchCanvas.height = canvasH;
-    const ctx = searchCanvas.getContext("2d", { willReadFrequently: true });
-    if (!ctx) return { dx: 0, dy: 0, confidence: 0 };
-
-    ctx.drawImage(videoEl, 0, 0, canvasW, canvasH);
-
-    const pw = refData.width;
-    const ph = refData.height;
-
-    // Search area: reference position ± searchRadius, biased toward last known offset
-    const searchLeft = Math.max(0, refX - searchRadius);
-    const searchTop = Math.max(0, refY - searchRadius);
-    const searchRight = Math.min(canvasW - pw, refX + searchRadius);
-    const searchBottom = Math.min(canvasH - ph, refY + searchRadius);
-
-    if (searchRight <= searchLeft || searchBottom <= searchTop) return { dx: 0, dy: 0, confidence: 0 };
-
-    // Get full search area pixels in one call (much faster than many small getImageData calls)
-    const searchW = searchRight - searchLeft + pw;
-    const searchH = searchBottom - searchTop + ph;
-    const searchData = ctx.getImageData(searchLeft, searchTop, searchW, searchH);
-
-    const refPx = refData.data;
-    const searchPx = searchData.data;
-
-    let bestDx = 0, bestDy = 0, bestSAD = Infinity;
-    // Two-pass search: coarse (step=6) then fine (step=2) around best coarse match
-    const coarseStep = 6;
-    const sampleStep = 4; // Sample every 4th pixel in patch (denser than before for better accuracy)
-
-    // Coarse pass
-    for (let sy = 0; sy <= searchBottom - searchTop; sy += coarseStep) {
-      for (let sx = 0; sx <= searchRight - searchLeft; sx += coarseStep) {
-        let sad = 0;
-        let samples = 0;
-
-        for (let py2 = 0; py2 < ph; py2 += sampleStep) {
-          for (let px2 = 0; px2 < pw; px2 += sampleStep) {
-            const refIdx = (py2 * pw + px2) * 4;
-            const searchIdx = ((sy + py2) * searchW + (sx + px2)) * 4;
-
-            const refGray = (refPx[refIdx] + refPx[refIdx + 1] + refPx[refIdx + 2]) / 3;
-            const srcGray = (searchPx[searchIdx] + searchPx[searchIdx + 1] + searchPx[searchIdx + 2]) / 3;
-            sad += Math.abs(refGray - srcGray);
-            samples++;
-          }
-        }
-
-        sad /= samples;
-
-        if (sad < bestSAD) {
-          bestSAD = sad;
-          bestDx = sx;
-          bestDy = sy;
-        }
-      }
-    }
-
-    // Fine pass: refine around the coarse best match
-    const fineStep = 2;
-    const fineRadius = coarseStep + 2;
-    const fineLeft = Math.max(0, bestDx - fineRadius);
-    const fineTop = Math.max(0, bestDy - fineRadius);
-    const fineRight = Math.min(searchRight - searchLeft, bestDx + fineRadius);
-    const fineBottom = Math.min(searchBottom - searchTop, bestDy + fineRadius);
-
-    for (let sy = fineTop; sy <= fineBottom; sy += fineStep) {
-      for (let sx = fineLeft; sx <= fineRight; sx += fineStep) {
-        let sad = 0;
-        let samples = 0;
-
-        for (let py2 = 0; py2 < ph; py2 += sampleStep) {
-          for (let px2 = 0; px2 < pw; px2 += sampleStep) {
-            const refIdx = (py2 * pw + px2) * 4;
-            const searchIdx = ((sy + py2) * searchW + (sx + px2)) * 4;
-
-            const refGray = (refPx[refIdx] + refPx[refIdx + 1] + refPx[refIdx + 2]) / 3;
-            const srcGray = (searchPx[searchIdx] + searchPx[searchIdx + 1] + searchPx[searchIdx + 2]) / 3;
-            sad += Math.abs(refGray - srcGray);
-            samples++;
-          }
-        }
-
-        sad /= samples;
-
-        if (sad < bestSAD) {
-          bestSAD = sad;
-          bestDx = sx;
-          bestDy = sy;
-        }
-      }
-    }
-
-    const finalDx = bestDx + searchLeft - refX;
-    const finalDy = bestDy + searchTop - refY;
-
-    // Convert SAD to confidence: 0 SAD = 1.0 confidence, 60+ SAD = 0.0
-    // SAD of 20 = excellent match (~0.67), SAD of 40 = mediocre (~0.33)
-    const confidence = Math.max(0, Math.min(1, 1 - bestSAD / 60));
-
-    // Also grab the current frame data at the matched position so caller can
-    // update reference patch when confidence is high
-    let frameData: ImageData | undefined;
-    if (confidence > 0.6) {
-      const matchX = bestDx + searchLeft;
-      const matchY = bestDy + searchTop;
-      if (matchX >= 0 && matchY >= 0 && matchX + pw <= canvasW && matchY + ph <= canvasH) {
-        frameData = ctx.getImageData(matchX, matchY, pw, ph);
-      }
-    }
-
-    return { dx: finalDx, dy: finalDy, confidence, frameData };
+    flowCanvas.width = flowW;
+    flowCanvas.height = flowH;
+    const ctx = flowCanvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return null;
+    ctx.drawImage(videoEl, 0, 0, flowW, flowH);
+    return ctx.getImageData(0, 0, flowW, flowH);
   } catch {
-    return { dx: 0, dy: 0, confidence: 0 };
+    return null;
   }
 }
 
@@ -585,52 +556,38 @@ export default function PlacementPreviewModal({
   const animFrameRef = useRef<number>(0);
   const canvasContainerRef = useRef<HTMLDivElement>(null);
 
-  // Client-side surface tracking state
-  // Captures a reference patch from the first frame and tracks it via template matching
+  // Client-side camera tracking state — uses global optical flow to follow camera pans
+  // This measures how the ENTIRE frame shifts between consecutive video frames,
+  // then applies that motion to keep the product anchored to the physical surface.
+  const FLOW_W = 320; // downscaled resolution for optical flow
+  const FLOW_H = 180;
   const trackingRef = useRef<{
-    referenceData: ImageData | null;   // Pixel patch from reference frame around surface
-    refCenterX: number;                // Top-left X of reference patch in canvas pixels
-    refCenterY: number;                // Top-left Y of reference patch in canvas pixels
-    patchWidth: number;                // Patch size in canvas pixels
-    patchHeight: number;
-    // Smoothed display position (what's actually rendered — smoothly interpolated)
+    // Previous frame's pixel data for optical flow comparison
+    prevFrameData: ImageData | null;
+    // Accumulated camera offset in canvas pixel coordinates
+    cumulativeOffsetX: number;
+    cumulativeOffsetY: number;
+    // Smoothed display position (what's actually rendered)
     displayOffsetX: number;
     displayOffsetY: number;
-    // Target position from tracking (raw measurement, may jump)
-    targetOffsetX: number;
-    targetOffsetY: number;
-    // Velocity for momentum-based interpolation
+    // Velocity for spring-damped interpolation
     velocityX: number;
     velocityY: number;
-    // Last confident position (held when tracking degrades)
-    lastGoodOffsetX: number;
-    lastGoodOffsetY: number;
-    searchCanvas: HTMLCanvasElement;    // Off-screen canvas for pixel sampling
+    // Off-screen canvas for frame capture
+    flowCanvas: HTMLCanvasElement;
     initialized: boolean;
-    frameCounter: number;              // Only run tracking every Nth frame
-    refUpdateCounter: number;          // Counter for adaptive reference updates
-    consecutiveLowConf: number;        // How many frames in a row had low confidence
-    lastConfidence: number;            // Most recent confidence score
+    frameCounter: number;
   }>({
-    referenceData: null,
-    refCenterX: 0,
-    refCenterY: 0,
-    patchWidth: 0,
-    patchHeight: 0,
+    prevFrameData: null,
+    cumulativeOffsetX: 0,
+    cumulativeOffsetY: 0,
     displayOffsetX: 0,
     displayOffsetY: 0,
-    targetOffsetX: 0,
-    targetOffsetY: 0,
     velocityX: 0,
     velocityY: 0,
-    lastGoodOffsetX: 0,
-    lastGoodOffsetY: 0,
-    searchCanvas: typeof document !== "undefined" ? document.createElement("canvas") : null as any,
+    flowCanvas: typeof document !== "undefined" ? document.createElement("canvas") : null as any,
     initialized: false,
     frameCounter: 0,
-    refUpdateCounter: 0,
-    consecutiveLowConf: 0,
-    lastConfidence: 1,
   });
 
   // Fetch video details to get file path for playback
@@ -1000,185 +957,112 @@ export default function PlacementPreviewModal({
 
       if (useVideo && videoEl) {
         const tracking = trackingRef.current;
+        const hasGeminiData = motionData?.available && motionData.source === "gemini-keyframes" && motionData.transforms.length > 0;
 
-        // ── STRATEGY A: Pre-computed motion data from server (Gemini keyframes) ──
-        // Two sub-modes:
-        //   source="gemini-keyframes" → real per-frame tracking from Gemini AI detections
-        //   source="static" → same static bbox repeated (fallback when keyframes aren't ready)
-        if (motionData?.available && motionData.transforms.length > 0) {
+        if (hasGeminiData) {
+          // ── STRATEGY A: Pre-computed Gemini keyframe data ──
+          // Real per-frame surface positions from Gemini AI vision analysis.
+          // Smooth spring interpolation between discrete keyframe lookups.
           const currentTime = videoEl.currentTime;
-          const frameIndex = Math.round(currentTime * motionData.fps);
-          const clampedIndex = Math.min(frameIndex, motionData.transforms.length - 1);
-
-          // Get the pre-computed position (normalized 0-1) for this frame
-          const pos = motionData.transforms[clampedIndex];
+          const frameIndex = Math.round(currentTime * motionData!.fps);
+          const clampedIndex = Math.min(frameIndex, motionData!.transforms.length - 1);
+          const pos = motionData!.transforms[clampedIndex];
 
           const targetBX = pos.x * canvas.width;
           const targetBY = pos.y * canvas.height;
           const targetBW = pos.w * canvas.width;
           const targetBH = pos.h * canvas.height;
 
-          if (motionData.source === "static") {
-            // Static fallback: just use the original surface bbox directly.
-            // No spring animation — it would look like the product is "drifting"
-            // and then "locking in" to an arbitrary spot, which confuses users.
-            bx = baseBX;
-            by = baseBY;
-            bw = baseBW;
-            bh = baseBH;
-          } else {
-            // Real Gemini keyframe data: use spring-damped interpolation
-            // for sub-frame smoothness between discrete frame lookups.
+          // Sanity check: constrain Gemini data within reasonable range of original bbox
+          const maxDrift = Math.max(baseBW, baseBH) * 2.5;
+          const constrainedBX = clamp(targetBX, baseBX - maxDrift, baseBX + maxDrift);
+          const constrainedBY = clamp(targetBY, baseBY - maxDrift, baseBY + maxDrift);
 
-            // Sanity check: if Gemini data diverges wildly from the original
-            // surface position, constrain it. This prevents the product from
-            // flying to a completely wrong area of the frame.
-            const maxDrift = Math.max(baseBW, baseBH) * 2; // Allow up to 2x bbox-size drift
-            const constrainedBX = clamp(targetBX, baseBX - maxDrift, baseBX + maxDrift);
-            const constrainedBY = clamp(targetBY, baseBY - maxDrift, baseBY + maxDrift);
-
-            if (!tracking.initialized) {
-              // First frame — snap directly, no spring
-              tracking.displayOffsetX = constrainedBX;
-              tracking.displayOffsetY = constrainedBY;
-              tracking.targetOffsetX = constrainedBX;
-              tracking.targetOffsetY = constrainedBY;
-              tracking.velocityX = 0;
-              tracking.velocityY = 0;
-              tracking.initialized = true;
-            } else {
-              tracking.targetOffsetX = constrainedBX;
-              tracking.targetOffsetY = constrainedBY;
-            }
-
-            // Spring physics: display smoothly chases target
-            const stiffness = 0.15;
-            const damping = 0.70;
-
-            const forceX = (tracking.targetOffsetX - tracking.displayOffsetX) * stiffness;
-            const forceY = (tracking.targetOffsetY - tracking.displayOffsetY) * stiffness;
-            tracking.velocityX = tracking.velocityX * damping + forceX;
-            tracking.velocityY = tracking.velocityY * damping + forceY;
-            tracking.displayOffsetX += tracking.velocityX;
-            tracking.displayOffsetY += tracking.velocityY;
-
-            bx = tracking.displayOffsetX;
-            by = tracking.displayOffsetY;
-            bw = targetBW;
-            bh = targetBH;
+          if (!tracking.initialized) {
+            tracking.displayOffsetX = constrainedBX;
+            tracking.displayOffsetY = constrainedBY;
+            tracking.cumulativeOffsetX = constrainedBX;
+            tracking.cumulativeOffsetY = constrainedBY;
+            tracking.velocityX = 0;
+            tracking.velocityY = 0;
+            tracking.initialized = true;
           }
-        }
-        // ── STRATEGY B: Client-side template matching (fallback) ──
-        // Used when server motion data is not available. Less smooth but functional.
-        // If tracking confidence degrades for too long, falls back to static position.
-        else {
-          // Initialize reference patch from first frame
-          if (!tracking.initialized && videoEl.currentTime < 0.5) {
-            const refPatch = captureReferencePatch(
-              videoEl, canvas.width, canvas.height,
-              baseBX, baseBY, baseBW, baseBH,
-              tracking.searchCanvas
-            );
-            if (refPatch) {
-              tracking.referenceData = refPatch;
-              const patchMargin = 0.3;
-              tracking.refCenterX = Math.max(0, Math.floor(baseBX - baseBW * patchMargin));
-              tracking.refCenterY = Math.max(0, Math.floor(baseBY - baseBH * patchMargin));
-              tracking.patchWidth = refPatch.width;
-              tracking.patchHeight = refPatch.height;
-              tracking.displayOffsetX = 0;
-              tracking.displayOffsetY = 0;
-              tracking.targetOffsetX = 0;
-              tracking.targetOffsetY = 0;
-              tracking.velocityX = 0;
-              tracking.velocityY = 0;
-              tracking.lastGoodOffsetX = 0;
-              tracking.lastGoodOffsetY = 0;
-              tracking.refUpdateCounter = 0;
-              tracking.consecutiveLowConf = 0;
-              tracking.lastConfidence = 1;
-              tracking.initialized = true;
-            }
-          }
+          tracking.cumulativeOffsetX = constrainedBX;
+          tracking.cumulativeOffsetY = constrainedBY;
 
-          if (tracking.initialized && tracking.referenceData) {
-            tracking.frameCounter++;
+          // Spring physics for smoothness
+          const stiffness = 0.18;
+          const damping = 0.68;
+          const forceX = (tracking.cumulativeOffsetX - tracking.displayOffsetX) * stiffness;
+          const forceY = (tracking.cumulativeOffsetY - tracking.displayOffsetY) * stiffness;
+          tracking.velocityX = tracking.velocityX * damping + forceX;
+          tracking.velocityY = tracking.velocityY * damping + forceY;
+          tracking.displayOffsetX += tracking.velocityX;
+          tracking.displayOffsetY += tracking.velocityY;
 
-            // If tracking has been lost for too many consecutive frames,
-            // give up and hold at static position instead of drifting arbitrarily
-            const trackingLost = tracking.consecutiveLowConf > 15;
+          bx = tracking.displayOffsetX;
+          by = tracking.displayOffsetY;
+          bw = targetBW;
+          bh = targetBH;
+        } else {
+          // ── STRATEGY B: Global Optical Flow (camera motion estimation) ──
+          // Measures how the ENTIRE frame shifts between consecutive video frames.
+          // Works reliably for camera pans/tilts because the whole scene moves together.
+          // The product stays anchored to the surface by compensating for camera motion.
+          tracking.frameCounter++;
 
-            // Template matching every 4th frame (skip if tracking is lost)
-            if (!trackingLost && tracking.frameCounter % 4 === 0) {
-              const searchFromX = tracking.refCenterX + Math.round(tracking.targetOffsetX);
-              const searchFromY = tracking.refCenterY + Math.round(tracking.targetOffsetY);
+          // Run optical flow every 3rd frame for good balance of accuracy vs performance
+          if (tracking.frameCounter % 3 === 0) {
+            const currFrameData = captureFrameForFlow(videoEl, tracking.flowCanvas, FLOW_W, FLOW_H);
 
-              const { dx, dy, confidence, frameData } = trackPatchInFrame(
-                videoEl, canvas.width, canvas.height,
-                tracking.referenceData,
-                searchFromX, searchFromY,
-                tracking.searchCanvas,
-                80
+            if (currFrameData && tracking.prevFrameData) {
+              const { dx, dy, confidence } = computeOpticalFlowBlock(
+                tracking.prevFrameData,
+                currFrameData,
+                FLOW_W,
+                FLOW_H,
               );
 
-              tracking.lastConfidence = confidence;
-
-              if (confidence > 0.35) { // Slightly higher threshold for more reliable matches
-                // Limit per-frame jump to prevent large erratic jumps
-                const maxJump = 20; // pixels
-                const clampedDx = clamp(dx, -maxJump, maxJump);
-                const clampedDy = clamp(dy, -maxJump, maxJump);
-
-                tracking.targetOffsetX += clampedDx;
-                tracking.targetOffsetY += clampedDy;
-                tracking.consecutiveLowConf = 0;
-                tracking.lastGoodOffsetX = tracking.targetOffsetX;
-                tracking.lastGoodOffsetY = tracking.targetOffsetY;
-
-                tracking.refUpdateCounter++;
-                if (tracking.refUpdateCounter >= 60 && confidence > 0.5 && frameData) {
-                  tracking.referenceData = frameData;
-                  tracking.refCenterX = searchFromX;
-                  tracking.refCenterY = searchFromY;
-                  tracking.targetOffsetX = 0;
-                  tracking.targetOffsetY = 0;
-                  tracking.displayOffsetX = 0;
-                  tracking.displayOffsetY = 0;
-                  tracking.velocityX = 0;
-                  tracking.velocityY = 0;
-                  tracking.lastGoodOffsetX = 0;
-                  tracking.lastGoodOffsetY = 0;
-                  tracking.refUpdateCounter = 0;
-                }
-              } else {
-                tracking.consecutiveLowConf++;
-                tracking.targetOffsetX = tracking.lastGoodOffsetX;
-                tracking.targetOffsetY = tracking.lastGoodOffsetY;
+              if (confidence > 0.15) {
+                // Scale flow dx/dy from flow resolution to canvas resolution
+                const scaleX = canvas.width / FLOW_W;
+                const scaleY = canvas.height / FLOW_H;
+                // Optical flow dx/dy = where previous frame's content appears in current frame.
+                // If camera pans left → scene moves right → dx is positive → product moves right.
+                tracking.cumulativeOffsetX += dx * scaleX;
+                tracking.cumulativeOffsetY += dy * scaleY;
               }
-            }
 
-            if (trackingLost) {
-              // Tracking confidence collapsed — hold at original bbox position
-              bx = baseBX;
-              by = baseBY;
-            } else {
-              // Spring interpolation every frame
-              const stiffness = 0.08;
-              const damping = 0.75;
-              const forceX = (tracking.targetOffsetX - tracking.displayOffsetX) * stiffness;
-              const forceY = (tracking.targetOffsetY - tracking.displayOffsetY) * stiffness;
-              tracking.velocityX = tracking.velocityX * damping + forceX;
-              tracking.velocityY = tracking.velocityY * damping + forceY;
-              tracking.displayOffsetX += tracking.velocityX;
-              tracking.displayOffsetY += tracking.velocityY;
-
-              const patchMargin = 0.3;
-              bx = tracking.refCenterX + tracking.displayOffsetX + patchMargin * baseBW;
-              by = tracking.refCenterY + tracking.displayOffsetY + patchMargin * baseBH;
+              tracking.prevFrameData = currFrameData;
+            } else if (currFrameData && !tracking.prevFrameData) {
+              // First frame — just capture, no motion yet
+              tracking.prevFrameData = currFrameData;
+              // Initialize display position to current base position so spring doesn't jump
+              tracking.displayOffsetX = baseBX;
+              tracking.displayOffsetY = baseBY;
+              tracking.initialized = true;
             }
-          } else {
+          }
+
+          // Spring-damped interpolation for smooth display
+          const stiffness = 0.20;
+          const damping = 0.65;
+          const targetX = baseBX + tracking.cumulativeOffsetX;
+          const targetY = baseBY + tracking.cumulativeOffsetY;
+          const forceX = (targetX - tracking.displayOffsetX) * stiffness;
+          const forceY = (targetY - tracking.displayOffsetY) * stiffness;
+          tracking.velocityX = tracking.velocityX * damping + forceX;
+          tracking.velocityY = tracking.velocityY * damping + forceY;
+          tracking.displayOffsetX += tracking.velocityX;
+          tracking.displayOffsetY += tracking.velocityY;
+
+          if (!tracking.initialized) {
+            // Before first flow computation, use static position
             bx = baseBX;
             by = baseBY;
+          } else {
+            bx = tracking.displayOffsetX;
+            by = tracking.displayOffsetY;
           }
           bw = baseBW;
           bh = baseBH;
@@ -1286,22 +1170,17 @@ export default function PlacementPreviewModal({
     if (!videoEl) return;
 
     if (!isVideoMode) {
-      // Enter video mode — reset tracking state and start from beginning
+      // Enter video mode — reset optical flow tracking state
       const tracking = trackingRef.current;
       tracking.initialized = false;
-      tracking.referenceData = null;
+      tracking.prevFrameData = null;
+      tracking.cumulativeOffsetX = 0;
+      tracking.cumulativeOffsetY = 0;
       tracking.displayOffsetX = 0;
       tracking.displayOffsetY = 0;
-      tracking.targetOffsetX = 0;
-      tracking.targetOffsetY = 0;
       tracking.velocityX = 0;
       tracking.velocityY = 0;
-      tracking.lastGoodOffsetX = 0;
-      tracking.lastGoodOffsetY = 0;
       tracking.frameCounter = 0;
-      tracking.refUpdateCounter = 0;
-      tracking.consecutiveLowConf = 0;
-      tracking.lastConfidence = 1;
 
       setIsVideoMode(true);
       triggerDenseScan(); // Fire-and-forget: generates dense keyframes in background (for export)
@@ -1333,22 +1212,17 @@ export default function PlacementPreviewModal({
     setIsVideoMode(false);
     setIsVideoPlaying(false);
     setVideoCurrentTime(0);
-    // Reset visual tracking
+    // Reset optical flow tracking
     const tracking = trackingRef.current;
     tracking.initialized = false;
-    tracking.referenceData = null;
+    tracking.prevFrameData = null;
+    tracking.cumulativeOffsetX = 0;
+    tracking.cumulativeOffsetY = 0;
     tracking.displayOffsetX = 0;
     tracking.displayOffsetY = 0;
-    tracking.targetOffsetX = 0;
-    tracking.targetOffsetY = 0;
     tracking.velocityX = 0;
     tracking.velocityY = 0;
-    tracking.lastGoodOffsetX = 0;
-    tracking.lastGoodOffsetY = 0;
     tracking.frameCounter = 0;
-    tracking.refUpdateCounter = 0;
-    tracking.consecutiveLowConf = 0;
-    tracking.lastConfidence = 1;
   }, []);
 
   // ============================================================================
@@ -1970,10 +1844,10 @@ export default function PlacementPreviewModal({
                     <p className="text-[10px] text-muted-foreground">
                       {isDenseScanning
                         ? "Analyzing video frames... Product tracking will improve once complete."
-                        : isVideoMode && motionData?.source === "static"
-                        ? "Playing preview — surface tracking data loading..."
+                        : isVideoMode && motionData?.source === "gemini-keyframes"
+                        ? "Playing with AI surface tracking — product follows the physical surface"
                         : isVideoMode
-                        ? "Playing video with camera-tracking placement — product follows the surface"
+                        ? "Playing with camera motion tracking — product follows camera movement"
                         : "Drag to move | Corner handles to resize | Orange dot to rotate | Play to preview"
                       }
                     </p>
