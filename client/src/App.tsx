@@ -148,7 +148,7 @@ function Router() {
         <Route path="/signup" component={AuthPage} />
         <Route path="/privacy" component={Privacy} />
         <Route path="/terms" component={Terms} />
-        <Route path="/creates" component={ComingSoon} />
+        <Route path="/content" component={ComingSoon} />
         <Route path="/about" component={ComingSoon} />
         <Route path="/waitlist" component={WaitlistPage} />
         <Route path="/c/:slug" component={CreatorProfile} />
@@ -195,7 +195,7 @@ function Router() {
   return (
     <Switch>
       <Route path="/home" component={Landing} />
-      <Route path="/creates" component={ComingSoon} />
+      <Route path="/content" component={ComingSoon} />
       <Route path="/about" component={ComingSoon} />
       <Route path="/c/:slug" component={CreatorProfile} />
       <Route path="/s/:slug" component={SharedView} />
