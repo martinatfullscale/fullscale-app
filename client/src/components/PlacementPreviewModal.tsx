@@ -666,6 +666,39 @@ export default function PlacementPreviewModal({
   const [isDenseScanning, setIsDenseScanning] = useState(false);
   const [denseScanDone, setDenseScanDone] = useState(false);
 
+  // Trigger server-side motion analysis for smooth product placement
+  // (must be defined before triggerDenseScan which calls it)
+  const triggerMotionTrack = useCallback(async () => {
+    if (isMotionLoading || motionData) return; // Already loaded or loading
+    if (!selectedSurface) return;
+
+    setIsMotionLoading(true);
+    try {
+      console.log(`[PlacementPreview] Requesting motion tracking for video ${videoId}, surface ${selectedSurface.id}...`);
+      const res = await fetch(`/api/video/${videoId}/motion-track`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ surfaceId: selectedSurface.id }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.available && data.transforms?.length > 0) {
+          setMotionData(data);
+          console.log(`[PlacementPreview] Got ${data.transforms.length} motion frames at ${data.fps}fps`);
+        } else {
+          console.log("[PlacementPreview] Motion tracking not available, using client-side fallback");
+          setMotionData({ transforms: [], fps: 30, duration: 0, available: false });
+        }
+      }
+    } catch (err) {
+      console.error("[PlacementPreview] Motion track request failed:", err);
+      setMotionData({ transforms: [], fps: 30, duration: 0, available: false });
+    } finally {
+      setIsMotionLoading(false);
+    }
+  }, [videoId, isMotionLoading, motionData, selectedSurface]);
+
   // Trigger dense scan when user first enters video playback mode
   const triggerDenseScan = useCallback(async () => {
     if (isDenseScanning || denseScanDone) return;
@@ -700,38 +733,6 @@ export default function PlacementPreviewModal({
       setIsDenseScanning(false);
     }
   }, [videoId, isDenseScanning, denseScanDone, selectedSurface?.surfaceType, denseKeyframesData, refetchKeyframes, triggerMotionTrack]);
-
-  // Trigger server-side motion analysis (vidstab) for smooth product placement
-  const triggerMotionTrack = useCallback(async () => {
-    if (isMotionLoading || motionData) return; // Already loaded or loading
-    if (!selectedSurface) return;
-
-    setIsMotionLoading(true);
-    try {
-      console.log(`[PlacementPreview] Requesting motion tracking for video ${videoId}, surface ${selectedSurface.id}...`);
-      const res = await fetch(`/api/video/${videoId}/motion-track`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ surfaceId: selectedSurface.id }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.available && data.transforms?.length > 0) {
-          setMotionData(data);
-          console.log(`[PlacementPreview] Got ${data.transforms.length} motion frames at ${data.fps}fps`);
-        } else {
-          console.log("[PlacementPreview] Motion tracking not available (vidstab not installed), using client-side fallback");
-          setMotionData({ transforms: [], fps: 30, duration: 0, available: false });
-        }
-      }
-    } catch (err) {
-      console.error("[PlacementPreview] Motion track request failed:", err);
-      setMotionData({ transforms: [], fps: 30, duration: 0, available: false });
-    } finally {
-      setIsMotionLoading(false);
-    }
-  }, [videoId, isMotionLoading, motionData, selectedSurface]);
 
   // Fetch product catalog
   const { data: catalogProducts } = useQuery<CatalogProduct[]>({
