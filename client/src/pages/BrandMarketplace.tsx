@@ -248,7 +248,55 @@ export default function BrandMarketplace() {
     staleTime: 5 * 60 * 1000, // Cache for 5 minutes
   });
 
-  const featuredCreators = featuredCreatorsData?.creators || [];
+  // Dummy featured creators to fill out the 2-row grid alongside real data
+  const DUMMY_FEATURED_CREATORS: FeaturedCreator[] = [
+    {
+      name: "Jaylen Carter",
+      slug: "jaylen",
+      headline: "Culture & Lifestyle Creator",
+      profileImage: null,
+      thumbnails: [
+        "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=200&h=120&fit=crop",
+        "https://images.unsplash.com/photo-1524758631624-e2822e304c36?w=200&h=120&fit=crop",
+        "https://images.unsplash.com/photo-1505373877841-8d25f7d46678?w=200&h=120&fit=crop",
+        "https://images.unsplash.com/photo-1536240478700-b869070f9279?w=200&h=120&fit=crop",
+      ],
+      stats: { totalVideos: 24, totalViews: 1850000, totalSurfaces: 87, subscribers: 145000 },
+    },
+    {
+      name: "Aisha Monet",
+      slug: "aisha",
+      headline: "Podcast Host · Sports & Entertainment",
+      profileImage: null,
+      thumbnails: [
+        "https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?w=200&h=120&fit=crop",
+        "https://images.unsplash.com/photo-1478737270239-2f02b77fc618?w=200&h=120&fit=crop",
+        "https://images.unsplash.com/photo-1590602847861-f357a9332bbc?w=200&h=120&fit=crop",
+        "https://images.unsplash.com/photo-1612287230202-1ff1d85d1bdf?w=200&h=120&fit=crop",
+      ],
+      stats: { totalVideos: 38, totalViews: 3200000, totalSurfaces: 142, subscribers: 290000 },
+    },
+    {
+      name: "Derek Thompson",
+      slug: "derek",
+      headline: "Tech Reviews & Unboxing",
+      profileImage: null,
+      thumbnails: [
+        "https://images.unsplash.com/photo-1593642702821-c8da6771f0c6?w=200&h=120&fit=crop",
+        "https://images.unsplash.com/photo-1496181133206-80ce9b88a853?w=200&h=120&fit=crop",
+        "https://images.unsplash.com/photo-1518770660439-4636190af475?w=200&h=120&fit=crop",
+        "https://images.unsplash.com/photo-1527443224154-c4a3942d3acf?w=200&h=120&fit=crop",
+      ],
+      stats: { totalVideos: 52, totalViews: 5400000, totalSurfaces: 210, subscribers: 420000 },
+    },
+  ];
+
+  // Merge real featured creators from API with dummy placeholders to fill 2 rows (up to 6)
+  const apiFeaturedCreators = featuredCreatorsData?.creators || [];
+  const featuredCreators = [
+    ...apiFeaturedCreators,
+    ...DUMMY_FEATURED_CREATORS.filter(d => !apiFeaturedCreators.some(a => a.slug === d.slug)),
+  ].slice(0, 6);
 
   const buyMutation = useMutation({
     mutationFn: async (opportunity: MarketplaceOpportunity) => {
