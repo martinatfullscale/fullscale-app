@@ -54,6 +54,7 @@ interface VideoData {
   title: string;
   thumbnail: string | null;
   videoUrl: string | null;
+  filePath: string | null;
   platform: string;
   viewCount: number;
   surfaceCount: number;
@@ -61,6 +62,18 @@ interface VideoData {
   surfaces: Surface[];
   category: string | null;
   duration: number | null;
+}
+
+// Normalize filePath to a browser-playable URL (same logic as VideoPreviewModal)
+function normalizeVideoSrc(filePath: string | null | undefined): string | null {
+  if (!filePath) return null;
+  let src = filePath;
+  src = src.replace(/^\/home\/runner\/workspace\/public\//, '/');
+  src = src.replace(/^\.\/public\//, '/');
+  src = src.replace(/^public\//, '/');
+  src = src.replace(/\/\//g, '/');
+  if (!src.startsWith('/') && !src.startsWith('http')) src = '/' + src;
+  return src;
 }
 
 interface SocialStats {
@@ -504,9 +517,12 @@ export default function CreatorProfile() {
               >
                 {/* Video / Thumbnail */}
                 <div className="relative aspect-video bg-black overflow-hidden">
-                  {video.videoUrl ? (
+                  {(() => {
+                    // Try videoUrl first, then normalize filePath as fallback
+                    const playbackUrl = video.videoUrl || normalizeVideoSrc(video.filePath);
+                    return playbackUrl ? (
                     <video
-                      src={video.videoUrl}
+                      src={playbackUrl}
                       poster={video.thumbnail || undefined}
                       controls
                       preload="metadata"
@@ -516,6 +532,14 @@ export default function CreatorProfile() {
                       onLoadedMetadata={(e) => {
                         const vid = e.currentTarget;
                         if (vid.currentTime === 0) vid.currentTime = 0.5;
+                      }}
+                      onError={(e) => {
+                        // If videoUrl fails, try filePath normalization as fallback
+                        const videoEl = e.currentTarget;
+                        const fallbackSrc = normalizeVideoSrc(video.filePath);
+                        if (fallbackSrc && videoEl.src !== window.location.origin + fallbackSrc) {
+                          videoEl.src = fallbackSrc;
+                        }
                       }}
                     />
                   ) : video.thumbnail ? (
@@ -540,7 +564,8 @@ export default function CreatorProfile() {
                     <div className="w-full h-full flex items-center justify-center">
                       <Play className="h-12 w-12 text-muted-foreground" />
                     </div>
-                  )}
+                  );
+                  })()}
 
                   {/* Platform badge */}
                   <Badge className="absolute top-3 right-3 text-xs capitalize" variant="secondary">

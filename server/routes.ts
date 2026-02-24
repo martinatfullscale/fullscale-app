@@ -3965,20 +3965,13 @@ export async function registerRoutes(
         }
 
         // Resolve video playback URL for local files
+        // Use normalizeVideoUrl (same as Library page) — works reliably on Replit
         let videoUrl = null;
         if (v.filePath) {
-          // Check Object Storage first, then local
-          const videoStorageKey = v.filePath.replace(/^\.?\/?public\//, "public/");
-          try {
-            if (await fileExistsInStorage(videoStorageKey)) {
-              videoUrl = `/storage/${v.filePath.replace(/^\.?\/?public\//, "")}`;
-            } else if (fs.existsSync(path.resolve(v.filePath))) {
-              videoUrl = `/${v.filePath.replace(/^\.?\/?public\//, "")}`;
-            }
-          } catch {
-            if (fs.existsSync(path.resolve(v.filePath))) {
-              videoUrl = `/${v.filePath.replace(/^\.?\/?public\//, "")}`;
-            }
+          if (v.filePath.startsWith('/storage/')) {
+            videoUrl = v.filePath;
+          } else {
+            videoUrl = normalizeVideoUrl(v.filePath);
           }
         }
 
@@ -3987,6 +3980,7 @@ export async function registerRoutes(
           title: v.title,
           thumbnail,
           videoUrl,
+          filePath: v.filePath || null,
           platform: v.platform || "youtube",
           viewCount: v.viewCount || 0,
           surfaceCount: v.surfaceCount || 0,
