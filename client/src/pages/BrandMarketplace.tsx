@@ -593,18 +593,18 @@ export default function BrandMarketplace() {
                   <Link href={`/c/${creator.slug}`}>
                     <Card className="group overflow-hidden hover-elevate cursor-pointer border-white/10 hover:border-purple-500/40 transition-all duration-300">
                       {/* Content Thumbnails Strip */}
-                      <div className="grid grid-cols-4 gap-0.5 bg-black/40">
+                      <div className="grid grid-cols-4 gap-px bg-black/60">
                         {(creator.thumbnails?.length > 0 ? creator.thumbnails : [
                           "https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?w=200&h=120&fit=crop",
                           "https://images.unsplash.com/photo-1478737270239-2f02b77fc618?w=200&h=120&fit=crop",
                           "https://images.unsplash.com/photo-1505373877841-8d25f7d46678?w=200&h=120&fit=crop",
                           "https://images.unsplash.com/photo-1536240478700-b869070f9279?w=200&h=120&fit=crop",
                         ]).slice(0, 4).map((thumb, i) => (
-                          <div key={i} className="aspect-video overflow-hidden">
+                          <div key={i} className="relative overflow-hidden" style={{ paddingBottom: '75%' }}>
                             <img
                               src={thumb}
                               alt={`${creator.name} content ${i + 1}`}
-                              className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                              className="absolute inset-0 w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                               onError={(e) => {
                                 (e.target as HTMLImageElement).src = `https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?w=200&h=120&fit=crop`;
                               }}

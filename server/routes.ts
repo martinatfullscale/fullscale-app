@@ -4008,13 +4008,20 @@ export async function registerRoutes(
         const totalViews = videosWithSurfaces.reduce((sum: number, v: any) => sum + (v.viewCount || 0), 0);
         const totalSurfaces = videosWithSurfaces.reduce((sum: number, v: any) => sum + (v.surfaceCount || 0), 0);
 
-        // Get up to 4 video thumbnails — use ALL videos so we always find content
-        const thumbnails = allCreatorVideos
+        // Get up to 4 video thumbnails — prioritize landscape videos with cached frames
+        // Sort: videos with larger cached frames first (landscape frames are bigger than portrait)
+        const videosWithFrameInfo = allCreatorVideos.map((v: any) => {
+          const framePath = path.join(process.cwd(), "public", "uploads", "frames", v.id.toString(), "frame_0s.jpg");
+          let frameSize = 0;
+          try { if (fs.existsSync(framePath)) frameSize = fs.statSync(framePath).size; } catch {}
+          return { ...v, framePath, frameSize };
+        }).sort((a: any, b: any) => b.frameSize - a.frameSize); // Biggest frames first (landscape > portrait)
+
+        const thumbnails = videosWithFrameInfo
           .slice(0, 4)
           .map((v: any) => {
             // Check if a cached frame already exists on disk
-            const framePath = path.join(process.cwd(), "public", "uploads", "frames", v.id.toString(), "frame_0s.jpg");
-            if (fs.existsSync(framePath)) {
+            if (v.frameSize > 0) {
               return `/uploads/frames/${v.id}/frame_0s.jpg`;
             }
             // Use stored thumbnailUrl
