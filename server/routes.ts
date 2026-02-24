@@ -4009,12 +4009,15 @@ export async function registerRoutes(
         const thumbnails = videos
           .slice(0, 4)
           .map((v: any) => {
-            // For YouTube videos, construct the thumbnail URL from youtubeId
+            // Use stored thumbnailUrl first (works for all video types)
+            if (v.thumbnailUrl) return v.thumbnailUrl;
+            // For YouTube videos, construct thumbnail URL from youtubeId
             if (v.youtubeId && !v.youtubeId.startsWith("test-") && !v.youtubeId.startsWith("local-")) {
               return `https://img.youtube.com/vi/${v.youtubeId}/mqdefault.jpg`;
             }
-            // For local/fullscale videos, use the thumbnailUrl if available
-            return v.thumbnailUrl || null;
+            // For local/fullscale videos, extract a frame as thumbnail
+            if (v.filePath) return `/api/video/${v.id}/frame/0`;
+            return null;
           })
           .filter(Boolean);
 
