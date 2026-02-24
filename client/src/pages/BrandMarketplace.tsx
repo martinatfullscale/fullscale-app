@@ -63,6 +63,7 @@ interface FeaturedCreator {
   slug: string;
   headline: string | null;
   profileImage: string | null;
+  thumbnails: string[];
   stats: {
     totalVideos: number;
     totalViews: number;
@@ -543,22 +544,45 @@ export default function BrandMarketplace() {
                 >
                   <Link href={`/c/${creator.slug}`}>
                     <Card className="group overflow-hidden hover-elevate cursor-pointer border-white/10 hover:border-purple-500/40 transition-all duration-300">
+                      {/* Content Thumbnails Strip */}
+                      <div className="grid grid-cols-4 gap-0.5 bg-black/40">
+                        {(creator.thumbnails?.length > 0 ? creator.thumbnails : [
+                          "https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?w=200&h=120&fit=crop",
+                          "https://images.unsplash.com/photo-1478737270239-2f02b77fc618?w=200&h=120&fit=crop",
+                          "https://images.unsplash.com/photo-1505373877841-8d25f7d46678?w=200&h=120&fit=crop",
+                          "https://images.unsplash.com/photo-1536240478700-b869070f9279?w=200&h=120&fit=crop",
+                        ]).slice(0, 4).map((thumb, i) => (
+                          <div key={i} className="aspect-video overflow-hidden">
+                            <img
+                              src={thumb}
+                              alt={`${creator.name} content ${i + 1}`}
+                              className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                              onError={(e) => {
+                                (e.target as HTMLImageElement).src = `https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?w=200&h=120&fit=crop`;
+                              }}
+                            />
+                          </div>
+                        ))}
+                      </div>
                       <CardContent className="p-4">
                         <div className="flex items-center gap-3 mb-3">
                           {/* Avatar */}
-                          <div className="w-12 h-12 rounded-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center text-white font-bold text-lg flex-shrink-0 overflow-hidden">
+                          <div className="w-10 h-10 rounded-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center text-white font-bold text-sm flex-shrink-0 overflow-hidden">
                             {creator.profileImage ? (
                               <img src={creator.profileImage} alt={creator.name} className="w-full h-full object-cover" />
                             ) : (
                               creator.name.charAt(0).toUpperCase()
                             )}
                           </div>
-                          <div className="min-w-0">
+                          <div className="min-w-0 flex-1">
                             <h3 className="font-semibold text-white text-sm truncate group-hover:text-purple-300 transition-colors">{creator.name}</h3>
                             {creator.headline && (
                               <p className="text-xs text-white/60 truncate">{creator.headline}</p>
                             )}
                           </div>
+                          <span className="text-xs text-purple-400 group-hover:text-purple-300 transition-colors flex items-center gap-1 flex-shrink-0">
+                            <ExternalLink className="w-3 h-3" />
+                          </span>
                         </div>
                         {/* Stats */}
                         <div className="grid grid-cols-3 gap-2">
@@ -580,11 +604,6 @@ export default function BrandMarketplace() {
                             <div className="text-sm font-semibold text-white">{creator.stats.totalSurfaces}</div>
                             <div className="text-[10px] text-white/50">Surfaces</div>
                           </div>
-                        </div>
-                        <div className="mt-3 flex justify-end">
-                          <span className="text-xs text-purple-400 group-hover:text-purple-300 transition-colors flex items-center gap-1">
-                            View Portfolio <ExternalLink className="w-3 h-3" />
-                          </span>
                         </div>
                       </CardContent>
                     </Card>

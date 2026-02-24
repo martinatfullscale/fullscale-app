@@ -4005,11 +4005,25 @@ export async function registerRoutes(
         const totalViews = videos.reduce((sum: number, v: any) => sum + (v.viewCount || 0), 0);
         const totalSurfaces = videos.reduce((sum: number, v: any) => sum + (v.surfaceCount || 0), 0);
 
+        // Get up to 4 recent video thumbnails for the creator card
+        const thumbnails = videos
+          .slice(0, 4)
+          .map((v: any) => {
+            // For YouTube videos, construct the thumbnail URL from youtubeId
+            if (v.youtubeId && !v.youtubeId.startsWith("test-") && !v.youtubeId.startsWith("local-")) {
+              return `https://img.youtube.com/vi/${v.youtubeId}/mqdefault.jpg`;
+            }
+            // For local/fullscale videos, use the thumbnailUrl if available
+            return v.thumbnailUrl || null;
+          })
+          .filter(Boolean);
+
         return {
           name: creator.name || creator.email.split("@")[0],
           slug: creator.slug,
           headline: creator.headline || null,
           profileImage: userProfile?.profileImageUrl || null,
+          thumbnails,
           stats: {
             totalVideos: videos.length,
             totalViews,
