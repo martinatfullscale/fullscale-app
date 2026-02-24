@@ -1615,12 +1615,7 @@ export class DatabaseStorage implements IStorage {
     return await db
       .select()
       .from(allowedUsers)
-      .where(
-        and(
-          eq(allowedUsers.isFeatured, true),
-          eq(allowedUsers.userType, "creator")
-        )
-      );
+      .where(eq(allowedUsers.isFeatured, true));
   }
 
   async getCreatorBySlug(slug: string): Promise<AllowedUser | undefined> {

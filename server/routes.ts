@@ -7602,7 +7602,7 @@ async function seedDatabase() {
     console.log("Allowed users seeded!");
   }
 
-  // Seed creator slugs for existing creators (one-time migration)
+  // Seed creator slugs and featured status for existing creators
   try {
     const creatorSlugs: Record<string, string> = {
       "martin@gofullscale.co": "martin",
@@ -7611,11 +7611,17 @@ async function seedDatabase() {
     };
     for (const [email, slug] of Object.entries(creatorSlugs)) {
       const user = await storage.getAllowedUser(email);
-      if (user && !user.slug) {
-        await storage.updateCreatorProfile(email, { slug });
-        // Also mark as featured
-        await db.update(allowedUsersTable).set({ isFeatured: true }).where(eq(allowedUsersTable.email, email));
-        console.log(`[Seed] Set slug="${slug}" and isFeatured=true for ${email}`);
+      if (user) {
+        // Always ensure slug is set
+        if (!user.slug) {
+          await storage.updateCreatorProfile(email, { slug });
+          console.log(`[Seed] Set slug="${slug}" for ${email}`);
+        }
+        // Always ensure isFeatured is true
+        if (!user.isFeatured) {
+          await db.update(allowedUsersTable).set({ isFeatured: true }).where(eq(allowedUsersTable.email, email));
+          console.log(`[Seed] Set isFeatured=true for ${email}`);
+        }
       }
     }
   } catch (err) {
