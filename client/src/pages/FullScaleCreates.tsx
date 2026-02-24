@@ -118,11 +118,8 @@ export default function FullScaleCreates() {
             <h1 className="text-4xl md:text-5xl lg:text-6xl font-bold tracking-tight mb-6 text-white">
               Content That Connects
             </h1>
-            <p className="text-lg md:text-xl text-white/80 leading-relaxed max-w-2xl mx-auto mb-4">
-              FullScale Creates focuses on building and curating content meant to connect to an audience screaming for things that are real.
-            </p>
-            <p className="text-base text-white/60 leading-relaxed max-w-xl mx-auto mb-8">
-              There is the utility of AI — which is great — but there needs to be a nice balance there between AI and Human.
+            <p className="text-lg md:text-xl text-white/80 leading-relaxed max-w-2xl mx-auto mb-8">
+              We build and curate content for audiences that demand something real. AI accelerates the craft — but the creator drives the story. That partnership is where the magic lands.
             </p>
             <div className="flex items-center justify-center gap-4">
               <Button size="lg" className="gap-2">
