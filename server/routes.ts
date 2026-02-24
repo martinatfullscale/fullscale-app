@@ -1252,8 +1252,8 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Not authorized to update this video" });
       }
 
-      const { title, category } = req.body;
-      if (!title && !category) return res.status(400).json({ error: "title or category is required" });
+      const { title, category, subcategory } = req.body;
+      if (!title && !category && subcategory === undefined) return res.status(400).json({ error: "title, category, or subcategory is required" });
 
       const updates: any = {};
 
@@ -1280,8 +1280,12 @@ export async function registerRoutes(
         updates.category = category;
       }
 
+      if (subcategory !== undefined) {
+        updates.subcategory = subcategory;
+      }
+
       await storage.updateVideoIndex(videoId, updates);
-      res.json({ success: true, title: title || video.title, category: category || video.category });
+      res.json({ success: true, title: title || video.title, category: category || video.category, subcategory: subcategory !== undefined ? subcategory : video.subcategory });
     } catch (err: any) {
       console.error("[Rename Video] Error:", err.message);
       res.status(500).json({ error: "Failed to rename video" });
@@ -2031,11 +2035,12 @@ export async function registerRoutes(
     const file = req.file;
     const title = req.body.title || file.originalname.replace(/\.[^/.]+$/, "");
     const category = req.body.category || "Other";
+    const subcategory = req.body.subcategory || null;
 
     console.log(`[UPLOAD] File: ${file.originalname} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
     console.log(`[UPLOAD] Saved as: ${file.filename}`);
     console.log(`[UPLOAD] Title: ${title}`);
-    console.log(`[UPLOAD] Category: ${category}`);
+    console.log(`[UPLOAD] Category: ${category}${subcategory ? ` / ${subcategory}` : ""}`);
 
     try {
       const uploadVideoId = `upload-${Date.now()}-${Math.random().toString(36).substring(7)}`;
@@ -2058,6 +2063,7 @@ export async function registerRoutes(
         priorityScore: 80,
         platform: "fullscale",
         category,
+        subcategory,
         isEvergreen: true,
         duration: "0:00",
         filePath: storageUrl,

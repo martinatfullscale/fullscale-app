@@ -26,6 +26,38 @@ export const CONTENT_CATEGORIES = [
   { value: "Other", label: "Other" },
 ] as const;
 
+// Subcategory options — provides finer classification within each category
+export const SUBCATEGORIES = [
+  "Sports",
+  "Comedy",
+  "News",
+  "Culture",
+  "Business",
+  "Entertainment",
+  "Science",
+  "Politics",
+  "True Crime",
+  "Interviews",
+  "Reviews",
+  "Tutorials",
+  "Vlogs",
+  "Reactions",
+  "Storytelling",
+  "Motivation",
+  "Relationships",
+  "Parenting",
+  "Spirituality",
+  "History",
+  "Art",
+  "Photography",
+  "Real Estate",
+  "Crypto",
+  "AI & Tech",
+  "Outdoor",
+  "Pets",
+  "Other",
+] as const;
+
 type UploadState = "dropzone" | "selected" | "uploading" | "processing" | "complete" | "error";
 
 interface UploadModalProps {
@@ -39,6 +71,7 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
   const [category, setCategory] = useState("Podcast");
+  const [subcategory, setSubcategory] = useState("");
   const [uploadProgress, setUploadProgress] = useState(0);
   const [processingLogs, setProcessingLogs] = useState<string[]>([]);
   const [errorMessage, setErrorMessage] = useState("");
@@ -102,6 +135,7 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
     formData.append("video", selectedFile);
     formData.append("title", title || selectedFile.name);
     formData.append("category", category);
+    if (subcategory) formData.append("subcategory", subcategory);
 
     try {
       const xhr = new XMLHttpRequest();
@@ -245,20 +279,37 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
                 />
               </div>
 
-              <div>
-                <label className="text-sm text-muted-foreground mb-2 block">Content Category</label>
-                <Select value={category} onValueChange={setCategory}>
-                  <SelectTrigger className="bg-white/5 border-white/10">
-                    <SelectValue placeholder="Select category" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {CONTENT_CATEGORIES.map((cat) => (
-                      <SelectItem key={cat.value} value={cat.value}>
-                        {cat.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-sm text-muted-foreground mb-2 block">Category</label>
+                  <Select value={category} onValueChange={setCategory}>
+                    <SelectTrigger className="bg-white/5 border-white/10">
+                      <SelectValue placeholder="Select category" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {CONTENT_CATEGORIES.map((cat) => (
+                        <SelectItem key={cat.value} value={cat.value}>
+                          {cat.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <label className="text-sm text-muted-foreground mb-2 block">Subcategory</label>
+                  <Select value={subcategory} onValueChange={setSubcategory}>
+                    <SelectTrigger className="bg-white/5 border-white/10">
+                      <SelectValue placeholder="e.g. Sports" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {SUBCATEGORIES.map((sub) => (
+                        <SelectItem key={sub} value={sub}>
+                          {sub}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
 
               <div className="flex gap-3">
