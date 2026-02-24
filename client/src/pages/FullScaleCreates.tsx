@@ -1,9 +1,16 @@
+import { useState, useRef } from "react";
 import { motion } from "framer-motion";
 import { Film, Play, Sparkles, Users, Zap, ArrowRight, Globe } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
+
+// Hero video path — Replit generates this file (fast-cut montage: podcasts, kitchen, music)
+// Drop the mp4 into: client/src/assets/generated_videos/fullscale_creates_hero_loop.mp4
+// Then uncomment the import below and remove the null fallback:
+// import createsHeroVideo from "@assets/generated_videos/fullscale_creates_hero_loop.mp4";
+const CREATES_HERO_VIDEO: string | null = "/attached_assets/fullscale_creates_hero_loop.mp4";
 
 // Placeholder video showcase — will be replaced with real links from the user
 const VIDEO_SHOWCASE = [
@@ -57,10 +64,13 @@ const CAPABILITIES = [
 ];
 
 export default function FullScaleCreates() {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [videoFailed, setVideoFailed] = useState(false);
+
   return (
     <div className="min-h-screen bg-background text-foreground">
       {/* Header */}
-      <header className="border-b bg-card/80 backdrop-blur-md sticky top-0 z-20">
+      <header className="border-b bg-card/80 backdrop-blur-md sticky top-0 z-30">
         <div className="max-w-6xl mx-auto px-6 py-3 flex items-center justify-between">
           <a href="/">
             <img src={logoUrl} alt="FullScale" className="h-7" />
@@ -72,28 +82,46 @@ export default function FullScaleCreates() {
         </div>
       </header>
 
-      {/* Hero Section */}
-      <section className="relative overflow-hidden">
+      {/* Hero Section — video background with gradient overlay */}
+      <section className="relative min-h-[500px] md:min-h-[600px] overflow-hidden">
+        {/* Video background (falls back to gradient if video not available) */}
+        {CREATES_HERO_VIDEO && !videoFailed ? (
+          <video
+            ref={videoRef}
+            src={CREATES_HERO_VIDEO}
+            preload="auto"
+            autoPlay
+            loop
+            muted
+            playsInline
+            className="absolute inset-0 w-full h-full object-cover"
+            onError={() => setVideoFailed(true)}
+            data-testid="video-creates-hero"
+          />
+        ) : null}
+        {/* Dark gradient overlay — always present for text readability */}
+        <div className="absolute inset-0 bg-gradient-to-b from-black/70 via-black/50 to-background" />
+        {/* Subtle accent gradients */}
         <div className="absolute inset-0 bg-gradient-to-br from-primary/8 via-transparent to-purple-500/5" />
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-primary/5 to-transparent" />
-        <div className="relative max-w-6xl mx-auto px-6 pt-20 pb-16">
+
+        <div className="relative z-10 max-w-6xl mx-auto px-6 pt-24 pb-20">
           <motion.div
             initial={{ opacity: 0, y: 30 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.7 }}
             className="text-center max-w-3xl mx-auto"
           >
-            <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-primary/10 border border-primary/20 text-primary text-sm font-medium mb-6">
+            <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-white/10 border border-white/20 text-white text-sm font-medium mb-6 backdrop-blur-sm">
               <Film className="w-4 h-4" />
               FullScale Creates
             </div>
-            <h1 className="text-4xl md:text-5xl lg:text-6xl font-bold tracking-tight mb-6 bg-gradient-to-r from-white via-white to-white/60 bg-clip-text text-transparent">
+            <h1 className="text-4xl md:text-5xl lg:text-6xl font-bold tracking-tight mb-6 text-white">
               Content That Connects
             </h1>
-            <p className="text-lg md:text-xl text-muted-foreground leading-relaxed max-w-2xl mx-auto mb-4">
+            <p className="text-lg md:text-xl text-white/80 leading-relaxed max-w-2xl mx-auto mb-4">
               FullScale Creates focuses on building and curating content meant to connect to an audience screaming for things that are real.
             </p>
-            <p className="text-base text-muted-foreground/80 leading-relaxed max-w-xl mx-auto mb-8">
+            <p className="text-base text-white/60 leading-relaxed max-w-xl mx-auto mb-8">
               There is the utility of AI — which is great — but there needs to be a nice balance there between AI and Human.
             </p>
             <div className="flex items-center justify-center gap-4">
@@ -101,7 +129,7 @@ export default function FullScaleCreates() {
                 Work With Us
                 <ArrowRight className="w-4 h-4" />
               </Button>
-              <Button size="lg" variant="outline" className="gap-2" onClick={() => {
+              <Button size="lg" variant="outline" className="gap-2 border-white/30 text-white hover:bg-white/10" onClick={() => {
                 document.getElementById("showcase")?.scrollIntoView({ behavior: "smooth" });
               }}>
                 <Play className="w-4 h-4" />
