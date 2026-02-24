@@ -517,73 +517,24 @@ export default function BrandMarketplace() {
       </div>
 
       <div className="max-w-7xl mx-auto px-4 py-6">
-        {activeTab === "categories" && (
-          <div className="mb-8">
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <h2 className="text-lg font-bold text-white">Browse by Industry</h2>
-                <p className="text-sm text-muted-foreground">Select a category to find brands looking for placements</p>
-              </div>
-              <Badge className="bg-primary/20 text-primary">
-                {BRAND_CATEGORIES.reduce((sum, c) => sum + c.brandCount, 0).toLocaleString()} Total Brands
-              </Badge>
-            </div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-              {BRAND_CATEGORIES.map((category, idx) => (
-                <motion.div
-                  key={category.id}
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: idx * 0.03 }}
-                >
-                  <Card 
-                    className="group overflow-hidden cursor-pointer hover-elevate"
-                    onClick={() => {
-                      setSelectedCategory(category.id);
-                      if (category.id === "podcasts") {
-                        setPlatformFilter("Podcasts");
-                      }
-                      setActiveTab("opportunities");
-                    }}
-                    data-testid={`card-category-${category.id}`}
-                  >
-                    <div className="aspect-[16/10] relative overflow-hidden">
-                      <img
-                        src={category.imageUrl}
-                        alt={category.name}
-                        className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-110"
-                      />
-                      <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent" />
-                      <div className="absolute bottom-0 left-0 right-0 p-3">
-                        <h3 className="font-semibold text-white text-sm mb-0.5">{category.name}</h3>
-                        <p className="text-xs text-white/70 line-clamp-1">{category.description}</p>
-                        <div className="flex items-center gap-1 mt-1.5">
-                          <Badge variant="secondary" className="text-[10px] py-0 px-1.5">
-                            {category.brandCount} brands
-                          </Badge>
-                        </div>
-                      </div>
-                    </div>
-                  </Card>
-                </motion.div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {activeTab === "opportunities" && (
-        <>
-        {/* Featured Creators Section */}
+        {/* Featured Creators Section — always visible on both tabs */}
         {featuredCreators.length > 0 && (
           <div className="mb-8">
             <div className="flex items-center justify-between mb-4">
               <div>
-                <h2 className="text-lg font-semibold text-white">Featured Creators</h2>
+                <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                  <Sparkles className="w-5 h-5 text-purple-400" />
+                  Featured Creators
+                </h2>
                 <p className="text-sm text-white/60">Discover top creators with premium placement surfaces</p>
               </div>
+              <Badge className="bg-purple-500/20 text-purple-400 border-purple-500/30">
+                {featuredCreators.length} Creators
+              </Badge>
             </div>
+            {/* 2-row grid: 3 per row on desktop, 2 on tablet, 1 on mobile — shows up to 6 creators in 2 rows */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {featuredCreators.map((creator, idx) => (
+              {featuredCreators.slice(0, 6).map((creator, idx) => (
                 <motion.div
                   key={creator.slug}
                   initial={{ opacity: 0, y: 15 }}
@@ -644,6 +595,63 @@ export default function BrandMarketplace() {
             <div className="border-b border-white/10 mt-6 mb-2" />
           </div>
         )}
+
+        {activeTab === "categories" && (
+          <div className="mb-8">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-lg font-bold text-white">Browse by Industry</h2>
+                <p className="text-sm text-muted-foreground">Select a category to find brands looking for placements</p>
+              </div>
+              <Badge className="bg-primary/20 text-primary">
+                {BRAND_CATEGORIES.reduce((sum, c) => sum + c.brandCount, 0).toLocaleString()} Total Brands
+              </Badge>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+              {BRAND_CATEGORIES.map((category, idx) => (
+                <motion.div
+                  key={category.id}
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: idx * 0.03 }}
+                >
+                  <Card
+                    className="group overflow-hidden cursor-pointer hover-elevate"
+                    onClick={() => {
+                      setSelectedCategory(category.id);
+                      if (category.id === "podcasts") {
+                        setPlatformFilter("Podcasts");
+                      }
+                      setActiveTab("opportunities");
+                    }}
+                    data-testid={`card-category-${category.id}`}
+                  >
+                    <div className="aspect-[16/10] relative overflow-hidden">
+                      <img
+                        src={category.imageUrl}
+                        alt={category.name}
+                        className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-110"
+                      />
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent" />
+                      <div className="absolute bottom-0 left-0 right-0 p-3">
+                        <h3 className="font-semibold text-white text-sm mb-0.5">{category.name}</h3>
+                        <p className="text-xs text-white/70 line-clamp-1">{category.description}</p>
+                        <div className="flex items-center gap-1 mt-1.5">
+                          <Badge variant="secondary" className="text-[10px] py-0 px-1.5">
+                            {category.brandCount} brands
+                          </Badge>
+                        </div>
+                      </div>
+                    </div>
+                  </Card>
+                </motion.div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {activeTab === "opportunities" && (
+        <>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
           <AnimatePresence mode="popLayout">
