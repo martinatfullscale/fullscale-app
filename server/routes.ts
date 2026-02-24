@@ -3966,8 +3966,19 @@ export async function registerRoutes(
         };
       }
 
-      // Get videos that are "Ready" with detected surfaces
-      const videos = await storage.getVideosWithSurfacesPublic(email);
+      // Get ALL videos for creator (including those without surfaces)
+      // so the full portfolio is shown on the public profile
+      const allCreatorVideos = await storage.getVideoIndex(email);
+      // Enrich each with surfaces
+      const videos: any[] = [];
+      for (const v of allCreatorVideos) {
+        const surfaces = await storage.getDetectedSurfaces(v.id);
+        videos.push({
+          ...v,
+          surfaces,
+          surfaceCount: surfaces.length,
+        });
+      }
 
       // Compute aggregate stats
       const totalViews = videos.reduce((sum: number, v: any) => sum + (v.viewCount || 0), 0);
