@@ -541,12 +541,9 @@ export default function CreatorProfile() {
               >
                 {/* Video / Thumbnail */}
                 <div className="relative aspect-video bg-black overflow-hidden">
-                  {(() => {
-                    // Try videoUrl first, then normalize filePath as fallback
-                    const playbackUrl = video.videoUrl || normalizeVideoSrc(video.filePath);
-                    return playbackUrl ? (
+                  {(video.videoUrl || video.filePath) ? (
                     <video
-                      src={playbackUrl}
+                      src={video.videoUrl || normalizeVideoSrc(video.filePath) || ""}
                       poster={video.thumbnail || undefined}
                       controls
                       preload="metadata"
@@ -558,7 +555,6 @@ export default function CreatorProfile() {
                         if (vid.currentTime === 0) vid.currentTime = 0.5;
                       }}
                       onError={(e) => {
-                        // If videoUrl fails, try filePath normalization as fallback
                         const videoEl = e.currentTarget;
                         const fallbackSrc = normalizeVideoSrc(video.filePath);
                         if (fallbackSrc && videoEl.src !== window.location.origin + fallbackSrc) {
@@ -588,8 +584,7 @@ export default function CreatorProfile() {
                     <div className="w-full h-full flex items-center justify-center">
                       <Play className="h-12 w-12 text-muted-foreground" />
                     </div>
-                  );
-                  })()}
+                  )}
 
                   {/* Platform badge */}
                   <Badge className="absolute top-3 right-3 text-xs capitalize" variant="secondary">
