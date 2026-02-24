@@ -40,6 +40,14 @@ export const allowedUsers = pgTable("allowed_users", {
   userType: varchar("user_type").notNull().default("creator"), // 'creator' or 'brand'
   companyName: varchar("company_name"), // For brand users
   addedAt: timestamp("added_at").defaultNow(),
+  // Creator profile fields
+  slug: varchar("slug"), // Unique URL slug for creator profiles (e.g., "martin")
+  isFeatured: boolean("is_featured").default(false), // Show in marketplace featured section
+  bio: text("bio"), // Creator bio/blurb
+  headline: varchar("headline"), // One-liner (e.g., "Sports Podcast Host")
+  podcastName: varchar("podcast_name"), // Podcast title if applicable
+  podcastUrl: varchar("podcast_url"), // Podcast link
+  websiteUrl: varchar("website_url"), // Personal/company website
 });
 
 export const insertAllowedUserSchema = createInsertSchema(allowedUsers).omit({
@@ -107,6 +115,8 @@ export const videoIndex = pgTable("video_index", {
   culturalContext: varchar("cultural_context").default("General"), // 'American Tech Office', 'Japanese Tea Room', etc.
   filePath: text("file_path"), // Persistent file path for uploaded videos (survives server restart)
   sourceUrl: text("source_url"), // Canonical URL to the original content (Facebook permalink, Instagram permalink, etc.)
+  subcategory: varchar("subcategory"), // e.g., "Sports", "Tech", "Comedy" — finer classification than category
+  tags: jsonb("tags"), // Flexible tag array for future filtering (e.g., ["sports", "basketball", "interview"])
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });

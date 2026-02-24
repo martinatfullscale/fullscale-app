@@ -245,6 +245,12 @@ export interface IStorage {
   getKeyframesByVideo(videoId: number): Promise<SurfaceKeyframe[]>;
   deleteKeyframesBySurface(surfaceId: number): Promise<void>;
   deleteSurfaceKeyframesInRange(surfaceId: number, startTime: number, endTime: number): Promise<void>;
+
+  // Creator profile methods
+  getFeaturedCreators(): Promise<AllowedUser[]>;
+  getCreatorBySlug(slug: string): Promise<AllowedUser | undefined>;
+  updateCreatorProfile(email: string, updates: { bio?: string; headline?: string; podcastName?: string; podcastUrl?: string; websiteUrl?: string; slug?: string }): Promise<void>;
+  updateVideoSubcategory(videoId: number, subcategory: string): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -1602,6 +1608,45 @@ export class DatabaseStorage implements IStorage {
           sql`${surfaceKeyframes.timestamp}::numeric <= ${endTime}`,
         )
       );
+  }
+
+  // Creator profile methods
+  async getFeaturedCreators(): Promise<AllowedUser[]> {
+    return await db
+      .select()
+      .from(allowedUsers)
+      .where(
+        and(
+          eq(allowedUsers.isFeatured, true),
+          eq(allowedUsers.userType, "creator")
+        )
+      );
+  }
+
+  async getCreatorBySlug(slug: string): Promise<AllowedUser | undefined> {
+    const [user] = await db
+      .select()
+      .from(allowedUsers)
+      .where(eq(allowedUsers.slug, slug.toLowerCase()));
+    return user;
+  }
+
+  async updateCreatorProfile(
+    email: string,
+    updates: { bio?: string; headline?: string; podcastName?: string; podcastUrl?: string; websiteUrl?: string; slug?: string }
+  ): Promise<void> {
+    const normalizedEmail = email.toLowerCase().trim();
+    await db
+      .update(allowedUsers)
+      .set(updates)
+      .where(eq(allowedUsers.email, normalizedEmail));
+  }
+
+  async updateVideoSubcategory(videoId: number, subcategory: string): Promise<void> {
+    await db
+      .update(videoIndex)
+      .set({ subcategory })
+      .where(eq(videoIndex.id, videoId));
   }
 }
 

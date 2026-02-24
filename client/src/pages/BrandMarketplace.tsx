@@ -30,6 +30,7 @@ import { useHybridMode } from "@/hooks/use-hybrid-mode";
 import { usePitchMode } from "@/contexts/pitch-mode-context";
 import { apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/hooks/use-auth";
+import { Link } from "wouter";
 import EditorialClips from "@/components/EditorialClips";
 
 const SUPER_ADMIN_EMAIL = "martin@gofullscale.co";
@@ -41,6 +42,7 @@ interface MarketplaceOpportunity {
   title: string;
   thumbnailUrl: string;
   creatorName: string;
+  creatorSlug?: string | null;
   creatorAvatar?: string;
   viewCount: number;
   sceneValue: number;
@@ -53,6 +55,20 @@ interface MarketplaceOpportunity {
   platforms?: string[];
   videoUrl?: string | null;
   filePath?: string | null;
+  subcategory?: string | null;
+}
+
+interface FeaturedCreator {
+  name: string;
+  slug: string;
+  headline: string | null;
+  profileImage: string | null;
+  stats: {
+    totalVideos: number;
+    totalViews: number;
+    totalSurfaces: number;
+    subscribers: number;
+  };
 }
 
 // Static demo opportunities for pitch mode - 20 items with unique creator space images
@@ -168,6 +184,7 @@ export default function BrandMarketplace() {
   const [budgetFilter, setBudgetFilter] = useState("All");
   const [sceneTypeFilter, setSceneTypeFilter] = useState("All");
   const [platformFilter, setPlatformFilter] = useState("All");
+  const [subcategoryFilter, setSubcategoryFilter] = useState("All");
   const [buyingId, setBuyingId] = useState<number | null>(null);
   const [showCategories, setShowCategories] = useState(true);
   const [activeTab, setActiveTab] = useState<"categories" | "opportunities">("categories");
@@ -218,6 +235,19 @@ export default function BrandMarketplace() {
     retry: 2,
     staleTime: 0,
   });
+
+  // Fetch featured creators for the spotlight section
+  const { data: featuredCreatorsData } = useQuery<{ creators: FeaturedCreator[] }>({
+    queryKey: ["featured-creators"],
+    queryFn: async () => {
+      const res = await fetch("/api/public/featured-creators");
+      if (!res.ok) throw new Error("Failed to fetch featured creators");
+      return res.json();
+    },
+    staleTime: 5 * 60 * 1000, // Cache for 5 minutes
+  });
+
+  const featuredCreators = featuredCreatorsData?.creators || [];
 
   const buyMutation = useMutation({
     mutationFn: async (opportunity: MarketplaceOpportunity) => {
@@ -315,8 +345,13 @@ export default function BrandMarketplace() {
     else if (budgetFilter === "$100-$200") matchesBudget = opp.sceneValue > 100 && opp.sceneValue <= 200;
     else if (budgetFilter === "Over $200") matchesBudget = opp.sceneValue > 200;
     
-    return matchesSearch && matchesGenre && matchesBudget && matchesSceneType && matchesCategory && matchesPlatform;
+    const matchesSubcategory = subcategoryFilter === "All" || opp.subcategory === subcategoryFilter;
+
+    return matchesSearch && matchesGenre && matchesBudget && matchesSceneType && matchesCategory && matchesPlatform && matchesSubcategory;
   });
+
+  // Derive available subcategories from the data
+  const availableSubcategories = ["All", ...Array.from(new Set(allOpportunities.map(o => o.subcategory).filter(Boolean) as string[])).sort()];
 
   const formatViewCount = (count: number) => {
     if (count >= 1000000) return `${(count / 1000000).toFixed(1)}M`;
@@ -463,6 +498,20 @@ export default function BrandMarketplace() {
                 ))}
               </SelectContent>
             </Select>
+
+            {availableSubcategories.length > 1 && (
+              <Select value={subcategoryFilter} onValueChange={setSubcategoryFilter}>
+                <SelectTrigger className="w-[150px]" data-testid="select-subcategory">
+                  <Filter className="w-4 h-4 mr-2" />
+                  <SelectValue placeholder="Subcategory" />
+                </SelectTrigger>
+                <SelectContent>
+                  {availableSubcategories.map((sub) => (
+                    <SelectItem key={sub} value={sub}>{sub}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
           </div>
         </div>
       </div>
@@ -524,6 +573,78 @@ export default function BrandMarketplace() {
 
         {activeTab === "opportunities" && (
         <>
+        {/* Featured Creators Section */}
+        {featuredCreators.length > 0 && (
+          <div className="mb-8">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-lg font-semibold text-white">Featured Creators</h2>
+                <p className="text-sm text-white/60">Discover top creators with premium placement surfaces</p>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {featuredCreators.map((creator, idx) => (
+                <motion.div
+                  key={creator.slug}
+                  initial={{ opacity: 0, y: 15 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: idx * 0.08 }}
+                >
+                  <Link href={`/c/${creator.slug}`}>
+                    <Card className="group overflow-hidden hover-elevate cursor-pointer border-white/10 hover:border-purple-500/40 transition-all duration-300">
+                      <CardContent className="p-4">
+                        <div className="flex items-center gap-3 mb-3">
+                          {/* Avatar */}
+                          <div className="w-12 h-12 rounded-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center text-white font-bold text-lg flex-shrink-0 overflow-hidden">
+                            {creator.profileImage ? (
+                              <img src={creator.profileImage} alt={creator.name} className="w-full h-full object-cover" />
+                            ) : (
+                              creator.name.charAt(0).toUpperCase()
+                            )}
+                          </div>
+                          <div className="min-w-0">
+                            <h3 className="font-semibold text-white text-sm truncate group-hover:text-purple-300 transition-colors">{creator.name}</h3>
+                            {creator.headline && (
+                              <p className="text-xs text-white/60 truncate">{creator.headline}</p>
+                            )}
+                          </div>
+                        </div>
+                        {/* Stats */}
+                        <div className="grid grid-cols-3 gap-2">
+                          <div className="text-center p-1.5 rounded bg-white/5">
+                            <div className="text-sm font-semibold text-white">{creator.stats.totalVideos}</div>
+                            <div className="text-[10px] text-white/50">Videos</div>
+                          </div>
+                          <div className="text-center p-1.5 rounded bg-white/5">
+                            <div className="text-sm font-semibold text-white">
+                              {creator.stats.totalViews >= 1000000
+                                ? `${(creator.stats.totalViews / 1000000).toFixed(1)}M`
+                                : creator.stats.totalViews >= 1000
+                                  ? `${(creator.stats.totalViews / 1000).toFixed(0)}K`
+                                  : creator.stats.totalViews}
+                            </div>
+                            <div className="text-[10px] text-white/50">Views</div>
+                          </div>
+                          <div className="text-center p-1.5 rounded bg-white/5">
+                            <div className="text-sm font-semibold text-white">{creator.stats.totalSurfaces}</div>
+                            <div className="text-[10px] text-white/50">Surfaces</div>
+                          </div>
+                        </div>
+                        <div className="mt-3 flex justify-end">
+                          <span className="text-xs text-purple-400 group-hover:text-purple-300 transition-colors flex items-center gap-1">
+                            View Portfolio <ExternalLink className="w-3 h-3" />
+                          </span>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </Link>
+                </motion.div>
+              ))}
+            </div>
+            <div className="border-b border-white/10 mt-6 mb-2" />
+          </div>
+        )}
+
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
           <AnimatePresence mode="popLayout">
             {filteredOpportunities.map((opportunity, idx) => (
@@ -739,8 +860,25 @@ export default function BrandMarketplace() {
                       {(selectedOpportunity.creatorName || "C").charAt(0)}
                     </div>
                     <div>
-                      <p className="font-semibold">{selectedOpportunity.creatorName}</p>
-                      <p className="text-sm text-muted-foreground">Creator</p>
+                      {selectedOpportunity.creatorSlug ? (
+                        <Link href={`/c/${selectedOpportunity.creatorSlug}`} onClick={() => setSelectedOpportunity(null)}>
+                          <p className="font-semibold text-purple-400 hover:text-purple-300 cursor-pointer transition-colors">
+                            {selectedOpportunity.creatorName}
+                          </p>
+                        </Link>
+                      ) : (
+                        <p className="font-semibold">{selectedOpportunity.creatorName}</p>
+                      )}
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm text-muted-foreground">Creator</p>
+                        {selectedOpportunity.creatorSlug && (
+                          <Link href={`/c/${selectedOpportunity.creatorSlug}`} onClick={() => setSelectedOpportunity(null)}>
+                            <span className="text-xs text-purple-400 hover:text-purple-300 cursor-pointer transition-colors flex items-center gap-0.5">
+                              View Portfolio <ExternalLink className="w-3 h-3" />
+                            </span>
+                          </Link>
+                        )}
+                      </div>
                     </div>
                   </div>
                   <div className="flex items-center gap-4 text-sm">
@@ -749,6 +887,9 @@ export default function BrandMarketplace() {
                       <span>{formatViewCount(selectedOpportunity.viewCount)}</span>
                     </div>
                     <Badge variant="outline">{selectedOpportunity.genre}</Badge>
+                    {selectedOpportunity.subcategory && (
+                      <Badge variant="outline" className="border-purple-500/30 text-purple-400">{selectedOpportunity.subcategory}</Badge>
+                    )}
                   </div>
                 </div>
 

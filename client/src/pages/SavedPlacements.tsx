@@ -182,6 +182,98 @@ export default function SavedPlacements() {
   });
   const isCreator = userTypeData?.userType === "creator";
 
+  // Export state
+  const [exportingId, setExportingId] = useState<number | null>(null);
+  const [exportProgress, setExportProgress] = useState<number>(0);
+  const [exportStatus, setExportStatus] = useState<string | null>(null);
+
+  // Direct export handler — triggers server-side video export with placement
+  const handleExport = async (placement: SavedPlacementEnriched) => {
+    setExportingId(placement.id);
+    setExportProgress(0);
+    setExportStatus("Starting export...");
+    try {
+      // Build placement data for export endpoint
+      const placementData = [{
+        surfaceId: placement.surfaceId,
+        productImageUrl: placement.productImageUrl,
+        transform: placement.transform,
+        blend: placement.blend,
+      }];
+
+      const res = await fetch(`/api/video/${placement.videoId}/export`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          placements: placementData,
+          canvasWidth: 1920,
+          canvasHeight: 1080,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Export failed");
+      }
+
+      const { exportId } = await res.json();
+      setExportStatus("Processing video...");
+
+      // Poll for progress
+      const pollInterval = setInterval(async () => {
+        try {
+          const pollRes = await fetch(`/api/exports/${exportId}`, { credentials: "include" });
+          if (!pollRes.ok) return;
+          const exportData = await pollRes.json();
+
+          if (exportData.progress) {
+            setExportProgress(exportData.progress);
+          }
+
+          if (exportData.status === "completed" && exportData.outputUrl) {
+            clearInterval(pollInterval);
+            setExportStatus("Download ready!");
+            setExportProgress(100);
+
+            // Trigger download
+            const link = document.createElement("a");
+            link.href = exportData.outputUrl;
+            link.download = `${placement.videoTitle || "export"}_with_placement.mp4`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+
+            toast({ title: "Export complete!", description: "Your video with product placement is downloading." });
+            setTimeout(() => {
+              setExportingId(null);
+              setExportStatus(null);
+            }, 2000);
+          } else if (exportData.status === "failed") {
+            clearInterval(pollInterval);
+            throw new Error(exportData.error || "Export processing failed");
+          }
+        } catch (pollErr) {
+          // Continue polling unless it's a definitive failure
+        }
+      }, 3000);
+
+      // Safety timeout — stop polling after 10 minutes
+      setTimeout(() => {
+        clearInterval(pollInterval);
+        if (exportingId === placement.id) {
+          setExportingId(null);
+          setExportStatus(null);
+          toast({ title: "Export timeout", description: "Export is taking longer than expected. Check back later.", variant: "destructive" });
+        }
+      }, 600000);
+    } catch (err: any) {
+      toast({ title: "Export failed", description: err.message, variant: "destructive" });
+      setExportingId(null);
+      setExportStatus(null);
+    }
+  };
+
   const placements = data?.placements || [];
 
   // Group placements by video
@@ -209,6 +301,27 @@ export default function SavedPlacements() {
           {placements.length} placement{placements.length !== 1 ? "s" : ""}
         </Badge>
       </div>
+
+      {/* Export Progress Banner */}
+      {exportingId && exportStatus && (
+        <div className="mb-4 p-3 rounded-lg border border-purple-500/30 bg-purple-500/10">
+          <div className="flex items-center gap-3">
+            <Loader2 className="w-4 h-4 animate-spin text-purple-400" />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-purple-300">{exportStatus}</p>
+              {exportProgress > 0 && (
+                <div className="mt-1.5 h-1.5 bg-white/10 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-purple-500 rounded-full transition-all duration-500"
+                    style={{ width: `${exportProgress}%` }}
+                  />
+                </div>
+              )}
+            </div>
+            <span className="text-xs text-purple-400">{exportProgress}%</span>
+          </div>
+        </div>
+      )}
 
       {/* Content */}
       {isLoading ? (
@@ -364,13 +477,18 @@ export default function SavedPlacements() {
                                   variant="outline"
                                   size="sm"
                                   className="gap-1 text-[10px] h-7 px-2"
-                                  title="Export Video"
+                                  title="Export Video with Placement"
+                                  disabled={exportingId === placement.id}
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    window.location.href = `/remix/${placement.videoId}`;
+                                    handleExport(placement);
                                   }}
                                 >
-                                  <Download className="w-3 h-3" />
+                                  {exportingId === placement.id ? (
+                                    <Loader2 className="w-3 h-3 animate-spin" />
+                                  ) : (
+                                    <Download className="w-3 h-3" />
+                                  )}
                                 </Button>
                               )}
                               <Button

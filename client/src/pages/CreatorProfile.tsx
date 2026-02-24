@@ -28,6 +28,10 @@ import {
   Clock,
   ArrowRight,
   Sparkles,
+  Mic,
+  Globe,
+  ExternalLink,
+  Mail,
 } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
 import fullscaleLogo from "@assets/fullscale-logo_1767679525676.png";
@@ -82,6 +86,10 @@ interface CreatorData {
     slug: string;
     profileImage: string | null;
     bio: string | null;
+    headline: string | null;
+    podcastName: string | null;
+    podcastUrl: string | null;
+    websiteUrl: string | null;
     userType: string;
   };
   stats: {
@@ -243,7 +251,7 @@ export default function CreatorProfile() {
 
             {/* Name + bio */}
             <div className="flex-1">
-              <div className="flex items-center gap-3 mb-2">
+              <div className="flex items-center gap-3 mb-1">
                 <h1
                   className="text-3xl md:text-4xl font-bold text-foreground tracking-tight"
                   data-testid="text-creator-name"
@@ -254,6 +262,9 @@ export default function CreatorProfile() {
                   {creator.userType}
                 </Badge>
               </div>
+              {creator.headline && (
+                <p className="text-primary font-medium text-base mb-2">{creator.headline}</p>
+              )}
               {creator.bio ? (
                 <p className="text-muted-foreground text-lg max-w-2xl">{creator.bio}</p>
               ) : (
@@ -262,22 +273,64 @@ export default function CreatorProfile() {
                   {stats.totalVideos !== 1 ? "s" : ""} available for brand placements
                 </p>
               )}
+              {/* Quick links */}
+              <div className="flex items-center gap-3 mt-3 flex-wrap">
+                {creator.podcastName && (
+                  <a
+                    href={creator.podcastUrl || "#"}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <Mic className="h-3.5 w-3.5" />
+                    {creator.podcastName}
+                  </a>
+                )}
+                {creator.websiteUrl && (
+                  <a
+                    href={creator.websiteUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <Globe className="h-3.5 w-3.5" />
+                    Website
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                )}
+              </div>
             </div>
 
-            {/* CTA */}
-            {videos.length > 0 && (
+            {/* CTA buttons */}
+            <div className="hidden md:flex flex-col gap-2">
+              {videos.length > 0 && (
+                <Button
+                  size="lg"
+                  className="gap-2"
+                  onClick={() => {
+                    const el = document.getElementById("video-portfolio");
+                    el?.scrollIntoView({ behavior: "smooth" });
+                  }}
+                >
+                  Browse Videos
+                  <ArrowRight className="h-4 w-4" />
+                </Button>
+              )}
               <Button
                 size="lg"
-                className="hidden md:flex gap-2"
+                variant="outline"
+                className="gap-2"
                 onClick={() => {
-                  const el = document.getElementById("video-portfolio");
-                  el?.scrollIntoView({ behavior: "smooth" });
+                  // Open placement request with first available video
+                  if (videos.length > 0) {
+                    openPlacementRequest(videos[0]);
+                  }
                 }}
               >
-                Browse Videos
-                <ArrowRight className="h-4 w-4" />
+                <Mail className="h-4 w-4" />
+                Get in Touch
               </Button>
-            )}
+            </div>
           </div>
         </div>
       </section>
@@ -373,6 +426,37 @@ export default function CreatorProfile() {
                   </span>
                   <span className="text-xs text-muted-foreground">followers</span>
                 </div>
+              )}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* ── Podcast section (if applicable) ── */}
+      {creator.podcastName && (
+        <section className="border-b bg-gradient-to-r from-primary/5 to-transparent">
+          <div className="max-w-6xl mx-auto px-6 py-8">
+            <div className="flex items-center gap-4">
+              <div className="w-14 h-14 rounded-xl bg-primary/10 flex items-center justify-center flex-shrink-0">
+                <Mic className="h-7 w-7 text-primary" />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-lg font-semibold text-foreground">{creator.podcastName}</h3>
+                <p className="text-sm text-muted-foreground mt-0.5">
+                  {creator.headline || `Podcast by ${creator.name}`}
+                </p>
+              </div>
+              {creator.podcastUrl && (
+                <a
+                  href={creator.podcastUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <Button variant="outline" size="sm" className="gap-1.5">
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    Listen Now
+                  </Button>
+                </a>
               )}
             </div>
           </div>

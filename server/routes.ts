@@ -21,7 +21,7 @@ import fs from "fs";
 import ytdl from "@distube/ytdl-core";
 import { decrypt, encrypt } from "./encryption";
 import { db } from "./db";
-import { users } from "@shared/schema";
+import { users, allowedUsers as allowedUsersTable, videoIndex as videoIndexTable } from "@shared/schema";
 import { eq, sql } from "drizzle-orm";
 import crypto from "crypto";
 import sharp from "sharp";
@@ -2759,13 +2759,18 @@ export async function registerRoutes(
           }
         }
 
+        // Look up creator slug from allowedUsers by video owner email
+        const creatorUser = await storage.getAllowedUser(video.userId);
+        const creatorSlug = creatorUser?.slug || null;
+
         return {
         id: video.id,
         videoId: video.id,
         youtubeId: video.youtubeId,
         title: video.title,
         thumbnailUrl,
-        creatorName: CREATOR_NAMES[video.category || ""] || video.category || "Pro Creator",
+        creatorName: creatorUser?.name || CREATOR_NAMES[video.category || ""] || video.category || "Pro Creator",
+        creatorSlug,
         viewCount: video.viewCount,
         sceneValue: Math.round(video.priorityScore * 1.2), // Derive value from priority
         context: video.contexts?.[0] || video.category || "General",
@@ -2776,6 +2781,7 @@ export async function registerRoutes(
         platform: video.platform === "fullscale" || video.filePath ? "fullscale" : (video.platform || "youtube"),
         filePath: video.filePath || null,
         videoUrl: video.filePath ? (video.filePath.startsWith('/storage/') ? video.filePath : normalizeVideoUrl(video.filePath)) : null,
+        subcategory: video.subcategory || null,
       };
       }));
 
@@ -3864,23 +3870,12 @@ export async function registerRoutes(
     const { slug } = req.params;
 
     try {
-      // Dynamic slug mapping: check allowed_users where email starts with slug
-      const emailMappings: Record<string, string> = {
-        "martin": "martin@gofullscale.co",
-        "kim": "thekimkwilson@gmail.com",
-        "tamara": "tamara@whtwrks.com",
-      };
-
-      const email = emailMappings[slug.toLowerCase()];
-      if (!email) {
-        return res.status(404).json({ error: "Creator not found" });
-      }
-
-      // Get creator info from allowed_users
-      const creator = await storage.getAllowedUser(email);
+      // Look up creator by slug in database (replaces hardcoded mapping)
+      const creator = await storage.getCreatorBySlug(slug);
       if (!creator) {
         return res.status(404).json({ error: "Creator not found" });
       }
+      const email = creator.email;
 
       // Get user profile for avatar and social stats
       const userProfile = await storage.getUserByEmail(email);
@@ -3965,9 +3960,13 @@ export async function registerRoutes(
         creator: {
           name: creator.name || email.split("@")[0],
           email: creator.email,
-          slug,
+          slug: creator.slug || slug,
           profileImage: userProfile?.profileImageUrl || null,
-          bio: (creator as any).bio || null,
+          bio: creator.bio || null,
+          headline: creator.headline || null,
+          podcastName: creator.podcastName || null,
+          podcastUrl: creator.podcastUrl || null,
+          websiteUrl: creator.websiteUrl || null,
           userType: creator.userType || "creator",
         },
         stats: {
@@ -3985,7 +3984,95 @@ export async function registerRoutes(
       res.status(500).json({ error: "Failed to fetch creator" });
     }
   });
-  
+
+  // Get featured creators for marketplace display
+  app.get("/api/public/featured-creators", async (_req, res) => {
+    try {
+      const featuredUsers = await storage.getFeaturedCreators();
+
+      // Enrich each creator with stats and social data
+      const creators = await Promise.all(featuredUsers.map(async (creator) => {
+        const userProfile = await storage.getUserByEmail(creator.email);
+        const ytConnection = await storage.getYoutubeConnectionByEmail(creator.email);
+        const videos = await storage.getVideosWithSurfacesPublic(creator.email);
+
+        const totalViews = videos.reduce((sum: number, v: any) => sum + (v.viewCount || 0), 0);
+        const totalSurfaces = videos.reduce((sum: number, v: any) => sum + (v.surfaceCount || 0), 0);
+
+        return {
+          name: creator.name || creator.email.split("@")[0],
+          slug: creator.slug,
+          headline: creator.headline || null,
+          profileImage: userProfile?.profileImageUrl || null,
+          stats: {
+            totalVideos: videos.length,
+            totalViews,
+            totalSurfaces,
+            subscribers: ytConnection?.subscriberCount || 0,
+          },
+        };
+      }));
+
+      res.json({ creators });
+    } catch (err: any) {
+      console.error("[Public] Error fetching featured creators:", err);
+      res.status(500).json({ error: "Failed to fetch featured creators" });
+    }
+  });
+
+  // Update creator profile (authenticated)
+  app.patch("/api/creator/profile", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const email = req.session?.googleUser?.email || req.user?.claims?.email;
+      if (!email) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { bio, headline, podcastName, podcastUrl, websiteUrl, slug } = req.body;
+      const updates: any = {};
+      if (bio !== undefined) updates.bio = bio;
+      if (headline !== undefined) updates.headline = headline;
+      if (podcastName !== undefined) updates.podcastName = podcastName;
+      if (podcastUrl !== undefined) updates.podcastUrl = podcastUrl;
+      if (websiteUrl !== undefined) updates.websiteUrl = websiteUrl;
+      if (slug !== undefined) {
+        // Validate slug: lowercase, alphanumeric + hyphens only
+        const cleanSlug = slug.toLowerCase().replace(/[^a-z0-9-]/g, "");
+        if (cleanSlug.length < 2) {
+          return res.status(400).json({ error: "Slug must be at least 2 characters" });
+        }
+        // Check uniqueness
+        const existing = await storage.getCreatorBySlug(cleanSlug);
+        if (existing && existing.email !== email.toLowerCase().trim()) {
+          return res.status(409).json({ error: "Slug already taken" });
+        }
+        updates.slug = cleanSlug;
+      }
+
+      await storage.updateCreatorProfile(email, updates);
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("Error updating creator profile:", err);
+      res.status(500).json({ error: "Failed to update profile" });
+    }
+  });
+
+  // Update video subcategory (authenticated)
+  app.patch("/api/videos/:videoId/subcategory", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const { subcategory } = req.body;
+      if (!subcategory) {
+        return res.status(400).json({ error: "Subcategory is required" });
+      }
+      await storage.updateVideoSubcategory(videoId, subcategory);
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("Error updating video subcategory:", err);
+      res.status(500).json({ error: "Failed to update subcategory" });
+    }
+  });
+
   // Submit a placement request (public - no auth)
   app.post("/api/public/placement-request", async (req, res) => {
     const { videoId, brandName, brandEmail, message } = req.body;
@@ -7507,6 +7594,26 @@ async function seedDatabase() {
       }
     }
     console.log("Allowed users seeded!");
+  }
+
+  // Seed creator slugs for existing creators (one-time migration)
+  try {
+    const creatorSlugs: Record<string, string> = {
+      "martin@gofullscale.co": "martin",
+      "thekimkwilson@gmail.com": "kim",
+      "tamara@whtwrks.com": "tamara",
+    };
+    for (const [email, slug] of Object.entries(creatorSlugs)) {
+      const user = await storage.getAllowedUser(email);
+      if (user && !user.slug) {
+        await storage.updateCreatorProfile(email, { slug });
+        // Also mark as featured
+        await db.update(allowedUsersTable).set({ isFeatured: true }).where(eq(allowedUsersTable.email, email));
+        console.log(`[Seed] Set slug="${slug}" and isFeatured=true for ${email}`);
+      }
+    }
+  } catch (err) {
+    console.error("[Seed] Error seeding creator slugs:", err);
   }
 
   // Seed local video files into library if not already present

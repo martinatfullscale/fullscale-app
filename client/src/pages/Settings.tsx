@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { TopBar } from "@/components/TopBar";
-import { User, CreditCard, Bell, CheckCircle, ExternalLink, Save, Link2, Loader2, ChevronDown, RefreshCw, Trash2 } from "lucide-react";
+import { User, CreditCard, Bell, CheckCircle, ExternalLink, Save, Link2, Loader2, ChevronDown, RefreshCw, Trash2, Star, Mic, Globe } from "lucide-react";
 import { SiInstagram, SiFacebook, SiX, SiTiktok, SiYoutube, SiTwitch } from "react-icons/si";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
@@ -12,10 +12,11 @@ import { useToast } from "@/hooks/use-toast";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
-type TabType = "profile" | "payouts" | "notifications" | "integrations";
+type TabType = "profile" | "creator" | "payouts" | "notifications" | "integrations";
 
 const tabs = [
   { id: "profile" as const, label: "General Profile", icon: User },
+  { id: "creator" as const, label: "Creator Profile", icon: Star },
   { id: "integrations" as const, label: "Social Integrations", icon: Link2 },
   { id: "payouts" as const, label: "Payouts & Billing", icon: CreditCard },
   { id: "notifications" as const, label: "Notification Preferences", icon: Bell },
@@ -96,6 +97,73 @@ export default function Settings() {
     videoAnalysisComplete: true,
     weeklyRevenueReport: false,
   });
+
+  // Creator profile state
+  const [creatorProfile, setCreatorProfile] = useState({
+    slug: "",
+    bio: "",
+    headline: "",
+    podcastName: "",
+    podcastUrl: "",
+    websiteUrl: "",
+  });
+  const [isSavingCreatorProfile, setIsSavingCreatorProfile] = useState(false);
+  const [creatorProfileLoaded, setCreatorProfileLoaded] = useState(false);
+
+  // Load creator profile when tab is opened
+  useEffect(() => {
+    if (activeTab === "creator" && !creatorProfileLoaded) {
+      const loadProfile = async () => {
+        try {
+          const res = await fetch("/api/auth/user-type", { credentials: "include" });
+          if (!res.ok) return;
+          const data = await res.json();
+          if (data.email) {
+            // Try fetching the creator by their slug or email-based slug
+            const slug = data.email.split("@")[0].toLowerCase();
+            const profileRes = await fetch(`/api/public/creator/${slug}`);
+            if (profileRes.ok) {
+              const profileData = await profileRes.json();
+              setCreatorProfile({
+                slug: profileData.creator.slug || slug,
+                bio: profileData.creator.bio || "",
+                headline: profileData.creator.headline || "",
+                podcastName: profileData.creator.podcastName || "",
+                podcastUrl: profileData.creator.podcastUrl || "",
+                websiteUrl: profileData.creator.websiteUrl || "",
+              });
+            }
+          }
+          setCreatorProfileLoaded(true);
+        } catch (err) {
+          console.error("Failed to load creator profile:", err);
+          setCreatorProfileLoaded(true);
+        }
+      };
+      loadProfile();
+    }
+  }, [activeTab, creatorProfileLoaded]);
+
+  const handleSaveCreatorProfile = async () => {
+    setIsSavingCreatorProfile(true);
+    try {
+      const res = await fetch("/api/creator/profile", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(creatorProfile),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "Failed to save");
+      }
+      toast({ title: "Profile saved", description: "Your creator profile has been updated." });
+    } catch (err: any) {
+      toast({ title: "Save failed", description: err.message, variant: "destructive" });
+    } finally {
+      setIsSavingCreatorProfile(false);
+    }
+  };
 
   // Fetch real platform connection status on mount
   useEffect(() => {
@@ -499,6 +567,130 @@ export default function Settings() {
                       className="bg-black/30 border-white/10 text-white"
                       data-testid="input-email"
                     />
+                  </div>
+                </div>
+              </motion.div>
+            )}
+
+            {activeTab === "creator" && (
+              <motion.div
+                initial={{ opacity: 0, x: 10 }}
+                animate={{ opacity: 1, x: 0 }}
+                className="bg-white/5 rounded-xl border border-white/5 p-6"
+              >
+                <h2 className="text-xl font-semibold text-white mb-2">Creator Profile</h2>
+                <p className="text-muted-foreground text-sm mb-6">
+                  Customize your public profile page and media kit — visible at <span className="text-primary font-mono">/c/{creatorProfile.slug || "your-slug"}</span>
+                </p>
+
+                <div className="space-y-6">
+                  <div className="space-y-2">
+                    <Label htmlFor="slug" className="text-white flex items-center gap-2">
+                      <Globe className="w-3.5 h-3.5" />
+                      Profile URL Slug
+                    </Label>
+                    <Input
+                      id="slug"
+                      value={creatorProfile.slug}
+                      onChange={(e) => setCreatorProfile({ ...creatorProfile, slug: e.target.value })}
+                      placeholder="your-name"
+                      className="bg-black/30 border-white/10 text-white"
+                    />
+                    <p className="text-xs text-muted-foreground">Your profile will be at fullscale.com/c/{creatorProfile.slug || "..."}</p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="headline" className="text-white">Headline</Label>
+                    <Input
+                      id="headline"
+                      value={creatorProfile.headline}
+                      onChange={(e) => setCreatorProfile({ ...creatorProfile, headline: e.target.value })}
+                      placeholder="e.g., Sports Podcast Host & Content Creator"
+                      className="bg-black/30 border-white/10 text-white"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="bio" className="text-white">Bio</Label>
+                    <textarea
+                      id="bio"
+                      value={creatorProfile.bio}
+                      onChange={(e) => setCreatorProfile({ ...creatorProfile, bio: e.target.value })}
+                      placeholder="Tell brands about yourself, your content style, and audience..."
+                      rows={4}
+                      className="w-full rounded-md bg-black/30 border border-white/10 text-white px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-primary"
+                    />
+                  </div>
+
+                  <div className="border-t border-white/10 pt-6">
+                    <h3 className="text-sm font-semibold text-white mb-4 flex items-center gap-2">
+                      <Mic className="w-4 h-4" />
+                      Podcast Info
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="podcastName" className="text-white">Podcast Name</Label>
+                        <Input
+                          id="podcastName"
+                          value={creatorProfile.podcastName}
+                          onChange={(e) => setCreatorProfile({ ...creatorProfile, podcastName: e.target.value })}
+                          placeholder="My Podcast"
+                          className="bg-black/30 border-white/10 text-white"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="podcastUrl" className="text-white">Podcast URL</Label>
+                        <Input
+                          id="podcastUrl"
+                          value={creatorProfile.podcastUrl}
+                          onChange={(e) => setCreatorProfile({ ...creatorProfile, podcastUrl: e.target.value })}
+                          placeholder="https://podcasts.apple.com/..."
+                          className="bg-black/30 border-white/10 text-white"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="border-t border-white/10 pt-6">
+                    <h3 className="text-sm font-semibold text-white mb-4 flex items-center gap-2">
+                      <ExternalLink className="w-4 h-4" />
+                      Links
+                    </h3>
+                    <div className="space-y-2">
+                      <Label htmlFor="websiteUrl" className="text-white">Website URL</Label>
+                      <Input
+                        id="websiteUrl"
+                        value={creatorProfile.websiteUrl}
+                        onChange={(e) => setCreatorProfile({ ...creatorProfile, websiteUrl: e.target.value })}
+                        placeholder="https://yourwebsite.com"
+                        className="bg-black/30 border-white/10 text-white"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between pt-4">
+                    {creatorProfile.slug && (
+                      <a
+                        href={`/c/${creatorProfile.slug}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-sm text-primary hover:underline flex items-center gap-1"
+                      >
+                        Preview Profile <ExternalLink className="w-3 h-3" />
+                      </a>
+                    )}
+                    <Button
+                      onClick={handleSaveCreatorProfile}
+                      disabled={isSavingCreatorProfile}
+                      className="gap-2"
+                    >
+                      {isSavingCreatorProfile ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Save className="w-4 h-4" />
+                      )}
+                      Save Creator Profile
+                    </Button>
                   </div>
                 </div>
               </motion.div>

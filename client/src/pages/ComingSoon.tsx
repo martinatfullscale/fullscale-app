@@ -1,16 +1,10 @@
 import { useLocation } from "wouter";
 import { motion } from "framer-motion";
-import { ArrowLeft, Sparkles, Film, Users } from "lucide-react";
+import { ArrowLeft, Sparkles, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 
 const PAGE_CONFIG: Record<string, { title: string; subtitle: string; description: string; icon: typeof Sparkles }> = {
-  "/content": {
-    title: "FullScale Creates",
-    subtitle: "Content & Production Studio",
-    description: "A full-service content and production studio specializing in developing creator content. From concept to final cut, we create for the creators.",
-    icon: Film,
-  },
   "/about": {
     title: "About Us",
     subtitle: "Our Story",
