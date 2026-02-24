@@ -4000,22 +4000,30 @@ export async function registerRoutes(
       const creators = await Promise.all(featuredUsers.map(async (creator) => {
         const userProfile = await storage.getUserByEmail(creator.email);
         const ytConnection = await storage.getYoutubeConnectionByEmail(creator.email);
-        const videos = await storage.getVideosWithSurfacesPublic(creator.email);
+        const videosWithSurfaces = await storage.getVideosWithSurfacesPublic(creator.email);
 
-        const totalViews = videos.reduce((sum: number, v: any) => sum + (v.viewCount || 0), 0);
-        const totalSurfaces = videos.reduce((sum: number, v: any) => sum + (v.surfaceCount || 0), 0);
+        // Also get ALL videos for this creator (for thumbnails — not filtered by status/surfaces)
+        const allCreatorVideos = await storage.getVideoIndex(creator.email);
 
-        // Get up to 4 recent video thumbnails for the creator card
-        const thumbnails = videos
+        const totalViews = videosWithSurfaces.reduce((sum: number, v: any) => sum + (v.viewCount || 0), 0);
+        const totalSurfaces = videosWithSurfaces.reduce((sum: number, v: any) => sum + (v.surfaceCount || 0), 0);
+
+        // Get up to 4 video thumbnails — use ALL videos so we always find content
+        const thumbnails = allCreatorVideos
           .slice(0, 4)
           .map((v: any) => {
-            // Use stored thumbnailUrl first (works for all video types)
+            // Check if a cached frame already exists on disk
+            const framePath = path.join(process.cwd(), "public", "uploads", "frames", v.id.toString(), "frame_0s.jpg");
+            if (fs.existsSync(framePath)) {
+              return `/uploads/frames/${v.id}/frame_0s.jpg`;
+            }
+            // Use stored thumbnailUrl
             if (v.thumbnailUrl) return v.thumbnailUrl;
-            // For YouTube videos, construct thumbnail URL from youtubeId
+            // For YouTube videos, construct thumbnail URL
             if (v.youtubeId && !v.youtubeId.startsWith("test-") && !v.youtubeId.startsWith("local-")) {
               return `https://img.youtube.com/vi/${v.youtubeId}/mqdefault.jpg`;
             }
-            // For local/fullscale videos, extract a frame as thumbnail
+            // For local videos, use on-demand frame endpoint
             if (v.filePath) return `/api/video/${v.id}/frame/0`;
             return null;
           })
@@ -4028,7 +4036,7 @@ export async function registerRoutes(
           profileImage: userProfile?.profileImageUrl || null,
           thumbnails,
           stats: {
-            totalVideos: videos.length,
+            totalVideos: allCreatorVideos.length,
             totalViews,
             totalSurfaces,
             subscribers: ytConnection?.subscriberCount || 0,
