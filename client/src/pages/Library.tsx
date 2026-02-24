@@ -1425,7 +1425,7 @@ export default function Library() {
                           setRenamingVideo({ id: video.id!, title: video.title, category: video.category, subcategory: video.subcategory });
                           setRenameInput(video.title);
                           setRenameCategoryInput(video.category || "Other");
-                          setRenameSubcategoryInput(video.subcategory || "");
+                          setRenameSubcategoryInput(video.subcategory || "none");
                         }}
                       >
                         <Pencil className="w-3 h-3" />
@@ -1742,7 +1742,7 @@ export default function Library() {
                     <SelectValue placeholder="e.g. Sports" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">None</SelectItem>
+                    <SelectItem value="none">None</SelectItem>
                     {SUBCATEGORIES.map((sub) => (
                       <SelectItem key={sub} value={sub}>
                         {sub}
@@ -1765,7 +1765,7 @@ export default function Library() {
                       videoId: renamingVideo.id,
                       title: renameInput.trim() || undefined,
                       category: renameCategoryInput || undefined,
-                      subcategory: renameSubcategoryInput || undefined,
+                      subcategory: renameSubcategoryInput === "none" ? "" : (renameSubcategoryInput || undefined),
                     });
                     setRenamingVideo(null);
                   }

@@ -286,7 +286,7 @@ export default function Settings() {
         body: JSON.stringify({
           facebookSourceId: selectedFacebookSource,
           facebookSourceType: selectedSource?.type || "personal",
-          instagramBusinessId: selectedInstagramSource || null,
+          instagramBusinessId: (selectedInstagramSource && selectedInstagramSource !== "none") ? selectedInstagramSource : null,
         }),
       });
       
@@ -950,7 +950,7 @@ export default function Settings() {
                                 <SelectValue placeholder="Select an Instagram account" />
                               </SelectTrigger>
                               <SelectContent>
-                                <SelectItem value="">No Instagram account</SelectItem>
+                                <SelectItem value="none">No Instagram account</SelectItem>
                                 {facebookSources
                                   .filter(s => s.instagramAccount)
                                   .map((source) => (
