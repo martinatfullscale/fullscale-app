@@ -53,6 +53,7 @@ interface VideoData {
   id: number;
   title: string;
   thumbnail: string | null;
+  videoUrl: string | null;
   platform: string;
   viewCount: number;
   surfaceCount: number;
@@ -501,9 +502,23 @@ export default function CreatorProfile() {
                 className="overflow-hidden group border border-border/50 hover:border-primary/30 transition-all duration-300 hover:shadow-lg"
                 data-testid={`card-video-${video.id}`}
               >
-                {/* Thumbnail */}
-                <div className="relative aspect-video bg-muted overflow-hidden">
-                  {video.thumbnail ? (
+                {/* Video / Thumbnail */}
+                <div className="relative aspect-video bg-black overflow-hidden">
+                  {video.videoUrl ? (
+                    <video
+                      src={video.videoUrl}
+                      poster={video.thumbnail || undefined}
+                      controls
+                      preload="metadata"
+                      playsInline
+                      muted
+                      className="w-full h-full object-contain"
+                      onLoadedMetadata={(e) => {
+                        const vid = e.currentTarget;
+                        if (vid.currentTime === 0) vid.currentTime = 0.5;
+                      }}
+                    />
+                  ) : video.thumbnail ? (
                     <img
                       src={video.thumbnail}
                       alt={video.title}

@@ -3929,18 +3929,64 @@ export async function registerRoutes(
         if (v.category) allCategories.add(v.category);
       });
 
-      // Enrich videos with frame existence and surface type breakdown
-      const enrichedVideos = videos.map((v: any) => {
+      // Enrich videos with frame existence, surface type breakdown, and playback URLs
+      // Deduplicate by title (keep the one with most surfaces)
+      const seenTitles = new Set<string>();
+      const deduped = videos.filter((v: any) => {
+        const key = v.title?.toLowerCase().trim();
+        if (seenTitles.has(key)) return false;
+        seenTitles.add(key);
+        return true;
+      });
+
+      const enrichedVideos = await Promise.all(deduped.map(async (v: any) => {
         const surfaceTypes = Array.from(new Set((v.surfaces || []).map((s: any) => s.surfaceType).filter(Boolean)));
-        // Use extracted frame as thumbnail for local files
-        const thumbnail = v.filePath
-          ? `/uploads/frames/${v.id}/frame_0s.jpg`
-          : v.thumbnailUrl;
+
+        // Resolve thumbnail — check Object Storage, then local filesystem, then on-demand
+        let thumbnail = null;
+        if (v.filePath || v.platform === "fullscale") {
+          const storageKey = `public/uploads/frames/${v.id}/frame_0s.jpg`;
+          const localPath = path.join(process.cwd(), "public", "uploads", "frames", v.id.toString(), "frame_0s.jpg");
+          try {
+            if (await fileExistsInStorage(storageKey)) {
+              thumbnail = `/storage/uploads/frames/${v.id}/frame_0s.jpg`;
+            } else if (fs.existsSync(localPath)) {
+              thumbnail = `/uploads/frames/${v.id}/frame_0s.jpg`;
+            } else {
+              thumbnail = `/api/video/${v.id}/frame/0`;
+            }
+          } catch {
+            thumbnail = fs.existsSync(localPath)
+              ? `/uploads/frames/${v.id}/frame_0s.jpg`
+              : `/api/video/${v.id}/frame/0`;
+          }
+        } else {
+          thumbnail = v.thumbnailUrl || null;
+        }
+
+        // Resolve video playback URL for local files
+        let videoUrl = null;
+        if (v.filePath) {
+          // Check Object Storage first, then local
+          const videoStorageKey = v.filePath.replace(/^\.?\/?public\//, "public/");
+          try {
+            if (await fileExistsInStorage(videoStorageKey)) {
+              videoUrl = `/storage/${v.filePath.replace(/^\.?\/?public\//, "")}`;
+            } else if (fs.existsSync(path.resolve(v.filePath))) {
+              videoUrl = `/${v.filePath.replace(/^\.?\/?public\//, "")}`;
+            }
+          } catch {
+            if (fs.existsSync(path.resolve(v.filePath))) {
+              videoUrl = `/${v.filePath.replace(/^\.?\/?public\//, "")}`;
+            }
+          }
+        }
 
         return {
           id: v.id,
           title: v.title,
           thumbnail,
+          videoUrl,
           platform: v.platform || "youtube",
           viewCount: v.viewCount || 0,
           surfaceCount: v.surfaceCount || 0,
@@ -3960,7 +4006,7 @@ export async function registerRoutes(
           category: v.category || null,
           duration: v.duration || null,
         };
-      });
+      }));
 
       res.json({
         creator: {
