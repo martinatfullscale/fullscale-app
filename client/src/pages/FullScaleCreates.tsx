@@ -13,29 +13,30 @@ import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 const CREATES_HERO_VIDEO: string | null = "/attached_assets/fullscale_creates_hero_loop.mp4";
 
 // Placeholder video showcase — will be replaced with real links from the user
+// Thumbnails: wider shots showing full scene, not close-ups
 const VIDEO_SHOWCASE = [
   {
     title: "Premium Content Production",
     description: "Full-service video production for creators who want to level up",
-    thumbnail: "https://images.unsplash.com/photo-1492691527719-9d1e07e534b4?w=640&h=360&fit=crop",
+    thumbnail: "https://images.unsplash.com/photo-1574717024653-61fd2cf4d44d?w=800&h=450&fit=crop",
     tag: "Production",
   },
   {
     title: "Brand Integration Stories",
     description: "Authentic brand narratives woven into creator content",
-    thumbnail: "https://images.unsplash.com/photo-1536240478700-b869070f9279?w=640&h=360&fit=crop",
+    thumbnail: "https://images.unsplash.com/photo-1524117074681-31bd4de22ad3?w=800&h=450&fit=crop",
     tag: "Brand",
   },
   {
     title: "Podcast & Studio",
     description: "Professional studio content with cinematic quality",
-    thumbnail: "https://images.unsplash.com/photo-1478737270239-2f02b77fc618?w=640&h=360&fit=crop",
+    thumbnail: "https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?w=800&h=450&fit=crop",
     tag: "Podcast",
   },
   {
-    title: "Cultural Storytelling",
-    description: "Content that resonates with audiences seeking authenticity",
-    thumbnail: "https://images.unsplash.com/photo-1505373877841-8d25f7d46678?w=640&h=360&fit=crop",
+    title: "Music Studio Sessions",
+    description: "Intimate studio recordings that capture the creative process",
+    thumbnail: "https://images.unsplash.com/photo-1598653222000-6b7b7a552625?w=800&h=450&fit=crop",
     tag: "Culture",
   },
 ];
