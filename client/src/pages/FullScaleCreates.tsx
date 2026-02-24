@@ -12,11 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 
-// Hero video path — Replit generates this file (fast-cut montage: podcasts, kitchen, music)
-// Drop the mp4 into: client/src/assets/generated_videos/fullscale_creates_hero_loop.mp4
-// Then uncomment the import below and remove the null fallback:
-// import createsHeroVideo from "@assets/generated_videos/fullscale_creates_hero_loop.mp4";
-const CREATES_HERO_VIDEO: string | null = "/attached_assets/fullscale_creates_hero_loop.mp4";
+import heroVideoUrl from "@assets/fullscale_creates_hero_loop.mp4";
 
 // Video showcase — real Vimeo content from vimeo.com/whtwrks
 const VIDEO_SHOWCASE = [
@@ -131,10 +127,10 @@ export default function FullScaleCreates() {
       {/* Hero Section — video background with gradient overlay */}
       <section className="relative min-h-[500px] md:min-h-[600px] overflow-hidden">
         {/* Video background (falls back to gradient if video not available) */}
-        {CREATES_HERO_VIDEO && !videoFailed ? (
+        {heroVideoUrl && !videoFailed ? (
           <video
             ref={videoRef}
-            src={CREATES_HERO_VIDEO}
+            src={heroVideoUrl}
             preload="auto"
             autoPlay
             loop
