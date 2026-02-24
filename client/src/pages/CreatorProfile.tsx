@@ -32,7 +32,9 @@ import {
   Globe,
   ExternalLink,
   Mail,
+  X,
 } from "lucide-react";
+import { useLocation } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
 import fullscaleLogo from "@assets/fullscale-logo_1767679525676.png";
 
@@ -124,8 +126,12 @@ function formatNumber(num: number): string {
 }
 
 function getInitials(name: string): string {
+  // Strip parentheses and non-letter chars, then take first letter of each word
   return name
-    .split(" ")
+    .replace(/[^a-zA-Z\s]/g, "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
     .map((w) => w[0])
     .join("")
     .toUpperCase()
@@ -235,17 +241,35 @@ export default function CreatorProfile() {
       <header className="border-b bg-card/80 backdrop-blur-md sticky top-0 z-20">
         <div className="max-w-6xl mx-auto px-6 py-3 flex items-center justify-between">
           <img src={fullscaleLogo} alt="FullScale" className="h-7" />
-          <Button
-            size="sm"
-            variant="outline"
-            className="text-xs"
-            onClick={() => {
-              const el = document.getElementById("video-portfolio");
-              el?.scrollIntoView({ behavior: "smooth" });
-            }}
-          >
-            View Portfolio
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              className="text-xs"
+              onClick={() => {
+                const el = document.getElementById("video-portfolio");
+                el?.scrollIntoView({ behavior: "smooth" });
+              }}
+            >
+              View Portfolio
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
+              onClick={() => {
+                // Go back to marketplace, or browser history if available
+                if (window.history.length > 1) {
+                  window.history.back();
+                } else {
+                  window.location.href = "/marketplace";
+                }
+              }}
+              title="Close"
+            >
+              <X className="h-5 w-5" />
+            </Button>
+          </div>
         </div>
       </header>
 

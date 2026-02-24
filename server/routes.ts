@@ -25,7 +25,7 @@ import { users, allowedUsers as allowedUsersTable, videoIndex as videoIndexTable
 import { eq, sql } from "drizzle-orm";
 import crypto from "crypto";
 import sharp from "sharp";
-import { uploadFileToStorage, fileExistsInStorage, objectKeyFromServeUrl } from "./lib/objectStorage";
+import { uploadFileToStorage, fileExistsInStorage, objectKeyFromServeUrl, getStorageStream } from "./lib/objectStorage";
 import { runTranscriptPipeline } from "./lib/remix/transcriptPipeline";
 import { analyzeEditorial } from "./lib/ai/claude-dense/editorialAnalyzer";
 import { rankClips, deduplicateClips } from "./lib/remix/clipRanker";
@@ -2188,6 +2188,60 @@ export async function registerRoutes(
     }
   });
 
+  // Stream a video file by ID (no auth required — for public creator profiles)
+  // Resolves filePath from DB and serves from Object Storage or local filesystem
+  app.get("/api/video/:id/stream", async (req: any, res) => {
+    const videoId = parseInt(req.params.id);
+    if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+
+    try {
+      const video = await storage.getVideoById(videoId);
+      if (!video || !video.filePath) {
+        return res.status(404).json({ error: "Video file not found" });
+      }
+
+      // Try Object Storage first (Replit)
+      const objectKey = video.filePath.replace(/^\.?\/?public\//, "public/");
+      try {
+        if (await fileExistsInStorage(objectKey)) {
+          const { file, stream } = getStorageStream(objectKey);
+          const [metadata] = await file.getMetadata();
+          res.set({
+            "Content-Type": metadata.contentType || "video/mp4",
+            "Content-Length": metadata.size?.toString(),
+            "Cache-Control": "public, max-age=86400",
+            "Accept-Ranges": "bytes",
+          });
+          stream.on("error", (err: any) => {
+            console.error("[Stream] Storage stream error:", err.message);
+            if (!res.headersSent) res.status(500).json({ error: "Stream failed" });
+          });
+          return stream.pipe(res);
+        }
+      } catch (e) {
+        // Object Storage not available, fall through to local
+      }
+
+      // Fall back to local filesystem
+      const absolutePath = path.resolve(video.filePath);
+      if (fs.existsSync(absolutePath)) {
+        const stat = fs.statSync(absolutePath);
+        res.set({
+          "Content-Type": "video/mp4",
+          "Content-Length": stat.size.toString(),
+          "Cache-Control": "public, max-age=86400",
+          "Accept-Ranges": "bytes",
+        });
+        return fs.createReadStream(absolutePath).pipe(res);
+      }
+
+      return res.status(404).json({ error: "Video file not found on disk or storage" });
+    } catch (err: any) {
+      console.error("[Stream] Error:", err.message);
+      return res.status(500).json({ error: "Failed to stream video" });
+    }
+  });
+
   // PUBLIC endpoint - surfaces are viewable by brands on creator profiles
   app.get("/api/video/:id/surfaces", async (req: any, res) => {
     const videoId = parseInt(req.params.id);
@@ -3964,16 +4018,9 @@ export async function registerRoutes(
           thumbnail = v.thumbnailUrl || null;
         }
 
-        // Resolve video playback URL for local files
-        // Use normalizeVideoUrl (same as Library page) — works reliably on Replit
-        let videoUrl = null;
-        if (v.filePath) {
-          if (v.filePath.startsWith('/storage/')) {
-            videoUrl = v.filePath;
-          } else {
-            videoUrl = normalizeVideoUrl(v.filePath);
-          }
-        }
+        // Use streaming endpoint for reliable video playback on public profiles
+        // This avoids filePath resolution issues across environments
+        const videoUrl = v.filePath ? `/api/video/${v.id}/stream` : null;
 
         return {
           id: v.id,
