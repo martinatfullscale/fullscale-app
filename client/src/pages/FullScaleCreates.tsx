@@ -21,13 +21,6 @@ const CREATES_HERO_VIDEO: string | null = "/attached_assets/fullscale_creates_he
 // Video showcase — real Vimeo content from vimeo.com/whtwrks
 const VIDEO_SHOWCASE = [
   {
-    title: "WHTWRKS Sizzle Reel",
-    description: "A fast look at the range of content we produce",
-    thumbnail: "https://i.vimeocdn.com/video/1988136521-24c03e2ce4dbaa6cca11d7ef7144df5b57efffd8988c66051dc917bddcc48c52-d_640x360",
-    tag: "Reel",
-    vimeoId: "1061409233",
-  },
-  {
     title: "Deleon at the NAACP Image Awards",
     description: "Brand activation coverage at one of culture's biggest nights",
     thumbnail: "https://i.vimeocdn.com/video/2011839791-0e13911c3ea48cb8e48c0601f118107660c026e782eaa20dc6f33613e52a0cfd-d_640x360",
