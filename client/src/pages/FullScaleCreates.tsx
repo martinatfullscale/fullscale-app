@@ -168,10 +168,12 @@ export default function FullScaleCreates() {
               We build and curate content for audiences that demand something real. AI accelerates the craft — but the creator drives the story. That partnership is where the magic lands.
             </p>
             <div className="flex items-center justify-center gap-4">
-              <Button size="lg" className="gap-2">
-                Work With Us
-                <ArrowRight className="w-4 h-4" />
-              </Button>
+              <a href="mailto:fullscale_info@gofullscale.co">
+                <Button size="lg" className="gap-2">
+                  Work With Us
+                  <ArrowRight className="w-4 h-4" />
+                </Button>
+              </a>
               <Button size="lg" variant="outline" className="gap-2 border-white/30 text-white hover:bg-white/10" onClick={() => {
                 document.getElementById("showcase")?.scrollIntoView({ behavior: "smooth" });
               }}>
@@ -343,10 +345,12 @@ export default function FullScaleCreates() {
             Whether you're a creator looking to produce premium content or a brand seeking authentic partnerships.
           </p>
           <div className="flex items-center justify-center gap-4 flex-wrap">
-            <Button size="lg" className="gap-2">
-              <Globe className="w-4 h-4" />
-              Get in Touch
-            </Button>
+            <a href="mailto:fullscale_info@gofullscale.co">
+              <Button size="lg" className="gap-2">
+                <Globe className="w-4 h-4" />
+                Get in Touch
+              </Button>
+            </a>
             <a href="/marketplace">
               <Button size="lg" variant="outline" className="gap-2">
                 Explore Marketplace
