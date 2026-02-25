@@ -4999,20 +4999,21 @@ export async function registerRoutes(
         return res.json({ transforms: [], fps, duration: videoDuration, available: false });
       }
 
-      // ── Stabilization Pipeline (same as clipGenerator.ts) ──
-      // Step 1: Outlier rejection
+      // ── Stabilization Pipeline (Anchor-Lock Mode) ──
+      // Step 1: Outlier rejection (relaxed threshold to keep more valid keyframes)
       let kfs = rawKfs;
       if (kfs.length > 3) {
         const filtered: PlacementKeyframe[] = [kfs[0]];
         for (let i = 1; i < kfs.length - 1; i++) {
           const expectedX = (kfs[i - 1].x + kfs[i + 1].x) / 2;
           const expectedY = (kfs[i - 1].y + kfs[i + 1].y) / 2;
-          if (Math.abs(kfs[i].x - expectedX) > 0.12 || Math.abs(kfs[i].y - expectedY) > 0.12) {
+          if (Math.abs(kfs[i].x - expectedX) > 0.15 || Math.abs(kfs[i].y - expectedY) > 0.15) {
             continue; // Skip outlier
           }
           filtered.push(kfs[i]);
         }
         filtered.push(kfs[kfs.length - 1]);
+        console.log(`[MotionTrack] Outlier rejection: ${rawKfs.length} → ${filtered.length} keyframes`);
         kfs = filtered;
       }
 
@@ -5027,8 +5028,36 @@ export async function registerRoutes(
         height: Math.abs(k.height - medianH) / medianH > 0.15 ? medianH : k.height,
       }));
 
-      // Step 3: Bidirectional EMA smoothing (eliminates detection noise)
-      const alpha = 0.4;
+      // Step 2B: Anchor persistence — lock top-right corner to highest-confidence keyframe
+      // Prevents the entire bbox from drifting to a different part of the surface
+      if (kfs.length > 1) {
+        // Find highest-confidence keyframe as the anchor reference
+        const anchorKf = rawKfs.reduce((best, kf) => {
+          const bestConf = (best as any).confidence || 0;
+          const kfConf = (kf as any).confidence || 0;
+          return kfConf > bestConf ? kf : best;
+        });
+        const anchorTopRightX = anchorKf.x + anchorKf.width;
+        const anchorTopRightY = anchorKf.y;
+
+        // Constrain all keyframes so top-right doesn't drift >5% from anchor
+        for (const kf of kfs) {
+          const trX = kf.x + kf.width;
+          const trY = kf.y;
+          const driftX = Math.abs(trX - anchorTopRightX);
+          const driftY = Math.abs(trY - anchorTopRightY);
+          if (driftX > 0.05) {
+            kf.x = anchorTopRightX - kf.width + Math.sign(trX - anchorTopRightX) * 0.05;
+          }
+          if (driftY > 0.05) {
+            kf.y = anchorTopRightY + Math.sign(trY - anchorTopRightY) * 0.05;
+          }
+        }
+        console.log(`[MotionTrack] Anchor-lock: top-right pinned at (${anchorTopRightX.toFixed(3)}, ${anchorTopRightY.toFixed(3)})`);
+      }
+
+      // Step 3: Bidirectional EMA smoothing (heavier smoothing for stable positions)
+      const alpha = 0.3;
       const fwd: PlacementKeyframe[] = [{ ...kfs[0] }];
       for (let i = 1; i < kfs.length; i++) {
         fwd.push({
@@ -6548,8 +6577,13 @@ export async function registerRoutes(
       });
 
       // Run pipeline asynchronously
-      runRemixPipeline(videoId, userId, pipelineConfig).catch(err => {
+      runRemixPipeline(videoId, userId, pipelineConfig).catch(async (err) => {
         console.error(`[Remix] Background job ${job.id} failed:`, err);
+        try {
+          await storage.updateRemixJobStatus(job.id, "failed", err.message || "Pipeline crashed");
+        } catch (dbErr) {
+          console.error(`[Remix] Failed to update job ${job.id} status to failed:`, dbErr);
+        }
       });
 
       const mode = config.clipRange ? "editorial-clip" : isEditorial ? "editorial" : "legacy";
@@ -6713,8 +6747,16 @@ export async function registerRoutes(
       });
 
       // Run in background after response
-      reRenderClip(clipId, modifications).catch(err => {
+      reRenderClip(clipId, modifications).catch(async (err) => {
         console.error(`[Re-Render] Background re-render for clip ${clipId} failed:`, err);
+        try {
+          const clip = await storage.getClipById(clipId);
+          if (clip?.remixJobId) {
+            await storage.updateRemixJobStatus(clip.remixJobId, "failed", `Re-render failed: ${err.message || "unknown"}`);
+          }
+        } catch (dbErr) {
+          console.error(`[Re-Render] Failed to update job status for clip ${clipId}:`, dbErr);
+        }
       });
     } catch (err: any) {
       console.error("[Re-Render Route] Error:", err.message);

@@ -408,20 +408,38 @@ export async function runRemixPipeline(
       const clip = candidates[i];
       const placements: ClipPlacement[] = [];
 
+      // ── Diagnostic: Log placement prerequisites for this clip ──
+      console.log(`[Remix]   Clip #${i + 1} placement check: ${clip.surfaceIds.length} surface(s) in time range ${clip.startTime.toFixed(1)}s-${clip.endTime.toFixed(1)}s`);
+      if (clip.surfaceIds.length === 0) {
+        console.warn(`[Remix]   ⚠️ Clip #${i + 1}: No detected surfaces — will produce clean cut (no product placement)`);
+      }
+
       for (const surfaceId of clip.surfaceIds) {
         const surface = surfaceMap.get(surfaceId);
-        if (!surface) continue;
+        if (!surface) {
+          console.warn(`[Remix]   ⚠️ Surface ${surfaceId} not found in surfaceMap — skipping`);
+          continue;
+        }
 
         // Find the approved brand match for this surface
         const surfaceAnalysis = await storage.getSceneAnalysisBySurface(surfaceId);
-        if (!surfaceAnalysis) continue;
+        if (!surfaceAnalysis) {
+          console.warn(`[Remix]   ⚠️ Surface ${surfaceId}: No scene analysis found — skipping (run editorial analysis first)`);
+          continue;
+        }
 
         const matches = await storage.getBrandMatchesByScene(surfaceAnalysis.id);
         const approved = matches.find(m => m.approved);
-        if (!approved) continue;
+        if (!approved) {
+          console.warn(`[Remix]   ⚠️ Surface ${surfaceId}: ${matches.length} brand match(es) found but none approved — skipping (approve a brand match in the UI)`);
+          continue;
+        }
 
         const product = itemMap.get(approved.brandProductId);
-        if (!product) continue;
+        if (!product) {
+          console.warn(`[Remix]   ⚠️ Surface ${surfaceId}: Approved brand product #${approved.brandProductId} not found in catalog — skipping`);
+          continue;
+        }
 
         // Phase 3: Auto-generate product asset via Seeddance if no image exists
         let resolvedImageUrl = product.imageUrl;

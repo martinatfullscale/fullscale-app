@@ -317,8 +317,12 @@ export default function RemixCopilot({
                   : "bg-gray-800 text-gray-200"
               }`}
             >
-              {/* Message text */}
-              <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+              {/* Message text — hide raw JSON during streaming, show only final message */}
+              {msg.role === "assistant" && isStreaming && msg === messages[messages.length - 1] && !msg.suggestions?.length ? (
+                null /* Content hidden during streaming — "Thinking..." indicator shows below */
+              ) : (
+                <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+              )}
 
               {/* Streaming indicator */}
               {msg.role === "assistant" && isStreaming && msg === messages[messages.length - 1] && !msg.suggestions?.length && (

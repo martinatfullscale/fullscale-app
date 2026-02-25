@@ -161,7 +161,14 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
         fetch(`/api/remix/${videoId}/stitch-plans`, { credentials: "include" }),
       ]);
       if (jobsRes.ok) setJobs(await jobsRes.json());
-      if (clipsRes.ok) setClips(await clipsRes.json());
+      if (clipsRes.ok) {
+        const loadedClips = await clipsRes.json();
+        setClips(loadedClips);
+        // Auto-set copilot clip ID to latest clip if not already set
+        if (loadedClips.length > 0) {
+          setCopilotClipId(prev => prev ?? loadedClips[loadedClips.length - 1].id);
+        }
+      }
       if (stitchRes.ok) setStitchPlans(await stitchRes.json());
     } catch (err) {
       console.error("Failed to load remix data:", err);
@@ -175,61 +182,82 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
     switch (type) {
       case "trim":
       case "hook_improvement": {
+        if (!copilotClipId) {
+          toast({ title: "No clip selected", description: "Generate or select a clip first to apply this suggestion.", variant: "destructive" });
+          break;
+        }
         const newStart = type === "trim" ? data.newStart : data.alternativeStart;
         const newEnd = type === "trim" ? data.newEnd : undefined;
-        if (copilotClipId) {
-          fetch(`/api/remix/clips/${copilotClipId}/re-render`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "include",
-            body: JSON.stringify({
-              newStart,
-              ...(newEnd !== undefined ? { newEnd } : {}),
-            }),
-          }).then((res) => {
-            if (res.ok) {
-              toast({ title: "Re-rendering", description: "Clip is being re-rendered with suggested changes" });
-              setTimeout(loadData, 3000);
-            }
-          });
-        }
+        fetch(`/api/remix/clips/${copilotClipId}/re-render`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            newStart,
+            ...(newEnd !== undefined ? { newEnd } : {}),
+          }),
+        }).then((res) => {
+          if (res.ok) {
+            toast({ title: "Re-rendering", description: "Clip is being re-rendered with suggested changes" });
+            setTimeout(loadData, 3000);
+          } else {
+            toast({ title: "Re-render failed", description: "Could not apply suggestion. Try again.", variant: "destructive" });
+          }
+        });
         break;
       }
       case "caption_edit": {
-        if (copilotClipId) {
-          fetch(`/api/remix/clips/${copilotClipId}/re-render`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "include",
-            body: JSON.stringify({
-              captionsEnabled: true,
-              captionStyle: data.suggestedStyle,
-            }),
-          }).then((res) => {
-            if (res.ok) {
-              toast({ title: "Re-rendering", description: `Applying ${data.suggestedStyle} caption style` });
-              setTimeout(loadData, 3000);
-            }
-          });
+        if (!copilotClipId) {
+          toast({ title: "No clip selected", description: "Generate or select a clip first to apply this suggestion.", variant: "destructive" });
+          break;
         }
+        fetch(`/api/remix/clips/${copilotClipId}/re-render`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            captionsEnabled: true,
+            captionStyle: data.suggestedStyle,
+          }),
+        }).then((res) => {
+          if (res.ok) {
+            toast({ title: "Re-rendering", description: `Applying ${data.suggestedStyle} caption style` });
+            setTimeout(loadData, 3000);
+          } else {
+            toast({ title: "Re-render failed", description: "Could not apply caption style. Try again.", variant: "destructive" });
+          }
+        });
         break;
       }
       case "platform_switch": {
-        if (copilotClipId) {
-          fetch(`/api/remix/clips/${copilotClipId}/re-render`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "include",
-            body: JSON.stringify({
-              platformTarget: data.betterPlatform,
-            }),
-          }).then((res) => {
-            if (res.ok) {
-              toast({ title: "Re-rendering", description: `Re-targeting clip for ${data.betterPlatform}` });
-              setTimeout(loadData, 3000);
-            }
-          });
+        if (!copilotClipId) {
+          toast({ title: "No clip selected", description: "Generate or select a clip first to apply this suggestion.", variant: "destructive" });
+          break;
         }
+        fetch(`/api/remix/clips/${copilotClipId}/re-render`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            platformTarget: data.betterPlatform,
+          }),
+        }).then((res) => {
+          if (res.ok) {
+            toast({ title: "Re-rendering", description: `Re-targeting clip for ${data.betterPlatform}` });
+            setTimeout(loadData, 3000);
+          } else {
+            toast({ title: "Re-render failed", description: "Could not switch platform. Try again.", variant: "destructive" });
+          }
+        });
+        break;
+      }
+      case "add_placement": {
+        toast({
+          title: "Placement suggestion",
+          description: data.productName
+            ? `${data.productName} can be placed on surface #${data.surfaceId} at ${data.placementTimestamp?.toFixed(1) || 0}s`
+            : suggestion.reason,
+        });
         break;
       }
       default:
@@ -256,6 +284,10 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
             setClips(prev => {
               const existing = new Set(prev.map(c => c.id));
               const newClips = data.clips.filter((c: GeneratedClip) => !existing.has(c.id));
+              // Auto-set copilot clip to newest clip
+              if (newClips.length > 0) {
+                setCopilotClipId(newClips[newClips.length - 1].id);
+              }
               return [...prev, ...newClips];
             });
           }

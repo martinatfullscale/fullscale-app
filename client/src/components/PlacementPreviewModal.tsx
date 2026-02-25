@@ -989,32 +989,34 @@ export default function PlacementPreviewModal({
         const hasGeminiData = motionData?.available && motionData.source === "gemini-keyframes" && motionData.transforms.length > 0;
 
         if (hasGeminiData) {
-          // ── STRATEGY A: Pre-computed Gemini keyframe data ──
+          // ── STRATEGY A: Pre-computed Gemini keyframe data (Anchor-Lock Mode) ──
           // Real per-frame surface positions from Gemini AI vision analysis.
-          // Smooth spring interpolation between discrete keyframe lookups.
+          // Anchors the product to the top-right corner of the detected bbox
+          // so the product stays locked to the surface throughout the scene.
           const currentTime = videoEl.currentTime;
           const frameIndex = Math.round(currentTime * motionData!.fps);
           const clampedIndex = Math.min(frameIndex, motionData!.transforms.length - 1);
           const pos = motionData!.transforms[clampedIndex];
 
-          const targetBX = pos.x * canvas.width;
-          const targetBY = pos.y * canvas.height;
+          // Anchor-lock: track the top-right corner of the bbox as the fixed reference point
+          // The product's right edge stays pinned to this anchor throughout the scene
+          const anchorX = (pos.x + pos.w) * canvas.width;   // top-right X of detected bbox
+          const anchorY = pos.y * canvas.height;              // top-right Y of detected bbox
+          // Derive product position so its right edge aligns with the anchor
+          const targetBX = anchorX - baseBW;
+          const targetBY = anchorY;
           const targetBW = pos.w * canvas.width;
           const targetBH = pos.h * canvas.height;
 
-          // Sanity check: constrain Gemini data within reasonable range of original bbox
-          const maxDrift = Math.max(baseBW, baseBH) * 2.5;
+          // Tight drift constraint: product can't wander more than 1x bbox size from original
+          const maxDrift = Math.max(baseBW, baseBH) * 1.0;
           const constrainedBX = clamp(targetBX, baseBX - maxDrift, baseBX + maxDrift);
           const constrainedBY = clamp(targetBY, baseBY - maxDrift, baseBY + maxDrift);
 
           if (!tracking.initialized) {
-            // If displayOffset is already set (transitioning from optical flow),
-            // keep it so the spring interpolates smoothly to Gemini position.
-            // Only snap if this is the very first frame (display at 0,0).
-            if (tracking.displayOffsetX === 0 && tracking.displayOffsetY === 0) {
-              tracking.displayOffsetX = constrainedBX;
-              tracking.displayOffsetY = constrainedBY;
-            }
+            // Snap to initial position on first frame (no spring lag)
+            tracking.displayOffsetX = constrainedBX;
+            tracking.displayOffsetY = constrainedBY;
             tracking.cumulativeOffsetX = constrainedBX;
             tracking.cumulativeOffsetY = constrainedBY;
             tracking.velocityX = 0;
@@ -1024,13 +1026,18 @@ export default function PlacementPreviewModal({
           tracking.cumulativeOffsetX = constrainedBX;
           tracking.cumulativeOffsetY = constrainedBY;
 
-          // Spring physics for smoothness
-          const stiffness = 0.18;
-          const damping = 0.68;
+          // Stiff spring physics — fast lock-on, minimal oscillation
+          const stiffness = 0.35;
+          const damping = 0.82;
           const forceX = (tracking.cumulativeOffsetX - tracking.displayOffsetX) * stiffness;
           const forceY = (tracking.cumulativeOffsetY - tracking.displayOffsetY) * stiffness;
           tracking.velocityX = tracking.velocityX * damping + forceX;
           tracking.velocityY = tracking.velocityY * damping + forceY;
+
+          // Velocity deadzone: eliminate micro-jitter when nearly at rest
+          if (Math.abs(tracking.velocityX) < 0.3) tracking.velocityX = 0;
+          if (Math.abs(tracking.velocityY) < 0.3) tracking.velocityY = 0;
+
           tracking.displayOffsetX += tracking.velocityX;
           tracking.displayOffsetY += tracking.velocityY;
 
@@ -1057,7 +1064,7 @@ export default function PlacementPreviewModal({
                 FLOW_H,
               );
 
-              if (confidence > 0.15) {
+              if (confidence > 0.25) {
                 // Scale flow dx/dy from flow resolution to canvas resolution
                 const scaleX = canvas.width / FLOW_W;
                 const scaleY = canvas.height / FLOW_H;
@@ -1078,15 +1085,20 @@ export default function PlacementPreviewModal({
             }
           }
 
-          // Spring-damped interpolation for smooth display
-          const stiffness = 0.20;
-          const damping = 0.65;
+          // Stiff spring-damped interpolation for stable display
+          const stiffness = 0.35;
+          const damping = 0.82;
           const targetX = baseBX + tracking.cumulativeOffsetX;
           const targetY = baseBY + tracking.cumulativeOffsetY;
           const forceX = (targetX - tracking.displayOffsetX) * stiffness;
           const forceY = (targetY - tracking.displayOffsetY) * stiffness;
           tracking.velocityX = tracking.velocityX * damping + forceX;
           tracking.velocityY = tracking.velocityY * damping + forceY;
+
+          // Velocity deadzone: eliminate micro-jitter
+          if (Math.abs(tracking.velocityX) < 0.3) tracking.velocityX = 0;
+          if (Math.abs(tracking.velocityY) < 0.3) tracking.velocityY = 0;
+
           tracking.displayOffsetX += tracking.velocityX;
           tracking.displayOffsetY += tracking.velocityY;
 

@@ -198,32 +198,94 @@ async function compositeFrame(
   const composites: sharp.OverlayOptions[] = [];
 
   for (const placement of placements) {
-    const { prev, next, progress } = findKeyframes(placement.keyframes, currentTime);
-    if (!prev) continue;
+    // ── Anchor-Lock Stabilization Pipeline (matches client-side preview) ──
+    // Step 1: Lock dimensions to median across all keyframes
+    const allWidths = placement.keyframes.map(k => k.bbox.w).sort((a, b) => a - b);
+    const allHeights = placement.keyframes.map(k => k.bbox.h).sort((a, b) => a - b);
+    const lockedW = allWidths[Math.floor(allWidths.length / 2)] || placement.keyframes[0]?.bbox.w || 10;
+    const lockedH = allHeights[Math.floor(allHeights.length / 2)] || placement.keyframes[0]?.bbox.h || 10;
 
-    // Lock bbox dimensions from the FIRST keyframe — a physical product doesn't change
-    // size when the camera pans. Only the CENTER POSITION is interpolated across keyframes.
-    const firstKf = placement.keyframes[0];
-    const lockedW = firstKf.bbox.w;
-    const lockedH = firstKf.bbox.h;
+    // Step 2: Anchor persistence — pin to top-right corner of first keyframe
+    // This prevents the product from drifting to a different surface region
+    const anchorKf = placement.keyframes[0];
+    const anchorTRX = anchorKf.bbox.x + anchorKf.bbox.w; // top-right X
+    const anchorTRY = anchorKf.bbox.y;                     // top-right Y
 
-    // Interpolate the center position only
-    let centerX: number, centerY: number;
-    if (next) {
-      const prevCX = prev.bbox.x + prev.bbox.w / 2;
-      const prevCY = prev.bbox.y + prev.bbox.h / 2;
-      const nextCX = next.bbox.x + next.bbox.w / 2;
-      const nextCY = next.bbox.y + next.bbox.h / 2;
-      centerX = lerp(prevCX, nextCX, progress);
-      centerY = lerp(prevCY, nextCY, progress);
-    } else {
-      centerX = prev.bbox.x + prev.bbox.w / 2;
-      centerY = prev.bbox.y + prev.bbox.h / 2;
+    // Step 3: Stabilize keyframe positions (constrain drift from anchor)
+    const stabilizedKfs = placement.keyframes.map(kf => {
+      const trX = kf.bbox.x + kf.bbox.w;
+      const trY = kf.bbox.y;
+      const driftX = Math.abs(trX - anchorTRX);
+      const driftY = Math.abs(trY - anchorTRY);
+      let stableX = kf.bbox.x;
+      let stableY = kf.bbox.y;
+      // Constrain top-right drift to 5% max
+      if (driftX > 5) stableX = anchorTRX - lockedW + Math.sign(trX - anchorTRX) * 5;
+      if (driftY > 5) stableY = anchorTRY + Math.sign(trY - anchorTRY) * 5;
+      return { ...kf, bbox: { ...kf.bbox, x: stableX, y: stableY, w: lockedW, h: lockedH } };
+    });
+
+    // Step 4: Bidirectional EMA smoothing (same as server motion-track pipeline)
+    let smoothedKfs = stabilizedKfs;
+    if (stabilizedKfs.length >= 3) {
+      const ema = 0.3;
+      const fwdKfs = [{ ...stabilizedKfs[0] }];
+      for (let si = 1; si < stabilizedKfs.length; si++) {
+        fwdKfs.push({
+          ...stabilizedKfs[si],
+          bbox: {
+            x: ema * stabilizedKfs[si].bbox.x + (1 - ema) * fwdKfs[si - 1].bbox.x,
+            y: ema * stabilizedKfs[si].bbox.y + (1 - ema) * fwdKfs[si - 1].bbox.y,
+            w: lockedW,
+            h: lockedH,
+          },
+        });
+      }
+      const bwdKfs = new Array(fwdKfs.length);
+      bwdKfs[fwdKfs.length - 1] = { ...fwdKfs[fwdKfs.length - 1] };
+      for (let si = fwdKfs.length - 2; si >= 0; si--) {
+        bwdKfs[si] = {
+          ...fwdKfs[si],
+          bbox: {
+            x: ema * fwdKfs[si].bbox.x + (1 - ema) * bwdKfs[si + 1].bbox.x,
+            y: ema * fwdKfs[si].bbox.y + (1 - ema) * bwdKfs[si + 1].bbox.y,
+            w: lockedW,
+            h: lockedH,
+          },
+        };
+      }
+      smoothedKfs = fwdKfs.map((f, si) => ({
+        ...f,
+        bbox: {
+          x: (f.bbox.x + bwdKfs[si].bbox.x) / 2,
+          y: (f.bbox.y + bwdKfs[si].bbox.y) / 2,
+          w: lockedW,
+          h: lockedH,
+        },
+      }));
     }
 
-    // Derive top-left from interpolated center and locked dimensions
-    const px = ((centerX - lockedW / 2) / 100) * width;
-    const py = ((centerY - lockedH / 2) / 100) * height;
+    // Step 5: Interpolate position using stabilized keyframes
+    const { prev, next, progress } = findKeyframes(smoothedKfs, currentTime);
+    if (!prev) continue;
+
+    // Anchor-lock: track top-right corner, derive position from there
+    let topRightX: number, topRightY: number;
+    if (next) {
+      const prevTRX = prev.bbox.x + prev.bbox.w;
+      const prevTRY = prev.bbox.y;
+      const nextTRX = next.bbox.x + next.bbox.w;
+      const nextTRY = next.bbox.y;
+      topRightX = lerp(prevTRX, nextTRX, progress);
+      topRightY = lerp(prevTRY, nextTRY, progress);
+    } else {
+      topRightX = prev.bbox.x + prev.bbox.w;
+      topRightY = prev.bbox.y;
+    }
+
+    // Derive top-left from anchor and locked dimensions
+    const px = ((topRightX - lockedW) / 100) * width;
+    const py = (topRightY / 100) * height;
     const pw = (lockedW / 100) * width;
     const ph = (lockedH / 100) * height;
 
