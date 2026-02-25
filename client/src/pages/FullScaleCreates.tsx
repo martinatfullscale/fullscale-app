@@ -56,11 +56,32 @@ const VIDEO_SHOWCASE = [
     vimeoId: "604858629",
   },
   {
-    title: "WHTWRKS Original",
-    description: "Original content from the WHTWRKS creative studio",
-    thumbnail: "",
+    title: "The Right Pitch on ROKU",
+    description: "Original series streaming on ROKU",
+    thumbnail: "https://i.vimeocdn.com/video/1992075312-2e02568673b7ad726568e07b6730887b5f8448f9852830ffe63d2661bff26427-d_640x360?region=us",
     tag: "Original",
     vimeoId: "1064709284",
+  },
+  {
+    title: "Smirnoff x BET — Ambre",
+    description: "Branded spot for Smirnoff in partnership with BET",
+    thumbnail: "https://i.vimeocdn.com/video/1701620964-ede573fc419aa4d9f0f16ce249bd4194119e866f56361bcefd96e6ddbfc17037-d_640x360?region=us",
+    tag: "Brand",
+    vimeoId: "848085934",
+  },
+  {
+    title: "Retool Your School — Home Depot × Rashan Ali",
+    description: "Home Depot's Retool Your School initiative with Rashan Ali",
+    thumbnail: "https://i.vimeocdn.com/video/863188183-5fa9e5bb245b887071a33639fc49252818eb2e070bc055f92508545906ed6078-d_640x360?region=us",
+    tag: "Brand",
+    vimeoId: "396427937",
+  },
+  {
+    title: "LEGO",
+    description: "Branded content for LEGO",
+    thumbnail: "https://i.vimeocdn.com/video/1100956605-d026d6bdce68dd4a655c2500d5e74794f055858c5e1d2e04fb201e06c991ccec-d_640x360?region=us",
+    tag: "Brand",
+    vimeoId: "531983975",
   },
 ];
 
