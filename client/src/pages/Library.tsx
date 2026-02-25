@@ -1347,7 +1347,7 @@ export default function Library() {
                   {isRealMode && video.id && (
                     <>
                       {/* Local files: Show scan/rescan button */}
-                      {video.hasLocalFile && (video.aiStatus === "pending" || video.aiStatus === "retry" || video.aiStatus === "complete" || scanningVideoIds.has(video.id)) && (
+                      {video.hasLocalFile && (video.aiStatus === "pending" || video.aiStatus === "retry" || video.aiStatus === "complete" || video.aiStatus === "scanning" || scanningVideoIds.has(video.id)) && (
                         <div
                           className="absolute bottom-12 right-2 z-20"
                           onClick={(e) => {
@@ -1370,6 +1370,11 @@ export default function Library() {
                               <>
                                 <Loader2 className="w-3 h-3 animate-spin" />
                                 Scanning...
+                              </>
+                            ) : video.aiStatus === "scanning" ? (
+                              <>
+                                <RefreshCw className="w-3 h-3" />
+                                Re-scan
                               </>
                             ) : video.aiStatus === "complete" ? (
                               <>
