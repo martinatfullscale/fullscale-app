@@ -990,19 +990,59 @@ export default function Library() {
     onSuccess: (data, videoId) => {
       toast({
         title: "Surface Scan Started",
-        description: "Analyzing your video for placement surfaces. This takes about 15-30 seconds.",
+        description: "Analyzing your video for placement surfaces. This may take 1-2 minutes.",
       });
-      
-      // Poll for scan completion by checking video status
+
+      // Poll for scan completion by checking actual video status
       const pollInterval = setInterval(async () => {
         try {
-          queryClient.invalidateQueries({ queryKey: ["videos"] });
+          const pollUrl = isAdminUser
+            ? `/api/video-index/with-opportunities?admin_email=${encodeURIComponent(userEmail)}`
+            : `/api/video-index/with-opportunities`;
+          const res = await fetch(pollUrl, { credentials: "include" });
+          if (!res.ok) return;
+          const freshData = await res.json();
+
+          queryClient.setQueryData(
+            ["videos", isPitchMode, mode, DEMO_DATA_VERSION, isAdminUser, userEmail],
+            freshData
+          );
+
+          const video = freshData.videos?.find((v: IndexedVideo) => v.id === videoId);
+
+          if (video && !video.status?.toLowerCase().includes("scanning")) {
+            clearInterval(pollInterval);
+            setScanningVideoIds(prev => {
+              const next = new Set(prev);
+              next.delete(videoId);
+              return next;
+            });
+            queryClient.invalidateQueries({ queryKey: ["videos"] });
+
+            if (video.status?.toLowerCase().includes("ready") && video.adOpportunities > 0) {
+              toast({
+                title: "Scan Complete",
+                description: `Found ${video.adOpportunities} placement surfaces. Click the video to view details.`,
+              });
+            } else if (video.status?.toLowerCase() === "scan failed") {
+              toast({
+                title: "Scan Failed",
+                description: "Could not analyze this video. Please try again.",
+                variant: "destructive",
+              });
+            } else {
+              toast({
+                title: "No Surfaces Found",
+                description: "No suitable placement surfaces detected in this video.",
+              });
+            }
+          }
         } catch (err) {
           console.error("Poll error:", err);
         }
       }, 5000);
-      
-      // Stop scanning state after 30 seconds
+
+      // Safety timeout: 3 minutes for long videos
       setTimeout(() => {
         clearInterval(pollInterval);
         setScanningVideoIds(prev => {
@@ -1010,12 +1050,7 @@ export default function Library() {
           next.delete(videoId);
           return next;
         });
-        queryClient.invalidateQueries({ queryKey: ["videos"] });
-        toast({
-          title: "Scan Complete",
-          description: "Check the video for detected surfaces.",
-        });
-      }, 30000);
+      }, 180000);
     },
     onError: (error: Error, videoId) => {
       setScanningVideoIds(prev => {

@@ -21,6 +21,7 @@ import {
   Droplets,
   Blend,
   Eye,
+  EyeOff,
   Play,
   Pause,
   Film,
@@ -512,6 +513,7 @@ export default function PlacementPreviewModal({
   // Interactive transform + blend state
   const [transform, setTransform] = useState<PlacementTransform>({ ...DEFAULT_TRANSFORM });
   const [blend, setBlend] = useState<PlacementBlend>({ ...DEFAULT_BLEND });
+  const [showBoundingBox, setShowBoundingBox] = useState(true);
 
   // Drag interaction state
   const [dragMode, setDragMode] = useState<DragMode>("none");
@@ -1109,64 +1111,68 @@ export default function PlacementPreviewModal({
 
       const hasProduct = !!productImgRef.current;
 
-      // Bounding box outline
-      ctx.strokeStyle = hasProduct ? "rgba(16, 185, 129, 0.6)" : "rgba(139, 92, 246, 0.8)";
-      ctx.lineWidth = 2;
-      ctx.setLineDash(hasProduct ? [4, 4] : [6, 4]);
-      ctx.strokeRect(bx, by, bw, bh);
-      ctx.setLineDash([]);
+      // Bounding box outline (hidden when toggle is off)
+      if (showBoundingBox) {
+        ctx.strokeStyle = hasProduct ? "rgba(16, 185, 129, 0.6)" : "rgba(139, 92, 246, 0.8)";
+        ctx.lineWidth = 2;
+        ctx.setLineDash(hasProduct ? [4, 4] : [6, 4]);
+        ctx.strokeRect(bx, by, bw, bh);
+        ctx.setLineDash([]);
 
-      // Surface label
-      if (!hasProduct) {
-        ctx.font = "bold 11px Inter, system-ui, sans-serif";
-        const label = selectedSurface.surfaceType;
-        const tw = ctx.measureText(label).width;
-        ctx.fillStyle = "rgba(139, 92, 246, 0.85)";
-        ctx.fillRect(bx, by - 18, tw + 10, 18);
-        ctx.fillStyle = "#fff";
-        ctx.fillText(label, bx + 5, by - 5);
+        // Surface label
+        if (!hasProduct) {
+          ctx.font = "bold 11px Inter, system-ui, sans-serif";
+          const label = selectedSurface.surfaceType;
+          const tw = ctx.measureText(label).width;
+          ctx.fillStyle = "rgba(139, 92, 246, 0.85)";
+          ctx.fillRect(bx, by - 18, tw + 10, 18);
+          ctx.fillStyle = "#fff";
+          ctx.fillText(label, bx + 5, by - 5);
+        }
       }
 
-      // Draw product if loaded
+      // Draw product if loaded (always renders regardless of toggle)
       const prodImg = productImgRef.current;
       if (prodImg && prodImg.complete && bw > 0 && bh > 0) {
         drawProduct(ctx, prodImg, bx, by, bw, bh, transform, blend);
 
-        // Draw resize handles + rotation handle
-        const handleSize = 8;
-        ctx.fillStyle = "rgba(139, 92, 246, 0.9)";
+        // Draw resize handles + rotation handle (hidden when toggle is off)
+        if (showBoundingBox) {
+          const handleSize = 8;
+          ctx.fillStyle = "rgba(139, 92, 246, 0.9)";
 
-        // Corner handles
-        const corners = [
-          { x: bx, y: by },
-          { x: bx + bw, y: by },
-          { x: bx, y: by + bh },
-          { x: bx + bw, y: by + bh },
-        ];
-        for (const c of corners) {
-          ctx.fillRect(c.x - handleSize / 2, c.y - handleSize / 2, handleSize, handleSize);
+          // Corner handles
+          const corners = [
+            { x: bx, y: by },
+            { x: bx + bw, y: by },
+            { x: bx, y: by + bh },
+            { x: bx + bw, y: by + bh },
+          ];
+          for (const c of corners) {
+            ctx.fillRect(c.x - handleSize / 2, c.y - handleSize / 2, handleSize, handleSize);
+          }
+
+          // Rotation handle (orange dot above center)
+          ctx.beginPath();
+          ctx.arc(bx + bw / 2, by - 22, 6, 0, Math.PI * 2);
+          ctx.fillStyle = "rgba(251, 146, 60, 0.9)";
+          ctx.fill();
+          ctx.strokeStyle = "rgba(255, 255, 255, 0.8)";
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+
+          // Line from top-center to rotation handle
+          ctx.beginPath();
+          ctx.moveTo(bx + bw / 2, by);
+          ctx.lineTo(bx + bw / 2, by - 16);
+          ctx.strokeStyle = "rgba(251, 146, 60, 0.5)";
+          ctx.lineWidth = 1;
+          ctx.stroke();
         }
-
-        // Rotation handle (orange dot above center)
-        ctx.beginPath();
-        ctx.arc(bx + bw / 2, by - 22, 6, 0, Math.PI * 2);
-        ctx.fillStyle = "rgba(251, 146, 60, 0.9)";
-        ctx.fill();
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.8)";
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-
-        // Line from top-center to rotation handle
-        ctx.beginPath();
-        ctx.moveTo(bx + bw / 2, by);
-        ctx.lineTo(bx + bw / 2, by - 16);
-        ctx.strokeStyle = "rgba(251, 146, 60, 0.5)";
-        ctx.lineWidth = 1;
-        ctx.stroke();
       }
 
-      // "Drop product here" text if no product
-      if (!hasProduct) {
+      // "Drop product here" text if no product (hidden when toggle is off)
+      if (!hasProduct && showBoundingBox) {
         ctx.fillStyle = "rgba(139, 92, 246, 0.15)";
         ctx.fillRect(bx, by, bw, bh);
 
@@ -1181,7 +1187,7 @@ export default function PlacementPreviewModal({
     }
 
     animFrameRef.current = requestAnimationFrame(renderFrame);
-  }, [selectedSurface, transform, blend, isVideoMode, motionData]);
+  }, [selectedSurface, transform, blend, isVideoMode, motionData, showBoundingBox]);
 
   // Start/stop render loop
   useEffect(() => {
@@ -1656,6 +1662,16 @@ export default function PlacementPreviewModal({
                 <p className="text-xs sm:text-sm text-muted-foreground line-clamp-1">{videoTitle}</p>
               </div>
               <div className="flex items-center gap-1.5 sm:gap-3 flex-wrap shrink-0">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="gap-1.5 text-xs sm:text-sm h-8"
+                  onClick={() => setShowBoundingBox(!showBoundingBox)}
+                  title={showBoundingBox ? "Hide bounding box" : "Show bounding box"}
+                >
+                  {showBoundingBox ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  <span className="hidden sm:inline">{showBoundingBox ? "Hide" : "Show"} Box</span>
+                </Button>
                 {hasProduct && (
                   <>
                     <Button
