@@ -4,6 +4,12 @@ import { Film, Play, Sparkles, Users, Zap, ArrowRight, Globe } from "lucide-reac
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 
 // Hero video path — Replit generates this file (fast-cut montage: podcasts, kitchen, music)
@@ -12,32 +18,56 @@ import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 // import createsHeroVideo from "@assets/generated_videos/fullscale_creates_hero_loop.mp4";
 const CREATES_HERO_VIDEO: string | null = "/attached_assets/fullscale_creates_hero_loop.mp4";
 
-// Placeholder video showcase — will be replaced with real links from the user
-// Thumbnails: wider shots showing full scene, not close-ups
+// Video showcase — real Vimeo content from vimeo.com/whtwrks
 const VIDEO_SHOWCASE = [
   {
-    title: "Premium Content Production",
-    description: "Full-service video production for creators who want to level up",
-    thumbnail: "https://images.unsplash.com/photo-1574717024653-61fd2cf4d44d?w=800&h=450&fit=crop",
-    tag: "Production",
+    title: "WHTWRKS Sizzle Reel",
+    description: "A fast look at the range of content we produce",
+    thumbnail: "https://i.vimeocdn.com/video/1988136521-24c03e2ce4dbaa6cca11d7ef7144df5b57efffd8988c66051dc917bddcc48c52-d_640x360",
+    tag: "Reel",
+    vimeoId: "1061409233",
   },
   {
-    title: "Brand Integration Stories",
-    description: "Authentic brand narratives woven into creator content",
-    thumbnail: "https://images.unsplash.com/photo-1524117074681-31bd4de22ad3?w=800&h=450&fit=crop",
+    title: "Deleon at the NAACP Image Awards",
+    description: "Brand activation coverage at one of culture's biggest nights",
+    thumbnail: "https://i.vimeocdn.com/video/2011839791-0e13911c3ea48cb8e48c0601f118107660c026e782eaa20dc6f33613e52a0cfd-d_640x360",
     tag: "Brand",
+    vimeoId: "1081125562",
   },
   {
-    title: "Podcast & Studio",
-    description: "Professional studio content with cinematic quality",
-    thumbnail: "https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?w=800&h=450&fit=crop",
-    tag: "Podcast",
+    title: "ANTA x Kyrie — The Journey is the Reward",
+    description: "Sizzle reel for the ANTA x Kyrie Irving partnership",
+    thumbnail: "https://i.vimeocdn.com/video/1751193427-8f6f48de3b0156f20b6dccd29ff7a844408ec7bf33eaa3be0d15ca4ccb696539-d_640x360",
+    tag: "Sports",
+    vimeoId: "882921661",
   },
   {
-    title: "Music Studio Sessions",
-    description: "Intimate studio recordings that capture the creative process",
-    thumbnail: "https://images.unsplash.com/photo-1598653222000-6b7b7a552625?w=800&h=450&fit=crop",
-    tag: "Culture",
+    title: "Chase United Ep. 2 — The Airport",
+    description: "Branded content series for Chase United",
+    thumbnail: "https://i.vimeocdn.com/video/1681997467-f1eff679e856e4d91be65c2d4d7e516451bc5feabaf592c606c24a46e09ccaab-d_640x360",
+    tag: "Series",
+    vimeoId: "834907261",
+  },
+  {
+    title: "Nike Blueprint",
+    description: "Campaign content for Nike's Blueprint initiative",
+    thumbnail: "https://i.vimeocdn.com/video/1552867525-26f71cfc72e9e88e091b6199a38294163734a67b5c6ff7c0a741c4efd69183f8-d_640x360",
+    tag: "Campaign",
+    vimeoId: "773881582",
+  },
+  {
+    title: "Machine Gun Kelly at the MTV VMAs × Doritos",
+    description: "Sponsored activation with MGK at the VMAs",
+    thumbnail: "https://i.vimeocdn.com/video/1241264300-8544249c591846901a6df3cf6b20c3dbc8120b79bc7431759973c0ad8f1773c1-d_640x360",
+    tag: "Music",
+    vimeoId: "604858629",
+  },
+  {
+    title: "WHTWRKS Original",
+    description: "Original content from the WHTWRKS creative studio",
+    thumbnail: "",
+    tag: "Original",
+    vimeoId: "1064709284",
   },
 ];
 
@@ -67,6 +97,7 @@ const CAPABILITIES = [
 export default function FullScaleCreates() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [videoFailed, setVideoFailed] = useState(false);
+  const [activeVideo, setActiveVideo] = useState<typeof VIDEO_SHOWCASE[number] | null>(null);
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -196,22 +227,31 @@ export default function FullScaleCreates() {
           </p>
         </motion.div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {VIDEO_SHOWCASE.map((video, idx) => (
             <motion.div
-              key={video.title}
+              key={video.vimeoId}
               initial={{ opacity: 0, y: 20 }}
               whileInView={{ opacity: 1, y: 0 }}
               viewport={{ once: true }}
-              transition={{ delay: idx * 0.1, duration: 0.4 }}
+              transition={{ delay: idx * 0.08, duration: 0.4 }}
             >
-              <Card className="overflow-hidden group border-white/5 hover:border-primary/20 transition-all duration-300 cursor-pointer">
+              <Card
+                className="overflow-hidden group border-white/5 hover:border-primary/20 transition-all duration-300 cursor-pointer"
+                onClick={() => video.vimeoId && setActiveVideo(video)}
+              >
                 <div className="relative aspect-video bg-muted overflow-hidden">
-                  <img
-                    src={video.thumbnail}
-                    alt={video.title}
-                    className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
-                  />
+                  {video.thumbnail ? (
+                    <img
+                      src={video.thumbnail}
+                      alt={video.title}
+                      className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+                    />
+                  ) : (
+                    <div className="w-full h-full bg-gradient-to-br from-zinc-800 to-zinc-900 flex items-center justify-center">
+                      <Film className="w-10 h-10 text-zinc-600" />
+                    </div>
+                  )}
                   <div className="absolute inset-0 bg-black/30 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                     <div className="w-14 h-14 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center">
                       <Play className="w-6 h-6 text-white ml-0.5" />
@@ -229,6 +269,28 @@ export default function FullScaleCreates() {
             </motion.div>
           ))}
         </div>
+
+        {/* Vimeo Playback Modal */}
+        <Dialog open={!!activeVideo} onOpenChange={(open) => !open && setActiveVideo(null)}>
+          <DialogContent className="max-w-4xl p-0 bg-black border-white/10 overflow-hidden">
+            <DialogHeader className="p-4 pb-2">
+              <DialogTitle className="text-white">
+                {activeVideo?.title}
+              </DialogTitle>
+            </DialogHeader>
+            <div className="aspect-video w-full">
+              {activeVideo?.vimeoId && (
+                <iframe
+                  src={`https://player.vimeo.com/video/${activeVideo.vimeoId}?autoplay=1&title=0&byline=0&portrait=0`}
+                  className="w-full h-full border-0"
+                  allow="autoplay; fullscreen; picture-in-picture"
+                  allowFullScreen
+                  title={activeVideo.title}
+                />
+              )}
+            </div>
+          </DialogContent>
+        </Dialog>
       </section>
 
       {/* Thesis / Philosophy Section */}
