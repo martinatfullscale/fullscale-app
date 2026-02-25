@@ -155,6 +155,7 @@ function Router() {
         <Route path="/content" component={FullScaleCreates} />
         <Route path="/studio" component={FullScaleStudio} />
         <Route path="/studio/pricing" component={StudioPricing} />
+        <Route path="/creates" component={FullScaleCreates} />
         <Route path="/about" component={ComingSoon} />
         <Route path="/waitlist" component={WaitlistPage} />
         <Route path="/c/:slug" component={CreatorProfile} />
@@ -204,11 +205,11 @@ function Router() {
       <Route path="/content" component={FullScaleCreates} />
       <Route path="/studio" component={FullScaleStudio} />
       <Route path="/studio/pricing" component={StudioPricing} />
+      <Route path="/creates" component={FullScaleCreates} />
       <Route path="/about" component={ComingSoon} />
       <Route path="/c/:slug" component={CreatorProfile} />
       <Route path="/s/:slug" component={SharedView} />
       <Route path="/remix/:videoId" component={RemixEngine} />
-      <Route path="/studio/upload" component={StudioUpload} />
       <Route>
         {() => (
           <AuthenticatedLayout userType={currentRole}>

@@ -1163,7 +1163,7 @@ export default function Landing() {
           {/* Desktop Navigation - visible at 600px and above */}
           <div className="hidden min-[600px]:flex items-center gap-3">
             <a
-              href="/content"
+              href="/creates"
               className="px-5 py-2 rounded-lg font-medium text-sm border border-white/20 bg-white/10 backdrop-blur-sm hover:bg-white/20 transition-colors text-white min-h-[44px] flex items-center"
               data-testid="link-nav-creates"
             >
