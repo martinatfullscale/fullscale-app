@@ -242,7 +242,7 @@ export default function FullScaleCreates() {
           >
             <div className="text-5xl mb-6 opacity-20">"</div>
             <p className="text-xl md:text-2xl text-foreground leading-relaxed font-medium mb-6">
-              We believe in the power of real stories told by real people. AI is a tool that amplifies creativity — it doesn't replace the human connection that makes content resonate.
+              We believe in the power of real stories told by real people. FullScale Creates amplifies creativity using the human connection that makes content resonate.
             </p>
             <p className="text-muted-foreground text-sm uppercase tracking-widest">
               The FullScale Creates Philosophy
