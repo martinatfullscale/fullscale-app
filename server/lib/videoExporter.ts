@@ -504,13 +504,29 @@ export async function processVideoExport(
       try {
         let imageBuffer: Buffer | null = null;
 
-        // Handle both local paths and URLs
-        if (url.startsWith("/")) {
+        // Handle Object Storage URLs (/storage/...), local paths, HTTP URLs, and data URIs
+        if (url.startsWith("/storage/")) {
+          // Replit Object Storage — convert /storage/... to public/... key and download
+          const objectKey = url.replace(/^\/storage\//, "public/");
+          console.log(`[VideoExporter] Loading product from Object Storage: ${objectKey}`);
+          try {
+            const { fileExistsInStorage, getStorageStream } = await import("./objectStorage");
+            if (await fileExistsInStorage(objectKey)) {
+              const { file } = getStorageStream(objectKey);
+              const [downloadBuffer] = await file.download();
+              imageBuffer = downloadBuffer;
+            } else {
+              console.warn(`[VideoExporter] Product image not in Object Storage: ${objectKey}`);
+            }
+          } catch (storageErr: any) {
+            console.warn(`[VideoExporter] Object Storage download failed for product: ${storageErr.message}`);
+          }
+        } else if (url.startsWith("/")) {
           const localPath = path.join("./public", url);
           if (fs.existsSync(localPath)) {
             imageBuffer = fs.readFileSync(localPath);
           } else {
-            console.warn(`[VideoExporter] Product image not found: ${localPath}`);
+            console.warn(`[VideoExporter] Product image not found locally: ${localPath}`);
           }
         } else if (url.startsWith("http")) {
           const response = await fetch(url);
@@ -532,9 +548,12 @@ export async function processVideoExport(
             width: meta.width || 100,
             height: meta.height || 100,
           });
+          console.log(`[VideoExporter] Loaded product image (${meta.width}x${meta.height}) from: ${url.substring(0, 80)}...`);
+        } else {
+          console.warn(`[VideoExporter] ⚠️ Product image buffer is null for URL: ${url.substring(0, 80)}...`);
         }
       } catch (err: any) {
-        console.warn(`[VideoExporter] Failed to load product image ${url}: ${err.message}`);
+        console.warn(`[VideoExporter] Failed to load product image ${url.substring(0, 80)}: ${err.message}`);
       }
     }
 

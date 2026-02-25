@@ -5,7 +5,7 @@ import {
   CheckCircle, AlertCircle, Clock, BarChart3, Sparkles,
   Tv, Smartphone, Globe, ThumbsUp, ThumbsDown, Settings,
   RefreshCw, Brain, Volume2, VolumeX, Maximize2,
-  Layers, ChevronDown, ChevronUp, Pencil, RotateCcw, Minus, Plus
+  Layers, ChevronDown, ChevronUp, Pencil, RotateCcw, Minus, Plus, Trash2
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -890,7 +890,13 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
                     </h3>
                     <div className="space-y-3">
                       {stitchPlans.map(plan => (
-                        <HighlightReelCard key={plan.id} plan={plan} />
+                        <HighlightReelCard
+                          key={plan.id}
+                          plan={plan}
+                          onDelete={(planId) => {
+                            setStitchPlans(prev => prev.filter(p => p.id !== planId));
+                          }}
+                        />
                       ))}
                     </div>
                   </div>
@@ -919,14 +925,16 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
 
 // ─── Sub-components ──────────────────────────────────────────────
 
-function HighlightReelCard({ plan }: { plan: StitchPlan }) {
+function HighlightReelCard({ plan, onDelete }: { plan: StitchPlan; onDelete?: (planId: number) => void }) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const { toast } = useToast();
   const [isPlaying, setIsPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(true);
   const [progress, setProgress] = useState(0);
   const [showPlayer, setShowPlayer] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const videoSrc = plan.generatedClipId
     ? `/api/remix/clips/${plan.generatedClipId}/download`
@@ -966,7 +974,7 @@ function HighlightReelCard({ plan }: { plan: StitchPlan }) {
     <div className="bg-gray-800/50 rounded-xl border border-gray-700/50 overflow-hidden">
       {/* Video player area */}
       {plan.status === "completed" && videoSrc && showPlayer && (
-        <div className="relative bg-black">
+        <div className="relative bg-black aspect-video">
           <video
             ref={videoRef}
             src={videoSrc}
@@ -976,7 +984,7 @@ function HighlightReelCard({ plan }: { plan: StitchPlan }) {
             onPlay={() => setIsPlaying(true)}
             onPause={() => setIsPlaying(false)}
             onLoadedMetadata={() => { if (videoRef.current) setDuration(videoRef.current.duration); }}
-            className="w-full max-h-[300px] object-contain"
+            className="w-full h-full object-contain"
             playsInline
             preload="metadata"
           />
@@ -1031,9 +1039,37 @@ function HighlightReelCard({ plan }: { plan: StitchPlan }) {
             </Badge>
             <span className="text-sm font-medium text-white">{plan.suggestedTitle || "Untitled Reel"}</span>
           </div>
-          <span className="text-xs text-gray-500">
-            {plan.totalDuration ? `${plan.totalDuration.toFixed(0)}s` : ""}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-gray-500">
+              {plan.totalDuration ? `${plan.totalDuration.toFixed(0)}s` : ""}
+            </span>
+            <button
+              className="text-gray-500 hover:text-red-400 transition-colors p-1 rounded hover:bg-red-500/10"
+              title="Delete highlight reel"
+              disabled={isDeleting}
+              onClick={async () => {
+                if (!confirm("Delete this highlight reel?")) return;
+                setIsDeleting(true);
+                try {
+                  const res = await fetch(`/api/remix/stitch-plans/${plan.id}`, {
+                    method: "DELETE",
+                    credentials: "include",
+                  });
+                  if (res.ok) {
+                    toast({ title: "Highlight reel deleted" });
+                    onDelete?.(plan.id);
+                  } else {
+                    throw new Error("Failed to delete");
+                  }
+                } catch {
+                  toast({ title: "Delete failed", variant: "destructive" });
+                  setIsDeleting(false);
+                }
+              }}
+            >
+              {isDeleting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+            </button>
+          </div>
         </div>
 
         {plan.narrativeArc && (
@@ -1171,7 +1207,7 @@ function ClipCard({
     >
       {/* Video Player / Thumbnail area */}
       {clipSrc && showPlayer ? (
-        <div className="relative bg-black">
+        <div className="relative bg-black aspect-video">
           <video
             ref={videoRef}
             src={clipSrc}
@@ -1180,7 +1216,7 @@ function ClipCard({
             onEnded={() => { setIsPlaying(false); setProgress(0); }}
             onPlay={() => setIsPlaying(true)}
             onPause={() => setIsPlaying(false)}
-            className="w-full max-h-[360px] object-contain"
+            className="w-full h-full object-contain"
             playsInline
             preload="metadata"
           />

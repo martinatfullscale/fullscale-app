@@ -7021,6 +7021,23 @@ export async function registerRoutes(
     }
   });
 
+  // DELETE /api/remix/stitch-plans/:planId — Delete a stitch plan (highlight reel)
+  app.delete("/api/remix/stitch-plans/:planId", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const planId = parseInt(req.params.planId);
+      if (isNaN(planId)) return res.status(400).json({ error: "Invalid plan ID" });
+
+      const plan = await storage.getStitchPlan(planId);
+      if (!plan) return res.status(404).json({ error: "Stitch plan not found" });
+
+      await storage.deleteStitchPlan(planId);
+      res.json({ success: true, message: "Highlight reel deleted" });
+    } catch (err: any) {
+      console.error(`[StitchPlans] Delete failed for plan ${req.params.planId}:`, err);
+      res.status(500).json({ error: err.message || "Failed to delete stitch plan" });
+    }
+  });
+
   // ─── AI Co-Pilot (Phase 4) ───────────────────────────────────
 
   // POST /api/remix/:videoId/copilot/ask — Ask the co-pilot (SSE streaming)

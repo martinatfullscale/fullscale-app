@@ -184,6 +184,7 @@ export interface IStorage {
   getStitchPlan(planId: number): Promise<StitchPlan | undefined>;
   getStitchPlansByVideo(videoId: number): Promise<StitchPlan[]>;
   updateStitchPlanStatus(planId: number, status: string, updates?: { outputPath?: string; thumbnailPath?: string; qualityScore?: number; generatedClipId?: number; errorMessage?: string }): Promise<StitchPlan | undefined>;
+  deleteStitchPlan(planId: number): Promise<void>;
   // Editorial clips methods
   saveEditorialClips(videoId: number, userId: number, clips: any[]): Promise<EditorialClip[]>;
   getEditorialClipsByVideo(videoId: number): Promise<EditorialClip[]>;
@@ -1206,6 +1207,10 @@ export class DatabaseStorage implements IStorage {
       .where(eq(stitchPlans.id, planId))
       .returning();
     return result;
+  }
+
+  async deleteStitchPlan(planId: number): Promise<void> {
+    await db.delete(stitchPlans).where(eq(stitchPlans.id, planId));
   }
 
   // ── Editorial Clips Methods ──
