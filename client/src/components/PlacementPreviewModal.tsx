@@ -998,6 +998,11 @@ export default function PlacementPreviewModal({
           const clampedIndex = Math.min(frameIndex, motionData!.transforms.length - 1);
           const pos = motionData!.transforms[clampedIndex];
 
+          // Scene-change detection: if position is null, surface is not visible at this time
+          if (!pos) {
+            bx = -9999; by = -9999; bw = 0; bh = 0;
+          } else {
+
           // Anchor-lock: track the top-right corner of the bbox as the fixed reference point
           // The product's right edge stays pinned to this anchor throughout the scene
           const anchorX = (pos.x + pos.w) * canvas.width;   // top-right X of detected bbox
@@ -1045,6 +1050,7 @@ export default function PlacementPreviewModal({
           by = tracking.displayOffsetY;
           bw = targetBW;
           bh = targetBH;
+          }
         } else {
           // ── STRATEGY B: Global Optical Flow (camera motion estimation) ──
           // Measures how the ENTIRE frame shifts between consecutive video frames.
@@ -1276,6 +1282,87 @@ export default function PlacementPreviewModal({
   }, []);
 
   // ============================================================================
+  // KEYBOARD SHORTCUTS FOR VIDEO PLAYBACK
+  // ============================================================================
+
+  useEffect(() => {
+    if (!isVideoMode) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const videoEl = videoRef.current;
+      if (!videoEl) return;
+
+      // Ignore if user is typing in an input
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+
+      switch (e.key) {
+        case " ":
+        case "k":
+        case "K":
+          e.preventDefault();
+          if (isVideoPlaying) {
+            videoEl.pause();
+            setIsVideoPlaying(false);
+          } else {
+            videoEl.play().then(() => setIsVideoPlaying(true)).catch(() => {});
+          }
+          break;
+        case "ArrowLeft":
+          e.preventDefault();
+          {
+            const step = e.shiftKey ? 1 : 5;
+            const newTime = Math.max(0, videoEl.currentTime - step);
+            videoEl.currentTime = newTime;
+            setVideoCurrentTime(newTime);
+            // Reset tracking so product snaps to correct position
+            const tracking = trackingRef.current;
+            tracking.initialized = false;
+            tracking.prevFrameData = null;
+            tracking.velocityX = 0;
+            tracking.velocityY = 0;
+          }
+          break;
+        case "ArrowRight":
+          e.preventDefault();
+          {
+            const step = e.shiftKey ? 1 : 5;
+            const newTime = Math.min(videoDuration, videoEl.currentTime + step);
+            videoEl.currentTime = newTime;
+            setVideoCurrentTime(newTime);
+            const tracking = trackingRef.current;
+            tracking.initialized = false;
+            tracking.prevFrameData = null;
+            tracking.velocityX = 0;
+            tracking.velocityY = 0;
+          }
+          break;
+        case "Home":
+        case "0":
+          e.preventDefault();
+          videoEl.currentTime = 0;
+          setVideoCurrentTime(0);
+          {
+            const tracking = trackingRef.current;
+            tracking.initialized = false;
+            tracking.prevFrameData = null;
+            tracking.velocityX = 0;
+            tracking.velocityY = 0;
+          }
+          break;
+        case "End":
+          e.preventDefault();
+          videoEl.currentTime = videoDuration;
+          setVideoCurrentTime(videoDuration);
+          break;
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isVideoMode, isVideoPlaying, videoDuration]);
+
+  // ============================================================================
   // VIDEO EXPORT
   // ============================================================================
 
@@ -1321,6 +1408,12 @@ export default function PlacementPreviewModal({
       blend,
       keyframes,
       productAspectRatio,
+      // Send pre-computed motion-track data so export uses identical positions as preview
+      motionTrackData: motionData?.available && motionData.transforms.length > 0 ? {
+        transforms: motionData.transforms,
+        fps: motionData.fps,
+        duration: motionData.duration,
+      } : null,
     }];
 
     try {
@@ -1813,23 +1906,68 @@ export default function PlacementPreviewModal({
                       </Button>
                       {isVideoMode && (
                         <>
-                          {/* Seek bar */}
-                          <input
-                            type="range"
-                            min={0}
-                            max={videoDuration || 1}
-                            step={0.1}
-                            value={videoCurrentTime}
-                            onChange={(e) => {
-                              const time = parseFloat(e.target.value);
+                          {/* Custom seek bar — wide hit area, visible track, drag support */}
+                          <div
+                            className="flex-1 relative h-6 flex items-center cursor-pointer group"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+                              const time = pct * (videoDuration || 1);
                               if (videoRef.current) {
                                 videoRef.current.currentTime = time;
                                 setVideoCurrentTime(time);
+                                // Reset tracking state so product snaps to correct position
+                                const tracking = trackingRef.current;
+                                tracking.initialized = false;
+                                tracking.prevFrameData = null;
+                                tracking.cumulativeOffsetX = 0;
+                                tracking.cumulativeOffsetY = 0;
+                                tracking.displayOffsetX = 0;
+                                tracking.displayOffsetY = 0;
+                                tracking.velocityX = 0;
+                                tracking.velocityY = 0;
                               }
                             }}
-                            onClick={(e) => e.stopPropagation()}
-                            className="flex-1 h-1 accent-primary cursor-pointer"
-                          />
+                            onMouseDown={(e) => {
+                              e.stopPropagation();
+                              e.preventDefault();
+                              const bar = e.currentTarget;
+                              const seek = (ev: MouseEvent) => {
+                                const rect = bar.getBoundingClientRect();
+                                const pct = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
+                                const time = pct * (videoDuration || 1);
+                                if (videoRef.current) {
+                                  videoRef.current.currentTime = time;
+                                  setVideoCurrentTime(time);
+                                }
+                              };
+                              const up = () => {
+                                window.removeEventListener("mousemove", seek);
+                                window.removeEventListener("mouseup", up);
+                                // Reset tracking after drag
+                                const tracking = trackingRef.current;
+                                tracking.initialized = false;
+                                tracking.prevFrameData = null;
+                                tracking.velocityX = 0;
+                                tracking.velocityY = 0;
+                              };
+                              window.addEventListener("mousemove", seek);
+                              window.addEventListener("mouseup", up);
+                            }}
+                          >
+                            {/* Track background */}
+                            <div className="absolute left-0 right-0 h-1.5 bg-white/20 rounded-full group-hover:h-2 transition-all">
+                              {/* Progress fill */}
+                              <div
+                                className="h-full bg-purple-500 rounded-full relative"
+                                style={{ width: `${videoDuration ? (videoCurrentTime / videoDuration) * 100 : 0}%` }}
+                              >
+                                {/* Thumb indicator */}
+                                <div className="absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full shadow-md opacity-0 group-hover:opacity-100 transition-opacity" />
+                              </div>
+                            </div>
+                          </div>
                           <span className="text-[10px] text-white/70 tabular-nums min-w-[60px] text-right">
                             {Math.floor(videoCurrentTime / 60)}:{String(Math.floor(videoCurrentTime % 60)).padStart(2, "0")}
                             {" / "}

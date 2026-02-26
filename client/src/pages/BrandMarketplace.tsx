@@ -64,6 +64,7 @@ interface FeaturedCreator {
   headline: string | null;
   profileImage: string | null;
   thumbnails: string[];
+  category?: string;
   stats: {
     totalVideos: number;
     totalViews: number;
@@ -248,55 +249,108 @@ export default function BrandMarketplace() {
     staleTime: 5 * 60 * 1000, // Cache for 5 minutes
   });
 
-  // Dummy featured creators to fill out the 2-row grid alongside real data
+  // Dummy featured creators — 8 slots for 2 rows of 4
   const DUMMY_FEATURED_CREATORS: FeaturedCreator[] = [
     {
       name: "Jaylen Carter",
       slug: "jaylen",
       headline: "Culture & Lifestyle Creator",
+      category: "Lifestyle",
       profileImage: null,
-      thumbnails: [
-        "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=200&h=120&fit=crop",
-        "https://images.unsplash.com/photo-1524758631624-e2822e304c36?w=200&h=120&fit=crop",
-        "https://images.unsplash.com/photo-1505373877841-8d25f7d46678?w=200&h=120&fit=crop",
-        "https://images.unsplash.com/photo-1536240478700-b869070f9279?w=200&h=120&fit=crop",
-      ],
+      thumbnails: ["https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=640&h=360&fit=crop"],
       stats: { totalVideos: 24, totalViews: 1850000, totalSurfaces: 87, subscribers: 145000 },
     },
     {
       name: "Aisha Monet",
       slug: "aisha",
       headline: "Podcast Host · Sports & Entertainment",
+      category: "Sports",
       profileImage: null,
-      thumbnails: [
-        "https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?w=200&h=120&fit=crop",
-        "https://images.unsplash.com/photo-1478737270239-2f02b77fc618?w=200&h=120&fit=crop",
-        "https://images.unsplash.com/photo-1590602847861-f357a9332bbc?w=200&h=120&fit=crop",
-        "https://images.unsplash.com/photo-1612287230202-1ff1d85d1bdf?w=200&h=120&fit=crop",
-      ],
+      thumbnails: ["https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?w=640&h=360&fit=crop"],
       stats: { totalVideos: 38, totalViews: 3200000, totalSurfaces: 142, subscribers: 290000 },
     },
     {
       name: "Derek Thompson",
       slug: "derek",
       headline: "Tech Reviews & Unboxing",
+      category: "Tech",
       profileImage: null,
-      thumbnails: [
-        "https://images.unsplash.com/photo-1593642702821-c8da6771f0c6?w=200&h=120&fit=crop",
-        "https://images.unsplash.com/photo-1496181133206-80ce9b88a853?w=200&h=120&fit=crop",
-        "https://images.unsplash.com/photo-1518770660439-4636190af475?w=200&h=120&fit=crop",
-        "https://images.unsplash.com/photo-1527443224154-c4a3942d3acf?w=200&h=120&fit=crop",
-      ],
+      thumbnails: ["https://images.unsplash.com/photo-1593642702821-c8da6771f0c6?w=640&h=360&fit=crop"],
       stats: { totalVideos: 52, totalViews: 5400000, totalSurfaces: 210, subscribers: 420000 },
+    },
+    {
+      name: "Nina Brooks",
+      slug: "nina",
+      headline: "Home & Interior Design",
+      category: "Home",
+      profileImage: null,
+      thumbnails: ["https://images.unsplash.com/photo-1618221195710-dd6b41faaea6?w=640&h=360&fit=crop"],
+      stats: { totalVideos: 31, totalViews: 2400000, totalSurfaces: 115, subscribers: 198000 },
+    },
+    {
+      name: "Marcus Cole",
+      slug: "marcus",
+      headline: "Music Production & Beats",
+      category: "Music",
+      profileImage: null,
+      thumbnails: ["https://images.unsplash.com/photo-1478737270239-2f02b77fc618?w=640&h=360&fit=crop"],
+      stats: { totalVideos: 67, totalViews: 8100000, totalSurfaces: 290, subscribers: 560000 },
+    },
+    {
+      name: "Keyla Voss",
+      slug: "keyla",
+      headline: "Fitness & Wellness Coach",
+      category: "Fitness",
+      profileImage: null,
+      thumbnails: ["https://images.unsplash.com/photo-1571019614242-c5c5dee9f50b?w=640&h=360&fit=crop"],
+      stats: { totalVideos: 45, totalViews: 4700000, totalSurfaces: 178, subscribers: 340000 },
+    },
+    {
+      name: "Trey Okonkwo",
+      slug: "trey",
+      headline: "Auto & Motorsport",
+      category: "Auto",
+      profileImage: null,
+      thumbnails: ["https://images.unsplash.com/photo-1494976388531-d1058494cdd8?w=640&h=360&fit=crop"],
+      stats: { totalVideos: 29, totalViews: 1600000, totalSurfaces: 64, subscribers: 125000 },
+    },
+    {
+      name: "Sasha Kim",
+      slug: "sasha",
+      headline: "Food & Cooking",
+      category: "Food",
+      profileImage: null,
+      thumbnails: ["https://images.unsplash.com/photo-1556909114-f6e7ad7d3136?w=640&h=360&fit=crop"],
+      stats: { totalVideos: 41, totalViews: 3900000, totalSurfaces: 155, subscribers: 275000 },
     },
   ];
 
-  // Merge real featured creators from API with dummy placeholders to fill 2 rows (up to 6)
+  // Helper to format view counts
+  const formatViews = (views: number) => {
+    if (views >= 1000000) return `${(views / 1000000).toFixed(1)}M`;
+    if (views >= 1000) return `${(views / 1000).toFixed(0)}K`;
+    return String(views);
+  };
+
+  // Derive category from headline if not explicitly set
+  const getCategory = (creator: FeaturedCreator) => {
+    if (creator.category) return creator.category;
+    const h = (creator.headline || "").toLowerCase();
+    if (h.includes("tech")) return "Tech";
+    if (h.includes("music")) return "Music";
+    if (h.includes("sport")) return "Sports";
+    if (h.includes("lifestyle") || h.includes("culture")) return "Lifestyle";
+    if (h.includes("food") || h.includes("cook")) return "Food";
+    if (h.includes("fitness") || h.includes("wellness")) return "Fitness";
+    return "Creator";
+  };
+
+  // Merge real featured creators from API with dummy placeholders — 2 rows of 4 (8 total)
   const apiFeaturedCreators = featuredCreatorsData?.creators || [];
   const featuredCreators = [
     ...apiFeaturedCreators,
     ...DUMMY_FEATURED_CREATORS.filter(d => !apiFeaturedCreators.some(a => a.slug === d.slug)),
-  ].slice(0, 6);
+  ].slice(0, 8);
 
   const buyMutation = useMutation({
     mutationFn: async (opportunity: MarketplaceOpportunity) => {
@@ -581,79 +635,41 @@ export default function BrandMarketplace() {
                 {featuredCreators.length} Creators
               </Badge>
             </div>
-            {/* 2-row grid: 3 per row on desktop, 2 on tablet, 1 on mobile — shows up to 6 creators in 2 rows */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {featuredCreators.slice(0, 6).map((creator, idx) => (
+            {/* 2-row grid: 4 per row on desktop, 3 on tablet, 2 on mobile — shows up to 8 creators */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+              {featuredCreators.slice(0, 8).map((creator, idx) => (
                 <motion.div
                   key={creator.slug}
                   initial={{ opacity: 0, y: 15 }}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: idx * 0.08 }}
+                  transition={{ delay: idx * 0.06 }}
                 >
                   <Link href={`/c/${creator.slug}`}>
-                    <Card className="group overflow-hidden hover-elevate cursor-pointer border-white/10 hover:border-purple-500/40 transition-all duration-300">
-                      {/* Content Thumbnails Strip */}
-                      <div className="grid grid-cols-4 gap-px bg-black/60">
-                        {(creator.thumbnails?.length > 0 ? creator.thumbnails : [
-                          "https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?w=200&h=120&fit=crop",
-                          "https://images.unsplash.com/photo-1478737270239-2f02b77fc618?w=200&h=120&fit=crop",
-                          "https://images.unsplash.com/photo-1505373877841-8d25f7d46678?w=200&h=120&fit=crop",
-                          "https://images.unsplash.com/photo-1536240478700-b869070f9279?w=200&h=120&fit=crop",
-                        ]).slice(0, 4).map((thumb, i) => (
-                          <div key={i} className="relative overflow-hidden" style={{ paddingBottom: '75%' }}>
-                            <img
-                              src={thumb}
-                              alt={`${creator.name} content ${i + 1}`}
-                              className="absolute inset-0 w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-                              onError={(e) => {
-                                (e.target as HTMLImageElement).src = `https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?w=200&h=120&fit=crop`;
-                              }}
-                            />
-                          </div>
-                        ))}
+                    <Card className="group overflow-hidden cursor-pointer border-white/10 hover:border-purple-500/40 transition-all duration-300">
+                      {/* Single key image with name overlay */}
+                      <div className="relative aspect-video overflow-hidden">
+                        <img
+                          src={creator.thumbnails?.[0] || "https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?w=640&h=360&fit=crop"}
+                          alt={creator.name}
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).src = "https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?w=640&h=360&fit=crop";
+                          }}
+                        />
+                        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent p-3">
+                          <h3 className="font-semibold text-white text-sm truncate">{creator.name}</h3>
+                        </div>
                       </div>
-                      <CardContent className="p-4">
-                        <div className="flex items-center gap-3 mb-3">
-                          {/* Avatar */}
-                          <div className="w-10 h-10 rounded-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center text-white font-bold text-sm flex-shrink-0 overflow-hidden">
-                            {creator.profileImage ? (
-                              <img src={creator.profileImage} alt={creator.name} className="w-full h-full object-cover" />
-                            ) : (
-                              creator.name.charAt(0).toUpperCase()
-                            )}
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <h3 className="font-semibold text-white text-sm truncate group-hover:text-purple-300 transition-colors">{creator.name}</h3>
-                            {creator.headline && (
-                              <p className="text-xs text-white/60 truncate">{creator.headline}</p>
-                            )}
-                          </div>
-                          <span className="text-xs text-purple-400 group-hover:text-purple-300 transition-colors flex items-center gap-1 flex-shrink-0">
-                            <ExternalLink className="w-3 h-3" />
-                          </span>
-                        </div>
-                        {/* Stats */}
-                        <div className="grid grid-cols-3 gap-2">
-                          <div className="text-center p-1.5 rounded bg-white/5">
-                            <div className="text-sm font-semibold text-white">{creator.stats.totalVideos}</div>
-                            <div className="text-[10px] text-white/50">Videos</div>
-                          </div>
-                          <div className="text-center p-1.5 rounded bg-white/5">
-                            <div className="text-sm font-semibold text-white">
-                              {creator.stats.totalViews >= 1000000
-                                ? `${(creator.stats.totalViews / 1000000).toFixed(1)}M`
-                                : creator.stats.totalViews >= 1000
-                                  ? `${(creator.stats.totalViews / 1000).toFixed(0)}K`
-                                  : creator.stats.totalViews}
-                            </div>
-                            <div className="text-[10px] text-white/50">Views</div>
-                          </div>
-                          <div className="text-center p-1.5 rounded bg-white/5">
-                            <div className="text-sm font-semibold text-white">{creator.stats.totalSurfaces}</div>
-                            <div className="text-[10px] text-white/50">Surfaces</div>
-                          </div>
-                        </div>
-                      </CardContent>
+                      {/* Category badge + view count */}
+                      <div className="px-3 py-2 flex items-center justify-between">
+                        <Badge variant="secondary" className="text-[10px] px-1.5 py-0.5 bg-white/10 text-white/70 border-white/10">
+                          {getCategory(creator)}
+                        </Badge>
+                        <span className="text-xs text-white/50 flex items-center gap-1">
+                          <Eye className="w-3 h-3" />
+                          {formatViews(creator.stats.totalViews)}
+                        </span>
+                      </div>
                     </Card>
                   </Link>
                 </motion.div>

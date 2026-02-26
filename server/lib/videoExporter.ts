@@ -51,6 +51,11 @@ interface ExportPlacementData {
   };
   keyframes: SurfaceKeyframe[];
   productAspectRatio?: number; // sent from client for accurate sizing
+  motionTrackData?: {
+    transforms: Array<{ x: number; y: number; w: number; h: number } | null>;
+    fps: number;
+    duration: number;
+  } | null;
 }
 
 interface ExportContext {
@@ -67,6 +72,10 @@ const EXPORT_CONFIG = {
   PRESET: "fast", // H.264 encoding speed
   FFMPEG_TIMEOUT_MS: 600000, // 10 minutes max per FFmpeg call
 };
+
+// Scene-change detection: if gap between keyframes > this, surface is not visible
+const GAP_THRESHOLD_SECONDS = 2.0;
+const CONFIDENCE_FADE_THRESHOLD = 0.3;
 
 // ── Math Helpers ──
 
@@ -87,29 +96,72 @@ function lerpBBox(
   };
 }
 
-function findKeyframes(keyframes: SurfaceKeyframe[], time: number) {
-  if (keyframes.length === 0) return { prev: null, next: null, progress: 0 };
+interface FindKeyframesResult {
+  prev: SurfaceKeyframe;
+  next: SurfaceKeyframe | null;
+  progress: number;
+  opacity: number; // 0-1, factors in gap proximity and confidence
+}
 
-  // Before first keyframe — use first
-  if (time <= keyframes[0].timestamp) {
-    return { prev: keyframes[0], next: null, progress: 0 };
+function getConfidenceOpacity(confidence: number | undefined): number {
+  if (confidence === undefined || confidence === null) return 1;
+  if (confidence >= CONFIDENCE_FADE_THRESHOLD) return 1;
+  return Math.max(0, confidence / CONFIDENCE_FADE_THRESHOLD);
+}
+
+function findKeyframes(keyframes: SurfaceKeyframe[], time: number): FindKeyframesResult | null {
+  if (keyframes.length === 0) return null;
+
+  const firstKf = keyframes[0];
+  const lastKf = keyframes[keyframes.length - 1];
+
+  // Before first keyframe — check if within threshold
+  if (time < firstKf.timestamp - GAP_THRESHOLD_SECONDS) return null; // Surface not yet visible
+  if (time <= firstKf.timestamp) {
+    const dist = firstKf.timestamp - time;
+    const fadeIn = 1 - (dist / GAP_THRESHOLD_SECONDS);
+    return { prev: firstKf, next: null, progress: 0, opacity: fadeIn * getConfidenceOpacity((firstKf as any).confidence) };
   }
 
-  // After last keyframe — use last
-  if (time >= keyframes[keyframes.length - 1].timestamp) {
-    return { prev: keyframes[keyframes.length - 1], next: null, progress: 0 };
+  // After last keyframe — check if within threshold
+  if (time > lastKf.timestamp + GAP_THRESHOLD_SECONDS) return null; // Surface gone (scene cut)
+  if (time >= lastKf.timestamp) {
+    const dist = time - lastKf.timestamp;
+    const fadeOut = 1 - (dist / GAP_THRESHOLD_SECONDS);
+    return { prev: lastKf, next: null, progress: 0, opacity: fadeOut * getConfidenceOpacity((lastKf as any).confidence) };
   }
 
-  // Between two keyframes — interpolate
+  // Between two keyframes — check for large gaps (scene cuts)
   for (let i = 0; i < keyframes.length - 1; i++) {
     if (time >= keyframes[i].timestamp && time <= keyframes[i + 1].timestamp) {
-      const range = keyframes[i + 1].timestamp - keyframes[i].timestamp;
+      const gap = keyframes[i + 1].timestamp - keyframes[i].timestamp;
+
+      // Large gap = scene cut. Fade out near prev, fade in near next, null in middle.
+      if (gap > GAP_THRESHOLD_SECONDS * 2) {
+        const midpoint = keyframes[i].timestamp + gap / 2;
+        if (time < midpoint) {
+          const distFromPrev = time - keyframes[i].timestamp;
+          if (distFromPrev > GAP_THRESHOLD_SECONDS) return null;
+          const fadeOut = 1 - (distFromPrev / GAP_THRESHOLD_SECONDS);
+          return { prev: keyframes[i], next: null, progress: 0, opacity: fadeOut * getConfidenceOpacity((keyframes[i] as any).confidence) };
+        } else {
+          const distFromNext = keyframes[i + 1].timestamp - time;
+          if (distFromNext > GAP_THRESHOLD_SECONDS) return null;
+          const fadeIn = 1 - (distFromNext / GAP_THRESHOLD_SECONDS);
+          return { prev: keyframes[i + 1], next: null, progress: 0, opacity: fadeIn * getConfidenceOpacity((keyframes[i + 1] as any).confidence) };
+        }
+      }
+
+      const range = gap;
       const progress = range > 0 ? (time - keyframes[i].timestamp) / range : 0;
-      return { prev: keyframes[i], next: keyframes[i + 1], progress };
+      const prevConf = (keyframes[i] as any).confidence ?? 1;
+      const nextConf = (keyframes[i + 1] as any).confidence ?? 1;
+      const interpConf = prevConf + (nextConf - prevConf) * progress;
+      return { prev: keyframes[i], next: keyframes[i + 1], progress, opacity: getConfidenceOpacity(interpConf) };
     }
   }
 
-  return { prev: keyframes[keyframes.length - 1], next: null, progress: 0 };
+  return null;
 }
 
 // ── FFmpeg Helpers ──
@@ -198,6 +250,114 @@ async function compositeFrame(
   const composites: sharp.OverlayOptions[] = [];
 
   for (const placement of placements) {
+    // ── FAST PATH: Pre-computed motion-track data from preview ──
+    // When the client sends motionTrackData, use it DIRECTLY so export matches preview exactly.
+    // This skips the separate dense-scan + stabilization pipeline that caused position mismatch.
+    if (placement.motionTrackData?.transforms?.length) {
+      const mtd = placement.motionTrackData;
+      const frameIndex = Math.min(
+        Math.round(currentTime * mtd.fps),
+        mtd.transforms.length - 1
+      );
+      const pos = mtd.transforms[Math.max(0, frameIndex)];
+
+      // Null position = surface not visible (scene cut)
+      if (!pos) continue;
+
+      // Convert 0-1 normalized coords to pixel coords
+      const px = pos.x * width;
+      const py = pos.y * height;
+      const pw = pos.w * width;
+      const ph = pos.h * height;
+
+      // Get cached product image with dimensions
+      const productInfo = productImageCache.get(placement.productImageUrl);
+      if (!productInfo) continue;
+
+      // Match client-side aspect-ratio fitting
+      const prodAspect = placement.productAspectRatio || (productInfo.width / productInfo.height);
+      const boxAspect = pw / ph;
+
+      let drawWidth: number, drawHeight: number;
+      if (prodAspect > boxAspect) {
+        drawWidth = pw * placement.transform.scale;
+        drawHeight = (pw / prodAspect) * placement.transform.scale;
+      } else {
+        drawHeight = ph * placement.transform.scale;
+        drawWidth = (ph * prodAspect) * placement.transform.scale;
+      }
+
+      const scaledW = Math.max(1, Math.round(drawWidth));
+      const scaledH = Math.max(1, Math.round(drawHeight));
+
+      try {
+        let product = sharp(productInfo.buffer)
+          .resize(scaledW, scaledH, {
+            fit: "fill",
+            background: { r: 0, g: 0, b: 0, alpha: 0 },
+          });
+
+        // Apply brightness/contrast
+        if (placement.blend.brightness !== 0 || placement.blend.contrast !== 0) {
+          const brightnessFactor = (100 + placement.blend.brightness) / 100;
+          const contrastFactor = (100 + placement.blend.contrast) / 100;
+          const a = contrastFactor * brightnessFactor;
+          const b = 128 * (1 - contrastFactor) * brightnessFactor;
+          product = product.linear(a, b);
+        }
+
+        // Apply rotation
+        if (placement.transform.rotation !== 0) {
+          product = product.rotate(placement.transform.rotation, {
+            background: { r: 0, g: 0, b: 0, alpha: 0 },
+          });
+        }
+
+        // Apply horizontal flip
+        if (placement.transform.flipH) {
+          product = product.flop();
+        }
+
+        // Apply opacity
+        const blendOpacity = Math.max(0, Math.min(100, placement.blend.opacity)) / 100;
+        if (blendOpacity <= 0.01) continue;
+        if (blendOpacity < 1) {
+          const { data, info } = await product
+            .ensureAlpha()
+            .raw()
+            .toBuffer({ resolveWithObject: true });
+          for (let i = 3; i < data.length; i += 4) {
+            data[i] = Math.round(data[i] * blendOpacity);
+          }
+          product = sharp(data, {
+            raw: { width: info.width, height: info.height, channels: 4 },
+          });
+        }
+
+        const productBuffer = await product.ensureAlpha().png().toBuffer();
+        const productMeta = await sharp(productBuffer).metadata();
+        const finalW = productMeta.width || scaledW;
+        const finalH = productMeta.height || scaledH;
+
+        // Center position: scale offsets from preview canvas to export resolution
+        const centerX = Math.round(px + pw / 2 + placement.transform.offsetX * scaleX);
+        const centerY = Math.round(py + ph / 2 + placement.transform.offsetY * scaleY);
+        const left = Math.round(centerX - finalW / 2);
+        const top = Math.round(centerY - finalH / 2);
+
+        composites.push({
+          input: productBuffer,
+          left: Math.max(0, Math.min(width - 1, left)),
+          top: Math.max(0, Math.min(height - 1, top)),
+          blend: "over" as const,
+        });
+      } catch (err: any) {
+        console.warn(`[VideoExporter] Motion-track fast-path skip ${placement.surfaceType} at ${currentTime}s: ${err.message}`);
+      }
+
+      continue; // Skip the stabilization pipeline below
+    }
+
     // ── Anchor-Lock Stabilization Pipeline (matches client-side preview) ──
     // Step 1: Lock dimensions to median across all keyframes
     const allWidths = placement.keyframes.map(k => k.bbox.w).sort((a, b) => a - b);
@@ -265,9 +425,10 @@ async function compositeFrame(
       }));
     }
 
-    // Step 5: Interpolate position using stabilized keyframes
-    const { prev, next, progress } = findKeyframes(smoothedKfs, currentTime);
-    if (!prev) continue;
+    // Step 5: Interpolate position using stabilized keyframes (with scene-change detection)
+    const kfResult = findKeyframes(smoothedKfs, currentTime);
+    if (!kfResult) continue; // Surface not visible at this time (scene cut or out of range)
+    const { prev, next, progress, opacity: kfOpacity } = kfResult;
 
     // Anchor-lock: track top-right corner, derive position from there
     let topRightX: number, topRightY: number;
@@ -346,7 +507,10 @@ async function compositeFrame(
       }
 
       // Apply opacity by pre-multiplying alpha channel
-      const opacity = Math.max(0, Math.min(100, placement.blend.opacity)) / 100;
+      // kfOpacity accounts for scene-change fade in/out and confidence
+      const blendOpacity = Math.max(0, Math.min(100, placement.blend.opacity)) / 100;
+      const opacity = blendOpacity * kfOpacity;
+      if (opacity <= 0.01) continue; // Nearly invisible — skip entirely
       if (opacity < 1) {
         const { data, info } = await product
           .ensureAlpha()

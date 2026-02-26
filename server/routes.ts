@@ -5094,42 +5094,28 @@ export async function registerRoutes(
       }
 
       const totalFrames = Math.ceil(videoDuration * fps);
-      const framePositions: Array<{ x: number; y: number; w: number; h: number }> = [];
+      const framePositions: Array<{ x: number; y: number; w: number; h: number } | null> = [];
+      const SCENE_GAP = 2.0; // seconds — gap > this means surface left frame
 
       for (let f = 0; f < totalFrames; f++) {
         const t = f / fps; // current time in seconds
 
-        // Before first keyframe: extrapolate
+        // Before first keyframe: null if too far away (surface not yet visible)
         if (t <= kfs[0].time) {
-          if (kfs.length >= 2) {
-            const dt = kfs[1].time - kfs[0].time;
-            const extFactor = dt > 0 ? Math.min((kfs[0].time - t) / dt, 0.5) : 0;
-            framePositions.push({
-              x: kfs[0].x - (kfs[1].x - kfs[0].x) * extFactor,
-              y: kfs[0].y - (kfs[1].y - kfs[0].y) * extFactor,
-              w: kfs[0].width,
-              h: kfs[0].height,
-            });
+          if (t < kfs[0].time - SCENE_GAP) {
+            framePositions.push(null);
           } else {
             framePositions.push({ x: kfs[0].x, y: kfs[0].y, w: kfs[0].width, h: kfs[0].height });
           }
           continue;
         }
 
-        // After last keyframe: extrapolate
+        // After last keyframe: null if too far away (surface gone / scene cut)
         if (t >= kfs[kfs.length - 1].time) {
-          const last = kfs[kfs.length - 1];
-          if (kfs.length >= 2) {
-            const prev = kfs[kfs.length - 2];
-            const dt = last.time - prev.time;
-            const extFactor = dt > 0 ? Math.min((t - last.time) / dt, 0.5) : 0;
-            framePositions.push({
-              x: last.x + (last.x - prev.x) * extFactor,
-              y: last.y + (last.y - prev.y) * extFactor,
-              w: last.width,
-              h: last.height,
-            });
+          if (t > kfs[kfs.length - 1].time + SCENE_GAP) {
+            framePositions.push(null);
           } else {
+            const last = kfs[kfs.length - 1];
             framePositions.push({ x: last.x, y: last.y, w: last.width, h: last.height });
           }
           continue;
@@ -5143,6 +5129,23 @@ export async function registerRoutes(
 
         const segDur = kfs[seg + 1].time - kfs[seg].time;
         const segT = segDur > 0 ? (t - kfs[seg].time) / segDur : 0;
+
+        // Large gap = scene cut — surface disappeared and reappeared
+        if (segDur > SCENE_GAP * 2) {
+          const midpoint = kfs[seg].time + segDur / 2;
+          const distFromNearest = Math.min(t - kfs[seg].time, kfs[seg + 1].time - t);
+          if (distFromNearest > SCENE_GAP) {
+            framePositions.push(null); // In the dead zone — surface not visible
+            continue;
+          }
+          // Near the edge — use nearest keyframe
+          if (t < midpoint) {
+            framePositions.push({ x: kfs[seg].x, y: kfs[seg].y, w: kfs[seg].width, h: kfs[seg].height });
+          } else {
+            framePositions.push({ x: kfs[seg + 1].x, y: kfs[seg + 1].y, w: kfs[seg + 1].width, h: kfs[seg + 1].height });
+          }
+          continue;
+        }
 
         if (kfs.length === 2) {
           // Linear interpolation
@@ -5274,16 +5277,15 @@ export async function registerRoutes(
       }
 
       // ── Dense surface tracking for video export ──
-      // Problem: The product must FOLLOW the surface as the camera moves.
-      // Bounding boxes are in screen coordinates — when the camera pans, the surface
-      // moves across the screen. A static bbox keeps the product anchored to a fixed
-      // screen position while the surface moves away.
-      //
-      // Solution: Run denseScanRange() to get Gemini surface detections at 0.5s intervals
-      // across the full video. This gives us per-half-second bbox positions that track
-      // where the surface actually is as the camera moves. Apply EMA smoothing to reduce
-      // Gemini detection noise while preserving genuine camera motion.
-      const detectedSurfs = await storage.getDetectedSurfaces(videoId);
+      // Skip when client sends pre-computed motion-track data (from Gemini keyframes).
+      // The motion-track positions match preview EXACTLY, eliminating export/preview mismatch.
+      const hasMotionTrack = placements.every((p: any) => p.motionTrackData?.transforms?.length > 0);
+      if (hasMotionTrack) {
+        console.log(`[Video Export] Using pre-computed motion-track data — skipping dense scan (export will match preview)`);
+      }
+
+      // Only run dense scan when motion-track data is NOT available
+      const detectedSurfs = hasMotionTrack ? [] : await storage.getDetectedSurfaces(videoId);
       const surfaceTypeMap = new Map<number, string>();
       const surfaceIdsByType = new Map<string, number[]>();
       for (const s of detectedSurfs) {
