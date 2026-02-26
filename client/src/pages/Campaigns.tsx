@@ -8,12 +8,13 @@ import { useQuery } from "@tanstack/react-query";
 
 interface Campaign {
   id: number;
+  source: "placement" | "bid";
   title: string;
   thumbnailUrl: string | null;
   productName: string;
-  productImageUrl: string;
+  productImageUrl: string | null;
   surfaceType: string;
-  videoId: number;
+  videoId: number | null;
   creatorUserId: string | null;
   bidAmount: string | null;
   viewCount: number;
@@ -50,8 +51,8 @@ export default function Campaigns() {
 
   const stats = {
     total: campaigns.length,
+    pending: campaigns.filter(c => c.status === "pending").length,
     live: campaigns.filter(c => c.status === "live" || c.status === "active").length,
-    archived: campaigns.filter(c => c.status === "archived").length,
     totalSpend: campaigns.reduce((sum, c) => sum + parseFloat(c.bidAmount || "0"), 0),
     estimatedReach: campaigns.reduce((sum, c) => sum + (c.viewCount || 0), 0),
   };
@@ -82,15 +83,24 @@ export default function Campaigns() {
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.05 }}
-            className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8"
+            className="grid grid-cols-2 sm:grid-cols-5 gap-4 mb-8"
           >
             <Card className="p-5">
               <div className="flex items-center gap-2 mb-2">
                 <Package className="w-4 h-4 text-primary" />
-                <p className="text-xs text-muted-foreground uppercase tracking-wider">Total Placements</p>
+                <p className="text-xs text-muted-foreground uppercase tracking-wider">Total</p>
               </div>
               <p className="text-3xl font-bold text-foreground" data-testid="text-total-placements">
                 {stats.total}
+              </p>
+            </Card>
+            <Card className="p-5">
+              <div className="flex items-center gap-2 mb-2">
+                <Clock className="w-4 h-4 text-amber-400" />
+                <p className="text-xs text-muted-foreground uppercase tracking-wider">Pending</p>
+              </div>
+              <p className="text-3xl font-bold text-foreground" data-testid="text-pending-placements">
+                {stats.pending}
               </p>
             </Card>
             <Card className="p-5">
@@ -108,7 +118,7 @@ export default function Campaigns() {
                 <p className="text-xs text-muted-foreground uppercase tracking-wider">Total Spend</p>
               </div>
               <p className="text-3xl font-bold text-foreground" data-testid="text-total-spend">
-                {stats.totalSpend > 0 ? `$${stats.totalSpend.toLocaleString()}` : "—"}
+                ${stats.totalSpend.toLocaleString()}
               </p>
             </Card>
             <Card className="p-5">

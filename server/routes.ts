@@ -3493,23 +3493,10 @@ export async function registerRoutes(
   app.get("/api/brand/campaigns", isGoogleAuthenticated, async (req: any, res) => {
     try {
       const brandEmail = req.googleUser.email;
+      const results: any[] = [];
 
-      // Get all saved placements by this brand user
+      // ── SOURCE 1: Actual saved placements (Live selections) ──
       const placements = await storage.getPlacementsByCreator(brandEmail);
-
-      // Also get monetization bids by this brand (for spend data)
-      const bids = await storage.getBrandCampaigns(brandEmail);
-      // Map bids by videoId for quick lookup
-      const bidsByVideo = new Map<number, typeof bids[0]>();
-      for (const bid of bids) {
-        if (bid.videoId && bid.bidAmount) {
-          const existing = bidsByVideo.get(bid.videoId);
-          // Keep the highest bid per video
-          if (!existing || parseFloat(bid.bidAmount || "0") > parseFloat(existing.bidAmount || "0")) {
-            bidsByVideo.set(bid.videoId, bid);
-          }
-        }
-      }
 
       // Deduplicate: group by videoId + surfaceId → keep only the most recent per combo
       const seen = new Map<string, typeof placements[0]>();
@@ -3522,22 +3509,16 @@ export async function registerRoutes(
       }
       const uniquePlacements = Array.from(seen.values());
 
-      // Enrich each unique placement
-      const enriched = await Promise.all(uniquePlacements.map(async (placement) => {
-        // Video info
-        const video = await storage.getVideoById(placement.videoId);
-        const videoTitle = video?.title || "Unknown Video";
-        const viewCount = video?.viewCount || 0;
-        const creatorUserId = video?.userId || null;
+      // Track which videoIds have live placements (to avoid showing duplicate bids)
+      const placedVideoIds = new Set<number>();
 
-        // Surface info — use surface frameUrl as thumbnail (actual video frame)
+      for (const placement of uniquePlacements) {
+        placedVideoIds.add(placement.videoId);
+
+        const video = await storage.getVideoById(placement.videoId);
         const surfaces = await storage.getDetectedSurfaces(placement.videoId);
         const surface = surfaces.find(s => s.id === placement.surfaceId);
-        const surfaceType = surface?.surfaceType || "Surface";
-        // Prefer the surface frame screenshot, fall back to video thumbnail
-        const thumbnailUrl = surface?.frameUrl || video?.thumbnailUrl || null;
 
-        // Product info
         let productName = "Custom Product";
         let productImageUrl = placement.productImageUrl;
         if (placement.productId) {
@@ -3548,41 +3529,68 @@ export async function registerRoutes(
           }
         }
 
-        // Spend: check linked bid first, then fall back to bids-by-video lookup
+        // Check for linked bid amount
         let bidAmount: string | null = null;
         if (placement.bidId) {
           const bid = await storage.getBidById(placement.bidId);
           if (bid) bidAmount = bid.bidAmount;
         }
-        if (!bidAmount) {
-          const videoBid = bidsByVideo.get(placement.videoId);
-          if (videoBid) bidAmount = videoBid.bidAmount;
-        }
 
-        return {
+        results.push({
           id: placement.id,
-          title: videoTitle,
-          thumbnailUrl,
+          source: "placement",
+          title: video?.title || "Unknown Video",
+          thumbnailUrl: surface?.frameUrl || video?.thumbnailUrl || null,
           productName,
           productImageUrl,
-          surfaceType,
+          surfaceType: surface?.surfaceType || "Surface",
           videoId: placement.videoId,
-          creatorUserId,
+          creatorUserId: video?.userId || null,
           bidAmount,
-          viewCount,
-          status: placement.status === "active" ? "live" : placement.status,
+          viewCount: video?.viewCount || 0,
+          status: "live",
           createdAt: placement.createdAt,
-        };
-      }));
+        });
+      }
 
-      // Sort by most recent first
-      enriched.sort((a, b) => {
+      // ── SOURCE 2: Pending bids / pitches (not yet fulfilled with a placement) ──
+      const bids = await storage.getBrandCampaigns(brandEmail);
+      for (const bid of bids) {
+        // Skip bids for videos that already have a live placement
+        if (bid.videoId && placedVideoIds.has(bid.videoId)) continue;
+
+        const video = bid.videoId ? await storage.getVideoById(bid.videoId) : null;
+
+        results.push({
+          id: bid.id + 1000000, // Offset to avoid ID collision with placements
+          source: "bid",
+          title: video?.title || bid.title || "Pending Pitch",
+          thumbnailUrl: video?.thumbnailUrl || bid.thumbnailUrl || null,
+          productName: bid.brandName || "Brand Product",
+          productImageUrl: null,
+          surfaceType: bid.sceneType || "Surface",
+          videoId: bid.videoId,
+          creatorUserId: video?.userId || null,
+          bidAmount: bid.bidAmount,
+          viewCount: video?.viewCount || 0,
+          status: bid.status || "pending",
+          createdAt: bid.date,
+        });
+      }
+
+      // Sort: pending first, then live, most recent first within each group
+      results.sort((a, b) => {
+        // Pending items first
+        const aPending = a.status === "pending" ? 0 : 1;
+        const bPending = b.status === "pending" ? 0 : 1;
+        if (aPending !== bPending) return aPending - bPending;
+        // Then by date descending
         const da = a.createdAt ? new Date(a.createdAt).getTime() : 0;
         const db = b.createdAt ? new Date(b.createdAt).getTime() : 0;
         return db - da;
       });
 
-      res.json(enriched);
+      res.json(results);
     } catch (err: any) {
       console.error("[Brand Campaigns] Error:", err.message);
       res.status(500).json({ error: "Failed to fetch campaigns" });
