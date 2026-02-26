@@ -3491,34 +3491,65 @@ export async function registerRoutes(
 
   // Get brand's campaigns (bids they've placed)
   app.get("/api/brand/campaigns", isGoogleAuthenticated, async (req: any, res) => {
-    const brandEmail = req.googleUser.email;
-    const campaigns = await storage.getBrandCampaigns(brandEmail);
-    
-    // Enrich campaigns with video data for estimated reach
-    const enrichedCampaigns = await Promise.all(campaigns.map(async (campaign) => {
-      let viewCount = 0;
-      let videoTitle = campaign.title;
-      let thumbnailUrl = campaign.thumbnailUrl;
-      
-      if (campaign.videoId) {
-        const video = await storage.getVideoById(campaign.videoId);
-        if (video) {
-          viewCount = video.viewCount || 0;
-          videoTitle = video.title || campaign.title;
-          thumbnailUrl = video.thumbnailUrl || campaign.thumbnailUrl;
+    try {
+      const brandEmail = req.googleUser.email;
+
+      // Get actual saved placements (real product-on-surface selections)
+      const placements = await storage.getPlacementsByCreator(brandEmail);
+
+      // Enrich each placement with video, surface, and product data
+      const enriched = await Promise.all(placements.map(async (placement) => {
+        // Video info
+        const video = await storage.getVideoById(placement.videoId);
+        const videoTitle = video?.title || "Unknown Video";
+        const thumbnailUrl = video?.thumbnailUrl || null;
+        const viewCount = video?.viewCount || 0;
+        const creatorUserId = video?.userId || null;
+
+        // Surface info
+        const surfaces = await storage.getDetectedSurfaces(placement.videoId);
+        const surface = surfaces.find(s => s.id === placement.surfaceId);
+        const surfaceType = surface?.surfaceType || "Surface";
+
+        // Product info
+        let productName = "Custom Product";
+        let productImageUrl = placement.productImageUrl;
+        if (placement.productId) {
+          const product = await storage.getBrandProduct(placement.productId);
+          if (product) {
+            productName = product.name;
+            productImageUrl = product.thumbnailUrl || product.imageUrl;
+          }
         }
-      }
-      
-      return {
-        ...campaign,
-        title: videoTitle,
-        thumbnailUrl,
-        viewCount,
-        creatorName: CREATOR_NAMES[campaign.genre || ""] || campaign.genre || "Pro Creator",
-      };
-    }));
-    
-    res.json(enrichedCampaigns);
+
+        // Bid info (if linked)
+        let bidAmount: string | null = null;
+        if (placement.bidId) {
+          const bid = await storage.getBidById(placement.bidId);
+          if (bid) bidAmount = bid.bidAmount;
+        }
+
+        return {
+          id: placement.id,
+          title: videoTitle,
+          thumbnailUrl,
+          productName,
+          productImageUrl,
+          surfaceType,
+          videoId: placement.videoId,
+          creatorUserId,
+          bidAmount,
+          viewCount,
+          status: placement.status === "active" ? "live" : placement.status,
+          createdAt: placement.createdAt,
+        };
+      }));
+
+      res.json(enriched);
+    } catch (err: any) {
+      console.error("[Brand Campaigns] Error:", err.message);
+      res.status(500).json({ error: "Failed to fetch campaigns" });
+    }
   });
 
   // Get full YouTube channel data (with profile picture and stats)

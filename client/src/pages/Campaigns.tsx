@@ -1,6 +1,6 @@
 import { TopBar } from "@/components/TopBar";
 import { motion } from "framer-motion";
-import { Briefcase, Clock, CheckCircle, DollarSign, Eye } from "lucide-react";
+import { Briefcase, Clock, CheckCircle, DollarSign, Eye, Package, Calendar, Film } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,41 +10,36 @@ interface Campaign {
   id: number;
   title: string;
   thumbnailUrl: string | null;
-  date: string | null;
-  status: string;
-  videoId: number | null;
+  productName: string;
+  productImageUrl: string;
+  surfaceType: string;
+  videoId: number;
   creatorUserId: string | null;
-  creatorName: string | null;
-  brandEmail: string | null;
-  brandName: string | null;
   bidAmount: string | null;
-  sceneType: string | null;
-  genre: string | null;
   viewCount: number;
-  placementId: number | null;
-  reviewSlug: string | null;
-  reviewNote: string | null;
+  status: string;
+  createdAt: string | null;
 }
 
 const statusColors: Record<string, string> = {
+  live: "bg-emerald-500/20 text-emerald-400",
+  active: "bg-emerald-500/20 text-emerald-400",
+  archived: "bg-gray-500/20 text-gray-400",
   pending: "bg-amber-500/20 text-amber-400",
-  placed: "bg-blue-500/20 text-blue-400",
-  accepted: "bg-emerald-500/20 text-emerald-400",
-  revision_requested: "bg-orange-500/20 text-orange-400",
-  live: "bg-blue-500/20 text-blue-400",
-  rejected: "bg-red-500/20 text-red-400",
-  expired: "bg-gray-500/20 text-gray-400",
 };
 
 const statusLabels: Record<string, string> = {
-  pending: "Pending",
-  placed: "Ready for Review",
-  accepted: "Approved",
-  revision_requested: "Revision Requested",
   live: "Live",
-  rejected: "Declined",
-  expired: "Expired",
+  active: "Live",
+  archived: "Archived",
+  pending: "Pending",
 };
+
+function formatDate(dateStr: string | null): string {
+  if (!dateStr) return "";
+  const d = new Date(dateStr);
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
 
 export default function Campaigns() {
   const { data: campaignsData, isLoading } = useQuery<Campaign[]>({
@@ -55,8 +50,8 @@ export default function Campaigns() {
 
   const stats = {
     total: campaigns.length,
-    pending: campaigns.filter(c => c.status === "pending").length,
-    accepted: campaigns.filter(c => c.status === "accepted" || c.status === "live").length,
+    live: campaigns.filter(c => c.status === "live" || c.status === "active").length,
+    archived: campaigns.filter(c => c.status === "archived").length,
     totalSpend: campaigns.reduce((sum, c) => sum + parseFloat(c.bidAmount || "0"), 0),
     estimatedReach: campaigns.reduce((sum, c) => sum + (c.viewCount || 0), 0),
   };
@@ -67,7 +62,7 @@ export default function Campaigns() {
 
       <main className="p-8">
         <div className="max-w-7xl mx-auto">
-          <motion.div 
+          <motion.div
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             className="mb-8"
@@ -75,11 +70,11 @@ export default function Campaigns() {
             <div className="flex items-center gap-3 mb-2">
               <Briefcase className="w-8 h-8 text-primary" />
               <h1 className="text-3xl font-bold font-display" data-testid="text-campaigns-title">
-                My Campaigns
+                My Placements
               </h1>
             </div>
             <p className="text-muted-foreground">
-              Track your brand placement bids and active campaigns
+              Track your product placements across creator content
             </p>
           </motion.div>
 
@@ -87,33 +82,24 @@ export default function Campaigns() {
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.05 }}
-            className="grid grid-cols-5 gap-4 mb-8"
+            className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8"
           >
             <Card className="p-5">
               <div className="flex items-center gap-2 mb-2">
-                <Briefcase className="w-4 h-4 text-primary" />
+                <Package className="w-4 h-4 text-primary" />
                 <p className="text-xs text-muted-foreground uppercase tracking-wider">Total Placements</p>
               </div>
-              <p className="text-3xl font-bold text-foreground" data-testid="text-total-bids">
+              <p className="text-3xl font-bold text-foreground" data-testid="text-total-placements">
                 {stats.total}
               </p>
             </Card>
             <Card className="p-5">
               <div className="flex items-center gap-2 mb-2">
-                <Clock className="w-4 h-4 text-amber-400" />
-                <p className="text-xs text-muted-foreground uppercase tracking-wider">Pending</p>
-              </div>
-              <p className="text-3xl font-bold text-foreground" data-testid="text-pending-bids">
-                {stats.pending}
-              </p>
-            </Card>
-            <Card className="p-5">
-              <div className="flex items-center gap-2 mb-2">
                 <CheckCircle className="w-4 h-4 text-emerald-400" />
-                <p className="text-xs text-muted-foreground uppercase tracking-wider">Active</p>
+                <p className="text-xs text-muted-foreground uppercase tracking-wider">Live</p>
               </div>
-              <p className="text-3xl font-bold text-foreground" data-testid="text-accepted-bids">
-                {stats.accepted}
+              <p className="text-3xl font-bold text-foreground" data-testid="text-live-placements">
+                {stats.live}
               </p>
             </Card>
             <Card className="p-5">
@@ -122,7 +108,7 @@ export default function Campaigns() {
                 <p className="text-xs text-muted-foreground uppercase tracking-wider">Total Spend</p>
               </div>
               <p className="text-3xl font-bold text-foreground" data-testid="text-total-spend">
-                ${stats.totalSpend.toLocaleString()}
+                {stats.totalSpend > 0 ? `$${stats.totalSpend.toLocaleString()}` : "—"}
               </p>
             </Card>
             <Card className="p-5">
@@ -131,9 +117,9 @@ export default function Campaigns() {
                 <p className="text-xs text-muted-foreground uppercase tracking-wider">Est. Reach</p>
               </div>
               <p className="text-3xl font-bold text-foreground" data-testid="text-estimated-reach">
-                {stats.estimatedReach >= 1000000 
+                {stats.estimatedReach >= 1000000
                   ? `${(stats.estimatedReach / 1000000).toFixed(1)}M`
-                  : stats.estimatedReach >= 1000 
+                  : stats.estimatedReach >= 1000
                     ? `${(stats.estimatedReach / 1000).toFixed(0)}K`
                     : stats.estimatedReach.toLocaleString()}
               </p>
@@ -142,7 +128,7 @@ export default function Campaigns() {
 
           {isLoading ? (
             <div className="flex items-center justify-center py-20">
-              <p className="text-muted-foreground">Loading campaigns...</p>
+              <p className="text-muted-foreground">Loading placements...</p>
             </div>
           ) : campaigns.length === 0 ? (
             <motion.div
@@ -151,10 +137,10 @@ export default function Campaigns() {
               transition={{ delay: 0.1 }}
             >
               <Card className="p-12 text-center">
-                <Briefcase className="w-16 h-16 text-muted-foreground mx-auto mb-4" />
-                <h3 className="text-xl font-semibold mb-2">No Campaigns Yet</h3>
+                <Package className="w-16 h-16 text-muted-foreground mx-auto mb-4" />
+                <h3 className="text-xl font-semibold mb-2">No Placements Yet</h3>
                 <p className="text-muted-foreground mb-6">
-                  Start bidding on creator videos in the Discovery feed to launch your first campaign
+                  Browse creator content and place your products to get started
                 </p>
                 <Button variant="default" asChild>
                   <a href="/marketplace" data-testid="link-discover-creators">
@@ -168,65 +154,76 @@ export default function Campaigns() {
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.1 }}
-              className="space-y-4"
+              className="space-y-3"
             >
               {campaigns.map((campaign) => (
-                <Card key={campaign.id} className="p-4 flex items-center gap-4" data-testid={`card-campaign-${campaign.id}`}>
-                  <div className="w-24 h-16 rounded-md overflow-hidden bg-muted flex-shrink-0">
+                <Card key={campaign.id} className="p-4 flex items-center gap-4 hover:border-primary/30 transition-colors" data-testid={`card-campaign-${campaign.id}`}>
+                  {/* Video thumbnail */}
+                  <div className="w-28 h-18 rounded-md overflow-hidden bg-muted flex-shrink-0 relative">
                     {campaign.thumbnailUrl ? (
-                      <img 
-                        src={campaign.thumbnailUrl} 
+                      <img
+                        src={campaign.thumbnailUrl}
                         alt={campaign.title}
                         className="w-full h-full object-cover"
                       />
                     ) : (
                       <div className="w-full h-full flex items-center justify-center">
-                        <Briefcase className="w-6 h-6 text-muted-foreground" />
+                        <Film className="w-6 h-6 text-muted-foreground" />
+                      </div>
+                    )}
+                    {/* Product image overlay */}
+                    {campaign.productImageUrl && (
+                      <div className="absolute -bottom-1 -right-1 w-8 h-8 rounded-md border-2 border-background bg-white overflow-hidden shadow-sm">
+                        <img
+                          src={campaign.productImageUrl}
+                          alt={campaign.productName}
+                          className="w-full h-full object-contain"
+                        />
                       </div>
                     )}
                   </div>
+
+                  {/* Info */}
                   <div className="flex-1 min-w-0">
-                    <h3 className="font-semibold truncate" data-testid={`text-campaign-title-${campaign.id}`}>{campaign.title}</h3>
-                    <p className="text-sm text-muted-foreground" data-testid={`text-campaign-creator-${campaign.id}`}>
-                      {campaign.creatorName || campaign.creatorUserId || "Pro Creator"}
-                    </p>
+                    <h3 className="font-semibold truncate" data-testid={`text-campaign-title-${campaign.id}`}>
+                      {campaign.title}
+                    </h3>
+                    <div className="flex items-center gap-2 mt-1">
+                      <span className="text-sm text-muted-foreground truncate">
+                        {campaign.productName}
+                      </span>
+                      {campaign.createdAt && (
+                        <span className="text-xs text-muted-foreground/60 flex items-center gap-1">
+                          <Calendar className="w-3 h-3" />
+                          {formatDate(campaign.createdAt)}
+                        </span>
+                      )}
+                    </div>
                   </div>
+
+                  {/* Badges */}
                   <div className="flex items-center gap-2">
-                    {campaign.sceneType && (
-                      <Badge variant="outline" data-testid={`badge-surface-${campaign.id}`}>
-                        {campaign.sceneType}
-                      </Badge>
-                    )}
+                    <Badge variant="outline" data-testid={`badge-surface-${campaign.id}`}>
+                      {campaign.surfaceType}
+                    </Badge>
                     <Badge variant="secondary" className="text-xs" data-testid={`badge-views-${campaign.id}`}>
                       <Eye className="w-3 h-3 mr-1" />
-                      {campaign.viewCount >= 1000 
-                        ? `${(campaign.viewCount / 1000).toFixed(0)}K` 
+                      {campaign.viewCount >= 1000
+                        ? `${(campaign.viewCount / 1000).toFixed(0)}K`
                         : campaign.viewCount} views
                     </Badge>
                   </div>
+
+                  {/* Status & amount */}
                   <div className="text-right min-w-[100px] flex flex-col items-end gap-1.5">
-                    <p className="font-bold text-lg" data-testid={`text-campaign-cost-${campaign.id}`}>
-                      ${parseFloat(campaign.bidAmount || "0").toLocaleString()}
-                    </p>
-                    <Badge className={statusColors[campaign.status] || statusColors.pending} data-testid={`badge-status-${campaign.id}`}>
+                    {campaign.bidAmount && parseFloat(campaign.bidAmount) > 0 && (
+                      <p className="font-bold text-lg" data-testid={`text-campaign-cost-${campaign.id}`}>
+                        ${parseFloat(campaign.bidAmount).toLocaleString()}
+                      </p>
+                    )}
+                    <Badge className={statusColors[campaign.status] || statusColors.live} data-testid={`badge-status-${campaign.id}`}>
                       {statusLabels[campaign.status] || campaign.status}
                     </Badge>
-                    {campaign.status === "placed" && campaign.reviewSlug && (
-                      <Button
-                        size="sm"
-                        variant="default"
-                        className="gap-1 text-xs h-7 mt-1"
-                        onClick={() => window.location.href = `/s/${campaign.reviewSlug}`}
-                      >
-                        <Eye className="w-3 h-3" />
-                        Review Placement
-                      </Button>
-                    )}
-                    {campaign.status === "revision_requested" && (
-                      <span className="text-xs text-orange-400 max-w-[140px] truncate" title={campaign.reviewNote || ""}>
-                        {campaign.reviewNote || "Changes requested"}
-                      </span>
-                    )}
                   </div>
                 </Card>
               ))}
