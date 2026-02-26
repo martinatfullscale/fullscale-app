@@ -1434,8 +1434,15 @@ export default function PlacementPreviewModal({
       });
 
       if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: "Export failed" }));
-        throw new Error(err.error || "Export failed to start");
+        const errBody = await res.text().catch(() => "");
+        let errMsg = `HTTP ${res.status}`;
+        try {
+          const parsed = JSON.parse(errBody);
+          errMsg = parsed.error || parsed.message || errMsg;
+        } catch {
+          errMsg = errBody.length > 0 ? `${errMsg}: ${errBody.substring(0, 200)}` : errMsg;
+        }
+        throw new Error(errMsg);
       }
 
       const { exportId } = await res.json();
@@ -1445,9 +1452,10 @@ export default function PlacementPreviewModal({
     } catch (err: any) {
       setIsExporting(false);
       setExportStatus("failed");
-      toast({ title: "Export failed", description: err.message, variant: "destructive" });
+      console.error("[PlacementPreview] Export failed:", err);
+      toast({ title: "Export failed", description: err.message || "Unknown error", variant: "destructive" });
     }
-  }, [selectedSurface, productImage, transform, blend, videoId, toast]);
+  }, [selectedSurface, productImage, transform, blend, videoId, motionData, toast]);
 
   // Poll export progress
   useEffect(() => {
@@ -1717,8 +1725,15 @@ export default function PlacementPreviewModal({
         }),
       });
       if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: "Save failed" }));
-        throw new Error(err.error || "Failed to save placement");
+        const errBody = await res.text().catch(() => "");
+        let errMsg = `HTTP ${res.status}`;
+        try {
+          const parsed = JSON.parse(errBody);
+          errMsg = parsed.error || parsed.message || errMsg;
+        } catch {
+          errMsg = errBody.length > 0 ? `${errMsg}: ${errBody.substring(0, 200)}` : errMsg;
+        }
+        throw new Error(errMsg);
       }
       const result = await res.json().catch(() => ({}));
       setSaveSuccess(true);
@@ -1731,7 +1746,8 @@ export default function PlacementPreviewModal({
       });
       setTimeout(() => setSaveSuccess(false), 3000);
     } catch (err: any) {
-      toast({ title: "Save failed", description: err.message, variant: "destructive" });
+      console.error("[PlacementPreview] Save failed:", err);
+      toast({ title: "Save failed", description: err.message || "Unknown error", variant: "destructive" });
     } finally {
       setIsSaving(false);
     }
