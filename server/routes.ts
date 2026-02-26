@@ -3498,16 +3498,17 @@ export async function registerRoutes(
       // ── SOURCE 1: Actual saved placements (Live selections) ──
       const placements = await storage.getPlacementsByCreator(brandEmail);
 
-      // Deduplicate: group by videoId + surfaceId → keep only the most recent per combo
-      const seen = new Map<string, typeof placements[0]>();
+      // Deduplicate: one entry per video (keep the most recent placement per videoId)
+      // Each scan creates new surfaceIds, so we group by videoId only
+      const seen = new Map<number, typeof placements[0]>();
       for (const p of placements) {
-        const key = `${p.videoId}-${p.surfaceId}`;
-        const existing = seen.get(key);
+        const existing = seen.get(p.videoId);
         if (!existing || (p.createdAt && existing.createdAt && new Date(p.createdAt) > new Date(existing.createdAt))) {
-          seen.set(key, p);
+          seen.set(p.videoId, p);
         }
       }
       const uniquePlacements = Array.from(seen.values());
+      console.log(`[Brand Campaigns] ${placements.length} total placements → ${uniquePlacements.length} unique videos`);
 
       // Track which videoIds have live placements (to avoid showing duplicate bids)
       const placedVideoIds = new Set<number>();
