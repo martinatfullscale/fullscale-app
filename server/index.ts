@@ -236,18 +236,41 @@ app.use((req, res, next) => {
     
     // ============================================
     // PHASE 6: Start listening - ONLY when everything is ready
+    // Includes EADDRINUSE retry logic for Replit restarts
     // ============================================
     const port = parseInt(process.env.PORT || "5000", 10);
-    
-    await new Promise<void>((resolve) => {
-      httpServer.listen(
-        { port, host: "0.0.0.0", reusePort: true },
-        () => {
-          log(`Server listening on port ${port}`);
-          resolve();
-        },
-      );
-    });
+    const MAX_LISTEN_RETRIES = 10;
+    const RETRY_DELAY_MS = 3000; // 3 seconds between retries
+
+    for (let attempt = 1; attempt <= MAX_LISTEN_RETRIES; attempt++) {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const onError = (err: NodeJS.ErrnoException) => {
+            httpServer.removeListener("error", onError);
+            reject(err);
+          };
+          httpServer.once("error", onError);
+          httpServer.listen(
+            { port, host: "0.0.0.0", reusePort: true },
+            () => {
+              httpServer.removeListener("error", onError);
+              log(`Server listening on port ${port}`);
+              resolve();
+            },
+          );
+        });
+        break; // Successfully bound — exit retry loop
+      } catch (listenErr: any) {
+        if (listenErr.code === "EADDRINUSE" && attempt < MAX_LISTEN_RETRIES) {
+          log(`Port ${port} in use (attempt ${attempt}/${MAX_LISTEN_RETRIES}). Retrying in ${RETRY_DELAY_MS / 1000}s...`);
+          // Try to force-close before retrying
+          try { httpServer.close(); } catch (_) {}
+          await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
+        } else {
+          throw listenErr; // Non-recoverable or retries exhausted
+        }
+      }
+    }
     
     // Mark server as fully ready AFTER listening
     serverReady = true;
