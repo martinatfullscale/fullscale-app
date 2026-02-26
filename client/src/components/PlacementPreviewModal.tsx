@@ -1880,6 +1880,7 @@ export default function PlacementPreviewModal({
                     onMouseMove={handleCanvasMouseMove}
                     onMouseUp={handleCanvasMouseUp}
                     onMouseLeave={handleCanvasMouseUp}
+                    style={isVideoMode ? { pointerEvents: "none" } : undefined}
                   />
 
                     {/* Hidden video element for playback mode */}
@@ -1904,7 +1905,7 @@ export default function PlacementPreviewModal({
 
                   {/* Video playback controls overlay */}
                   {hasProduct && videoSrc && (
-                    <div className="absolute bottom-2 sm:bottom-3 left-2 sm:left-3 right-2 sm:right-3 flex items-center gap-1.5 sm:gap-2 z-10">
+                    <div className="absolute bottom-0 left-0 right-0 flex items-center gap-1.5 sm:gap-2 z-20 px-3 py-2.5 bg-gradient-to-t from-black/80 via-black/50 to-transparent" style={{ pointerEvents: "auto" }}>
                       <Button
                         size="sm"
                         variant={isVideoPlaying ? "default" : "secondary"}
@@ -1924,7 +1925,7 @@ export default function PlacementPreviewModal({
                         <>
                           {/* Custom seek bar — wide hit area, visible track, drag support */}
                           <div
-                            className="flex-1 relative h-6 flex items-center cursor-pointer group"
+                            className="flex-1 relative h-8 flex items-center cursor-pointer group"
                             onClick={(e) => {
                               e.stopPropagation();
                               const rect = e.currentTarget.getBoundingClientRect();
@@ -1973,14 +1974,14 @@ export default function PlacementPreviewModal({
                             }}
                           >
                             {/* Track background */}
-                            <div className="absolute left-0 right-0 h-1.5 bg-white/20 rounded-full group-hover:h-2 transition-all">
+                            <div className="absolute left-0 right-0 h-2 bg-white/30 rounded-full group-hover:h-3 transition-all">
                               {/* Progress fill */}
                               <div
                                 className="h-full bg-purple-500 rounded-full relative"
                                 style={{ width: `${videoDuration ? (videoCurrentTime / videoDuration) * 100 : 0}%` }}
                               >
-                                {/* Thumb indicator */}
-                                <div className="absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full shadow-md opacity-0 group-hover:opacity-100 transition-opacity" />
+                                {/* Thumb indicator — always visible */}
+                                <div className="absolute right-0 top-1/2 -translate-y-1/2 w-4 h-4 bg-white rounded-full shadow-lg border-2 border-purple-500 transition-transform group-hover:scale-110" />
                               </div>
                             </div>
                           </div>
