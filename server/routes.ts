@@ -3494,22 +3494,48 @@ export async function registerRoutes(
     try {
       const brandEmail = req.googleUser.email;
 
-      // Get actual saved placements (real product-on-surface selections)
+      // Get all saved placements by this brand user
       const placements = await storage.getPlacementsByCreator(brandEmail);
 
-      // Enrich each placement with video, surface, and product data
-      const enriched = await Promise.all(placements.map(async (placement) => {
+      // Also get monetization bids by this brand (for spend data)
+      const bids = await storage.getBrandCampaigns(brandEmail);
+      // Map bids by videoId for quick lookup
+      const bidsByVideo = new Map<number, typeof bids[0]>();
+      for (const bid of bids) {
+        if (bid.videoId && bid.bidAmount) {
+          const existing = bidsByVideo.get(bid.videoId);
+          // Keep the highest bid per video
+          if (!existing || parseFloat(bid.bidAmount || "0") > parseFloat(existing.bidAmount || "0")) {
+            bidsByVideo.set(bid.videoId, bid);
+          }
+        }
+      }
+
+      // Deduplicate: group by videoId + surfaceId → keep only the most recent per combo
+      const seen = new Map<string, typeof placements[0]>();
+      for (const p of placements) {
+        const key = `${p.videoId}-${p.surfaceId}`;
+        const existing = seen.get(key);
+        if (!existing || (p.createdAt && existing.createdAt && new Date(p.createdAt) > new Date(existing.createdAt))) {
+          seen.set(key, p);
+        }
+      }
+      const uniquePlacements = Array.from(seen.values());
+
+      // Enrich each unique placement
+      const enriched = await Promise.all(uniquePlacements.map(async (placement) => {
         // Video info
         const video = await storage.getVideoById(placement.videoId);
         const videoTitle = video?.title || "Unknown Video";
-        const thumbnailUrl = video?.thumbnailUrl || null;
         const viewCount = video?.viewCount || 0;
         const creatorUserId = video?.userId || null;
 
-        // Surface info
+        // Surface info — use surface frameUrl as thumbnail (actual video frame)
         const surfaces = await storage.getDetectedSurfaces(placement.videoId);
         const surface = surfaces.find(s => s.id === placement.surfaceId);
         const surfaceType = surface?.surfaceType || "Surface";
+        // Prefer the surface frame screenshot, fall back to video thumbnail
+        const thumbnailUrl = surface?.frameUrl || video?.thumbnailUrl || null;
 
         // Product info
         let productName = "Custom Product";
@@ -3522,11 +3548,15 @@ export async function registerRoutes(
           }
         }
 
-        // Bid info (if linked)
+        // Spend: check linked bid first, then fall back to bids-by-video lookup
         let bidAmount: string | null = null;
         if (placement.bidId) {
           const bid = await storage.getBidById(placement.bidId);
           if (bid) bidAmount = bid.bidAmount;
+        }
+        if (!bidAmount) {
+          const videoBid = bidsByVideo.get(placement.videoId);
+          if (videoBid) bidAmount = videoBid.bidAmount;
         }
 
         return {
@@ -3544,6 +3574,13 @@ export async function registerRoutes(
           createdAt: placement.createdAt,
         };
       }));
+
+      // Sort by most recent first
+      enriched.sort((a, b) => {
+        const da = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const db = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return db - da;
+      });
 
       res.json(enriched);
     } catch (err: any) {
