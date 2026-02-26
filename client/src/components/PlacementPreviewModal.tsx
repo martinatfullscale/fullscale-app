@@ -535,7 +535,7 @@ export default function PlacementPreviewModal({
   // Pre-computed motion tracking data from server (Gemini keyframes or static fallback)
   // When available, this gives smooth camera-locked placement
   const [motionData, setMotionData] = useState<{
-    transforms: Array<{ x: number; y: number; w: number; h: number }>;
+    transforms: Array<{ x: number; y: number; w: number; h: number } | null>;
     fps: number;
     duration: number;
     available: boolean;

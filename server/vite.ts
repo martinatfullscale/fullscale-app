@@ -21,8 +21,11 @@ export async function setupVite(server: Server, app: Express) {
     customLogger: {
       ...viteLogger,
       error: (msg, options) => {
+        // Log the error but do NOT kill the process — let Vite handle it gracefully.
+        // The old process.exit(1) would crash the entire server on any client compilation error,
+        // making it impossible to see the error or fix it without checking server logs.
         viteLogger.error(msg, options);
-        process.exit(1);
+        console.error("[Vite] Compilation error — check above for details");
       },
     },
     server: serverOptions,
