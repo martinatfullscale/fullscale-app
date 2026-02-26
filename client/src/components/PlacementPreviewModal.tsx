@@ -572,6 +572,9 @@ export default function PlacementPreviewModal({
     // Smoothed display position (what's actually rendered)
     displayOffsetX: number;
     displayOffsetY: number;
+    // Smoothed display dimensions (prevents size jitter)
+    displayOffsetW: number;
+    displayOffsetH: number;
     // Velocity for spring-damped interpolation
     velocityX: number;
     velocityY: number;
@@ -585,6 +588,8 @@ export default function PlacementPreviewModal({
     cumulativeOffsetY: 0,
     displayOffsetX: 0,
     displayOffsetY: 0,
+    displayOffsetW: 0,
+    displayOffsetH: 0,
     velocityX: 0,
     velocityY: 0,
     flowCanvas: typeof document !== "undefined" ? document.createElement("canvas") : null as any,
@@ -1022,6 +1027,8 @@ export default function PlacementPreviewModal({
             // Snap to initial position on first frame (no spring lag)
             tracking.displayOffsetX = constrainedBX;
             tracking.displayOffsetY = constrainedBY;
+            tracking.displayOffsetW = targetBW;
+            tracking.displayOffsetH = targetBH;
             tracking.cumulativeOffsetX = constrainedBX;
             tracking.cumulativeOffsetY = constrainedBY;
             tracking.velocityX = 0;
@@ -1031,25 +1038,30 @@ export default function PlacementPreviewModal({
           tracking.cumulativeOffsetX = constrainedBX;
           tracking.cumulativeOffsetY = constrainedBY;
 
-          // Stiff spring physics — fast lock-on, minimal oscillation
-          const stiffness = 0.35;
-          const damping = 0.82;
+          // Very stiff spring for Gemini data — server already smoothed, just snap to it
+          const stiffness = 0.7;
+          const damping = 0.5;
           const forceX = (tracking.cumulativeOffsetX - tracking.displayOffsetX) * stiffness;
           const forceY = (tracking.cumulativeOffsetY - tracking.displayOffsetY) * stiffness;
           tracking.velocityX = tracking.velocityX * damping + forceX;
           tracking.velocityY = tracking.velocityY * damping + forceY;
 
           // Velocity deadzone: eliminate micro-jitter when nearly at rest
-          if (Math.abs(tracking.velocityX) < 0.3) tracking.velocityX = 0;
-          if (Math.abs(tracking.velocityY) < 0.3) tracking.velocityY = 0;
+          if (Math.abs(tracking.velocityX) < 0.5) tracking.velocityX = 0;
+          if (Math.abs(tracking.velocityY) < 0.5) tracking.velocityY = 0;
 
           tracking.displayOffsetX += tracking.velocityX;
           tracking.displayOffsetY += tracking.velocityY;
 
+          // Also smooth width/height to prevent size jitter
+          const dimStiffness = 0.8;
+          tracking.displayOffsetW = (tracking.displayOffsetW || targetBW) + (targetBW - (tracking.displayOffsetW || targetBW)) * dimStiffness;
+          tracking.displayOffsetH = (tracking.displayOffsetH || targetBH) + (targetBH - (tracking.displayOffsetH || targetBH)) * dimStiffness;
+
           bx = tracking.displayOffsetX;
           by = tracking.displayOffsetY;
-          bw = targetBW;
-          bh = targetBH;
+          bw = tracking.displayOffsetW;
+          bh = tracking.displayOffsetH;
           }
         } else {
           // ── STRATEGY B: Global Optical Flow (camera motion estimation) ──
@@ -1234,6 +1246,8 @@ export default function PlacementPreviewModal({
       tracking.cumulativeOffsetY = 0;
       tracking.displayOffsetX = 0;
       tracking.displayOffsetY = 0;
+      tracking.displayOffsetW = 0;
+      tracking.displayOffsetH = 0;
       tracking.velocityX = 0;
       tracking.velocityY = 0;
       tracking.frameCounter = 0;
@@ -1276,6 +1290,8 @@ export default function PlacementPreviewModal({
     tracking.cumulativeOffsetY = 0;
     tracking.displayOffsetX = 0;
     tracking.displayOffsetY = 0;
+    tracking.displayOffsetW = 0;
+    tracking.displayOffsetH = 0;
     tracking.velocityX = 0;
     tracking.velocityY = 0;
     tracking.frameCounter = 0;
@@ -1942,6 +1958,8 @@ export default function PlacementPreviewModal({
                                 tracking.cumulativeOffsetY = 0;
                                 tracking.displayOffsetX = 0;
                                 tracking.displayOffsetY = 0;
+                                tracking.displayOffsetW = 0;
+                                tracking.displayOffsetH = 0;
                                 tracking.velocityX = 0;
                                 tracking.velocityY = 0;
                               }

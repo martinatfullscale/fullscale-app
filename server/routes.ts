@@ -5094,15 +5094,15 @@ export async function registerRoutes(
         kfs = filtered;
       }
 
-      // Step 2: Lock dimensions to median
+      // Step 2: Lock dimensions to median (tight threshold to prevent size jitter)
       const widths = kfs.map(k => k.width).sort((a, b) => a - b);
       const heights = kfs.map(k => k.height).sort((a, b) => a - b);
       const medianW = widths[Math.floor(widths.length / 2)];
       const medianH = heights[Math.floor(heights.length / 2)];
       kfs = kfs.map(k => ({
         ...k,
-        width: Math.abs(k.width - medianW) / medianW > 0.15 ? medianW : k.width,
-        height: Math.abs(k.height - medianH) / medianH > 0.15 ? medianH : k.height,
+        width: Math.abs(k.width - medianW) / medianW > 0.08 ? medianW : k.width,
+        height: Math.abs(k.height - medianH) / medianH > 0.08 ? medianH : k.height,
       }));
 
       // Step 2B: Anchor persistence — lock top-right corner to highest-confidence keyframe
@@ -5117,24 +5117,24 @@ export async function registerRoutes(
         const anchorTopRightX = anchorKf.x + anchorKf.width;
         const anchorTopRightY = anchorKf.y;
 
-        // Constrain all keyframes so top-right doesn't drift >5% from anchor
+        // Constrain all keyframes so top-right doesn't drift >2% from anchor
         for (const kf of kfs) {
           const trX = kf.x + kf.width;
           const trY = kf.y;
           const driftX = Math.abs(trX - anchorTopRightX);
           const driftY = Math.abs(trY - anchorTopRightY);
-          if (driftX > 0.05) {
-            kf.x = anchorTopRightX - kf.width + Math.sign(trX - anchorTopRightX) * 0.05;
+          if (driftX > 0.02) {
+            kf.x = anchorTopRightX - kf.width + Math.sign(trX - anchorTopRightX) * 0.02;
           }
-          if (driftY > 0.05) {
-            kf.y = anchorTopRightY + Math.sign(trY - anchorTopRightY) * 0.05;
+          if (driftY > 0.02) {
+            kf.y = anchorTopRightY + Math.sign(trY - anchorTopRightY) * 0.02;
           }
         }
         console.log(`[MotionTrack] Anchor-lock: top-right pinned at (${anchorTopRightX.toFixed(3)}, ${anchorTopRightY.toFixed(3)})`);
       }
 
-      // Step 3: Bidirectional EMA smoothing (heavier smoothing for stable positions)
-      const alpha = 0.3;
+      // Step 3: Bidirectional EMA smoothing (very heavy smoothing for rock-solid positions)
+      const alpha = 0.15;
       const fwd: PlacementKeyframe[] = [{ ...kfs[0] }];
       for (let i = 1; i < kfs.length; i++) {
         fwd.push({

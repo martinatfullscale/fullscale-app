@@ -379,16 +379,16 @@ async function compositeFrame(
       const driftY = Math.abs(trY - anchorTRY);
       let stableX = kf.bbox.x;
       let stableY = kf.bbox.y;
-      // Constrain top-right drift to 5% max
-      if (driftX > 5) stableX = anchorTRX - lockedW + Math.sign(trX - anchorTRX) * 5;
-      if (driftY > 5) stableY = anchorTRY + Math.sign(trY - anchorTRY) * 5;
+      // Constrain top-right drift to 2% max (tight lock to prevent jitter)
+      if (driftX > 2) stableX = anchorTRX - lockedW + Math.sign(trX - anchorTRX) * 2;
+      if (driftY > 2) stableY = anchorTRY + Math.sign(trY - anchorTRY) * 2;
       return { ...kf, bbox: { ...kf.bbox, x: stableX, y: stableY, w: lockedW, h: lockedH } };
     });
 
     // Step 4: Bidirectional EMA smoothing (same as server motion-track pipeline)
     let smoothedKfs = stabilizedKfs;
     if (stabilizedKfs.length >= 3) {
-      const ema = 0.3;
+      const ema = 0.15;
       const fwdKfs = [{ ...stabilizedKfs[0] }];
       for (let si = 1; si < stabilizedKfs.length; si++) {
         fwdKfs.push({
