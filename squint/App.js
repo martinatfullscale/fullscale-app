@@ -1,3 +1,4 @@
+import { registerRootComponent } from 'expo';
 import React from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
@@ -13,7 +14,7 @@ const Stack = createNativeStackNavigator();
  * Squint — a trivia game where you guess famous people from zoomed-in images.
  * Navigation flow: Start → Game → Score → Start (loop)
  */
-export default function App() {
+function App() {
   return (
     <SafeAreaProvider>
       <NavigationContainer>
@@ -33,3 +34,6 @@ export default function App() {
     </SafeAreaProvider>
   );
 }
+
+export default App;
+registerRootComponent(App);
