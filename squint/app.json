@@ -2,6 +2,7 @@
   "expo": {
     "name": "Squint",
     "slug": "squint",
+    "owner": "martinatfullscale",
     "version": "1.0.0",
     "orientation": "portrait",
     "backgroundColor": "#0D0D0D",
@@ -16,6 +17,12 @@
         "backgroundColor": "#0D0D0D"
       }
     },
-    "platforms": ["ios", "android"]
+    "platforms": [
+      "ios",
+      "android"
+    ],
+    "plugins": [
+      "expo-asset"
+    ]
   }
 }
