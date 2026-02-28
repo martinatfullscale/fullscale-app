@@ -1,34 +1,39 @@
 import { registerRootComponent } from 'expo';
 import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import { NavigationContainer } from '@react-navigation/native';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 
+import StartScreen from './src/screens/StartScreen';
+import GameScreen from './src/screens/GameScreen';
+import ScoreScreen from './src/screens/ScoreScreen';
+
+const Stack = createNativeStackNavigator();
+
+/**
+ * Squint — a trivia game where you guess famous people from zoomed-in images.
+ * Navigation flow: Start → Game → Score → Start (loop)
+ */
 function App() {
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>SQUINT</Text>
-      <Text style={styles.sub}>Loading test...</Text>
-    </View>
+    <SafeAreaProvider>
+      <NavigationContainer>
+        <Stack.Navigator
+          initialRouteName="Start"
+          screenOptions={{
+            headerShown: false,
+            animation: 'fade',
+            contentStyle: { backgroundColor: '#0D0D0D' },
+          }}
+        >
+          <Stack.Screen name="Start" component={StartScreen} />
+          <Stack.Screen name="Game" component={GameScreen} />
+          <Stack.Screen name="Score" component={ScoreScreen} />
+        </Stack.Navigator>
+      </NavigationContainer>
+    </SafeAreaProvider>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#0D0D0D',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  title: {
-    fontSize: 64,
-    fontWeight: '900',
-    color: '#F5E642',
-  },
-  sub: {
-    fontSize: 18,
-    color: '#888',
-    marginTop: 12,
-  },
-});
 
 export default App;
 registerRootComponent(App);
