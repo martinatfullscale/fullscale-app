@@ -9,19 +9,24 @@ const IMAGE_HEIGHT = SCREEN_HEIGHT * 0.55;
 
 /**
  * Zoom stage → scale factor.
- * Higher scale = more zoomed in, less visible.
+ * FLIPPED: image starts TINY (you have to squint!) and grows each stage.
+ * Stage 1: 5% size — nearly invisible, gotta squint hard
+ * Stage 2: 15% — still tiny
+ * Stage 3: 30% — starting to make it out
+ * Stage 4: 55% — getting clearer
+ * Stage 5: 100% — fully revealed
  */
 const SCALE_BY_STAGE = {
-  1: 3.5,
-  2: 2.35,
-  3: 1.77,
-  4: 1.35,
+  1: 0.05,
+  2: 0.15,
+  3: 0.30,
+  4: 0.55,
   5: 1.0,
 };
 
 /**
- * ZoomImage — renders a face image (or colored fallback) at varying zoom levels.
- * Fills the top portion of the screen edge-to-edge.
+ * ZoomImage — renders a face image (or colored fallback) starting super tiny.
+ * The image grows with each wrong guess — you literally have to squint to see it.
  *
  * Props:
  *   image       — image source (uri string, require(), or null)
@@ -38,9 +43,10 @@ export default function ZoomImage({ image, imageColor, initials, zoomStage }) {
       scaleAnim.setValue(SCALE_BY_STAGE[1]);
     } else {
       const targetScale = SCALE_BY_STAGE[zoomStage] || 1;
-      Animated.timing(scaleAnim, {
+      Animated.spring(scaleAnim, {
         toValue: targetScale,
-        duration: 300,
+        tension: 40,
+        friction: 7,
         useNativeDriver: true,
       }).start();
     }
@@ -91,7 +97,9 @@ const styles = StyleSheet.create({
     height: IMAGE_HEIGHT,
     borderRadius: 20,
     overflow: 'hidden',
-    backgroundColor: '#1A1A1A',
+    backgroundColor: '#0D0D0D',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   imageWrapper: {
     width: IMAGE_WIDTH,
@@ -108,6 +116,7 @@ const styles = StyleSheet.create({
     height: IMAGE_HEIGHT,
     alignItems: 'center',
     justifyContent: 'center',
+    borderRadius: 20,
   },
   initials: {
     fontSize: 100,
