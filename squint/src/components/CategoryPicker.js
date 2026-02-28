@@ -8,7 +8,7 @@ import {
   ScrollView,
   Dimensions,
 } from 'react-native';
-import { getCategoryList } from '../data/categories';
+import { getCategoryList, getAllFaces, getFacesByCategory } from '../data/categories';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -51,7 +51,7 @@ export default function CategoryPicker({ visible, onSelect, onClose }) {
             >
               <Text style={styles.categoryIcon}>🎯</Text>
               <Text style={styles.categoryName}>All Categories</Text>
-              <Text style={styles.categoryCount}>100 faces</Text>
+              <Text style={styles.categoryCount}>{getAllFaces().length} total</Text>
             </TouchableOpacity>
 
             {/* Individual categories */}
@@ -64,7 +64,7 @@ export default function CategoryPicker({ visible, onSelect, onClose }) {
               >
                 <Text style={styles.categoryIcon}>{cat.icon}</Text>
                 <Text style={styles.categoryName}>{cat.name}</Text>
-                <Text style={styles.categoryCount}>10 faces</Text>
+                <Text style={styles.categoryCount}>{getFacesByCategory(cat.id).length}</Text>
               </TouchableOpacity>
             ))}
           </ScrollView>

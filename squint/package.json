@@ -23,7 +23,8 @@
     "react-native-screens": "~4.16.0"
   },
   "devDependencies": {
-    "@babel/core": "^7.25.2"
+    "@babel/core": "^7.25.2",
+    "canvas": "^3.2.1"
   },
   "private": true
 }

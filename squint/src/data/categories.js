@@ -1,12 +1,19 @@
 /**
  * Category data for Squint.
- * 10 cultural categories, each with 10 famous faces.
+ * 13 categories across 3 types: Famous People, Landmarks, and Scenes/Objects.
  *
- * IMAGE SETUP:
- * Each entry has an `image` field for a photo URL and a fallback `imageColor`/`initials`.
- * To add real photos:
- *   1. Drop images into assets/images/ and use: image: require('../../assets/images/drake.jpg')
- *   2. Or point to a CDN: image: 'https://your-cdn.com/images/drake.jpg'
+ * IMAGE SETUP — Two approaches:
+ *
+ * A) PUBLIC FIGURES (real photos you license or source):
+ *    1. Drop photos into: assets/images/<category>/<name>.jpg
+ *    2. Update the entry: image: require('../../assets/images/hip-hop/drake.jpg')
+ *
+ * B) AI-GENERATED (images you OWN, no licensing needed):
+ *    1. Run: OPENAI_API_KEY="sk-..." node scripts/generate-images.js
+ *    2. Images saved to: assets/images/<category>/
+ *    3. Update the entry: image: require('../../assets/images/landmarks/eiffel-tower.png')
+ *    4. See scripts/generate-images.js for prompts and options.
+ *
  * The ZoomImage component handles both local (require) and remote (uri string) images,
  * falling back to the colored initials block when image is null.
  */
@@ -928,6 +935,285 @@ const categories = [
         imageColor: '#FF69B4',
         initials: 'TR',
         options: ['Tracee Ellis Ross', 'Issa Rae', 'Kerry Washington', 'Rashida Jones'],
+      },
+    ],
+  },
+
+  // ─────────────────────────────────────────────
+  // 11. WORLD LANDMARKS (AI-generated images)
+  // ─────────────────────────────────────────────
+  {
+    id: 'landmarks',
+    name: 'World Landmarks',
+    icon: '🗽',
+    color: '#00897B',
+    type: 'landmark',
+    faces: [
+      {
+        id: 'lm-1',
+        name: 'Eiffel Tower',
+        image: require('../../assets/images/landmarks/eiffel-tower.png'),
+        imageColor: '#5C4033',
+        initials: 'ET',
+        options: ['Eiffel Tower', 'Big Ben', 'Leaning Tower of Pisa', 'Burj Khalifa'],
+      },
+      {
+        id: 'lm-2',
+        name: 'Great Wall of China',
+        image: require('../../assets/images/landmarks/great-wall.png'),
+        imageColor: '#8B7355',
+        initials: 'GW',
+        options: ['Great Wall of China', 'Machu Picchu', 'Angkor Wat', 'Petra'],
+      },
+      {
+        id: 'lm-3',
+        name: 'Statue of Liberty',
+        image: require('../../assets/images/landmarks/statue-of-liberty.png'),
+        imageColor: '#4A7C59',
+        initials: 'SL',
+        options: ['Statue of Liberty', 'Christ the Redeemer', 'Lincoln Memorial', 'Washington Monument'],
+      },
+      {
+        id: 'lm-4',
+        name: 'Taj Mahal',
+        image: require('../../assets/images/landmarks/taj-mahal.png'),
+        imageColor: '#F5F5DC',
+        initials: 'TM',
+        options: ['Taj Mahal', 'Lotus Temple', 'Hagia Sophia', 'Blue Mosque'],
+      },
+      {
+        id: 'lm-5',
+        name: 'Colosseum',
+        image: require('../../assets/images/landmarks/colosseum.png'),
+        imageColor: '#C19A6B',
+        initials: 'C',
+        options: ['Colosseum', 'Parthenon', 'Pantheon', 'Roman Forum'],
+      },
+      {
+        id: 'lm-6',
+        name: 'Machu Picchu',
+        image: require('../../assets/images/landmarks/machu-picchu.png'),
+        imageColor: '#6B8E23',
+        initials: 'MP',
+        options: ['Machu Picchu', 'Chichen Itza', 'Easter Island', 'Teotihuacan'],
+      },
+      {
+        id: 'lm-7',
+        name: 'Sydney Opera House',
+        image: require('../../assets/images/landmarks/sydney-opera-house.png'),
+        imageColor: '#F0F0F0',
+        initials: 'SO',
+        options: ['Sydney Opera House', 'Walt Disney Concert Hall', 'Guggenheim Museum', 'Louvre Pyramid'],
+      },
+      {
+        id: 'lm-8',
+        name: 'Big Ben',
+        image: require('../../assets/images/landmarks/big-ben.png'),
+        imageColor: '#B8860B',
+        initials: 'BB',
+        options: ['Big Ben', 'Eiffel Tower', 'Empire State Building', 'CN Tower'],
+      },
+      {
+        id: 'lm-9',
+        name: 'Christ the Redeemer',
+        image: require('../../assets/images/landmarks/christ-redeemer.png'),
+        imageColor: '#D3D3D3',
+        initials: 'CR',
+        options: ['Christ the Redeemer', 'Statue of Liberty', 'The Motherland Calls', 'Spring Temple Buddha'],
+      },
+      {
+        id: 'lm-10',
+        name: 'Golden Gate Bridge',
+        image: require('../../assets/images/landmarks/golden-gate.png'),
+        imageColor: '#C0392B',
+        initials: 'GG',
+        options: ['Golden Gate Bridge', 'Brooklyn Bridge', 'Tower Bridge', 'Sydney Harbour Bridge'],
+      },
+    ],
+  },
+
+  // ─────────────────────────────────────────────
+  // 12. WHAT'S HAPPENING? (AI-generated scenes)
+  // ─────────────────────────────────────────────
+  {
+    id: 'whats-happening',
+    name: "What's Happening?",
+    icon: '🤔',
+    color: '#FF9800',
+    type: 'scene',
+    faces: [
+      {
+        id: 'wh-1',
+        name: 'Man Riding a Bike',
+        image: require('../../assets/images/whats-happening/man-on-bike.png'),
+        imageColor: '#3498DB',
+        initials: '🚲',
+        options: ['Man Riding a Bike', 'Man Running', 'Man on a Scooter', 'Man Skateboarding'],
+      },
+      {
+        id: 'wh-2',
+        name: 'Woman Jumping',
+        image: require('../../assets/images/whats-happening/woman-jumping.png'),
+        imageColor: '#E67E22',
+        initials: '🏃‍♀️',
+        options: ['Woman Jumping', 'Woman Dancing', 'Woman Running', 'Woman Stretching'],
+      },
+      {
+        id: 'wh-3',
+        name: 'Kid Flying a Kite',
+        image: require('../../assets/images/whats-happening/kid-kite.png'),
+        imageColor: '#2ECC71',
+        initials: '🪁',
+        options: ['Kid Flying a Kite', 'Kid Catching Butterflies', 'Kid Playing Tag', 'Kid Blowing Bubbles'],
+      },
+      {
+        id: 'wh-4',
+        name: 'Dog Catching a Frisbee',
+        image: require('../../assets/images/whats-happening/dog-frisbee.png'),
+        imageColor: '#8E44AD',
+        initials: '🐕',
+        options: ['Dog Catching a Frisbee', 'Dog Fetching a Ball', 'Dog Swimming', 'Dog Jumping a Hurdle'],
+      },
+      {
+        id: 'wh-5',
+        name: 'Couple Dancing in Rain',
+        image: require('../../assets/images/whats-happening/dancing-rain.png'),
+        imageColor: '#2C3E50',
+        initials: '💃',
+        options: ['Couple Dancing in Rain', 'Couple Walking on Beach', 'Couple at a Concert', 'Couple Having a Picnic'],
+      },
+      {
+        id: 'wh-6',
+        name: 'Person Skateboarding',
+        image: require('../../assets/images/whats-happening/skateboarding.png'),
+        imageColor: '#E74C3C',
+        initials: '🛹',
+        options: ['Person Skateboarding', 'Person Surfing', 'Person Snowboarding', 'Person Rollerblading'],
+      },
+      {
+        id: 'wh-7',
+        name: 'Chef Tossing Pizza Dough',
+        image: require('../../assets/images/whats-happening/pizza-toss.png'),
+        imageColor: '#F39C12',
+        initials: '🍕',
+        options: ['Chef Tossing Pizza Dough', 'Chef Flipping Pancakes', 'Chef Chopping Vegetables', 'Chef Decorating Cake'],
+      },
+      {
+        id: 'wh-8',
+        name: 'Person Reading in Hammock',
+        image: require('../../assets/images/whats-happening/hammock-reading.png'),
+        imageColor: '#1ABC9C',
+        initials: '📖',
+        options: ['Person Reading in Hammock', 'Person Sleeping in Hammock', 'Person Fishing from Dock', 'Person Painting Outdoors'],
+      },
+      {
+        id: 'wh-9',
+        name: 'Street Musician Playing',
+        image: require('../../assets/images/whats-happening/street-musician.png'),
+        imageColor: '#9B59B6',
+        initials: '🎷',
+        options: ['Street Musician Playing', 'Street Artist Painting', 'Street Dancer Performing', 'Magician Doing Tricks'],
+      },
+      {
+        id: 'wh-10',
+        name: 'Kids Having a Snowball Fight',
+        image: require('../../assets/images/whats-happening/snowball-fight.png'),
+        imageColor: '#BDC3C7',
+        initials: '❄️',
+        options: ['Kids Having a Snowball Fight', 'Kids Building a Snowman', 'Kids Sledding Down a Hill', 'Kids Making Snow Angels'],
+      },
+    ],
+  },
+
+  // ─────────────────────────────────────────────
+  // 13. EVERYDAY OBJECTS (AI-generated)
+  // ─────────────────────────────────────────────
+  {
+    id: 'everyday-objects',
+    name: 'Everyday Objects',
+    icon: '👟',
+    color: '#795548',
+    type: 'object',
+    faces: [
+      {
+        id: 'eo-1',
+        name: 'Red Sneakers',
+        image: require('../../assets/images/everyday-objects/red-sneakers.png'),
+        imageColor: '#E74C3C',
+        initials: '👟',
+        options: ['Red Sneakers', 'Hiking Boots', 'Ballet Shoes', 'Cowboy Boots'],
+      },
+      {
+        id: 'eo-2',
+        name: 'Vintage Typewriter',
+        image: require('../../assets/images/everyday-objects/typewriter.png'),
+        imageColor: '#34495E',
+        initials: '⌨️',
+        options: ['Vintage Typewriter', 'Old Radio', 'Record Player', 'Rotary Phone'],
+      },
+      {
+        id: 'eo-3',
+        name: 'Stack of Pancakes',
+        image: require('../../assets/images/everyday-objects/pancakes.png'),
+        imageColor: '#D4A574',
+        initials: '🥞',
+        options: ['Stack of Pancakes', 'Stack of Waffles', 'French Toast', 'Crepes'],
+      },
+      {
+        id: 'eo-4',
+        name: 'Acoustic Guitar',
+        image: require('../../assets/images/everyday-objects/guitar.png'),
+        imageColor: '#8B4513',
+        initials: '🎸',
+        options: ['Acoustic Guitar', 'Electric Guitar', 'Ukulele', 'Violin'],
+      },
+      {
+        id: 'eo-5',
+        name: 'Old Rotary Phone',
+        image: require('../../assets/images/everyday-objects/rotary-phone.png'),
+        imageColor: '#16A085',
+        initials: '☎️',
+        options: ['Old Rotary Phone', 'Vintage Typewriter', 'Grandfather Clock', 'Gramophone'],
+      },
+      {
+        id: 'eo-6',
+        name: 'Hot Air Balloon',
+        image: require('../../assets/images/everyday-objects/hot-air-balloon.png'),
+        imageColor: '#3498DB',
+        initials: '🎈',
+        options: ['Hot Air Balloon', 'Helicopter', 'Blimp', 'Hang Glider'],
+      },
+      {
+        id: 'eo-7',
+        name: 'Polaroid Camera',
+        image: require('../../assets/images/everyday-objects/polaroid-camera.png'),
+        imageColor: '#F5F5F5',
+        initials: '📸',
+        options: ['Polaroid Camera', 'Film Camera', 'Disposable Camera', 'Digital Camera'],
+      },
+      {
+        id: 'eo-8',
+        name: 'Disco Ball',
+        image: require('../../assets/images/everyday-objects/disco-ball.png'),
+        imageColor: '#C0C0C0',
+        initials: '🪩',
+        options: ['Disco Ball', 'Crystal Chandelier', 'Globe', 'Snow Globe'],
+      },
+      {
+        id: 'eo-9',
+        name: 'Yellow School Bus',
+        image: require('../../assets/images/everyday-objects/school-bus.png'),
+        imageColor: '#F1C40F',
+        initials: '🚌',
+        options: ['Yellow School Bus', 'Fire Truck', 'Ice Cream Truck', 'Double Decker Bus'],
+      },
+      {
+        id: 'eo-10',
+        name: "Rubik's Cube",
+        image: require('../../assets/images/everyday-objects/rubiks-cube.png'),
+        imageColor: '#E74C3C',
+        initials: '🧩',
+        options: ["Rubik's Cube", 'Puzzle Box', 'Magic 8-Ball', 'Lego Brick'],
       },
     ],
   },
