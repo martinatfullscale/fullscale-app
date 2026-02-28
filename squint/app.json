@@ -3,13 +3,16 @@
     "name": "Squint",
     "slug": "squint",
     "owner": "martinatfullscale",
-    "version": "1.0.0",
+    "version": "2.0.0",
     "orientation": "portrait",
     "backgroundColor": "#0D0D0D",
     "userInterfaceStyle": "dark",
     "ios": {
       "bundleIdentifier": "com.squint.app",
-      "supportsTablet": false
+      "supportsTablet": false,
+      "infoPlist": {
+        "UIBackgroundModes": ["audio"]
+      }
     },
     "android": {
       "package": "com.squint.app",
@@ -22,7 +25,13 @@
       "android"
     ],
     "plugins": [
-      "expo-asset"
+      "expo-asset",
+      [
+        "expo-av",
+        {
+          "microphonePermission": false
+        }
+      ]
     ]
   }
 }

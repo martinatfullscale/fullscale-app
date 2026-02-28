@@ -2,7 +2,7 @@ import React from 'react';
 import { TouchableOpacity, Text, StyleSheet, Dimensions } from 'react-native';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const CARD_WIDTH = (SCREEN_WIDTH - 48) / 2; // 2 columns with padding
+const CARD_WIDTH = (SCREEN_WIDTH - 44) / 2; // 2 columns with tighter padding
 
 /**
  * AnswerCard — a tappable multiple-choice option.
@@ -30,7 +30,12 @@ export default function AnswerCard({ label, onPress, state = 'default' }) {
       disabled={isDisabled}
       activeOpacity={0.7}
     >
-      <Text style={[styles.label, state === 'disabled' && styles.disabledLabel]}>
+      <Text
+        style={[styles.label, state === 'disabled' && styles.disabledLabel]}
+        numberOfLines={2}
+        adjustsFontSizeToFit
+        minimumFontScale={0.7}
+      >
         {label}
       </Text>
     </TouchableOpacity>
@@ -40,16 +45,16 @@ export default function AnswerCard({ label, onPress, state = 'default' }) {
 const styles = StyleSheet.create({
   card: {
     width: CARD_WIDTH,
-    minHeight: 64,
-    borderRadius: 16,
+    minHeight: 56,
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 14,
-    paddingHorizontal: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 10,
   },
   label: {
     color: '#FFFFFF',
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '700',
     textAlign: 'center',
   },
