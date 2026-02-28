@@ -9,13 +9,12 @@
  *    2. Update the entry: image: require('../../assets/images/hip-hop/drake.jpg')
  *
  * B) AI-GENERATED (images you OWN, no licensing needed):
- *    1. Run: OPENAI_API_KEY="sk-..." node scripts/generate-images.js
+ *    1. Run: REPLICATE_API_TOKEN="..." python3 scripts/generate-flux-images.py
  *    2. Images saved to: assets/images/<category>/
  *    3. Update the entry: image: require('../../assets/images/landmarks/eiffel-tower.png')
- *    4. See scripts/generate-images.js for prompts and options.
  *
- * The ZoomImage component handles both local (require) and remote (uri string) images,
- * falling back to the colored initials block when image is null.
+ * OPTIONS: Each option is a mini description / clue — NOT the direct name.
+ * The first option always corresponds to the correct answer (the `name` field).
  */
 
 const categories = [
@@ -34,7 +33,12 @@ const categories = [
         image: null,
         imageColor: '#8B6914',
         initials: 'D',
-        options: ['Drake', 'Kendrick Lamar', 'J. Cole', 'Future'],
+        options: [
+          'Toronto rapper who started from the bottom on Degrassi',
+          'Compton lyricist crowned king of West Coast rap',
+          'Dreamville founder who went platinum with no features',
+          'Atlanta trap pioneer known for Auto-Tune melodies',
+        ],
       },
       {
         id: 'hh-2',
@@ -42,7 +46,12 @@ const categories = [
         image: null,
         imageColor: '#1C1C1C',
         initials: 'JZ',
-        options: ['Jay-Z', 'Nas', 'Diddy', 'Kanye West'],
+        options: [
+          'Brooklyn mogul who built Roc-A-Fella into an empire',
+          'Queensbridge poet who painted street life on Illmatic',
+          'Bad Boy mogul who made hip hop and fashion collide',
+          'Chicago visionary who dropped out to produce beats',
+        ],
       },
       {
         id: 'hh-3',
@@ -50,7 +59,12 @@ const categories = [
         image: null,
         imageColor: '#4A0E0E',
         initials: 'KL',
-        options: ['Kendrick Lamar', 'J. Cole', 'Drake', 'Tyler, The Creator'],
+        options: [
+          'Compton storyteller who took rap to Pulitzer Prize heights',
+          'Dreamville founder who went platinum with no features',
+          'Toronto rapper who started from the bottom on Degrassi',
+          'Odd Future leader who reinvents himself every album',
+        ],
       },
       {
         id: 'hh-4',
@@ -58,7 +72,12 @@ const categories = [
         image: null,
         imageColor: '#FF69B4',
         initials: 'NM',
-        options: ['Nicki Minaj', 'Cardi B', 'Megan Thee Stallion', 'Lil Kim'],
+        options: [
+          'Queens rapper who crowned herself the Queen of Rap',
+          'Bronx star who went from Love & Hip Hop to #1',
+          'Houston hottie driving the hot girl summer movement',
+          'Brooklyn queen bee who pioneered female rap fashion',
+        ],
       },
       {
         id: 'hh-5',
@@ -66,7 +85,12 @@ const categories = [
         image: null,
         imageColor: '#8B4513',
         initials: 'KW',
-        options: ['Kanye West', 'Jay-Z', 'Kid Cudi', 'Pharrell Williams'],
+        options: [
+          'Chicago producer turned rapper who dropped out of college',
+          'Brooklyn mogul who built Roc-A-Fella into an empire',
+          'Cleveland dreamer who put mental health in hip hop',
+          'Superproducer who created hits across every genre',
+        ],
       },
       {
         id: 'hh-6',
@@ -74,7 +98,12 @@ const categories = [
         image: null,
         imageColor: '#B22222',
         initials: 'LW',
-        options: ['Lil Wayne', 'Birdman', 'T.I.', '2 Chainz'],
+        options: [
+          'New Orleans legend who dropped more mixtapes than anyone',
+          'Cash Money co-founder who put the South on the map',
+          'Atlanta\'s self-proclaimed King of the South',
+          'Former college basketball player turned trap hitmaker',
+        ],
       },
       {
         id: 'hh-7',
@@ -82,7 +111,12 @@ const categories = [
         image: null,
         imageColor: '#DC143C',
         initials: 'CB',
-        options: ['Cardi B', 'Nicki Minaj', 'Megan Thee Stallion', 'Doja Cat'],
+        options: [
+          'Bronx sensation who went from reality TV to Grammy winner',
+          'Queens rapper who crowned herself the Queen of Rap',
+          'Houston hottie driving the hot girl summer movement',
+          'Genre-blending hitmaker who went viral on the internet',
+        ],
       },
       {
         id: 'hh-8',
@@ -90,7 +124,12 @@ const categories = [
         image: null,
         imageColor: '#4B3621',
         initials: 'TS',
-        options: ['Travis Scott', 'Kid Cudi', 'Don Toliver', 'Playboi Carti'],
+        options: [
+          'Houston rapper known for raging concerts and Astroworld',
+          'Cleveland dreamer who put mental health in hip hop',
+          'Cactus Jack signee with smooth melodic vibes',
+          'Atlanta mumble rap pioneer with a cult following',
+        ],
       },
       {
         id: 'hh-9',
@@ -98,7 +137,12 @@ const categories = [
         image: null,
         imageColor: '#228B22',
         initials: 'SD',
-        options: ['Snoop Dogg', 'Dr. Dre', 'Ice Cube', 'Warren G'],
+        options: [
+          'Long Beach legend who debuted on The Chronic in \'92',
+          'Compton producer who built Aftermath and Beats by Dre',
+          'N.W.A. member turned Hollywood movie star',
+          'West Coast G-funk pioneer who regulated the game',
+        ],
       },
       {
         id: 'hh-10',
@@ -106,7 +150,12 @@ const categories = [
         image: null,
         imageColor: '#FF6347',
         initials: 'MS',
-        options: ['Megan Thee Stallion', 'Cardi B', 'Doja Cat', 'GloRilla'],
+        options: [
+          'Houston hottie with a degree who drives hot girl summer',
+          'Bronx star who went from reality TV to the Grammys',
+          'Genre-blending viral sensation from Los Angeles',
+          'Memphis rapper who brought the energy with F.N.F.',
+        ],
       },
     ],
   },
@@ -126,7 +175,12 @@ const categories = [
         image: null,
         imageColor: '#FF69B4',
         initials: 'TS',
-        options: ['Taylor Swift', 'Ariana Grande', 'Selena Gomez', 'Katy Perry'],
+        options: [
+          'Country girl turned pop queen with a catalog of eras',
+          'Powerhouse vocalist with the signature high ponytail',
+          'Disney Channel alum turned pop star and beauty mogul',
+          'Pop star who kissed a girl and shot fireworks on stage',
+        ],
       },
       {
         id: 'ps-2',
@@ -134,7 +188,12 @@ const categories = [
         image: null,
         imageColor: '#DDA0DD',
         initials: 'AG',
-        options: ['Ariana Grande', 'Taylor Swift', 'Dua Lipa', 'Camila Cabello'],
+        options: [
+          'Nickelodeon alum with a ponytail and five-octave range',
+          'Country girl turned global pop queen known for her eras',
+          'British-Albanian pop star who set new rules for dance',
+          'Former girl group member who came straight from Havana',
+        ],
       },
       {
         id: 'ps-3',
@@ -142,7 +201,12 @@ const categories = [
         image: null,
         imageColor: '#32CD32',
         initials: 'BE',
-        options: ['Billie Eilish', 'Olivia Rodrigo', 'Halsey', 'Lorde'],
+        options: [
+          'Whisper-voiced teen who broke records from her bedroom',
+          'Disney star who channeled heartbreak into a debut smash',
+          'Alt-pop artist who blurs genres and boundaries',
+          'New Zealand teen who called out the royals at 16',
+        ],
       },
       {
         id: 'ps-4',
@@ -150,7 +214,12 @@ const categories = [
         image: null,
         imageColor: '#FF8C00',
         initials: 'ES',
-        options: ['Ed Sheeran', 'Sam Smith', 'Lewis Capaldi', 'Shawn Mendes'],
+        options: [
+          'Red-haired British singer with just a guitar and loop pedal',
+          'Grammy-winning British vocalist with a soulful ballad voice',
+          'Scottish singer known for emotional heartbreak ballads',
+          'Canadian heartthrob who started posting covers on Vine',
+        ],
       },
       {
         id: 'ps-5',
@@ -158,7 +227,12 @@ const categories = [
         image: null,
         imageColor: '#9370DB',
         initials: 'JB',
-        options: ['Justin Bieber', 'Shawn Mendes', 'Charlie Puth', 'Harry Styles'],
+        options: [
+          'Canadian kid discovered on YouTube who became a global idol',
+          'Canadian heartthrob who started posting covers on Vine',
+          'Producer-singer who writes pop hits with perfect pitch',
+          'British boy band star who went solo with bold fashion',
+        ],
       },
       {
         id: 'ps-6',
@@ -166,7 +240,12 @@ const categories = [
         image: null,
         imageColor: '#C71585',
         initials: 'LG',
-        options: ['Lady Gaga', 'Madonna', 'Katy Perry', 'P!nk'],
+        options: [
+          'Avant-garde pop icon who once arrived in a meat dress',
+          'Queen of Pop who ruled the \'80s and constantly reinvented',
+          'Pop star who kissed a girl and shot fireworks on stage',
+          'Acrobatic pop-rock performer who sings from the rafters',
+        ],
       },
       {
         id: 'ps-7',
@@ -174,7 +253,12 @@ const categories = [
         image: null,
         imageColor: '#4169E1',
         initials: 'HS',
-        options: ['Harry Styles', 'Niall Horan', 'Zayn Malik', 'Louis Tomlinson'],
+        options: [
+          'Boy band heartthrob who went solo with bold fashion flair',
+          'Irish singer from the same boy band gone country-pop',
+          'Boy band dropout who went dark and moody as a solo act',
+          'Boy band member who stayed closest to pop-rock roots',
+        ],
       },
       {
         id: 'ps-8',
@@ -182,7 +266,12 @@ const categories = [
         image: null,
         imageColor: '#FF1493',
         initials: 'DL',
-        options: ['Dua Lipa', 'Ariana Grande', 'Billie Eilish', 'Doja Cat'],
+        options: [
+          'British-Albanian singer who set new rules for dance pop',
+          'Nickelodeon alum with a ponytail and five-octave range',
+          'Whisper-voiced artist who broke records from her bedroom',
+          'Genre-blending viral sensation from Los Angeles',
+        ],
       },
       {
         id: 'ps-9',
@@ -190,7 +279,12 @@ const categories = [
         image: null,
         imageColor: '#8B0000',
         initials: 'TW',
-        options: ['The Weeknd', 'Bruno Mars', 'Post Malone', 'Khalid'],
+        options: [
+          'Toronto singer who emerged from mystery with dark R&B',
+          'Hawaiian-born showman who does pop, funk, and R&B',
+          'Genre-bending artist covered head to toe in face tattoos',
+          'Smooth-voiced singer who debuted as a teen from El Paso',
+        ],
       },
       {
         id: 'ps-10',
@@ -198,7 +292,12 @@ const categories = [
         image: null,
         imageColor: '#8A2BE2',
         initials: 'OR',
-        options: ['Olivia Rodrigo', 'Billie Eilish', 'Sabrina Carpenter', 'Madison Beer'],
+        options: [
+          'Disney star whose heartbreak debut album dominated 2021',
+          'Whisper-voiced artist who broke records from her bedroom',
+          'Disney alum with clever pop songs and killer stage presence',
+          'Singer discovered on YouTube who built an indie pop career',
+        ],
       },
     ],
   },
@@ -218,7 +317,12 @@ const categories = [
         image: null,
         imageColor: '#FF8C00',
         initials: 'OW',
-        options: ['Oprah Winfrey', 'Whoopi Goldberg', 'Gayle King', 'Ellen DeGeneres'],
+        options: [
+          'Media mogul who built an empire from a talk show chair',
+          'EGOT-winning comedian who co-hosts The View every morning',
+          'Morning news anchor and best friend to a media mogul',
+          'Daytime TV host who danced her way into living rooms',
+        ],
       },
       {
         id: 'iw-2',
@@ -226,7 +330,12 @@ const categories = [
         image: null,
         imageColor: '#4682B4',
         initials: 'MO',
-        options: ['Michelle Obama', 'Kamala Harris', 'Condoleezza Rice', 'Jill Biden'],
+        options: [
+          'Former First Lady who championed health and education',
+          'First woman to serve as Vice President of the U.S.',
+          'Stanford professor who became Secretary of State',
+          'Educator who kept teaching while living in the White House',
+        ],
       },
       {
         id: 'iw-3',
@@ -234,7 +343,12 @@ const categories = [
         image: null,
         imageColor: '#6A0DAD',
         initials: 'SW',
-        options: ['Serena Williams', 'Venus Williams', 'Naomi Osaka', 'Simone Biles'],
+        options: [
+          'Tennis champion with 23 Grand Slam singles titles',
+          'Tennis pioneer who paved the way alongside her sister',
+          'Four-time Grand Slam champion who spoke up for mental health',
+          'Most decorated gymnast in World Championship history',
+        ],
       },
       {
         id: 'iw-4',
@@ -242,7 +356,12 @@ const categories = [
         image: null,
         imageColor: '#C8A415',
         initials: 'B',
-        options: ['Beyoncé', 'Rihanna', 'Alicia Keys', 'Mary J. Blige'],
+        options: [
+          'Houston queen who went from Destiny\'s Child to global icon',
+          'Barbadian superstar who built a beauty and fashion empire',
+          'Classically trained pianist who lit the music world on fire',
+          'Queen of Hip-Hop Soul from Yonkers, New York',
+        ],
       },
       {
         id: 'iw-5',
@@ -250,7 +369,12 @@ const categories = [
         image: null,
         imageColor: '#191970',
         initials: 'KH',
-        options: ['Kamala Harris', 'Michelle Obama', 'Hillary Clinton', 'Nancy Pelosi'],
+        options: [
+          'First woman and person of color to serve as Vice President',
+          'Former First Lady who championed healthy eating for kids',
+          'Former Secretary of State who ran for the top office',
+          'First woman to serve as Speaker of the House',
+        ],
       },
       {
         id: 'iw-6',
@@ -258,7 +382,12 @@ const categories = [
         image: null,
         imageColor: '#800020',
         initials: 'VD',
-        options: ['Viola Davis', 'Taraji P. Henson', 'Lupita Nyong\'o', 'Angela Bassett'],
+        options: [
+          'EGOT-winning actress who made history at the Emmys',
+          'Actress who played a fierce music mogul on primetime TV',
+          'Kenyan-Mexican actress who won an Oscar on her very first try',
+          'Actress who brought Tina Turner\'s story to the big screen',
+        ],
       },
       {
         id: 'iw-7',
@@ -266,7 +395,12 @@ const categories = [
         image: null,
         imageColor: '#FF4500',
         initials: 'SB',
-        options: ['Simone Biles', 'Gabby Douglas', 'Aly Raisman', 'Sunisa Lee'],
+        options: [
+          'Most decorated gymnast who redefined what\'s possible',
+          'First African American to win all-around Olympic gold',
+          'Two-time Olympic captain of the U.S. gymnastics team',
+          'Hmong American gymnast who won all-around gold in Tokyo',
+        ],
       },
       {
         id: 'iw-8',
@@ -274,7 +408,12 @@ const categories = [
         image: null,
         imageColor: '#FFB6C1',
         initials: 'DP',
-        options: ['Dolly Parton', 'Loretta Lynn', 'Reba McEntire', 'Carrie Underwood'],
+        options: [
+          'Country music legend who always works 9 to 5 with heart',
+          'Coal miner\'s daughter who became a country music queen',
+          'Red-haired country icon who also conquered TV and Broadway',
+          'American Idol winner who became country\'s biggest voice',
+        ],
       },
       {
         id: 'iw-9',
@@ -282,7 +421,12 @@ const categories = [
         image: null,
         imageColor: '#2F4F4F',
         initials: 'RBG',
-        options: ['Ruth Bader Ginsburg', 'Sonia Sotomayor', 'Sandra Day O\'Connor', 'Elena Kagan'],
+        options: [
+          'Supreme Court justice who became a pop culture icon for equality',
+          'First Latina to serve on the nation\'s highest court',
+          'First woman ever appointed to the Supreme Court',
+          'Former Harvard Law dean who joined the highest court',
+        ],
       },
       {
         id: 'iw-10',
@@ -290,7 +434,12 @@ const categories = [
         image: null,
         imageColor: '#8B4513',
         initials: 'MA',
-        options: ['Maya Angelou', 'Toni Morrison', 'Alice Walker', 'Zora Neale Hurston'],
+        options: [
+          'Poet and author who knew why the caged bird sings',
+          'Nobel Prize-winning novelist who explored the Black experience',
+          'Pulitzer Prize-winning author of The Color Purple',
+          'Harlem Renaissance writer who captured Southern Black life',
+        ],
       },
     ],
   },
@@ -310,7 +459,12 @@ const categories = [
         image: null,
         imageColor: '#B22222',
         initials: 'MJ',
-        options: ['Michael Jordan', 'LeBron James', 'Kobe Bryant', 'Magic Johnson'],
+        options: [
+          '6x champion who flew through the air in Chicago wearing #23',
+          'The King who chased greatness from Cleveland to LA',
+          'Mamba Mentality icon who spent 20 years in purple and gold',
+          'Showtime floor general who made LA basketball electric',
+        ],
       },
       {
         id: 'nba-2',
@@ -318,7 +472,12 @@ const categories = [
         image: null,
         imageColor: '#4B0082',
         initials: 'LJ',
-        options: ['LeBron James', 'Michael Jordan', 'Kevin Durant', 'Giannis Antetokounmpo'],
+        options: [
+          'The King who took his talents from Cleveland to Miami to LA',
+          '6x champion who never lost a Finals series in Chicago',
+          '7-foot scoring machine with a silky-smooth jumper',
+          'The Greek Freak who went from unknown to MVP in Milwaukee',
+        ],
       },
       {
         id: 'nba-3',
@@ -326,7 +485,12 @@ const categories = [
         image: null,
         imageColor: '#FFD700',
         initials: 'KB',
-        options: ['Kobe Bryant', 'Michael Jordan', 'Tracy McGrady', 'Allen Iverson'],
+        options: [
+          'Mamba Mentality legend with 5 rings in purple and gold',
+          '6x champion who was the greatest to ever lace them up',
+          'Scoring machine who once dropped 13 points in 33 seconds',
+          'Pound-for-pound warrior who crossed over everyone he faced',
+        ],
       },
       {
         id: 'nba-4',
@@ -334,7 +498,12 @@ const categories = [
         image: null,
         imageColor: '#1E90FF',
         initials: 'SC',
-        options: ['Stephen Curry', 'Klay Thompson', 'Chris Paul', 'Russell Westbrook'],
+        options: [
+          'Baby-faced assassin who revolutionized the three-point shot',
+          'Splash brother who once scored 37 points in a single quarter',
+          'Point God who orchestrates every play to absolute perfection',
+          'Triple-double machine with the most explosive athleticism',
+        ],
       },
       {
         id: 'nba-5',
@@ -342,7 +511,12 @@ const categories = [
         image: null,
         imageColor: '#DAA520',
         initials: 'MJ',
-        options: ['Magic Johnson', 'Larry Bird', 'Kareem Abdul-Jabbar', 'Isiah Thomas'],
+        options: [
+          'Showtime point guard who made LA basketball a spectacle',
+          'Boston legend who traded trash talk and titles with LA',
+          'All-time scoring king with the unstoppable skyhook',
+          'Bad Boy Pistons leader with a killer smile and crossover',
+        ],
       },
       {
         id: 'nba-6',
@@ -350,7 +524,12 @@ const categories = [
         image: null,
         imageColor: '#000080',
         initials: 'SO',
-        options: ['Shaquille O\'Neal', 'Hakeem Olajuwon', 'Patrick Ewing', 'Dwight Howard'],
+        options: [
+          'Dominant big man who shattered backboards and made movies',
+          'Nigerian-born center with the dreamiest footwork ever seen',
+          'Georgetown giant who anchored the Knicks for a decade',
+          'Superman center who dominated the slam dunk contest',
+        ],
       },
       {
         id: 'nba-7',
@@ -358,7 +537,12 @@ const categories = [
         image: null,
         imageColor: '#FF4500',
         initials: 'KD',
-        options: ['Kevin Durant', 'LeBron James', 'Kawhi Leonard', 'Paul George'],
+        options: [
+          '7-foot scoring machine who can shoot over anyone alive',
+          'The King who chased greatness across three cities',
+          'Silent superstar who lets his Finals MVPs do the talking',
+          'Two-way wing nicknamed PG-13 for his playoff theatrics',
+        ],
       },
       {
         id: 'nba-8',
@@ -366,7 +550,12 @@ const categories = [
         image: null,
         imageColor: '#8B0000',
         initials: 'AI',
-        options: ['Allen Iverson', 'Derrick Rose', 'Steve Nash', 'Jason Kidd'],
+        options: [
+          'The Answer — pound-for-pound toughest player to ever step over',
+          'Youngest MVP whose career was tragically cut short by injuries',
+          'Canadian point guard who won back-to-back MVPs in Phoenix',
+          'Pass-first floor general with a triple-double habit',
+        ],
       },
       {
         id: 'nba-9',
@@ -374,7 +563,12 @@ const categories = [
         image: null,
         imageColor: '#2F2F2F',
         initials: 'TD',
-        options: ['Tim Duncan', 'Kevin Garnett', 'Dirk Nowitzki', 'Karl Malone'],
+        options: [
+          'The Big Fundamental who quietly won 5 rings in San Antonio',
+          'Intense power forward who finally brought a title to Boston',
+          'German legend who brought Dallas its only championship ring',
+          'The Mailman who always delivered in Utah but never got a ring',
+        ],
       },
       {
         id: 'nba-10',
@@ -382,7 +576,12 @@ const categories = [
         image: null,
         imageColor: '#4B0082',
         initials: 'WC',
-        options: ['Wilt Chamberlain', 'Bill Russell', 'Kareem Abdul-Jabbar', 'Oscar Robertson'],
+        options: [
+          'The only player to ever score 100 points in a single game',
+          '11-time champion who defined winning above all else in Boston',
+          'All-time scoring king with the unstoppable skyhook shot',
+          'First player to average a triple-double for an entire season',
+        ],
       },
     ],
   },
@@ -402,7 +601,12 @@ const categories = [
         image: null,
         imageColor: '#1C1C1C',
         initials: 'DW',
-        options: ['Denzel Washington', 'Will Smith', 'Samuel L. Jackson', 'Morgan Freeman'],
+        options: [
+          'Two-time Oscar winner who commands every scene he enters',
+          'Fresh Prince who became one of Hollywood\'s biggest stars',
+          'Highest-grossing actor of all time with unmistakable intensity',
+          'Voice of God narrator who makes every film feel epic',
+        ],
       },
       {
         id: 'hw-2',
@@ -410,7 +614,12 @@ const categories = [
         image: null,
         imageColor: '#2E8B57',
         initials: 'LD',
-        options: ['Leonardo DiCaprio', 'Brad Pitt', 'Matt Damon', 'Tom Cruise'],
+        options: [
+          'Oscar winner who survived the Titanic and the Revenant',
+          'Leading man from Fight Club to Once Upon a Time in Hollywood',
+          'Good Will Hunting star who keeps getting stranded in movies',
+          'Action star who does his own stunts at impossible heights',
+        ],
       },
       {
         id: 'hw-3',
@@ -418,7 +627,12 @@ const categories = [
         image: null,
         imageColor: '#708090',
         initials: 'MS',
-        options: ['Meryl Streep', 'Cate Blanchett', 'Judi Dench', 'Helen Mirren'],
+        options: [
+          'Most Oscar-nominated actress in the history of cinema',
+          'Australian actress who played an elven queen and a legend',
+          'British dame who played M and won an Oscar in 8 minutes',
+          'British queen of the screen who literally played The Queen',
+        ],
       },
       {
         id: 'hw-4',
@@ -426,7 +640,12 @@ const categories = [
         image: null,
         imageColor: '#4169E1',
         initials: 'WS',
-        options: ['Will Smith', 'Denzel Washington', 'Martin Lawrence', 'Jamie Foxx'],
+        options: [
+          'Fresh Prince who went from Philly rap to Hollywood royalty',
+          'Two-time Oscar winner known for intense dramatic performances',
+          'Comedian who made Bad Boys a blockbuster franchise',
+          'Comedian turned Oscar winner who channeled Ray Charles',
+        ],
       },
       {
         id: 'hw-5',
@@ -434,7 +653,12 @@ const categories = [
         image: null,
         imageColor: '#DC143C',
         initials: 'SJ',
-        options: ['Scarlett Johansson', 'Jennifer Lawrence', 'Margot Robbie', 'Emma Stone'],
+        options: [
+          'Highest-grossing actress who suited up as a Black Widow',
+          'Hunger Games star who tripped her way to an Oscar',
+          'Australian actress who brought Barbie to life on the big screen',
+          'La La Land dancer who won the Oscar for best actress',
+        ],
       },
       {
         id: 'hw-6',
@@ -442,7 +666,12 @@ const categories = [
         image: null,
         imageColor: '#6A0DAD',
         initials: 'SJ',
-        options: ['Samuel L. Jackson', 'Morgan Freeman', 'Laurence Fishburne', 'Idris Elba'],
+        options: [
+          'Highest-grossing actor ever who carries a very special wallet',
+          'Voice of God narrator who brings gravitas to every role',
+          'Actor who offered the red pill in a sci-fi classic',
+          'British actor constantly tipped to be the next James Bond',
+        ],
       },
       {
         id: 'hw-7',
@@ -450,7 +679,12 @@ const categories = [
         image: null,
         imageColor: '#F4A460',
         initials: 'JA',
-        options: ['Jennifer Aniston', 'Courteney Cox', 'Reese Witherspoon', 'Julia Roberts'],
+        options: [
+          'America\'s sweetheart from the most iconic sitcom apartment',
+          'Her sitcom bestie who was famously obsessed with cleanliness',
+          'Legally Blonde star turned Hollywood production powerhouse',
+          'Pretty Woman star with the most famous smile in Hollywood',
+        ],
       },
       {
         id: 'hw-8',
@@ -458,7 +692,12 @@ const categories = [
         image: null,
         imageColor: '#D2B48C',
         initials: 'BP',
-        options: ['Brad Pitt', 'Leonardo DiCaprio', 'George Clooney', 'Matt Damon'],
+        options: [
+          'Leading man who fought in clubs and pulled off casino heists',
+          'Oscar winner who survived the Titanic and the frozen wilderness',
+          'ER doctor turned Ocean\'s ringleader and Hollywood activist',
+          'Actor who needed rescuing from both Mars and Normandy Beach',
+        ],
       },
       {
         id: 'hw-9',
@@ -466,7 +705,12 @@ const categories = [
         image: null,
         imageColor: '#FF4081',
         initials: 'Z',
-        options: ['Zendaya', 'Halle Bailey', 'Amandla Stenberg', 'Yara Shahidi'],
+        options: [
+          'Disney star who swung into the MCU and HBO teen drama',
+          'Singer-actress who became Disney\'s live-action mermaid',
+          'Young actress who debuted as Rue in the Hunger Games',
+          'Grown-ish star and activist from a beloved TV family',
+        ],
       },
       {
         id: 'hw-10',
@@ -474,7 +718,12 @@ const categories = [
         image: null,
         imageColor: '#3E2723',
         initials: 'MF',
-        options: ['Morgan Freeman', 'Samuel L. Jackson', 'Denzel Washington', 'James Earl Jones'],
+        options: [
+          'Voice of God narrator who narrated penguins and prison breaks',
+          'Highest-grossing actor ever with unmistakable screen presence',
+          'Two-time Oscar winner who commands every dramatic scene',
+          'Iconic bass voice behind Darth Vader and the Lion King',
+        ],
       },
     ],
   },
@@ -494,7 +743,12 @@ const categories = [
         image: null,
         imageColor: '#DC143C',
         initials: 'R',
-        options: ['Rihanna', 'Beyoncé', 'SZA', 'Jhené Aiko'],
+        options: [
+          'Barbadian queen who built Fenty and stands under her umbrella',
+          'Houston queen who runs the world from Destiny\'s stage',
+          'TDE songstress who bared her soul on Ctrl and S.O.S.',
+          'Ethereal vocalist known for chill, dreamy R&B melodies',
+        ],
       },
       {
         id: 'rb-2',
@@ -502,7 +756,12 @@ const categories = [
         image: null,
         imageColor: '#4A4A4A',
         initials: 'U',
-        options: ['Usher', 'Chris Brown', 'Ne-Yo', 'Trey Songz'],
+        options: [
+          'Atlanta showman who taught the world his confessions',
+          'Dancer-singer who\'s been making hits since he was a teen',
+          'Smooth singer-songwriter always seen in a signature fedora',
+          'Virginia heartthrob known for slow jams and pure charisma',
+        ],
       },
       {
         id: 'rb-3',
@@ -510,7 +769,12 @@ const categories = [
         image: null,
         imageColor: '#B8860B',
         initials: 'AK',
-        options: ['Alicia Keys', 'Beyoncé', 'Mary J. Blige', 'Lauryn Hill'],
+        options: [
+          'Classically trained pianist who set the music world on fire',
+          'Former Destiny\'s Child frontwoman turned global queen',
+          'Queen of Hip-Hop Soul from Yonkers, New York',
+          'Fugees star who dropped one perfect solo album and vanished',
+        ],
       },
       {
         id: 'rb-4',
@@ -518,7 +782,12 @@ const categories = [
         image: null,
         imageColor: '#FF8C00',
         initials: 'FO',
-        options: ['Frank Ocean', 'The Weeknd', 'Daniel Caesar', 'Miguel'],
+        options: [
+          'Reclusive artist who rewrote R&B with Channel Orange and Blonde',
+          'Toronto singer who emerged from the shadows with dark R&B',
+          'Toronto singer blending gospel roots with modern R&B',
+          'Genre-bending artist who told everyone to just adorn themselves',
+        ],
       },
       {
         id: 'rb-5',
@@ -526,7 +795,12 @@ const categories = [
         image: null,
         imageColor: '#8FBC8F',
         initials: 'S',
-        options: ['SZA', 'Jhené Aiko', 'Summer Walker', 'H.E.R.'],
+        options: [
+          'TDE songstress who bared her soul on Ctrl and S.O.S.',
+          'Ethereal vocalist with dreamy, meditative R&B vibes',
+          'Introverted Atlanta singer with raw emotional ballads',
+          'Mystery artist who hid behind sunglasses and let music speak',
+        ],
       },
       {
         id: 'rb-6',
@@ -534,7 +808,12 @@ const categories = [
         image: null,
         imageColor: '#FFB6C1',
         initials: 'MC',
-        options: ['Mariah Carey', 'Whitney Houston', 'Celine Dion', 'Christina Aguilera'],
+        options: [
+          'Five-octave diva who literally owns Christmas with one song',
+          'The Voice — greatest female vocalist of her generation',
+          'Canadian powerhouse whose heart will go on and on forever',
+          'Powerhouse vocalist who started as a genie in a bottle',
+        ],
       },
       {
         id: 'rb-7',
@@ -542,7 +821,12 @@ const categories = [
         image: null,
         imageColor: '#CD853F',
         initials: 'CB',
-        options: ['Chris Brown', 'Usher', 'Trey Songz', 'Omarion'],
+        options: [
+          'Singer-dancer making Billboard hits since he was a teenager',
+          'Atlanta showman who mentored the greats and owned the stage',
+          'Virginia crooner known for ladies\' anthems and smooth moves',
+          'Former B2K frontman with iconic choreography and dance moves',
+        ],
       },
       {
         id: 'rb-8',
@@ -550,7 +834,12 @@ const categories = [
         image: null,
         imageColor: '#556B2F',
         initials: 'LH',
-        options: ['Lauryn Hill', 'Erykah Badu', 'India.Arie', 'Jill Scott'],
+        options: [
+          'Fugees legend who dropped one perfect solo album and vanished',
+          'Neo-soul queen from Dallas who stays On & On forever',
+          'Acoustic soul artist who reminded us we are not our hair',
+          'Philly poet who sings with raw emotion and literary grace',
+        ],
       },
       {
         id: 'rb-9',
@@ -558,7 +847,12 @@ const categories = [
         image: null,
         imageColor: '#800080',
         initials: 'TB',
-        options: ['Toni Braxton', 'Mariah Carey', 'TLC', 'Brandy'],
+        options: [
+          'Sultry-voiced star who un-broke our hearts in the \'90s',
+          'Five-octave diva who owns the entire holiday music season',
+          'Girl group who told the world not to go chasing waterfalls',
+          'TV\'s Moesha who also became a Grammy-winning vocalist',
+        ],
       },
       {
         id: 'rb-10',
@@ -566,7 +860,12 @@ const categories = [
         image: null,
         imageColor: '#696969',
         initials: 'H',
-        options: ['H.E.R.', 'SZA', 'Summer Walker', 'Kehlani'],
+        options: [
+          'Mystery artist who hid behind sunglasses and let her guitar talk',
+          'TDE songstress with raw vulnerability and a devoted fanbase',
+          'Introverted Atlanta singer with emotional ballads and vibes',
+          'Oakland R&B singer blending pop, soul, and raw real talk',
+        ],
       },
     ],
   },
@@ -586,7 +885,12 @@ const categories = [
         image: null,
         imageColor: '#1E3A5F',
         initials: 'BO',
-        options: ['Barack Obama', 'Denzel Washington', 'Will Smith', 'Jamie Foxx'],
+        options: [
+          '44th President who made history and said "Yes We Can"',
+          'Two-time Oscar winner who commands every scene he enters',
+          'Fresh Prince who went from Philly rap to Hollywood royalty',
+          'Comedian turned Oscar winner who channeled Ray Charles',
+        ],
       },
       {
         id: 'wl-2',
@@ -594,7 +898,12 @@ const categories = [
         image: null,
         imageColor: '#228B22',
         initials: 'NM',
-        options: ['Nelson Mandela', 'Desmond Tutu', 'Kofi Annan', 'Morgan Freeman'],
+        options: [
+          'South African leader who spent 27 years in prison for freedom',
+          'South African archbishop who championed peace and forgiveness',
+          'Ghanaian diplomat who led the United Nations as Secretary-General',
+          'Voice of God narrator who brings gravitas to every role',
+        ],
       },
       {
         id: 'wl-3',
@@ -602,7 +911,12 @@ const categories = [
         image: null,
         imageColor: '#2F4F4F',
         initials: 'MLK',
-        options: ['Martin Luther King Jr.', 'Malcolm X', 'John Lewis', 'Frederick Douglass'],
+        options: [
+          'Civil rights leader who had a dream and changed America',
+          'Activist who said "by any means necessary" for Black liberation',
+          'Civil rights icon who marched across the Edmund Pettus Bridge',
+          'Abolitionist who escaped slavery and wrote his own narrative',
+        ],
       },
       {
         id: 'wl-4',
@@ -610,7 +924,12 @@ const categories = [
         image: null,
         imageColor: '#4169E1',
         initials: 'QE',
-        options: ['Queen Elizabeth II', 'Princess Diana', 'Margaret Thatcher', 'Queen Victoria'],
+        options: [
+          'Longest-reigning British monarch who served for 70 years',
+          'People\'s Princess whose life was cut tragically short',
+          'Britain\'s first female Prime Minister known as the Iron Lady',
+          'Monarch who ruled during the height of the British Empire',
+        ],
       },
       {
         id: 'wl-5',
@@ -618,7 +937,12 @@ const categories = [
         image: null,
         imageColor: '#1C1C1C',
         initials: 'AL',
-        options: ['Abraham Lincoln', 'George Washington', 'Thomas Jefferson', 'Theodore Roosevelt'],
+        options: [
+          'Top-hat president who preserved the Union and freed the enslaved',
+          'First president and general who could not tell a lie',
+          'Founding father who wrote the Declaration of Independence',
+          'Rough Rider president who built the Panama Canal',
+        ],
       },
       {
         id: 'wl-6',
@@ -626,7 +950,12 @@ const categories = [
         image: null,
         imageColor: '#4682B4',
         initials: 'JFK',
-        options: ['John F. Kennedy', 'Richard Nixon', 'Ronald Reagan', 'Bill Clinton'],
+        options: [
+          'Young president who launched the Space Race from Camelot',
+          'President who opened relations with China and resigned in scandal',
+          'Actor-turned-president who told a wall to come down',
+          'Charismatic president who played saxophone on late-night TV',
+        ],
       },
       {
         id: 'wl-7',
@@ -634,7 +963,12 @@ const categories = [
         image: null,
         imageColor: '#F5F5DC',
         initials: 'MG',
-        options: ['Mahatma Gandhi', 'Jawaharlal Nehru', 'Dalai Lama', 'Nelson Mandela'],
+        options: [
+          'Indian leader who freed a nation through nonviolent resistance',
+          'India\'s first prime minister after independence from Britain',
+          'Tibetan spiritual leader who advocates for peace in exile',
+          'South African hero who spent 27 years imprisoned on an island',
+        ],
       },
       {
         id: 'wl-8',
@@ -642,7 +976,12 @@ const categories = [
         image: null,
         imageColor: '#FF1493',
         initials: 'MY',
-        options: ['Malala Yousafzai', 'Greta Thunberg', 'Emma Watson', 'Yara Shahidi'],
+        options: [
+          'Pakistani activist who survived being shot for defending education',
+          'Swedish teen who sailed across the ocean to fight climate change',
+          'British actress and UN Women goodwill ambassador',
+          'Grown-ish star and activist from a beloved TV family dynasty',
+        ],
       },
       {
         id: 'wl-9',
@@ -650,7 +989,12 @@ const categories = [
         image: null,
         imageColor: '#3B3B3B',
         initials: 'WC',
-        options: ['Winston Churchill', 'Franklin Roosevelt', 'Dwight Eisenhower', 'Charles de Gaulle'],
+        options: [
+          'British PM who rallied a nation with blood, toil, tears and sweat',
+          'American president who led the Allies through most of WWII',
+          'Supreme Allied Commander who became America\'s 34th president',
+          'French general who led the resistance and rebuilt a republic',
+        ],
       },
       {
         id: 'wl-10',
@@ -658,7 +1002,12 @@ const categories = [
         image: null,
         imageColor: '#B0C4DE',
         initials: 'AM',
-        options: ['Angela Merkel', 'Theresa May', 'Hillary Clinton', 'Christine Lagarde'],
+        options: [
+          'German chancellor who led Europe for 16 years with quiet resolve',
+          'British PM who navigated the turbulence of Brexit',
+          'Former Secretary of State who ran for the highest office',
+          'French economist who became head of the European Central Bank',
+        ],
       },
     ],
   },
@@ -678,7 +1027,12 @@ const categories = [
         image: null,
         imageColor: '#2F4F4F',
         initials: 'EM',
-        options: ['Elon Musk', 'Jeff Bezos', 'Mark Zuckerberg', 'Bill Gates'],
+        options: [
+          'Rocket-launching CEO who also bought a social media platform',
+          'Bald billionaire who built an everything-store empire online',
+          'Harvard dropout who connected the world through a social network',
+          'Philanthropist who built the world\'s biggest software company',
+        ],
       },
       {
         id: 'tt-2',
@@ -686,7 +1040,12 @@ const categories = [
         image: null,
         imageColor: '#FF9900',
         initials: 'JB',
-        options: ['Jeff Bezos', 'Elon Musk', 'Larry Page', 'Tim Cook'],
+        options: [
+          'Bald billionaire who built an everything-store from a garage',
+          'Rocket-launching CEO who also bought a social media platform',
+          'Co-founder of a search engine that became a verb',
+          'Soft-spoken CEO running the world\'s most valuable tech company',
+        ],
       },
       {
         id: 'tt-3',
@@ -694,7 +1053,12 @@ const categories = [
         image: null,
         imageColor: '#00A4EF',
         initials: 'BG',
-        options: ['Bill Gates', 'Steve Jobs', 'Mark Zuckerberg', 'Paul Allen'],
+        options: [
+          'Philanthropist who put a PC on every desk and Windows on every screen',
+          'Turtleneck visionary who built the most beloved tech brand ever',
+          'Harvard dropout who connected the world through a social network',
+          'His co-founder at Microsoft who later became a sports team owner',
+        ],
       },
       {
         id: 'tt-4',
@@ -702,7 +1066,12 @@ const categories = [
         image: null,
         imageColor: '#4267B2',
         initials: 'MZ',
-        options: ['Mark Zuckerberg', 'Jack Dorsey', 'Evan Spiegel', 'Kevin Systrom'],
+        options: [
+          'Harvard dropout who connected 3 billion people on one platform',
+          'CEO who built a short-form messaging platform with a blue bird',
+          'Stanford kid who built a disappearing photo app worth billions',
+          'Photo-sharing app creator who sold to a social media giant',
+        ],
       },
       {
         id: 'tt-5',
@@ -710,7 +1079,12 @@ const categories = [
         image: null,
         imageColor: '#555555',
         initials: 'SJ',
-        options: ['Steve Jobs', 'Bill Gates', 'Tim Cook', 'Jony Ive'],
+        options: [
+          'Turtleneck visionary who put a thousand songs in your pocket',
+          'Philanthropist who put Windows on every screen in the world',
+          'Soft-spoken CEO who took over after the visionary passed away',
+          'British designer who shaped every curve of the iPhone and iMac',
+        ],
       },
       {
         id: 'tt-6',
@@ -718,7 +1092,12 @@ const categories = [
         image: null,
         imageColor: '#A3AAAE',
         initials: 'TC',
-        options: ['Tim Cook', 'Steve Jobs', 'Sundar Pichai', 'Satya Nadella'],
+        options: [
+          'Soft-spoken CEO who made the world\'s most valuable company even bigger',
+          'Turtleneck visionary who put a thousand songs in your pocket',
+          'Indian-born CEO running the world\'s biggest search company',
+          'Indian-born CEO who transformed a software giant with cloud computing',
+        ],
       },
       {
         id: 'tt-7',
@@ -726,7 +1105,12 @@ const categories = [
         image: null,
         imageColor: '#4285F4',
         initials: 'SP',
-        options: ['Sundar Pichai', 'Satya Nadella', 'Tim Cook', 'Larry Page'],
+        options: [
+          'Indian-born CEO running the company behind the world\'s top search engine',
+          'Indian-born CEO who transformed a software giant with cloud computing',
+          'Soft-spoken CEO who took Apple to even greater heights',
+          'Co-founder of a search engine that became a household verb',
+        ],
       },
       {
         id: 'tt-8',
@@ -734,7 +1118,12 @@ const categories = [
         image: null,
         imageColor: '#76B900',
         initials: 'JH',
-        options: ['Jensen Huang', 'Lisa Su', 'Pat Gelsinger', 'Satya Nadella'],
+        options: [
+          'Leather-jacket CEO whose GPU chips power the entire AI revolution',
+          'CEO who turned a chip underdog into a competitor overnight',
+          'Intel CEO who tried to catch up to the AI chip leaders',
+          'Indian-born CEO who transformed Microsoft with cloud and AI',
+        ],
       },
       {
         id: 'tt-9',
@@ -742,7 +1131,12 @@ const categories = [
         image: null,
         imageColor: '#00A4EF',
         initials: 'SN',
-        options: ['Satya Nadella', 'Sundar Pichai', 'Tim Cook', 'Andy Jassy'],
+        options: [
+          'Indian-born CEO who revived Microsoft with cloud computing and AI',
+          'Indian-born CEO running the world\'s biggest search company',
+          'Soft-spoken CEO who took Apple to record-breaking valuations',
+          'Former AWS exec who took over the everything-store empire',
+        ],
       },
       {
         id: 'tt-10',
@@ -750,7 +1144,12 @@ const categories = [
         image: null,
         imageColor: '#ED1C24',
         initials: 'LS',
-        options: ['Lisa Su', 'Jensen Huang', 'Sheryl Sandberg', 'Susan Wojcicki'],
+        options: [
+          'CEO who turned a struggling chip company into a powerhouse',
+          'Leather-jacket CEO whose GPU chips power the AI revolution',
+          'Facebook COO who told women to lean in at work',
+          'YouTube CEO who shaped how the world watches video online',
+        ],
       },
     ],
   },
@@ -770,7 +1169,12 @@ const categories = [
         image: null,
         imageColor: '#002244',
         initials: 'TB',
-        options: ['Tom Brady', 'Peyton Manning', 'Aaron Rodgers', 'Patrick Mahomes'],
+        options: [
+          '7-ring quarterback who won more Super Bowls than any franchise',
+          'Sheriff of the NFL who set every passing record in Indianapolis',
+          'Green Bay gunslinger with the most MVP awards among QBs',
+          'Young Chiefs QB with a cannon arm and a famous girlfriend',
+        ],
       },
       {
         id: 'sg-2',
@@ -778,7 +1182,12 @@ const categories = [
         image: null,
         imageColor: '#FFD700',
         initials: 'UB',
-        options: ['Usain Bolt', 'Carl Lewis', 'Tyson Gay', 'Justin Gatlin'],
+        options: [
+          'Jamaican lightning bolt — fastest human to ever live',
+          'American sprinter who dominated the \'80s and \'90s Olympics',
+          'American sprinter who was once the second-fastest man alive',
+          'American sprinter who pushed the fastest man in every race',
+        ],
       },
       {
         id: 'sg-3',
@@ -786,7 +1195,12 @@ const categories = [
         image: null,
         imageColor: '#75AADB',
         initials: 'LM',
-        options: ['Lionel Messi', 'Cristiano Ronaldo', 'Neymar Jr.', 'Kylian Mbappé'],
+        options: [
+          'Argentine wizard who finally lifted the World Cup in Qatar',
+          'Portuguese goal machine with the most Champions League goals',
+          'Brazilian flair player who dazzled but never won the big one',
+          'French teen who became the youngest World Cup star since Pelé',
+        ],
       },
       {
         id: 'sg-4',
@@ -794,7 +1208,12 @@ const categories = [
         image: null,
         imageColor: '#8B0000',
         initials: 'MA',
-        options: ['Muhammad Ali', 'Mike Tyson', 'Floyd Mayweather', 'Joe Frazier'],
+        options: [
+          'The Greatest — floated like a butterfly, stung like a bee',
+          'Iron fist heavyweight who was the baddest man on the planet',
+          'Undefeated boxer who never lost in 50 professional fights',
+          'Smokin\' heavyweight who battled The Greatest in a trilogy',
+        ],
       },
       {
         id: 'sg-5',
@@ -802,7 +1221,12 @@ const categories = [
         image: null,
         imageColor: '#006400',
         initials: 'TW',
-        options: ['Tiger Woods', 'Jack Nicklaus', 'Phil Mickelson', 'Arnold Palmer'],
+        options: [
+          'Golf legend who won 15 majors and made Sunday red iconic',
+          'The Golden Bear with the most major championship wins ever',
+          'Lefty golfer famous for his short game and epic rivalries',
+          'Golf legend known as The King who made the sport popular',
+        ],
       },
       {
         id: 'sg-6',
@@ -810,7 +1234,12 @@ const categories = [
         image: null,
         imageColor: '#006633',
         initials: 'CR',
-        options: ['Cristiano Ronaldo', 'Lionel Messi', 'Neymar Jr.', 'Zlatan Ibrahimovic'],
+        options: [
+          'Portuguese goal machine who celebrates with a signature jump',
+          'Argentine wizard who dribbles through defenses like no one else',
+          'Brazilian flair player who dazzled with tricks and skill',
+          'Swedish striker who scored impossible bicycle kicks for fun',
+        ],
       },
       {
         id: 'sg-7',
@@ -818,7 +1247,12 @@ const categories = [
         image: null,
         imageColor: '#041E42',
         initials: 'WG',
-        options: ['Wayne Gretzky', 'Mario Lemieux', 'Sidney Crosby', 'Bobby Orr'],
+        options: [
+          'The Great One — hockey\'s all-time points leader by a mile',
+          'Magnificent hockey center who rivaled The Great One in skill',
+          'Canadian hockey phenom who is the best player of his era',
+          'Legendary defenseman who changed how hockey is played',
+        ],
       },
       {
         id: 'sg-8',
@@ -826,7 +1260,12 @@ const categories = [
         image: null,
         imageColor: '#1E90FF',
         initials: 'MP',
-        options: ['Michael Phelps', 'Ryan Lochte', 'Mark Spitz', 'Ian Thorpe'],
+        options: [
+          'Most decorated Olympian ever with 23 gold medals in the pool',
+          'American swimmer who was always chasing the golden champion',
+          'Swimmer with 7 golds in 1972 before a greater champion arrived',
+          'Australian swimmer known as Thorpedo who dominated freestyle',
+        ],
       },
       {
         id: 'sg-9',
@@ -834,7 +1273,12 @@ const categories = [
         image: null,
         imageColor: '#E31837',
         initials: 'PM',
-        options: ['Patrick Mahomes', 'Josh Allen', 'Tom Brady', 'Lamar Jackson'],
+        options: [
+          'Young Chiefs QB with a cannon arm and back-to-back rings',
+          'Bills QB with a rocket arm chasing his first championship',
+          '7-ring GOAT quarterback who dominated for two decades',
+          'Dynamic Ravens QB who runs and throws like no one else',
+        ],
       },
       {
         id: 'sg-10',
@@ -842,7 +1286,12 @@ const categories = [
         image: null,
         imageColor: '#FF6347',
         initials: 'SR',
-        options: ['Sha\'Carri Richardson', 'Florence Griffith Joyner', 'Shelly-Ann Fraser-Pryce', 'Allyson Felix'],
+        options: [
+          'Fastest woman in America who runs with long nails and flair',
+          'Flo-Jo — fastest woman ever with those iconic one-legged suits',
+          'Jamaican sprint queen who dominated the 100m for a decade',
+          'Most decorated female track athlete in Olympic history',
+        ],
       },
     ],
   },
@@ -862,7 +1311,12 @@ const categories = [
         image: null,
         imageColor: '#8B4513',
         initials: 'PP',
-        options: ['Pedro Pascal', 'Oscar Isaac', 'Diego Luna', 'Javier Bardem'],
+        options: [
+          'Mandalorian dad who never takes off his helmet on screen',
+          'Guatemalan-American actor who played a Marvel moon knight',
+          'Mexican actor who played a rebel spy in a galaxy far away',
+          'Spanish actor known for intense roles and a chilling villain',
+        ],
       },
       {
         id: 'tv-2',
@@ -870,7 +1324,12 @@ const categories = [
         image: null,
         imageColor: '#FF7F50',
         initials: 'IR',
-        options: ['Issa Rae', 'Tracee Ellis Ross', 'Yvonne Orji', 'Marsai Martin'],
+        options: [
+          'Creator-star of an HBO show about being awkward and Black in LA',
+          'Daughter of a music legend who stars in a family sitcom',
+          'Her best friend and co-star on that same HBO comedy series',
+          'Youngest Black executive producer in Hollywood history',
+        ],
       },
       {
         id: 'tv-3',
@@ -878,7 +1337,12 @@ const categories = [
         image: null,
         imageColor: '#FF1493',
         initials: 'MB',
-        options: ['Millie Bobby Brown', 'Sadie Sink', 'Jenna Ortega', 'Florence Pugh'],
+        options: [
+          'British teen who shaved her head to fight monsters in Hawkins',
+          'Redhead who faced Vecna alongside Eleven in the Upside Down',
+          'Latina actress who became Netflix\'s most famous Wednesday',
+          'British actress who joined the MCU as a fierce warrior',
+        ],
       },
       {
         id: 'tv-4',
@@ -886,7 +1350,12 @@ const categories = [
         image: null,
         imageColor: '#2F4F4F',
         initials: 'SB',
-        options: ['Sterling K. Brown', 'Mahershala Ali', 'Brian Tyree Henry', 'Jonathan Majors'],
+        options: [
+          'Emmy winner who made America cry every week on This Is Us',
+          'Two-time Oscar winner with a gentle intensity and quiet power',
+          'Actor known for comedic roles and a thunderous screen presence',
+          'Marvel villain who was supposed to be the next big thing',
+        ],
       },
       {
         id: 'tv-5',
@@ -894,7 +1363,12 @@ const categories = [
         image: null,
         imageColor: '#9932CC',
         initials: 'KW',
-        options: ['Kerry Washington', 'Viola Davis', 'Taraji P. Henson', 'Regina King'],
+        options: [
+          'Scandal fixer who handled Washington\'s biggest crises on ABC',
+          'EGOT-winning actress who shattered Emmy records',
+          'Actress who played a fierce music mogul on primetime TV',
+          'Emmy-winning actress and director who rules behind the camera',
+        ],
       },
       {
         id: 'tv-6',
@@ -902,7 +1376,12 @@ const categories = [
         image: null,
         imageColor: '#36454F',
         initials: 'IE',
-        options: ['Idris Elba', 'Daniel Kaluuya', 'John Boyega', 'Chiwetel Ejiofor'],
+        options: [
+          'British actor who played a drug kingpin in Baltimore on HBO',
+          'British actor who escaped the Sunken Place in a horror hit',
+          'British actor who wielded a lightsaber as a Stormtrooper rebel',
+          'British-Nigerian actor who starred in a devastating civil war film',
+        ],
       },
       {
         id: 'tv-7',
@@ -910,7 +1389,12 @@ const categories = [
         image: null,
         imageColor: '#DAA520',
         initials: 'DG',
-        options: ['Donald Glover', 'Lakeith Stanfield', 'Brian Tyree Henry', 'Kid Cudi'],
+        options: [
+          'Multi-hyphenate who created Atlanta and raps as Childish Gambino',
+          'His Atlanta co-star known for surreal performances and quiet intensity',
+          'His Atlanta co-star with a thunderous voice and gentle presence',
+          'Cleveland dreamer who put mental health in his hip hop music',
+        ],
       },
       {
         id: 'tv-8',
@@ -918,7 +1402,12 @@ const categories = [
         image: null,
         imageColor: '#1C1C1C',
         initials: 'JO',
-        options: ['Jenna Ortega', 'Millie Bobby Brown', 'Hailee Steinfeld', 'Xochitl Gomez'],
+        options: [
+          'Latina actress who danced her way to fame as Netflix\'s Wednesday',
+          'British teen who shaved her head to fight Upside Down monsters',
+          'Marvel actress who played a sharp-shooting young Avenger',
+          'Young Latina actress who became a new MCU hero named America',
+        ],
       },
       {
         id: 'tv-9',
@@ -926,7 +1415,12 @@ const categories = [
         image: null,
         imageColor: '#000080',
         initials: 'MJ',
-        options: ['Michael B. Jordan', 'Chadwick Boseman', 'John David Washington', 'Lakeith Stanfield'],
+        options: [
+          'Actor who stepped into the ring for Creed and lit a kingdom on fire',
+          'Wakanda king who said "Wakanda Forever" and inspired millions',
+          'Son of a legendary actor who starred in a Christopher Nolan film',
+          'Atlanta co-star known for surreal performances and quiet intensity',
+        ],
       },
       {
         id: 'tv-10',
@@ -934,7 +1428,12 @@ const categories = [
         image: null,
         imageColor: '#FF69B4',
         initials: 'TR',
-        options: ['Tracee Ellis Ross', 'Issa Rae', 'Kerry Washington', 'Rashida Jones'],
+        options: [
+          'Daughter of a Motown legend who stars in a beloved family sitcom',
+          'Creator-star of an HBO show about being awkward and Black in LA',
+          'Scandal fixer who handled Washington\'s crises on primetime TV',
+          'Actress and writer who is also the daughter of music royalty',
+        ],
       },
     ],
   },
@@ -955,7 +1454,12 @@ const categories = [
         image: require('../../assets/images/landmarks/eiffel-tower.png'),
         imageColor: '#5C4033',
         initials: 'ET',
-        options: ['Eiffel Tower', 'Big Ben', 'Leaning Tower of Pisa', 'Burj Khalifa'],
+        options: [
+          'Iron lattice tower overlooking Paris since 1889',
+          'London clock tower that chimes on the hour',
+          'Leaning marble tower in an Italian piazza',
+          'World\'s tallest skyscraper rising over the Dubai desert',
+        ],
       },
       {
         id: 'lm-2',
@@ -963,7 +1467,12 @@ const categories = [
         image: require('../../assets/images/landmarks/great-wall.png'),
         imageColor: '#8B7355',
         initials: 'GW',
-        options: ['Great Wall of China', 'Machu Picchu', 'Angkor Wat', 'Petra'],
+        options: [
+          'Ancient stone barrier winding thousands of miles across mountains',
+          'Incan citadel hidden high in the Peruvian Andes',
+          'Massive temple complex deep in the Cambodian jungle',
+          'Rose-red city carved into desert cliffs in Jordan',
+        ],
       },
       {
         id: 'lm-3',
@@ -971,63 +1480,103 @@ const categories = [
         image: require('../../assets/images/landmarks/statue-of-liberty.png'),
         imageColor: '#4A7C59',
         initials: 'SL',
-        options: ['Statue of Liberty', 'Christ the Redeemer', 'Lincoln Memorial', 'Washington Monument'],
+        options: [
+          'Green copper lady holding a torch in New York Harbor',
+          'Giant stone figure with arms outstretched over Rio de Janeiro',
+          'Marble memorial honoring a president who freed the enslaved',
+          'Tall stone obelisk on the National Mall in Washington D.C.',
+        ],
       },
       {
         id: 'lm-4',
-        name: 'Taj Mahal',
-        image: require('../../assets/images/landmarks/taj-mahal.png'),
+        name: 'Taj Mahal',
+        image: require('../../assets/images/landmarks/taj-mahal.png'),
         imageColor: '#F5F5DC',
         initials: 'TM',
-        options: ['Taj Mahal', 'Lotus Temple', 'Hagia Sophia', 'Blue Mosque'],
+        options: [
+          'White marble mausoleum built by a heartbroken emperor in India',
+          'Lotus-shaped temple welcoming all faiths in New Delhi',
+          'Ancient cathedral turned mosque with a massive dome in Istanbul',
+          'Blue-tiled mosque facing a grand square in Istanbul',
+        ],
       },
       {
         id: 'lm-5',
-        name: 'Colosseum',
-        image: require('../../assets/images/landmarks/colosseum.png'),
+        name: 'Colosseum',
+        image: require('../../assets/images/landmarks/colosseum.png'),
         imageColor: '#C19A6B',
         initials: 'C',
-        options: ['Colosseum', 'Parthenon', 'Pantheon', 'Roman Forum'],
+        options: [
+          'Ancient Roman arena where gladiators once battled to the roar of 50,000',
+          'Greek hilltop temple dedicated to the goddess Athena',
+          'Domed Roman temple with an open hole to the sky',
+          'Ruins of ancient Roman government buildings and temples',
+        ],
       },
       {
         id: 'lm-6',
-        name: 'Machu Picchu',
-        image: require('../../assets/images/landmarks/machu-picchu.png'),
+        name: 'Machu Picchu',
+        image: require('../../assets/images/landmarks/machu-picchu.png'),
         imageColor: '#6B8E23',
         initials: 'MP',
-        options: ['Machu Picchu', 'Chichen Itza', 'Easter Island', 'Teotihuacan'],
+        options: [
+          'Lost Incan city perched on a misty mountain ridge in Peru',
+          'Mayan pyramid with a serpent shadow in Mexico\'s Yucatan',
+          'Mysterious giant stone heads on a remote Pacific island',
+          'Aztec pyramid of the sun towering over an ancient avenue',
+        ],
       },
       {
         id: 'lm-7',
-        name: 'Sydney Opera House',
-        image: require('../../assets/images/landmarks/sydney-opera-house.png'),
+        name: 'Sydney Opera House',
+        image: require('../../assets/images/landmarks/sydney-opera-house.png'),
         imageColor: '#F0F0F0',
         initials: 'SO',
-        options: ['Sydney Opera House', 'Walt Disney Concert Hall', 'Guggenheim Museum', 'Louvre Pyramid'],
+        options: [
+          'White shell-roofed concert hall on an Australian harbor',
+          'Swooping silver concert hall designed by Frank Gehry in LA',
+          'Spiraling white museum on Fifth Avenue in New York City',
+          'Glass pyramid entrance to the world\'s most famous art museum',
+        ],
       },
       {
         id: 'lm-8',
-        name: 'Big Ben',
-        image: require('../../assets/images/landmarks/big-ben.png'),
+        name: 'Big Ben',
+        image: require('../../assets/images/landmarks/big-ben.png'),
         imageColor: '#B8860B',
         initials: 'BB',
-        options: ['Big Ben', 'Eiffel Tower', 'Empire State Building', 'CN Tower'],
+        options: [
+          'Gothic clock tower standing watch over London\'s Parliament',
+          'Iron lattice tower that has overlooked Paris since 1889',
+          'Art Deco skyscraper that defined the New York City skyline',
+          'Concrete observation tower rising above Toronto\'s waterfront',
+        ],
       },
       {
         id: 'lm-9',
-        name: 'Christ the Redeemer',
-        image: require('../../assets/images/landmarks/christ-redeemer.png'),
+        name: 'Christ the Redeemer',
+        image: require('../../assets/images/landmarks/christ-redeemer.png'),
         imageColor: '#D3D3D3',
         initials: 'CR',
-        options: ['Christ the Redeemer', 'Statue of Liberty', 'The Motherland Calls', 'Spring Temple Buddha'],
+        options: [
+          'Giant stone figure with arms outstretched high above Rio',
+          'Green copper lady holding a torch in New York Harbor',
+          'Massive Soviet-era statue of a woman raising a sword in Russia',
+          'Towering golden Buddha overlooking a temple in China',
+        ],
       },
       {
         id: 'lm-10',
-        name: 'Golden Gate Bridge',
-        image: require('../../assets/images/landmarks/golden-gate.png'),
+        name: 'Golden Gate Bridge',
+        image: require('../../assets/images/landmarks/golden-gate.png'),
         imageColor: '#C0392B',
         initials: 'GG',
-        options: ['Golden Gate Bridge', 'Brooklyn Bridge', 'Tower Bridge', 'Sydney Harbour Bridge'],
+        options: [
+          'Iconic red suspension bridge stretching across San Francisco Bay',
+          'Historic stone-and-steel bridge connecting Brooklyn and Manhattan',
+          'Twin-towered bridge that lifts open over the River Thames in London',
+          'Steel arch bridge framing the Sydney Opera House in Australia',
+        ],
       },
     ],
   },
@@ -1044,83 +1593,133 @@ const categories = [
     faces: [
       {
         id: 'wh-1',
-        name: 'Man Riding a Bike',
-        image: require('../../assets/images/whats-happening/man-on-bike.png'),
+        name: 'Man Riding a Bike',
+        image: require('../../assets/images/whats-happening/man-on-bike.png'),
         imageColor: '#3498DB',
         initials: '🚲',
-        options: ['Man Riding a Bike', 'Man Running', 'Man on a Scooter', 'Man Skateboarding'],
+        options: [
+          'Someone pedaling on two wheels down the street',
+          'Someone sprinting on foot at full speed',
+          'Someone standing on a kick scooter and gliding along',
+          'Someone rolling on four wheels doing a kickflip',
+        ],
       },
       {
         id: 'wh-2',
-        name: 'Woman Jumping',
-        image: require('../../assets/images/whats-happening/woman-jumping.png'),
+        name: 'Woman Jumping',
+        image: require('../../assets/images/whats-happening/woman-jumping.png'),
         imageColor: '#E67E22',
         initials: '🏃‍♀️',
-        options: ['Woman Jumping', 'Woman Dancing', 'Woman Running', 'Woman Stretching'],
+        options: [
+          'A woman leaping into the air with pure joy',
+          'A woman moving to the rhythm on a dance floor',
+          'A woman sprinting at full speed on a track',
+          'A woman bending and reaching in a yoga pose',
+        ],
       },
       {
         id: 'wh-3',
-        name: 'Kid Flying a Kite',
-        image: require('../../assets/images/whats-happening/kid-kite.png'),
+        name: 'Kid Flying a Kite',
+        image: require('../../assets/images/whats-happening/kid-kite.png'),
         imageColor: '#2ECC71',
         initials: '🪁',
-        options: ['Kid Flying a Kite', 'Kid Catching Butterflies', 'Kid Playing Tag', 'Kid Blowing Bubbles'],
+        options: [
+          'A child sending something colorful soaring high on a string',
+          'A child chasing winged insects through a meadow with a net',
+          'A child running around with friends in a game of chase',
+          'A child blowing soapy spheres that float away in the wind',
+        ],
       },
       {
         id: 'wh-4',
-        name: 'Dog Catching a Frisbee',
-        image: require('../../assets/images/whats-happening/dog-frisbee.png'),
+        name: 'Dog Catching a Frisbee',
+        image: require('../../assets/images/whats-happening/dog-frisbee.png'),
         imageColor: '#8E44AD',
         initials: '🐕',
-        options: ['Dog Catching a Frisbee', 'Dog Fetching a Ball', 'Dog Swimming', 'Dog Jumping a Hurdle'],
+        options: [
+          'A pup leaping to snag a flying disc out of the air',
+          'A pup chasing after a bouncing round toy in a park',
+          'A pup paddling through water to retrieve something',
+          'A pup soaring over a set of agility course obstacles',
+        ],
       },
       {
         id: 'wh-5',
-        name: 'Couple Dancing in Rain',
-        image: require('../../assets/images/whats-happening/dancing-rain.png'),
+        name: 'Couple Dancing in Rain',
+        image: require('../../assets/images/whats-happening/dancing-rain.png'),
         imageColor: '#2C3E50',
         initials: '💃',
-        options: ['Couple Dancing in Rain', 'Couple Walking on Beach', 'Couple at a Concert', 'Couple Having a Picnic'],
+        options: [
+          'Two people moving together romantically as water falls from the sky',
+          'Two people strolling hand in hand along the ocean shore',
+          'Two people swaying together at a loud outdoor music event',
+          'Two people sharing food on a blanket in a sunny park',
+        ],
       },
       {
         id: 'wh-6',
-        name: 'Person Skateboarding',
-        image: require('../../assets/images/whats-happening/skateboarding.png'),
+        name: 'Person Skateboarding',
+        image: require('../../assets/images/whats-happening/skateboarding.png'),
         imageColor: '#E74C3C',
         initials: '🛹',
-        options: ['Person Skateboarding', 'Person Surfing', 'Person Snowboarding', 'Person Rollerblading'],
+        options: [
+          'Someone doing tricks on a board with four small wheels',
+          'Someone riding waves standing on a board in the ocean',
+          'Someone carving down a snowy slope on a board',
+          'Someone gliding on inline wheels down a smooth path',
+        ],
       },
       {
         id: 'wh-7',
-        name: 'Chef Tossing Pizza Dough',
-        image: require('../../assets/images/whats-happening/pizza-toss.png'),
+        name: 'Chef Tossing Pizza Dough',
+        image: require('../../assets/images/whats-happening/pizza-toss.png'),
         imageColor: '#F39C12',
         initials: '🍕',
-        options: ['Chef Tossing Pizza Dough', 'Chef Flipping Pancakes', 'Chef Chopping Vegetables', 'Chef Decorating Cake'],
+        options: [
+          'A cook spinning a round disc of dough high into the air',
+          'A cook flipping a flat breakfast cake on a hot griddle',
+          'A cook rapidly slicing vegetables with a sharp knife',
+          'A cook carefully piping frosting onto a layered dessert',
+        ],
       },
       {
         id: 'wh-8',
-        name: 'Person Reading in Hammock',
-        image: require('../../assets/images/whats-happening/hammock-reading.png'),
+        name: 'Person Reading in Hammock',
+        image: require('../../assets/images/whats-happening/hammock-reading.png'),
         imageColor: '#1ABC9C',
         initials: '📖',
-        options: ['Person Reading in Hammock', 'Person Sleeping in Hammock', 'Person Fishing from Dock', 'Person Painting Outdoors'],
+        options: [
+          'Someone relaxing with a book in a hanging fabric bed',
+          'Someone napping peacefully in a swinging cloth between trees',
+          'Someone casting a line into the water from a wooden platform',
+          'Someone creating art on a canvas in the great outdoors',
+        ],
       },
       {
         id: 'wh-9',
-        name: 'Street Musician Playing',
-        image: require('../../assets/images/whats-happening/street-musician.png'),
+        name: 'Street Musician Playing',
+        image: require('../../assets/images/whats-happening/street-musician.png'),
         imageColor: '#9B59B6',
         initials: '🎷',
-        options: ['Street Musician Playing', 'Street Artist Painting', 'Street Dancer Performing', 'Magician Doing Tricks'],
+        options: [
+          'Someone playing a brass instrument for passersby on the sidewalk',
+          'Someone creating art with spray paint on a wall for a crowd',
+          'Someone doing breakdance moves on cardboard for tips',
+          'Someone performing card tricks and illusions for a gathering',
+        ],
       },
       {
         id: 'wh-10',
-        name: 'Kids Having a Snowball Fight',
-        image: require('../../assets/images/whats-happening/snowball-fight.png'),
+        name: 'Kids Having a Snowball Fight',
+        image: require('../../assets/images/whats-happening/snowball-fight.png'),
         imageColor: '#BDC3C7',
         initials: '❄️',
-        options: ['Kids Having a Snowball Fight', 'Kids Building a Snowman', 'Kids Sledding Down a Hill', 'Kids Making Snow Angels'],
+        options: [
+          'Children throwing packed balls of snow at each other',
+          'Children stacking three round shapes into a frozen figure',
+          'Children racing down a snowy hill on sleds at full speed',
+          'Children lying on their backs waving arms in fresh powder',
+        ],
       },
     ],
   },
@@ -1137,75 +1736,120 @@ const categories = [
     faces: [
       {
         id: 'eo-1',
-        name: 'Red Sneakers',
-        image: require('../../assets/images/everyday-objects/red-sneakers.png'),
+        name: 'Red Sneakers',
+        image: require('../../assets/images/everyday-objects/red-sneakers.png'),
         imageColor: '#E74C3C',
         initials: '👟',
-        options: ['Red Sneakers', 'Hiking Boots', 'Ballet Shoes', 'Cowboy Boots'],
+        options: [
+          'Bright canvas kicks made for walking city streets in style',
+          'Rugged lace-up footwear built for mountain trails',
+          'Satin slippers with ribbons made for dancing on pointe',
+          'Leather boots with pointed toes and a Western heel',
+        ],
       },
       {
         id: 'eo-2',
-        name: 'Vintage Typewriter',
-        image: require('../../assets/images/everyday-objects/typewriter.png'),
+        name: 'Vintage Typewriter',
+        image: require('../../assets/images/everyday-objects/typewriter.png'),
         imageColor: '#34495E',
         initials: '⌨️',
-        options: ['Vintage Typewriter', 'Old Radio', 'Record Player', 'Rotary Phone'],
+        options: [
+          'Mechanical writing machine with round keys that go clack-clack',
+          'Wooden box with dials and an antenna that played broadcasts',
+          'Turntable device that spins black vinyl discs to play music',
+          'Handheld communication device with a circular numbered dial',
+        ],
       },
       {
         id: 'eo-3',
-        name: 'Stack of Pancakes',
-        image: require('../../assets/images/everyday-objects/pancakes.png'),
+        name: 'Stack of Pancakes',
+        image: require('../../assets/images/everyday-objects/pancakes.png'),
         imageColor: '#D4A574',
         initials: '🥞',
-        options: ['Stack of Pancakes', 'Stack of Waffles', 'French Toast', 'Crepes'],
+        options: [
+          'A tower of fluffy golden breakfast cakes dripping with syrup',
+          'A tower of crispy grid-patterned breakfast cakes with butter',
+          'Thick slices of egg-soaked bread cooked golden on a griddle',
+          'Thin French breakfast wraps rolled up with sweet fillings',
+        ],
       },
       {
         id: 'eo-4',
-        name: 'Acoustic Guitar',
-        image: require('../../assets/images/everyday-objects/guitar.png'),
+        name: 'Acoustic Guitar',
+        image: require('../../assets/images/everyday-objects/guitar.png'),
         imageColor: '#8B4513',
         initials: '🎸',
-        options: ['Acoustic Guitar', 'Electric Guitar', 'Ukulele', 'Violin'],
+        options: [
+          'Hollow-body wooden instrument with six steel strings and a sound hole',
+          'Solid-body instrument with pickups, an amp, and a whammy bar',
+          'Tiny four-stringed Hawaiian instrument perfect for beach songs',
+          'Four-stringed instrument played with a bow under the chin',
+        ],
       },
       {
         id: 'eo-5',
-        name: 'Old Rotary Phone',
-        image: require('../../assets/images/everyday-objects/rotary-phone.png'),
+        name: 'Old Rotary Phone',
+        image: require('../../assets/images/everyday-objects/rotary-phone.png'),
         imageColor: '#16A085',
         initials: '☎️',
-        options: ['Old Rotary Phone', 'Vintage Typewriter', 'Grandfather Clock', 'Gramophone'],
+        options: [
+          'A heavy telephone with a spinning numbered dial and curly cord',
+          'A mechanical writing machine with round keys that go clack-clack',
+          'A tall wooden clock with a swinging pendulum and hourly chimes',
+          'A horn-shaped music player that amplifies sound from a needle',
+        ],
       },
       {
         id: 'eo-6',
-        name: 'Hot Air Balloon',
-        image: require('../../assets/images/everyday-objects/hot-air-balloon.png'),
+        name: 'Hot Air Balloon',
+        image: require('../../assets/images/everyday-objects/hot-air-balloon.png'),
         imageColor: '#3498DB',
         initials: '🎈',
-        options: ['Hot Air Balloon', 'Helicopter', 'Blimp', 'Hang Glider'],
+        options: [
+          'A colorful fabric envelope floating in the sky with a wicker basket',
+          'A flying machine with spinning blades on top for vertical flight',
+          'A giant cigar-shaped airship drifting slowly through the clouds',
+          'A V-shaped wing you run off a cliff with and ride the thermals',
+        ],
       },
       {
         id: 'eo-7',
-        name: 'Polaroid Camera',
-        image: require('../../assets/images/everyday-objects/polaroid-camera.png'),
+        name: 'Polaroid Camera',
+        image: require('../../assets/images/everyday-objects/polaroid-camera.png'),
         imageColor: '#F5F5F5',
         initials: '📸',
-        options: ['Polaroid Camera', 'Film Camera', 'Disposable Camera', 'Digital Camera'],
+        options: [
+          'Boxy instant camera that spits out a self-developing photo',
+          'Classic 35mm camera that shoots onto a roll of film negatives',
+          'Cheap plastic camera you use once and then turn in for prints',
+          'Modern mirrorless camera with a screen and interchangeable lenses',
+        ],
       },
       {
         id: 'eo-8',
-        name: 'Disco Ball',
-        image: require('../../assets/images/everyday-objects/disco-ball.png'),
+        name: 'Disco Ball',
+        image: require('../../assets/images/everyday-objects/disco-ball.png'),
         imageColor: '#C0C0C0',
         initials: '🪩',
-        options: ['Disco Ball', 'Crystal Chandelier', 'Globe', 'Snow Globe'],
+        options: [
+          'A mirrored sphere that scatters light beams across a dance floor',
+          'An elegant hanging light fixture dripping with crystal prisms',
+          'A round model of the Earth showing continents and oceans',
+          'A glass sphere with a miniature winter scene that snows when shaken',
+        ],
       },
       {
         id: 'eo-9',
-        name: 'Yellow School Bus',
-        image: require('../../assets/images/everyday-objects/school-bus.png'),
+        name: 'Yellow School Bus',
+        image: require('../../assets/images/everyday-objects/school-bus.png'),
         imageColor: '#F1C40F',
         initials: '🚌',
-        options: ['Yellow School Bus', 'Fire Truck', 'Ice Cream Truck', 'Double Decker Bus'],
+        options: [
+          'Bright yellow ride that picks kids up every weekday morning',
+          'Big red emergency vehicle with a ladder and a siren on top',
+          'A jingly truck that drives through neighborhoods playing music',
+          'A tall red vehicle with two levels of passenger seating',
+        ],
       },
       {
         id: 'eo-10',
@@ -1213,7 +1857,12 @@ const categories = [
         image: require('../../assets/images/everyday-objects/rubiks-cube.png'),
         imageColor: '#E74C3C',
         initials: '🧩',
-        options: ["Rubik's Cube", 'Puzzle Box', 'Magic 8-Ball', 'Lego Brick'],
+        options: [
+          'Twistable six-sided puzzle with nine colored squares on each face',
+          'A mysterious wooden box with hidden compartments and mechanisms',
+          'A fortune-telling toy sphere you shake and flip for an answer',
+          'Colorful interlocking plastic bricks for building anything',
+        ],
       },
     ],
   },
