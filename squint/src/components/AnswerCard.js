@@ -8,7 +8,7 @@ const CARD_WIDTH = (SCREEN_WIDTH - 44) / 2; // 2 columns with tighter padding
  * AnswerCard — a tappable multiple-choice option.
  *
  * Props:
- *   label   — the answer text
+ *   label   — the answer text (can be a short name OR a longer description)
  *   onPress — callback when tapped
  *   state   — "default" | "correct" | "wrong" | "disabled"
  */
@@ -32,9 +32,9 @@ export default function AnswerCard({ label, onPress, state = 'default' }) {
     >
       <Text
         style={[styles.label, state === 'disabled' && styles.disabledLabel]}
-        numberOfLines={2}
+        numberOfLines={3}
         adjustsFontSizeToFit
-        minimumFontScale={0.7}
+        minimumFontScale={0.6}
       >
         {label}
       </Text>
@@ -45,18 +45,19 @@ export default function AnswerCard({ label, onPress, state = 'default' }) {
 const styles = StyleSheet.create({
   card: {
     width: CARD_WIDTH,
-    minHeight: 56,
+    minHeight: 64,
     borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 12,
+    paddingVertical: 10,
     paddingHorizontal: 10,
   },
   label: {
     color: '#FFFFFF',
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '700',
     textAlign: 'center',
+    lineHeight: 20,
   },
   disabledLabel: {
     opacity: 0.4,

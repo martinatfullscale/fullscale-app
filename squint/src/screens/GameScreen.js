@@ -21,7 +21,9 @@ import { playSFX } from '../utils/audio';
 const TOTAL_ROUNDS = 10;
 const TIMER_SECONDS = 30;
 const MAX_STAGES = 5;
+const MAX_HINTS = 4; // 4 hint rounds per face (peel the onion)
 const CORRECT_DELAY = 1500;
+const WRONG_DELAY = 600; // brief flash before new hints appear
 const ELIMINATION_TIMER = 15;
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -31,9 +33,10 @@ const PLAYER_COLORS = ['#F5E642', '#FF4444', '#4CAF50', '#2196F3'];
  * GameScreen — the core gameplay loop.
  * Supports solo and elimination (multiplayer) modes.
  *
- * Solo: Standard 10 rounds, guess the zoomed face.
- * Elimination: Players take turns. After every 3 rounds, lowest scorer
- * faces a sudden-death challenge. Fail = eliminated.
+ * "Peel the Onion" mechanic:
+ *   Each face has 4 hint rounds. Round 1 is the vaguest (tiny zoom, vague clues).
+ *   Wrong answer → image reveals more + clues get more specific.
+ *   Round 4 shows the flat names. If still wrong → 0 points, move on.
  */
 export default function GameScreen({ route, navigation }) {
   const {
@@ -51,19 +54,33 @@ export default function GameScreen({ route, navigation }) {
     return shuffleArray(pool);
   });
 
-  const [shuffledOptions] = useState(() =>
-    faces.map((face) => shuffleArray([...face.options]))
+  // Pre-shuffle hints for every face × every hint round.
+  // shuffledHints[faceIdx][hintRound] = { options: string[], correctIdx: number }
+  const [shuffledHints] = useState(() =>
+    faces.map((face) => {
+      const hints = face.hints || [face.options || []];
+      return hints.map((roundOpts) => {
+        const correct = roundOpts[0]; // first is always correct before shuffle
+        const shuffled = shuffleArray([...roundOpts]);
+        return {
+          options: shuffled,
+          correctIdx: shuffled.indexOf(correct),
+        };
+      });
+    })
   );
 
   // Core game state
   const [round, setRound] = useState(0);
+  const [hintRound, setHintRound] = useState(0); // 0-3 = which layer of the onion
   const [zoomStage, setZoomStage] = useState(1);
   const [score, setScore] = useState(0);
   const [correctCount, setCorrectCount] = useState(0);
   const [secondsLeft, setSecondsLeft] = useState(TIMER_SECONDS);
-  const [timerRunning, setTimerRunning] = useState(!isElimination); // Pause for turn screen in multiplayer
+  const [timerRunning, setTimerRunning] = useState(!isElimination);
   const [cardStates, setCardStates] = useState({});
   const [roundLocked, setRoundLocked] = useState(false);
+  const [revealName, setRevealName] = useState(null); // show name on miss-all
 
   // Elimination mode state
   const [activePlayers, setActivePlayers] = useState(players ? [...players] : []);
@@ -99,6 +116,7 @@ export default function GameScreen({ route, navigation }) {
 
   const currentFace = faces[round];
   const currentPlayer = isElimination ? activePlayers[currentPlayerIndex] : null;
+  const currentHintData = shuffledHints[round]?.[hintRound] || { options: [], correctIdx: -1 };
 
   // --- End game (navigate to score screen) ---
   const endGame = useCallback(() => {
@@ -128,13 +146,14 @@ export default function GameScreen({ route, navigation }) {
 
   // --- Advance to next round or end game ---
   const advanceRound = useCallback(() => {
+    setRevealName(null);
+
     if (isElimination) {
-      // In elimination: advance to next player or next round
       const nextPlayerIdx = currentPlayerIndex + 1;
 
       if (nextPlayerIdx < activePlayers.length) {
-        // Next player's turn for the same round
         setCurrentPlayerIndex(nextPlayerIdx);
+        setHintRound(0);
         setZoomStage(1);
         setSecondsLeft(TIMER_SECONDS);
         setTimerRunning(false);
@@ -142,26 +161,23 @@ export default function GameScreen({ route, navigation }) {
         setRoundLocked(false);
         setShowTurnScreen(true);
       } else {
-        // All players have gone — check for elimination
         const newElimRoundCount = eliminationRoundCount + 1;
         setEliminationRoundCount(newElimRoundCount);
 
         if (newElimRoundCount % 3 === 0 && activePlayers.length > 1) {
-          // Time for elimination check
           triggerEliminationCheck();
         } else {
-          // Advance to next round
           advanceToNextRound();
         }
       }
     } else {
-      // Solo mode
       const nextRound = roundRef.current + 1;
       if (nextRound >= TOTAL_ROUNDS) {
         endGame();
         return;
       }
       setRound(nextRound);
+      setHintRound(0);
       setZoomStage(1);
       setSecondsLeft(TIMER_SECONDS);
       setTimerRunning(true);
@@ -178,20 +194,19 @@ export default function GameScreen({ route, navigation }) {
     }
     setRound(nextRound);
     setCurrentPlayerIndex(0);
+    setHintRound(0);
     setZoomStage(1);
     setSecondsLeft(TIMER_SECONDS);
     setTimerRunning(false);
     setCardStates({});
     setRoundLocked(false);
     setShowTurnScreen(true);
-    // Reset phase scores
     const resetScores = {};
     activePlayers.forEach((p) => { resetScores[p] = 0; });
     setRoundScoresThisPhase(resetScores);
   }, [activePlayers, endGame]);
 
   const triggerEliminationCheck = useCallback(() => {
-    // Find the player with the lowest phase score
     let lowestScore = Infinity;
     let lowestPlayer = null;
     activePlayers.forEach((p) => {
@@ -205,7 +220,6 @@ export default function GameScreen({ route, navigation }) {
     setEliminationTarget(lowestPlayer);
     setShowEliminationScreen(true);
 
-    // Red flash animation
     Animated.sequence([
       Animated.timing(redFlash, { toValue: 1, duration: 200, useNativeDriver: false }),
       Animated.timing(redFlash, { toValue: 0, duration: 200, useNativeDriver: false }),
@@ -216,7 +230,6 @@ export default function GameScreen({ route, navigation }) {
     playSFX('eliminate');
   }, [activePlayers, roundScoresThisPhase, redFlash]);
 
-  // Handle elimination challenge result
   const handleEliminationSurvive = useCallback(() => {
     setShowEliminationScreen(false);
     setEliminationTarget(null);
@@ -235,7 +248,6 @@ export default function GameScreen({ route, navigation }) {
     setEliminationTarget(null);
 
     if (newActive.length <= 1) {
-      // Game over — we have a winner
       setTimeout(() => {
         const winner = newActive[0] || newEliminated[newEliminated.length - 1];
         navigation.replace('Score', {
@@ -263,23 +275,26 @@ export default function GameScreen({ route, navigation }) {
     } else if (secondsLeft === 0 && timerRunning) {
       setTimerRunning(false);
       setRoundLocked(true);
-      setTimeout(() => advanceRound(), 1000);
+      // Time's up — reveal answer briefly then advance
+      setZoomStage(MAX_STAGES);
+      setRevealName(currentFace.name);
+      setTimeout(() => advanceRound(), CORRECT_DELAY);
     }
     return () => clearTimeout(timerRef.current);
-  }, [secondsLeft, timerRunning, advanceRound]);
+  }, [secondsLeft, timerRunning, advanceRound, currentFace]);
 
   // --- Handle answer tap ---
   const handleAnswer = useCallback(
-    (selectedOption, optionIndex) => {
+    (optionIndex) => {
       if (roundLocked) return;
 
-      const isCorrect = selectedOption === currentFace.name;
+      const isCorrect = optionIndex === currentHintData.correctIdx;
 
       if (isCorrect) {
         setRoundLocked(true);
         setTimerRunning(false);
 
-        const points = getPointsForStage(zoomStage);
+        const points = getPointsForStage(hintRound + 1); // hintRound 0→stage 1 (500pts)
         playSFX('correct');
 
         if (isElimination && currentPlayer) {
@@ -294,7 +309,6 @@ export default function GameScreen({ route, navigation }) {
             ...prev,
             [currentPlayer]: (prev[currentPlayer] || 0) + points,
           }));
-          // Also update the solo score display
           setScore((prev) => prev + points);
         } else {
           setScore((prev) => prev + points);
@@ -305,16 +319,26 @@ export default function GameScreen({ route, navigation }) {
         setTimeout(() => advanceRound(), CORRECT_DELAY);
       } else {
         playSFX('wrong');
-        setCardStates((prev) => ({ ...prev, [optionIndex]: 'wrong' }));
-        if (zoomStage < MAX_STAGES) {
-          setZoomStage((prev) => prev + 1);
-        }
+        setCardStates({ [optionIndex]: 'wrong' });
+
         setTimeout(() => {
-          setCardStates((prev) => ({ ...prev, [optionIndex]: 'disabled' }));
-        }, 400);
+          if (hintRound < MAX_HINTS - 1) {
+            // Peel the next layer — new clues + zoom out
+            setHintRound((prev) => prev + 1);
+            setZoomStage((prev) => Math.min(prev + 1, MAX_STAGES));
+            setCardStates({});
+          } else {
+            // All 4 hint rounds exhausted — reveal and move on
+            setRoundLocked(true);
+            setTimerRunning(false);
+            setZoomStage(MAX_STAGES);
+            setRevealName(currentFace.name);
+            setTimeout(() => advanceRound(), CORRECT_DELAY);
+          }
+        }, WRONG_DELAY);
       }
     },
-    [roundLocked, currentFace, zoomStage, advanceRound, isElimination, currentPlayer]
+    [roundLocked, currentHintData, hintRound, advanceRound, isElimination, currentPlayer, currentFace]
   );
 
   // --- Turn transition screen for multiplayer ---
@@ -398,7 +422,6 @@ export default function GameScreen({ route, navigation }) {
             <Text style={styles.readyText}>I'm Ready</Text>
           </TouchableOpacity>
 
-          {/* Active players list */}
           <View style={styles.playersAlive}>
             {activePlayers.map((p, i) => (
               <View
@@ -450,7 +473,22 @@ export default function GameScreen({ route, navigation }) {
               </View>
             )}
           </View>
-          <ScoreDisplay score={isElimination ? (playerScores[currentPlayer]?.score || 0) : score} />
+          <View style={styles.headerRight}>
+            {/* Hint round dots — shows which layer of the onion */}
+            <View style={styles.hintDots}>
+              {Array.from({ length: MAX_HINTS }).map((_, i) => (
+                <View
+                  key={i}
+                  style={[
+                    styles.hintDot,
+                    i < hintRound && styles.hintDotUsed,
+                    i === hintRound && styles.hintDotActive,
+                  ]}
+                />
+              ))}
+            </View>
+            <ScoreDisplay score={isElimination ? (playerScores[currentPlayer]?.score || 0) : score} />
+          </View>
         </View>
       </View>
 
@@ -462,27 +500,33 @@ export default function GameScreen({ route, navigation }) {
           initials={currentFace.initials}
           zoomStage={zoomStage}
         />
+        {/* Reveal overlay — shows name when all hints exhausted or time's up */}
+        {revealName && (
+          <View style={styles.revealOverlay}>
+            <Text style={styles.revealText}>{revealName}</Text>
+          </View>
+        )}
       </View>
 
       {/* Answer cards — 2x2 grid in bottom portion */}
       <View style={styles.answersArea}>
         <View style={styles.answerRow}>
-          {shuffledOptions[round].slice(0, 2).map((option, i) => (
+          {currentHintData.options.slice(0, 2).map((option, i) => (
             <AnswerCard
-              key={`${round}-${currentPlayerIndex}-${i}`}
+              key={`${round}-${hintRound}-${currentPlayerIndex}-${i}`}
               label={option}
               state={cardStates[i] || 'default'}
-              onPress={() => handleAnswer(option, i)}
+              onPress={() => handleAnswer(i)}
             />
           ))}
         </View>
         <View style={styles.answerRow}>
-          {shuffledOptions[round].slice(2, 4).map((option, i) => (
+          {currentHintData.options.slice(2, 4).map((option, i) => (
             <AnswerCard
-              key={`${round}-${currentPlayerIndex}-${i + 2}`}
+              key={`${round}-${hintRound}-${currentPlayerIndex}-${i + 2}`}
               label={option}
               state={cardStates[i + 2] || 'default'}
-              onPress={() => handleAnswer(option, i + 2)}
+              onPress={() => handleAnswer(i + 2)}
             />
           ))}
         </View>
@@ -522,6 +566,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 10,
   },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
   roundText: {
     color: '#888888',
     fontSize: 15,
@@ -546,12 +595,47 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
+  // --- Hint round dots ---
+  hintDots: {
+    flexDirection: 'row',
+    gap: 5,
+  },
+  hintDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#333333',
+  },
+  hintDotActive: {
+    backgroundColor: '#F5E642',
+  },
+  hintDotUsed: {
+    backgroundColor: '#E74C3C',
+  },
   // --- Image area (top 2/3) ---
   imageArea: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 6,
+  },
+  // --- Reveal overlay ---
+  revealOverlay: {
+    position: 'absolute',
+    bottom: 16,
+    left: 24,
+    right: 24,
+    backgroundColor: 'rgba(0,0,0,0.85)',
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+  },
+  revealText: {
+    color: '#F5E642',
+    fontSize: 22,
+    fontWeight: '900',
+    textAlign: 'center',
   },
   // --- Answers area (bottom 1/3) ---
   answersArea: {
