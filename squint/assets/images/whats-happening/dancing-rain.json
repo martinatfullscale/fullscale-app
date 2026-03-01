@@ -1,0 +1,15 @@
+{
+  "filename": "dancing-rain.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Leica Q3 28mm f/1.7, dramatic light, deep shadows, film-like rendering. a couple dancing together in the rain on a city street at night, romantic scene, rain drops visible, wet pavement reflecting streetlights, umbrellas abandoned, joyful embrace",
+  "camera_preset": "moody",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/UBRVKhwgc0bzMtdpSjvUc0NK66VbK95fweANNuPQx56eAXYsA/tmphy7pa1_4.png",
+  "generated_at": "2026-02-28T15:13:35Z"
+}

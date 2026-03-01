@@ -1,0 +1,15 @@
+{
+  "filename": "pizza-toss.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "candid photograph shot on Fujifilm X-T4 23mm f/2.0, available light, subtle grain, muted tones. a pizza chef tossing pizza dough high in the air inside a pizzeria kitchen, flour dusting the air, white chef uniform, wood-fired oven glowing in background, skilled hands",
+  "camera_preset": "street",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/7fy3wbRDTpwuRiICjE2q9jNBRMP8SztC7kl5qf2nlTmzgLMWA/tmpwno9srmy.png",
+  "generated_at": "2026-02-28T15:13:57Z"
+}

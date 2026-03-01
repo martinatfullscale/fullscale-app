@@ -1,0 +1,15 @@
+{
+  "filename": "taj-mahal.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Fujifilm GFX 100S 32-64mm f/4, golden hour light, sharp detail, natural colors. the Taj Mahal in Agra India, symmetrical front view from the reflecting pool, white marble dome and minarets, long reflecting pool with cypress trees lining both sides",
+  "camera_preset": "landscape_wide",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/0Eg2T56RgfToYq8RhZJfQey8Lq03TIUGCoF0mWd4k2588WYsA/tmpctrqx3s6.png",
+  "generated_at": "2026-02-28T15:11:28Z"
+}

@@ -1,0 +1,15 @@
+{
+  "filename": "pancakes.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Sony A7IV 35mm f/1.4, natural window light, shallow depth of field, warm tones. a tall stack of fluffy golden pancakes on a white plate, dripping with maple syrup, pat of butter melting on top, fresh berries scattered around, breakfast table setting",
+  "camera_preset": "object_natural",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/8574d8hJO37qANJvfTeQvL2zwmTVPHfMhHyTx4eedOs9OchxC/tmpkfj0cmnt.png",
+  "generated_at": "2026-02-28T15:15:04Z"
+}

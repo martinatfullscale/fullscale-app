@@ -1,0 +1,15 @@
+{
+  "filename": "street-musician.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "candid photograph shot on Fujifilm X-T4 23mm f/2.0, available light, subtle grain, muted tones. a street musician playing a saxophone on a city sidewalk, jazz performance, instrument gleaming gold, open instrument case with tips, cobblestone street, warm evening light",
+  "camera_preset": "street",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/4fd8De0wWTrk00ZBHXkYvhpy0prlNEbsjDiXcTdQs7NIhLMWA/tmpk_4ixpiz.png",
+  "generated_at": "2026-02-28T15:14:18Z"
+}

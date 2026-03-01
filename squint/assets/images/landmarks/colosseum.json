@@ -1,0 +1,15 @@
+{
+  "filename": "colosseum.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Fujifilm GFX 100S 32-64mm f/4, golden hour light, sharp detail, natural colors. the Roman Colosseum in Rome Italy, exterior view showing the famous arched facade, ancient stone architecture, warm afternoon light, some tourists for scale",
+  "camera_preset": "landscape_wide",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/H2xWjBoLzLpwBtOeI1dryy98bvsswzaDouzfH25eclHU9WYsA/tmpqabsq7qi.png",
+  "generated_at": "2026-02-28T15:11:40Z"
+}

@@ -1,0 +1,15 @@
+{
+  "filename": "hammock-reading.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Sony A7IV 35mm f/1.4, natural window light, shallow depth of field, warm tones. a person relaxing in a hammock reading a book, strung between two palm trees, tropical beach setting, dappled sunlight, bare feet, peaceful lazy afternoon",
+  "camera_preset": "object_natural",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/asdeV4pRvKwpZSteNK4JLmrkqEexx9AiWOC1ODawo9M8BXYsA/tmpczuo05zd.png",
+  "generated_at": "2026-02-28T15:14:07Z"
+}

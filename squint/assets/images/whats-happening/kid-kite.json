@@ -1,0 +1,15 @@
+{
+  "filename": "kid-kite.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "candid photograph shot on Fujifilm X-T4 23mm f/2.0, available light, subtle grain, muted tones. a child running across an open grassy field flying a colorful kite high in the sky, windy day, string visible, bright colored diamond kite against blue sky",
+  "camera_preset": "street",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/yMTtd7yYMHZkA9ElLxESG1veDYCftf4KciMPDfAaUKXbAuwYB/tmpos1k06w_.png",
+  "generated_at": "2026-02-28T15:13:12Z"
+}

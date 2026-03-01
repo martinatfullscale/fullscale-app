@@ -18,12 +18,12 @@ const { width: SCREEN_WIDTH } = Dimensions.get('window');
  * StartScreen — landing page with animated zoom-reveal logo,
  * game mode popup, and category picker popup.
  *
- * Logo animation: starts zoomed in very tight (only see fragments of letters),
- * then zooms out dramatically to reveal the full "SQUINT" text.
+ * Logo animation: starts tiny (far away), then zooms in dramatically
+ * to reveal the full "SQUINT" text.
  */
 export default function StartScreen({ navigation }) {
-  // Animated logo: start at 8x scale (super zoomed in), reveal to 1x
-  const logoScale = useRef(new Animated.Value(8)).current;
+  // Animated logo: start tiny (far away), zoom in to full size
+  const logoScale = useRef(new Animated.Value(0.1)).current;
   const logoOpacity = useRef(new Animated.Value(0)).current;
   const taglineOpacity = useRef(new Animated.Value(0)).current;
   const buttonsOpacity = useRef(new Animated.Value(0)).current;
@@ -39,17 +39,17 @@ export default function StartScreen({ navigation }) {
 
     // Logo zoom reveal animation sequence
     Animated.sequence([
-      // Fade in while zoomed in tight
+      // Fade in while tiny
       Animated.timing(logoOpacity, {
         toValue: 1,
         duration: 300,
         useNativeDriver: true,
       }),
-      // Dramatic zoom out from 8x to 1x
+      // Zoom in from tiny to full size
       Animated.spring(logoScale, {
         toValue: 1,
-        tension: 8,
-        friction: 5,
+        tension: 40,
+        friction: 7,
         useNativeDriver: true,
       }),
     ]).start(() => {
@@ -108,7 +108,7 @@ export default function StartScreen({ navigation }) {
       </TouchableOpacity>
 
       <View style={styles.content}>
-        {/* Animated logo — starts zoomed in tight, reveals on zoom out */}
+        {/* Animated logo — starts tiny, zooms in to full size */}
         <Animated.View
           style={[
             styles.logoContainer,

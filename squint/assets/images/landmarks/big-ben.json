@@ -1,0 +1,15 @@
+{
+  "filename": "big-ben.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Nikon Z9 70-200mm f/2.8, crystal clear atmosphere, rich tones. Big Ben clock tower at the Palace of Westminster in London, Elizabeth Tower with golden clock face, Gothic Revival architecture, dramatic clouds, classic London scene",
+  "camera_preset": "landscape_tele",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/Wluh4UmyPdJzA5mvKdvsq79F2pMjAyBswseDSksZcvQmvFGLA/tmpkr7bnemt.png",
+  "generated_at": "2026-02-28T15:12:13Z"
+}

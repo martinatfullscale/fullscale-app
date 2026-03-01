@@ -1,0 +1,15 @@
+{
+  "filename": "rotary-phone.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Sony A7IV 35mm f/1.4, natural window light, shallow depth of field, warm tones. a vintage rotary dial telephone, classic mid-century design, round numbered dial, coiled handset cord, sitting on a side table, warm retro color palette",
+  "camera_preset": "object_natural",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/FV9ejADImJQsUKrhL4QOnt5aGsU437rneTEofzuoEO2bEXYsA/tmpvnblwqcf.png",
+  "generated_at": "2026-02-28T15:15:26Z"
+}

@@ -1,0 +1,15 @@
+{
+  "filename": "guitar.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Sony A7IV 35mm f/1.4, natural window light, shallow depth of field, warm tones. a beautiful acoustic guitar leaning against a sunlit wall, warm wood grain body, steel strings, classic dreadnought shape, natural window light, musician's living room",
+  "camera_preset": "object_natural",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/aoH8eiFgN3S0YCLzsP6NzPKQ4Vbf4X0g2dUGPUaB5vSCiLMWA/tmpgbsn1v2g.png",
+  "generated_at": "2026-02-28T15:15:16Z"
+}

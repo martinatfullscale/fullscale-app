@@ -1,0 +1,15 @@
+{
+  "filename": "red-sneakers.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Sony A7IV 35mm f/1.4, natural window light, shallow depth of field, warm tones. a pair of bright red sneakers on a wooden floor, classic canvas high-top style, white rubber soles, white laces, slightly worn and lived-in, top-down angle",
+  "camera_preset": "object_natural",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/JEgXejdnNsyUa6NA958iKNZ7QxfR8sE2tCUfQ5acNuleFuwYB/tmpt7s77550.png",
+  "generated_at": "2026-02-28T15:14:40Z"
+}

@@ -1,0 +1,15 @@
+{
+  "filename": "great-wall.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Nikon Z9 70-200mm f/2.8, crystal clear atmosphere, rich tones. the Great Wall of China winding across mountain ridges, ancient stone watchtower in foreground, misty green mountains receding into distance, dramatic perspective",
+  "camera_preset": "landscape_tele",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/UXr3AugTCZoPAhbpwtUgnypTzOmloKASIvqywBZTEE4g3CjF/tmpbk8h_bz5.png",
+  "generated_at": "2026-02-28T15:11:01Z"
+}

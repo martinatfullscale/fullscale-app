@@ -1,0 +1,15 @@
+{
+  "filename": "rubiks-cube.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Sony A7IV 35mm f/1.4, natural window light, shallow depth of field, warm tones. a Rubik's cube sitting on a table, classic 3x3 puzzle, partially solved with colorful scrambled faces visible, red blue green yellow orange white squares, sharp focus",
+  "camera_preset": "object_natural",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/qao8ipON6b53J5Sjd9cQjM3cSiYIyQCtRZ3YqP0FN36x4CjF/tmp4t5uupa9.png",
+  "generated_at": "2026-02-28T15:16:24Z"
+}

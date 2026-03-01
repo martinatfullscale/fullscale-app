@@ -1,0 +1,15 @@
+{
+  "filename": "woman-jumping.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Sony A1 70-200mm f/2.8, 1/2000s freeze frame, sharp detail, vivid colors. a young woman jumping joyfully in the air outdoors, arms spread wide, big smile, park setting with green grass, sunshine, pure happiness and freedom",
+  "camera_preset": "action",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/9I6AUk0cCyKpA9DAe0P2vkBBXztwgLFC2eJixdmfgOv2ftwYB/tmpth0rp8dq.png",
+  "generated_at": "2026-02-28T15:13:00Z"
+}

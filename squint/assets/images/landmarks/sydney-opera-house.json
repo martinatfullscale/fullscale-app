@@ -1,0 +1,15 @@
+{
+  "filename": "sydney-opera-house.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Fujifilm GFX 100S 32-64mm f/4, golden hour light, sharp detail, natural colors. the Sydney Opera House, iconic white shell-shaped roof sails, shot from across the harbor, deep blue water in foreground, clear sky, Harbour Bridge visible in background",
+  "camera_preset": "landscape_wide",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/8WpemU73IaR5GCvaPRRsczCjPH8ebsIkZeZ8uha4iozDetwYB/tmpwl89t_g5.png",
+  "generated_at": "2026-02-28T15:12:03Z"
+}

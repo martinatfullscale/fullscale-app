@@ -39,6 +39,32 @@ const categories = [
           'Dreamville founder who went platinum with no features',
           'Atlanta trap pioneer known for Auto-Tune melodies',
         ],
+        hints: [
+          [
+            'Toronto rapper who started from the bottom on Degrassi',
+            'Compton lyricist crowned king of West Coast rap',
+            'Dreamville founder who went platinum with no features',
+            'Atlanta trap pioneer known for Auto-Tune melodies',
+          ],
+          [
+            'Canadian artist known for blending singing and rapping',
+            'Memphis rapper who built an empire with Three 6 Mafia',
+            'Philly rapper who started as a battle rap legend',
+            'Detroit rapper with machine-gun delivery and bleached hair',
+          ],
+          [
+            'OVO Sound founder whose beef with Pusha T went viral',
+            'TDE rapper who won a Pulitzer Prize for DAMN.',
+            'Cash Money protégé who coined Young Money',
+            'Odd Future leader known for flower-themed albums',
+          ],
+          [
+            'Aubrey Graham — the 6 God from Toronto',
+            'Dwayne Carter — Weezy F Baby from New Orleans',
+            'Shawn Carter — Hov, the blueprint of hip hop',
+            'Marshall Mathers — Slim Shady from 8 Mile',
+          ],
+        ],
       },
       {
         id: 'hh-2',
@@ -51,6 +77,32 @@ const categories = [
           'Queensbridge poet who painted street life on Illmatic',
           'Bad Boy mogul who made hip hop and fashion collide',
           'Chicago visionary who dropped out to produce beats',
+        ],
+        hints: [
+          [
+            'Brooklyn mogul who built Roc-A-Fella into an empire',
+            'Queensbridge poet who painted street life on Illmatic',
+            'Bad Boy mogul who made hip hop and fashion collide',
+            'Chicago visionary who dropped out to produce beats',
+          ],
+          [
+            'Rapper-turned-billionaire married to a Houston queen',
+            'Harlem rapper known for diplomatic immunity',
+            'Detroit rapper with rapid-fire lyrics and alter egos',
+            'Baton Rouge rapper with punchlines and mixtape dominance',
+          ],
+          [
+            'Artist behind The Blueprint and Reasonable Doubt',
+            'Artist behind Illmatic and Stillmatic',
+            'Artist behind Ready to Die and Life After Death',
+            'Artist behind The College Dropout and Graduation',
+          ],
+          [
+            'Shawn Carter — husband of Beyoncé and Roc Nation founder',
+            'Nasir Jones — Queensbridge legend and lyrical genius',
+            'Sean Combs — Bad Boy founder and fashion mogul',
+            'Kanye West — Yeezy designer and producer from Chicago',
+          ],
         ],
       },
       {
@@ -65,6 +117,32 @@ const categories = [
           'Toronto rapper who started from the bottom on Degrassi',
           'Odd Future leader who reinvents himself every album',
         ],
+        hints: [
+          [
+            'Compton storyteller who took rap to Pulitzer Prize heights',
+            'Dreamville founder who went platinum with no features',
+            'Toronto rapper who started from the bottom on Degrassi',
+            'Odd Future leader who reinvents himself every album',
+          ],
+          [
+            'West Coast lyricist signed to Dr. Dre\'s Aftermath label',
+            'North Carolina rapper with conscious lyrics and a record label',
+            'Canadian singer-rapper who dominates pop and hip hop charts',
+            'LA skater-rapper known for wild genre experiments',
+          ],
+          [
+            'TDE artist behind Good Kid, M.A.A.D City and DAMN.',
+            'Dreamville artist behind 2014 Forest Hills Drive',
+            'OVO artist behind Take Care and Views',
+            'Odd Future artist behind Flower Boy and Igor',
+          ],
+          [
+            'K-Dot — Pulitzer Prize winner from Compton',
+            'J. Cole — went platinum with no features',
+            'Drake — the 6 God from Toronto',
+            'Tyler, the Creator — Golf Wang founder from LA',
+          ],
+        ],
       },
       {
         id: 'hh-4',
@@ -77,6 +155,32 @@ const categories = [
           'Bronx star who went from Love & Hip Hop to #1',
           'Houston hottie driving the hot girl summer movement',
           'Brooklyn queen bee who pioneered female rap fashion',
+        ],
+        hints: [
+          [
+            'Queens rapper who crowned herself the Queen of Rap',
+            'Bronx star who went from Love & Hip Hop to #1',
+            'Houston hottie driving the hot girl summer movement',
+            'Brooklyn queen bee who pioneered female rap fashion',
+          ],
+          [
+            'Trinidadian-born MC known for colorful wigs and alter egos',
+            'Dominican rapper who made money moves overnight',
+            'Texas rapper with a college degree and fierce bars',
+            'Bronx rapper who made bodak yellow the anthem of a summer',
+          ],
+          [
+            'Young Money artist behind Super Bass and Anaconda',
+            'Atlantic artist behind Bodak Yellow and WAP',
+            '300 Entertainment artist behind Savage and Hot Girl Summer',
+            'Def Jam artist behind Karma and Put It On Da Floor',
+          ],
+          [
+            'Onika Maraj — the Barbie of Rap from Queens, New York',
+            'Belcalis Almanzar — Grammy winner from the Bronx',
+            'Megan Pete — H-Town hottie with a degree',
+            'Lil Kim — original Queen Bee from Brooklyn',
+          ],
         ],
       },
       {
@@ -91,6 +195,32 @@ const categories = [
           'Cleveland dreamer who put mental health in hip hop',
           'Superproducer who created hits across every genre',
         ],
+        hints: [
+          [
+            'Chicago producer turned rapper who dropped out of college',
+            'Brooklyn mogul who built Roc-A-Fella into an empire',
+            'Cleveland dreamer who put mental health in hip hop',
+            'Superproducer who created hits across every genre',
+          ],
+          [
+            'Fashion mogul behind the Yeezy brand and sneaker line',
+            'Roc Nation mogul married to a Houston superstar',
+            'Atlanta producer behind OutKast\'s signature sound',
+            'Pharrell\'s production partner behind The Neptunes sound',
+          ],
+          [
+            'Artist behind My Beautiful Dark Twisted Fantasy',
+            'Artist behind The Blueprint and 4:44',
+            'Artist behind Take Care and Certified Lover Boy',
+            'Artist behind To Pimp a Butterfly and Mr. Morale',
+          ],
+          [
+            'Ye — Chicago producer who married into the Kardashian family',
+            'Jay-Z — billionaire rapper and Roc Nation founder',
+            'Drake — Canadian rapper and OVO Sound founder',
+            'Kendrick Lamar — Pulitzer Prize-winning Compton MC',
+          ],
+        ],
       },
       {
         id: 'hh-6',
@@ -103,6 +233,32 @@ const categories = [
           'Cash Money co-founder who put the South on the map',
           'Atlanta\'s self-proclaimed King of the South',
           'Former college basketball player turned trap hitmaker',
+        ],
+        hints: [
+          [
+            'New Orleans legend who dropped more mixtapes than anyone',
+            'Cash Money co-founder who put the South on the map',
+            'Atlanta\'s self-proclaimed King of the South',
+            'Former college basketball player turned trap hitmaker',
+          ],
+          [
+            'Rapper who mentored Drake, Nicki Minaj, and Tyga',
+            'Label head who discovered a teenage rapper from New Orleans',
+            'Trap music pioneer behind T.I.P. and King albums',
+            'Master P\'s brother who helped run No Limit Records',
+          ],
+          [
+            'Young Money founder behind the Tha Carter series',
+            'Cash Money co-founder behind the Big Tymers',
+            'Grand Hustle founder behind Trap Muzik',
+            'Maybach Music founder behind Dreams and Nightmares',
+          ],
+          [
+            'Weezy F Baby — tattooed legend with dreads from New Orleans',
+            'Birdman — Cash Money CEO and No. 1 Stunna',
+            'T.I. — Clifford Harris, the King of the South',
+            '2 Chainz — former college basketball player turned rapper',
+          ],
         ],
       },
       {
@@ -117,6 +273,32 @@ const categories = [
           'Houston hottie driving the hot girl summer movement',
           'Genre-blending hitmaker who went viral on the internet',
         ],
+        hints: [
+          [
+            'Bronx sensation who went from reality TV to Grammy winner',
+            'Queens rapper who crowned herself the Queen of Rap',
+            'Houston hottie driving the hot girl summer movement',
+            'Genre-blending hitmaker who went viral on the internet',
+          ],
+          [
+            'Former stripper who used social media to launch a rap career',
+            'Trinidadian-born rapper known for wigs and alter egos',
+            'Texas Southern student who raps with academic precision',
+            'City Girls member known for period anthems and energy',
+          ],
+          [
+            'Atlantic Records artist behind Bodak Yellow and I Like It',
+            'Young Money artist behind Super Bass and Starships',
+            '300 Entertainment artist behind Savage Remix',
+            'Quality Control artist behind Act Up and Twerkulator',
+          ],
+          [
+            'Belcalis Almanzar — Love & Hip Hop star turned rap queen',
+            'Onika Maraj — the Barbie from Queens, New York',
+            'Megan Pete — Houston rapper with hot girl summer',
+            'JT — City Girl from Miami with fierce energy',
+          ],
+        ],
       },
       {
         id: 'hh-8',
@@ -129,6 +311,32 @@ const categories = [
           'Cleveland dreamer who put mental health in hip hop',
           'Cactus Jack signee with smooth melodic vibes',
           'Atlanta mumble rap pioneer with a cult following',
+        ],
+        hints: [
+          [
+            'Houston rapper known for raging concerts and Astroworld',
+            'Cleveland dreamer who put mental health in hip hop',
+            'Cactus Jack signee with smooth melodic vibes',
+            'Atlanta mumble rap pioneer with a cult following',
+          ],
+          [
+            'Rapper-producer who dated a Kardashian-Jenner billionaire',
+            'Chicago rapper married to reality TV royalty',
+            'Toronto mystery artist who hides behind dark R&B',
+            'Atlanta rapper known for painting his face for performances',
+          ],
+          [
+            'Cactus Jack founder behind Rodeo and Astroworld',
+            'G.O.O.D. Music artist behind Graduation and Yeezus',
+            'OVO artist behind Take Care and Nothing Was the Same',
+            'Slaughter Gang artist behind Without Warning',
+          ],
+          [
+            'Jacques Webster — the Astroworld creator from Houston',
+            'Kanye West — Yeezy mogul from Chicago',
+            'Drake — the 6 God from Toronto, Canada',
+            '21 Savage — British-born Atlanta rapper',
+          ],
         ],
       },
       {
@@ -143,6 +351,32 @@ const categories = [
           'N.W.A. member turned Hollywood movie star',
           'West Coast G-funk pioneer who regulated the game',
         ],
+        hints: [
+          [
+            'Long Beach legend who debuted on The Chronic in \'92',
+            'Compton producer who built Aftermath and Beats by Dre',
+            'N.W.A. member turned Hollywood movie star',
+            'West Coast G-funk pioneer who regulated the game',
+          ],
+          [
+            'Rapper known for a laid-back flow and a love of green',
+            'Headphone mogul who produced for Eminem and 50 Cent',
+            'Straight Outta Compton actor turned family comedian',
+            'DJ and rapper who narrated the streets of Long Beach',
+          ],
+          [
+            'Death Row artist behind Doggystyle and Tha Doggfather',
+            'Aftermath founder behind 2001 and Compton',
+            'Ruthless Records artist behind Straight Outta Compton',
+            'Death Row artist behind All Eyez on Me',
+          ],
+          [
+            'Calvin Broadus — the D-O-double-G from Long Beach',
+            'Andre Young — Dr. Dre, the legendary producer',
+            'O\'Shea Jackson — Ice Cube, actor and rapper',
+            'Tupac Shakur — 2Pac, the poet of the streets',
+          ],
+        ],
       },
       {
         id: 'hh-10',
@@ -155,6 +389,32 @@ const categories = [
           'Bronx star who went from reality TV to the Grammys',
           'Genre-blending viral sensation from Los Angeles',
           'Memphis rapper who brought the energy with F.N.F.',
+        ],
+        hints: [
+          [
+            'Houston hottie with a degree who drives hot girl summer',
+            'Bronx star who went from reality TV to the Grammys',
+            'Genre-blending viral sensation from Los Angeles',
+            'Memphis rapper who brought the energy with F.N.F.',
+          ],
+          [
+            'Texas Southern graduate who raps about confidence and power',
+            'Former Love & Hip Hop star who made money moves',
+            'Pop-rap crossover artist known for candy-coated hits',
+            'GloRilla\'s collaborator from the South',
+          ],
+          [
+            '300 Entertainment artist behind Savage and Traumazine',
+            'Atlantic artist behind Invasion of Privacy and Up',
+            'Interscope artist behind Planet Her and Hot Pink',
+            'CMG artist behind F.N.F. and Tomorrow',
+          ],
+          [
+            'Megan Pete — Houston rapper with a health administration degree',
+            'Belcalis Almanzar — Bronx rapper married to Offset',
+            'Amala Zandile — Doja Cat, viral internet sensation',
+            'Gloria Woods — GloRilla from Memphis, Tennessee',
+          ],
         ],
       },
     ],
@@ -181,6 +441,32 @@ const categories = [
           'Disney Channel alum turned pop star and beauty mogul',
           'Pop star who kissed a girl and shot fireworks on stage',
         ],
+        hints: [
+          [
+            'Country girl turned pop queen with a catalog of eras',
+            'Powerhouse vocalist with the signature high ponytail',
+            'Disney Channel alum turned pop star and beauty mogul',
+            'Pop star who kissed a girl and shot fireworks on stage',
+          ],
+          [
+            'Singer-songwriter known for weaving personal stories into chart hits',
+            'Chart-topping vocalist who blends hip hop beats with bubbly pop',
+            'Former Nickelodeon star who pivoted to music and perfume lines',
+            'British soul singer whose debut album won six Grammy Awards',
+          ],
+          [
+            'Fourteen-time Grammy winner who re-recorded her own albums',
+            'Pop icon who performed Super Bowl halftime shows in sequins',
+            'Singer who launched her career with a viral TikTok breakup anthem',
+            'British singer who swept the Grammys with her debut album 21',
+          ],
+          [
+            'Taylor Alison Swift — the Eras Tour queen from Reading, Pennsylvania',
+            'Stefani Germanotta — Mother Monster from New York City',
+            'Robyn Fenty — the Barbadian beauty mogul behind Fenty',
+            'Adele Adkins — the soulful powerhouse from Tottenham, London',
+          ],
+        ],
       },
       {
         id: 'ps-2',
@@ -193,6 +479,32 @@ const categories = [
           'Country girl turned global pop queen known for her eras',
           'British-Albanian pop star who set new rules for dance',
           'Former girl group member who came straight from Havana',
+        ],
+        hints: [
+          [
+            'Nickelodeon alum with a ponytail and five-octave range',
+            'Country girl turned global pop queen known for her eras',
+            'British-Albanian pop star who set new rules for dance',
+            'Former girl group member who came straight from Havana',
+          ],
+          [
+            'Pop star whose Manchester concert tragedy made her a symbol of resilience',
+            'Dance-pop queen from Australia who reinvents herself every album cycle',
+            'Rising Latin crossover artist who sings in English and Spanish',
+            'Former Disney star known for switching between pop and rock personas',
+          ],
+          [
+            'Thank U Next singer who holds multiple Spotify streaming records',
+            'Shake It Off singer who re-recorded her albums to own her masters',
+            'Bad Guy singer who won five Grammys before turning twenty',
+            'Havana singer who left Fifth Harmony for a massive solo career',
+          ],
+          [
+            'Ariana Grande-Butera — the Boca Raton native who played Cat Valentine',
+            'Demi Lovato — the Dallas-born Disney star behind Sorry Not Sorry',
+            'Selena Gomez — the Texas native who played Alex Russo on Wizards',
+            'Miley Cyrus — the Nashville kid who started as Hannah Montana',
+          ],
         ],
       },
       {
@@ -207,6 +519,32 @@ const categories = [
           'Alt-pop artist who blurs genres and boundaries',
           'New Zealand teen who called out the royals at 16',
         ],
+        hints: [
+          [
+            'Whisper-voiced teen who broke records from her bedroom',
+            'Disney star who channeled heartbreak into a debut smash',
+            'Alt-pop artist who blurs genres and boundaries',
+            'New Zealand teen who called out the royals at 16',
+          ],
+          [
+            'Teen sensation who creates dark pop with her older brother at home',
+            'Dance-pop artist who ruled the charts with disco-inspired grooves',
+            'Singer-songwriter who went viral with a melancholy bedroom pop ballad',
+            'Alt-R&B artist known for dark moody visuals and mysterious persona',
+          ],
+          [
+            'Bad Guy singer who swept all four major Grammy categories at 18',
+            'Drivers License singer who dominated 2021 with a debut heartbreak album',
+            'Royals singer from Auckland who took a long hiatus from music',
+            'Stay singer who blended bedroom pop with viral internet fame',
+          ],
+          [
+            'Billie Eilish Pirate Baird O\'Connell — the LA prodigy who works with brother Finneas',
+            'Olivia Isabel Rodrigo — the Filipino-American Disney breakout star',
+            'Ella Yelich-O\'Connor — the Kiwi teen known worldwide as Lorde',
+            'Halsey — Ashley Frangipane from Washington, New Jersey',
+          ],
+        ],
       },
       {
         id: 'ps-4',
@@ -219,6 +557,32 @@ const categories = [
           'Grammy-winning British vocalist with a soulful ballad voice',
           'Scottish singer known for emotional heartbreak ballads',
           'Canadian heartthrob who started posting covers on Vine',
+        ],
+        hints: [
+          [
+            'Red-haired British singer with just a guitar and loop pedal',
+            'Grammy-winning British vocalist with a soulful ballad voice',
+            'Scottish singer known for emotional heartbreak ballads',
+            'Canadian heartthrob who started posting covers on Vine',
+          ],
+          [
+            'Singer-songwriter who slept on couches in London before selling out stadiums',
+            'Folk-pop artist from Ireland who busked his way to global stardom',
+            'British soul singer who won Album of the Year with his debut',
+            'Australian acoustic artist known for heartfelt love song covers',
+          ],
+          [
+            'Shape of You hitmaker who names his albums after math symbols',
+            'Someone Like You singer who took long breaks between albums',
+            'Stay With Me singer who performed the Bond theme Writing\'s on the Wall',
+            'Stitches singer from Canada who started posting covers on Vine',
+          ],
+          [
+            'Edward Christopher Sheeran — the Suffolk songwriter with paw print tattoos',
+            'James Bay — the British singer behind Hold Back the River',
+            'Sam Smith — the London vocalist who debuted with Stay With Me',
+            'Lewis Capaldi — the Scottish singer behind Someone You Loved',
+          ],
         ],
       },
       {
@@ -233,6 +597,32 @@ const categories = [
           'Producer-singer who writes pop hits with perfect pitch',
           'British boy band star who went solo with bold fashion',
         ],
+        hints: [
+          [
+            'Canadian kid discovered on YouTube who became a global idol',
+            'Canadian heartthrob who started posting covers on Vine',
+            'Producer-singer who writes pop hits with perfect pitch',
+            'British boy band star who went solo with bold fashion',
+          ],
+          [
+            'Teen heartthrob managed by Scooter Braun since age thirteen',
+            'Pop star who rose from SoundCloud covers to diamond-selling singles',
+            'Child actor who transitioned from sitcoms to chart-topping music',
+            'Young singer discovered at a local talent show in Toronto',
+          ],
+          [
+            'Baby and Sorry singer whose Purpose album marked a massive comeback',
+            'Stitches singer from Toronto who rose to fame through Vine covers',
+            'Blinding Lights singer who emerged from Toronto with dark R&B',
+            'As It Was singer who left One Direction for a bold solo career',
+          ],
+          [
+            'Justin Drew Bieber — the Stratford, Ontario kid discovered by Scooter Braun',
+            'Shawn Peter Raul Mendes — the Canadian Vine star turned pop heartthrob',
+            'Abel Tesfaye — the Scarborough singer known as The Weeknd',
+            'Harry Edward Styles — the Redditch lad from One Direction',
+          ],
+        ],
       },
       {
         id: 'ps-6',
@@ -245,6 +635,32 @@ const categories = [
           'Queen of Pop who ruled the \'80s and constantly reinvented',
           'Pop star who kissed a girl and shot fireworks on stage',
           'Acrobatic pop-rock performer who sings from the rafters',
+        ],
+        hints: [
+          [
+            'Avant-garde pop icon who once arrived in a meat dress',
+            'Queen of Pop who ruled the eighties and constantly reinvented',
+            'Pop star who kissed a girl and shot fireworks on stage',
+            'Acrobatic pop-rock performer who sings from the rafters',
+          ],
+          [
+            'Shapeshifting artist who transitioned from pop to jazz to Oscar-winning film',
+            'Pop diva known for elaborate Egyptian-themed world tour spectacles',
+            'Dance-pop queen who built a fragrance and fashion empire',
+            'Performance artist who blends electronic music with aerial stunts',
+          ],
+          [
+            'Poker Face singer who won an Oscar for Shallow from A Star Is Born',
+            'Roar singer who performed at the inauguration and shot fireworks on stage',
+            'Wrecking Ball singer who reinvented herself from Disney to punk rock',
+            'Chandelier singer known for hiding her face and dancing wildly',
+          ],
+          [
+            'Stefani Joanne Angelina Germanotta — Mother Monster from Manhattan',
+            'Madonna Louise Ciccone — the Material Girl from Bay City, Michigan',
+            'Katheryn Elizabeth Hudson — the California Girl known as Katy Perry',
+            'Alecia Beth Moore — the acrobatic pop-rocker known as Pink',
+          ],
         ],
       },
       {
@@ -259,6 +675,32 @@ const categories = [
           'Boy band dropout who went dark and moody as a solo act',
           'Boy band member who stayed closest to pop-rock roots',
         ],
+        hints: [
+          [
+            'Boy band heartthrob who went solo with bold fashion flair',
+            'Irish singer from the same boy band gone country-pop',
+            'Boy band dropout who went dark and moody as a solo act',
+            'Boy band member who stayed closest to pop-rock roots',
+          ],
+          [
+            'Gender-fluid fashion icon who graced the Vogue cover in a dress',
+            'Pop singer known for bleached blond hair and electronic dance anthems',
+            'British singer who launched a tequila brand after his band split',
+            'Solo artist who traded boy band pop for moody alt-R&B ballads',
+          ],
+          [
+            'Watermelon Sugar hitmaker who starred in Dunkirk and Don\'t Worry Darling',
+            'Pillowtalk singer who left the boy band first and went R&B',
+            'Slow Hands singer who found success blending pop with country',
+            'Strip That Down singer who collaborated with Quavo on his debut',
+          ],
+          [
+            'Harry Edward Styles — the Redditch lad who headlined Coachella solo',
+            'Zayn Malik — the Bradford boy who left One Direction first',
+            'Niall Horan — the Mullingar native who went country-pop solo',
+            'Louis Tomlinson — the Doncaster member who went indie-rock solo',
+          ],
+        ],
       },
       {
         id: 'ps-8',
@@ -271,6 +713,32 @@ const categories = [
           'Nickelodeon alum with a ponytail and five-octave range',
           'Whisper-voiced artist who broke records from her bedroom',
           'Genre-blending viral sensation from Los Angeles',
+        ],
+        hints: [
+          [
+            'British-Albanian singer who set new rules for dance pop',
+            'Nickelodeon alum with a ponytail and five-octave range',
+            'Whisper-voiced artist who broke records from her bedroom',
+            'Genre-blending viral sensation from Los Angeles',
+          ],
+          [
+            'Pop star whose retro disco album became a pandemic dance anthem',
+            'Dance-pop queen from Australia who reinvents her sound every era',
+            'Rising singer who blends Latin rhythms with English-language pop',
+            'Chart-topper known for fierce choreography and neon stage visuals',
+          ],
+          [
+            'Don\'t Start Now singer whose Future Nostalgia won Best Pop Album',
+            'Blinding Lights singer whose After Hours era went multi-platinum',
+            'Say So singer who crossed over from rap to full-blown pop stardom',
+            'Rain On Me collaborator who also won an Oscar for her acting debut',
+          ],
+          [
+            'Dua Lipa — the London-born, Kosovo-Albanian pop and disco queen',
+            'Charli XCX — the British pop disruptor known for Brat',
+            'Rita Ora — the British-Albanian singer behind Your Song',
+            'Rina Sawayama — the Japanese-British pop artist from London',
+          ],
         ],
       },
       {
@@ -285,6 +753,32 @@ const categories = [
           'Genre-bending artist covered head to toe in face tattoos',
           'Smooth-voiced singer who debuted as a teen from El Paso',
         ],
+        hints: [
+          [
+            'Toronto singer who emerged from mystery with dark R&B',
+            'Hawaiian-born showman who mixes pop, funk, and R&B',
+            'Genre-bending artist covered head to toe in face tattoos',
+            'Smooth-voiced singer who debuted as a teen from El Paso',
+          ],
+          [
+            'Artist who performed the Super Bowl halftime surrounded by bandaged dancers',
+            'R&B crooner from Virginia known for smooth falsetto and dance moves',
+            'Pop artist from Toronto who blends singing and rapping seamlessly',
+            'Singer-producer from LA known for moody alternative R&B production',
+          ],
+          [
+            'Blinding Lights singer whose After Hours featured a bloody red suit persona',
+            'Redbone singer who also writes and directs acclaimed horror films',
+            'Call Me by Your Name rapper who broke the internet with a music video',
+            'Pony singer who made an R&B comeback thanks to viral TikTok fame',
+          ],
+          [
+            'Abel Tesfaye — the Scarborough, Toronto native behind The Weeknd',
+            'Aubrey Graham — the Toronto actor turned rapper known as Drake',
+            'Peter Gene Hernandez — the Honolulu showman known as Bruno Mars',
+            'Khalid Robinson — the El Paso singer who debuted with Location',
+          ],
+        ],
       },
       {
         id: 'ps-10',
@@ -297,6 +791,32 @@ const categories = [
           'Whisper-voiced artist who broke records from her bedroom',
           'Disney alum with clever pop songs and killer stage presence',
           'Singer discovered on YouTube who built an indie pop career',
+        ],
+        hints: [
+          [
+            'Disney star whose heartbreak debut album dominated 2021',
+            'Whisper-voiced artist who broke records from her bedroom',
+            'Disney alum with clever pop songs and killer stage presence',
+            'Singer discovered on YouTube who built an indie pop career',
+          ],
+          [
+            'Teen sensation whose debut single shattered Spotify streaming records',
+            'Pop artist who rose from Nickelodeon acting to headlining world tours',
+            'Young singer-songwriter known for confessional indie pop ballads',
+            'Former Disney star who reinvented herself with edgy pop-rock anthems',
+          ],
+          [
+            'Drivers License singer from SOUR who brought pop-punk back to radio',
+            'Positions singer who starred as Glinda in the Wicked movie',
+            'Bad Guy artist who made Ocean Eyes at 14 with her brother Finneas',
+            'Abcdefu singer who went viral with a profanity-filled breakup track',
+          ],
+          [
+            'Olivia Isabel Rodrigo — the Filipino-American star from High School Musical: The Musical: The Series',
+            'Billie Eilish Pirate Baird O\'Connell — the homeschooled LA pop prodigy',
+            'Sabrina Annlynn Carpenter — the Girl Meets World star turned pop queen',
+            'Madison Elle Beer — the Long Island singer discovered by Justin Bieber',
+          ],
         ],
       },
     ],
@@ -323,6 +843,32 @@ const categories = [
           'Morning news anchor and best friend to a media mogul',
           'Daytime TV host who danced her way into living rooms',
         ],
+        hints: [
+          [
+            'Media mogul who built an empire from a talk show chair',
+            'EGOT-winning comedian who co-hosts The View every morning',
+            'Morning news anchor and best friend to a media mogul',
+            'Daytime TV host who danced her way into living rooms',
+          ],
+          [
+            'Billionaire media queen who gives everyone their favorite things',
+            'Television producer who revolutionized reality TV competitions',
+            'Talk show host known for emotional makeovers and surprise reveals',
+            'Beloved TV personality who hosts a popular daytime cooking show',
+          ],
+          [
+            'Talk show legend who launched her own cable network called OWN',
+            'The View co-creator who also produced multiple Broadway hits',
+            'Good Morning America anchor who became a media powerhouse',
+            'Ellen show host who danced with guests for nineteen seasons',
+          ],
+          [
+            'Oprah Gail Winfrey — the Mississippi-born queen of daytime television',
+            'Whoopi Goldberg — the EGOT-winning comedian from New York City',
+            'Gayle King — the CBS Mornings anchor and best friend to a mogul',
+            'Ellen DeGeneres — the comedian who danced through daytime TV',
+          ],
+        ],
       },
       {
         id: 'iw-2',
@@ -335,6 +881,32 @@ const categories = [
           'First woman to serve as Vice President of the U.S.',
           'Stanford professor who became Secretary of State',
           'Educator who kept teaching while living in the White House',
+        ],
+        hints: [
+          [
+            'Former First Lady who championed health and education',
+            'First woman to serve as Vice President of the U.S.',
+            'Stanford professor who became Secretary of State',
+            'Educator who kept teaching while living in the White House',
+          ],
+          [
+            'Harvard Law graduate who became the most admired First Lady in decades',
+            'Trailblazing attorney who broke barriers in California politics',
+            'Accomplished lawyer who served two terms as a U.S. Senator',
+            'Georgetown graduate who became a leading voice in public health',
+          ],
+          [
+            'Let\'s Move founder whose memoir Becoming became a global bestseller',
+            'Howard University graduate who served as California Attorney General',
+            'Former Secretary of State who ran for president twice',
+            'Education advocate who kept her teaching job as Second Lady',
+          ],
+          [
+            'Michelle LaVaughn Robinson Obama — Princeton and Harvard Law alum from Chicago',
+            'Kamala Devi Harris — the Howard University graduate from Oakland, California',
+            'Condoleezza Rice — the Stanford provost who served under George W. Bush',
+            'Jill Tracy Biden — the educator who kept teaching as First Lady',
+          ],
         ],
       },
       {
@@ -349,6 +921,32 @@ const categories = [
           'Four-time Grand Slam champion who spoke up for mental health',
           'Most decorated gymnast in World Championship history',
         ],
+        hints: [
+          [
+            'Tennis champion with 23 Grand Slam singles titles',
+            'Tennis pioneer who paved the way alongside her sister',
+            'Four-time Grand Slam champion who spoke up for mental health',
+            'Most decorated gymnast in World Championship history',
+          ],
+          [
+            'Dominant athlete who trained on Compton courts with her older sister',
+            'Champion known for a powerful serve and fierce on-court fashion',
+            'Groundbreaking player who retired to focus on venture capital investing',
+            'Record-breaking competitor who won her first Grand Slam as a teenager',
+          ],
+          [
+            'Twenty-three-time Grand Slam winner who launched the fashion brand S by Serena',
+            'Seven-time Grand Slam winner who was the first sister to reach world number one',
+            'Four-time Grand Slam champion from Japan who took breaks for mental health',
+            'Twenty-two-time Grand Slam winner who dominated grass courts for decades',
+          ],
+          [
+            'Serena Jameka Williams — the Compton-raised queen with 23 Grand Slam titles',
+            'Venus Ebony Starr Williams — the elder sister who won seven Grand Slams',
+            'Naomi Osaka — the Japanese-Haitian champion who spoke up for mental health',
+            'Steffi Graf — the German legend who achieved the Golden Slam in 1988',
+          ],
+        ],
       },
       {
         id: 'iw-4',
@@ -361,6 +959,32 @@ const categories = [
           'Barbadian superstar who built a beauty and fashion empire',
           'Classically trained pianist who lit the music world on fire',
           'Queen of Hip-Hop Soul from Yonkers, New York',
+        ],
+        hints: [
+          [
+            'Houston queen who went from Destiny\'s Child to global icon',
+            'Barbadian superstar who built a beauty and fashion empire',
+            'Classically trained pianist who lit the music world on fire',
+            'Queen of Hip-Hop Soul from Yonkers, New York',
+          ],
+          [
+            'Performer who shut down the Super Bowl with a Black Panther tribute',
+            'Pop icon who dropped a surprise visual album that broke the internet',
+            'Singer-actress who voiced Nala in the live-action Lion King',
+            'R&B powerhouse known for elaborate concert residencies in Las Vegas',
+          ],
+          [
+            'Lemonade artist who holds the record for most Grammy wins ever',
+            'Umbrella singer who built the Fenty Beauty empire from scratch',
+            'Girl on Fire pianist who won fifteen Grammys before turning thirty',
+            'No More Drama singer crowned the Queen of Hip-Hop Soul',
+          ],
+          [
+            'Beyoncé Giselle Knowles-Carter — Queen Bey from Houston, Texas',
+            'Robyn Rihanna Fenty — the Barbadian mogul behind Fenty Beauty',
+            'Alicia Augello Cook — the classically trained Keys from Hell\'s Kitchen',
+            'Mary Jane Blige — the Queen of Hip-Hop Soul from the Bronx',
+          ],
         ],
       },
       {
@@ -375,6 +999,32 @@ const categories = [
           'Former Secretary of State who ran for the top office',
           'First woman to serve as Speaker of the House',
         ],
+        hints: [
+          [
+            'First woman and person of color to serve as Vice President',
+            'Former First Lady who championed healthy eating for kids',
+            'Former Secretary of State who ran for the top office',
+            'First woman to serve as Speaker of the House',
+          ],
+          [
+            'Trailblazing prosecutor who rose from DA to the nation\'s second-highest office',
+            'Political pioneer who shattered glass ceilings in California before going national',
+            'Attorney who made history as the first Black woman in her state\'s top legal role',
+            'Leader who navigated both sides of the aisle to pass landmark legislation',
+          ],
+          [
+            'Howard University graduate who served as California AG and U.S. Senator',
+            'Yale Law graduate who served as Secretary of State under two presidents',
+            'Stanford graduate who became the first female Speaker of the House',
+            'Princeton and Harvard Law graduate who championed the Let\'s Move campaign',
+          ],
+          [
+            'Kamala Devi Harris — the Oakland-born VP, daughter of Jamaican and Indian immigrants',
+            'Hillary Diane Rodham Clinton — the former Secretary of State from Park Ridge, Illinois',
+            'Nancy Patricia Pelosi — the San Francisco congresswoman who became Speaker',
+            'Michelle LaVaughn Robinson Obama — the Chicago-born Princeton and Harvard Law alum',
+          ],
+        ],
       },
       {
         id: 'iw-6',
@@ -387,6 +1037,32 @@ const categories = [
           'Actress who played a fierce music mogul on primetime TV',
           'Kenyan-Mexican actress who won an Oscar on her very first try',
           'Actress who brought Tina Turner\'s story to the big screen',
+        ],
+        hints: [
+          [
+            'EGOT-winning actress who made history at the Emmys',
+            'Actress who played a fierce music mogul on primetime TV',
+            'Kenyan-Mexican actress who won an Oscar on her very first try',
+            'Actress who brought Tina Turner\'s story to the big screen',
+          ],
+          [
+            'Powerhouse performer who has conquered film, TV, Broadway, and voice acting',
+            'Award-winning actress known for intense dramatic roles and raw emotion',
+            'Trailblazing actress who broke barriers for Black women in Hollywood',
+            'Classically trained performer who transitioned from stage to blockbusters',
+          ],
+          [
+            'How to Get Away with Murder star who won an Oscar for Fences',
+            'Empire star who played Cookie Lyon on Fox for six seasons',
+            '12 Years a Slave actress who won an Oscar on her very first nomination',
+            'Hidden Figures star who brought NASA mathematicians to the big screen',
+          ],
+          [
+            'Viola Davis — the EGOT winner from St. Matthews, South Carolina',
+            'Taraji P. Henson — the DC-born actress behind Cookie Lyon on Empire',
+            'Lupita Nyong\'o — the Kenyan-Mexican actress who debuted in 12 Years a Slave',
+            'Angela Bassett — the actress who played Tina Turner in What\'s Love Got to Do with It',
+          ],
         ],
       },
       {
@@ -401,6 +1077,32 @@ const categories = [
           'Two-time Olympic captain of the U.S. gymnastics team',
           'Hmong American gymnast who won all-around gold in Tokyo',
         ],
+        hints: [
+          [
+            'Most decorated gymnast who redefined what\'s possible',
+            'First African American to win all-around Olympic gold',
+            'Two-time Olympic captain of the U.S. gymnastics team',
+            'Hmong American gymnast who won all-around gold in Tokyo',
+          ],
+          [
+            'Athlete who withdrew from Olympic events for mental health then came back stronger',
+            'Young gymnast who has multiple skills named after her in the sport\'s code',
+            'Olympic champion who spoke out against abuse in her sport\'s governing body',
+            'Gymnastics prodigy who dominated every competition she entered since age fourteen',
+          ],
+          [
+            'Seven-time Olympic medalist with four skills named after her in gymnastics',
+            'First African American to win the individual all-around Olympic gold in 2012',
+            'Two-time Olympic team captain who led the U.S. to gold in 2012 and 2016',
+            'Hmong American gymnast who surprised the world with all-around gold in Tokyo',
+          ],
+          [
+            'Simone Arianne Biles — the Spring, Texas gymnast married to NFL player Jonathan Owens',
+            'Gabrielle Christina Victoria Douglas — the first Black all-around Olympic champion',
+            'Alexandra Rose Raisman — the Needham captain who led Team USA in 2012 and 2016',
+            'Sunisa Lee — the St. Paul, Minnesota gymnast who won all-around gold in Tokyo',
+          ],
+        ],
       },
       {
         id: 'iw-8',
@@ -413,6 +1115,32 @@ const categories = [
           'Coal miner\'s daughter who became a country music queen',
           'Red-haired country icon who also conquered TV and Broadway',
           'American Idol winner who became country\'s biggest voice',
+        ],
+        hints: [
+          [
+            'Country music legend who always works 9 to 5 with heart',
+            'Coal miner\'s daughter who became a country music queen',
+            'Red-haired country icon who also conquered TV and Broadway',
+            'American Idol winner who became country\'s biggest voice',
+          ],
+          [
+            'Country icon who created a theme park and gave millions of books to children',
+            'Nashville legend known for outlaw country and songs about the open road',
+            'Country queen from Kentucky who had a successful acting career too',
+            'Pop-country crossover artist who judged on American Idol for years',
+          ],
+          [
+            'Jolene and 9 to 5 singer who founded the Dollywood theme park',
+            'Coal Miner\'s Daughter singer who was one of country\'s first female superstars',
+            'Stand by Your Man singer who defined the classic Nashville sound era',
+            'Before He Cheats singer from Oklahoma who dominated the 2000s',
+          ],
+          [
+            'Dolly Rebecca Parton — the Locust Ridge, Tennessee legend behind Dollywood and the Imagination Library',
+            'Loretta Lynn — the Butcher Hollow, Kentucky coal miner\'s daughter',
+            'Reba Nell McEntire — the Oklahoma redhead who also starred on TV sitcoms',
+            'Carrie Marie Underwood — the Checotah, Oklahoma American Idol winner',
+          ],
         ],
       },
       {
@@ -427,6 +1155,32 @@ const categories = [
           'First woman ever appointed to the Supreme Court',
           'Former Harvard Law dean who joined the highest court',
         ],
+        hints: [
+          [
+            'Supreme Court justice who became a pop culture icon for equality',
+            'First Latina to serve on the nation\'s highest court',
+            'First woman ever appointed to the Supreme Court',
+            'Former Harvard Law dean who joined the highest court',
+          ],
+          [
+            'Diminutive jurist whose fierce dissents earned her a massive cult following',
+            'Trailblazing jurist who was the first Hispanic person on the highest bench',
+            'Pioneering judge who was the first woman ever confirmed to the court',
+            'Legal scholar and former dean who wrote extensively on constitutional law',
+          ],
+          [
+            'Notorious RBG — justice who served 27 years and inspired a documentary and biopic',
+            'First Latina justice who grew up in the Bronx public housing projects',
+            'First female justice ever, appointed by President Ronald Reagan in 1981',
+            'Former Harvard Law dean appointed to the court by President Obama',
+          ],
+          [
+            'Ruth Joan Bader Ginsburg — the Brooklyn-born justice appointed by President Clinton in 1993',
+            'Sonia Maria Sotomayor — the Bronx-born justice appointed by President Obama in 2009',
+            'Sandra Day O\'Connor — the El Paso-born justice appointed by President Reagan in 1981',
+            'Elena Kagan — the Manhattan-born justice and former Harvard Law School dean',
+          ],
+        ],
       },
       {
         id: 'iw-10',
@@ -439,6 +1193,32 @@ const categories = [
           'Nobel Prize-winning novelist who explored the Black experience',
           'Pulitzer Prize-winning author of The Color Purple',
           'Harlem Renaissance writer who captured Southern Black life',
+        ],
+        hints: [
+          [
+            'Poet and author who knew why the caged bird sings',
+            'Nobel Prize-winning novelist who explored the Black experience',
+            'Pulitzer Prize-winning author of The Color Purple',
+            'Harlem Renaissance writer who captured Southern Black life',
+          ],
+          [
+            'Memoirist and civil rights activist who also worked as a singer and dancer',
+            'Nobel Prize-winning author who explored race and identity in sweeping novels',
+            'Pulitzer Prize-winning author who wrote about Southern Black women\'s lives',
+            'Poet laureate known for reciting her work at presidential inaugurations',
+          ],
+          [
+            'I Know Why the Caged Bird Sings author who recited a poem at Clinton\'s inauguration',
+            'Beloved author of Song of Solomon who won the Nobel Prize in Literature',
+            'The Color Purple author who won the Pulitzer Prize and National Book Award',
+            'Their Eyes Were Watching God author from the Harlem Renaissance era',
+          ],
+          [
+            'Maya Angelou — born Marguerite Annie Johnson in St. Louis, Missouri',
+            'Toni Morrison — born Chloe Ardelia Wofford in Lorain, Ohio',
+            'Alice Walker — the Eatonton, Georgia native who wrote The Color Purple',
+            'Zora Neale Hurston — the Notasulga, Alabama writer of the Harlem Renaissance',
+          ],
         ],
       },
     ],
@@ -465,6 +1245,32 @@ const categories = [
           'Mamba Mentality icon who spent 20 years in purple and gold',
           'Showtime floor general who made LA basketball electric',
         ],
+        hints: [
+          [
+            '6x champion who flew through the air in Chicago wearing #23',
+            'The King who chased greatness from Cleveland to LA',
+            'Mamba Mentality icon who spent 20 years in purple and gold',
+            'Showtime floor general who made LA basketball electric',
+          ],
+          [
+            'Guard who dominated the 90s with six rings and a legendary sneaker brand',
+            'All-time scorer who broke every record from Cleveland to Los Angeles',
+            'Dominant center who won three straight Finals MVPs in the 2000s',
+            'Point guard who led the greatest show on hardwood in the 1980s',
+          ],
+          [
+            'Air Jordan who hit the last shot to seal his sixth title in 1998',
+            'All-time leading scorer who surpassed Kareem Abdul-Jabbar\'s record',
+            'Black Mamba who scored 60 points in his legendary farewell game',
+            'Showtime leader who won five titles and three MVPs in the 1980s',
+          ],
+          [
+            'Michael Jeffrey Jordan — His Airness from Wilmington, North Carolina, #23 Chicago Bulls',
+            'LeBron Raymone James — the Chosen One from Akron, Ohio',
+            'Kobe Bean Bryant — the Black Mamba who spent 20 years with the Lakers',
+            'Earvin Johnson Jr. — the Showtime point guard from Lansing, Michigan',
+          ],
+        ],
       },
       {
         id: 'nba-2',
@@ -477,6 +1283,32 @@ const categories = [
           '6x champion who never lost a Finals series in Chicago',
           '7-foot scoring machine with a silky-smooth jumper',
           'The Greek Freak who went from unknown to MVP in Milwaukee',
+        ],
+        hints: [
+          [
+            'The King who took his talents from Cleveland to Miami to LA',
+            '6x champion who never lost a Finals series in Chicago',
+            '7-foot scoring machine with a silky-smooth jumper',
+            'The Greek Freak who went from unknown to MVP in Milwaukee',
+          ],
+          [
+            'All-time leading scorer who was crowned the Chosen One as a teenager',
+            'Dominant big man who formed a dynasty with Wade and Bosh in Miami',
+            'Seven-foot forward who can shoot threes and handle like a guard',
+            'International star who rose from poverty in Athens to NBA superstardom',
+          ],
+          [
+            'Akron native who passed Kareem as the all-time leading scorer in 2023',
+            'Six-time champion who won three titles in a row twice in Chicago',
+            'Two-time Finals MVP who won back-to-back titles with the Warriors',
+            'Greek Freak who led Milwaukee to its first title in fifty years',
+          ],
+          [
+            'LeBron Raymone James — the Chosen One from Akron, Ohio who wears #23 for the Lakers',
+            'Michael Jeffrey Jordan — His Airness who won six titles with the Chicago Bulls',
+            'Kevin Wayne Durant — the Slim Reaper from Suitland, Maryland',
+            'Giannis Sina Ugo Antetokounmpo — the Greek Freak who led Milwaukee to a title',
+          ],
         ],
       },
       {
@@ -491,6 +1323,32 @@ const categories = [
           'Scoring machine who once dropped 13 points in 33 seconds',
           'Pound-for-pound warrior who crossed over everyone he faced',
         ],
+        hints: [
+          [
+            'Mamba Mentality legend with 5 rings in purple and gold',
+            '6x champion who was the greatest to ever lace them up',
+            'Scoring machine who once dropped 13 points in 33 seconds',
+            'Pound-for-pound warrior who crossed over everyone he faced',
+          ],
+          [
+            'Guard drafted out of high school who became an all-time great in LA',
+            'Fierce competitor who brought the King James mentality to three cities',
+            'Seven-footer from Germany who brought a title to Dallas in 2011',
+            'Point guard who electrified the NBA with his crossover and braids',
+          ],
+          [
+            'Black Mamba who scored 81 points in a game and 60 in his farewell',
+            'Air Jordan who hit the shot that sealed his sixth championship ring',
+            'The Answer who crossed over Jordan and stood only six feet tall',
+            'The Big Diesel who teamed up with the Mamba to three-peat in LA',
+          ],
+          [
+            'Kobe Bean Bryant — the Black Mamba who wore #8 and #24 for the Lakers for 20 years',
+            'Michael Jeffrey Jordan — His Airness who wore #23 for the Chicago Bulls',
+            'Allen Ezail Iverson — The Answer who wore #3 for the Philadelphia 76ers',
+            'Shaquille Rashaun O\'Neal — the Big Diesel who dominated the paint for two decades',
+          ],
+        ],
       },
       {
         id: 'nba-4',
@@ -503,6 +1361,32 @@ const categories = [
           'Splash brother who once scored 37 points in a single quarter',
           'Point God who orchestrates every play to absolute perfection',
           'Triple-double machine with the most explosive athleticism',
+        ],
+        hints: [
+          [
+            'Baby-faced assassin who revolutionized the three-point shot',
+            'Splash brother who once scored 37 points in a single quarter',
+            'Point God who orchestrates every play to absolute perfection',
+            'Triple-double machine with the most explosive athleticism',
+          ],
+          [
+            'Undersized guard from Davidson who changed how basketball is played forever',
+            'Splash brother who scored 37 points in a single quarter against Sacramento',
+            'Floor general from New Orleans known as the Point God for his vision',
+            'Explosive point guard who averaged a triple-double multiple seasons in a row',
+          ],
+          [
+            'Four-time champion who broke Ray Allen\'s all-time three-point record',
+            'Splash brother who scored 37 in a quarter and once drained 14 threes in a game',
+            'Point God who led the Clippers and Suns but never won a championship',
+            'Mr. Triple-Double who averaged one for three different seasons in OKC',
+          ],
+          [
+            'Wardell Stephen Curry II — the baby-faced shooter from Akron who plays for Golden State',
+            'Klay Alexander Thompson — the other Splash Brother who wore #11 for the Warriors',
+            'Christopher Emmanuel Paul — the Point God from Winston-Salem, North Carolina',
+            'Russell Westbrook III — the triple-double king from Long Beach, California',
+          ],
         ],
       },
       {
@@ -517,6 +1401,32 @@ const categories = [
           'All-time scoring king with the unstoppable skyhook',
           'Bad Boy Pistons leader with a killer smile and crossover',
         ],
+        hints: [
+          [
+            'Showtime point guard who made LA basketball a spectacle',
+            'Boston legend who traded trash talk and titles with LA',
+            'All-time scoring king with the unstoppable skyhook',
+            'Bad Boy Pistons leader with a killer smile and crossover',
+          ],
+          [
+            'Six-nine point guard who could play all five positions and dazzle the crowd',
+            'Trash-talking small forward who led the Celtics dynasty in the 1980s',
+            'Dominant center who perfected the skyhook and scored more than anyone',
+            'Bad Boy point guard who led Detroit to back-to-back titles',
+          ],
+          [
+            'Showtime floor general who won five titles and three Finals MVPs with the Lakers',
+            'Boston Celtic who won three titles and three MVP awards in the 1980s',
+            'All-time leading scorer before LeBron who won six MVP awards total',
+            'Bad Boy Piston who led Detroit to back-to-back titles in 1989 and 1990',
+          ],
+          [
+            'Earvin "Magic" Johnson Jr. — the six-nine Showtime point guard from Lansing, Michigan',
+            'Larry Joe Bird — the Hick from French Lick who led the Boston Celtics',
+            'Kareem Abdul-Jabbar — born Lew Alcindor, the skyhook master from New York City',
+            'Isiah Lord Thomas III — the Bad Boy Pistons leader from Chicago',
+          ],
+        ],
       },
       {
         id: 'nba-6',
@@ -529,6 +1439,32 @@ const categories = [
           'Nigerian-born center with the dreamiest footwork ever seen',
           'Georgetown giant who anchored the Knicks for a decade',
           'Superman center who dominated the slam dunk contest',
+        ],
+        hints: [
+          [
+            'Dominant big man who shattered backboards and made movies',
+            'Nigerian-born center with the dreamiest footwork ever seen',
+            'Georgetown giant who anchored the Knicks for a decade',
+            'Superman center who dominated the slam dunk contest',
+          ],
+          [
+            'Larger-than-life center who dominated the paint and also starred in movies',
+            'Nigerian-born center known for the smoothest footwork in the post',
+            'Georgetown legend who anchored the New York Knicks in the 1990s',
+            'Athletic big man who won the dunk contest and earned the Superman nickname',
+          ],
+          [
+            'The Big Diesel who three-peated with Kobe and later won a fourth ring in Miami',
+            'The Dream who led the Houston Rockets to back-to-back titles in the mid-90s',
+            'The Admiral who spent his entire career in San Antonio winning two titles',
+            'The Big Fundamental who quietly anchored the Spurs dynasty for two decades',
+          ],
+          [
+            'Shaquille Rashaun O\'Neal — the Big Diesel from Newark who wore #34 for the Lakers',
+            'Hakeem Abdul Olajuwon — the Dream from Lagos who wore #34 for the Rockets',
+            'David Robinson — the Admiral from Key West who wore #50 for the Spurs',
+            'Patrick Aloysius Ewing — the Jamaican-born center who wore #33 for the Knicks',
+          ],
         ],
       },
       {
@@ -543,6 +1479,32 @@ const categories = [
           'Silent superstar who lets his Finals MVPs do the talking',
           'Two-way wing nicknamed PG-13 for his playoff theatrics',
         ],
+        hints: [
+          [
+            '7-foot scoring machine who can shoot over anyone alive',
+            'The King who chased greatness across three cities',
+            'Silent superstar who lets his Finals MVPs do the talking',
+            'Two-way wing nicknamed PG-13 for his playoff theatrics',
+          ],
+          [
+            'Slim seven-footer who handles like a guard and has played for four franchises',
+            'All-time great who chased rings from Cleveland to Miami to Los Angeles',
+            'Athletic wing who earned the PG-13 nickname for his playoff performances',
+            'Two-way superstar from Greece who transformed the Milwaukee Bucks',
+          ],
+          [
+            'Two-time Finals MVP who won back-to-back titles with the Warriors in 2017 and 2018',
+            'Four-time MVP who passed Kareem as the all-time leading scorer',
+            'Two-way wing who earned All-NBA honors with both the Pacers and Clippers',
+            'Greek Freak who won Finals MVP with the Bucks in 2021',
+          ],
+          [
+            'Kevin Wayne Durant — the Slim Reaper from Suitland, Maryland who wore #35',
+            'LeBron Raymone James — the Chosen One from Akron, Ohio who wore #23',
+            'Paul Clifton Anthony George — PG-13 from Palmdale, California',
+            'Giannis Sina Ugo Antetokounmpo — the Greek Freak from Athens, Greece',
+          ],
+        ],
       },
       {
         id: 'nba-8',
@@ -555,6 +1517,32 @@ const categories = [
           'Youngest MVP whose career was tragically cut short by injuries',
           'Canadian point guard who won back-to-back MVPs in Phoenix',
           'Pass-first floor general with a triple-double habit',
+        ],
+        hints: [
+          [
+            'The Answer — pound-for-pound toughest player to ever step over',
+            'Youngest MVP whose career was tragically cut short by injuries',
+            'Canadian point guard who won back-to-back MVPs in Phoenix',
+            'Pass-first floor general with a triple-double habit',
+          ],
+          [
+            'Undersized guard who crossed over defenders and changed basketball culture',
+            'Youngest MVP in history whose career was cut short by knee injuries',
+            'Canadian point guard who won back-to-back MVPs leading the Phoenix Suns',
+            'Pass-first point guard from California known for his triple-double average',
+          ],
+          [
+            'The Answer who crossed over Jordan and led the 76ers to the 2001 Finals',
+            'Youngest MVP who tragically tore his ACL and never reached his full potential',
+            'Two-time MVP from Canada who revolutionized the point guard position in Phoenix',
+            'Mr. Triple-Double who averaged one for an entire season in Oklahoma City',
+          ],
+          [
+            'Allen Ezail Iverson — The Answer from Hampton, Virginia who wore #3 for the Sixers',
+            'Derrick Martell Rose — the youngest MVP from Chicago who wore #1 for the Bulls',
+            'Steve John Nash — the Canadian point guard who wore #13 for the Phoenix Suns',
+            'Russell Westbrook III — the triple-double king from Long Beach who wore #0',
+          ],
         ],
       },
       {
@@ -569,6 +1557,32 @@ const categories = [
           'German legend who brought Dallas its only championship ring',
           'The Mailman who always delivered in Utah but never got a ring',
         ],
+        hints: [
+          [
+            'The Big Fundamental who quietly won 5 rings in San Antonio',
+            'Intense power forward who finally brought a title to Boston',
+            'German legend who brought Dallas its only championship ring',
+            'The Mailman who always delivered in Utah but never got a ring',
+          ],
+          [
+            'Quiet superstar who anchored one franchise for his entire nineteen-year career',
+            'Intense power forward from Boston who paired with Ray Allen and Paul Pierce',
+            'Seven-foot German who mastered the fadeaway and played for one team his whole career',
+            'Powerful forward from Louisiana who delivered in Utah for nearly two decades',
+          ],
+          [
+            'The Big Fundamental who won Finals MVP three times with the Spurs',
+            'The Big Ticket who finally won a championship in Boston alongside Pierce and Allen',
+            'Dirk who brought Dallas its only title in 2011 with a legendary playoff run',
+            'The Mailman who won two MVPs in Utah but never won an NBA championship',
+          ],
+          [
+            'Timothy Theodore Duncan — the Big Fundamental from the U.S. Virgin Islands, #21 Spurs',
+            'Kevin Maurice Garnett — the Big Ticket from Mauldin who wore #5 for the Celtics',
+            'Dirk Werner Nowitzki — the tall German who wore #41 for the Dallas Mavericks',
+            'Karl Anthony Malone — the Mailman from Summerfield who wore #32 for the Jazz',
+          ],
+        ],
       },
       {
         id: 'nba-10',
@@ -581,6 +1595,32 @@ const categories = [
           '11-time champion who defined winning above all else in Boston',
           'All-time scoring king with the unstoppable skyhook shot',
           'First player to average a triple-double for an entire season',
+        ],
+        hints: [
+          [
+            'The only player to ever score 100 points in a single game',
+            '11-time champion who defined winning above all else in Boston',
+            'All-time scoring king with the unstoppable skyhook shot',
+            'First player to average a triple-double for an entire season',
+          ],
+          [
+            'Towering center who once averaged over 50 points per game for a full season',
+            'Boston legend who won eleven championships in thirteen seasons',
+            'Dominant center who mastered the skyhook and scored over 38,000 points',
+            'Electric guard from Cincinnati who was the first to average a triple-double',
+          ],
+          [
+            'Hundred-point game scorer who also led the league in assists one season',
+            'Eleven-time champion who anchored the Celtics dynasty from 1957 to 1969',
+            'Six-time MVP who perfected the skyhook playing for the Bucks and Lakers',
+            'Big O who averaged a triple-double for the entire 1961-62 season',
+          ],
+          [
+            'Wilton Norman Chamberlain — the Big Dipper from Philadelphia who scored 100 in a game',
+            'William Felton Russell — the eleven-time champion who anchored the Boston Celtics',
+            'Kareem Abdul-Jabbar — born Lew Alcindor, the skyhook master from New York City',
+            'Oscar Palmer Robertson — the Big O from Indianapolis who averaged a triple-double',
+          ],
         ],
       },
     ],
@@ -607,6 +1647,32 @@ const categories = [
           'Highest-grossing actor of all time with unmistakable intensity',
           'Voice of God narrator who makes every film feel epic',
         ],
+        hints: [
+          [
+            'Two-time Oscar winner who commands every scene he enters',
+            'Fresh Prince who became one of Hollywood\'s biggest stars',
+            'Highest-grossing actor of all time with unmistakable intensity',
+            'Voice of God narrator who makes every film feel epic',
+          ],
+          [
+            'Legendary actor known for playing real-life heroes and complex antiheroes',
+            'Blockbuster star who went from sitcom rapper to action movie leading man',
+            'Record-setting box office king who appears in nearly every Marvel movie',
+            'Iconic voice actor and narrator whose deep bass resonates across cinema',
+          ],
+          [
+            'Training Day and Glory Oscar winner who also directed Fences on Broadway and film',
+            'Pursuit of Happyness and King Richard star who won his first Oscar in 2022',
+            'Pulp Fiction and Avengers star who holds the Guinness record for box office totals',
+            'Shawshank Redemption and March of the Penguins narrator beloved for his voice',
+          ],
+          [
+            'Denzel Hayes Washington Jr. — the Mount Vernon, New York legend with two Academy Awards',
+            'Willard Carroll Smith II — the Fresh Prince from West Philadelphia',
+            'Samuel Leroy Jackson — the highest-grossing actor from Washington, D.C.',
+            'Morgan Freeman — the Memphis-born narrator with the Voice of God',
+          ],
+        ],
       },
       {
         id: 'hw-2',
@@ -619,6 +1685,32 @@ const categories = [
           'Leading man from Fight Club to Once Upon a Time in Hollywood',
           'Good Will Hunting star who keeps getting stranded in movies',
           'Action star who does his own stunts at impossible heights',
+        ],
+        hints: [
+          [
+            'Oscar winner who survived the Titanic and the Revenant',
+            'Leading man from Fight Club to Once Upon a Time in Hollywood',
+            'Good Will Hunting star who keeps getting stranded in movies',
+            'Action star who does his own stunts at impossible heights',
+          ],
+          [
+            'Environmental activist and leading man who waited decades for his first Oscar',
+            'Leading man known for intense roles in crime dramas and ensemble heist films',
+            'Oscar-winning actor and math genius who solved impossible problems on screen',
+            'Action hero known for doing his own stunts in impossible mission franchises',
+          ],
+          [
+            'Titanic and Revenant star who finally won his Oscar for crawling through snow',
+            'Fight Club and Once Upon a Time in Hollywood star and acclaimed producer',
+            'Good Will Hunting and Bourne Identity star who plays brainy action heroes',
+            'Mission: Impossible star who actually hangs off planes and buildings',
+          ],
+          [
+            'Leonardo Wilhelm DiCaprio — the LA-born environmentalist who starred in Titanic',
+            'William Bradley Pitt — the Shawnee, Oklahoma native from Fight Club and Ocean\'s Eleven',
+            'Matthew Paige Damon — the Cambridge native behind Good Will Hunting and Jason Bourne',
+            'Thomas Cruise Mapother IV — the Syracuse native behind Mission: Impossible',
+          ],
         ],
       },
       {
@@ -633,6 +1725,32 @@ const categories = [
           'British dame who played M and won an Oscar in 8 minutes',
           'British queen of the screen who literally played The Queen',
         ],
+        hints: [
+          [
+            'Most Oscar-nominated actress in the history of cinema',
+            'Australian actress who played an elven queen and a legend',
+            'British dame who played M and won an Oscar in 8 minutes',
+            'British queen of the screen who literally played The Queen',
+          ],
+          [
+            'Actress renowned for mastering accents and disappearing into every character',
+            'Australian actress known for playing ethereal royalty in fantasy epics',
+            'British dame who brought authority and wit to the role of a spy chief',
+            'British actress who transformed into a queen and an iron lady on screen',
+          ],
+          [
+            'Devil Wears Prada and Sophie\'s Choice star with 21 Oscar nominations',
+            'Lord of the Rings and Thor actress who played Galadriel the Elf Queen',
+            'Skyfall and GoldenEye actress who played M in the James Bond franchise',
+            'The Queen and The Crown actress who was made a dame by the real royals',
+          ],
+          [
+            'Mary Louise "Meryl" Streep — the Summit, New Jersey icon with three Academy Awards',
+            'Cate Blanchett — the Melbourne-born actress who played Galadriel and Carol',
+            'Judi Dench — the British dame from York who played M in seven Bond films',
+            'Helen Mirren — the London-born dame who won an Oscar for playing Queen Elizabeth',
+          ],
+        ],
       },
       {
         id: 'hw-4',
@@ -645,6 +1763,32 @@ const categories = [
           'Two-time Oscar winner known for intense dramatic performances',
           'Comedian who made Bad Boys a blockbuster franchise',
           'Comedian turned Oscar winner who channeled Ray Charles',
+        ],
+        hints: [
+          [
+            'Fresh Prince who went from Philly rap to Hollywood royalty',
+            'Two-time Oscar winner known for intense dramatic performances',
+            'Comedian who made Bad Boys a blockbuster franchise',
+            'Comedian turned Oscar winner who channeled Ray Charles',
+          ],
+          [
+            'Blockbuster star who saved the world from aliens and played a legendary boxer',
+            'Intense dramatic actor known for playing real-life leaders and antiheroes',
+            'Comedian who turned action star and headlined a buddy cop franchise',
+            'Comedian turned dramatic actor who won an Oscar channeling a music legend',
+          ],
+          [
+            'Ali and Pursuit of Happyness star who won his Oscar for King Richard',
+            'Training Day and Fences star who has been nominated for ten Academy Awards',
+            'Bad Boys and Coming 2 America star who also headlines stand-up comedy specials',
+            'Ray and Django Unchained star who won an Oscar for playing Ray Charles',
+          ],
+          [
+            'Willard Carroll Smith II — the Fresh Prince from West Philadelphia who won the Oscar for King Richard',
+            'Denzel Hayes Washington Jr. — the Mount Vernon legend with two Academy Awards',
+            'Martin Fitzgerald Lawrence — the Frankfurt-born comedian behind Bad Boys',
+            'Eric Marlon Bishop — the Terrell, Texas native known as Jamie Foxx',
+          ],
         ],
       },
       {
@@ -659,6 +1803,32 @@ const categories = [
           'Australian actress who brought Barbie to life on the big screen',
           'La La Land dancer who won the Oscar for best actress',
         ],
+        hints: [
+          [
+            'Highest-grossing actress who suited up as a Black Widow',
+            'Hunger Games star who tripped her way to an Oscar',
+            'Australian actress who brought Barbie to life on the big screen',
+            'La La Land dancer who won the Oscar for best actress',
+          ],
+          [
+            'Marvel superheroine who also earned Oscar nominations for dramatic indie films',
+            'Young adult franchise star known for stumbling charmingly at award ceremonies',
+            'Australian actress who went from soap operas to commanding Hollywood roles',
+            'Musical actress who danced through a jazz-themed love story on screen',
+          ],
+          [
+            'Black Widow star who earned dual Oscar nominations for Marriage Story and Jojo Rabbit',
+            'Katniss Everdeen actress who tripped on stage while accepting her Oscar',
+            'Barbie and Harley Quinn actress from Dalby, Queensland, Australia',
+            'La La Land and Poor Things star who won back-to-back Oscar nominations',
+          ],
+          [
+            'Scarlett Ingrid Johansson — the New York City-born Black Widow of the MCU',
+            'Jennifer Shrader Lawrence — the Louisville native who played Katniss Everdeen',
+            'Margot Elise Robbie — the Dalby, Australia native who played Barbie and Harley Quinn',
+            'Emily Jean Stone — the Scottsdale, Arizona native known as Emma Stone',
+          ],
+        ],
       },
       {
         id: 'hw-6',
@@ -671,6 +1841,32 @@ const categories = [
           'Voice of God narrator who brings gravitas to every role',
           'Actor who offered the red pill in a sci-fi classic',
           'British actor constantly tipped to be the next James Bond',
+        ],
+        hints: [
+          [
+            'Highest-grossing actor ever who carries a very special wallet',
+            'Voice of God narrator who brings gravitas to every role',
+            'Actor who offered the red pill in a sci-fi classic',
+            'British actor constantly tipped to be the next James Bond',
+          ],
+          [
+            'Prolific actor who has appeared in over 150 films across every genre',
+            'Iconic narrator whose deep voice has graced documentaries and dramas',
+            'Action star who offered a choice between the red pill and blue pill',
+            'British actor from London who is constantly tipped as the next 007',
+          ],
+          [
+            'Nick Fury actor and Pulp Fiction star who carries a Bad Mother wallet',
+            'Shawshank Redemption narrator who also played God in Bruce Almighty',
+            'Matrix star who played Morpheus and offered Neo the red pill',
+            'Luther and The Wire star from Hackney who is always linked to James Bond',
+          ],
+          [
+            'Samuel Leroy Jackson — the Washington, D.C. native who plays Nick Fury in the MCU',
+            'Morgan Freeman — the Memphis-born actor known as the Voice of God',
+            'Laurence Fishburne — the Augusta native who played Morpheus in The Matrix',
+            'Idris Elba — the Hackney, London actor behind Luther and Stringer Bell',
+          ],
         ],
       },
       {
@@ -685,6 +1881,32 @@ const categories = [
           'Legally Blonde star turned Hollywood production powerhouse',
           'Pretty Woman star with the most famous smile in Hollywood',
         ],
+        hints: [
+          [
+            'America\'s sweetheart from the most iconic sitcom apartment',
+            'Her sitcom bestie who was famously obsessed with cleanliness',
+            'Legally Blonde star turned Hollywood production powerhouse',
+            'Pretty Woman star with the most famous smile in Hollywood',
+          ],
+          [
+            'Actress whose hairstyle became one of the most copied looks of the 1990s',
+            'Sitcom star known for her obsessive tidiness and signature catchphrases',
+            'Harvard Law comedy star who built a production empire behind the scenes',
+            'Romantic comedy queen whose smile lit up the 1990s box office',
+          ],
+          [
+            'Friends star who played Rachel Green and later starred in The Morning Show',
+            'Friends star who played Monica Geller and directed episodes of the show',
+            'Legally Blonde and Big Little Lies star who also produced Promising Young Woman',
+            'Pretty Woman and Erin Brockovich star who became America\'s Sweetheart',
+          ],
+          [
+            'Jennifer Joanna Aniston — the Sherman Oaks native who played Rachel Green on Friends',
+            'Courteney Bass Cox — the Birmingham native who played Monica Geller on Friends',
+            'Laura Jeanne Reese Witherspoon — the New Orleans native behind Legally Blonde',
+            'Julia Fiona Roberts — the Smyrna, Georgia native behind Pretty Woman',
+          ],
+        ],
       },
       {
         id: 'hw-8',
@@ -697,6 +1919,32 @@ const categories = [
           'Oscar winner who survived the Titanic and the frozen wilderness',
           'ER doctor turned Ocean\'s ringleader and Hollywood activist',
           'Actor who needed rescuing from both Mars and Normandy Beach',
+        ],
+        hints: [
+          [
+            'Leading man who fought in clubs and pulled off casino heists',
+            'Oscar winner who survived the Titanic and the frozen wilderness',
+            'ER doctor turned Ocean\'s ringleader and Hollywood activist',
+            'Actor who needed rescuing from both Mars and Normandy Beach',
+          ],
+          [
+            'Hollywood star and producer who won Oscars for both acting and producing',
+            'Oscar winner who played a sinking ship passenger and a frozen wilderness survivor',
+            'TV doctor turned Hollywood leading man and human rights activist',
+            'Actor who needed rescuing from both the red planet and Omaha Beach',
+          ],
+          [
+            'Fight Club and Ocean\'s Eleven star who won his acting Oscar for Once Upon a Time in Hollywood',
+            'Titanic and Revenant star who finally won his Oscar after years of waiting',
+            'ER star and Ocean\'s costar who cofounded a human rights advocacy group',
+            'Saving Private Ryan and The Martian star who keeps getting stranded in movies',
+          ],
+          [
+            'William Bradley Pitt — the Shawnee, Oklahoma native from Fight Club and Ocean\'s Eleven',
+            'Leonardo Wilhelm DiCaprio — the LA-born environmentalist who starred in Titanic',
+            'George Timothy Clooney — the Lexington, Kentucky native from ER and Ocean\'s Eleven',
+            'Matthew Paige Damon — the Cambridge native behind The Martian and Saving Private Ryan',
+          ],
         ],
       },
       {
@@ -711,6 +1959,32 @@ const categories = [
           'Young actress who debuted as Rue in the Hunger Games',
           'Grown-ish star and activist from a beloved TV family',
         ],
+        hints: [
+          [
+            'Disney star who swung into the MCU and HBO teen drama',
+            'Singer-actress who became Disney\'s live-action mermaid',
+            'Young actress who debuted as Rue in the Hunger Games',
+            'Grown-ish star and activist from a beloved TV family',
+          ],
+          [
+            'Fashion icon who transitioned from kids TV to critically acclaimed prestige drama',
+            'Disney star who became a live-action princess in an underwater kingdom',
+            'Young actress who volunteered as tribute in a dystopian film franchise',
+            'Sitcom star and activist who grew up on screen in a beloved family comedy',
+          ],
+          [
+            'Euphoria star who plays MJ in the Spider-Man films and starred in Challengers',
+            'The Little Mermaid star who brought Ariel to life in the Disney live-action remake',
+            'Hunger Games star who played Rue and later starred in The Darkest Minds',
+            'Black-ish and Grown-ish star who became a fashion and beauty entrepreneur',
+          ],
+          [
+            'Zendaya Maree Stoermer Coleman — the Oakland-born Euphoria and Spider-Man star',
+            'Halle Lynn Bailey — the Atlanta-born singer who played Ariel in The Little Mermaid',
+            'Amandla Stenberg — the LA-born actress who played Rue in The Hunger Games',
+            'Yara Shahidi — the Minneapolis-born actress from Black-ish and Grown-ish',
+          ],
+        ],
       },
       {
         id: 'hw-10',
@@ -723,6 +1997,32 @@ const categories = [
           'Highest-grossing actor ever with unmistakable screen presence',
           'Two-time Oscar winner who commands every dramatic scene',
           'Iconic bass voice behind Darth Vader and the Lion King',
+        ],
+        hints: [
+          [
+            'Voice of God narrator who narrated penguins and prison breaks',
+            'Highest-grossing actor ever with unmistakable screen presence',
+            'Two-time Oscar winner who commands every dramatic scene',
+            'Iconic bass voice behind Darth Vader and the Lion King',
+          ],
+          [
+            'Beloved actor whose voice has narrated documentaries, dramas, and commercials',
+            'Prolific actor who holds the box office record with over 150 film appearances',
+            'Dramatic powerhouse who has won two Academy Awards for leading roles',
+            'Iconic voice actor whose deep bass brought Darth Vader and Mufasa to life',
+          ],
+          [
+            'Shawshank Redemption and Million Dollar Baby star who played God in Bruce Almighty',
+            'Pulp Fiction and Avengers star who holds the all-time box office gross record',
+            'Training Day and Fences star who won Oscars for both of those performances',
+            'Star Wars and Lion King voice actor who lent his bass to Vader and Mufasa',
+          ],
+          [
+            'Morgan Freeman — the Memphis-born Voice of God who won his Oscar for Million Dollar Baby',
+            'Samuel Leroy Jackson — the Washington, D.C. native who plays Nick Fury in the MCU',
+            'Denzel Hayes Washington Jr. — the Mount Vernon legend behind Training Day and Fences',
+            'James Earl Jones — the Arkabutla, Mississippi native who voiced Darth Vader and Mufasa',
+          ],
         ],
       },
     ],
@@ -749,6 +2049,32 @@ const categories = [
           'TDE songstress who bared her soul on Ctrl and S.O.S.',
           'Ethereal vocalist known for chill, dreamy R&B melodies',
         ],
+        hints: [
+          [
+            'Barbadian queen who built Fenty and stands under her umbrella',
+            'Houston queen who runs the world from Destiny\'s stage',
+            'TDE songstress who bared her soul on Ctrl and S.O.S.',
+            'Ethereal vocalist known for chill, dreamy R&B melodies',
+          ],
+          [
+            'Caribbean superstar who became a billionaire through her beauty and fashion empire',
+            'Houston-born singer who built a global empire from girl group beginnings',
+            'TDE artist known for confessional lyrics about love, loss, and self-doubt',
+            'Ethereal R&B vocalist known for dreamy melodies and meditative vibes',
+          ],
+          [
+            'Umbrella and Work singer who built the Fenty Beauty and Savage X Fenty empires',
+            'Lemonade and Renaissance artist who holds the record for most Grammy wins',
+            'Ctrl and S.O.S. singer who earned nine Grammy nominations from TDE',
+            'Mystery artist who won an Oscar for Best Original Song with Fight for You',
+          ],
+          [
+            'Robyn Rihanna Fenty — the Barbadian billionaire from Saint Michael Parish',
+            'Beyoncé Giselle Knowles-Carter — Queen Bey from Houston, Texas',
+            'Solána Imani Rowe — the St. Louis native known as SZA',
+            'Gabriella Sarmiento Wilson — the Vallejo native known as H.E.R.',
+          ],
+        ],
       },
       {
         id: 'rb-2',
@@ -761,6 +2087,32 @@ const categories = [
           'Dancer-singer who\'s been making hits since he was a teen',
           'Smooth singer-songwriter always seen in a signature fedora',
           'Virginia heartthrob known for slow jams and pure charisma',
+        ],
+        hints: [
+          [
+            'Atlanta showman who taught the world his confessions',
+            'Dancer-singer who\'s been making hits since he was a teen',
+            'Smooth singer-songwriter always seen in a signature fedora',
+            'Virginia heartthrob known for slow jams and pure charisma',
+          ],
+          [
+            'R&B showman who headlined the Super Bowl halftime show in 2024',
+            'Smooth R&B singer always spotted in a signature fedora and shades',
+            'Virginia-born singer known for slow jams and incredible vocal runs',
+            'Former B2K frontman who became known for precise choreography',
+          ],
+          [
+            'Confessions and Yeah singer who mentored Justin Bieber and headlined the 2024 Super Bowl',
+            'Untitled (How Does It Feel) artist who vanished for over a decade between albums',
+            'So Sick singer-songwriter from Camden always seen wearing his signature fedora',
+            'Heart Attack singer from Virginia known for his shirtless performances',
+          ],
+          [
+            'Usher Raymond IV — the Atlanta R&B king from Chattanooga, Tennessee',
+            'Michael Eugene Archer — the Richmond native known as D\'Angelo',
+            'Shaffer Chimere Smith — the Camden native known as Ne-Yo',
+            'Tremaine Aldon Neverson — the Virginia native known as Trey Songz',
+          ],
         ],
       },
       {
@@ -775,6 +2127,32 @@ const categories = [
           'Queen of Hip-Hop Soul from Yonkers, New York',
           'Fugees star who dropped one perfect solo album and vanished',
         ],
+        hints: [
+          [
+            'Classically trained pianist who set the music world on fire',
+            'Former Destiny\'s Child frontwoman turned global queen',
+            'Queen of Hip-Hop Soul from Yonkers, New York',
+            'Fugees star who dropped one perfect solo album and vanished',
+          ],
+          [
+            'Piano prodigy from Hell\'s Kitchen who championed a natural beauty movement',
+            'Girl group frontwoman who transitioned into a solo empire and fashion mogul',
+            'Queen of Hip-Hop Soul who pioneered the genre from Yonkers, New York',
+            'Fugees vocalist who released one critically acclaimed solo album then vanished',
+          ],
+          [
+            'Fallin\' and No One singer who hosted the Grammys and composed a Broadway musical',
+            'Crazy in Love and Halo singer who holds the record for most Grammy wins',
+            'No More Drama and Family Affair singer crowned Queen of Hip-Hop Soul',
+            'Miseducation album creator who blended hip hop and soul into one masterpiece',
+          ],
+          [
+            'Alicia Augello Cook — the Hell\'s Kitchen pianist known as Alicia Keys',
+            'Beyoncé Giselle Knowles-Carter — Queen Bey from Houston, Texas',
+            'Mary Jane Blige — the Queen of Hip-Hop Soul from Yonkers, New York',
+            'Lauryn Noelle Hill — the South Orange, New Jersey Fugees legend',
+          ],
+        ],
       },
       {
         id: 'rb-4',
@@ -787,6 +2165,32 @@ const categories = [
           'Toronto singer who emerged from the shadows with dark R&B',
           'Toronto singer blending gospel roots with modern R&B',
           'Genre-bending artist who told everyone to just adorn themselves',
+        ],
+        hints: [
+          [
+            'Reclusive artist who rewrote R&B with Channel Orange and Blonde',
+            'Toronto singer who emerged from the shadows with dark R&B',
+            'Toronto singer blending gospel roots with modern R&B',
+            'Genre-bending artist who told everyone to just adorn themselves',
+          ],
+          [
+            'Mysterious artist who dropped albums with no warning and then disappeared completely',
+            'Toronto singer who emerged anonymously with dark moody mixtapes on YouTube',
+            'Toronto singer who blends gospel harmonies and choir roots with modern R&B',
+            'Genre-bending R&B artist who told the world to adorn themselves with his falsetto',
+          ],
+          [
+            'Channel Orange and Blonde artist who was part of the Odd Future collective',
+            'Trilogy and After Hours singer whose dark R&B persona featured bandaged faces',
+            'Take Care and Views singer who blends rap and R&B from Scarborough',
+            'Adorn and Kaleidoscope Dream singer known for his silky smooth falsetto',
+          ],
+          [
+            'Christopher Edwin Breaux — the Long Beach native known as Frank Ocean',
+            'Abel Tesfaye — the Scarborough, Toronto native known as The Weeknd',
+            'Aubrey Drake Graham — the Toronto actor turned rapper known as Drake',
+            'Miguel Jontel Pimentel — the San Pedro, LA singer behind Adorn',
+          ],
         ],
       },
       {
@@ -801,6 +2205,32 @@ const categories = [
           'Introverted Atlanta singer with raw emotional ballads',
           'Mystery artist who hid behind sunglasses and let music speak',
         ],
+        hints: [
+          [
+            'TDE songstress who bared her soul on Ctrl and S.O.S.',
+            'Ethereal vocalist with dreamy, meditative R&B vibes',
+            'Introverted Atlanta singer with raw emotional ballads',
+            'Mystery artist who hid behind sunglasses and let music speak',
+          ],
+          [
+            'Singer who studied marine biology before pursuing music full time',
+            'Ethereal R&B vocalist known for dreamy and meditative sonic landscapes',
+            'Introverted singer from Atlanta who pours raw emotion into every ballad',
+            'Mysterious artist who let her guitar and sunglasses speak for her',
+          ],
+          [
+            'Ctrl and S.O.S. artist from TDE whose Kill Bill topped the Billboard Hot 100',
+            'Baduizm and Mama\'s Gun artist who pioneered neo-soul from Dallas, Texas',
+            'I Am Not My Hair singer who blends acoustic guitar with soul and inspiration',
+            'Oscar-winning artist who plays guitar, piano, bass, and drums on her own records',
+          ],
+          [
+            'Solána Imani Rowe — the St. Louis-born TDE singer known as SZA',
+            'Erica Abi Wright — the Dallas native known as Erykah Badu',
+            'India Arie Simpson — the Denver-born acoustic soul singer and activist',
+            'Gabriella Sarmiento Wilson — the Vallejo native known as H.E.R.',
+          ],
+        ],
       },
       {
         id: 'rb-6',
@@ -813,6 +2243,32 @@ const categories = [
           'The Voice — greatest female vocalist of her generation',
           'Canadian powerhouse whose heart will go on and on forever',
           'Powerhouse vocalist who started as a genie in a bottle',
+        ],
+        hints: [
+          [
+            'Five-octave diva who literally owns Christmas with one song',
+            'The Voice — greatest female vocalist of her generation',
+            'Canadian powerhouse whose heart will go on and on forever',
+            'Powerhouse vocalist who started as a genie in a bottle',
+          ],
+          [
+            'Record-breaking vocalist with more number-one hits than almost anyone in history',
+            'Powerhouse singer whose voice defined an entire generation of pop ballads',
+            'Canadian songstress whose voice powered one of the biggest movie soundtracks ever',
+            'Former Mouseketeer turned pop star who started with a genie-themed debut',
+          ],
+          [
+            'All I Want for Christmas Is You singer with 19 number-one Billboard hits',
+            'I Will Always Love You singer whose voice defined The Bodyguard soundtrack',
+            'My Heart Will Go On singer whose voice powered the Titanic soundtrack',
+            'Genie in a Bottle singer who evolved from teen pop to mature R&B',
+          ],
+          [
+            'Mariah Angela Carey — the Huntington, New York diva with the five-octave whistle register',
+            'Whitney Elizabeth Houston — The Voice from Newark who starred in The Bodyguard',
+            'Celine Marie Claudette Dion — the Quebec powerhouse behind My Heart Will Go On',
+            'Christina Maria Aguilera — the Staten Island-born Genie in a Bottle singer',
+          ],
         ],
       },
       {
@@ -827,6 +2283,32 @@ const categories = [
           'Virginia crooner known for ladies\' anthems and smooth moves',
           'Former B2K frontman with iconic choreography and dance moves',
         ],
+        hints: [
+          [
+            'Singer-dancer making Billboard hits since he was a teenager',
+            'Atlanta showman who mentored the greats and owned the stage',
+            'Virginia crooner known for ladies\' anthems and smooth moves',
+            'Former B2K frontman with iconic choreography and dance moves',
+          ],
+          [
+            'Triple-threat entertainer who debuted at 16 with a self-titled platinum album',
+            'Atlanta R&B showman who mentored young talent and headlined the Super Bowl',
+            'Virginia Beach crooner known for romantic anthems and buttery smooth vocals',
+            'Former boy band frontman known for precise choreography and early 2000s hits',
+          ],
+          [
+            'Run It and Forever singer from Tappahannock who debuted as a teen in 2005',
+            'Confessions and Yeah singer who mentored Justin Bieber from childhood',
+            'My Boo and Nice & Slow singer from Chattanooga who headlined the 2024 Super Bowl',
+            'Bump Bump Bump singer who led B2K before going solo in the 2000s',
+          ],
+          [
+            'Christopher Maurice Brown — the Tappahannock, Virginia singer-dancer who debuted at 16',
+            'Usher Raymond IV — the Chattanooga-born R&B king of Atlanta',
+            'Omarion Ishmael Grandberry — the Inglewood native who fronted B2K',
+            'Tremaine Aldon Neverson — the Petersburg, Virginia native known as Trey Songz',
+          ],
+        ],
       },
       {
         id: 'rb-8',
@@ -839,6 +2321,32 @@ const categories = [
           'Neo-soul queen from Dallas who stays On & On forever',
           'Acoustic soul artist who reminded us we are not our hair',
           'Philly poet who sings with raw emotion and literary grace',
+        ],
+        hints: [
+          [
+            'Fugees legend who dropped one perfect solo album and vanished',
+            'Neo-soul queen from Dallas who stays On & On forever',
+            'Acoustic soul artist who reminded us we are not our hair',
+            'Philly poet who sings with raw emotion and literary grace',
+          ],
+          [
+            'Singer-rapper who proved hip hop and soul could be one and the same',
+            'Neo-soul pioneer from Dallas who blends spirituality with futuristic R&B',
+            'Acoustic soul artist who celebrated natural beauty and Black identity in music',
+            'Philadelphia-born poet who sings with raw literary emotion and grace',
+          ],
+          [
+            'Miseducation album creator who also starred in Sister Act 2 as a teenager',
+            'Baduizm and Mama\'s Gun artist who pioneered neo-soul from Dallas, Texas',
+            'I Am Not My Hair singer who blends acoustic guitar with soul and inspiration',
+            'A Long Walk singer from Philadelphia known for poetic neo-soul and spoken word',
+          ],
+          [
+            'Lauryn Noelle Hill — the South Orange, New Jersey Fugees legend behind Miseducation',
+            'Erica Abi Wright — the Dallas native known as Erykah Badu',
+            'India Arie Simpson — the Denver-born singer behind I Am Not My Hair',
+            'Jill Heather Scott — the Philadelphia poet and neo-soul vocalist',
+          ],
         ],
       },
       {
@@ -853,6 +2361,32 @@ const categories = [
           'Girl group who told the world not to go chasing waterfalls',
           'TV\'s Moesha who also became a Grammy-winning vocalist',
         ],
+        hints: [
+          [
+            'Sultry-voiced star who un-broke our hearts in the \'90s',
+            'Five-octave diva who owns the entire holiday music season',
+            'Girl group who told the world not to go chasing waterfalls',
+            'TV\'s Moesha who also became a Grammy-winning vocalist',
+          ],
+          [
+            'Contralto vocalist whose deep smoky voice defined 90s R&B ballads',
+            'Five-octave vocalist who dominates the airwaves every holiday season',
+            'Girl group from Atlanta whose harmonies warned against chasing waterfalls',
+            'TV star from Moesha who crossed over into Grammy-winning R&B music',
+          ],
+          [
+            'Un-Break My Heart and Breathe Again singer who headlined Las Vegas residencies',
+            'All I Want for Christmas Is You singer with the five-octave whistle register',
+            'Waterfalls and No Scrubs group from Atlanta with three iconic members',
+            'The Boy Is Mine singer who also starred as Moesha on television',
+          ],
+          [
+            'Toni Michele Braxton — the Severn, Maryland vocalist with the signature contralto',
+            'Mariah Angela Carey — the Huntington diva who literally owns Christmas',
+            'TLC — Tionne "T-Boz" Watkins, Lisa "Left Eye" Lopes, and Rozonda "Chilli" Thomas',
+            'Brandy Rayana Norwood — the McComb, Mississippi singer who played Moesha',
+          ],
+        ],
       },
       {
         id: 'rb-10',
@@ -865,6 +2399,32 @@ const categories = [
           'TDE songstress with raw vulnerability and a devoted fanbase',
           'Introverted Atlanta singer with emotional ballads and vibes',
           'Oakland R&B singer blending pop, soul, and raw real talk',
+        ],
+        hints: [
+          [
+            'Mystery artist who hid behind sunglasses and let her guitar talk',
+            'TDE songstress with raw vulnerability and a devoted fanbase',
+            'Introverted Atlanta singer with emotional ballads and vibes',
+            'Oakland R&B singer blending pop, soul, and raw real talk',
+          ],
+          [
+            'Multi-instrumentalist who kept her identity hidden while releasing R&B EPs',
+            'TDE songstress known for raw vulnerability and a devoted cult fanbase',
+            'Introverted Atlanta-based singer who pours raw emotion into every ballad',
+            'Oakland R&B singer who blends pop hooks with soulful storytelling',
+          ],
+          [
+            'Oscar winner for Fight for You who plays guitar, piano, bass, and drums',
+            'Ctrl and S.O.S. singer from TDE whose Kill Bill topped the Hot 100',
+            'Acoustic Soul and Voyage singer who champions natural beauty in her music',
+            'ANTI and Unapologetic singer who built a beauty empire called Fenty',
+          ],
+          [
+            'Gabriella Sarmiento Wilson — the Vallejo, California prodigy known as H.E.R.',
+            'Solána Imani Rowe — the St. Louis-born TDE singer known as SZA',
+            'India Arie Simpson — the Denver-born acoustic soul singer and activist',
+            'Robyn Rihanna Fenty — the Barbadian billionaire behind Fenty Beauty',
+          ],
         ],
       },
     ],
@@ -891,6 +2451,32 @@ const categories = [
           'Fresh Prince who went from Philly rap to Hollywood royalty',
           'Comedian turned Oscar winner who channeled Ray Charles',
         ],
+        hints: [
+          [
+            '44th President who made history and said "Yes We Can"',
+            'Two-time Oscar winner who commands every scene he enters',
+            'Fresh Prince who went from Philly rap to Hollywood royalty',
+            'Comedian turned Oscar winner who channeled Ray Charles',
+          ],
+          [
+            'First African American president who served two terms in the White House',
+            'Dramatic actor who has won two Academy Awards for leading roles',
+            'Rapper turned actor who became one of the biggest box office draws',
+            'Comedian and musician who won an Oscar for portraying a music legend',
+          ],
+          [
+            'Yes We Can president who won the Nobel Peace Prize and signed the Affordable Care Act',
+            'Training Day and Fences actor who won two Oscars over three decades',
+            'Fresh Prince of Bel-Air star who won his Oscar for King Richard in 2022',
+            'Ray and Django Unchained star who won an Oscar for playing Ray Charles',
+          ],
+          [
+            'Barack Hussein Obama II — the 44th President from Honolulu, Hawaii and Chicago, Illinois',
+            'Denzel Hayes Washington Jr. — the Mount Vernon, New York legend with two Academy Awards',
+            'Willard Carroll Smith II — the Fresh Prince from West Philadelphia',
+            'Eric Marlon Bishop — the Terrell, Texas native known as Jamie Foxx',
+          ],
+        ],
       },
       {
         id: 'wl-2',
@@ -903,6 +2489,32 @@ const categories = [
           'South African archbishop who championed peace and forgiveness',
           'Ghanaian diplomat who led the United Nations as Secretary-General',
           'Voice of God narrator who brings gravitas to every role',
+        ],
+        hints: [
+          [
+            'South African leader who spent 27 years in prison for freedom',
+            'South African archbishop who championed peace and forgiveness',
+            'Ghanaian diplomat who led the United Nations as Secretary-General',
+            'Voice of God narrator who brings gravitas to every role',
+          ],
+          [
+            'Anti-apartheid revolutionary who became his country\'s first Black president',
+            'Archbishop who won the Nobel Peace Prize for fighting apartheid through peace',
+            'Ghanaian diplomat who served as the seventh Secretary-General of the United Nations',
+            'Hollywood actor whose deep voice narrated documentaries and prison dramas',
+          ],
+          [
+            'Prisoner 46664 who served 27 years on Robben Island then became South Africa\'s president',
+            'Archbishop who chaired the Truth and Reconciliation Commission after apartheid',
+            'UN Secretary-General from Ghana who won the Nobel Peace Prize for humanitarian work',
+            'Shawshank narrator who played God in Bruce Almighty and drove Miss Daisy',
+          ],
+          [
+            'Nelson Rolihlahla Mandela — Madiba, the first Black president of South Africa',
+            'Desmond Mpilo Tutu — the Archbishop of Cape Town and Nobel Peace laureate',
+            'Kofi Atta Annan — the Ghanaian diplomat who led the United Nations',
+            'Morgan Freeman — the Memphis-born narrator who played Mandela in Invictus',
+          ],
         ],
       },
       {
@@ -917,6 +2529,32 @@ const categories = [
           'Civil rights icon who marched across the Edmund Pettus Bridge',
           'Abolitionist who escaped slavery and wrote his own narrative',
         ],
+        hints: [
+          [
+            'Civil rights leader who had a dream and changed America',
+            'Activist who said "by any means necessary" for Black liberation',
+            'Civil rights icon who marched across the Edmund Pettus Bridge',
+            'Abolitionist who escaped slavery and wrote his own narrative',
+          ],
+          [
+            'Baptist minister who led the movement for racial equality through nonviolence',
+            'Activist who advocated for Black liberation by any means necessary',
+            'Civil rights hero who marched from Selma to Montgomery across a famous bridge',
+            'Former slave who escaped to freedom and became a powerful abolitionist speaker',
+          ],
+          [
+            'I Have a Dream speaker who led the Montgomery Bus Boycott and March on Washington',
+            'By Any Means Necessary activist who founded the Organization of Afro-American Unity',
+            'Selma march leader and congressman who was called the conscience of Congress',
+            'Abolitionist who wrote a famous narrative and advised President Lincoln on slavery',
+          ],
+          [
+            'Martin Luther King Jr. — the Atlanta-born Baptist minister and Nobel Peace Prize laureate',
+            'Malcolm X — born Malcolm Little in Omaha, the Nation of Islam leader',
+            'John Robert Lewis — the Troy, Alabama native who marched across the Edmund Pettus Bridge',
+            'Frederick Douglass — the Talbot County, Maryland abolitionist who escaped slavery',
+          ],
+        ],
       },
       {
         id: 'wl-4',
@@ -929,6 +2567,32 @@ const categories = [
           'People\'s Princess whose life was cut tragically short',
           'Britain\'s first female Prime Minister known as the Iron Lady',
           'Monarch who ruled during the height of the British Empire',
+        ],
+        hints: [
+          [
+            'Longest-reigning British monarch who served for 70 years',
+            'People\'s Princess whose life was cut tragically short',
+            'Britain\'s first female Prime Minister known as the Iron Lady',
+            'Monarch who ruled during the height of the British Empire',
+          ],
+          [
+            'Sovereign who ascended the throne at age 25 and served until age 96',
+            'People\'s Princess who revolutionized the royal family with her warmth',
+            'Britain\'s first female PM who earned the Iron Lady nickname in the 1980s',
+            'Longest-reigning queen who oversaw the golden age of an empire',
+          ],
+          [
+            'Platinum Jubilee monarch who saw 15 British Prime Ministers during her 70-year reign',
+            'Princess of Wales who was tragically killed in a Paris car accident in 1997',
+            'Iron Lady PM who led Britain during the Falklands War and Cold War era',
+            'Queen Victoria who reigned for 63 years during the height of the British Empire',
+          ],
+          [
+            'Elizabeth Alexandra Mary Windsor — Queen Elizabeth II, who reigned from 1952 to 2022',
+            'Diana Frances Spencer — Princess Diana, the People\'s Princess from Sandringham',
+            'Margaret Hilda Thatcher — the Iron Lady who served as PM from 1979 to 1990',
+            'Alexandrina Victoria — Queen Victoria who reigned from 1837 to 1901',
+          ],
         ],
       },
       {
@@ -943,6 +2607,32 @@ const categories = [
           'Founding father who wrote the Declaration of Independence',
           'Rough Rider president who built the Panama Canal',
         ],
+        hints: [
+          [
+            'Top-hat president who preserved the Union and freed the enslaved',
+            'First president and general who could not tell a lie',
+            'Founding father who wrote the Declaration of Independence',
+            'Rough Rider president who built the Panama Canal',
+          ],
+          [
+            'Self-educated lawyer from Kentucky who led the nation through its bloodiest conflict',
+            'Revolutionary War general who became the first president of the new republic',
+            'Founding father and polymath who drafted the nation\'s founding document',
+            'Rough-riding president who built a canal connecting two oceans',
+          ],
+          [
+            'Emancipation Proclamation president who was assassinated at Ford\'s Theatre in 1865',
+            'First president who crossed the Delaware River and led the Continental Army',
+            'Declaration of Independence author who later served as the third president',
+            'Rough Rider who built the Panama Canal and had his face carved on Mount Rushmore',
+          ],
+          [
+            'Abraham Lincoln — the 16th President from a log cabin in Hodgenville, Kentucky',
+            'George Washington — the first President and Commander of the Continental Army',
+            'Thomas Jefferson — the third President and author of the Declaration of Independence',
+            'Theodore Roosevelt — the 26th President and Rough Rider from New York City',
+          ],
+        ],
       },
       {
         id: 'wl-6',
@@ -955,6 +2645,32 @@ const categories = [
           'President who opened relations with China and resigned in scandal',
           'Actor-turned-president who told a wall to come down',
           'Charismatic president who played saxophone on late-night TV',
+        ],
+        hints: [
+          [
+            'Young president who launched the Space Race from Camelot',
+            'President who opened relations with China and resigned in scandal',
+            'Actor-turned-president who told a wall to come down',
+            'Charismatic president who played saxophone on late-night TV',
+          ],
+          [
+            'Youngest elected president who navigated the Cuban Missile Crisis',
+            'President who visited China and later resigned over a political scandal',
+            'Hollywood actor who became president and demanded a wall be torn down',
+            'Charismatic southern governor who played saxophone on The Tonight Show',
+          ],
+          [
+            'Camelot president who was assassinated in Dallas and launched the moon mission',
+            'Watergate president who opened diplomatic relations with China',
+            'Former actor who told Gorbachev to tear down the Berlin Wall',
+            'Arkansas governor who played saxophone on late-night TV and served two terms',
+          ],
+          [
+            'John Fitzgerald Kennedy — the 35th President from Brookline, Massachusetts',
+            'Richard Milhous Nixon — the 37th President who resigned over Watergate',
+            'Ronald Wilson Reagan — the 40th President and former Hollywood actor from Illinois',
+            'William Jefferson Clinton — the 42nd President from Hope, Arkansas',
+          ],
         ],
       },
       {
@@ -969,6 +2685,32 @@ const categories = [
           'Tibetan spiritual leader who advocates for peace in exile',
           'South African hero who spent 27 years imprisoned on an island',
         ],
+        hints: [
+          [
+            'Indian leader who freed a nation through nonviolent resistance',
+            'India\'s first prime minister after independence from Britain',
+            'Tibetan spiritual leader who advocates for peace in exile',
+            'South African hero who spent 27 years imprisoned on an island',
+          ],
+          [
+            'Lawyer turned activist who led a salt march to challenge colonial rule',
+            'India\'s first PM who shaped the new nation after independence from Britain',
+            'Tibetan monk who has lived in exile for decades advocating for peace',
+            'South African freedom fighter who united a nation after decades behind bars',
+          ],
+          [
+            'Salt March leader whose philosophy of nonviolence freed India from British rule',
+            'First Prime Minister who shaped modern India and championed the Non-Aligned Movement',
+            'Tibetan spiritual leader who fled to India in 1959 and won the Nobel Peace Prize',
+            'Robben Island prisoner who became South Africa\'s first democratically elected president',
+          ],
+          [
+            'Mohandas Karamchand Gandhi — the Mahatma, Father of the Indian Nation, from Porbandar',
+            'Jawaharlal Nehru — India\'s first Prime Minister from Allahabad',
+            'Tenzin Gyatso — the 14th Dalai Lama from Taktser, Tibet',
+            'Nelson Rolihlahla Mandela — Madiba, South Africa\'s first Black president',
+          ],
+        ],
       },
       {
         id: 'wl-8',
@@ -981,6 +2723,32 @@ const categories = [
           'Swedish teen who sailed across the ocean to fight climate change',
           'British actress and UN Women goodwill ambassador',
           'Grown-ish star and activist from a beloved TV family dynasty',
+        ],
+        hints: [
+          [
+            'Pakistani activist who survived being shot for defending education',
+            'Swedish teen who sailed across the ocean to fight climate change',
+            'British actress and UN Women goodwill ambassador',
+            'Grown-ish star and activist from a beloved TV family dynasty',
+          ],
+          [
+            'Youngest Nobel Peace Prize laureate who continued her fight from a hospital bed',
+            'Swedish teenager who started a global climate strike movement outside parliament',
+            'British actress who launched the HeForShe campaign at the United Nations',
+            'Young actress and activist who grew up on screen in a beloved sitcom family',
+          ],
+          [
+            'Youngest Nobel laureate who was shot by the Taliban for advocating girls\' education',
+            'Fridays for Future founder who sailed to the UN Climate Summit on a yacht',
+            'Harry Potter actress who gave a famous UN speech launching HeForShe',
+            'Grown-ish and Black-ish star who became a Harvard-bound activist and model',
+          ],
+          [
+            'Malala Yousafzai — the Mingora, Pakistan activist and youngest Nobel Peace Prize winner',
+            'Greta Tintin Eleonora Ernman Thunberg — the Swedish climate activist from Stockholm',
+            'Emma Charlotte Duerre Watson — the Paris-born British actress behind Hermione Granger',
+            'Yara Shahidi — the Minneapolis-born actress and activist from Black-ish',
+          ],
         ],
       },
       {
@@ -995,6 +2763,32 @@ const categories = [
           'Supreme Allied Commander who became America\'s 34th president',
           'French general who led the resistance and rebuilt a republic',
         ],
+        hints: [
+          [
+            'British PM who rallied a nation with blood, toil, tears and sweat',
+            'American president who led the Allies through most of WWII',
+            'Supreme Allied Commander who became America\'s 34th president',
+            'French general who led the resistance and rebuilt a republic',
+          ],
+          [
+            'Wartime leader who inspired Britain through its darkest hour with powerful speeches',
+            'American president who led the nation through the Great Depression and most of WWII',
+            'Supreme Allied Commander on D-Day who later ran the country as president',
+            'French general who led the Free French resistance and later became president',
+          ],
+          [
+            'British PM who led through the Blitz and gave the "We shall fight on the beaches" speech',
+            'American president who served four terms and created the New Deal during the Depression',
+            'D-Day commander who became the 34th president and warned of the military-industrial complex',
+            'French resistance leader who became president and established the Fifth Republic',
+          ],
+          [
+            'Sir Winston Leonard Spencer Churchill — the British PM who led Britain through WWII',
+            'Franklin Delano Roosevelt — the 32nd President who led America through WWII',
+            'Dwight David Eisenhower — the Supreme Allied Commander who became the 34th President',
+            'Charles André Joseph Marie de Gaulle — the French general who led the Free French Forces',
+          ],
+        ],
       },
       {
         id: 'wl-10',
@@ -1007,6 +2801,32 @@ const categories = [
           'British PM who navigated the turbulence of Brexit',
           'Former Secretary of State who ran for the highest office',
           'French economist who became head of the European Central Bank',
+        ],
+        hints: [
+          [
+            'German chancellor who led Europe for 16 years with quiet resolve',
+            'British PM who navigated the turbulence of Brexit',
+            'Former Secretary of State who ran for the highest office',
+            'French economist who became head of the European Central Bank',
+          ],
+          [
+            'Physicist-turned-politician who became Europe\'s most powerful leader for a decade',
+            'British PM who called the Brexit referendum and then resigned from office',
+            'Former Secretary of State and senator who ran for president twice',
+            'French economist who led the European Central Bank through the debt crisis',
+          ],
+          [
+            'German chancellor who served four terms and was called the leader of the free world',
+            'British PM who triggered Article 50 and negotiated Britain\'s exit from the EU',
+            'Secretary of State and former First Lady who lost the 2016 presidential race',
+            'French IMF head who became the first woman to lead the European Central Bank',
+          ],
+          [
+            'Angela Dorothea Merkel — the Hamburg-born physicist who served as German Chancellor for 16 years',
+            'Theresa Mary May — the Eastbourne-born PM who navigated Brexit negotiations',
+            'Hillary Diane Rodham Clinton — the Chicago-born Secretary of State and senator',
+            'Christine Madeleine Odette Lagarde — the Paris-born economist who leads the ECB',
+          ],
         ],
       },
     ],
@@ -1033,6 +2853,32 @@ const categories = [
           'Harvard dropout who connected the world through a social network',
           'Philanthropist who built the world\'s biggest software company',
         ],
+        hints: [
+          [
+            'Rocket-launching CEO who also bought a social media platform',
+            'Bald billionaire who built an everything-store empire online',
+            'Harvard dropout who connected the world through a social network',
+            'Philanthropist who built the world\'s biggest software company',
+          ],
+          [
+            'South African-born CEO who runs a rocket company and an electric car empire',
+            'Bald billionaire who flew to space on his own rocket ship',
+            'Hoodie-wearing CEO who rebranded his social network to Meta',
+            'Soft-spoken philanthropist who eradicated diseases around the globe',
+          ],
+          [
+            'CEO of Tesla and SpaceX who renamed Twitter to X and launched Starlink satellites',
+            'Former Amazon CEO who bought the Washington Post and flew on Blue Origin',
+            'Meta CEO who built the Metaverse and wears the same gray t-shirt every day',
+            'Microsoft co-founder who pledged to give away his entire fortune through his foundation',
+          ],
+          [
+            'Elon Reeve Musk — the Pretoria-born CEO of Tesla, SpaceX, and xAI',
+            'Jeffrey Preston Bezos — the Albuquerque-born founder of Amazon and Blue Origin',
+            'Mark Elliot Zuckerberg — the White Plains-born founder of Facebook and Meta',
+            'William Henry Gates III — the Seattle-born co-founder of Microsoft',
+          ],
+        ],
       },
       {
         id: 'tt-2',
@@ -1045,6 +2891,32 @@ const categories = [
           'Rocket-launching CEO who also bought a social media platform',
           'Co-founder of a search engine that became a verb',
           'Soft-spoken CEO running the world\'s most valuable tech company',
+        ],
+        hints: [
+          [
+            'Bald billionaire who built an everything-store from a garage',
+            'Rocket-launching CEO who also bought a social media platform',
+            'Co-founder of a search engine that became a verb',
+            'Soft-spoken CEO running the world\'s most valuable tech company',
+          ],
+          [
+            'Online retail king who turned a bookstore startup into the world\'s biggest marketplace',
+            'South African-born CEO who runs both a rocket company and an electric car brand',
+            'Stanford PhD dropout who co-created the world\'s dominant search engine',
+            'Alabama-born operations guru who quietly runs the most valuable tech company',
+          ],
+          [
+            'Founder of Amazon and Blue Origin who bought the Washington Post and flew to space',
+            'CEO of Tesla and SpaceX who renamed Twitter to X and launched Starlink',
+            'Co-founder of Google who also co-created the self-driving car project Waymo',
+            'Apple CEO who doubled the company\'s value and championed privacy as a right',
+          ],
+          [
+            'Jeffrey Preston Bezos — the Albuquerque-born founder of Amazon who flew to space on Blue Origin',
+            'Elon Reeve Musk — the Pretoria-born CEO of Tesla, SpaceX, and xAI',
+            'Lawrence Edward Page — the Michigan-born co-founder of Google and Alphabet',
+            'Timothy Donald Cook — the Mobile-born CEO who succeeded Steve Jobs at Apple',
+          ],
         ],
       },
       {
@@ -1059,6 +2931,32 @@ const categories = [
           'Harvard dropout who connected the world through a social network',
           'His co-founder at Microsoft who later became a sports team owner',
         ],
+        hints: [
+          [
+            'Philanthropist who put a PC on every desk and Windows on every screen',
+            'Turtleneck visionary who built the most beloved tech brand ever',
+            'Harvard dropout who connected the world through a social network',
+            'His co-founder at Microsoft who later became a sports team owner',
+          ],
+          [
+            'Glasses-wearing philanthropist who shifted from software mogul to global health crusader',
+            'Black-turtleneck visionary who revolutionized phones, music, and computers',
+            'Hoodie-wearing CEO who rebranded his social network and pivoted to virtual reality',
+            'Microsoft co-founder who later owned the Portland Trail Blazers and Seattle Seahawks',
+          ],
+          [
+            'Microsoft co-founder who became the world\'s richest person and launched a global health foundation',
+            'Apple co-founder who launched the iPod, iPhone, and iPad before passing away in 2011',
+            'Facebook founder who dropped out of Harvard and later rebranded the company to Meta',
+            'Paul Allen — Microsoft co-founder who invested in sports teams and brain science research',
+          ],
+          [
+            'William Henry Gates III — the Seattle-born Microsoft co-founder and global health philanthropist',
+            'Steven Paul Jobs — the San Francisco-born Apple co-founder who changed personal computing forever',
+            'Mark Elliot Zuckerberg — the White Plains-born founder of Facebook turned Meta',
+            'Paul Gardner Allen — the Seattle-born Microsoft co-founder and Seahawks owner',
+          ],
+        ],
       },
       {
         id: 'tt-4',
@@ -1071,6 +2969,32 @@ const categories = [
           'CEO who built a short-form messaging platform with a blue bird',
           'Stanford kid who built a disappearing photo app worth billions',
           'Photo-sharing app creator who sold to a social media giant',
+        ],
+        hints: [
+          [
+            'Harvard dropout who connected 3 billion people on one platform',
+            'CEO who built a short-form messaging platform with a blue bird',
+            'Stanford kid who built a disappearing photo app worth billions',
+            'Photo-sharing app creator who sold to a social media giant',
+          ],
+          [
+            'Hoodie-wearing CEO who rebranded his social network to Meta and pivoted to VR',
+            'CEO who co-founded a 140-character messaging platform that changed how news breaks',
+            'Stanford fraternity kid who built Snapchat and pioneered disappearing stories',
+            'Brazilian-American entrepreneur who co-founded Instagram and sold it for a billion dollars',
+          ],
+          [
+            'Facebook founder who testified before Congress and launched the Metaverse initiative',
+            'Twitter co-founder who also created Square for mobile payments',
+            'Snapchat CEO Evan Spiegel who turned down a multi-billion dollar offer from Facebook',
+            'Instagram co-founder Kevin Systrom who sold to Facebook and later left the company',
+          ],
+          [
+            'Mark Elliot Zuckerberg — the White Plains-born Harvard dropout who founded Facebook and Meta',
+            'Jack Patrick Dorsey — the St. Louis-born co-founder of Twitter and Square',
+            'Evan Thomas Spiegel — the Los Angeles-born co-founder and CEO of Snap Inc.',
+            'Kevin Systrom — the Holliston-born co-founder of Instagram',
+          ],
         ],
       },
       {
@@ -1085,6 +3009,32 @@ const categories = [
           'Soft-spoken CEO who took over after the visionary passed away',
           'British designer who shaped every curve of the iPhone and iMac',
         ],
+        hints: [
+          [
+            'Turtleneck visionary who put a thousand songs in your pocket',
+            'Philanthropist who put Windows on every screen in the world',
+            'Soft-spoken CEO who took over after the visionary passed away',
+            'British designer who shaped every curve of the iPhone and iMac',
+          ],
+          [
+            'Black-turtleneck icon who revolutionized phones, music, and personal computing',
+            'Glasses-wearing philanthropist who shifted from software mogul to global health crusader',
+            'Alabama-born operations guru who took over the world\'s most valuable tech company',
+            'British industrial designer who crafted the look of every Apple product for two decades',
+          ],
+          [
+            'Apple co-founder who launched the iPod, iPhone, and iPad and gave legendary keynote presentations',
+            'Microsoft co-founder who became the world\'s richest person and launched a global health foundation',
+            'Apple CEO Tim Cook who doubled the company\'s value after taking over in 2011',
+            'Jony Ive — the London-born designer behind the iMac, iPod, iPhone, and iPad designs',
+          ],
+          [
+            'Steven Paul Jobs — the San Francisco-born Apple co-founder who changed computing, music, and phones forever',
+            'William Henry Gates III — the Seattle-born Microsoft co-founder and philanthropist',
+            'Timothy Donald Cook — the Mobile, Alabama-born CEO who succeeded Jobs at Apple',
+            'Jonathan Paul Ive — the London-born Chief Design Officer behind Apple\'s iconic products',
+          ],
+        ],
       },
       {
         id: 'tt-6',
@@ -1097,6 +3047,32 @@ const categories = [
           'Turtleneck visionary who put a thousand songs in your pocket',
           'Indian-born CEO running the world\'s biggest search company',
           'Indian-born CEO who transformed a software giant with cloud computing',
+        ],
+        hints: [
+          [
+            'Soft-spoken CEO who made the world\'s most valuable company even bigger',
+            'Turtleneck visionary who put a thousand songs in your pocket',
+            'Indian-born CEO running the world\'s biggest search company',
+            'Indian-born CEO who transformed a software giant with cloud computing',
+          ],
+          [
+            'Alabama-born operations expert who quietly doubled Apple\'s market value',
+            'Black-turtleneck icon who launched the iPod, iPhone, and iPad',
+            'Indian-born CEO who leads Google and oversees YouTube and Android',
+            'Indian-born CEO who transformed Microsoft from Windows-first to cloud-first',
+          ],
+          [
+            'Apple CEO who championed user privacy and led the company past a three-trillion-dollar valuation',
+            'Apple co-founder who introduced the Macintosh, iPod, and iPhone to the world',
+            'Sundar Pichai — Google CEO who launched Chrome browser and expanded into AI',
+            'Satya Nadella — Microsoft CEO who acquired LinkedIn and GitHub and partnered with OpenAI',
+          ],
+          [
+            'Timothy Donald Cook — the Mobile, Alabama-born CEO who succeeded Steve Jobs at Apple in 2011',
+            'Steven Paul Jobs — the San Francisco-born Apple co-founder who passed away in 2011',
+            'Pichai Sundararajan — the Madurai-born CEO of Google and Alphabet',
+            'Satya Narayana Nadella — the Hyderabad-born CEO who revitalized Microsoft',
+          ],
         ],
       },
       {
@@ -1111,6 +3087,32 @@ const categories = [
           'Soft-spoken CEO who took Apple to even greater heights',
           'Co-founder of a search engine that became a household verb',
         ],
+        hints: [
+          [
+            'Indian-born CEO running the company behind the world\'s top search engine',
+            'Indian-born CEO who transformed a software giant with cloud computing',
+            'Soft-spoken CEO who took Apple to even greater heights',
+            'Co-founder of a search engine that became a household verb',
+          ],
+          [
+            'Chennai-raised CEO who oversees search, Android, YouTube, and Chrome',
+            'Hyderabad-raised CEO who pivoted a legacy software company to the cloud',
+            'Alabama-born operations guru who quietly runs the most valuable tech company',
+            'Stanford PhD dropout who co-created the world\'s dominant search engine with a classmate',
+          ],
+          [
+            'Google and Alphabet CEO who launched Chrome browser and led the company into AI with Gemini',
+            'Microsoft CEO Satya Nadella who acquired GitHub, LinkedIn, and partnered with OpenAI',
+            'Apple CEO Tim Cook who doubled the company\'s value and championed user privacy',
+            'Larry Page — Stanford PhD dropout who co-founded Google with Sergey Brin',
+          ],
+          [
+            'Pichai Sundararajan — the Madurai-born CEO of Google and Alphabet who rose from product manager to chief',
+            'Satya Narayana Nadella — the Hyderabad-born CEO who transformed Microsoft with Azure and AI',
+            'Timothy Donald Cook — the Mobile-born CEO who succeeded Steve Jobs at Apple',
+            'Lawrence Edward Page — the Michigan-born co-founder of Google and Alphabet',
+          ],
+        ],
       },
       {
         id: 'tt-8',
@@ -1123,6 +3125,32 @@ const categories = [
           'CEO who turned a chip underdog into a competitor overnight',
           'Intel CEO who tried to catch up to the AI chip leaders',
           'Indian-born CEO who transformed Microsoft with cloud and AI',
+        ],
+        hints: [
+          [
+            'Leather-jacket CEO whose GPU chips power the entire AI revolution',
+            'CEO who turned a chip underdog into a competitor overnight',
+            'Intel CEO who tried to catch up to the AI chip leaders',
+            'Indian-born CEO who transformed Microsoft with cloud and AI',
+          ],
+          [
+            'Leather-jacket-wearing CEO whose graphics chips became the backbone of AI training',
+            'AMD CEO who turned a struggling chipmaker into a serious rival for the GPU throne',
+            'Intel CEO Pat Gelsinger who tried to revive the chip giant with new factories',
+            'Hyderabad-raised CEO who pivoted Microsoft from Windows-first to cloud-first',
+          ],
+          [
+            'NVIDIA CEO who co-founded the company in a Denny\'s and built it into an AI chip empire worth trillions',
+            'AMD CEO Lisa Su who engineered a dramatic turnaround with Ryzen and EPYC processors',
+            'Intel CEO who returned to the company and launched an ambitious foundry strategy',
+            'Microsoft CEO Satya Nadella who acquired GitHub, LinkedIn, and partnered with OpenAI',
+          ],
+          [
+            'Jen-Hsun Huang — the Tainan-born co-founder and CEO of NVIDIA who built the AI chip empire',
+            'Lisa Tzwu-Fang Su — the Tainan-born CEO who turned AMD into a chip powerhouse',
+            'Patrick Paul Gelsinger — the Pennsylvania-born CEO who returned to lead Intel',
+            'Satya Narayana Nadella — the Hyderabad-born CEO who transformed Microsoft',
+          ],
         ],
       },
       {
@@ -1137,6 +3165,32 @@ const categories = [
           'Soft-spoken CEO who took Apple to record-breaking valuations',
           'Former AWS exec who took over the everything-store empire',
         ],
+        hints: [
+          [
+            'Indian-born CEO who revived Microsoft with cloud computing and AI',
+            'Indian-born CEO running the world\'s biggest search company',
+            'Soft-spoken CEO who took Apple to record-breaking valuations',
+            'Former AWS exec who took over the everything-store empire',
+          ],
+          [
+            'Hyderabad-raised CEO who pivoted Microsoft from Windows-first to cloud-first',
+            'Chennai-raised CEO who oversees Google, YouTube, Android, and Chrome',
+            'Alabama-born operations guru who doubled Apple\'s market value after taking over',
+            'Former AWS chief Andy Jassy who became the second-ever CEO of Amazon',
+          ],
+          [
+            'Microsoft CEO who acquired GitHub and LinkedIn and invested billions in OpenAI for an AI partnership',
+            'Google CEO Sundar Pichai who launched Gemini and expanded into AI across all products',
+            'Apple CEO Tim Cook who championed privacy and led the company past three trillion dollars',
+            'Amazon CEO Andy Jassy who built AWS into the world\'s biggest cloud platform before taking the top job',
+          ],
+          [
+            'Satya Narayana Nadella — the Hyderabad-born CEO who transformed Microsoft with Azure, Teams, and AI',
+            'Pichai Sundararajan — the Madurai-born CEO of Google and Alphabet',
+            'Timothy Donald Cook — the Mobile-born CEO who succeeded Steve Jobs at Apple',
+            'Andrew Robert Jassy — the Scarsdale-born CEO who succeeded Jeff Bezos at Amazon',
+          ],
+        ],
       },
       {
         id: 'tt-10',
@@ -1149,6 +3203,32 @@ const categories = [
           'Leather-jacket CEO whose GPU chips power the AI revolution',
           'Facebook COO who told women to lean in at work',
           'YouTube CEO who shaped how the world watches video online',
+        ],
+        hints: [
+          [
+            'CEO who turned a struggling chip company into a powerhouse',
+            'Leather-jacket CEO whose GPU chips power the AI revolution',
+            'Facebook COO who told women to lean in at work',
+            'YouTube CEO who shaped how the world watches video online',
+          ],
+          [
+            'Taiwanese-American CEO who engineered a dramatic turnaround at a struggling chipmaker',
+            'Leather-jacket-wearing CEO whose graphics chips power every major AI model',
+            'Facebook and Meta COO who wrote the bestselling book Lean In',
+            'YouTube CEO Susan Wojcicki who grew the platform to over two billion users',
+          ],
+          [
+            'AMD CEO who launched Ryzen and EPYC processors and turned the company profitable again',
+            'NVIDIA CEO Jensen Huang who co-founded the company in a Denny\'s and built an AI empire',
+            'Sheryl Sandberg — Meta COO who scaled Facebook\'s advertising business to billions',
+            'Susan Wojcicki — longtime YouTube CEO who helped build Google from a garage startup',
+          ],
+          [
+            'Lisa Tzwu-Fang Su — the Tainan-born CEO who transformed AMD into a chip industry powerhouse',
+            'Jen-Hsun Huang — the Tainan-born CEO and co-founder of NVIDIA',
+            'Sheryl Kara Sandberg — the Washington D.C.-born COO of Facebook and Meta',
+            'Susan Diane Wojcicki — the Santa Clara-born CEO of YouTube and early Google employee',
+          ],
         ],
       },
     ],
@@ -1175,6 +3255,32 @@ const categories = [
           'Green Bay gunslinger with the most MVP awards among QBs',
           'Young Chiefs QB with a cannon arm and a famous girlfriend',
         ],
+        hints: [
+          [
+            '7-ring quarterback who won more Super Bowls than any franchise',
+            'Sheriff of the NFL who set every passing record in Indianapolis',
+            'Green Bay gunslinger with the most MVP awards among QBs',
+            'Young Chiefs QB with a cannon arm and a famous girlfriend',
+          ],
+          [
+            'Legendary QB who left New England after 20 years and won a ring in Tampa Bay',
+            'Indianapolis and Denver QB who won two Super Bowls and retired as the passing king',
+            'Legendary Green Bay and Minnesota QB known for his gunslinger style and iron man streak',
+            'Kansas City QB who won back-to-back Super Bowls and is dating a pop superstar',
+          ],
+          [
+            'Patriots and Buccaneers QB who won 7 Super Bowls and 3 MVPs before retiring at 45',
+            'Peyton Manning — two-time Super Bowl champion who set the single-season TD record',
+            'Brett Favre — three-time consecutive MVP and NFL\'s iron man at quarterback',
+            'Patrick Mahomes — Chiefs QB who won Super Bowl MVP twice before turning 30',
+          ],
+          [
+            'Thomas Edward Patrick Brady Jr. — the San Mateo-born QB who won 7 Super Bowls with the Patriots and Buccaneers',
+            'Peyton Williams Manning — the New Orleans-born QB who won Super Bowls with the Colts and Broncos',
+            'Brett Lorenzo Favre — the Gulfport-born QB who played 297 consecutive games',
+            'Patrick Lavon Mahomes II — the Tyler, Texas-born Chiefs QB with back-to-back rings',
+          ],
+        ],
       },
       {
         id: 'sg-2',
@@ -1187,6 +3293,32 @@ const categories = [
           'American sprinter who dominated the \'80s and \'90s Olympics',
           'American sprinter who was once the second-fastest man alive',
           'American sprinter who pushed the fastest man in every race',
+        ],
+        hints: [
+          [
+            'Jamaican lightning bolt — fastest human to ever live',
+            'American sprinter who dominated the \'80s and \'90s Olympics',
+            'American sprinter who was once the second-fastest man alive',
+            'American sprinter who pushed the fastest man in every race',
+          ],
+          [
+            'Towering Jamaican sprinter who celebrated before crossing the finish line in Beijing',
+            'American sprinter Carl Lewis who won 9 Olympic golds across four Games',
+            'American sprinter Tyson Gay who held the U.S. 100m record for years',
+            'American sprinter Justin Gatlin who rivaled the fastest man at every championship',
+          ],
+          [
+            'Jamaican sprinter who set the 100m world record at 9.58 seconds and won 8 Olympic golds',
+            'Carl Lewis — American track legend who won 4 consecutive Olympic long jump golds',
+            'Tyson Gay — American sprinter who ran 9.69 seconds in the 100m in 2009',
+            'Justin Gatlin — American sprinter who won Olympic gold in 2004 and rivaled Bolt for years',
+          ],
+          [
+            'Usain St. Leo Bolt — the Trelawny-born Jamaican who ran 9.58 in the 100m and 19.19 in the 200m',
+            'Frederick Carlton Lewis — the Birmingham-born sprinter with 9 Olympic golds',
+            'Tyson Gaylord Gay — the Lexington-born sprinter who was once America\'s fastest man',
+            'Justin Alexander Gatlin — the Brooklyn-born sprinter who won 2004 Olympic 100m gold',
+          ],
         ],
       },
       {
@@ -1201,6 +3333,32 @@ const categories = [
           'Brazilian flair player who dazzled but never won the big one',
           'French teen who became the youngest World Cup star since Pelé',
         ],
+        hints: [
+          [
+            'Argentine wizard who finally lifted the World Cup in Qatar',
+            'Portuguese goal machine with the most Champions League goals',
+            'Brazilian flair player who dazzled but never won the big one',
+            'French teen who became the youngest World Cup star since Pelé',
+          ],
+          [
+            'Diminutive Argentine dribbler who spent most of his career at Barcelona before moving to Miami',
+            'Portuguese forward who scored over 800 career goals and won five Ballon d\'Or awards',
+            'Brazilian forward Neymar who dazzled at Barcelona alongside the Argentine wizard',
+            'French forward who scored a hat trick in the 2022 World Cup final at just 23 years old',
+          ],
+          [
+            'Barcelona and Inter Miami legend who won 8 Ballon d\'Or awards and the 2022 World Cup with Argentina',
+            'Cristiano Ronaldo — Real Madrid legend who won 5 Champions League titles and 5 Ballon d\'Or awards',
+            'Neymar da Silva Santos Jr. — Brazilian superstar who played alongside Messi at Barcelona',
+            'Kylian Mbappé — French forward who scored 4 goals in the 2022 World Cup final match',
+          ],
+          [
+            'Lionel Andrés Messi — the Rosario-born Argentine who won 8 Ballon d\'Or awards and the 2022 World Cup',
+            'Cristiano Ronaldo dos Santos Aveiro — the Funchal-born Portuguese with over 800 career goals',
+            'Neymar da Silva Santos Júnior — the Mogi das Cruzes-born Brazilian forward',
+            'Kylian Mbappé Lottin — the Paris-born French striker who joined Real Madrid',
+          ],
+        ],
       },
       {
         id: 'sg-4',
@@ -1213,6 +3371,32 @@ const categories = [
           'Iron fist heavyweight who was the baddest man on the planet',
           'Undefeated boxer who never lost in 50 professional fights',
           'Smokin\' heavyweight who battled The Greatest in a trilogy',
+        ],
+        hints: [
+          [
+            'The Greatest — floated like a butterfly, stung like a bee',
+            'Iron fist heavyweight who was the baddest man on the planet',
+            'Undefeated boxer who never lost in 50 professional fights',
+            'Smokin\' heavyweight who battled The Greatest in a trilogy',
+          ],
+          [
+            'Heavyweight champion who refused to fight in Vietnam and had his title stripped',
+            'Youngest heavyweight champion ever who was feared for his devastating knockouts',
+            'Undefeated welterweight who retired 50-0 and was known as Money for his flashy lifestyle',
+            'Smokin\' Joe — heavyweight rival who fought the greatest boxer in the Thrilla in Manila',
+          ],
+          [
+            'Three-time heavyweight champion who lit the Olympic cauldron in Atlanta 1996 with shaking hands',
+            'Mike Tyson — youngest heavyweight champion at 20 who knocked out opponents in the first round',
+            'Floyd Mayweather Jr. — undefeated boxer who beat Pacquiao in the Fight of the Century',
+            'Joe Frazier — heavyweight who handed The Greatest his first defeat in the Fight of the Century',
+          ],
+          [
+            'Muhammad Ali — born Cassius Marcellus Clay Jr. in Louisville, the three-time heavyweight champion',
+            'Michael Gerard Tyson — the Brooklyn-born Iron Mike who became champion at age 20',
+            'Floyd Joy Mayweather Jr. — the Grand Rapids-born undefeated champion who retired 50-0',
+            'Joseph William Frazier — the Beaufort-born Smokin\' Joe who fought Ali three times',
+          ],
         ],
       },
       {
@@ -1227,6 +3411,32 @@ const categories = [
           'Lefty golfer famous for his short game and epic rivalries',
           'Golf legend known as The King who made the sport popular',
         ],
+        hints: [
+          [
+            'Golf legend who won 15 majors and made Sunday red iconic',
+            'The Golden Bear with the most major championship wins ever',
+            'Lefty golfer famous for his short game and epic rivalries',
+            'Golf legend known as The King who made the sport popular',
+          ],
+          [
+            'Dominant golfer who won the Masters five times and made a comeback after major injuries',
+            'The Golden Bear who won 18 major championships — the all-time record in golf',
+            'Left-handed golfer Phil Mickelson who won 6 majors and rivaled the top player for years',
+            'Arnold Palmer — The King who popularized golf on television in the 1960s',
+          ],
+          [
+            'Golfer who won 15 majors, completed the Tiger Slam, and made a legendary comeback at the 2019 Masters',
+            'Jack Nicklaus — The Golden Bear who holds the record with 18 major championship victories',
+            'Phil Mickelson — Lefty who won 3 Masters and became the oldest major winner at the 2021 PGA',
+            'Arnold Palmer — The King whose rivalry with Nicklaus defined golf\'s golden age',
+          ],
+          [
+            'Eldrick Tont Woods — the Cypress-born golfer who won 15 majors and 82 PGA Tour events',
+            'Jack William Nicklaus — the Columbus-born Golden Bear with 18 major championships',
+            'Philip Alfred Mickelson — the San Diego-born Lefty with 6 major championship wins',
+            'Arnold Daniel Palmer — the Latrobe-born King who transformed golf into a spectator sport',
+          ],
+        ],
       },
       {
         id: 'sg-6',
@@ -1239,6 +3449,32 @@ const categories = [
           'Argentine wizard who dribbles through defenses like no one else',
           'Brazilian flair player who dazzled with tricks and skill',
           'Swedish striker who scored impossible bicycle kicks for fun',
+        ],
+        hints: [
+          [
+            'Portuguese goal machine who celebrates with a signature jump',
+            'Argentine wizard who dribbles through defenses like no one else',
+            'Brazilian flair player who dazzled with tricks and skill',
+            'Swedish striker who scored impossible bicycle kicks for fun',
+          ],
+          [
+            'Portuguese forward who left Real Madrid as their all-time top scorer',
+            'Diminutive Argentine who spent most of his career at Barcelona before moving to Miami',
+            'Brazilian superstar Neymar who played at Barcelona and PSG with flair and skill',
+            'Zlatan Ibrahimovic — towering Swedish striker known for acrobatic goals and massive ego',
+          ],
+          [
+            'Five-time Ballon d\'Or winner who scored over 800 goals for Sporting, Man United, Real Madrid, and Juventus',
+            'Lionel Messi — eight-time Ballon d\'Or winner who won the 2022 World Cup with Argentina',
+            'Neymar Jr. — Brazilian forward who transferred from Barcelona to PSG for a record 222 million euros',
+            'Zlatan Ibrahimovic — Swedish striker who played for Ajax, Inter, Barcelona, PSG, and AC Milan',
+          ],
+          [
+            'Cristiano Ronaldo dos Santos Aveiro — the Funchal-born Portuguese with 5 Champions League titles',
+            'Lionel Andrés Messi — the Rosario-born Argentine legend with 8 Ballon d\'Or awards',
+            'Neymar da Silva Santos Júnior — the Mogi das Cruzes-born Brazilian superstar',
+            'Zlatan Ibrahimović — the Malmö-born Swedish striker who played for 10 clubs across Europe',
+          ],
         ],
       },
       {
@@ -1253,6 +3489,32 @@ const categories = [
           'Canadian hockey phenom who is the best player of his era',
           'Legendary defenseman who changed how hockey is played',
         ],
+        hints: [
+          [
+            'The Great One — hockey\'s all-time points leader by a mile',
+            'Magnificent hockey center who rivaled The Great One in skill',
+            'Canadian hockey phenom who is the best player of his era',
+            'Legendary defenseman who changed how hockey is played',
+          ],
+          [
+            'Canadian hockey legend who scored over 2,800 points and made the Oilers and Kings iconic',
+            'Mario Lemieux — Pittsburgh Penguins center known as The Magnificent One',
+            'Sidney Crosby — Pittsburgh Penguins captain known as Sid the Kid with 3 Stanley Cups',
+            'Bobby Orr — Boston Bruins defenseman who revolutionized the position with his skating',
+          ],
+          [
+            'Edmonton and LA hockey legend who holds 61 NHL records including 894 career goals and 2,857 points',
+            'Mario Lemieux — Penguins legend who won 2 Stanley Cups and scored 690 career goals',
+            'Sidney Crosby — Penguins captain who won 3 Stanley Cups and 2 Olympic golds for Canada',
+            'Bobby Orr — Bruins legend who won 8 consecutive Norris Trophies as best defenseman',
+          ],
+          [
+            'Wayne Douglas Gretzky — the Brantford-born Great One who scored 2,857 career points in the NHL',
+            'Mario Lemieux — the Montreal-born Magnificent One who led the Penguins to 2 Stanley Cups',
+            'Sidney Patrick Crosby — the Cole Harbour-born Penguins captain with 3 Stanley Cup rings',
+            'Robert Gordon Orr — the Parry Sound-born Bruins defenseman who changed hockey forever',
+          ],
+        ],
       },
       {
         id: 'sg-8',
@@ -1265,6 +3527,32 @@ const categories = [
           'American swimmer who was always chasing the golden champion',
           'Swimmer with 7 golds in 1972 before a greater champion arrived',
           'Australian swimmer known as Thorpedo who dominated freestyle',
+        ],
+        hints: [
+          [
+            'Most decorated Olympian ever with 23 gold medals in the pool',
+            'American swimmer who was always chasing the golden champion',
+            'Swimmer with 7 golds in 1972 before a greater champion arrived',
+            'Australian swimmer known as Thorpedo who dominated freestyle',
+          ],
+          [
+            'American swimmer who dominated the butterfly and medley events across five Olympic Games',
+            'American swimmer Ryan Lochte who was always the second-best behind the greatest swimmer',
+            'Mark Spitz — swimmer who won 7 golds at the 1972 Munich Olympics with his iconic mustache',
+            'Ian Thorpe — Australian freestyle swimmer known as Thorpedo who won 5 Olympic golds',
+          ],
+          [
+            'Swimmer who won 23 Olympic golds across Athens, Beijing, London, and Rio — more than any Olympian ever',
+            'Ryan Lochte — American swimmer who won 12 Olympic medals in backstroke and medley events',
+            'Mark Spitz — American swimmer whose record of 7 golds in one Olympics stood for 36 years',
+            'Ian Thorpe — Australian swimmer who won 5 Olympic golds and set world records in freestyle',
+          ],
+          [
+            'Michael Fred Phelps II — the Baltimore-born swimmer who won 28 Olympic medals including 23 golds',
+            'Ryan Steven Lochte — the Rochester-born swimmer who won 12 Olympic medals',
+            'Mark Andrew Spitz — the Modesto-born swimmer who won 7 golds at the 1972 Munich Olympics',
+            'Ian James Thorpe — the Sydney-born Thorpedo who won 5 Olympic gold medals in freestyle',
+          ],
         ],
       },
       {
@@ -1279,6 +3567,32 @@ const categories = [
           '7-ring GOAT quarterback who dominated for two decades',
           'Dynamic Ravens QB who runs and throws like no one else',
         ],
+        hints: [
+          [
+            'Young Chiefs QB with a cannon arm and back-to-back rings',
+            'Bills QB with a rocket arm chasing his first championship',
+            '7-ring GOAT quarterback who dominated for two decades',
+            'Dynamic Ravens QB who runs and throws like no one else',
+          ],
+          [
+            'Kansas City QB who won back-to-back Super Bowls and is dating a pop superstar',
+            'Buffalo Bills QB Josh Allen known for his rocket arm and hurdling defenders',
+            'Tom Brady — Patriots and Buccaneers legend who won 7 Super Bowls before retiring',
+            'Lamar Jackson — Ravens dual-threat QB who won back-to-back MVP awards',
+          ],
+          [
+            'Chiefs QB who won Super Bowl MVP twice and threw a no-look pass that went viral',
+            'Josh Allen — Bills QB with the strongest arm in football who led Buffalo to the playoffs repeatedly',
+            'Tom Brady — 7-time Super Bowl champion who played until age 45 and retired as the GOAT',
+            'Lamar Jackson — Ravens QB who won unanimous MVP in 2019 with his elite rushing and passing',
+          ],
+          [
+            'Patrick Lavon Mahomes II — the Tyler, Texas-born Chiefs QB with back-to-back Super Bowl rings',
+            'Joshua Patrick Allen — the Firebaugh-born Bills QB chasing his first championship',
+            'Thomas Edward Patrick Brady Jr. — the San Mateo-born 7-time Super Bowl champion',
+            'Lamar Demeatrice Jackson Jr. — the Pompano Beach-born Ravens QB with 2 MVP awards',
+          ],
+        ],
       },
       {
         id: 'sg-10',
@@ -1291,6 +3605,32 @@ const categories = [
           'Flo-Jo — fastest woman ever with those iconic one-legged suits',
           'Jamaican sprint queen who dominated the 100m for a decade',
           'Most decorated female track athlete in Olympic history',
+        ],
+        hints: [
+          [
+            'Fastest woman in America who runs with long nails and flair',
+            'Flo-Jo — fastest woman ever with those iconic one-legged suits',
+            'Jamaican sprint queen who dominated the 100m for a decade',
+            'Most decorated female track athlete in Olympic history',
+          ],
+          [
+            'Fiery American sprinter known for her long colorful nails and bold hair on the track',
+            'Florence Griffith Joyner — Flo-Jo who set the 100m and 200m world records in 1988',
+            'Shelly-Ann Fraser-Pryce — Jamaican Pocket Rocket who won 3 Olympic 100m medals',
+            'Allyson Felix — most decorated American track and field Olympian in history',
+          ],
+          [
+            'American sprinter who won the 100m at the 2023 World Championships and the 2024 Paris Olympics',
+            'Flo-Jo — set the 100m world record of 10.49 seconds that still stands decades later',
+            'Shelly-Ann Fraser-Pryce — Jamaican sprint queen who won Olympic 100m gold in 2008 and 2012',
+            'Allyson Felix — American sprinter who won 11 Olympic medals across five Games',
+          ],
+          [
+            'Sha\'Carri Richardson — the Dallas-born sprinter who won Olympic 100m gold in Paris 2024',
+            'Florence Delorez Griffith Joyner — the Los Angeles-born Flo-Jo who set unbreakable sprint records',
+            'Shelly-Ann Fraser-Pryce — the Kingston-born Pocket Rocket with 3 Olympic 100m medals',
+            'Allyson Michelle Felix — the Los Angeles-born sprinter with 11 Olympic medals',
+          ],
         ],
       },
     ],
@@ -1317,6 +3657,32 @@ const categories = [
           'Mexican actor who played a rebel spy in a galaxy far away',
           'Spanish actor known for intense roles and a chilling villain',
         ],
+        hints: [
+          [
+            'Mandalorian dad who never takes off his helmet on screen',
+            'Guatemalan-American actor who played a Marvel moon knight',
+            'Mexican actor who played a rebel spy in a galaxy far away',
+            'Spanish actor known for intense roles and a chilling villain',
+          ],
+          [
+            'Chilean-American actor who protects a child across a fungal apocalypse on HBO',
+            'Oscar Isaac — Guatemalan-American actor who played Moon Knight and a Star Wars pilot',
+            'Diego Luna — Mexican actor who played Cassian Andor in the Star Wars universe',
+            'Javier Bardem — Spanish actor who won an Oscar for his terrifying villain in No Country',
+          ],
+          [
+            'Star of The Mandalorian and The Last of Us who played Oberyn Martell on Game of Thrones',
+            'Oscar Isaac — actor who played Poe Dameron in Star Wars and Moon Knight in the MCU',
+            'Diego Luna — actor who starred in Rogue One and the Andor series on Disney Plus',
+            'Javier Bardem — Spanish actor who played a Bond villain in Skyfall and won an Oscar',
+          ],
+          [
+            'José Pedro Balmaceda Pascal — the Santiago-born actor who stars in The Mandalorian and The Last of Us',
+            'Óscar Isaac Hernández Estrada — the Guatemala City-born actor who played Moon Knight',
+            'Diego Luna Alexander — the Mexico City-born actor who played Cassian Andor',
+            'Javier Ángel Encinas Bardem — the Las Palmas-born Oscar-winning Spanish actor',
+          ],
+        ],
       },
       {
         id: 'tv-2',
@@ -1329,6 +3695,32 @@ const categories = [
           'Daughter of a music legend who stars in a family sitcom',
           'Her best friend and co-star on that same HBO comedy series',
           'Youngest Black executive producer in Hollywood history',
+        ],
+        hints: [
+          [
+            'Creator-star of an HBO show about being awkward and Black in LA',
+            'Daughter of a music legend who stars in a family sitcom',
+            'Her best friend and co-star on that same HBO comedy series',
+            'Youngest Black executive producer in Hollywood history',
+          ],
+          [
+            'Actress and writer who turned her YouTube web series into an acclaimed HBO comedy',
+            'Tracee Ellis Ross — daughter of Diana Ross who stars in the sitcom Black-ish',
+            'Yvonne Orji — Nigerian-American actress who co-starred in that same HBO comedy',
+            'Michaela Coel — British actress who created and starred in I May Destroy You on HBO',
+          ],
+          [
+            'Creator and star of Insecure on HBO who also voiced a spider in Spider-Verse and starred in Barbie',
+            'Tracee Ellis Ross — Golden Globe winner who played Rainbow Johnson on Black-ish for 8 seasons',
+            'Yvonne Orji — actress who played Molly on Insecure and is also a stand-up comedian',
+            'Michaela Coel — BAFTA-winning creator of I May Destroy You who joined the MCU in Black Panther 2',
+          ],
+          [
+            'Jo-Issa Rae Diop — the Los Angeles-born creator of Awkward Black Girl and HBO\'s Insecure',
+            'Tracee Joy Silberstein — the Los Angeles-born daughter of Diana Ross and star of Black-ish',
+            'Yvonne Anuli Orji — the Port Harcourt-born actress who played Molly on Insecure',
+            'Michaela Ewuraba Boakye-Collinson Coel — the London-born creator of I May Destroy You',
+          ],
         ],
       },
       {
@@ -1343,6 +3735,32 @@ const categories = [
           'Latina actress who became Netflix\'s most famous Wednesday',
           'British actress who joined the MCU as a fierce warrior',
         ],
+        hints: [
+          [
+            'British teen who shaved her head to fight monsters in Hawkins',
+            'Redhead who faced Vecna alongside Eleven in the Upside Down',
+            'Latina actress who became Netflix\'s most famous Wednesday',
+            'British actress who joined the MCU as a fierce warrior',
+          ],
+          [
+            'Young British actress who became a global star playing a telekinetic kid on Netflix',
+            'Sadie Sink — redhead actress who played Max in Stranger Things seasons 3 and 4',
+            'Jenna Ortega — Latina actress who danced her way to fame as Wednesday Addams',
+            'Florence Pugh — British actress who joined the MCU as Yelena Belova in Black Widow',
+          ],
+          [
+            'Stranger Things star who played Eleven and also starred in Enola Holmes on Netflix',
+            'Sadie Sink — actress who played Max Mayfield and had the iconic Running Up That Hill scene',
+            'Jenna Ortega — actress who starred as Wednesday Addams and in the Scream franchise',
+            'Florence Pugh — actress who starred in Midsommar, Little Women, and the MCU as Yelena',
+          ],
+          [
+            'Millie Bobby Brown — the Marbella-born British actress who plays Eleven in Stranger Things',
+            'Sadie Elizabeth Sink — the Brenham-born actress who plays Max in Stranger Things',
+            'Jenna Marie Ortega — the Coachella Valley-born actress who plays Wednesday Addams',
+            'Florence Rose C. M. Pugh — the Oxford-born actress who plays Yelena Belova in the MCU',
+          ],
+        ],
       },
       {
         id: 'tv-4',
@@ -1355,6 +3773,32 @@ const categories = [
           'Two-time Oscar winner with a gentle intensity and quiet power',
           'Actor known for comedic roles and a thunderous screen presence',
           'Marvel villain who was supposed to be the next big thing',
+        ],
+        hints: [
+          [
+            'Emmy winner who made America cry every week on This Is Us',
+            'Two-time Oscar winner with a gentle intensity and quiet power',
+            'Actor known for comedic roles and a thunderous screen presence',
+            'Marvel villain who was supposed to be the next big thing',
+          ],
+          [
+            'Actor who played Randall Pearson on an NBC family drama that ran for six emotional seasons',
+            'Denzel Washington — two-time Oscar winner known for powerful dramatic performances',
+            'Kevin Hart — actor and comedian known for his high-energy comedy and action films',
+            'Jonathan Majors — actor who played Kang the Conqueror in the MCU\'s Ant-Man sequel',
+          ],
+          [
+            'Emmy and SAG winner who starred in This Is Us and also played Christopher Darden in The People v. O.J.',
+            'Denzel Washington — Oscar winner for Training Day and Glory who directed Fences',
+            'Kevin Hart — comedian who starred in Jumanji, Central Intelligence, and sold-out arena tours',
+            'Jonathan Majors — actor who starred in Lovecraft Country and Creed III before legal troubles',
+          ],
+          [
+            'Sterling Kelby Brown — the St. Louis-born Emmy winner who starred in This Is Us and The People v. O.J.',
+            'Denzel Hayes Washington Jr. — the Mount Vernon-born two-time Oscar winner',
+            'Kevin Darnell Hart — the Philadelphia-born comedian and actor',
+            'Jonathan Michael Majors — the Lompoc-born actor who played Kang in the MCU',
+          ],
         ],
       },
       {
@@ -1369,6 +3813,32 @@ const categories = [
           'Actress who played a fierce music mogul on primetime TV',
           'Emmy-winning actress and director who rules behind the camera',
         ],
+        hints: [
+          [
+            'Scandal fixer who handled Washington\'s biggest crises on ABC',
+            'EGOT-winning actress who shattered Emmy records',
+            'Actress who played a fierce music mogul on primetime TV',
+            'Emmy-winning actress and director who rules behind the camera',
+          ],
+          [
+            'Actress who played Olivia Pope — a powerful Washington D.C. fixer on a hit ABC drama',
+            'Viola Davis — EGOT winner who starred in How to Get Away with Murder on ABC',
+            'Taraji P. Henson — actress who played Cookie Lyon on the music drama Empire',
+            'Regina King — Emmy-winning actress and director of One Night in Miami',
+          ],
+          [
+            'Star of Scandal who played Olivia Pope and also starred in Django Unchained and Little Fires Everywhere',
+            'Viola Davis — EGOT winner who played Annalise Keating and won an Oscar for Fences',
+            'Taraji P. Henson — Golden Globe winner who played Cookie Lyon and starred in Hidden Figures',
+            'Regina King — Emmy winner for Watchmen who directed One Night in Miami and won an Oscar',
+          ],
+          [
+            'Kerry Marisa Washington — the Bronx-born actress who starred as Olivia Pope in Scandal',
+            'Viola Davis — the St. Matthews-born EGOT winner who starred in How to Get Away with Murder',
+            'Taraji Penda Henson — the Washington D.C.-born actress who played Cookie Lyon on Empire',
+            'Regina Rene King — the Cincinnati-born actress and director who won Emmys for Watchmen',
+          ],
+        ],
       },
       {
         id: 'tv-6',
@@ -1381,6 +3851,32 @@ const categories = [
           'British actor who escaped the Sunken Place in a horror hit',
           'British actor who wielded a lightsaber as a Stormtrooper rebel',
           'British-Nigerian actor who starred in a devastating civil war film',
+        ],
+        hints: [
+          [
+            'British actor who played a drug kingpin in Baltimore on HBO',
+            'British actor who escaped the Sunken Place in a horror hit',
+            'British actor who wielded a lightsaber as a Stormtrooper rebel',
+            'British-Nigerian actor who starred in a devastating civil war film',
+          ],
+          [
+            'British actor who played Stringer Bell on The Wire and was the people\'s choice for James Bond',
+            'Daniel Kaluuya — British actor who starred in Get Out and won an Oscar for Judas and the Black Messiah',
+            'John Boyega — British-Nigerian actor who played Finn in the Star Wars sequel trilogy',
+            'Chiwetel Ejiofor — British-Nigerian actor who starred in 12 Years a Slave',
+          ],
+          [
+            'Star of The Wire and Luther who also played Heimdall in the MCU and voiced Knuckles in Sonic',
+            'Daniel Kaluuya — Oscar winner for Judas and the Black Messiah who also starred in Nope and Black Panther',
+            'John Boyega — Star Wars actor who played Finn and starred in Attack the Block and Detroit',
+            'Chiwetel Ejiofor — Oscar-nominated actor for 12 Years a Slave who played Mordo in Doctor Strange',
+          ],
+          [
+            'Idrissa Akuna Elba — the Hackney-born British actor who starred in The Wire, Luther, and the MCU',
+            'Daniel Kaluuya — the London-born Oscar winner for Judas and the Black Messiah',
+            'John Adedayo Bamidele Adegboyega — the Peckham-born actor who played Finn in Star Wars',
+            'Chiwetel Umeadi Ejiofor — the London-born actor who starred in 12 Years a Slave',
+          ],
         ],
       },
       {
@@ -1395,6 +3891,32 @@ const categories = [
           'His Atlanta co-star with a thunderous voice and gentle presence',
           'Cleveland dreamer who put mental health in his hip hop music',
         ],
+        hints: [
+          [
+            'Multi-hyphenate who created Atlanta and raps as Childish Gambino',
+            'His Atlanta co-star known for surreal performances and quiet intensity',
+            'His Atlanta co-star with a thunderous voice and gentle presence',
+            'Cleveland dreamer who put mental health in his hip hop music',
+          ],
+          [
+            'Actor-rapper-writer who created the surreal FX series Atlanta and made This Is America go viral',
+            'LaKeith Stanfield — Atlanta co-star known for his surreal intensity in Sorry to Bother You',
+            'Brian Tyree Henry — Atlanta co-star who played Paper Boi and joined the MCU in Eternals',
+            'Kid Cudi — Cleveland rapper who pioneered emotional hip hop and starred in Entergalactic',
+          ],
+          [
+            'Creator of Atlanta who also played young Lando Calrissian in Solo and voiced Simba in The Lion King',
+            'LaKeith Stanfield — actor who played Darius in Atlanta and starred in Judas and the Black Messiah',
+            'Brian Tyree Henry — actor who played Paper Boi in Atlanta and won a Tony nomination for Lobby Hero',
+            'Scott Ramon Seguro Mescudi — Kid Cudi who co-created the Netflix animated show Entergalactic',
+          ],
+          [
+            'Donald McKinley Glover — the Edwards AFB-born creator of Atlanta who raps as Childish Gambino',
+            'LaKeith Lee Stanfield — the San Bernardino-born actor who played Darius in Atlanta',
+            'Brian Tyree Henry — the Fayetteville-born actor who played Paper Boi in Atlanta',
+            'Scott Ramon Seguro Mescudi — the Cleveland-born rapper known as Kid Cudi',
+          ],
+        ],
       },
       {
         id: 'tv-8',
@@ -1407,6 +3929,32 @@ const categories = [
           'British teen who shaved her head to fight Upside Down monsters',
           'Marvel actress who played a sharp-shooting young Avenger',
           'Young Latina actress who became a new MCU hero named America',
+        ],
+        hints: [
+          [
+            'Latina actress who danced her way to fame as Netflix\'s Wednesday',
+            'British teen who shaved her head to fight Upside Down monsters',
+            'Marvel actress who played a sharp-shooting young Avenger',
+            'Young Latina actress who became a new MCU hero named America',
+          ],
+          [
+            'Young actress who played Wednesday Addams with a deadpan viral dance on Netflix',
+            'Millie Bobby Brown — British actress who plays Eleven in Stranger Things',
+            'Hailee Steinfeld — actress who played Kate Bishop in the MCU\'s Hawkeye series',
+            'Xochitl Gomez — young actress who played America Chavez in Doctor Strange 2',
+          ],
+          [
+            'Star of Wednesday and the Scream franchise who also appeared in You season 2 and X',
+            'Millie Bobby Brown — Stranger Things star who also played Enola Holmes on Netflix',
+            'Hailee Steinfeld — actress and singer who played Kate Bishop and starred in Bumblebee and Dickinson',
+            'Xochitl Gomez — actress who debuted as America Chavez in Doctor Strange in the Multiverse of Madness',
+          ],
+          [
+            'Jenna Marie Ortega — the Coachella Valley-born actress who stars as Wednesday Addams on Netflix',
+            'Millie Bobby Brown — the Marbella-born actress who plays Eleven in Stranger Things',
+            'Hailee Steinfeld — the Los Angeles-born actress who plays Kate Bishop in the MCU',
+            'Xochitl Gomez — the Los Angeles-born actress who plays America Chavez in the MCU',
+          ],
         ],
       },
       {
@@ -1421,6 +3969,32 @@ const categories = [
           'Son of a legendary actor who starred in a Christopher Nolan film',
           'Atlanta co-star known for surreal performances and quiet intensity',
         ],
+        hints: [
+          [
+            'Actor who stepped into the ring for Creed and lit a kingdom on fire',
+            'Wakanda king who said "Wakanda Forever" and inspired millions',
+            'Son of a legendary actor who starred in a Christopher Nolan film',
+            'Atlanta co-star known for surreal performances and quiet intensity',
+          ],
+          [
+            'Actor who played Adonis Creed in the boxing franchise and Erik Killmonger in Black Panther',
+            'Chadwick Boseman — the actor who played T\'Challa and became a cultural icon before passing away',
+            'John David Washington — son of Denzel who starred in Tenet and BlacKkKlansman',
+            'LaKeith Stanfield — actor who starred in Atlanta, Sorry to Bother You, and Get Out',
+          ],
+          [
+            'Star of Creed and Black Panther who also directed Creed III and starred in Without Remorse',
+            'Chadwick Boseman — actor who played Jackie Robinson, James Brown, and T\'Challa before his passing',
+            'John David Washington — actor who starred in Christopher Nolan\'s Tenet and Spike Lee\'s BlacKkKlansman',
+            'LaKeith Stanfield — Oscar-nominated actor for Judas and the Black Messiah who played Darius in Atlanta',
+          ],
+          [
+            'Michael Bakari Jordan — the Santa Ana-born actor who plays Adonis Creed and Erik Killmonger',
+            'Chadwick Aaron Boseman — the Anderson-born actor who played T\'Challa in Black Panther',
+            'John David Washington — the Los Angeles-born son of Denzel who starred in Tenet',
+            'LaKeith Lee Stanfield — the San Bernardino-born actor who played Darius in Atlanta',
+          ],
+        ],
       },
       {
         id: 'tv-10',
@@ -1433,6 +4007,32 @@ const categories = [
           'Creator-star of an HBO show about being awkward and Black in LA',
           'Scandal fixer who handled Washington\'s crises on primetime TV',
           'Actress and writer who is also the daughter of music royalty',
+        ],
+        hints: [
+          [
+            'Daughter of a Motown legend who stars in a beloved family sitcom',
+            'Creator-star of an HBO show about being awkward and Black in LA',
+            'Scandal fixer who handled Washington\'s crises on primetime TV',
+            'Actress and writer who is also the daughter of music royalty',
+          ],
+          [
+            'Daughter of a Supreme who starred as a hilarious mom on an ABC family comedy for 8 seasons',
+            'Issa Rae — creator and star of the HBO comedy Insecure about life in Los Angeles',
+            'Kerry Washington — actress who played Olivia Pope the crisis fixer on Scandal',
+            'Zoë Kravitz — actress and daughter of Lenny Kravitz who played Catwoman in The Batman',
+          ],
+          [
+            'Golden Globe-winning star of Black-ish who played Rainbow Johnson and launched a hair care brand',
+            'Issa Rae — Insecure creator who also voiced a spider in Spider-Verse and starred in Barbie',
+            'Kerry Washington — Scandal star who also appeared in Django Unchained and Little Fires Everywhere',
+            'Zoë Kravitz — actress who played Catwoman in The Batman and starred in Big Little Lies',
+          ],
+          [
+            'Tracee Joy Silberstein — the Los Angeles-born daughter of Diana Ross who starred in Black-ish',
+            'Jo-Issa Rae Diop — the Los Angeles-born creator of Insecure on HBO',
+            'Kerry Marisa Washington — the Bronx-born actress who starred as Olivia Pope in Scandal',
+            'Zoë Isabella Kravitz — the Venice-born actress and daughter of Lenny Kravitz and Lisa Bonet',
+          ],
         ],
       },
     ],
@@ -1460,6 +4060,32 @@ const categories = [
           'Leaning marble tower in an Italian piazza',
           'World\'s tallest skyscraper rising over the Dubai desert',
         ],
+        hints: [
+          [
+            'Iron lattice tower overlooking Paris since 1889',
+            'London clock tower that chimes on the hour',
+            'Leaning marble tower in an Italian piazza',
+            'World\'s tallest skyscraper rising over the Dubai desert',
+          ],
+          [
+            'Tall iron structure in the French capital built for a world exposition',
+            'Gothic clock tower standing beside the Houses of Parliament in London',
+            'Medieval bell tower in Pisa that tilts several degrees off vertical',
+            'Supertall skyscraper called the Burj Khalifa standing over 2,700 feet',
+          ],
+          [
+            'Wrought-iron tower on the Champ de Mars built by Gustave Eiffel for the 1889 World\'s Fair',
+            'Elizabeth Tower housing the Great Bell called Big Ben beside the River Thames',
+            'Leaning Tower of Pisa — a freestanding bell tower that took 200 years to build',
+            'Burj Khalifa in Dubai — the tallest structure in the world at 828 meters',
+          ],
+          [
+            'The Eiffel Tower — the 1,083-foot iron lattice tower on the Champ de Mars in Paris, France',
+            'Big Ben — the Gothic clock tower at the Palace of Westminster in London, England',
+            'The Leaning Tower of Pisa — the tilting campanile in the Piazza dei Miracoli in Tuscany, Italy',
+            'The Burj Khalifa — the 2,717-foot supertall skyscraper in downtown Dubai, UAE',
+          ],
+        ],
       },
       {
         id: 'lm-2',
@@ -1472,6 +4098,32 @@ const categories = [
           'Incan citadel hidden high in the Peruvian Andes',
           'Massive temple complex deep in the Cambodian jungle',
           'Rose-red city carved into desert cliffs in Jordan',
+        ],
+        hints: [
+          [
+            'Ancient stone barrier winding thousands of miles across mountains',
+            'Incan citadel hidden high in the Peruvian Andes',
+            'Massive temple complex deep in the Cambodian jungle',
+            'Rose-red city carved into desert cliffs in Jordan',
+          ],
+          [
+            'Massive defensive fortification stretching across northern China built over many dynasties',
+            'Ancient mountaintop city in Peru built by the Inca empire in the 1400s',
+            'Angkor Wat — the enormous temple complex built by the Khmer Empire in Cambodia',
+            'Petra — an ancient Nabataean city with rock-carved facades in the Jordanian desert',
+          ],
+          [
+            'Stone wall stretching over 13,000 miles across China built to defend against northern invaders',
+            'Machu Picchu — the lost Incan citadel rediscovered by Hiram Bingham in 1911',
+            'Angkor Wat — the world\'s largest religious monument built in the 12th century in Siem Reap',
+            'Petra — the Rose City with the iconic Treasury facade carved into sandstone cliffs',
+          ],
+          [
+            'The Great Wall of China — the ancient fortification stretching over 13,000 miles across northern China',
+            'Machu Picchu — the 15th-century Incan citadel at 7,970 feet in the Andes of Peru',
+            'Angkor Wat — the 12th-century Hindu-Buddhist temple complex in Siem Reap, Cambodia',
+            'Petra — the ancient Nabataean city carved into rose-red cliffs in Ma\'an, Jordan',
+          ],
         ],
       },
       {
@@ -1486,6 +4138,32 @@ const categories = [
           'Marble memorial honoring a president who freed the enslaved',
           'Tall stone obelisk on the National Mall in Washington D.C.',
         ],
+        hints: [
+          [
+            'Green copper lady holding a torch in New York Harbor',
+            'Giant stone figure with arms outstretched over Rio de Janeiro',
+            'Marble memorial honoring a president who freed the enslaved',
+            'Tall stone obelisk on the National Mall in Washington D.C.',
+          ],
+          [
+            'Copper statue on an island gifted by France to the United States in 1886',
+            'Christ the Redeemer — massive Art Deco statue overlooking Rio from Corcovado mountain',
+            'Lincoln Memorial — seated marble figure honoring the 16th president in Washington D.C.',
+            'Washington Monument — 555-foot obelisk honoring the first president on the National Mall',
+          ],
+          [
+            'Neoclassical sculpture on Liberty Island designed by Frédéric Bartholdi with a torch and crown',
+            'Christ the Redeemer — 98-foot statue atop Corcovado mountain completed in 1931',
+            'Lincoln Memorial — Daniel Chester French\'s marble statue of a seated Abraham Lincoln',
+            'Washington Monument — the tallest obelisk in the world completed in 1884',
+          ],
+          [
+            'The Statue of Liberty — the 305-foot copper statue on Liberty Island in New York Harbor',
+            'Christ the Redeemer — the 98-foot Art Deco statue atop Corcovado in Rio de Janeiro, Brazil',
+            'The Lincoln Memorial — the marble tribute to Abraham Lincoln on the National Mall in D.C.',
+            'The Washington Monument — the 555-foot stone obelisk on the National Mall in Washington D.C.',
+          ],
+        ],
       },
       {
         id: 'lm-4',
@@ -1498,6 +4176,32 @@ const categories = [
           'Lotus-shaped temple welcoming all faiths in New Delhi',
           'Ancient cathedral turned mosque with a massive dome in Istanbul',
           'Blue-tiled mosque facing a grand square in Istanbul',
+        ],
+        hints: [
+          [
+            'White marble mausoleum built by a heartbroken emperor in India',
+            'Lotus-shaped temple welcoming all faiths in New Delhi',
+            'Ancient cathedral turned mosque with a massive dome in Istanbul',
+            'Blue-tiled mosque facing a grand square in Istanbul',
+          ],
+          [
+            'Symmetrical white marble monument in Agra built as a tomb for a beloved queen',
+            'Lotus Temple — a Baha\'i house of worship shaped like a flower in New Delhi',
+            'Hagia Sophia — a 1,500-year-old domed building that served as church and mosque in Istanbul',
+            'Sultan Ahmed Mosque — the Blue Mosque with six minarets in Istanbul',
+          ],
+          [
+            'Mughal mausoleum in Agra commissioned by Shah Jahan for his wife Mumtaz Mahal in 1632',
+            'Lotus Temple — the white marble Baha\'i house of worship completed in 1986 in New Delhi',
+            'Hagia Sophia — Byzantine cathedral built in 537 AD that became a mosque and then a museum',
+            'Sultan Ahmed Mosque — the 17th-century mosque with blue tiles and six minarets in Istanbul',
+          ],
+          [
+            'The Taj Mahal — the white marble mausoleum on the Yamuna River in Agra, India built by Shah Jahan',
+            'The Lotus Temple — the Baha\'i house of worship shaped like a lotus flower in New Delhi, India',
+            'Hagia Sophia — the 6th-century Byzantine cathedral turned mosque in Istanbul, Turkey',
+            'The Sultan Ahmed Mosque — the Blue Mosque with over 20,000 tiles in Istanbul, Turkey',
+          ],
         ],
       },
       {
@@ -1512,6 +4216,32 @@ const categories = [
           'Domed Roman temple with an open hole to the sky',
           'Ruins of ancient Roman government buildings and temples',
         ],
+        hints: [
+          [
+            'Ancient Roman arena where gladiators once battled to the roar of 50,000',
+            'Greek hilltop temple dedicated to the goddess Athena',
+            'Domed Roman temple with an open hole to the sky',
+            'Ruins of ancient Roman government buildings and temples',
+          ],
+          [
+            'Massive oval amphitheater in Rome built for spectacles and gladiator combat',
+            'The Parthenon — marble temple on the Acropolis in Athens dedicated to the goddess Athena',
+            'The Pantheon — ancient Roman temple with a concrete dome and an oculus open to the sky',
+            'The Roman Forum — ruins of the civic center of ancient Rome with temples and arches',
+          ],
+          [
+            'Flavian Amphitheatre in Rome that could seat 50,000 spectators for gladiator fights and public spectacles',
+            'The Parthenon — 5th-century BC temple on the Athens Acropolis built by Pericles and Phidias',
+            'The Pantheon — temple built by Emperor Hadrian with the world\'s largest unreinforced concrete dome',
+            'The Roman Forum — ancient gathering place with the Arch of Titus and Temple of Saturn ruins',
+          ],
+          [
+            'The Colosseum — the Flavian Amphitheatre built in 80 AD in the center of Rome, Italy',
+            'The Parthenon — the 5th-century BC temple to Athena on the Acropolis in Athens, Greece',
+            'The Pantheon — the 2nd-century AD domed temple on the Piazza della Rotonda in Rome, Italy',
+            'The Roman Forum — the ancient civic center between the Palatine and Capitoline Hills in Rome',
+          ],
+        ],
       },
       {
         id: 'lm-6',
@@ -1524,6 +4254,32 @@ const categories = [
           'Mayan pyramid with a serpent shadow in Mexico\'s Yucatan',
           'Mysterious giant stone heads on a remote Pacific island',
           'Aztec pyramid of the sun towering over an ancient avenue',
+        ],
+        hints: [
+          [
+            'Lost Incan city perched on a misty mountain ridge in Peru',
+            'Mayan pyramid with a serpent shadow in Mexico\'s Yucatan',
+            'Mysterious giant stone heads on a remote Pacific island',
+            'Aztec pyramid of the sun towering over an ancient avenue',
+          ],
+          [
+            'Ancient mountaintop citadel in Peru rediscovered in the early 1900s',
+            'Chichén Itzá — Mayan pyramid in Mexico where a serpent shadow appears at the equinox',
+            'Easter Island — remote Pacific island with hundreds of giant carved stone figures called Moai',
+            'Teotihuacán — ancient Mesoamerican city in Mexico with the Pyramid of the Sun',
+          ],
+          [
+            'Incan citadel at nearly 8,000 feet in the Andes rediscovered by Hiram Bingham in 1911',
+            'Chichén Itzá — the Temple of Kukulcán pyramid where a shadow serpent descends at the equinox',
+            'Easter Island — Rapa Nui with 887 carved Moai statues created by the Polynesian people',
+            'Teotihuacán — the ancient City of the Gods near Mexico City with pyramids of the Sun and Moon',
+          ],
+          [
+            'Machu Picchu — the 15th-century Incan citadel at 7,970 feet in the Cusco Region of Peru',
+            'Chichén Itzá — the Mayan city with the Temple of Kukulcán in Yucatán, Mexico',
+            'Easter Island — Rapa Nui with its 887 Moai statues in the southeastern Pacific Ocean, Chile',
+            'Teotihuacán — the ancient Mesoamerican city with the Pyramid of the Sun near Mexico City',
+          ],
         ],
       },
       {
@@ -1538,6 +4294,32 @@ const categories = [
           'Spiraling white museum on Fifth Avenue in New York City',
           'Glass pyramid entrance to the world\'s most famous art museum',
         ],
+        hints: [
+          [
+            'White shell-roofed concert hall on an Australian harbor',
+            'Swooping silver concert hall designed by Frank Gehry in LA',
+            'Spiraling white museum on Fifth Avenue in New York City',
+            'Glass pyramid entrance to the world\'s most famous art museum',
+          ],
+          [
+            'Iconic performing arts center with sail-shaped roofs on Bennelong Point in Sydney',
+            'Walt Disney Concert Hall — Frank Gehry\'s swooping steel masterpiece in downtown Los Angeles',
+            'The Guggenheim Museum — Frank Lloyd Wright\'s spiraling white rotunda on Fifth Avenue in NYC',
+            'The Louvre Pyramid — I.M. Pei\'s glass and steel pyramid in the courtyard of the Louvre in Paris',
+          ],
+          [
+            'Danish architect Jørn Utzon\'s masterpiece completed in 1973 on Sydney Harbour in Australia',
+            'Walt Disney Concert Hall — Frank Gehry\'s 2003 stainless steel concert hall on Grand Avenue in LA',
+            'The Guggenheim — Frank Lloyd Wright\'s 1959 spiraling art museum at 1071 Fifth Avenue in NYC',
+            'The Louvre Pyramid — I.M. Pei\'s 1989 glass pyramid entrance to the Louvre Museum in Paris',
+          ],
+          [
+            'The Sydney Opera House — Jørn Utzon\'s shell-roofed masterpiece on Bennelong Point in Sydney, Australia',
+            'Walt Disney Concert Hall — Frank Gehry\'s steel concert hall on Grand Avenue in Los Angeles',
+            'The Solomon R. Guggenheim Museum — Frank Lloyd Wright\'s spiral on Fifth Avenue in New York City',
+            'The Louvre Pyramid — I.M. Pei\'s glass pyramid in the Cour Napoléon of the Louvre in Paris, France',
+          ],
+        ],
       },
       {
         id: 'lm-8',
@@ -1550,6 +4332,32 @@ const categories = [
           'Iron lattice tower that has overlooked Paris since 1889',
           'Art Deco skyscraper that defined the New York City skyline',
           'Concrete observation tower rising above Toronto\'s waterfront',
+        ],
+        hints: [
+          [
+            'Gothic clock tower standing watch over London\'s Parliament',
+            'Iron lattice tower that has overlooked Paris since 1889',
+            'Art Deco skyscraper that defined the New York City skyline',
+            'Concrete observation tower rising above Toronto\'s waterfront',
+          ],
+          [
+            'Ornate Victorian clock tower beside the Palace of Westminster on the River Thames',
+            'The Eiffel Tower — tall iron structure built by Gustave Eiffel for the 1889 World\'s Fair',
+            'The Empire State Building — Art Deco skyscraper that was once the world\'s tallest building',
+            'The CN Tower — concrete communications tower in downtown Toronto completed in 1976',
+          ],
+          [
+            'Elizabeth Tower housing the Great Bell at the north end of the Palace of Westminster in London',
+            'The Eiffel Tower — 1,083-foot wrought-iron tower on the Champ de Mars built in 1889',
+            'The Empire State Building — 1,454-foot Art Deco tower on Fifth Avenue completed in 1931',
+            'The CN Tower — 1,815-foot communications tower in Toronto that was the world\'s tallest for 32 years',
+          ],
+          [
+            'Big Ben — the Elizabeth Tower and Great Bell at the Palace of Westminster in London, England',
+            'The Eiffel Tower — Gustave Eiffel\'s iron lattice tower on the Champ de Mars in Paris, France',
+            'The Empire State Building — the 102-story Art Deco skyscraper on Fifth Avenue in New York City',
+            'The CN Tower — the 1,815-foot communications tower on Front Street in Toronto, Canada',
+          ],
         ],
       },
       {
@@ -1564,6 +4372,32 @@ const categories = [
           'Massive Soviet-era statue of a woman raising a sword in Russia',
           'Towering golden Buddha overlooking a temple in China',
         ],
+        hints: [
+          [
+            'Giant stone figure with arms outstretched high above Rio',
+            'Green copper lady holding a torch in New York Harbor',
+            'Massive Soviet-era statue of a woman raising a sword in Russia',
+            'Towering golden Buddha overlooking a temple in China',
+          ],
+          [
+            'Massive Art Deco statue on a mountaintop overlooking Rio de Janeiro in Brazil',
+            'The Statue of Liberty — copper figure on Liberty Island gifted by France in 1886',
+            'The Motherland Calls — Soviet war memorial statue in Volgograd raising a sword skyward',
+            'The Spring Temple Buddha — 420-foot golden statue of Vairocana Buddha in Henan, China',
+          ],
+          [
+            'Art Deco soapstone statue atop Corcovado mountain completed in 1931 overlooking Rio',
+            'The Statue of Liberty — Frédéric Bartholdi\'s 305-foot copper statue on Liberty Island in NYC',
+            'The Motherland Calls — 279-foot Soviet statue in Volgograd commemorating the Battle of Stalingrad',
+            'The Spring Temple Buddha — the tallest statue in the world at 420 feet in Lushan County, China',
+          ],
+          [
+            'Christ the Redeemer — the 98-foot Art Deco statue atop Corcovado mountain in Rio de Janeiro, Brazil',
+            'The Statue of Liberty — the 305-foot copper statue on Liberty Island in New York Harbor',
+            'The Motherland Calls — the 279-foot Soviet memorial statue in Volgograd, Russia',
+            'The Spring Temple Buddha — the 420-foot Vairocana Buddha statue in Lushan County, Henan, China',
+          ],
+        ],
       },
       {
         id: 'lm-10',
@@ -1576,6 +4410,32 @@ const categories = [
           'Historic stone-and-steel bridge connecting Brooklyn and Manhattan',
           'Twin-towered bridge that lifts open over the River Thames in London',
           'Steel arch bridge framing the Sydney Opera House in Australia',
+        ],
+        hints: [
+          [
+            'Iconic red suspension bridge stretching across San Francisco Bay',
+            'Historic stone-and-steel bridge connecting Brooklyn and Manhattan',
+            'Twin-towered bridge that lifts open over the River Thames in London',
+            'Steel arch bridge framing the Sydney Opera House in Australia',
+          ],
+          [
+            'Art Deco suspension bridge painted International Orange spanning the Golden Gate strait',
+            'The Brooklyn Bridge — Gothic stone-towered suspension bridge connecting two NYC boroughs',
+            'Tower Bridge — Victorian drawbridge with two towers on the River Thames in London',
+            'Sydney Harbour Bridge — steel arch bridge nicknamed the Coathanger in Sydney, Australia',
+          ],
+          [
+            'Suspension bridge designed by Joseph Strauss completed in 1937 spanning 4,200 feet across the strait',
+            'The Brooklyn Bridge — John Roebling\'s 1883 suspension bridge connecting Brooklyn and Manhattan',
+            'Tower Bridge — the 1894 drawbridge with twin Gothic towers near the Tower of London',
+            'Sydney Harbour Bridge — the 1932 steel arch bridge carrying eight lanes of traffic in Sydney',
+          ],
+          [
+            'The Golden Gate Bridge — the 4,200-foot suspension bridge across the Golden Gate strait in San Francisco',
+            'The Brooklyn Bridge — John Roebling\'s 1883 suspension bridge over the East River in New York City',
+            'Tower Bridge — the 1894 bascule and suspension bridge over the Thames in London, England',
+            'The Sydney Harbour Bridge — the 1932 steel arch bridge across Sydney Harbour in Australia',
+          ],
         ],
       },
     ],
@@ -1603,6 +4463,32 @@ const categories = [
           'Someone standing on a kick scooter and gliding along',
           'Someone rolling on four wheels doing a kickflip',
         ],
+        hints: [
+          [
+            'Someone pedaling on two wheels down the street',
+            'Someone sprinting on foot at full speed',
+            'Someone standing on a kick scooter and gliding along',
+            'Someone rolling on four wheels doing a kickflip',
+          ],
+          [
+            'A person gripping handlebars and pedaling a two-wheeled vehicle down a road',
+            'A person pumping their arms and running as fast as they can on pavement',
+            'A person pushing off the ground while standing on a two-wheeled scooter',
+            'A person crouching on a wooden board with four wheels doing a trick at a skatepark',
+          ],
+          [
+            'A man riding a bicycle — pedaling with both feet on a chain-driven two-wheeler',
+            'A man jogging or sprinting — running on foot with athletic shoes on pavement',
+            'A man riding a kick scooter — standing on a foldable platform and pushing along',
+            'A man skateboarding — riding a deck with trucks and wheels and doing a kickflip',
+          ],
+          [
+            'Man Riding a Bike — someone cycling on a two-wheeled bicycle down the street',
+            'Man Running — someone sprinting on foot at full speed',
+            'Man on a Scooter — someone gliding along on a kick scooter',
+            'Man Skateboarding — someone rolling on a skateboard doing tricks',
+          ],
+        ],
       },
       {
         id: 'wh-2',
@@ -1615,6 +4501,32 @@ const categories = [
           'A woman moving to the rhythm on a dance floor',
           'A woman sprinting at full speed on a track',
           'A woman bending and reaching in a yoga pose',
+        ],
+        hints: [
+          [
+            'A woman leaping into the air with pure joy',
+            'A woman moving to the rhythm on a dance floor',
+            'A woman sprinting at full speed on a track',
+            'A woman bending and reaching in a yoga pose',
+          ],
+          [
+            'A woman launching herself upward with both feet leaving the ground in celebration',
+            'A woman swaying and stepping to music at a party or club',
+            'A woman racing down a track with powerful strides in a competition',
+            'A woman stretching her body into a balanced position on a mat',
+          ],
+          [
+            'A woman jumping for joy — both feet off the ground, arms raised, full of energy and excitement',
+            'A woman dancing — moving her body rhythmically to music on a crowded dance floor',
+            'A woman sprinting — racing at top speed on a running track with lanes',
+            'A woman doing yoga — holding a pose like warrior or tree on a yoga mat',
+          ],
+          [
+            'Woman Jumping — a joyful leap into the air with arms and legs spread wide',
+            'Woman Dancing — rhythmic movement to music on a dance floor',
+            'Woman Sprinting — a full-speed run down an athletic track',
+            'Woman Doing Yoga — a balanced stretch pose on a yoga mat',
+          ],
         ],
       },
       {
@@ -1629,6 +4541,32 @@ const categories = [
           'A child running around with friends in a game of chase',
           'A child blowing soapy spheres that float away in the wind',
         ],
+        hints: [
+          [
+            'A child sending something colorful soaring high on a string',
+            'A child chasing winged insects through a meadow with a net',
+            'A child running around with friends in a game of chase',
+            'A child blowing soapy spheres that float away in the wind',
+          ],
+          [
+            'A kid holding a long string connected to a colorful fabric shape sailing in the wind',
+            'A kid running through a field swinging a net trying to catch butterflies',
+            'A kid playing tag — chasing friends around a playground at full speed',
+            'A kid dipping a wand in soap and blowing bubbles into the air',
+          ],
+          [
+            'A child flying a kite — holding the string as a diamond or delta shape catches the breeze',
+            'A child catching butterflies — chasing colorful insects with a net in a garden',
+            'A child playing tag — running and dodging friends in an outdoor game of chase',
+            'A child blowing bubbles — creating floating soapy spheres with a bubble wand',
+          ],
+          [
+            'Kid Flying a Kite — a child running with a colorful kite soaring on a string in the wind',
+            'Kid Catching Butterflies — a child chasing insects with a net through a meadow',
+            'Kid Playing Tag — a child running and chasing friends in an outdoor game',
+            'Kid Blowing Bubbles — a child blowing soapy bubbles into the air with a wand',
+          ],
+        ],
       },
       {
         id: 'wh-4',
@@ -1641,6 +4579,32 @@ const categories = [
           'A pup chasing after a bouncing round toy in a park',
           'A pup paddling through water to retrieve something',
           'A pup soaring over a set of agility course obstacles',
+        ],
+        hints: [
+          [
+            'A pup leaping to snag a flying disc out of the air',
+            'A pup chasing after a bouncing round toy in a park',
+            'A pup paddling through water to retrieve something',
+            'A pup soaring over a set of agility course obstacles',
+          ],
+          [
+            'A dog jumping high with its mouth open to catch a spinning plastic disc mid-flight',
+            'A dog bounding across a grassy field chasing a tennis ball that someone threw',
+            'A dog swimming through a lake or river to fetch a stick or toy from the water',
+            'A dog leaping over hurdles and weaving through poles on an obstacle course',
+          ],
+          [
+            'A dog catching a frisbee — leaping into the air and snagging a flying disc with its teeth',
+            'A dog playing fetch — chasing and retrieving a ball thrown across a park',
+            'A dog swimming — paddling through water with a stick or ball in its mouth',
+            'A dog on an agility course — jumping hurdles and running through tunnels for competition',
+          ],
+          [
+            'Dog Catching a Frisbee — a pup leaping high to snag a flying disc out of the air',
+            'Dog Playing Fetch — a pup chasing a thrown ball across a grassy field',
+            'Dog Swimming — a pup paddling through water to retrieve a toy or stick',
+            'Dog on Agility Course — a pup jumping over obstacles and weaving through poles',
+          ],
         ],
       },
       {
@@ -1655,6 +4619,32 @@ const categories = [
           'Two people swaying together at a loud outdoor music event',
           'Two people sharing food on a blanket in a sunny park',
         ],
+        hints: [
+          [
+            'Two people moving together romantically as water falls from the sky',
+            'Two people strolling hand in hand along the ocean shore',
+            'Two people swaying together at a loud outdoor music event',
+            'Two people sharing food on a blanket in a sunny park',
+          ],
+          [
+            'A couple holding each other and swaying in a downpour on a city street',
+            'A couple walking barefoot along a sandy beach at sunset',
+            'A couple dancing together in front of a stage at an outdoor concert',
+            'A couple sitting on a blanket enjoying a picnic spread in a park',
+          ],
+          [
+            'A couple dancing in the rain — twirling and embracing as raindrops fall around them',
+            'A couple walking on the beach — strolling hand in hand along the water\'s edge at sunset',
+            'A couple at a concert — swaying together in a crowd at a live outdoor music festival',
+            'A couple having a picnic — sharing food and drinks on a blanket spread in the grass',
+          ],
+          [
+            'Couple Dancing in the Rain — two people twirling romantically as rain pours down around them',
+            'Couple Walking on Beach — two people strolling hand in hand along the shoreline',
+            'Couple at a Concert — two people swaying together at a live outdoor music event',
+            'Couple Having a Picnic — two people sharing food on a blanket in a sunny park',
+          ],
+        ],
       },
       {
         id: 'wh-6',
@@ -1667,6 +4657,32 @@ const categories = [
           'Someone riding waves standing on a board in the ocean',
           'Someone carving down a snowy slope on a board',
           'Someone gliding on inline wheels down a smooth path',
+        ],
+        hints: [
+          [
+            'Someone doing tricks on a board with four small wheels',
+            'Someone riding waves standing on a board in the ocean',
+            'Someone carving down a snowy slope on a board',
+            'Someone gliding on inline wheels down a smooth path',
+          ],
+          [
+            'A person riding a wooden deck with trucks and wheels and performing tricks at a skatepark',
+            'A person standing on a board and riding the crest of an ocean wave toward shore',
+            'A person strapped to a board and carving turns down a snowy mountain slope',
+            'A person wearing boots with wheels in a line and rolling down a paved path',
+          ],
+          [
+            'A person skateboarding — doing kickflips and grinds on a board with four urethane wheels',
+            'A person surfing — standing on a surfboard and riding a breaking wave in the ocean',
+            'A person snowboarding — carving and jumping on a board strapped to both feet on snow',
+            'A person rollerblading — skating on inline skates down a smooth path or rink',
+          ],
+          [
+            'Person Skateboarding — someone doing tricks on a skateboard at a park or on the street',
+            'Person Surfing — someone riding ocean waves standing on a surfboard',
+            'Person Snowboarding — someone carving down a snowy slope on a snowboard',
+            'Person Rollerblading — someone gliding on inline skates down a smooth path',
+          ],
         ],
       },
       {
@@ -1681,6 +4697,32 @@ const categories = [
           'A cook rapidly slicing vegetables with a sharp knife',
           'A cook carefully piping frosting onto a layered dessert',
         ],
+        hints: [
+          [
+            'A cook spinning a round disc of dough high into the air',
+            'A cook flipping a flat breakfast cake on a hot griddle',
+            'A cook rapidly slicing vegetables with a sharp knife',
+            'A cook carefully piping frosting onto a layered dessert',
+          ],
+          [
+            'A chef in a kitchen throwing a circle of stretchy dough upward and letting it spin',
+            'A chef using a spatula to flip flapjacks on a hot flat cooking surface',
+            'A chef chopping and dicing vegetables at high speed on a cutting board',
+            'A chef squeezing a pastry bag to pipe decorations onto a multi-layer cake',
+          ],
+          [
+            'A chef tossing pizza dough — spinning a round disc of dough in the air to stretch it thin',
+            'A chef making pancakes — flipping golden round cakes on a hot griddle with a spatula',
+            'A chef julienning vegetables — rapidly slicing carrots, peppers, and onions with a sharp knife',
+            'A chef decorating a cake — piping buttercream frosting onto layers with a pastry bag',
+          ],
+          [
+            'Chef Tossing Pizza Dough — a cook spinning a round disc of dough high into the air',
+            'Chef Making Pancakes — a cook flipping flat golden breakfast cakes on a hot griddle',
+            'Chef Chopping Vegetables — a cook rapidly slicing veggies with a sharp knife',
+            'Chef Decorating a Cake — a cook piping frosting onto a layered dessert',
+          ],
+        ],
       },
       {
         id: 'wh-8',
@@ -1693,6 +4735,32 @@ const categories = [
           'Someone napping peacefully in a swinging cloth between trees',
           'Someone casting a line into the water from a wooden platform',
           'Someone creating art on a canvas in the great outdoors',
+        ],
+        hints: [
+          [
+            'Someone relaxing with a book in a hanging fabric bed',
+            'Someone napping peacefully in a swinging cloth between trees',
+            'Someone casting a line into the water from a wooden platform',
+            'Someone creating art on a canvas in the great outdoors',
+          ],
+          [
+            'A person lying in a suspended fabric cradle strung between two trees reading a novel',
+            'A person dozing off in a rope or cloth swing hung between two posts under shade',
+            'A person sitting on a dock holding a fishing rod and waiting for a bite',
+            'A person sitting outdoors with an easel painting a landscape on a canvas',
+          ],
+          [
+            'A person reading in a hammock — lying in a hanging cloth bed with a book open in their hands',
+            'A person napping in a hammock — sleeping peacefully in a swaying fabric bed between trees',
+            'A person fishing from a dock — casting a line with a rod and reel into a lake or river',
+            'A person painting outdoors — creating art on a canvas with brushes and an easel in nature',
+          ],
+          [
+            'Person Reading in a Hammock — someone relaxing with a book in a hanging fabric bed between trees',
+            'Person Napping in a Hammock — someone sleeping peacefully in a swinging cloth outdoors',
+            'Person Fishing from a Dock — someone casting a line into the water with a rod and reel',
+            'Person Painting Outdoors — someone creating art on a canvas with an easel in nature',
+          ],
         ],
       },
       {
@@ -1707,6 +4775,32 @@ const categories = [
           'Someone doing breakdance moves on cardboard for tips',
           'Someone performing card tricks and illusions for a gathering',
         ],
+        hints: [
+          [
+            'Someone playing a brass instrument for passersby on the sidewalk',
+            'Someone creating art with spray paint on a wall for a crowd',
+            'Someone doing breakdance moves on cardboard for tips',
+            'Someone performing card tricks and illusions for a gathering',
+          ],
+          [
+            'A performer blowing into a shiny horn-like instrument on a busy street corner for tips',
+            'A performer using spray cans to create a colorful mural on a wall while people watch',
+            'A performer spinning on their head and doing power moves on a piece of cardboard',
+            'A performer shuffling cards and making them appear and disappear in front of a crowd',
+          ],
+          [
+            'A street musician playing saxophone — blowing into a brass reed instrument for passersby on the sidewalk',
+            'A street artist doing graffiti — spray-painting a colorful mural on a wall for onlookers',
+            'A street dancer breakdancing — doing headspins and windmills on cardboard for tips',
+            'A street magician — performing card tricks and sleight-of-hand illusions for a gathered crowd',
+          ],
+          [
+            'Street Musician Playing — someone playing a saxophone or trumpet for passersby on the sidewalk',
+            'Street Artist Painting — someone creating spray paint art on a wall for a crowd',
+            'Street Dancer Breakdancing — someone doing power moves on cardboard for tips',
+            'Street Magician Performing — someone doing card tricks and illusions for a gathering',
+          ],
+        ],
       },
       {
         id: 'wh-10',
@@ -1719,6 +4813,32 @@ const categories = [
           'Children stacking three round shapes into a frozen figure',
           'Children racing down a snowy hill on sleds at full speed',
           'Children lying on their backs waving arms in fresh powder',
+        ],
+        hints: [
+          [
+            'Children throwing packed balls of snow at each other',
+            'Children stacking three round shapes into a frozen figure',
+            'Children racing down a snowy hill on sleds at full speed',
+            'Children lying on their backs waving arms in fresh powder',
+          ],
+          [
+            'Kids scooping up handfuls of snow, packing them tight, and hurling them at each other',
+            'Kids rolling large balls of snow and stacking them to build a frosty figure with a carrot nose',
+            'Kids sitting on sleds or toboggans and sliding down a snow-covered hill at top speed',
+            'Kids falling backward into fresh snow and sweeping their arms and legs to make angel shapes',
+          ],
+          [
+            'Kids having a snowball fight — packing and throwing balls of snow at each other in a winter battle',
+            'Kids building a snowman — rolling and stacking three balls of snow and adding a hat and carrot nose',
+            'Kids sledding — racing down a snowy hill on sleds, toboggans, or saucers at full speed',
+            'Kids making snow angels — lying on their backs in fresh powder and waving arms and legs',
+          ],
+          [
+            'Kids Having a Snowball Fight — children throwing packed balls of snow at each other in winter',
+            'Kids Building a Snowman — children stacking three snowballs into a figure with a carrot nose',
+            'Kids Sledding Down a Hill — children racing down a snowy slope on sleds at full speed',
+            'Kids Making Snow Angels — children lying in fresh powder waving their arms and legs',
+          ],
         ],
       },
     ],
@@ -1746,6 +4866,32 @@ const categories = [
           'Satin slippers with ribbons made for dancing on pointe',
           'Leather boots with pointed toes and a Western heel',
         ],
+        hints: [
+          [
+            'Bright canvas kicks made for walking city streets in style',
+            'Rugged lace-up footwear built for mountain trails',
+            'Satin slippers with ribbons made for dancing on pointe',
+            'Leather boots with pointed toes and a Western heel',
+          ],
+          [
+            'Colorful low-top shoes with rubber soles and laces — the kind you wear to the gym or skatepark',
+            'Heavy-duty hiking boots with thick treads and ankle support for rugged terrain',
+            'Pink satin ballet shoes with long ribbons that wrap around the ankles for stage performances',
+            'Cowboy boots with pointed toes, a stacked heel, and decorative stitching',
+          ],
+          [
+            'Red sneakers — casual athletic shoes with a bright crimson canvas upper and white rubber sole',
+            'Hiking boots — rugged brown leather lace-ups with Vibram soles for mountain trails',
+            'Ballet pointe shoes — satin slippers with a hardened toe box for dancing on the tips of your toes',
+            'Cowboy boots — Western-style leather boots with pointed toes and an angled riding heel',
+          ],
+          [
+            'Red Sneakers — bright red canvas athletic shoes with laces and a rubber sole',
+            'Hiking Boots — rugged lace-up trail boots built for mountain terrain',
+            'Ballet Pointe Shoes — satin dance slippers with ribbons for performing on stage',
+            'Cowboy Boots — pointed-toe leather boots with a Western heel',
+          ],
+        ],
       },
       {
         id: 'eo-2',
@@ -1758,6 +4904,32 @@ const categories = [
           'Wooden box with dials and an antenna that played broadcasts',
           'Turntable device that spins black vinyl discs to play music',
           'Handheld communication device with a circular numbered dial',
+        ],
+        hints: [
+          [
+            'Mechanical writing machine with round keys that go clack-clack',
+            'Wooden box with dials and an antenna that played broadcasts',
+            'Turntable device that spins black vinyl discs to play music',
+            'Handheld communication device with a circular numbered dial',
+          ],
+          [
+            'An old-fashioned machine with metal arms that stamp ink letters onto paper one key at a time',
+            'A vintage radio receiver — a wooden cabinet with dials that picked up AM and FM broadcasts',
+            'A record player — a device with a spinning platter and needle that plays vinyl LP albums',
+            'A rotary telephone — a heavy desk phone with a spinning dial you turn to call numbers',
+          ],
+          [
+            'A vintage typewriter — a mechanical keyboard machine with typebars, a ribbon, and a carriage return bell',
+            'A vintage radio — a tabletop receiver with vacuum tubes and a tuning dial for AM broadcasts',
+            'A vinyl record player — a turntable with a tonearm and stylus that reads grooves on spinning discs',
+            'A rotary phone — a telephone with a numbered finger wheel dial and a curly handset cord',
+          ],
+          [
+            'Vintage Typewriter — a mechanical writing machine with round keys, typebars, and an ink ribbon',
+            'Vintage Radio — a wooden tabletop receiver with dials and an antenna for AM and FM broadcasts',
+            'Vinyl Record Player — a turntable that spins black vinyl discs and reads grooves with a needle',
+            'Rotary Telephone — a heavy phone with a spinning numbered dial and a curly cord handset',
+          ],
         ],
       },
       {
@@ -1772,6 +4944,32 @@ const categories = [
           'Thick slices of egg-soaked bread cooked golden on a griddle',
           'Thin French breakfast wraps rolled up with sweet fillings',
         ],
+        hints: [
+          [
+            'A tower of fluffy golden breakfast cakes dripping with syrup',
+            'A tower of crispy grid-patterned breakfast cakes with butter',
+            'Thick slices of egg-soaked bread cooked golden on a griddle',
+            'Thin French breakfast wraps rolled up with sweet fillings',
+          ],
+          [
+            'A tall stack of round flat cakes made from batter and cooked on a griddle, topped with maple syrup',
+            'A stack of crispy square-patterned cakes pressed in a hot iron and topped with butter and fruit',
+            'Slices of bread dipped in an egg and milk mixture then fried golden brown — French toast',
+            'Paper-thin French batter wraps filled with Nutella, fruit, or whipped cream — crêpes',
+          ],
+          [
+            'A stack of pancakes — fluffy golden flapjacks piled high and dripping with maple syrup and butter',
+            'A stack of waffles — crispy grid-patterned cakes made in a waffle iron with deep syrup pockets',
+            'French toast — thick bread slices soaked in egg and cinnamon then pan-fried until golden',
+            'Crêpes — thin French batter wraps rolled or folded with sweet fillings like Nutella and strawberries',
+          ],
+          [
+            'Stack of Pancakes — a tower of fluffy golden flapjacks dripping with maple syrup and butter',
+            'Stack of Waffles — crispy grid-patterned breakfast cakes pressed in a hot waffle iron',
+            'French Toast — thick egg-soaked bread slices cooked golden on a griddle with cinnamon',
+            'Crêpes — thin French breakfast wraps rolled up with sweet fillings',
+          ],
+        ],
       },
       {
         id: 'eo-4',
@@ -1784,6 +4982,32 @@ const categories = [
           'Solid-body instrument with pickups, an amp, and a whammy bar',
           'Tiny four-stringed Hawaiian instrument perfect for beach songs',
           'Four-stringed instrument played with a bow under the chin',
+        ],
+        hints: [
+          [
+            'Hollow-body wooden instrument with six steel strings and a sound hole',
+            'Solid-body instrument with pickups, an amp, and a whammy bar',
+            'Tiny four-stringed Hawaiian instrument perfect for beach songs',
+            'Four-stringed instrument played with a bow under the chin',
+          ],
+          [
+            'A wooden stringed instrument with a curved body, a neck, and a round hole that resonates sound',
+            'An electric stringed instrument with a solid body, magnetic pickups, and a cable to an amplifier',
+            'A small four-stringed instrument from Hawaii with a bright cheerful sound — a ukulele',
+            'A classical stringed instrument held under the chin and played with a horsehair bow — a violin',
+          ],
+          [
+            'An acoustic guitar — a hollow wooden instrument with six strings, frets, and a sound hole for unplugged playing',
+            'An electric guitar — a solid-body instrument with six strings, pickups, and a tremolo bar plugged into an amp',
+            'A ukulele — a small four-stringed Hawaiian instrument with nylon strings and a bright tone',
+            'A violin — a four-stringed classical instrument played with a bow, held between chin and shoulder',
+          ],
+          [
+            'Acoustic Guitar — a hollow-body wooden instrument with six steel strings and a round sound hole',
+            'Electric Guitar — a solid-body instrument with magnetic pickups, an amp, and a whammy bar',
+            'Ukulele — a tiny four-stringed Hawaiian instrument perfect for beach songs',
+            'Violin — a four-stringed classical instrument played with a bow under the chin',
+          ],
         ],
       },
       {
@@ -1798,6 +5022,32 @@ const categories = [
           'A tall wooden clock with a swinging pendulum and hourly chimes',
           'A horn-shaped music player that amplifies sound from a needle',
         ],
+        hints: [
+          [
+            'A heavy telephone with a spinning numbered dial and curly cord',
+            'A mechanical writing machine with round keys that go clack-clack',
+            'A tall wooden clock with a swinging pendulum and hourly chimes',
+            'A horn-shaped music player that amplifies sound from a needle',
+          ],
+          [
+            'A vintage desk phone where you stick your finger in numbered holes and spin the dial to call',
+            'A typewriter — an old machine where pressing keys makes metal arms stamp ink letters on paper',
+            'A grandfather clock — a tall wooden timepiece with a swinging pendulum and chiming bells',
+            'A gramophone — an early music player with a large flared horn and a hand-cranked turntable',
+          ],
+          [
+            'A rotary phone — a telephone with a circular finger dial, a heavy handset, and a curly cord',
+            'A typewriter — a mechanical machine with typebars, an ink ribbon, and a carriage return bell',
+            'A grandfather clock — a tall freestanding pendulum clock with Westminster chimes on the hour',
+            'A gramophone — a phonograph with a large horn speaker that plays sound from a spinning disc',
+          ],
+          [
+            'Old Rotary Phone — a heavy telephone with a spinning numbered dial and a curly cord handset',
+            'Vintage Typewriter — a mechanical writing machine with round keys and an ink ribbon',
+            'Grandfather Clock — a tall wooden pendulum clock with hourly chimes',
+            'Gramophone — a horn-shaped music player that amplifies sound from a needle on a spinning disc',
+          ],
+        ],
       },
       {
         id: 'eo-6',
@@ -1810,6 +5060,32 @@ const categories = [
           'A flying machine with spinning blades on top for vertical flight',
           'A giant cigar-shaped airship drifting slowly through the clouds',
           'A V-shaped wing you run off a cliff with and ride the thermals',
+        ],
+        hints: [
+          [
+            'A colorful fabric envelope floating in the sky with a wicker basket',
+            'A flying machine with spinning blades on top for vertical flight',
+            'A giant cigar-shaped airship drifting slowly through the clouds',
+            'A V-shaped wing you run off a cliff with and ride the thermals',
+          ],
+          [
+            'A large balloon filled with heated air that lifts a basket of passengers into the sky',
+            'A helicopter — an aircraft with spinning rotor blades that can hover and fly vertically',
+            'A blimp or zeppelin — a large elongated gas-filled airship that floats through the sky',
+            'A hang glider — a lightweight triangular wing you launch from a hillside and soar on air currents',
+          ],
+          [
+            'A hot air balloon — a colorful nylon envelope inflated by a burner flame carrying a wicker gondola',
+            'A helicopter — a rotorcraft with spinning overhead blades used for transport and rescue missions',
+            'A blimp — a non-rigid airship filled with helium gas often seen floating over sporting events',
+            'A hang glider — a fabric delta wing on an aluminum frame launched from cliffs to ride thermals',
+          ],
+          [
+            'Hot Air Balloon — a colorful fabric envelope floating in the sky with a wicker basket underneath',
+            'Helicopter — a flying machine with spinning rotor blades on top for vertical flight',
+            'Blimp — a giant cigar-shaped airship drifting slowly through the clouds',
+            'Hang Glider — a V-shaped wing you launch from a cliff to ride the thermals',
+          ],
         ],
       },
       {
@@ -1824,6 +5100,32 @@ const categories = [
           'Cheap plastic camera you use once and then turn in for prints',
           'Modern mirrorless camera with a screen and interchangeable lenses',
         ],
+        hints: [
+          [
+            'Boxy instant camera that spits out a self-developing photo',
+            'Classic 35mm camera that shoots onto a roll of film negatives',
+            'Cheap plastic camera you use once and then turn in for prints',
+            'Modern mirrorless camera with a screen and interchangeable lenses',
+          ],
+          [
+            'A square-shaped camera that prints a photo right after you take it — no darkroom needed',
+            'A traditional film camera that uses rolls of 35mm film and requires manual focusing',
+            'A disposable camera — a pre-loaded single-use camera you buy at a drugstore and return for prints',
+            'A digital mirrorless camera — a modern compact body with an electronic viewfinder and swappable lenses',
+          ],
+          [
+            'A Polaroid camera — an instant film camera that ejects a white-bordered self-developing photograph',
+            'A 35mm SLR camera — a film camera with a mirror reflex system, manual focus, and film advance lever',
+            'A disposable camera — a cheap single-use film camera with a built-in flash sold at convenience stores',
+            'A mirrorless digital camera — a modern interchangeable-lens camera with no mirror box and a digital sensor',
+          ],
+          [
+            'Polaroid Camera — a boxy instant camera that spits out a self-developing white-bordered photo',
+            'Film SLR Camera — a classic 35mm camera that shoots onto a roll of film negatives',
+            'Disposable Camera — a cheap single-use plastic camera you turn in for prints',
+            'Mirrorless Camera — a modern digital camera with interchangeable lenses and an electronic screen',
+          ],
+        ],
       },
       {
         id: 'eo-8',
@@ -1836,6 +5138,32 @@ const categories = [
           'An elegant hanging light fixture dripping with crystal prisms',
           'A round model of the Earth showing continents and oceans',
           'A glass sphere with a miniature winter scene that snows when shaken',
+        ],
+        hints: [
+          [
+            'A mirrored sphere that scatters light beams across a dance floor',
+            'An elegant hanging light fixture dripping with crystal prisms',
+            'A round model of the Earth showing continents and oceans',
+            'A glass sphere with a miniature winter scene that snows when shaken',
+          ],
+          [
+            'A rotating ball covered in tiny mirrors that reflects colored spotlights around a nightclub',
+            'A chandelier — an ornate multi-armed ceiling fixture with dangling crystals that sparkle',
+            'A globe — a spherical model of the Earth mounted on a stand showing countries and oceans',
+            'A snow globe — a sealed glass dome with a miniature scene that creates a snowstorm when shaken',
+          ],
+          [
+            'A disco ball — a sphere covered in small square mirror tiles that spins and scatters light beams',
+            'A crystal chandelier — a decorative hanging light fixture with glass prisms and multiple arms',
+            'A desktop globe — a rotating spherical map of the world on a tilted axis stand',
+            'A snow globe — a glass sphere with a miniature winter scene, water, and glitter that floats like snow',
+          ],
+          [
+            'Disco Ball — a mirrored sphere that spins and scatters colored light beams across a dance floor',
+            'Crystal Chandelier — an elegant hanging light fixture dripping with glass prisms',
+            'Desktop Globe — a round model of the Earth showing continents and oceans on a stand',
+            'Snow Globe — a glass sphere with a miniature winter scene that snows when shaken',
+          ],
         ],
       },
       {
@@ -1850,6 +5178,32 @@ const categories = [
           'A jingly truck that drives through neighborhoods playing music',
           'A tall red vehicle with two levels of passenger seating',
         ],
+        hints: [
+          [
+            'Bright yellow ride that picks kids up every weekday morning',
+            'Big red emergency vehicle with a ladder and a siren on top',
+            'A jingly truck that drives through neighborhoods playing music',
+            'A tall red vehicle with two levels of passenger seating',
+          ],
+          [
+            'A long yellow vehicle with flashing red lights and a stop sign arm that carries students to school',
+            'A fire truck — a red emergency vehicle with ladders, hoses, and a loud siren on top',
+            'An ice cream truck — a white truck playing music that drives through neighborhoods selling frozen treats',
+            'A double-decker bus — a tall bus with two levels of passenger seating popular in London',
+          ],
+          [
+            'A yellow school bus — the iconic American school transport with black lettering and flashing stop signs',
+            'A fire engine — a red truck with a turntable ladder, water pump, and emergency lights and sirens',
+            'An ice cream truck — a mobile vendor playing jingly music selling popsicles and soft serve',
+            'A London double-decker bus — a tall red Routemaster bus with an open platform and two passenger decks',
+          ],
+          [
+            'Yellow School Bus — the bright yellow ride that picks kids up every weekday morning for school',
+            'Fire Truck — a big red emergency vehicle with a ladder, hoses, and a siren on top',
+            'Ice Cream Truck — a jingly truck that drives through neighborhoods selling frozen treats',
+            'Double-Decker Bus — a tall red vehicle with two levels of passenger seating',
+          ],
+        ],
       },
       {
         id: 'eo-10',
@@ -1862,6 +5216,32 @@ const categories = [
           'A mysterious wooden box with hidden compartments and mechanisms',
           'A fortune-telling toy sphere you shake and flip for an answer',
           'Colorful interlocking plastic bricks for building anything',
+        ],
+        hints: [
+          [
+            'Twistable six-sided puzzle with nine colored squares on each face',
+            'A mysterious wooden box with hidden compartments and mechanisms',
+            'A fortune-telling toy sphere you shake and flip for an answer',
+            'Colorful interlocking plastic bricks for building anything',
+          ],
+          [
+            'A 3x3 rotating cube puzzle where each face has nine colored tiles you twist to solve',
+            'A puzzle box — a wooden box with secret sliding panels and hidden compartments',
+            'A Magic 8-Ball — a black sphere with a window that reveals answers when you shake and flip it',
+            'LEGO bricks — small colorful interlocking plastic pieces you snap together to build anything',
+          ],
+          [
+            'A Rubik\'s Cube — a 3x3x3 twisting puzzle invented in 1974 with six colored faces to solve',
+            'A Japanese puzzle box — a wooden Himitsu-Bako with hidden sliding mechanisms to open',
+            'A Magic 8-Ball — a fortune-telling toy made by Mattel with a 20-sided die floating in blue liquid',
+            'LEGO — Danish interlocking plastic bricks with studs and tubes for building models and creations',
+          ],
+          [
+            'Rubik\'s Cube — the twistable six-sided 3x3 puzzle with nine colored squares on each face',
+            'Puzzle Box — a mysterious wooden box with hidden compartments and sliding mechanisms',
+            'Magic 8-Ball — a fortune-telling toy sphere you shake and flip for a yes-or-no answer',
+            'LEGO Bricks — colorful interlocking plastic bricks for building anything you can imagine',
+          ],
         ],
       },
     ],

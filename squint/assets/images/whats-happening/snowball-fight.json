@@ -1,0 +1,15 @@
+{
+  "filename": "snowball-fight.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Sony A1 70-200mm f/2.8, 1/2000s freeze frame, sharp detail, vivid colors. children having an energetic snowball fight in a snowy backyard, throwing snowballs, laughing faces, winter coats and hats, snow-covered trees, white winter wonderland",
+  "camera_preset": "action",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/vhyRtn5fJ8UCXC2HeoBexfT0qqQAGNYRDxO7gNdeIfWUV4CjF/tmp8ykjgmhi.png",
+  "generated_at": "2026-02-28T15:14:30Z"
+}

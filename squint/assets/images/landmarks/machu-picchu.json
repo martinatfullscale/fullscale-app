@@ -1,0 +1,15 @@
+{
+  "filename": "machu-picchu.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "aerial photograph shot on DJI Mavic 3 Hasselblad, overhead perspective, crystal clear detail. Machu Picchu ancient Incan citadel in Peru, terraced stone ruins on mountain ridge, Huayna Picchu peak rising behind, morning mist in the valley below, lush green mountains",
+  "camera_preset": "aerial",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/aQzL3AQQ3DoLEBqAdfwfGns1VwMbMn1P9f7po7ktAQBr9WYsA/tmpgtrja8qy.png",
+  "generated_at": "2026-02-28T15:11:51Z"
+}

@@ -7,6 +7,7 @@ import {
   Animated,
   TouchableOpacity,
   Dimensions,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -347,6 +348,20 @@ export default function GameScreen({ route, navigation }) {
     setTimerRunning(true);
   };
 
+  // --- Exit game with confirmation ---
+  const handleExit = () => {
+    const wasRunning = timerRunning;
+    setTimerRunning(false);
+    Alert.alert(
+      'Exit Game?',
+      'Your progress will be lost.',
+      [
+        { text: 'Cancel', style: 'cancel', onPress: () => { if (wasRunning) setTimerRunning(true); } },
+        { text: 'Exit', style: 'destructive', onPress: () => navigation.replace('Start') },
+      ]
+    );
+  };
+
   // ============================================
   // ELIMINATION CHALLENGE SCREEN
   // ============================================
@@ -460,6 +475,9 @@ export default function GameScreen({ route, navigation }) {
         <TimerBar secondsLeft={secondsLeft} running={timerRunning} />
         <View style={styles.headerRow}>
           <View style={styles.headerLeft}>
+            <TouchableOpacity style={styles.exitButton} onPress={handleExit}>
+              <Text style={styles.exitText}>✕</Text>
+            </TouchableOpacity>
             <Text style={styles.roundText}>{round + 1} of {TOTAL_ROUNDS}</Text>
             {isElimination && currentPlayer && (
               <View style={styles.playerTag}>
@@ -570,6 +588,21 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+  },
+  exitButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#3A3A3A',
+    borderWidth: 1.5,
+    borderColor: '#555',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  exitText: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    fontWeight: '800',
   },
   roundText: {
     color: '#888888',

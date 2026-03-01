@@ -8,7 +8,7 @@ import {
   ScrollView,
   Dimensions,
 } from 'react-native';
-import { getCategoryList, getAllFaces, getFacesByCategory } from '../data/categories';
+import { getCategoryList } from '../data/categories';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -51,7 +51,6 @@ export default function CategoryPicker({ visible, onSelect, onClose }) {
             >
               <Text style={styles.categoryIcon}>🎯</Text>
               <Text style={styles.categoryName}>All Categories</Text>
-              <Text style={styles.categoryCount}>{getAllFaces().length} total</Text>
             </TouchableOpacity>
 
             {/* Individual categories */}
@@ -64,7 +63,6 @@ export default function CategoryPicker({ visible, onSelect, onClose }) {
               >
                 <Text style={styles.categoryIcon}>{cat.icon}</Text>
                 <Text style={styles.categoryName}>{cat.name}</Text>
-                <Text style={styles.categoryCount}>{getFacesByCategory(cat.id).length}</Text>
               </TouchableOpacity>
             ))}
           </ScrollView>
@@ -77,7 +75,7 @@ export default function CategoryPicker({ visible, onSelect, onClose }) {
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
-    justifyContent: 'flex-end',
+    justifyContent: 'flex-start',
   },
   backdrop: {
     ...StyleSheet.absoluteFillObject,
@@ -85,9 +83,10 @@ const styles = StyleSheet.create({
   },
   sheet: {
     backgroundColor: '#1A1A1A',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    maxHeight: SCREEN_HEIGHT * 0.75,
+    borderBottomLeftRadius: 24,
+    borderBottomRightRadius: 24,
+    maxHeight: SCREEN_HEIGHT * 0.85,
+    paddingTop: 60,
     paddingBottom: 40,
   },
   handle: {
@@ -132,10 +131,5 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '700',
     color: '#FFFFFF',
-  },
-  categoryCount: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#888888',
   },
 });

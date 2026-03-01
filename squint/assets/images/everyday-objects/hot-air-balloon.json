@@ -1,0 +1,15 @@
+{
+  "filename": "hot-air-balloon.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Fujifilm GFX 100S 32-64mm f/4, golden hour light, sharp detail, natural colors. a single colorful hot air balloon floating in a clear blue sky, vibrant rainbow-striped envelope fully inflated, wicker basket below, puffy white clouds, festival atmosphere",
+  "camera_preset": "landscape_wide",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/PNQjrHIvakLIEJnDgaCoJqaNyenOvkbT8ksrxLxFffxvEXYsA/tmp8ehtvutk.png",
+  "generated_at": "2026-02-28T15:15:36Z"
+}

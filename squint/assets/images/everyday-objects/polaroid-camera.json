@@ -1,0 +1,15 @@
+{
+  "filename": "polaroid-camera.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "product photograph shot on Canon R5 100mm f/2.8 macro, studio lighting, crisp detail, white seamless background. a classic white Polaroid instant camera, iconic square body design, rainbow stripe, viewfinder and lens visible, slightly angled hero shot, clean minimal background",
+  "camera_preset": "object_studio",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/RC4wMaO9lb67NtVveHvxeSkOI8GQkLlDCIQrl8ahKNDiiLMWA/tmprslosrcm.png",
+  "generated_at": "2026-02-28T15:15:46Z"
+}

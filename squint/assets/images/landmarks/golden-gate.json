@@ -1,0 +1,15 @@
+{
+  "filename": "golden-gate.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Fujifilm GFX 100S 32-64mm f/4, golden hour light, sharp detail, natural colors. the Golden Gate Bridge in San Francisco, iconic International Orange suspension bridge spanning the bay, shot from Battery Spencer viewpoint, fog rolling under the bridge, dramatic composition",
+  "camera_preset": "landscape_wide",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/NGeC18TkWO2XfkPFfjLLoq7cIyV1hcCOWFZkkkHRta4HftwYB/tmp9wfgdi97.png",
+  "generated_at": "2026-02-28T15:12:37Z"
+}

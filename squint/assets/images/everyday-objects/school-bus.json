@@ -1,0 +1,15 @@
+{
+  "filename": "school-bus.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "candid photograph shot on Fujifilm X-T4 23mm f/2.0, available light, subtle grain, muted tones. a classic yellow American school bus parked on a suburban street, iconic flat-nose design, black lettering reading SCHOOL BUS, red stop sign arm, clear day",
+  "camera_preset": "street",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/pLdNNNenR70NSq2nwQHxVffm1A9J0fCEOrmG4bzAef7Iv4CjF/tmpg97qnejb.png",
+  "generated_at": "2026-02-28T15:16:14Z"
+}

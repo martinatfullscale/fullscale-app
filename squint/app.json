@@ -7,6 +7,7 @@
     "orientation": "portrait",
     "backgroundColor": "#0D0D0D",
     "userInterfaceStyle": "dark",
+    "icon": "./assets/icon.png",
     "ios": {
       "bundleIdentifier": "com.squint.app",
       "supportsTablet": false,
@@ -17,6 +18,7 @@
     "android": {
       "package": "com.squint.app",
       "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0D0D0D"
       }
     },

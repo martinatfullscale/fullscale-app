@@ -1,0 +1,15 @@
+{
+  "filename": "man-on-bike.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Sony A1 70-200mm f/2.8, 1/2000s freeze frame, sharp detail, vivid colors. a man riding a bicycle down a city street, cycling fast, urban environment, motion and energy, casual athletic clothing, daytime",
+  "camera_preset": "action",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/avXKKJXU7aYmPBfTZjioGjag5XddXEzXh3Ky5YleFVAwfWYsA/tmpk37x8blo.png",
+  "generated_at": "2026-02-28T15:12:49Z"
+}

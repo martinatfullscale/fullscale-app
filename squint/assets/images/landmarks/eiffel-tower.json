@@ -1,0 +1,15 @@
+{
+  "filename": "eiffel-tower.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Fujifilm GFX 100S 32-64mm f/4, golden hour light, sharp detail, natural colors. the Eiffel Tower in Paris, full structure visible, shot from Champ de Mars, blue sky with wispy clouds, green lawn in foreground, iconic iron lattice detail",
+  "camera_preset": "landscape_wide",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/JS6Z7L0PryY7IRK5jAEEuiOTDhN10MkxvvFNHL5HAf77uFGLA/tmp9vcy0gyr.png",
+  "generated_at": "2026-02-28T15:10:48Z"
+}

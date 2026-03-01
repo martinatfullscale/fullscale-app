@@ -1,0 +1,15 @@
+{
+  "filename": "disco-ball.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Leica Q3 28mm f/1.7, dramatic light, deep shadows, film-like rendering. a shimmering disco ball hanging from a dark ceiling, hundreds of tiny mirror tiles catching colored lights, beams of light scattered across the room, party atmosphere, sparkle",
+  "camera_preset": "moody",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/t5MV8CvvyfT9YqMWY21VkfFFk2ppiG0iqPwRC2dpMflgFXYsA/tmpij9d3vjc.png",
+  "generated_at": "2026-02-28T15:16:01Z"
+}

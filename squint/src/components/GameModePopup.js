@@ -8,6 +8,8 @@ import {
   Modal,
   ScrollView,
   Dimensions,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -75,7 +77,10 @@ export default function GameModePopup({ visible, onStartSolo, onStartMulti, onCl
       animationType="slide"
       onRequestClose={handleClose}
     >
-      <View style={styles.overlay}>
+      <KeyboardAvoidingView
+        style={styles.overlay}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      >
         <TouchableOpacity style={styles.backdrop} onPress={handleClose} activeOpacity={1} />
 
         <View style={styles.sheet}>
@@ -190,7 +195,7 @@ export default function GameModePopup({ visible, onStartSolo, onStartMulti, onCl
             </ScrollView>
           )}
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }

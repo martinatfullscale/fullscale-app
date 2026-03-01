@@ -1,0 +1,15 @@
+{
+  "filename": "dog-frisbee.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Sony A1 70-200mm f/2.8, 1/2000s freeze frame, sharp detail, vivid colors. an energetic dog leaping high into the air to catch a red frisbee in a park, athletic mid-air jump, tongue out, green grass field, action shot",
+  "camera_preset": "action",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/euwtbOxhc6VRIioW7LeSyzpG8BffvCOgA4WGIZ6qXntABuwYB/tmpfr50jrvz.png",
+  "generated_at": "2026-02-28T15:13:22Z"
+}

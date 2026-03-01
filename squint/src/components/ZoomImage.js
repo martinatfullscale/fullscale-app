@@ -24,6 +24,9 @@ const SCALE_BY_STAGE = {
   5: 1.0,
 };
 
+/** Blur radius per zoom stage — blurry when zoomed in, clear when revealed */
+const BLUR_BY_STAGE = { 1: 12, 2: 8, 3: 4, 4: 1, 5: 0 };
+
 /**
  * ZoomImage — renders a face image (or colored fallback) starting super tiny.
  * The image grows with each wrong guess — you literally have to squint to see it.
@@ -74,6 +77,7 @@ export default function ZoomImage({ image, imageColor, initials, zoomStage }) {
               source={imageSource}
               style={styles.image}
               resizeMode="cover"
+              blurRadius={BLUR_BY_STAGE[zoomStage] || 0}
               onError={() => setImageError(true)}
             />
           ) : (
