@@ -6,16 +6,17 @@ import {
   StyleSheet,
   StatusBar,
   Alert,
+  FlatList,
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { getScoreLabel } from '../utils/scoring';
-import { saveScore } from '../utils/storage';
+import { saveScore, getTopScores } from '../utils/storage';
 import { stopBackgroundMusic } from '../utils/audio';
 
 /**
  * ScoreScreen — final results after a game session.
- * Handles both solo and elimination mode results.
- * Auto-saves scores to the leaderboard.
+ * Shows score + performance label + mini leaderboard snapshot.
+ * No more misleading "X of Y correct" — just the score and where you rank.
  */
 export default function ScoreScreen({ route, navigation }) {
   const {
@@ -33,40 +34,48 @@ export default function ScoreScreen({ route, navigation }) {
   const label = getScoreLabel(finalScore);
   const isElimination = mode === 'elimination';
   const [saved, setSaved] = useState(false);
+  const [topScores, setTopScores] = useState([]);
 
   useEffect(() => {
     stopBackgroundMusic();
 
-    if (!saved) {
-      if (isElimination && playerScores) {
-        Object.entries(playerScores).forEach(([name, data]) => {
-          saveScore({
-            playerName: name,
-            score: data.score,
-            correctCount: data.correct,
+    const saveAndLoad = async () => {
+      if (!saved) {
+        if (isElimination && playerScores) {
+          Object.entries(playerScores).forEach(([name, data]) => {
+            saveScore({
+              playerName: name,
+              score: data.score,
+              correctCount: data.correct,
+              totalRounds,
+              category: categoryId || 'all',
+              mode: 'elimination',
+            });
+          });
+        } else {
+          await saveScore({
+            playerName,
+            score: finalScore,
+            correctCount,
             totalRounds,
             category: categoryId || 'all',
-            mode: 'elimination',
+            mode: 'solo',
           });
-        });
-      } else {
-        saveScore({
-          playerName,
-          score: finalScore,
-          correctCount,
-          totalRounds,
-          category: categoryId || 'all',
-          mode: 'solo',
-        });
+        }
+        setSaved(true);
       }
-      setSaved(true);
-    }
+      // Load top 5 for the mini leaderboard
+      const top = await getTopScores(5);
+      setTopScores(top);
+    };
+
+    saveAndLoad();
   }, []);
 
   const handleShare = async () => {
     const shareText = isElimination && winner
       ? `💀 SQUINT ELIMINATION\n${winner} survived!\nScore: ${playerScores?.[winner]?.score || 0} / 5000`
-      : `🔍 SQUINT\nI scored ${finalScore} / 5000 (${correctCount}/${totalRounds} correct)\n${label}`;
+      : `🔍 SQUINT\nI scored ${finalScore} / 5000\n${label}`;
     try {
       await Clipboard.setStringAsync(shareText);
       Alert.alert('Copied!', 'Score copied to clipboard.');
@@ -103,17 +112,28 @@ export default function ScoreScreen({ route, navigation }) {
             <Text style={styles.label}>{label}</Text>
             <Text style={styles.score}>{finalScore}</Text>
             <Text style={styles.outOf}>out of 5,000</Text>
-            <Text style={styles.correct}>
-              {correctCount} of {totalRounds} correct
-            </Text>
           </>
+        )}
+
+        {/* Mini leaderboard snapshot */}
+        {topScores.length > 0 && (
+          <View style={styles.miniLeaderboard}>
+            <Text style={styles.miniTitle}>TOP SCORES</Text>
+            {topScores.map((entry, i) => (
+              <View key={entry.id || i} style={styles.miniRow}>
+                <Text style={styles.miniRank}>{i + 1}.</Text>
+                <Text style={styles.miniName} numberOfLines={1}>{entry.playerName}</Text>
+                <Text style={styles.miniScore}>{entry.score}</Text>
+              </View>
+            ))}
+          </View>
         )}
 
         <View style={styles.buttons}>
           <TouchableOpacity
             style={styles.primaryButton}
             activeOpacity={0.8}
-            onPress={() => navigation.replace('Start')}
+            onPress={() => navigation.replace('EyeTest')}
           >
             <Text style={styles.primaryButtonText}>Play Again</Text>
           </TouchableOpacity>
@@ -123,7 +143,7 @@ export default function ScoreScreen({ route, navigation }) {
             activeOpacity={0.8}
             onPress={() => navigation.navigate('Leaderboard')}
           >
-            <Text style={styles.leaderboardButtonText}>🏆 Leaderboard</Text>
+            <Text style={styles.leaderboardButtonText}>🏆 Full Leaderboard</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
@@ -149,6 +169,7 @@ const styles = StyleSheet.create({
   content: {
     alignItems: 'center',
     paddingHorizontal: 32,
+    width: '100%',
   },
   label: {
     fontSize: 24,
@@ -182,17 +203,11 @@ const styles = StyleSheet.create({
     fontSize: 18,
     color: '#888888',
     fontWeight: '600',
-    marginBottom: 16,
-  },
-  correct: {
-    fontSize: 20,
-    color: '#FFFFFF',
-    fontWeight: '700',
-    marginBottom: 40,
+    marginBottom: 20,
   },
   eliminatedSection: {
     marginTop: 16,
-    marginBottom: 32,
+    marginBottom: 24,
     alignItems: 'center',
   },
   eliminatedTitle: {
@@ -209,6 +224,46 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginBottom: 4,
   },
+  // --- Mini leaderboard ---
+  miniLeaderboard: {
+    width: '100%',
+    backgroundColor: '#1A1A1A',
+    borderRadius: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    marginBottom: 24,
+  },
+  miniTitle: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#888888',
+    letterSpacing: 3,
+    marginBottom: 10,
+    textAlign: 'center',
+  },
+  miniRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  miniRank: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#555',
+    width: 24,
+  },
+  miniName: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  miniScore: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#F5E642',
+  },
+  // --- Buttons ---
   buttons: {
     width: '100%',
     gap: 14,

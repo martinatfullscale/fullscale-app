@@ -110,7 +110,7 @@ export default function LeaderboardScreen({ navigation }) {
           <Text style={styles.emptySubtitle}>Play a game to get on the board!</Text>
           <TouchableOpacity
             style={styles.playButton}
-            onPress={() => navigation.replace('Start')}
+            onPress={() => navigation.replace('EyeTest')}
           >
             <Text style={styles.playButtonText}>Play Now</Text>
           </TouchableOpacity>

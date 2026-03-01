@@ -13,30 +13,56 @@ const CARD_WIDTH = (SCREEN_WIDTH - 44) / 2; // 2 columns with tighter padding
  *   state   — "default" | "correct" | "wrong" | "disabled"
  */
 
-/** Strip trailing filler words that make truncated labels read awkwardly */
-const FILLER = new Set([
+/** Words that dangle awkwardly at the end of a truncated phrase */
+const TRAILING_FILLER = new Set([
   'who', 'that', 'which', 'on', 'in', 'for', 'from',
   'with', 'and', 'or', 'to', 'at', 'by', 'of', 'since',
-  'the', 'a', 'an', 'its', 'their',
+  'the', 'a', 'an', 'its', 'their', 'his', 'her',
+  'known', 'famous', 'nicknamed', 'called', 'turned',
+  'whose', 'behind', 'became', 'as', 'is', 'was', 'been',
 ]);
 
-/** Shorten a label to 2-3 meaningful words for compact display */
+/**
+ * Shorten a label to 2-3 distinctive words for compact card display.
+ *
+ * Strategy:
+ *  1. Em-dash → take the name/title portion before it.
+ *  2. Strip leading articles (A, An, The) — they waste card space.
+ *  3. Keep first 2-3 words, strip trailing filler.
+ */
 function shortenLabel(text) {
   if (!text) return '';
+
   // If em-dash present, take part before it (that's the name/title)
   const dashIdx = text.indexOf(' — ');
   if (dashIdx !== -1) return text.substring(0, dashIdx).trim();
   const dashIdx2 = text.indexOf(' – ');
   if (dashIdx2 !== -1) return text.substring(0, dashIdx2).trim();
-  // Take first 3 words, strip trailing filler
-  const words = text.trim().split(/\s+/);
-  if (words.length <= 3) return text.trim();
-  const sliced = words.slice(0, 3);
-  while (sliced.length > 1 && FILLER.has(sliced[sliced.length - 1].toLowerCase())) {
+
+  // Strip leading articles — they eat up space and aren't distinctive
+  const cleaned = text.trim().replace(/^(A|An|The)\s+/i, '');
+  const words = cleaned.split(/\s+/);
+
+  if (words.length <= 2) return cleaned;
+
+  // Take first 2 words
+  const sliced = words.slice(0, 2);
+
+  // If the 2nd word is filler, grab a 3rd to keep it meaningful
+  if (TRAILING_FILLER.has(sliced[1].toLowerCase()) && words.length > 2) {
+    sliced.push(words[2]);
+  }
+
+  // Strip trailing filler
+  while (sliced.length > 1 && TRAILING_FILLER.has(sliced[sliced.length - 1].toLowerCase())) {
     sliced.pop();
   }
-  // If stripped to 1 word, keep first 2
-  if (sliced.length === 1) return words.slice(0, 2).join(' ');
+
+  // Safety: if stripped to 1 word, grab the next word too
+  if (sliced.length === 1 && words.length > 1) {
+    sliced.push(words[1]);
+  }
+
   return sliced.join(' ');
 }
 
@@ -60,8 +86,7 @@ export default function AnswerCard({ label, onPress, state = 'default' }) {
       <Text
         style={[styles.label, state === 'disabled' && styles.disabledLabel]}
         numberOfLines={2}
-        adjustsFontSizeToFit
-        minimumFontScale={0.7}
+        ellipsizeMode="tail"
       >
         {shortenLabel(label)}
       </Text>
@@ -81,10 +106,10 @@ const styles = StyleSheet.create({
   },
   label: {
     color: '#FFFFFF',
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '700',
     textAlign: 'center',
-    lineHeight: 20,
+    lineHeight: 22,
   },
   disabledLabel: {
     opacity: 0.4,

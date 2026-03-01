@@ -1,19 +1,26 @@
 /**
  * Scoring utility for Squint.
- * Points decrease as more of the image is revealed.
+ * Points drop STEEPLY with each wrong answer — guessing wrong and fast
+ * should NOT yield a high score.
+ *
+ * Stage 1 (first try):      500 pts
+ * Stage 2 (after 1 wrong):  300 pts
+ * Stage 3 (after 2 wrong):  150 pts
+ * Stage 4 (after 3 wrong):   50 pts
+ * Time-out / all wrong:       0 pts
  */
 
 const POINTS_BY_STAGE = {
   1: 500,
-  2: 400,
-  3: 300,
-  4: 200,
-  5: 100,
+  2: 300,
+  3: 150,
+  4: 50,
+  5: 0,
 };
 
 /**
- * Get the points awarded for a correct answer at the given zoom stage.
- * @param {number} stage - Current zoom stage (1-5)
+ * Get the points awarded for a correct answer at the given stage.
+ * @param {number} stage - Current hint stage (1-4 playable, 5 = time-out)
  * @returns {number} Points earned
  */
 export function getPointsForStage(stage) {

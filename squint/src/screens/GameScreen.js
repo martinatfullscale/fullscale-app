@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
+  Image,
   StyleSheet,
   StatusBar,
   Animated,
@@ -29,6 +30,8 @@ const ELIMINATION_TIMER = 15;
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const PLAYER_COLORS = ['#F5E642', '#FF4444', '#4CAF50', '#2196F3'];
+const SPLASH_DURATION = 2000; // ms to show icon splash before game starts
+const ICON_SOURCE = require('../../assets/icon.png');
 
 /**
  * GameScreen — the core gameplay loop.
@@ -71,6 +74,32 @@ export default function GameScreen({ route, navigation }) {
     })
   );
 
+  // Splash screen state — show icon before game starts
+  const [showSplash, setShowSplash] = useState(true);
+  const splashOpacity = useRef(new Animated.Value(1)).current;
+  const splashScale = useRef(new Animated.Value(0.6)).current;
+
+  useEffect(() => {
+    // Animate icon in
+    Animated.spring(splashScale, {
+      toValue: 1,
+      tension: 40,
+      friction: 7,
+      useNativeDriver: true,
+    }).start();
+
+    // After delay, fade out and start game
+    const timer = setTimeout(() => {
+      Animated.timing(splashOpacity, {
+        toValue: 0,
+        duration: 400,
+        useNativeDriver: true,
+      }).start(() => setShowSplash(false));
+    }, SPLASH_DURATION);
+
+    return () => clearTimeout(timer);
+  }, []);
+
   // Core game state
   const [round, setRound] = useState(0);
   const [hintRound, setHintRound] = useState(0); // 0-3 = which layer of the onion
@@ -78,10 +107,11 @@ export default function GameScreen({ route, navigation }) {
   const [score, setScore] = useState(0);
   const [correctCount, setCorrectCount] = useState(0);
   const [secondsLeft, setSecondsLeft] = useState(TIMER_SECONDS);
-  const [timerRunning, setTimerRunning] = useState(!isElimination);
+  const [timerRunning, setTimerRunning] = useState(false); // starts after splash
   const [cardStates, setCardStates] = useState({});
   const [roundLocked, setRoundLocked] = useState(false);
   const [revealName, setRevealName] = useState(null); // show name on miss-all
+  const [isPaused, setIsPaused] = useState(false);
 
   // Elimination mode state
   const [activePlayers, setActivePlayers] = useState(players ? [...players] : []);
@@ -106,6 +136,13 @@ export default function GameScreen({ route, navigation }) {
 
   // Elimination animation
   const redFlash = useRef(new Animated.Value(0)).current;
+
+  // Start timer when splash finishes (solo mode only; elimination waits for turn screen)
+  useEffect(() => {
+    if (!showSplash && !isElimination) {
+      setTimerRunning(true);
+    }
+  }, [showSplash, isElimination]);
 
   const timerRef = useRef(null);
   const roundRef = useRef(round);
@@ -317,6 +354,9 @@ export default function GameScreen({ route, navigation }) {
         }
 
         setCardStates({ [optionIndex]: 'correct' });
+        // Reveal full unblurred photo + name on correct answer
+        setZoomStage(MAX_STAGES);
+        setRevealName(currentFace.name);
         setTimeout(() => advanceRound(), CORRECT_DELAY);
       } else {
         playSFX('wrong');
@@ -348,6 +388,17 @@ export default function GameScreen({ route, navigation }) {
     setTimerRunning(true);
   };
 
+  // --- Pause / Resume ---
+  const handlePause = () => {
+    setIsPaused(true);
+    setTimerRunning(false);
+  };
+
+  const handleResume = () => {
+    setIsPaused(false);
+    setTimerRunning(true);
+  };
+
   // --- Exit game with confirmation ---
   const handleExit = () => {
     const wasRunning = timerRunning;
@@ -357,10 +408,38 @@ export default function GameScreen({ route, navigation }) {
       'Your progress will be lost.',
       [
         { text: 'Cancel', style: 'cancel', onPress: () => { if (wasRunning) setTimerRunning(true); } },
-        { text: 'Exit', style: 'destructive', onPress: () => navigation.replace('Start') },
+        { text: 'Exit', style: 'destructive', onPress: () => navigation.replace('EyeTest') },
       ]
     );
   };
+
+  // ============================================
+  // ICON SPLASH — shown briefly before game starts
+  // ============================================
+  if (showSplash) {
+    return (
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <StatusBar barStyle="light-content" backgroundColor="#0D0D0D" />
+        <Animated.View
+          style={[
+            styles.splashContent,
+            {
+              opacity: splashOpacity,
+              transform: [{ scale: splashScale }],
+            },
+          ]}
+        >
+          <Image
+            source={ICON_SOURCE}
+            style={styles.splashIcon}
+            resizeMode="contain"
+          />
+          <Text style={styles.splashText}>SQUINT</Text>
+          <Text style={styles.splashSubtext}>Get ready...</Text>
+        </Animated.View>
+      </SafeAreaView>
+    );
+  }
 
   // ============================================
   // ELIMINATION CHALLENGE SCREEN
@@ -478,6 +557,9 @@ export default function GameScreen({ route, navigation }) {
             <TouchableOpacity style={styles.exitButton} onPress={handleExit}>
               <Text style={styles.exitText}>✕</Text>
             </TouchableOpacity>
+            <TouchableOpacity style={styles.pauseButton} onPress={handlePause}>
+              <Text style={styles.pauseText}>⏸</Text>
+            </TouchableOpacity>
             <Text style={styles.roundText}>{round + 1} of {TOTAL_ROUNDS}</Text>
             {isElimination && currentPlayer && (
               <View style={styles.playerTag}>
@@ -549,6 +631,17 @@ export default function GameScreen({ route, navigation }) {
           ))}
         </View>
       </View>
+
+      {/* Pause overlay — covers everything so they can't cheat */}
+      {isPaused && (
+        <View style={styles.pauseOverlay}>
+          <Text style={styles.pauseTitle}>PAUSED</Text>
+          <Text style={styles.pauseHint}>The image is hidden so you can't cheat 👀</Text>
+          <TouchableOpacity style={styles.resumeButton} onPress={handleResume} activeOpacity={0.8}>
+            <Text style={styles.resumeText}>Resume</Text>
+          </TouchableOpacity>
+        </View>
+      )}
     </SafeAreaView>
   );
 }
@@ -567,6 +660,30 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#0D0D0D',
+  },
+  // --- Splash screen ---
+  splashContent: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  splashIcon: {
+    width: 180,
+    height: 180,
+    borderRadius: 36,
+    marginBottom: 24,
+  },
+  splashText: {
+    fontSize: 48,
+    fontWeight: '900',
+    color: '#F5E642',
+    letterSpacing: 8,
+    marginBottom: 8,
+  },
+  splashSubtext: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#888888',
   },
   // --- Header ---
   header: {
@@ -603,6 +720,19 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 18,
     fontWeight: '800',
+  },
+  pauseButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#3A3A3A',
+    borderWidth: 1.5,
+    borderColor: '#555',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pauseText: {
+    fontSize: 16,
   },
   roundText: {
     color: '#888888',
@@ -836,5 +966,37 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 20,
     fontStyle: 'italic',
+  },
+  // --- Pause overlay ---
+  pauseOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#0D0D0D',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 100,
+  },
+  pauseTitle: {
+    fontSize: 48,
+    fontWeight: '900',
+    color: '#F5E642',
+    letterSpacing: 8,
+    marginBottom: 16,
+  },
+  pauseHint: {
+    fontSize: 16,
+    color: '#888888',
+    fontWeight: '600',
+    marginBottom: 48,
+  },
+  resumeButton: {
+    backgroundColor: '#F5E642',
+    paddingVertical: 18,
+    paddingHorizontal: 60,
+    borderRadius: 16,
+  },
+  resumeText: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#0D0D0D',
   },
 });

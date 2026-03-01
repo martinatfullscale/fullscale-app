@@ -118,6 +118,56 @@ IMAGE_PROMPTS: dict[str, list[dict]] = {
             "camera": "landscape_wide",
             "prompt": "the Golden Gate Bridge in San Francisco, iconic International Orange suspension bridge spanning the bay, shot from Battery Spencer viewpoint, fog rolling under the bridge, dramatic composition",
         },
+        {
+            "filename": "petra.png",
+            "camera": "landscape_wide",
+            "prompt": "the Treasury facade of Petra in Jordan, rose-red sandstone carved into a narrow canyon wall called the Siq, intricate Hellenistic columns and pediments, warm golden light illuminating the rock face",
+        },
+        {
+            "filename": "angkor-wat.png",
+            "camera": "landscape_wide",
+            "prompt": "Angkor Wat temple complex in Siem Reap Cambodia, five lotus-shaped towers reflected perfectly in the moat water, ancient sandstone architecture, sunrise golden light, palm trees framing the scene",
+        },
+        {
+            "filename": "pyramids-of-giza.png",
+            "camera": "landscape_wide",
+            "prompt": "the three Great Pyramids of Giza in Egypt, massive limestone pyramids rising from the desert sand, the Great Sphinx visible in foreground, clear blue sky, warm desert light, Cairo skyline faintly visible in background",
+        },
+        {
+            "filename": "mount-rushmore.png",
+            "camera": "landscape_tele",
+            "prompt": "Mount Rushmore National Memorial in South Dakota, four presidential faces carved into granite mountainside, Washington Jefferson Roosevelt Lincoln, pine trees at the base, clear sky, dramatic American monument",
+        },
+        {
+            "filename": "stonehenge.png",
+            "camera": "landscape_wide",
+            "prompt": "Stonehenge prehistoric stone circle on Salisbury Plain in Wiltshire England, massive sarsen stone trilithons arranged in a circle, green grass field, dramatic cloudy sky, ancient mysterious atmosphere",
+        },
+        {
+            "filename": "burj-khalifa.png",
+            "camera": "landscape_tele",
+            "prompt": "the Burj Khalifa supertall skyscraper in Dubai UAE, gleaming glass and steel tower soaring into clear blue sky, Y-shaped floor plan visible, modern city skyline below, world's tallest building",
+        },
+        {
+            "filename": "leaning-tower-of-pisa.png",
+            "camera": "landscape_tele",
+            "prompt": "the Leaning Tower of Pisa in Tuscany Italy, white marble Romanesque bell tower tilting to one side, multiple levels of arched colonnades, green grass of Piazza dei Miracoli, blue sky, cathedral partially visible",
+        },
+        {
+            "filename": "chichen-itza.png",
+            "camera": "landscape_wide",
+            "prompt": "the Temple of Kukulcan pyramid at Chichen Itza in Yucatan Mexico, stepped limestone pyramid with flat top, ancient Mayan architecture, green grass plaza, clear blue sky, dramatic stone serpent head at base of stairs",
+        },
+        {
+            "filename": "sagrada-familia.png",
+            "camera": "landscape_tele",
+            "prompt": "La Sagrada Familia basilica in Barcelona Spain, Antoni Gaudi's unfinished masterpiece, fantastical organic spires and towers, intricate stone facades with religious sculptures, construction cranes visible, warm Mediterranean light",
+        },
+        {
+            "filename": "niagara-falls.png",
+            "camera": "landscape_wide",
+            "prompt": "Niagara Falls Horseshoe Falls on the US-Canadian border, massive curtain of water plunging over rocky cliff edge, enormous mist cloud rising, turquoise water, rainbow in the spray, tourist boat below for scale",
+        },
     ],
     "whats-happening": [
         {
@@ -170,6 +220,56 @@ IMAGE_PROMPTS: dict[str, list[dict]] = {
             "camera": "action",
             "prompt": "children having an energetic snowball fight in a snowy backyard, throwing snowballs, laughing faces, winter coats and hats, snow-covered trees, white winter wonderland",
         },
+        {
+            "filename": "surfing-wave.png",
+            "camera": "action",
+            "prompt": "a surfer riding a large turquoise ocean wave, crouching low on a surfboard, wetsuit, spray of white water, tropical beach in background, athletic action shot, bright sunny day",
+        },
+        {
+            "filename": "tug-of-war.png",
+            "camera": "action",
+            "prompt": "two teams of kids playing tug of war outdoors, pulling a thick rope in opposite directions, digging heels into grass, straining faces, school field day atmosphere, bright sunny day",
+        },
+        {
+            "filename": "birthday-candles.png",
+            "camera": "object_natural",
+            "prompt": "a child blowing out birthday candles on a decorated cake, puffed cheeks, party hats, colorful frosted cake with lit candles, birthday party atmosphere, warm indoor lighting, friends gathered around",
+        },
+        {
+            "filename": "painter-easel.png",
+            "camera": "street",
+            "prompt": "an artist painting at a wooden easel in a bright sunlit studio, holding a paint palette with oil colors, brush applying strokes to a landscape canvas, paint-splattered smock, creative atmosphere",
+        },
+        {
+            "filename": "walking-dog.png",
+            "camera": "street",
+            "prompt": "a person walking a golden retriever on a leash down a tree-lined suburban sidewalk, casual clothing, autumn leaves on the ground, peaceful neighborhood, warm afternoon light",
+        },
+        {
+            "filename": "casting-line.png",
+            "camera": "landscape_wide",
+            "prompt": "a fisherman casting a fly fishing line over a scenic mountain river, rod arcing overhead, fishing line visible mid-air, wearing waders and vest, misty morning light, rocky stream bed, pine trees",
+        },
+        {
+            "filename": "merry-go-round.png",
+            "camera": "street",
+            "prompt": "children riding a colorful carousel merry-go-round at a fairground, painted wooden horses bobbing up and down, twinkling lights and mirrors, bright carnival atmosphere, joyful expressions",
+        },
+        {
+            "filename": "doing-yoga.png",
+            "camera": "object_natural",
+            "prompt": "a woman doing a tree pose yoga position on a yoga mat in a serene sunlit studio, balanced on one leg with arms raised, peaceful expression, minimalist room with plants, warm natural light",
+        },
+        {
+            "filename": "firefighter-hose.png",
+            "camera": "action",
+            "prompt": "a firefighter in full turnout gear and helmet spraying a powerful stream of water from a fire hose, dramatic angle, smoke in background, protective breathing apparatus, intense action scene",
+        },
+        {
+            "filename": "barber-cutting.png",
+            "camera": "street",
+            "prompt": "a barber cutting a man's hair in a classic barbershop, using electric clippers for a fade, barber cape on client, vintage barber chair, mirrors and traditional barbershop interior, warm lighting",
+        },
     ],
     "everyday-objects": [
         {
@@ -221,6 +321,56 @@ IMAGE_PROMPTS: dict[str, list[dict]] = {
             "filename": "rubiks-cube.png",
             "camera": "object_natural",
             "prompt": "a Rubik's cube sitting on a table, classic 3x3 puzzle, partially solved with colorful scrambled faces visible, red blue green yellow orange white squares, sharp focus",
+        },
+        {
+            "filename": "vintage-globe.png",
+            "camera": "object_natural",
+            "prompt": "a vintage desktop globe on a brass stand, faded antique map showing continents and oceans, brass meridian ring, sitting on a wooden desk in a study, warm library lighting, leather books in background",
+        },
+        {
+            "filename": "cactus-in-a-pot.png",
+            "camera": "object_natural",
+            "prompt": "a small prickly cactus in a terracotta clay pot on a sunny windowsill, green spiny succulent, desert plant, simple and charming, natural window light, minimalist indoor garden aesthetic",
+        },
+        {
+            "filename": "lava-lamp.png",
+            "camera": "moody",
+            "prompt": "a classic lava lamp glowing on a dark surface, cone-shaped base, glass cylinder with colorful wax blobs floating and rising in illuminated liquid, retro 1960s aesthetic, psychedelic warm glow",
+        },
+        {
+            "filename": "fire-hydrant.png",
+            "camera": "street",
+            "prompt": "a bright red fire hydrant on a city sidewalk, classic American style with two nozzle caps and a bonnet on top, concrete pavement, urban street scene, slight wear and chipped paint",
+        },
+        {
+            "filename": "grandfather-clock.png",
+            "camera": "object_natural",
+            "prompt": "a tall grandfather clock standing against a wall in a traditional living room, ornate dark wood case, pendulum visible through glass panel, roman numeral clock face, warm ambient lighting",
+        },
+        {
+            "filename": "telescope.png",
+            "camera": "object_natural",
+            "prompt": "a brass and black telescope on a wooden tripod, pointed slightly upward, sitting near a window at night, starry sky visible outside, classic refractor design, astronomer's study setting",
+        },
+        {
+            "filename": "vintage-suitcase.png",
+            "camera": "object_natural",
+            "prompt": "a vintage leather suitcase with brass latches and corner protectors, covered in colorful travel stickers from old hotels, warm brown leather, sitting on a wooden floor, nostalgic travel aesthetic",
+        },
+        {
+            "filename": "popcorn-machine.png",
+            "camera": "street",
+            "prompt": "a classic red and gold popcorn machine cart, glass cabinet filled with freshly popped popcorn, heated kettle visible inside, carnival fairground setting, warm inviting glow, movie theater vibes",
+        },
+        {
+            "filename": "vinyl-record-player.png",
+            "camera": "object_natural",
+            "prompt": "a vintage turntable record player with a black vinyl record spinning on the platter, tonearm with stylus resting on the groove, wooden base, warm retro living room setting, audiophile aesthetic",
+        },
+        {
+            "filename": "red-fire-extinguisher.png",
+            "camera": "object_natural",
+            "prompt": "a bright red fire extinguisher mounted on a white wall with a metal bracket, pressurized steel cylinder with black squeeze handle and safety pin, rubber hose nozzle, safety equipment",
         },
     ],
 }
