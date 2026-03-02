@@ -30,7 +30,7 @@ const categories = [
       {
         id: 'hh-1',
         name: 'Drake',
-        image: null,
+        image: require('../../assets/images/hip-hop/drake.png'),
         imageColor: '#8B6914',
         initials: 'D',
         options: [
@@ -69,7 +69,7 @@ const categories = [
       {
         id: 'hh-2',
         name: 'Jay-Z',
-        image: null,
+        image: require('../../assets/images/hip-hop/jay-z.png'),
         imageColor: '#1C1C1C',
         initials: 'JZ',
         options: [
@@ -108,7 +108,7 @@ const categories = [
       {
         id: 'hh-3',
         name: 'Kendrick Lamar',
-        image: null,
+        image: require('../../assets/images/hip-hop/kendrick-lamar.png'),
         imageColor: '#4A0E0E',
         initials: 'KL',
         options: [
@@ -147,7 +147,7 @@ const categories = [
       {
         id: 'hh-4',
         name: 'Nicki Minaj',
-        image: null,
+        image: require('../../assets/images/hip-hop/nicki-minaj.png'),
         imageColor: '#FF69B4',
         initials: 'NM',
         options: [
@@ -186,7 +186,7 @@ const categories = [
       {
         id: 'hh-5',
         name: 'Kanye West',
-        image: null,
+        image: require('../../assets/images/hip-hop/kanye-west.png'),
         imageColor: '#8B4513',
         initials: 'KW',
         options: [
@@ -225,7 +225,7 @@ const categories = [
       {
         id: 'hh-6',
         name: 'Lil Wayne',
-        image: null,
+        image: require('../../assets/images/hip-hop/lil-wayne.png'),
         imageColor: '#B22222',
         initials: 'LW',
         options: [
@@ -264,7 +264,7 @@ const categories = [
       {
         id: 'hh-7',
         name: 'Cardi B',
-        image: null,
+        image: require('../../assets/images/hip-hop/cardi-b.png'),
         imageColor: '#DC143C',
         initials: 'CB',
         options: [
@@ -303,7 +303,7 @@ const categories = [
       {
         id: 'hh-8',
         name: 'Travis Scott',
-        image: null,
+        image: require('../../assets/images/hip-hop/travis-scott.png'),
         imageColor: '#4B3621',
         initials: 'TS',
         options: [
@@ -342,7 +342,7 @@ const categories = [
       {
         id: 'hh-9',
         name: 'Snoop Dogg',
-        image: null,
+        image: require('../../assets/images/hip-hop/snoop-dogg.png'),
         imageColor: '#228B22',
         initials: 'SD',
         options: [
@@ -381,7 +381,7 @@ const categories = [
       {
         id: 'hh-10',
         name: 'Megan Thee Stallion',
-        image: null,
+        image: require('../../assets/images/hip-hop/megan-thee-stallion.png'),
         imageColor: '#FF6347',
         initials: 'MS',
         options: [
@@ -432,7 +432,7 @@ const categories = [
       {
         id: 'ps-1',
         name: 'Taylor Swift',
-        image: null,
+        image: require('../../assets/images/pop-stars/taylor-swift.png'),
         imageColor: '#FF69B4',
         initials: 'TS',
         options: [
@@ -471,7 +471,7 @@ const categories = [
       {
         id: 'ps-2',
         name: 'Ariana Grande',
-        image: null,
+        image: require('../../assets/images/pop-stars/ariana-grande.png'),
         imageColor: '#DDA0DD',
         initials: 'AG',
         options: [
@@ -510,7 +510,7 @@ const categories = [
       {
         id: 'ps-3',
         name: 'Billie Eilish',
-        image: null,
+        image: require('../../assets/images/pop-stars/billie-eilish.png'),
         imageColor: '#32CD32',
         initials: 'BE',
         options: [
@@ -549,7 +549,7 @@ const categories = [
       {
         id: 'ps-4',
         name: 'Ed Sheeran',
-        image: null,
+        image: require('../../assets/images/pop-stars/ed-sheeran.png'),
         imageColor: '#FF8C00',
         initials: 'ES',
         options: [
@@ -588,7 +588,7 @@ const categories = [
       {
         id: 'ps-5',
         name: 'Justin Bieber',
-        image: null,
+        image: require('../../assets/images/pop-stars/justin-bieber.png'),
         imageColor: '#9370DB',
         initials: 'JB',
         options: [
@@ -627,7 +627,7 @@ const categories = [
       {
         id: 'ps-6',
         name: 'Lady Gaga',
-        image: null,
+        image: require('../../assets/images/pop-stars/lady-gaga.png'),
         imageColor: '#C71585',
         initials: 'LG',
         options: [
@@ -666,7 +666,7 @@ const categories = [
       {
         id: 'ps-7',
         name: 'Harry Styles',
-        image: null,
+        image: require('../../assets/images/pop-stars/harry-styles.png'),
         imageColor: '#4169E1',
         initials: 'HS',
         options: [
@@ -705,7 +705,7 @@ const categories = [
       {
         id: 'ps-8',
         name: 'Dua Lipa',
-        image: null,
+        image: require('../../assets/images/pop-stars/dua-lipa.png'),
         imageColor: '#FF1493',
         initials: 'DL',
         options: [
@@ -744,7 +744,7 @@ const categories = [
       {
         id: 'ps-9',
         name: 'The Weeknd',
-        image: null,
+        image: require('../../assets/images/pop-stars/the-weeknd.png'),
         imageColor: '#8B0000',
         initials: 'TW',
         options: [
@@ -783,7 +783,7 @@ const categories = [
       {
         id: 'ps-10',
         name: 'Olivia Rodrigo',
-        image: null,
+        image: require('../../assets/images/pop-stars/olivia-rodrigo.png'),
         imageColor: '#8A2BE2',
         initials: 'OR',
         options: [
@@ -834,7 +834,7 @@ const categories = [
       {
         id: 'iw-1',
         name: 'Oprah Winfrey',
-        image: null,
+        image: require('../../assets/images/iconic-women/oprah-winfrey.png'),
         imageColor: '#FF8C00',
         initials: 'OW',
         options: [
@@ -873,7 +873,7 @@ const categories = [
       {
         id: 'iw-2',
         name: 'Michelle Obama',
-        image: null,
+        image: require('../../assets/images/iconic-women/michelle-obama.png'),
         imageColor: '#4682B4',
         initials: 'MO',
         options: [
@@ -912,7 +912,7 @@ const categories = [
       {
         id: 'iw-3',
         name: 'Serena Williams',
-        image: null,
+        image: require('../../assets/images/iconic-women/serena-williams.png'),
         imageColor: '#6A0DAD',
         initials: 'SW',
         options: [
@@ -951,7 +951,7 @@ const categories = [
       {
         id: 'iw-4',
         name: 'Beyoncé',
-        image: null,
+        image: require('../../assets/images/iconic-women/beyonce.png'),
         imageColor: '#C8A415',
         initials: 'B',
         options: [
@@ -990,7 +990,7 @@ const categories = [
       {
         id: 'iw-5',
         name: 'Kamala Harris',
-        image: null,
+        image: require('../../assets/images/iconic-women/kamala-harris.png'),
         imageColor: '#191970',
         initials: 'KH',
         options: [
@@ -1029,7 +1029,7 @@ const categories = [
       {
         id: 'iw-6',
         name: 'Viola Davis',
-        image: null,
+        image: require('../../assets/images/iconic-women/viola-davis.png'),
         imageColor: '#800020',
         initials: 'VD',
         options: [
@@ -1068,7 +1068,7 @@ const categories = [
       {
         id: 'iw-7',
         name: 'Simone Biles',
-        image: null,
+        image: require('../../assets/images/iconic-women/simone-biles.png'),
         imageColor: '#FF4500',
         initials: 'SB',
         options: [
@@ -1107,7 +1107,7 @@ const categories = [
       {
         id: 'iw-8',
         name: 'Dolly Parton',
-        image: null,
+        image: require('../../assets/images/iconic-women/dolly-parton.png'),
         imageColor: '#FFB6C1',
         initials: 'DP',
         options: [
@@ -1146,7 +1146,7 @@ const categories = [
       {
         id: 'iw-9',
         name: 'Ruth Bader Ginsburg',
-        image: null,
+        image: require('../../assets/images/iconic-women/ruth-bader-ginsburg.png'),
         imageColor: '#2F4F4F',
         initials: 'RBG',
         options: [
@@ -1185,7 +1185,7 @@ const categories = [
       {
         id: 'iw-10',
         name: 'Maya Angelou',
-        image: null,
+        image: require('../../assets/images/iconic-women/maya-angelou.png'),
         imageColor: '#8B4513',
         initials: 'MA',
         options: [
@@ -1236,7 +1236,7 @@ const categories = [
       {
         id: 'nba-1',
         name: 'Michael Jordan',
-        image: null,
+        image: require('../../assets/images/nba-legends/michael-jordan.png'),
         imageColor: '#B22222',
         initials: 'MJ',
         options: [
@@ -1275,7 +1275,7 @@ const categories = [
       {
         id: 'nba-2',
         name: 'LeBron James',
-        image: null,
+        image: require('../../assets/images/nba-legends/lebron-james.png'),
         imageColor: '#4B0082',
         initials: 'LJ',
         options: [
@@ -1314,7 +1314,7 @@ const categories = [
       {
         id: 'nba-3',
         name: 'Kobe Bryant',
-        image: null,
+        image: require('../../assets/images/nba-legends/kobe-bryant.png'),
         imageColor: '#FFD700',
         initials: 'KB',
         options: [
@@ -1353,7 +1353,7 @@ const categories = [
       {
         id: 'nba-4',
         name: 'Stephen Curry',
-        image: null,
+        image: require('../../assets/images/nba-legends/stephen-curry.png'),
         imageColor: '#1E90FF',
         initials: 'SC',
         options: [
@@ -1392,7 +1392,7 @@ const categories = [
       {
         id: 'nba-5',
         name: 'Magic Johnson',
-        image: null,
+        image: require('../../assets/images/nba-legends/magic-johnson.png'),
         imageColor: '#DAA520',
         initials: 'MJ',
         options: [
@@ -1431,7 +1431,7 @@ const categories = [
       {
         id: 'nba-6',
         name: 'Shaquille O\'Neal',
-        image: null,
+        image: require('../../assets/images/nba-legends/shaquille-oneal.png'),
         imageColor: '#000080',
         initials: 'SO',
         options: [
@@ -1470,7 +1470,7 @@ const categories = [
       {
         id: 'nba-7',
         name: 'Kevin Durant',
-        image: null,
+        image: require('../../assets/images/nba-legends/kevin-durant.png'),
         imageColor: '#FF4500',
         initials: 'KD',
         options: [
@@ -1509,7 +1509,7 @@ const categories = [
       {
         id: 'nba-8',
         name: 'Allen Iverson',
-        image: null,
+        image: require('../../assets/images/nba-legends/allen-iverson.png'),
         imageColor: '#8B0000',
         initials: 'AI',
         options: [
@@ -1548,7 +1548,7 @@ const categories = [
       {
         id: 'nba-9',
         name: 'Tim Duncan',
-        image: null,
+        image: require('../../assets/images/nba-legends/tim-duncan.png'),
         imageColor: '#2F2F2F',
         initials: 'TD',
         options: [
@@ -1587,7 +1587,7 @@ const categories = [
       {
         id: 'nba-10',
         name: 'Wilt Chamberlain',
-        image: null,
+        image: require('../../assets/images/nba-legends/wilt-chamberlain.png'),
         imageColor: '#4B0082',
         initials: 'WC',
         options: [
@@ -1638,7 +1638,7 @@ const categories = [
       {
         id: 'hw-1',
         name: 'Denzel Washington',
-        image: null,
+        image: require('../../assets/images/hollywood/denzel-washington.png'),
         imageColor: '#1C1C1C',
         initials: 'DW',
         options: [
@@ -1677,7 +1677,7 @@ const categories = [
       {
         id: 'hw-2',
         name: 'Leonardo DiCaprio',
-        image: null,
+        image: require('../../assets/images/hollywood/leonardo-dicaprio.png'),
         imageColor: '#2E8B57',
         initials: 'LD',
         options: [
@@ -1716,7 +1716,7 @@ const categories = [
       {
         id: 'hw-3',
         name: 'Meryl Streep',
-        image: null,
+        image: require('../../assets/images/hollywood/meryl-streep.png'),
         imageColor: '#708090',
         initials: 'MS',
         options: [
@@ -1755,7 +1755,7 @@ const categories = [
       {
         id: 'hw-4',
         name: 'Will Smith',
-        image: null,
+        image: require('../../assets/images/hollywood/will-smith.png'),
         imageColor: '#4169E1',
         initials: 'WS',
         options: [
@@ -1794,7 +1794,7 @@ const categories = [
       {
         id: 'hw-5',
         name: 'Scarlett Johansson',
-        image: null,
+        image: require('../../assets/images/hollywood/scarlett-johansson.png'),
         imageColor: '#DC143C',
         initials: 'SJ',
         options: [
@@ -1833,7 +1833,7 @@ const categories = [
       {
         id: 'hw-6',
         name: 'Samuel L. Jackson',
-        image: null,
+        image: require('../../assets/images/hollywood/samuel-l-jackson.png'),
         imageColor: '#6A0DAD',
         initials: 'SJ',
         options: [
@@ -1872,7 +1872,7 @@ const categories = [
       {
         id: 'hw-7',
         name: 'Jennifer Aniston',
-        image: null,
+        image: require('../../assets/images/hollywood/jennifer-aniston.png'),
         imageColor: '#F4A460',
         initials: 'JA',
         options: [
@@ -1911,7 +1911,7 @@ const categories = [
       {
         id: 'hw-8',
         name: 'Brad Pitt',
-        image: null,
+        image: require('../../assets/images/hollywood/brad-pitt.png'),
         imageColor: '#D2B48C',
         initials: 'BP',
         options: [
@@ -1950,7 +1950,7 @@ const categories = [
       {
         id: 'hw-9',
         name: 'Zendaya',
-        image: null,
+        image: require('../../assets/images/hollywood/zendaya.png'),
         imageColor: '#FF4081',
         initials: 'Z',
         options: [
@@ -1989,7 +1989,7 @@ const categories = [
       {
         id: 'hw-10',
         name: 'Morgan Freeman',
-        image: null,
+        image: require('../../assets/images/hollywood/morgan-freeman.png'),
         imageColor: '#3E2723',
         initials: 'MF',
         options: [
@@ -2040,7 +2040,7 @@ const categories = [
       {
         id: 'rb-1',
         name: 'Rihanna',
-        image: null,
+        image: require('../../assets/images/rnb-icons/rihanna.png'),
         imageColor: '#DC143C',
         initials: 'R',
         options: [
@@ -2079,7 +2079,7 @@ const categories = [
       {
         id: 'rb-2',
         name: 'Usher',
-        image: null,
+        image: require('../../assets/images/rnb-icons/usher.png'),
         imageColor: '#4A4A4A',
         initials: 'U',
         options: [
@@ -2118,7 +2118,7 @@ const categories = [
       {
         id: 'rb-3',
         name: 'Alicia Keys',
-        image: null,
+        image: require('../../assets/images/rnb-icons/alicia-keys.png'),
         imageColor: '#B8860B',
         initials: 'AK',
         options: [
@@ -2157,7 +2157,7 @@ const categories = [
       {
         id: 'rb-4',
         name: 'Frank Ocean',
-        image: null,
+        image: require('../../assets/images/rnb-icons/frank-ocean.png'),
         imageColor: '#FF8C00',
         initials: 'FO',
         options: [
@@ -2196,7 +2196,7 @@ const categories = [
       {
         id: 'rb-5',
         name: 'SZA',
-        image: null,
+        image: require('../../assets/images/rnb-icons/sza.png'),
         imageColor: '#8FBC8F',
         initials: 'S',
         options: [
@@ -2235,7 +2235,7 @@ const categories = [
       {
         id: 'rb-6',
         name: 'Mariah Carey',
-        image: null,
+        image: require('../../assets/images/rnb-icons/mariah-carey.png'),
         imageColor: '#FFB6C1',
         initials: 'MC',
         options: [
@@ -2274,7 +2274,7 @@ const categories = [
       {
         id: 'rb-7',
         name: 'Chris Brown',
-        image: null,
+        image: require('../../assets/images/rnb-icons/chris-brown.png'),
         imageColor: '#CD853F',
         initials: 'CB',
         options: [
@@ -2313,7 +2313,7 @@ const categories = [
       {
         id: 'rb-8',
         name: 'Lauryn Hill',
-        image: null,
+        image: require('../../assets/images/rnb-icons/lauryn-hill.png'),
         imageColor: '#556B2F',
         initials: 'LH',
         options: [
@@ -2352,7 +2352,7 @@ const categories = [
       {
         id: 'rb-9',
         name: 'Toni Braxton',
-        image: null,
+        image: require('../../assets/images/rnb-icons/toni-braxton.png'),
         imageColor: '#800080',
         initials: 'TB',
         options: [
@@ -2391,7 +2391,7 @@ const categories = [
       {
         id: 'rb-10',
         name: 'H.E.R.',
-        image: null,
+        image: require('../../assets/images/rnb-icons/her.png'),
         imageColor: '#696969',
         initials: 'H',
         options: [
@@ -2442,7 +2442,7 @@ const categories = [
       {
         id: 'wl-1',
         name: 'Barack Obama',
-        image: null,
+        image: require('../../assets/images/world-leaders/barack-obama.png'),
         imageColor: '#1E3A5F',
         initials: 'BO',
         options: [
@@ -2481,7 +2481,7 @@ const categories = [
       {
         id: 'wl-2',
         name: 'Nelson Mandela',
-        image: null,
+        image: require('../../assets/images/world-leaders/nelson-mandela.png'),
         imageColor: '#228B22',
         initials: 'NM',
         options: [
@@ -2520,7 +2520,7 @@ const categories = [
       {
         id: 'wl-3',
         name: 'Martin Luther King Jr.',
-        image: null,
+        image: require('../../assets/images/world-leaders/martin-luther-king-jr.png'),
         imageColor: '#2F4F4F',
         initials: 'MLK',
         options: [
@@ -2559,7 +2559,7 @@ const categories = [
       {
         id: 'wl-4',
         name: 'Queen Elizabeth II',
-        image: null,
+        image: require('../../assets/images/world-leaders/queen-elizabeth-ii.png'),
         imageColor: '#4169E1',
         initials: 'QE',
         options: [
@@ -2598,7 +2598,7 @@ const categories = [
       {
         id: 'wl-5',
         name: 'Abraham Lincoln',
-        image: null,
+        image: require('../../assets/images/world-leaders/abraham-lincoln.png'),
         imageColor: '#1C1C1C',
         initials: 'AL',
         options: [
@@ -2637,7 +2637,7 @@ const categories = [
       {
         id: 'wl-6',
         name: 'John F. Kennedy',
-        image: null,
+        image: require('../../assets/images/world-leaders/john-f-kennedy.png'),
         imageColor: '#4682B4',
         initials: 'JFK',
         options: [
@@ -2676,7 +2676,7 @@ const categories = [
       {
         id: 'wl-7',
         name: 'Mahatma Gandhi',
-        image: null,
+        image: require('../../assets/images/world-leaders/mahatma-gandhi.png'),
         imageColor: '#F5F5DC',
         initials: 'MG',
         options: [
@@ -2715,7 +2715,7 @@ const categories = [
       {
         id: 'wl-8',
         name: 'Malala Yousafzai',
-        image: null,
+        image: require('../../assets/images/world-leaders/malala-yousafzai.png'),
         imageColor: '#FF1493',
         initials: 'MY',
         options: [
@@ -2754,7 +2754,7 @@ const categories = [
       {
         id: 'wl-9',
         name: 'Winston Churchill',
-        image: null,
+        image: require('../../assets/images/world-leaders/winston-churchill.png'),
         imageColor: '#3B3B3B',
         initials: 'WC',
         options: [
@@ -2793,7 +2793,7 @@ const categories = [
       {
         id: 'wl-10',
         name: 'Angela Merkel',
-        image: null,
+        image: require('../../assets/images/world-leaders/angela-merkel.png'),
         imageColor: '#B0C4DE',
         initials: 'AM',
         options: [
@@ -2844,7 +2844,7 @@ const categories = [
       {
         id: 'tt-1',
         name: 'Elon Musk',
-        image: null,
+        image: require('../../assets/images/tech-titans/elon-musk.png'),
         imageColor: '#2F4F4F',
         initials: 'EM',
         options: [
@@ -2883,7 +2883,7 @@ const categories = [
       {
         id: 'tt-2',
         name: 'Jeff Bezos',
-        image: null,
+        image: require('../../assets/images/tech-titans/jeff-bezos.png'),
         imageColor: '#FF9900',
         initials: 'JB',
         options: [
@@ -2922,7 +2922,7 @@ const categories = [
       {
         id: 'tt-3',
         name: 'Bill Gates',
-        image: null,
+        image: require('../../assets/images/tech-titans/bill-gates.png'),
         imageColor: '#00A4EF',
         initials: 'BG',
         options: [
@@ -2961,7 +2961,7 @@ const categories = [
       {
         id: 'tt-4',
         name: 'Mark Zuckerberg',
-        image: null,
+        image: require('../../assets/images/tech-titans/mark-zuckerberg.png'),
         imageColor: '#4267B2',
         initials: 'MZ',
         options: [
@@ -3000,7 +3000,7 @@ const categories = [
       {
         id: 'tt-5',
         name: 'Steve Jobs',
-        image: null,
+        image: require('../../assets/images/tech-titans/steve-jobs.png'),
         imageColor: '#555555',
         initials: 'SJ',
         options: [
@@ -3039,7 +3039,7 @@ const categories = [
       {
         id: 'tt-6',
         name: 'Tim Cook',
-        image: null,
+        image: require('../../assets/images/tech-titans/tim-cook.png'),
         imageColor: '#A3AAAE',
         initials: 'TC',
         options: [
@@ -3078,7 +3078,7 @@ const categories = [
       {
         id: 'tt-7',
         name: 'Sundar Pichai',
-        image: null,
+        image: require('../../assets/images/tech-titans/sundar-pichai.png'),
         imageColor: '#4285F4',
         initials: 'SP',
         options: [
@@ -3117,7 +3117,7 @@ const categories = [
       {
         id: 'tt-8',
         name: 'Jensen Huang',
-        image: null,
+        image: require('../../assets/images/tech-titans/jensen-huang.png'),
         imageColor: '#76B900',
         initials: 'JH',
         options: [
@@ -3156,7 +3156,7 @@ const categories = [
       {
         id: 'tt-9',
         name: 'Satya Nadella',
-        image: null,
+        image: require('../../assets/images/tech-titans/satya-nadella.png'),
         imageColor: '#00A4EF',
         initials: 'SN',
         options: [
@@ -3195,7 +3195,7 @@ const categories = [
       {
         id: 'tt-10',
         name: 'Lisa Su',
-        image: null,
+        image: require('../../assets/images/tech-titans/lisa-su.png'),
         imageColor: '#ED1C24',
         initials: 'LS',
         options: [
@@ -3246,7 +3246,7 @@ const categories = [
       {
         id: 'sg-1',
         name: 'Tom Brady',
-        image: null,
+        image: require('../../assets/images/sports-goats/tom-brady.png'),
         imageColor: '#002244',
         initials: 'TB',
         options: [
@@ -3285,7 +3285,7 @@ const categories = [
       {
         id: 'sg-2',
         name: 'Usain Bolt',
-        image: null,
+        image: require('../../assets/images/sports-goats/usain-bolt.png'),
         imageColor: '#FFD700',
         initials: 'UB',
         options: [
@@ -3324,7 +3324,7 @@ const categories = [
       {
         id: 'sg-3',
         name: 'Lionel Messi',
-        image: null,
+        image: require('../../assets/images/sports-goats/lionel-messi.png'),
         imageColor: '#75AADB',
         initials: 'LM',
         options: [
@@ -3363,7 +3363,7 @@ const categories = [
       {
         id: 'sg-4',
         name: 'Muhammad Ali',
-        image: null,
+        image: require('../../assets/images/sports-goats/muhammad-ali.png'),
         imageColor: '#8B0000',
         initials: 'MA',
         options: [
@@ -3402,7 +3402,7 @@ const categories = [
       {
         id: 'sg-5',
         name: 'Tiger Woods',
-        image: null,
+        image: require('../../assets/images/sports-goats/tiger-woods.png'),
         imageColor: '#006400',
         initials: 'TW',
         options: [
@@ -3441,7 +3441,7 @@ const categories = [
       {
         id: 'sg-6',
         name: 'Cristiano Ronaldo',
-        image: null,
+        image: require('../../assets/images/sports-goats/cristiano-ronaldo.png'),
         imageColor: '#006633',
         initials: 'CR',
         options: [
@@ -3480,7 +3480,7 @@ const categories = [
       {
         id: 'sg-7',
         name: 'Wayne Gretzky',
-        image: null,
+        image: require('../../assets/images/sports-goats/wayne-gretzky.png'),
         imageColor: '#041E42',
         initials: 'WG',
         options: [
@@ -3519,7 +3519,7 @@ const categories = [
       {
         id: 'sg-8',
         name: 'Michael Phelps',
-        image: null,
+        image: require('../../assets/images/sports-goats/michael-phelps.png'),
         imageColor: '#1E90FF',
         initials: 'MP',
         options: [
@@ -3558,7 +3558,7 @@ const categories = [
       {
         id: 'sg-9',
         name: 'Patrick Mahomes',
-        image: null,
+        image: require('../../assets/images/sports-goats/patrick-mahomes.png'),
         imageColor: '#E31837',
         initials: 'PM',
         options: [
@@ -3597,7 +3597,7 @@ const categories = [
       {
         id: 'sg-10',
         name: 'Sha\'Carri Richardson',
-        image: null,
+        image: require('../../assets/images/sports-goats/shacarri-richardson.png'),
         imageColor: '#FF6347',
         initials: 'SR',
         options: [
@@ -3648,7 +3648,7 @@ const categories = [
       {
         id: 'tv-1',
         name: 'Pedro Pascal',
-        image: null,
+        image: require('../../assets/images/tv-streaming/pedro-pascal.png'),
         imageColor: '#8B4513',
         initials: 'PP',
         options: [
@@ -3687,7 +3687,7 @@ const categories = [
       {
         id: 'tv-2',
         name: 'Issa Rae',
-        image: null,
+        image: require('../../assets/images/tv-streaming/issa-rae.png'),
         imageColor: '#FF7F50',
         initials: 'IR',
         options: [
@@ -3726,7 +3726,7 @@ const categories = [
       {
         id: 'tv-3',
         name: 'Millie Bobby Brown',
-        image: null,
+        image: require('../../assets/images/tv-streaming/millie-bobby-brown.png'),
         imageColor: '#FF1493',
         initials: 'MB',
         options: [
@@ -3765,7 +3765,7 @@ const categories = [
       {
         id: 'tv-4',
         name: 'Sterling K. Brown',
-        image: null,
+        image: require('../../assets/images/tv-streaming/sterling-k-brown.png'),
         imageColor: '#2F4F4F',
         initials: 'SB',
         options: [
@@ -3804,7 +3804,7 @@ const categories = [
       {
         id: 'tv-5',
         name: 'Kerry Washington',
-        image: null,
+        image: require('../../assets/images/tv-streaming/kerry-washington.png'),
         imageColor: '#9932CC',
         initials: 'KW',
         options: [
@@ -3843,7 +3843,7 @@ const categories = [
       {
         id: 'tv-6',
         name: 'Idris Elba',
-        image: null,
+        image: require('../../assets/images/tv-streaming/idris-elba.png'),
         imageColor: '#36454F',
         initials: 'IE',
         options: [
@@ -3882,7 +3882,7 @@ const categories = [
       {
         id: 'tv-7',
         name: 'Donald Glover',
-        image: null,
+        image: require('../../assets/images/tv-streaming/donald-glover.png'),
         imageColor: '#DAA520',
         initials: 'DG',
         options: [
@@ -3921,7 +3921,7 @@ const categories = [
       {
         id: 'tv-8',
         name: 'Jenna Ortega',
-        image: null,
+        image: require('../../assets/images/tv-streaming/jenna-ortega.png'),
         imageColor: '#1C1C1C',
         initials: 'JO',
         options: [
@@ -3960,7 +3960,7 @@ const categories = [
       {
         id: 'tv-9',
         name: 'Michael B. Jordan',
-        image: null,
+        image: require('../../assets/images/tv-streaming/michael-b-jordan.png'),
         imageColor: '#000080',
         initials: 'MJ',
         options: [
@@ -3999,7 +3999,7 @@ const categories = [
       {
         id: 'tv-10',
         name: 'Tracee Ellis Ross',
-        image: null,
+        image: require('../../assets/images/tv-streaming/tracee-ellis-ross.png'),
         imageColor: '#FF69B4',
         initials: 'TR',
         options: [
