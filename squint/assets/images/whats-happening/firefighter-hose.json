@@ -1,0 +1,15 @@
+{
+  "filename": "firefighter-hose.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Sony A1 70-200mm f/2.8, 1/2000s freeze frame, sharp detail, vivid colors. a firefighter in full turnout gear and helmet spraying a powerful stream of water from a fire hose, dramatic angle, smoke in background, protective breathing apparatus, intense action scene",
+  "camera_preset": "action",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/QcY9MsSEbr6EE1U3pb7F2AWTUfkmACSqZNeTojAvS7Y7CpMWA/tmpynnazuvv.png",
+  "generated_at": "2026-03-02T00:50:04Z"
+}

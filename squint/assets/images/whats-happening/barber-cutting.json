@@ -1,0 +1,15 @@
+{
+  "filename": "barber-cutting.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "candid photograph shot on Fujifilm X-T4 23mm f/2.0, available light, subtle grain, muted tones. a barber cutting a man's hair in a classic barbershop, using electric clippers for a fade, barber cape on client, vintage barber chair, mirrors and traditional barbershop interior, warm lighting",
+  "camera_preset": "street",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/242CReWucJWUAqrloE8O1UvkdFkjwa6mdE1CuUDVOuhjhUGLA/tmp8grgeiij.png",
+  "generated_at": "2026-03-02T00:50:16Z"
+}

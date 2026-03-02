@@ -1,0 +1,15 @@
+{
+  "filename": "tug-of-war.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Sony A1 70-200mm f/2.8, 1/2000s freeze frame, sharp detail, vivid colors. two teams of kids playing tug of war outdoors, pulling a thick rope in opposite directions, digging heels into grass, straining faces, school field day atmosphere, bright sunny day",
+  "camera_preset": "action",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/voIjCPykADpbN5Gsz837I7OzoNjsfUtWulXO4h35O05zgUGLA/tmpngize1_0.png",
+  "generated_at": "2026-03-02T00:48:40Z"
+}

@@ -1,0 +1,15 @@
+{
+  "filename": "niagara-falls.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Fujifilm GFX 100S 32-64mm f/4, golden hour light, sharp detail, natural colors. Niagara Falls Horseshoe Falls on the US-Canadian border, massive curtain of water plunging over rocky cliff edge, enormous mist cloud rising, turquoise water, rainbow in the spray, tourist boat below for scale",
+  "camera_preset": "landscape_wide",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/EZ7kErFex5ytFaC6hrAmWFq4A2fP21tU2PfOjScDYvzgCSZsA/tmp3ru00sr7.png",
+  "generated_at": "2026-03-02T00:48:17Z"
+}

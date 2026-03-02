@@ -1,0 +1,15 @@
+{
+  "filename": "painter-easel.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "candid photograph shot on Fujifilm X-T4 23mm f/2.0, available light, subtle grain, muted tones. an artist painting at a wooden easel in a bright sunlit studio, holding a paint palette with oil colors, brush applying strokes to a landscape canvas, paint-splattered smock, creative atmosphere",
+  "camera_preset": "street",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/kSlcXkvjgo4NBVSfKER8LBBk7scDDHLqIcqy1zV1OgBAhUGLA/tmpk0i1evt6.png",
+  "generated_at": "2026-03-02T00:49:05Z"
+}

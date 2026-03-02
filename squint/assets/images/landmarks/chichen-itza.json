@@ -1,0 +1,15 @@
+{
+  "filename": "chichen-itza.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Fujifilm GFX 100S 32-64mm f/4, golden hour light, sharp detail, natural colors. the Temple of Kukulcan pyramid at Chichen Itza in Yucatan Mexico, stepped limestone pyramid with flat top, ancient Mayan architecture, green grass plaza, clear blue sky, dramatic stone serpent head at base of stairs",
+  "camera_preset": "landscape_wide",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/27esy4sQ3JRCJ6VO6ZNj5MavZDhs4dKbVtCE0BEb9eX6ApMWA/tmplqemlq4_.png",
+  "generated_at": "2026-03-02T00:47:56Z"
+}

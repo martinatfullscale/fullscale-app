@@ -1,0 +1,15 @@
+{
+  "filename": "red-fire-extinguisher.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Sony A7IV 35mm f/1.4, natural window light, shallow depth of field, warm tones. a bright red fire extinguisher mounted on a white wall with a metal bracket, pressurized steel cylinder with black squeeze handle and safety pin, rubber hose nozzle, safety equipment",
+  "camera_preset": "object_natural",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/0IIuMUrwzTYXNpaDaCi8ZzfxOb6995R0nKAsDQ4XoCqYiUGLA/tmpuum_hxrw.png",
+  "generated_at": "2026-03-02T00:52:03Z"
+}

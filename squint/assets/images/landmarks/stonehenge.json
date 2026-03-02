@@ -1,0 +1,15 @@
+{
+  "filename": "stonehenge.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Fujifilm GFX 100S 32-64mm f/4, golden hour light, sharp detail, natural colors. Stonehenge prehistoric stone circle on Salisbury Plain in Wiltshire England, massive sarsen stone trilithons arranged in a circle, green grass field, dramatic cloudy sky, ancient mysterious atmosphere",
+  "camera_preset": "landscape_wide",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/3cIWf3yLhOwtBC6u1YS4nU5Lf4tifEJVp9JqVmxyZKbtASZsA/tmpiq9ody6g.png",
+  "generated_at": "2026-03-02T00:47:19Z"
+}

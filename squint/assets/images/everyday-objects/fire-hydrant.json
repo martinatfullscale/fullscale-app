@@ -1,0 +1,15 @@
+{
+  "filename": "fire-hydrant.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "candid photograph shot on Fujifilm X-T4 23mm f/2.0, available light, subtle grain, muted tones. a bright red fire hydrant on a city sidewalk, classic American style with two nozzle caps and a bonnet on top, concrete pavement, urban street scene, slight wear and chipped paint",
+  "camera_preset": "street",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/w8GDrPgxZr6gL150ekpDk54pkUeI6MbZtVTsu0ALXt3xDpMWA/tmpvf_w90pi.png",
+  "generated_at": "2026-03-02T00:50:58Z"
+}

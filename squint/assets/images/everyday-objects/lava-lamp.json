@@ -1,0 +1,15 @@
+{
+  "filename": "lava-lamp.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Leica Q3 28mm f/1.7, dramatic light, deep shadows, film-like rendering. a classic lava lamp glowing on a dark surface, cone-shaped base, glass cylinder with colorful wax blobs floating and rising in illuminated liquid, retro 1960s aesthetic, psychedelic warm glow",
+  "camera_preset": "moody",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/qMJ5dfagSQVlZi61emeTz3OKJ7nxXpvtJJV6VUExkwDPHSZsA/tmprniklyiw.png",
+  "generated_at": "2026-03-02T00:50:48Z"
+}

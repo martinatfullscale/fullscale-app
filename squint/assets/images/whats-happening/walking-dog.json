@@ -1,0 +1,15 @@
+{
+  "filename": "walking-dog.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "candid photograph shot on Fujifilm X-T4 23mm f/2.0, available light, subtle grain, muted tones. a person walking a golden retriever on a leash down a tree-lined suburban sidewalk, casual clothing, autumn leaves on the ground, peaceful neighborhood, warm afternoon light",
+  "camera_preset": "street",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/Pur4e9SWmY35WqpqxpP9XdDTj1fRE4WkYMLikx1DSOmLCpMWA/tmpsw511pz3.png",
+  "generated_at": "2026-03-02T00:49:16Z"
+}

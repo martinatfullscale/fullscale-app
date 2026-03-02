@@ -1,0 +1,15 @@
+{
+  "filename": "casting-line.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Fujifilm GFX 100S 32-64mm f/4, golden hour light, sharp detail, natural colors. a fisherman casting a fly fishing line over a scenic mountain river, rod arcing overhead, fishing line visible mid-air, wearing waders and vest, misty morning light, rocky stream bed, pine trees",
+  "camera_preset": "landscape_wide",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/F9D9dZk49Qp6KJ3a3hxIBQOKx4iVLHazZs1uuZDlaQjlQKjF/tmp176aruhw.png",
+  "generated_at": "2026-03-02T00:49:27Z"
+}

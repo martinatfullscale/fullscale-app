@@ -1,0 +1,15 @@
+{
+  "filename": "vintage-globe.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Sony A7IV 35mm f/1.4, natural window light, shallow depth of field, warm tones. a vintage desktop globe on a brass stand, faded antique map showing continents and oceans, brass meridian ring, sitting on a wooden desk in a study, warm library lighting, leather books in background",
+  "camera_preset": "object_natural",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/YeZvZnEq6FUhVSfp8K0LM4gYMzPJWP9gG6cwDQHVR8HRDpMWA/tmpjntswpra.png",
+  "generated_at": "2026-03-02T00:50:26Z"
+}

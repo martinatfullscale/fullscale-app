@@ -1,0 +1,15 @@
+{
+  "filename": "vinyl-record-player.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Sony A7IV 35mm f/1.4, natural window light, shallow depth of field, warm tones. a vintage turntable record player with a black vinyl record spinning on the platter, tonearm with stylus resting on the groove, wooden base, warm retro living room setting, audiophile aesthetic",
+  "camera_preset": "object_natural",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/fF4GDxeWgfTd2ItT0Zvbiz4L7BlfDesRdqBbSoaGDH45kIlxC/tmpew0plz3v.png",
+  "generated_at": "2026-03-02T00:51:53Z"
+}

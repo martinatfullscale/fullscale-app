@@ -1,0 +1,15 @@
+{
+  "filename": "doing-yoga.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Sony A7IV 35mm f/1.4, natural window light, shallow depth of field, warm tones. a woman doing a tree pose yoga position on a yoga mat in a serene sunlit studio, balanced on one leg with arms raised, peaceful expression, minimalist room with plants, warm natural light",
+  "camera_preset": "object_natural",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/qWjegY8pPV0tLq9Kn8OwXJmdEPYn5jPNPYQfeGhlcm2cFSZsA/tmp4d06xqjw.png",
+  "generated_at": "2026-03-02T00:49:51Z"
+}

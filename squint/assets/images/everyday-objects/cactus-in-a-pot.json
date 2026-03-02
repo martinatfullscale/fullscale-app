@@ -1,0 +1,15 @@
+{
+  "filename": "cactus-in-a-pot.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Sony A7IV 35mm f/1.4, natural window light, shallow depth of field, warm tones. a small prickly cactus in a terracotta clay pot on a sunny windowsill, green spiny succulent, desert plant, simple and charming, natural window light, minimalist indoor garden aesthetic",
+  "camera_preset": "object_natural",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/uwBUwrUBcM5kCJIhxKqntIehRM3cUxUN8RGX9BQ9KnfdDpMWA/tmpz84bjxgd.png",
+  "generated_at": "2026-03-02T00:50:38Z"
+}

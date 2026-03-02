@@ -4441,7 +4441,7 @@ const categories = [
       {
         id: 'lm-11',
         name: 'Petra',
-        image: null,
+        image: require('../../assets/images/landmarks/petra.png'),
         imageColor: '#C1644A',
         initials: 'P',
         options: [
@@ -4480,7 +4480,7 @@ const categories = [
       {
         id: 'lm-12',
         name: 'Angkor Wat',
-        image: null,
+        image: require('../../assets/images/landmarks/angkor-wat.png'),
         imageColor: '#8B7D6B',
         initials: 'AW',
         options: [
@@ -4519,7 +4519,7 @@ const categories = [
       {
         id: 'lm-13',
         name: 'Pyramids of Giza',
-        image: null,
+        image: require('../../assets/images/landmarks/pyramids-of-giza.png'),
         imageColor: '#D4A574',
         initials: 'PG',
         options: [
@@ -4558,7 +4558,7 @@ const categories = [
       {
         id: 'lm-14',
         name: 'Mount Rushmore',
-        image: null,
+        image: require('../../assets/images/landmarks/mount-rushmore.png'),
         imageColor: '#A9A9A9',
         initials: 'MR',
         options: [
@@ -4597,7 +4597,7 @@ const categories = [
       {
         id: 'lm-15',
         name: 'Stonehenge',
-        image: null,
+        image: require('../../assets/images/landmarks/stonehenge.png'),
         imageColor: '#708090',
         initials: 'SH',
         options: [
@@ -4636,7 +4636,7 @@ const categories = [
       {
         id: 'lm-16',
         name: 'Burj Khalifa',
-        image: null,
+        image: require('../../assets/images/landmarks/burj-khalifa.png'),
         imageColor: '#4682B4',
         initials: 'BK',
         options: [
@@ -4675,7 +4675,7 @@ const categories = [
       {
         id: 'lm-17',
         name: 'Leaning Tower of Pisa',
-        image: null,
+        image: require('../../assets/images/landmarks/leaning-tower-of-pisa.png'),
         imageColor: '#D2C8B0',
         initials: 'LP',
         options: [
@@ -4714,7 +4714,7 @@ const categories = [
       {
         id: 'lm-18',
         name: 'Chichen Itza',
-        image: null,
+        image: require('../../assets/images/landmarks/chichen-itza.png'),
         imageColor: '#CD853F',
         initials: 'CI',
         options: [
@@ -4753,7 +4753,7 @@ const categories = [
       {
         id: 'lm-19',
         name: 'Sagrada Familia',
-        image: null,
+        image: require('../../assets/images/landmarks/sagrada-familia.png'),
         imageColor: '#DAA520',
         initials: 'SF',
         options: [
@@ -4792,7 +4792,7 @@ const categories = [
       {
         id: 'lm-20',
         name: 'Niagara Falls',
-        image: null,
+        image: require('../../assets/images/landmarks/niagara-falls.png'),
         imageColor: '#1E90FF',
         initials: 'NF',
         options: [
@@ -5234,7 +5234,7 @@ const categories = [
       {
         id: 'wh-11',
         name: 'Person Surfing a Wave',
-        image: null,
+        image: require('../../assets/images/whats-happening/surfing-wave.png'),
         imageColor: '#3498DB',
         initials: '🏄',
         options: [
@@ -5273,7 +5273,7 @@ const categories = [
       {
         id: 'wh-12',
         name: 'Kids Playing Tug of War',
-        image: null,
+        image: require('../../assets/images/whats-happening/tug-of-war.png'),
         imageColor: '#E74C3C',
         initials: '🪢',
         options: [
@@ -5312,7 +5312,7 @@ const categories = [
       {
         id: 'wh-13',
         name: 'Someone Blowing Out Birthday Candles',
-        image: null,
+        image: require('../../assets/images/whats-happening/birthday-candles.png'),
         imageColor: '#F39C12',
         initials: '🎂',
         options: [
@@ -5351,7 +5351,7 @@ const categories = [
       {
         id: 'wh-14',
         name: 'Painter at an Easel',
-        image: null,
+        image: require('../../assets/images/whats-happening/painter-easel.png'),
         imageColor: '#9B59B6',
         initials: '🎨',
         options: [
@@ -5390,7 +5390,7 @@ const categories = [
       {
         id: 'wh-15',
         name: 'Person Walking a Dog',
-        image: null,
+        image: require('../../assets/images/whats-happening/walking-dog.png'),
         imageColor: '#27AE60',
         initials: '🐕',
         options: [
@@ -5429,7 +5429,7 @@ const categories = [
       {
         id: 'wh-16',
         name: 'Fisherman Casting a Line',
-        image: null,
+        image: require('../../assets/images/whats-happening/casting-line.png'),
         imageColor: '#1ABC9C',
         initials: '🎣',
         options: [
@@ -5468,7 +5468,7 @@ const categories = [
       {
         id: 'wh-17',
         name: 'Kids on a Merry-Go-Round',
-        image: null,
+        image: require('../../assets/images/whats-happening/merry-go-round.png'),
         imageColor: '#E67E22',
         initials: '🎠',
         options: [
@@ -5507,7 +5507,7 @@ const categories = [
       {
         id: 'wh-18',
         name: 'Someone Doing Yoga',
-        image: null,
+        image: require('../../assets/images/whats-happening/doing-yoga.png'),
         imageColor: '#8E44AD',
         initials: '🧘',
         options: [
@@ -5546,7 +5546,7 @@ const categories = [
       {
         id: 'wh-19',
         name: 'Firefighter Spraying a Hose',
-        image: null,
+        image: require('../../assets/images/whats-happening/firefighter-hose.png'),
         imageColor: '#C0392B',
         initials: '🚒',
         options: [
@@ -5585,7 +5585,7 @@ const categories = [
       {
         id: 'wh-20',
         name: 'Barber Cutting Hair',
-        image: null,
+        image: require('../../assets/images/whats-happening/barber-cutting.png'),
         imageColor: '#2C3E50',
         initials: '💈',
         options: [
@@ -6027,7 +6027,7 @@ const categories = [
       {
         id: 'eo-11',
         name: 'Vintage Globe',
-        image: null,
+        image: require('../../assets/images/everyday-objects/vintage-globe.png'),
         imageColor: '#2E86AB',
         initials: '🌍',
         options: [
@@ -6066,7 +6066,7 @@ const categories = [
       {
         id: 'eo-12',
         name: 'Cactus in a Pot',
-        image: null,
+        image: require('../../assets/images/everyday-objects/cactus-in-a-pot.png'),
         imageColor: '#27AE60',
         initials: '🌵',
         options: [
@@ -6105,7 +6105,7 @@ const categories = [
       {
         id: 'eo-13',
         name: 'Lava Lamp',
-        image: null,
+        image: require('../../assets/images/everyday-objects/lava-lamp.png'),
         imageColor: '#9B59B6',
         initials: '🫧',
         options: [
@@ -6144,7 +6144,7 @@ const categories = [
       {
         id: 'eo-14',
         name: 'Fire Hydrant',
-        image: null,
+        image: require('../../assets/images/everyday-objects/fire-hydrant.png'),
         imageColor: '#E74C3C',
         initials: '🧯',
         options: [
@@ -6183,7 +6183,7 @@ const categories = [
       {
         id: 'eo-15',
         name: 'Grandfather Clock',
-        image: null,
+        image: require('../../assets/images/everyday-objects/grandfather-clock.png'),
         imageColor: '#8B4513',
         initials: '🕰️',
         options: [
@@ -6222,7 +6222,7 @@ const categories = [
       {
         id: 'eo-16',
         name: 'Telescope',
-        image: null,
+        image: require('../../assets/images/everyday-objects/telescope.png'),
         imageColor: '#1A1A2E',
         initials: '🔭',
         options: [
@@ -6261,7 +6261,7 @@ const categories = [
       {
         id: 'eo-17',
         name: 'Vintage Suitcase',
-        image: null,
+        image: require('../../assets/images/everyday-objects/vintage-suitcase.png'),
         imageColor: '#D4A574',
         initials: '🧳',
         options: [
@@ -6300,7 +6300,7 @@ const categories = [
       {
         id: 'eo-18',
         name: 'Popcorn Machine',
-        image: null,
+        image: require('../../assets/images/everyday-objects/popcorn-machine.png'),
         imageColor: '#FF6B6B',
         initials: '🍿',
         options: [
@@ -6339,7 +6339,7 @@ const categories = [
       {
         id: 'eo-19',
         name: 'Vinyl Record Player',
-        image: null,
+        image: require('../../assets/images/everyday-objects/vinyl-record-player.png'),
         imageColor: '#2C3E50',
         initials: '🎶',
         options: [
@@ -6378,7 +6378,7 @@ const categories = [
       {
         id: 'eo-20',
         name: 'Red Fire Extinguisher',
-        image: null,
+        image: require('../../assets/images/everyday-objects/red-fire-extinguisher.png'),
         imageColor: '#C0392B',
         initials: '🧯',
         options: [

@@ -1,0 +1,15 @@
+{
+  "filename": "leaning-tower-of-pisa.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Nikon Z9 70-200mm f/2.8, crystal clear atmosphere, rich tones. the Leaning Tower of Pisa in Tuscany Italy, white marble Romanesque bell tower tilting to one side, multiple levels of arched colonnades, green grass of Piazza dei Miracoli, blue sky, cathedral partially visible",
+  "camera_preset": "landscape_tele",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/VGCckM81ze31WyI3iwvXxVeIzdRBGYwKPUeNBhTIrWe1CkyYB/tmpgp_08pwf.png",
+  "generated_at": "2026-03-02T00:47:42Z"
+}

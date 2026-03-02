@@ -1,0 +1,15 @@
+{
+  "filename": "sagrada-familia.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Nikon Z9 70-200mm f/2.8, crystal clear atmosphere, rich tones. La Sagrada Familia basilica in Barcelona Spain, Antoni Gaudi's unfinished masterpiece, fantastical organic spires and towers, intricate stone facades with religious sculptures, construction cranes visible, warm Mediterranean light",
+  "camera_preset": "landscape_tele",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/zTxs3RaIeZR7VaKYA82MMYa5Q26a8bs2P5H8FkbX3XCjgUGLA/tmp16ulc83u.png",
+  "generated_at": "2026-03-02T00:48:07Z"
+}

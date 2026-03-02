@@ -1,0 +1,15 @@
+{
+  "filename": "burj-khalifa.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Nikon Z9 70-200mm f/2.8, crystal clear atmosphere, rich tones. the Burj Khalifa supertall skyscraper in Dubai UAE, gleaming glass and steel tower soaring into clear blue sky, Y-shaped floor plan visible, modern city skyline below, world's tallest building",
+  "camera_preset": "landscape_tele",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/65ptMT0nuSK7NZsRuaegNX8peLXS1NoMBgNU9ECaeoLFBSZsA/tmp2hd48clm.png",
+  "generated_at": "2026-03-02T00:47:31Z"
+}

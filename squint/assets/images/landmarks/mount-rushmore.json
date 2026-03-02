@@ -1,0 +1,15 @@
+{
+  "filename": "mount-rushmore.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Nikon Z9 70-200mm f/2.8, crystal clear atmosphere, rich tones. Mount Rushmore National Memorial in South Dakota, four presidential faces carved into granite mountainside, Washington Jefferson Roosevelt Lincoln, pine trees at the base, clear sky, dramatic American monument",
+  "camera_preset": "landscape_tele",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/v1n0xeu0wGz0cK8F9RdRMqv1q7ZEBPCN8LAPPFd7jqhFgUGLA/tmpsxx0jvmo.png",
+  "generated_at": "2026-03-02T00:47:08Z"
+}

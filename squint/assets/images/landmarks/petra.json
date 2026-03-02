@@ -1,0 +1,15 @@
+{
+  "filename": "petra.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Fujifilm GFX 100S 32-64mm f/4, golden hour light, sharp detail, natural colors. the Treasury facade of Petra in Jordan, rose-red sandstone carved into a narrow canyon wall called the Siq, intricate Hellenistic columns and pediments, warm golden light illuminating the rock face",
+  "camera_preset": "landscape_wide",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/h9K8fShzRW1Ff0xeKwUvOogWbp2k3NzQRGglrCnNFiMWfjyYB/tmp96ovwtw5.png",
+  "generated_at": "2026-03-02T00:46:36Z"
+}

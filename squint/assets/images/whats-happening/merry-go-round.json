@@ -1,0 +1,15 @@
+{
+  "filename": "merry-go-round.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "candid photograph shot on Fujifilm X-T4 23mm f/2.0, available light, subtle grain, muted tones. children riding a colorful carousel merry-go-round at a fairground, painted wooden horses bobbing up and down, twinkling lights and mirrors, bright carnival atmosphere, joyful expressions",
+  "camera_preset": "street",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/DffREgHfH3NtIpayaTK8Rz4XefEEoloWIiN164EBp14foQKjF/tmp21cm98t5.png",
+  "generated_at": "2026-03-02T00:49:40Z"
+}

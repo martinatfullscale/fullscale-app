@@ -1,0 +1,15 @@
+{
+  "filename": "angkor-wat.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Fujifilm GFX 100S 32-64mm f/4, golden hour light, sharp detail, natural colors. Angkor Wat temple complex in Siem Reap Cambodia, five lotus-shaped towers reflected perfectly in the moat water, ancient sandstone architecture, sunrise golden light, palm trees framing the scene",
+  "camera_preset": "landscape_wide",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/6bemTLbIger9mk8SBY1UrnYPmXqXPS00u0wfYmLaChCrfjyYB/tmpe0e1mig8.png",
+  "generated_at": "2026-03-02T00:46:46Z"
+}

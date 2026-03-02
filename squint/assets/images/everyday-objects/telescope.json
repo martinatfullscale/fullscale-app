@@ -1,0 +1,15 @@
+{
+  "filename": "telescope.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Sony A7IV 35mm f/1.4, natural window light, shallow depth of field, warm tones. a brass and black telescope on a wooden tripod, pointed slightly upward, sitting near a window at night, starry sky visible outside, classic refractor design, astronomer's study setting",
+  "camera_preset": "object_natural",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/tbeM8r1zI1X5GCDht0TSnQU9McwWFZUjUrQodb7yPiNDiUGLA/tmpdrw3ik6z.png",
+  "generated_at": "2026-03-02T00:51:19Z"
+}

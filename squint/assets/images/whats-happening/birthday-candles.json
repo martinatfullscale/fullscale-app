@@ -1,0 +1,15 @@
+{
+  "filename": "birthday-candles.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Sony A7IV 35mm f/1.4, natural window light, shallow depth of field, warm tones. a child blowing out birthday candles on a decorated cake, puffed cheeks, party hats, colorful frosted cake with lit candles, birthday party atmosphere, warm indoor lighting, friends gathered around",
+  "camera_preset": "object_natural",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/xc2p6Zqsqv7LM54AxrTgcr7nh43YbJxxteenRPhfHhyrDSZsA/tmp1qj2_w7v.png",
+  "generated_at": "2026-03-02T00:48:55Z"
+}

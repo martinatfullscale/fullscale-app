@@ -1,0 +1,15 @@
+{
+  "filename": "vintage-suitcase.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Sony A7IV 35mm f/1.4, natural window light, shallow depth of field, warm tones. a vintage leather suitcase with brass latches and corner protectors, covered in colorful travel stickers from old hotels, warm brown leather, sitting on a wooden floor, nostalgic travel aesthetic",
+  "camera_preset": "object_natural",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/JsuHlCxbOeR7ByQh1TpgF1VaViX2yNIKvjVlZfneauJiISZsA/tmpay7vi05b.png",
+  "generated_at": "2026-03-02T00:51:30Z"
+}

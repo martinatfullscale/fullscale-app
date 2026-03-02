@@ -1,0 +1,15 @@
+{
+  "filename": "grandfather-clock.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Sony A7IV 35mm f/1.4, natural window light, shallow depth of field, warm tones. a tall grandfather clock standing against a wall in a traditional living room, ornate dark wood case, pendulum visible through glass panel, roman numeral clock face, warm ambient lighting",
+  "camera_preset": "object_natural",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/gZw7EIbCf5Q4CiyBeQ7ARhM3kdZGkoGqVjZHeDceuKkzPkyYB/tmp4pshe4_5.png",
+  "generated_at": "2026-03-02T00:51:09Z"
+}

@@ -1,0 +1,15 @@
+{
+  "filename": "surfing-wave.png",
+  "model": "black-forest-labs/flux-2-pro",
+  "prompt": "photograph shot on Sony A1 70-200mm f/2.8, 1/2000s freeze frame, sharp detail, vivid colors. a surfer riding a large turquoise ocean wave, crouching low on a surfboard, wetsuit, spray of white water, tropical beach in background, athletic action shot, bright sunny day",
+  "camera_preset": "action",
+  "config": {
+    "aspect_ratio": "1:1",
+    "output_format": "png",
+    "output_quality": 95,
+    "safety_tolerance": 5,
+    "prompt_upsampling": false
+  },
+  "source_url": "https://replicate.delivery/xezq/CinwcyeHACyfFE4NaR93Mb9Ugak3K2KpDcLXviBy9ZpcBpMWA/tmpmbnhzmz_.png",
+  "generated_at": "2026-03-02T00:48:29Z"
+}
