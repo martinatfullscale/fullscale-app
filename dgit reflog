@@ -1,0 +1,895 @@
+[33m3120062[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m)[m HEAD@{0}: pull origin main --rebase (finish): returning to refs/heads/main
+[33m3120062[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m)[m HEAD@{1}: pull origin main --rebase (pick): Update website navigation to use new creation page URL
+[33m006fff9[m HEAD@{2}: pull origin main --rebase (pick): Published your App
+[33m7540b36[m HEAD@{3}: pull origin main --rebase (pick): Published your App
+[33m8b10d25[m HEAD@{4}: pull origin main --rebase (pick): Published your App
+[33m88c0989[m HEAD@{5}: pull origin main --rebase (pick): Published your App
+[33md28b839[m HEAD@{6}: pull origin main --rebase (pick): Update video loading to use new asset pipeline
+[33m11e2363[m HEAD@{7}: pull origin main --rebase (pick): Update hero video to showcase everyday creators monetizing content
+[33m1a647df[m HEAD@{8}: pull origin main --rebase (pick): Add engaging hero video to the content creation page
+[33m9d76a3c[m[33m ([m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m HEAD@{9}: pull origin main --rebase (start): checkout 9d76a3c4ec93bafa21bfccdc46ec07807d7272b1
+[33mdfbc801[m HEAD@{10}: pull origin main --rebase (finish): returning to refs/heads/main
+[33mdfbc801[m HEAD@{11}: pull origin main --rebase (pick): Update website navigation to use new creation page URL
+[33m24ab735[m HEAD@{12}: pull origin main --rebase (pick): Published your App
+[33mb322252[m HEAD@{13}: pull origin main --rebase (pick): Published your App
+[33m344b24f[m HEAD@{14}: pull origin main --rebase (pick): Published your App
+[33m341207a[m HEAD@{15}: pull origin main --rebase (pick): Published your App
+[33me262acf[m HEAD@{16}: pull origin main --rebase (pick): Update video loading to use new asset pipeline
+[33m3d5ec91[m HEAD@{17}: pull origin main --rebase (pick): Update hero video to showcase everyday creators monetizing content
+[33ma5b5457[m HEAD@{18}: pull origin main --rebase (pick): Add engaging hero video to the content creation page
+[33mc134de5[m HEAD@{19}: pull origin main --rebase (start): checkout c134de5c4f6b5665336878a00871ff227518182c
+[33m328c64e[m HEAD@{20}: pull origin main --rebase (finish): returning to refs/heads/main
+[33m328c64e[m HEAD@{21}: pull origin main --rebase (pick): Update website navigation to use new creation page URL
+[33m87dd8be[m HEAD@{22}: pull origin main --rebase (pick): Published your App
+[33m118df2a[m HEAD@{23}: pull origin main --rebase (pick): Published your App
+[33m234be11[m HEAD@{24}: pull origin main --rebase (pick): Published your App
+[33mf0e0fa3[m HEAD@{25}: pull origin main --rebase (pick): Published your App
+[33ma4bf2b2[m HEAD@{26}: pull origin main --rebase (pick): Update video loading to use new asset pipeline
+[33m710fcbd[m HEAD@{27}: pull origin main --rebase (pick): Update hero video to showcase everyday creators monetizing content
+[33mf019138[m HEAD@{28}: pull origin main --rebase (pick): Add engaging hero video to the content creation page
+[33m6a17a0d[m HEAD@{29}: pull origin main --rebase (start): checkout 6a17a0d139d992061944cd5598bd90a65217502f
+[33mc68f378[m HEAD@{30}: commit: Update website navigation to use new creation page URL
+[33m1ae9c8d[m HEAD@{31}: pull origin main --rebase (finish): returning to refs/heads/main
+[33m1ae9c8d[m HEAD@{32}: pull origin main --rebase (pick): Published your App
+[33ma5d16e7[m HEAD@{33}: pull origin main --rebase (pick): Published your App
+[33mb482484[m HEAD@{34}: pull origin main --rebase (pick): Published your App
+[33mc214737[m HEAD@{35}: pull origin main --rebase (pick): Published your App
+[33ma4b370a[m HEAD@{36}: pull origin main --rebase (pick): Update video loading to use new asset pipeline
+[33m97a79b9[m HEAD@{37}: pull origin main --rebase (pick): Update hero video to showcase everyday creators monetizing content
+[33me25516d[m HEAD@{38}: pull origin main --rebase (pick): Add engaging hero video to the content creation page
+[33m4bf2210[m HEAD@{39}: pull origin main --rebase (start): checkout 4bf22104fd5aeaa277fe0da5db6d6bb419126b10
+[33m0560f2d[m HEAD@{40}: pull origin main --rebase (finish): returning to refs/heads/main
+[33m0560f2d[m HEAD@{41}: pull origin main --rebase (pick): Published your App
+[33m916f417[m HEAD@{42}: pull origin main --rebase (pick): Published your App
+[33mab5ddbb[m HEAD@{43}: pull origin main --rebase (pick): Published your App
+[33m8a6019d[m HEAD@{44}: pull origin main --rebase (pick): Published your App
+[33mf871100[m HEAD@{45}: pull origin main --rebase (pick): Update video loading to use new asset pipeline
+[33m6e9afe5[m HEAD@{46}: pull origin main --rebase (pick): Update hero video to showcase everyday creators monetizing content
+[33m112cee7[m HEAD@{47}: pull origin main --rebase (pick): Add engaging hero video to the content creation page
+[33m69adf27[m HEAD@{48}: pull origin main --rebase (start): checkout 69adf278ed9ad859ef19f84ea4c3fd72fb319292
+[33m81b0cae[m HEAD@{49}: pull origin main --rebase (finish): returning to refs/heads/main
+[33m81b0cae[m HEAD@{50}: pull origin main --rebase (pick): Published your App
+[33m54d5fc2[m HEAD@{51}: pull origin main --rebase (pick): Published your App
+[33m7eba84b[m HEAD@{52}: pull origin main --rebase (pick): Published your App
+[33md8f3ccb[m HEAD@{53}: pull origin main --rebase (pick): Published your App
+[33m172c550[m HEAD@{54}: pull origin main --rebase (pick): Update video loading to use new asset pipeline
+[33m9fbd74d[m HEAD@{55}: pull origin main --rebase (pick): Update hero video to showcase everyday creators monetizing content
+[33md040965[m HEAD@{56}: pull origin main --rebase (pick): Add engaging hero video to the content creation page
+[33ma0bc698[m HEAD@{57}: pull origin main --rebase (start): checkout a0bc698e1ecc0e6504bd13ab773e10a8757b8c45
+[33md57d3c6[m HEAD@{58}: commit: Published your App
+[33m8099167[m HEAD@{59}: pull origin main --rebase (finish): returning to refs/heads/main
+[33m8099167[m HEAD@{60}: pull origin main --rebase (pick): Published your App
+[33m75383be[m HEAD@{61}: pull origin main --rebase (pick): Published your App
+[33m50ee76a[m HEAD@{62}: pull origin main --rebase (pick): Published your App
+[33m215b28b[m HEAD@{63}: pull origin main --rebase (pick): Update video loading to use new asset pipeline
+[33m705863b[m HEAD@{64}: pull origin main --rebase (pick): Update hero video to showcase everyday creators monetizing content
+[33m8488304[m HEAD@{65}: pull origin main --rebase (pick): Add engaging hero video to the content creation page
+[33m055fe7a[m HEAD@{66}: pull origin main --rebase (start): checkout 055fe7a519fc9c968673cfdfa213d8781b6dff26
+[33m7711afa[m HEAD@{67}: commit: Published your App
+[33m5472657[m HEAD@{68}: pull origin main --rebase (finish): returning to refs/heads/main
+[33m5472657[m HEAD@{69}: pull origin main --rebase (pick): Published your App
+[33ma4abeaa[m HEAD@{70}: pull origin main --rebase (pick): Published your App
+[33me6b7ddd[m HEAD@{71}: pull origin main --rebase (pick): Update video loading to use new asset pipeline
+[33m9d1e6a4[m HEAD@{72}: pull origin main --rebase (pick): Update hero video to showcase everyday creators monetizing content
+[33m0dc4e81[m HEAD@{73}: pull origin main --rebase (pick): Add engaging hero video to the content creation page
+[33m8213e47[m HEAD@{74}: pull origin main --rebase (start): checkout 8213e477906339933797a76dc72d60f9b72f3a5d
+[33m7347f9e[m HEAD@{75}: pull origin main --rebase (finish): returning to refs/heads/main
+[33m7347f9e[m HEAD@{76}: pull origin main --rebase (pick): Published your App
+[33m2fc5978[m HEAD@{77}: pull origin main --rebase (pick): Published your App
+[33m413961c[m HEAD@{78}: pull origin main --rebase (pick): Update video loading to use new asset pipeline
+[33m90085f5[m HEAD@{79}: pull origin main --rebase (pick): Update hero video to showcase everyday creators monetizing content
+[33m9733831[m HEAD@{80}: pull origin main --rebase (pick): Add engaging hero video to the content creation page
+[33m024aa18[m HEAD@{81}: pull origin main --rebase (start): checkout 024aa185240bb1fb4e14cdbf594dbc2380a5114b
+[33mce38fea[m HEAD@{82}: pull origin main --rebase (finish): returning to refs/heads/main
+[33mce38fea[m HEAD@{83}: pull origin main --rebase (pick): Published your App
+[33m25d4200[m HEAD@{84}: pull origin main --rebase (pick): Published your App
+[33mca7e263[m HEAD@{85}: pull origin main --rebase (pick): Update video loading to use new asset pipeline
+[33mff5a04c[m HEAD@{86}: pull origin main --rebase (pick): Update hero video to showcase everyday creators monetizing content
+[33m43fea33[m HEAD@{87}: pull origin main --rebase (pick): Add engaging hero video to the content creation page
+[33md32d4f1[m HEAD@{88}: pull origin main --rebase (start): checkout d32d4f1733ac699cd4c5a24f213036f44500e9f7
+[33m21ca94d[m HEAD@{89}: pull origin main --rebase (finish): returning to refs/heads/main
+[33m21ca94d[m HEAD@{90}: pull origin main --rebase (pick): Published your App
+[33me7593e0[m HEAD@{91}: pull origin main --rebase (pick): Published your App
+[33m7991e74[m HEAD@{92}: pull origin main --rebase (pick): Update video loading to use new asset pipeline
+[33med2335d[m HEAD@{93}: pull origin main --rebase (pick): Update hero video to showcase everyday creators monetizing content
+[33m0a7229c[m HEAD@{94}: pull origin main --rebase (pick): Add engaging hero video to the content creation page
+[33m59e73c0[m HEAD@{95}: pull origin main --rebase (start): checkout 59e73c01fa411e1c74aa530d9876654c2c9bc573
+[33mcff3d17[m HEAD@{96}: commit: Published your App
+[33mf442801[m HEAD@{97}: commit: Published your App
+[33maca580c[m HEAD@{98}: commit: Update video loading to use new asset pipeline
+[33m10a76c3[m HEAD@{99}: commit: Update hero video to showcase everyday creators monetizing content
+[33m70cc35f[m HEAD@{100}: commit: Add engaging hero video to the content creation page
+[33m88841bb[m HEAD@{101}: pull origin main: Fast-forward
+[33m219a057[m HEAD@{102}: rebase (finish): returning to refs/heads/main
+[33m219a057[m HEAD@{103}: pull origin main --rebase (start): checkout 219a0570af64722de2bd59c4ed88c357d39f4db8
+[33mdc9b70f[m HEAD@{104}: commit: Add hero video to the FullScale Creates page
+[33m52c2fc3[m HEAD@{105}: pull origin main: Fast-forward
+[33m836a6d5[m HEAD@{106}: pull origin main: Fast-forward
+[33mf67150b[m HEAD@{107}: pull origin main: Fast-forward
+[33ma3361f5[m HEAD@{108}: pull origin main: Fast-forward
+[33mc62f227[m HEAD@{109}: pull origin main: Fast-forward
+[33mbffadc0[m HEAD@{110}: pull origin main: Fast-forward
+[33m74eead7[m HEAD@{111}: pull origin main: Fast-forward
+[33m1ce3ec8[m HEAD@{112}: pull origin main: Fast-forward
+[33m742ff6d[m HEAD@{113}: pull origin main: Fast-forward
+[33m40e1612[m HEAD@{114}: pull origin main: Fast-forward
+[33m4cee193[m HEAD@{115}: pull origin main: Fast-forward
+[33mef3be9a[m HEAD@{116}: pull origin main: Fast-forward
+[33m00c4e2e[m HEAD@{117}: pull origin main: Fast-forward
+[33m1203832[m HEAD@{118}: pull origin main: Fast-forward
+[33m21d8615[m HEAD@{119}: reset: moving to origin/main
+[33m1014a9d[m HEAD@{120}: commit: Published your App
+[33ma1d233f[m HEAD@{121}: commit: Published your App
+[33mb510b8c[m HEAD@{122}: pull origin main: Fast-forward
+[33mb222e7d[m HEAD@{123}: reset: moving to origin/main
+[33m756b749[m HEAD@{124}: reset: moving to origin/main
+[33m756b749[m HEAD@{125}: reset: moving to origin/main
+[33m62141ce[m HEAD@{126}: commit: Add Smith Family Circle logo to assets and update partner scroll
+[33m8174183[m HEAD@{127}: reset: moving to origin/main
+[33m18d7cc5[m HEAD@{128}: reset: moving to origin/main
+[33m80ba2bc[m HEAD@{129}: reset: moving to origin/main
+[33mb5a0c51[m HEAD@{130}: commit: Update mobile navigation to stack "FullScale Creates" text
+[33mf322226[m HEAD@{131}: commit: Adjust website navigation to improve mobile experience
+[33m934accb[m HEAD@{132}: commit: Update partner logos to include Smith Family Circle in white
+[33m730144e[m HEAD@{133}: commit: Update partner logo display and add new site navigation
+[33m63533c7[m HEAD@{134}: commit: Add new pages for "About Us" and "FullScale Creates" content
+[33mc77755c[m HEAD@{135}: reset: moving to origin/main
+[33mc77755c[m HEAD@{136}: reset: moving to origin/main
+[33m6347935[m HEAD@{137}: commit: Update marketing text to describe content creation services
+[33m4961f33[m HEAD@{138}: commit: Update tagline on the coming soon page
+[33m1bcce01[m HEAD@{139}: commit: Update company name to FullScale Creates across the application
+[33m2051ba1[m HEAD@{140}: commit: Saved progress at the end of the loop
+[33me407286[m HEAD@{141}: commit: Update navigation and create a separate page for About Us information
+[33m3bb9a7a[m HEAD@{142}: commit: Saved progress at the end of the loop
+[33m2bba9fc[m HEAD@{143}: commit: Add a dedicated page for upcoming content services and update site navigation
+[33me3f5862[m HEAD@{144}: pull origin main --rebase (finish): returning to refs/heads/main
+[33me3f5862[m HEAD@{145}: pull origin main --rebase (pick): Published your App
+[33m376efbf[m HEAD@{146}: pull origin main --rebase (pick): Published your App
+[33mea1faab[m HEAD@{147}: pull origin main --rebase (pick): Published your App
+[33m8836d06[m HEAD@{148}: pull origin main --rebase (start): checkout 8836d06ef26efd3f004e8c1fa8dd1221e328f81d
+[33m0620f47[m HEAD@{149}: pull origin main --rebase (finish): returning to refs/heads/main
+[33m0620f47[m HEAD@{150}: pull origin main --rebase (pick): Published your App
+[33m4d008f8[m HEAD@{151}: pull origin main --rebase (pick): Published your App
+[33maaa686c[m HEAD@{152}: pull origin main --rebase (pick): Published your App
+[33md5c927f[m HEAD@{153}: pull origin main --rebase (start): checkout d5c927fddfb9e96cf065df0833479d096b39ef3c
+[33m9dce132[m HEAD@{154}: pull origin main --rebase (finish): returning to refs/heads/main
+[33m9dce132[m HEAD@{155}: pull origin main --rebase (pick): Published your App
+[33m7d783aa[m HEAD@{156}: pull origin main --rebase (pick): Published your App
+[33ma9517d6[m HEAD@{157}: pull origin main --rebase (pick): Published your App
+[33m12b4b53[m HEAD@{158}: pull origin main --rebase (start): checkout 12b4b53bd618a36e336a6456068665acd78c5a3a
+[33m913e0af[m HEAD@{159}: commit: Published your App
+[33m24400af[m HEAD@{160}: pull origin main --rebase (finish): returning to refs/heads/main
+[33m24400af[m HEAD@{161}: pull origin main --rebase (pick): Published your App
+[33m0acb6c1[m HEAD@{162}: pull origin main --rebase (pick): Published your App
+[33m2297f8a[m HEAD@{163}: pull origin main --rebase (start): checkout 2297f8a86f6882955a30b9e48d37f0f734f616b4
+[33mf82cd82[m HEAD@{164}: pull origin main --rebase (finish): returning to refs/heads/main
+[33mf82cd82[m HEAD@{165}: pull origin main --rebase (pick): Published your App
+[33me995b11[m HEAD@{166}: pull origin main --rebase (pick): Published your App
+[33mefa07cb[m HEAD@{167}: pull origin main --rebase (start): checkout efa07cba5e647ca78f010a7e27f5d90b42234c89
+[33m2582068[m HEAD@{168}: commit: Published your App
+[33m52f147e[m HEAD@{169}: pull origin main --rebase (finish): returning to refs/heads/main
+[33m52f147e[m HEAD@{170}: pull origin main --rebase (pick): Published your App
+[33m6d1e4eb[m HEAD@{171}: pull origin main --rebase (start): checkout 6d1e4eb44154393739d28da78e3e68a5e889a518
+[33m0684955[m HEAD@{172}: commit: Published your App
+[33mcb78090[m HEAD@{173}: pull origin main: Fast-forward
+[33mc1ac076[m HEAD@{174}: pull origin main: Fast-forward
+[33m2ce58c0[m HEAD@{175}: pull origin main: Fast-forward
+[33m55c5a42[m HEAD@{176}: pull origin main: Fast-forward
+[33me40c8e5[m HEAD@{177}: pull origin main: Fast-forward
+[33m968056c[m HEAD@{178}: pull origin main: Fast-forward
+[33ma3d04ff[m HEAD@{179}: pull: Fast-forward
+[33m32dd6c4[m HEAD@{180}: pull origin main: Fast-forward
+[33mb79ff93[m HEAD@{181}: pull origin main: Fast-forward
+[33m8d3e928[m HEAD@{182}: pull origin main: Fast-forward
+[33m0ccbdab[m HEAD@{183}: pull origin main: Fast-forward
+[33mb7ab8fe[m HEAD@{184}: pull: Fast-forward
+[33m851012f[m HEAD@{185}: pull: Fast-forward
+[33m8aaf048[m HEAD@{186}: pull: Fast-forward
+[33mabfe2e5[m HEAD@{187}: pull origin main --rebase (finish): returning to refs/heads/main
+[33mabfe2e5[m HEAD@{188}: pull origin main --rebase (pick): Published your App
+[33md3df422[m HEAD@{189}: pull origin main --rebase (start): checkout d3df422bb908a42868fd5197628797f69ca0b52f
+[33mf0054d0[m HEAD@{190}: commit: Published your App
+[33me7d1ffc[m HEAD@{191}: commit (merge): Merge branch 'main' of https://github.com/martinatfullscale/fullscale-app
+[33m5f18726[m HEAD@{192}: commit: Published your App
+[33m1ca071b[m HEAD@{193}: pull origin main --rebase (finish): returning to refs/heads/main
+[33m1ca071b[m HEAD@{194}: pull origin main --rebase (pick): Published your App
+[33m961807d[m HEAD@{195}: pull origin main --rebase (pick): Published your App
+[33mef16a20[m HEAD@{196}: pull origin main --rebase (pick): Published your App
+[33m6533358[m HEAD@{197}: pull origin main --rebase (pick): Improve mobile layout for metric cards on the landing page
+[33mb8bb523[m HEAD@{198}: pull origin main --rebase (pick): Improve mobile display of key performance metrics on the landing page
+[33m924bcea[m HEAD@{199}: pull origin main --rebase (pick): Published your App
+[33m8fdb7a6[m HEAD@{200}: pull origin main --rebase (pick): Improve creator profile form layout to prevent content cutoff
+[33m11af7b3[m HEAD@{201}: pull origin main --rebase (pick): Published your App
+[33m4525ee7[m HEAD@{202}: pull origin main --rebase (pick): Published your App
+[33mc92f76d[m HEAD@{203}: pull origin main --rebase (pick): Update tagline to accurately describe product placement feature
+[33m0c83da0[m HEAD@{204}: pull origin main --rebase (pick): Update interactive tour button to interactive demo
+[33m1e4ddfd[m HEAD@{205}: pull origin main --rebase (pick): Published your App
+[33mfe9fd4d[m HEAD@{206}: pull origin main --rebase (pick): Published your App
+[33mc074358[m HEAD@{207}: pull origin main --rebase (pick): Published your App
+[33m51abe7a[m HEAD@{208}: pull origin main --rebase (start): checkout 51abe7ac6239a3a5539fe2a9aa86c803e8f9a5f2
+[33m83567dc[m HEAD@{209}: commit: Published your App
+[33m92a3e5d[m HEAD@{210}: commit: Published your App
+[33mf528b3e[m HEAD@{211}: commit: Published your App
+[33me3947b0[m HEAD@{212}: commit: Improve mobile layout for metric cards on the landing page
+[33m64dcb50[m HEAD@{213}: commit: Improve mobile display of key performance metrics on the landing page
+[33m42e2040[m HEAD@{214}: commit: Published your App
+[33me4c2d39[m HEAD@{215}: commit: Improve creator profile form layout to prevent content cutoff
+[33m5de92d2[m HEAD@{216}: commit: Published your App
+[33m8385c3c[m HEAD@{217}: pull origin main --rebase (finish): returning to refs/heads/main
+[33m8385c3c[m HEAD@{218}: pull origin main --rebase (pick): Published your App
+[33me8ec75b[m HEAD@{219}: pull origin main --rebase (pick): Update tagline to accurately describe product placement feature
+[33mcdbb5bd[m HEAD@{220}: pull origin main --rebase (pick): Update interactive tour button to interactive demo
+[33md025667[m HEAD@{221}: pull origin main --rebase (pick): Published your App
+[33m9e3b366[m HEAD@{222}: pull origin main --rebase (pick): Published your App
+[33ma976a95[m HEAD@{223}: pull origin main --rebase (pick): Published your App
+[33me9a6618[m HEAD@{224}: pull origin main --rebase (start): checkout e9a6618ac5b7dc4b9843d2b711182d62ff12cbbe
+[33m1b651e9[m HEAD@{225}: commit: Published your App
+[33ma6fbab5[m HEAD@{226}: commit: Update tagline to accurately describe product placement feature
+[33m3cbff73[m HEAD@{227}: commit: Update interactive tour button to interactive demo
+[33m2f3ae45[m HEAD@{228}: commit: Published your App
+[33m1352de6[m HEAD@{229}: pull origin main --rebase (finish): returning to refs/heads/main
+[33m1352de6[m HEAD@{230}: pull origin main --rebase (pick): Published your App
+[33m2f6bc0b[m HEAD@{231}: pull origin main --rebase (pick): Published your App
+[33m330db2e[m HEAD@{232}: pull origin main --rebase (start): checkout 330db2e00f663b12e20340813ee55c880d2686e6
+[33mc989eef[m HEAD@{233}: commit: Published your App
+[33m2b0aa44[m HEAD@{234}: pull origin main --rebase (finish): returning to refs/heads/main
+[33m2b0aa44[m HEAD@{235}: pull origin main --rebase (pick): Published your App
+[33mf744064[m HEAD@{236}: pull origin main --rebase (start): checkout f744064ad0044ae447f14353962f374fde153e7e
+[33m7c20af8[m HEAD@{237}: commit: Published your App
+[33m8d19171[m HEAD@{238}: pull origin main: Fast-forward
+[33me809595[m HEAD@{239}: commit: Published your App
+[33m6ae1fbd[m HEAD@{240}: commit: Published your App
+[33mb747648[m HEAD@{241}: commit: Update database connection to use an override variable
+[33m9d07936[m HEAD@{242}: commit: Published your App
+[33m3f7616b[m HEAD@{243}: pull origin main --rebase (finish): returning to refs/heads/main
+[33m3f7616b[m HEAD@{244}: pull origin main --rebase (pick): Published your App
+[33m763f1b9[m HEAD@{245}: pull origin main --rebase (pick): Published your App
+[33m781e350[m HEAD@{246}: pull origin main --rebase (start): checkout 781e3509b147a9a9a94e068011cff38028583178
+[33m7b6e8b4[m HEAD@{247}: commit: Published your App
+[33m4302d06[m HEAD@{248}: pull origin main --rebase (finish): returning to refs/heads/main
+[33m4302d06[m HEAD@{249}: pull origin main --rebase (pick): Published your App
+[33m55e7c29[m HEAD@{250}: pull origin main --rebase (start): checkout 55e7c291a0d0d72ef475815977c6566886fb1489
+[33mdce6c31[m HEAD@{251}: pull origin main --rebase (finish): returning to refs/heads/main
+[33mdce6c31[m HEAD@{252}: pull origin main --rebase (pick): Published your App
+[33madb1e1c[m HEAD@{253}: pull origin main --rebase (start): checkout adb1e1cebbcfdac4d3eb4b0131f1a8014f4dc244
+[33m752c599[m HEAD@{254}: pull origin main --rebase (finish): returning to refs/heads/main
+[33m752c599[m HEAD@{255}: pull origin main --rebase (pick): Published your App
+[33m4a9e0e5[m HEAD@{256}: pull origin main --rebase (start): checkout 4a9e0e512ec738218ccf988b0c021b6fb13638c0
+[33m0b28b06[m HEAD@{257}: commit: Published your App
+[33m0d08a9d[m HEAD@{258}: pull origin main: Fast-forward
+[33m6c3fbc4[m HEAD@{259}: pull origin main: Fast-forward
+[33m047a256[m HEAD@{260}: commit: Fix video scanning process to handle object storage
+[33m5dfc2c0[m HEAD@{261}: commit: Update video scanning to use object storage for files
+[33m9f8aeec[m HEAD@{262}: pull origin main --rebase (finish): returning to refs/heads/main
+[33m9f8aeec[m HEAD@{263}: pull origin main --rebase (pick): Migrate assets and uploads to object storage for improved scalability
+[33m7a90148[m HEAD@{264}: pull origin main --rebase (pick): Migrate application files and database to object storage
+[33m615b1c5[m HEAD@{265}: pull origin main --rebase (pick): Published your App
+[33m7f544d7[m HEAD@{266}: pull origin main --rebase (pick): Published your App
+[33m8299f8a[m HEAD@{267}: pull origin main --rebase (pick): Saved progress at the end of the loop
+[33m6da4479[m HEAD@{268}: pull origin main --rebase (pick): Add migration endpoint to copy video scan data from dev to production
+[33m5ead748[m HEAD@{269}: pull origin main --rebase (pick): Saved progress after completing a task
+[33m132241c[m HEAD@{270}: pull origin main --rebase (pick): Saved progress at the end of the loop
+[33m6bd4c2f[m HEAD@{271}: pull origin main --rebase (pick): Published your App
+[33mf332c49[m HEAD@{272}: pull origin main --rebase (pick): Published your App
+[33m5bb54e3[m HEAD@{273}: pull origin main --rebase (pick): Published your App
+[33m1d01fe2[m HEAD@{274}: pull origin main --rebase (pick): Published your App
+[33m4b1c7d1[m HEAD@{275}: pull origin main --rebase (pick): Add new video files and update existing ones
+[33m3b6e5be[m HEAD@{276}: pull origin main --rebase (start): checkout 3b6e5be6440d9777dd1443232c909c97da0332d7
+[33m900b8e6[m HEAD@{277}: commit: Migrate assets and uploads to object storage for improved scalability
+[33m25dbf64[m HEAD@{278}: commit: Migrate application files and database to object storage
+[33m7068388[m HEAD@{279}: commit: Published your App
+[33m587b604[m HEAD@{280}: pull origin main --rebase (finish): returning to refs/heads/main
+[33m587b604[m HEAD@{281}: pull origin main --rebase (pick): Published your App
+[33m949e305[m HEAD@{282}: pull origin main --rebase (pick): Saved progress at the end of the loop
+[33m3bae014[m HEAD@{283}: pull origin main --rebase (pick): Add migration endpoint to copy video scan data from dev to production
+[33m00eaf61[m HEAD@{284}: pull origin main --rebase (pick): Saved progress after completing a task
+[33m77af79f[m HEAD@{285}: pull origin main --rebase (pick): Saved progress at the end of the loop
+[33mc6fb3bc[m HEAD@{286}: pull origin main --rebase (pick): Published your App
+[33m37ab06e[m HEAD@{287}: pull origin main --rebase (pick): Published your App
+[33m02bbfc3[m HEAD@{288}: pull origin main --rebase (pick): Published your App
+[33m74d03a9[m HEAD@{289}: pull origin main --rebase (pick): Published your App
+[33m7fe941f[m HEAD@{290}: pull origin main --rebase (pick): Add new video files and update existing ones
+[33md481e84[m HEAD@{291}: pull origin main --rebase (start): checkout d481e84ddd8e37085c7868d359263dbc0643a8c0
+[33me35c35a[m HEAD@{292}: commit: Published your App
+[33m6336f95[m HEAD@{293}: commit: Saved progress at the end of the loop
+[33m8e17b40[m HEAD@{294}: commit: Add migration endpoint to copy video scan data from dev to production
+[33mc92e2a4[m HEAD@{295}: commit: Saved progress after completing a task
+[33m8995e82[m HEAD@{296}: commit: Saved progress at the end of the loop
+[33m0debd41[m HEAD@{297}: commit: Published your App
+[33md4e796e[m HEAD@{298}: pull origin main --rebase (finish): returning to refs/heads/main
+[33md4e796e[m HEAD@{299}: pull origin main --rebase (pick): Published your App
+[33mdeab349[m HEAD@{300}: pull origin main --rebase (pick): Published your App
+[33mdec5dbb[m HEAD@{301}: pull origin main --rebase (pick): Published your App
+[33m94919b0[m HEAD@{302}: pull origin main --rebase (pick): Add new video files and update existing ones
+[33mb15b20d[m HEAD@{303}: pull origin main --rebase (start): checkout b15b20dc8a36da47fa28bbbd2bab3c69df980544
+[33m41f0008[m HEAD@{304}: commit: Published your App
+[33m8b3323b[m HEAD@{305}: pull origin main --rebase (finish): returning to refs/heads/main
+[33m8b3323b[m HEAD@{306}: pull origin main --rebase (pick): Published your App
+[33m18e1f90[m HEAD@{307}: pull origin main --rebase (pick): Published your App
+[33m124cf2b[m HEAD@{308}: pull origin main --rebase (pick): Add new video files and update existing ones
+[33mb8ad406[m HEAD@{309}: pull origin main --rebase (start): checkout b8ad40665bfeb8ccd72c3f0399a07c7c5952317d
+[33m290027c[m HEAD@{310}: commit: Published your App
+[33m9ad7ae0[m HEAD@{311}: commit: Published your App
+[33ma608cd5[m HEAD@{312}: pull origin main --rebase (finish): returning to refs/heads/main
+[33ma608cd5[m HEAD@{313}: pull origin main --rebase (pick): Add new video files and update existing ones
+[33m9a13125[m HEAD@{314}: pull origin main --rebase (start): checkout 9a131257dd617638943afd832ab297d076f544be
+[33m19eb23e[m HEAD@{315}: pull origin main --rebase (finish): returning to refs/heads/main
+[33m19eb23e[m HEAD@{316}: pull origin main --rebase (pick): Add new video files and update existing ones
+[33m3bac207[m HEAD@{317}: pull origin main --rebase (start): checkout 3bac207dde5005fe78fd6d67e42824447dd8a124
+[33mb14e104[m HEAD@{318}: pull origin main --rebase (finish): returning to refs/heads/main
+[33mb14e104[m HEAD@{319}: pull origin main --rebase (pick): Add new video files and update existing ones
+[33m8929573[m HEAD@{320}: pull origin main --rebase (start): checkout 8929573036093cb0c7cf4a45d01abbd195362174
+[33m2eb9f4d[m HEAD@{321}: commit: Add new video files and update existing ones
+[33maa86883[m HEAD@{322}: pull origin main --rebase: Fast-forward
+[33mea1e2a6[m HEAD@{323}: reset: moving to HEAD
+[33mea1e2a6[m HEAD@{324}: pull origin main --rebase: Fast-forward
+[33me5aa79a[m HEAD@{325}: reset: moving to HEAD
+[33me5aa79a[m HEAD@{326}: pull origin main --rebase: Fast-forward
+[33m5cd6558[m HEAD@{327}: reset: moving to HEAD
+[33m5cd6558[m HEAD@{328}: pull origin main --rebase: Fast-forward
+[33m863d9d3[m HEAD@{329}: reset: moving to HEAD
+[33m863d9d3[m HEAD@{330}: pull origin main --rebase: Fast-forward
+[33m4651cce[m HEAD@{331}: reset: moving to HEAD
+[33m4651cce[m HEAD@{332}: pull origin main --rebase: Fast-forward
+[33m5c69eef[m HEAD@{333}: reset: moving to HEAD
+[33m5c69eef[m HEAD@{334}: pull origin main --rebase: Fast-forward
+[33m45a0818[m HEAD@{335}: reset: moving to HEAD
+[33m45a0818[m HEAD@{336}: pull origin main --rebase: Fast-forward
+[33m895d242[m HEAD@{337}: reset: moving to HEAD
+[33m895d242[m HEAD@{338}: pull origin main --rebase (finish): returning to refs/heads/main
+[33m895d242[m HEAD@{339}: pull origin main --rebase (pick): Show important marketing text on mobile devices
+[33mf1fc269[m HEAD@{340}: pull origin main --rebase (start): checkout f1fc269a19e3fb5db1cf4ad477f834640881bcc4
+[33m8eca3df[m HEAD@{341}: pull origin main --rebase (finish): returning to refs/heads/main
+[33m8eca3df[m HEAD@{342}: pull origin main --rebase (pick): Show important marketing text on mobile devices
+[33maeec61a[m HEAD@{343}: pull origin main --rebase (start): checkout aeec61abd811880438f3bb723398afc879edcb3f
+[33m863009b[m HEAD@{344}: commit: Show important marketing text on mobile devices
+[33m7f2984a[m HEAD@{345}: pull origin main --rebase: Fast-forward
+[33m87a0512[m HEAD@{346}: pull origin main --rebase: Fast-forward
+[33maa59d53[m HEAD@{347}: pull origin claude/resume-session-FhWPr --rebase (finish): returning to refs/heads/main
+[33maa59d53[m HEAD@{348}: pull origin claude/resume-session-FhWPr --rebase (pick): Add welcome and admin notification emails to Google signups
+[33meb88e3c[m HEAD@{349}: pull origin claude/resume-session-FhWPr --rebase (pick): Add new visual frames for content previews
+[33md7c1fc6[m HEAD@{350}: pull origin claude/resume-session-FhWPr --rebase (start): checkout d7c1fc60dcf27572725959ce0b85e75a32a05d5f
+[33m2d614d3[m HEAD@{351}: pull origin claude/resume-session-FhWPr --rebase (finish): returning to refs/heads/main
+[33m2d614d3[m HEAD@{352}: pull origin claude/resume-session-FhWPr --rebase (pick): Add welcome and admin notification emails to Google signups
+[33mfefcddc[m HEAD@{353}: pull origin claude/resume-session-FhWPr --rebase (pick): Add new visual frames for content previews
+[33m52c20ab[m HEAD@{354}: pull origin claude/resume-session-FhWPr --rebase (start): checkout 52c20ab8d7d309eaa16bd7c747dba17f56b182e2
+[33m60aa54f[m HEAD@{355}: pull origin claude/resume-session-FhWPr --rebase (finish): returning to refs/heads/main
+[33m60aa54f[m HEAD@{356}: pull origin claude/resume-session-FhWPr --rebase (pick): Add welcome and admin notification emails to Google signups
+[33mc7e1805[m HEAD@{357}: pull origin claude/resume-session-FhWPr --rebase (pick): Add new visual frames for content previews
+[33mcac5e02[m HEAD@{358}: pull origin claude/resume-session-FhWPr --rebase (start): checkout cac5e02a4556c9e8ac8ff356b92b7bf2658520a2
+[33m86061f5[m HEAD@{359}: pull origin claude/resume-session-FhWPr --rebase (finish): returning to refs/heads/main
+[33m86061f5[m HEAD@{360}: pull origin claude/resume-session-FhWPr --rebase (pick): Add welcome and admin notification emails to Google signups
+[33m163022c[m HEAD@{361}: pull origin claude/resume-session-FhWPr --rebase (pick): Add new visual frames for content previews
+[33mb3cb0b3[m HEAD@{362}: pull origin claude/resume-session-FhWPr --rebase (start): checkout b3cb0b30f762f46d0ff7f8075bd0b34d5e637d9b
+[33m23bd3e3[m HEAD@{363}: pull origin claude/resume-session-FhWPr --rebase (finish): returning to refs/heads/main
+[33m23bd3e3[m HEAD@{364}: pull origin claude/resume-session-FhWPr --rebase (pick): Add welcome and admin notification emails to Google signups
+[33m32c5426[m HEAD@{365}: pull origin claude/resume-session-FhWPr --rebase (pick): Add new visual frames for content previews
+[33m74e385b[m HEAD@{366}: pull origin claude/resume-session-FhWPr --rebase (start): checkout 74e385b4be04c01a10408529510db8ba7b332e66
+[33m50daa60[m HEAD@{367}: commit: Add welcome and admin notification emails to Google signups
+[33m2f228f2[m HEAD@{368}: pull origin main --rebase (finish): returning to refs/heads/main
+[33m2f228f2[m HEAD@{369}: pull origin main --rebase (pick): Add new visual frames for content previews
+[33m657b382[m HEAD@{370}: pull origin main --rebase (start): checkout 657b3825ac834104f07c52c290deba0df8e5c361
+[33m7ae688f[m HEAD@{371}: commit: Add new visual frames for content previews
+[33m786ae18[m HEAD@{372}: pull: Fast-forward
+[33md099c6b[m HEAD@{373}: reset: moving to HEAD
+[33md099c6b[m HEAD@{374}: pull origin main --rebase: Fast-forward
+[33m61c1c25[m HEAD@{375}: reset: moving to HEAD
+[33m61c1c25[m HEAD@{376}: pull origin main --rebase: Fast-forward
+[33m5aa1406[m HEAD@{377}: reset: moving to HEAD
+[33m5aa1406[m HEAD@{378}: reset: moving to HEAD
+[33m5aa1406[m HEAD@{379}: pull origin main --rebase: Fast-forward
+[33m9dbdc83[m HEAD@{380}: reset: moving to HEAD
+[33m9dbdc83[m HEAD@{381}: pull origin main --rebase: Fast-forward
+[33m2bd0197[m HEAD@{382}: reset: moving to HEAD
+[33m2bd0197[m HEAD@{383}: pull origin main --rebase: Fast-forward
+[33mfc80b75[m HEAD@{384}: reset: moving to HEAD
+[33mfc80b75[m HEAD@{385}: pull origin main --rebase (finish): returning to refs/heads/main
+[33mfc80b75[m HEAD@{386}: pull origin main --rebase (pick): Add a test email endpoint and expand admin access
+[33m46cbb09[m HEAD@{387}: pull origin main --rebase (start): checkout 46cbb0923f06e4285ae6e356a2e47e7de7b2024d
+[33m8601fcf[m HEAD@{388}: reset: moving to HEAD
+[33m8601fcf[m HEAD@{389}: pull origin main --rebase (finish): returning to refs/heads/main
+[33m8601fcf[m HEAD@{390}: pull origin main --rebase (pick): Add a test email endpoint and expand admin access
+[33mc1e814c[m HEAD@{391}: pull origin main --rebase (start): checkout c1e814cb5305151f7cd106268adddfc01797713b
+[33me95bc8c[m HEAD@{392}: reset: moving to HEAD
+[33me95bc8c[m HEAD@{393}: commit: Add a test email endpoint and expand admin access
+[33m63aec6f[m HEAD@{394}: reset: moving to origin/main
+[33m6d8d292[m HEAD@{395}: reset: moving to origin/main
+[33m90b65b6[m HEAD@{396}: pull origin main: Fast-forward
+[33m7ce65a1[m HEAD@{397}: pull origin main: Fast-forward
+[33m6c99b49[m HEAD@{398}: pull origin main: Fast-forward
+[33mf9d9496[m HEAD@{399}: pull origin main: Fast-forward
+[33m925ff8a[m HEAD@{400}: pull origin main: Fast-forward
+[33md7e7cea[m HEAD@{401}: pull origin main: Fast-forward
+[33m35405b0[m HEAD@{402}: pull origin main: Fast-forward
+[33maff53e1[m HEAD@{403}: pull origin main: Fast-forward
+[33mb93151a[m HEAD@{404}: pull origin main: Fast-forward
+[33m3c8c640[m HEAD@{405}: pull origin main: Fast-forward
+[33mdf3b880[m HEAD@{406}: pull origin main: Fast-forward
+[33me089034[m HEAD@{407}: pull origin main: Fast-forward
+[33m58adcdd[m HEAD@{408}: rebase (finish): returning to refs/heads/main
+[33m58adcdd[m HEAD@{409}: rebase (pick): Restored to '3cfe370ee5c9a39086e08adfae067e76475daab0'
+[33mb7b1b31[m HEAD@{410}: rebase (pick): Restore functionality by fixing broken asset links on the landing page
+[33mf3ff82e[m HEAD@{411}: rebase (pick): Add logo file to assets directory for application use
+[33m8d4e1c0[m HEAD@{412}: rebase (continue): Update logo references across the application to correct a critical error
+[33m6c7747d[m HEAD@{413}: commit (amend): Add dev login bypass and dynamic OAuth redirect
+[33mee54eb0[m HEAD@{414}: rebase (start): checkout origin/main
+[33mf6ae6d7[m HEAD@{415}: reset: moving to HEAD
+[33mf6ae6d7[m HEAD@{416}: reset: moving to f6ae6d76b2f0b60b98383867f011f94e381a928b
+[33mf31c395[m[33m ([m[1;31mgitsafe-backup/main[m[33m)[m HEAD@{417}: commit: Restore functionality by fixing broken asset links on the landing page
+[33m6d4bdb4[m HEAD@{418}: commit: Add logo file to assets directory for application use
+[33m9b93f90[m HEAD@{419}: commit: Update logo references across the application to correct a critical error
+[33m5832926[m HEAD@{420}: pull origin main: Fast-forward
+[33mdfd7b81[m HEAD@{421}: pull origin main: Fast-forward
+[33m6de5380[m HEAD@{422}: reset: moving to HEAD
+[33m6de5380[m HEAD@{423}: filter-branch: rewrite
+[33me61797c[m HEAD@{424}: filter-branch: rewrite
+[33m8f2e234[m HEAD@{425}: filter-branch: rewrite
+[33m2a1ed83[m HEAD@{426}: commit: Remove large video files from git tracking
+[33m3cfe370[m HEAD@{427}: Branch: renamed refs/heads/main to refs/heads/main
+[33m3cfe370[m HEAD@{429}: commit: Add two new emails to the list of administrators for the backend
+[33m4effc9e[m HEAD@{430}: commit: Saved progress at the end of the loop
+[33mce8dae2[m HEAD@{431}: commit: Improve surface detection in videos by scanning more frequently
+[33mc1b6b1e[m HEAD@{432}: commit: Add ability to play videos from specific detected moments
+[33mf48d8fa[m HEAD@{433}: commit: Improve video scanning to automatically detect more surfaces
+[33m78d1741[m HEAD@{434}: commit: Add option to append surfaces instead of replacing them
+[33md19f6ca[m HEAD@{435}: commit: Published your App
+[33mfb5be3c[m HEAD@{436}: commit: Published your App
+[33mca8cb9c[m HEAD@{437}: commit: Add an endpoint to batch insert surface detection results
+[33ma366e87[m HEAD@{438}: commit: Published your App
+[33mc39bf95[m HEAD@{439}: commit: Add test video for surface detection analysis
+[33m4d6d39f[m HEAD@{440}: commit: Published your App
+[33m326fd8b[m HEAD@{441}: commit: Saved progress at the end of the loop
+[33med7b1ec[m HEAD@{442}: commit: Remove demo scenes and add API for inserting surfaces
+[33m60af7cb[m HEAD@{443}: commit: Published your App
+[33m0d33a48[m HEAD@{444}: commit: Saved progress at the end of the loop
+[33m5cddfad[m HEAD@{445}: commit: Update thumbnail display and remove dummy data from scene analysis
+[33m3eca0e0[m HEAD@{446}: commit: Remove dummy data and run actual video scans
+[33m0a48e55[m HEAD@{447}: commit: Published your App
+[33ma734650[m HEAD@{448}: commit: Saved progress at the end of the loop
+[33m4ab73f2[m HEAD@{449}: commit: Fix video playback, aspect ratios, and scanning confidence levels
+[33mfcd972f[m HEAD@{450}: commit: Published your App
+[33mb4259a7[m HEAD@{451}: commit: Fix video loading, scanning, and thumbnail display issues
+[33m68b7fb2[m HEAD@{452}: commit: Published your App
+[33m6342c8e[m HEAD@{453}: commit: Published your App
+[33mb1b416f[m HEAD@{454}: commit: Add API endpoint to update video file paths and thumbnails
+[33m411bdcf[m HEAD@{455}: commit: Published your App
+[33m1e41798[m HEAD@{456}: commit: Fix distortion of local video thumbnails in library
+[33m8da5f91[m HEAD@{457}: commit: Published your App
+[33mf5f9a80[m HEAD@{458}: commit: Fix video popups to show correct thumbnails and add scanner configuration
+[33m72927c9[m HEAD@{459}: commit: Update scanner settings to improve video detection accuracy
+[33m5a2d187[m HEAD@{460}: commit: Published your App
+[33mc5f4e09[m HEAD@{461}: commit: Update video mapping to use permanently deployed file
+[33m3a90509[m HEAD@{462}: commit: Published your App
+[33mf6ff436[m HEAD@{463}: commit: Add missing thumbnails for video uploads and processing
+[33m267778b[m HEAD@{464}: commit: Published your App
+[33m3d32ca4[m HEAD@{465}: commit: Map uploaded videos to deployed assets for consistent scanning
+[33md7c2cb1[m HEAD@{466}: commit: Add images to showcase the application's features
+[33m2e0165a[m HEAD@{467}: commit: Published your App
+[33mfba2811[m HEAD@{468}: commit: Add mapping for production video asset in local development environment
+[33mbb0cab0[m HEAD@{469}: commit: Update production environment to reflect development video data
+[33m0a9bf03[m HEAD@{470}: commit: Add helpful images to aid in debugging user authentication issues
+[33mc99ce5a[m HEAD@{471}: commit: Published your App
+[33m5c45f20[m HEAD@{472}: commit: Update local video assets and add new test video for creator portal
+[33m8492dc3[m HEAD@{473}: commit: Published your App
+[33ma36b598[m HEAD@{474}: commit: Update application to serve latest code to production
+[33me7a82e8[m HEAD@{475}: commit: Add detailed logging to diagnose video display issues in the library
+[33m1271a74[m HEAD@{476}: commit: Published your App
+[33m357c40d[m HEAD@{477}: commit: Improve library page to show real videos when logged in
+[33m72e8426[m HEAD@{478}: commit: Published your App
+[33m2d66cd1[m HEAD@{479}: commit: Make video surfaces API publicly accessible for all users
+[33m4331dd6[m HEAD@{480}: commit: Published your App
+[33m32f8ab5[m HEAD@{481}: commit: Allow viewing Gemini AI surfaces by passing admin email
+[33mcbb395a[m HEAD@{482}: commit: Published your App
+[33mbf76cf5[m HEAD@{483}: commit: Allow viewing scene analysis for videos with local files
+[33m9aeef1d[m HEAD@{484}: commit: Published your App
+[33m1eaa1bc[m HEAD@{485}: commit: Update video details to show AI-detected surfaces instead of object detections
+[33m7f17d50[m HEAD@{486}: commit: Improve AI surface detection for product placement using Gemini
+[33m70eff6e[m HEAD@{487}: commit: Add detailed logging to edge detection for improved debugging
+[33mde48ff4[m HEAD@{488}: commit: Add new video asset for testing scan functionality
+[33m41e1aef[m HEAD@{489}: commit: Add debug logging to scanner and map local video assets
+[33m4e48363[m HEAD@{490}: commit: Published your App
+[33mc29a19c[m HEAD@{491}: commit: Add public creator profile pages for brands to request placements
+[33m8c642e1[m HEAD@{492}: commit: Add public creator profile page with video and placement request functionality
+[33mdabd457[m HEAD@{493}: commit: Add favicons and update site links for better browser compatibility
+[33mc88a3f0[m HEAD@{494}: commit: Published your App
+[33m313e38f[m HEAD@{495}: commit: Improve database connection handling to prevent crashes
+[33m2059ea8[m HEAD@{496}: commit: Published your App
+[33m43e1ece[m HEAD@{497}: commit: Published your App
+[33me1b280f[m HEAD@{498}: commit: Saved progress at the end of the loop
+[33mbec6003[m HEAD@{499}: commit: Published your App
+[33mce5a468[m HEAD@{500}: commit: Add a branded loading screen for server startup
+[33m175d8fd[m HEAD@{501}: commit: Published your App
+[33m4056f77[m HEAD@{502}: commit: Add a branded loading page to display during server startup
+[33m80aafff[m HEAD@{503}: commit: Published your App
+[33m65e50ce[m HEAD@{504}: commit: Published your App
+[33mffca529[m HEAD@{505}: commit: Remove TensorFlow scanning and related startup processes
+[33mcc3179f[m HEAD@{506}: commit: Published your App
+[33mc94946c[m HEAD@{507}: commit: Introduce a new, stable video scanning system
+[33mb4cb020[m HEAD@{508}: commit: Published your App
+[33m552a5a9[m HEAD@{509}: commit: Published your App
+[33me530849[m HEAD@{510}: commit: Add production user data and send emails
+[33m494f187[m HEAD@{511}: commit: Add production user data to Airtable and send cohort emails
+[33md2e968c[m HEAD@{512}: commit: Update Airtable integration to use the correct table name
+[33m8207010[m HEAD@{513}: commit: Clarify Airtable permission issues for user access
+[33md38b227[m HEAD@{514}: commit: Update Airtable permissions to allow reading data
+[33mdb598b3[m HEAD@{515}: commit: Update email content and guide users on Airtable token configuration
+[33mdcf83ee[m HEAD@{516}: commit: Update email to announce upcoming platform developments
+[33mfb0cc1d[m HEAD@{517}: commit: Update email header to display brand name instead of logo
+[33m1d2dfa1[m HEAD@{518}: commit: Update email design to match website branding and include logo
+[33m9292b32[m HEAD@{519}: commit: Update email template to improve compatibility and visual appeal
+[33m91cc6b6[m HEAD@{520}: commit: Update email sender to use verified domain
+[33m1f044ae[m HEAD@{521}: commit: Add ability to send personalized emails to founding creator cohort
+[33m7e4abfc[m HEAD@{522}: commit: Published your App
+[33mcb22152[m HEAD@{523}: commit: Fix logout functionality and improve cookie clearing
+[33m3ee637f[m HEAD@{524}: commit: Add options to exit the waitlist signup page
+[33m1681bf0[m HEAD@{525}: commit: Add user type selection and email notifications for signups
+[33mda359ca[m HEAD@{526}: commit: Add password visibility toggle to login and registration forms
+[33m21787ae[m HEAD@{527}: commit: Published your App
+[33m519d620[m HEAD@{528}: commit: Improve error handling for static file serving and session initialization
+[33m14dd476[m HEAD@{529}: commit: Published your App
+[33m884ef07[m HEAD@{530}: commit: Add support for various image and video file formats
+[33m54d0521[m HEAD@{531}: commit: Published your App
+[33ma9d2b54[m HEAD@{532}: commit: Published your App
+[33m616d8f6[m HEAD@{533}: commit: Add a video preview modal with frame extraction capabilities
+[33m53441d9[m HEAD@{534}: commit: Published your App
+[33m97487da[m HEAD@{535}: commit: Add a new favicon to the application
+[33m5d61be8[m HEAD@{536}: commit: Published your App
+[33m9a651c6[m HEAD@{537}: commit: Update website favicon and resolve server error
+[33md6ad940[m HEAD@{538}: commit: Add a new icon to improve website appearance
+[33m6d7b7aa[m HEAD@{539}: commit: Published your App
+[33mb707fb5[m HEAD@{540}: commit: Update application to display the correct logo and add demo video
+[33m417a9d0[m HEAD@{541}: commit: Update browser icon to display the new FS logo
+[33m18b6e23[m HEAD@{542}: commit: Published your App
+[33m7815b54[m HEAD@{543}: commit: Update website's favicon and branding elements to new logo
+[33mc83d55b[m HEAD@{544}: commit: Published your App
+[33m9485bd8[m HEAD@{545}: commit: Add demo video to production library for testing
+[33m61ada78[m HEAD@{546}: commit: Published your App
+[33m9ff1bbd[m HEAD@{547}: commit: Add a way to seed demo videos using a secret key
+[33m55dda6e[m HEAD@{548}: commit: Published your App
+[33m11699fc[m HEAD@{549}: commit: Update website preview image to improve publishing speed
+[33m2f2de0e[m HEAD@{550}: commit: Published your App
+[33mfd20357[m HEAD@{551}: commit: Update link preview image to use user-provided screenshot
+[33m4cf4fbf[m HEAD@{552}: commit: Update link previews with a new share image and correct file format
+[33m4272053[m HEAD@{553}: commit: Add endpoint to directly add local videos to production
+[33m3cd785d[m HEAD@{554}: commit: Improve library refresh functionality by making the refresh button always visible
+[33mf395b9f[m HEAD@{555}: commit: Published your App
+[33me7c3ee5[m HEAD@{556}: commit: Add local video file for testing and scanning feature
+[33meda4b24[m HEAD@{557}: commit: Published your App
+[33mb3c4a09[m HEAD@{558}: commit: Add button to clear user's video library and improve deletion logic
+[33m262c437[m HEAD@{559}: commit: Published your App
+[33mccc9171[m HEAD@{560}: commit: Remove lingering YouTube connection data from the system
+[33m941ee2d[m HEAD@{561}: commit: Published your App
+[33m3da3022[m HEAD@{562}: commit: Improve platform disconnect persistence and local file badge display
+[33m1298e68[m HEAD@{563}: commit: Add ability to disconnect Facebook and Twitch accounts
+[33m563ad59[m HEAD@{564}: commit: Fix social media connection and disconnection issues
+[33m65a90f4[m HEAD@{565}: commit: Published your App
+[33m3223e84[m HEAD@{566}: commit: Published your App
+[33m0dad222[m HEAD@{567}: commit: Published your App
+[33m2f591e9[m HEAD@{568}: commit: Add uploads tab and improve platform badge display for videos
+[33m3d562ff[m HEAD@{569}: commit: Published your App
+[33mab1784f[m HEAD@{570}: commit: Improve local file detection and prevent duplicate video imports
+[33mab4596f[m HEAD@{571}: commit: Published your App
+[33m1636eee[m HEAD@{572}: commit: Update slider to reveal product augmentation from left to right
+[33mfd54756[m HEAD@{573}: commit: Update image comparison to show reality on the left and augmented on the right
+[33maa759b8[m HEAD@{574}: commit: Implement a classic image comparison slider for reality to augmentation transitions
+[33m85fdf4c[m HEAD@{575}: commit: Improve the landing page with a new visual transition for reality to augmented content
+[33md1d0dd0[m HEAD@{576}: commit: Improve scene capture by expanding object detection and updating transition visuals
+[33m2cfb858[m HEAD@{577}: commit: Add new video scanning capabilities and update the library interface
+[33m1b7a1a1[m HEAD@{578}: commit: Simplify local file scanning by removing ownership checks
+[33md2da424[m HEAD@{579}: commit: Saved progress at the end of the loop
+[33md58d8da[m HEAD@{580}: commit: Add AI-powered surface detection and automatic thumbnail extraction for videos
+[33m854e121[m HEAD@{581}: commit: Published your App
+[33ma7ac5db[m HEAD@{582}: commit: Published your App
+[33mfdb2eaf[m HEAD@{583}: commit: Published your App
+[33m95c1e27[m HEAD@{584}: commit: Published your App
+[33m5661475[m HEAD@{585}: commit: Improve YouTube OAuth initiation error handling and logging
+[33mc31aeba[m HEAD@{586}: commit: Fix error when attempting to log in with Google
+[33md60fa5a[m HEAD@{587}: commit: Add robust error handling to the Google login callback process
+[33m94f4c06[m HEAD@{588}: commit: Update video import to include more fields and find Instagram accounts
+[33m40c8bce[m HEAD@{589}: commit: Published your App
+[33mf2f3542[m HEAD@{590}: commit: Improve importing videos from creator pages by using granular scopes
+[33m1e84115[m HEAD@{591}: commit: Published your App
+[33m07b69d6[m HEAD@{592}: commit: Improve fetching of creator page details and video content
+[33m89db397[m HEAD@{593}: commit: Published your App
+[33mf4b4cbd[m HEAD@{594}: commit: Fetch Facebook pages using granular scopes when direct account access fails
+[33m5bd918d[m HEAD@{595}: commit: Published your App
+[33mbf60657[m HEAD@{596}: commit: Add debug endpoint to inspect Facebook token and account data
+[33m717412d[m HEAD@{597}: commit: Remove permission that requires Facebook App Review
+[33m25c540b[m HEAD@{598}: commit: Published your App
+[33m80a7d97[m HEAD@{599}: commit: Add logging to help diagnose issues fetching user's Facebook pages
+[33m89c4a0f[m HEAD@{600}: commit: Published your App
+[33m071430f[m HEAD@{601}: commit: Update platform authentication to request correct Facebook API permissions
+[33m5bbb7b5[m HEAD@{602}: commit: Published your App
+[33m30d19fc[m HEAD@{603}: commit: Add necessary permissions to access user content and Instagram accounts
+[33m9ef740b[m HEAD@{604}: commit: Published your App
+[33m047cb6f[m HEAD@{605}: commit: Update button style to fix production build errors
+[33mb8ee22c[m HEAD@{606}: commit: Published your App
+[33m71fe162[m HEAD@{607}: commit: Add Instagram Business connection option to settings
+[33m44c1b99[m HEAD@{608}: commit: Published your App
+[33mc1b9913[m HEAD@{609}: commit: Improve Facebook authentication and token storage reliability
+[33m1dc65b2[m HEAD@{610}: commit: Published your App
+[33mcc82cdd[m HEAD@{611}: commit: Update Facebook authentication to correctly store access tokens
+[33mceb3f11[m HEAD@{612}: commit: Published your App
+[33mf02143c[m HEAD@{613}: commit: Update favicon and remove deprecated Facebook scope
+[33m1f42124[m HEAD@{614}: commit: Published your App
+[33m4633dc4[m HEAD@{615}: commit: Saved progress at the end of the loop
+[33m4195dfb[m HEAD@{616}: commit: Allow users to select specific Facebook pages and Instagram profiles
+[33m42003b3[m HEAD@{617}: commit: Add ability to import videos from Facebook personal profiles
+[33m4cebee6[m HEAD@{618}: commit: Published your App
+[33mff00fb2[m HEAD@{619}: commit: Enable testing sync endpoint via browser GET requests
+[33m75fa16c[m HEAD@{620}: commit: Add debug information to check Facebook connection status
+[33me41496c[m HEAD@{621}: commit: Published your App
+[33m5a77b34[m HEAD@{622}: commit: Ensure Facebook access tokens are saved to the user session
+[33m1f8813d[m HEAD@{623}: commit: Published your App
+[33m6b68090[m HEAD@{624}: commit: Add Facebook access token to user session and database
+[33m8363936[m HEAD@{625}: commit: Published your App
+[33m56c456e[m HEAD@{626}: commit: Add ability to automatically sync Facebook ID to user accounts
+[33ma3d55c0[m HEAD@{627}: commit: Add endpoint to manually sync Facebook connection data
+[33m611d963[m HEAD@{628}: commit: Published your App
+[33m7ca6a91[m HEAD@{629}: commit: Add endpoint to sync Facebook connection data from session to database
+[33m437141c[m HEAD@{630}: commit: Published your App
+[33mb0e3d6b[m HEAD@{631}: commit: Improve authentication by adding detailed logging and a debug endpoint
+[33m21494e0[m HEAD@{632}: commit: Update session configuration to properly handle authentication
+[33m2cf6096[m HEAD@{633}: commit: Add debug endpoint to check Facebook OAuth session state
+[33md47ae0a[m HEAD@{634}: commit: Published your App
+[33m93a7ccd[m HEAD@{635}: commit: Add debug endpoint to inspect Facebook connection status
+[33m18b17c7[m HEAD@{636}: commit: Published your App
+[33m6a3d1bf[m HEAD@{637}: commit: Improve account linking by preserving Google login session data
+[33madf0e35[m HEAD@{638}: commit: Published your App
+[33m740ddc2[m HEAD@{639}: commit: Add detailed logging to improve Facebook account linking
+[33m41922ce[m HEAD@{640}: commit: Improve error handling for Google sign-in flow
+[33mc7f8f87[m HEAD@{641}: commit: Published your App
+[33mce80774[m HEAD@{642}: commit: Improve Google sign-in process with better error handling and credential checks
+[33m42f0496[m HEAD@{643}: commit: Published your App
+[33m7b73cef[m HEAD@{644}: commit: Link Facebook accounts to existing Google OAuth users
+[33m81defb9[m HEAD@{645}: commit: Published your App
+[33m0d727da[m HEAD@{646}: commit: Enhance the creator portal with YouTube sync and improved UI elements
+[33m2242f2b[m HEAD@{647}: commit: Update YouTube video display to show actual thumbnails
+[33m0f68dab[m HEAD@{648}: commit: Published your App
+[33mf5b1b6f[m HEAD@{649}: commit: Update YouTube API endpoints to use flexible authentication
+[33m3d97454[m HEAD@{650}: commit: Update authentication and YouTube connection handling for consistency
+[33m01e983b[m HEAD@{651}: commit: Published your App
+[33mfbdf075[m HEAD@{652}: commit: Add logging to YouTube video retrieval endpoint
+[33m9ca3308[m HEAD@{653}: commit: Published your App
+[33m05b1a3d[m HEAD@{654}: commit: Add table for storing OAuth state to protect against CSRF attacks
+[33m9c66d4f[m HEAD@{655}: commit: Published your App
+[33md47ec17[m HEAD@{656}: commit: Published your App
+[33mc22926e[m HEAD@{657}: commit: Update login system to prevent errors after YouTube authentication
+[33m1be865b[m HEAD@{658}: commit: Published your App
+[33m384e635[m HEAD@{659}: commit: Simplify database seeding script execution method
+[33m14f4e9d[m HEAD@{660}: commit: Published your App
+[33me1436df[m HEAD@{661}: commit: Improve Google sign-in by fixing state verification and cookie handling
+[33m07c02b5[m HEAD@{662}: commit: Published your App
+[33me754175[m HEAD@{663}: commit: Published your App
+[33m6025238[m HEAD@{664}: commit: Add cookie-based backup for OAuth state verification
+[33m8be50dc[m HEAD@{665}: commit: Published your App
+[33m61d8055[m HEAD@{666}: commit: Add error handling for Google OAuth login process
+[33m111f92b[m HEAD@{667}: commit: Published your App
+[33m68fa514[m HEAD@{668}: commit: Update site to show uploaded videos and use correct favicon
+[33md502c14[m HEAD@{669}: commit: Published your App
+[33mae50a11[m HEAD@{670}: commit: Add FullScale logo as the browser tab icon
+[33m5fe944e[m HEAD@{671}: commit: Update website favicon to show the correct company logo
+[33m6d7f835[m HEAD@{672}: commit: Add favicon and improve error logging for authentication flow
+[33mee7383f[m HEAD@{673}: commit: Published your App
+[33mfde15ea[m HEAD@{674}: commit: Update browser tab icon to use the company favicon
+[33m982fc3d[m HEAD@{675}: commit: Improve landing page performance by prioritizing video and lazy loading images
+[33mdb44465[m HEAD@{676}: commit: Improve video loading performance and responsiveness on the landing page
+[33mdcb8e0e[m HEAD@{677}: commit: Published your App
+[33m989aeb7[m HEAD@{678}: commit: Remove unused YouTube download package and restart server
+[33m67ea788[m HEAD@{679}: commit: Saved progress at the end of the loop
+[33m4e802e7[m HEAD@{680}: commit: Published your App
+[33m1e44b18[m HEAD@{681}: commit: Update background video to use correct hero video file
+[33m921333c[m HEAD@{682}: commit: Update background video path and verify YouTube callback URL
+[33mf933d12[m HEAD@{683}: commit: Remove large unused video and image files to free up disk space
+[33m7ef618d[m HEAD@{684}: commit: Remove session store error logging
+[33m0b5857b[m HEAD@{685}: reset: moving to 0b5857b344f4b41a9ca1b29ba4b913349a78d08f
+[33maacd398[m HEAD@{686}: commit: Published your App
+[33m73fa474[m HEAD@{687}: reset: moving to 73fa474cda4648e60a918cd47fae13bedc5c6fcd
+[33m4e85090[m HEAD@{688}: commit: Fix sign-in issues and improve application stability
+[33m5a809d6[m HEAD@{689}: commit: Published your App
+[33m3b79e3b[m HEAD@{690}: commit: Make the login process more resilient to session loss
+[33m1e5039b[m HEAD@{691}: commit: Published your App
+[33mfc22621[m HEAD@{692}: commit: Make the application start faster and respond to health checks immediately
+[33mf200a8d[m HEAD@{693}: reset: moving to f200a8d81c98486e07880b097ba53304e82b28e6
+[33md475799[m HEAD@{694}: commit: Improve landing page performance by lazy loading video
+[33mf699217[m HEAD@{695}: commit: Published your App
+[33m5279cab[m HEAD@{696}: reset: moving to 5279cab66065ca71402716f2ada6ad36bdca77b0
+[33meb3d272[m HEAD@{697}: commit: Published your App
+[33m6544fe1[m HEAD@{698}: commit: Improve YouTube connection reliability and error handling
+[33m0ac6d35[m HEAD@{699}: commit: Published your App
+[33mb27c6c1[m HEAD@{700}: commit: Improve landing page load speed and login stability
+[33mc24eb77[m HEAD@{701}: commit: Improve session stability and reset functionality for user accounts
+[33md9ddc3b[m HEAD@{702}: commit: Published your App
+[33ma58d04a[m HEAD@{703}: commit: Speed up social login by deferring YouTube channel data retrieval
+[33mf433c03[m HEAD@{704}: commit: Update site title and favicon for branding and SEO
+[33m5285f02[m HEAD@{705}: commit: Published your App
+[33m5bb2487[m HEAD@{706}: commit: Published your App
+[33md1f88e5[m HEAD@{707}: commit: Published your App
+[33mafe6305[m HEAD@{708}: commit: Improve session handling and login security for a more stable experience
+[33md8a0fe1[m HEAD@{709}: commit: Published your App
+[33mbaae04f[m HEAD@{710}: commit: Published your App
+[33m3a6b1f0[m HEAD@{711}: commit: Prioritize serving static assets and clarify dashboard access
+[33md39695f[m HEAD@{712}: commit: Update login redirect URL to match Google OAuth configuration
+[33mb7ad04e[m HEAD@{713}: commit: Improve session handling and error recovery for authentication
+[33m0a71304[m HEAD@{714}: commit: Add detailed logging to Google login process
+[33m5a51c75[m HEAD@{715}: commit: Published your App
+[33m09e2861[m HEAD@{716}: commit: Defer syncing new user data to Airtable for improved login performance
+[33m5946b6a[m HEAD@{717}: commit: Published your App
+[33m274594a[m HEAD@{718}: commit: Improve caching for production static files
+[33m1dbbef9[m HEAD@{719}: commit: Update Google authentication to improve session handling and prevent errors
+[33m31fbb68[m HEAD@{720}: commit: Remove the poster image from the hero video on the landing page
+[33m29f4240[m HEAD@{721}: commit: Improve hero video loading speed with poster image and preloading
+[33md8bed36[m HEAD@{722}: commit: Published your App
+[33mb78b569[m HEAD@{723}: commit: Optimize site speed by improving backend performance and static file delivery
+[33m83dabe0[m HEAD@{724}: commit: Published your App
+[33m1153dbd[m HEAD@{725}: commit: Set background video to only use the hero video
+[33m416f28b[m HEAD@{726}: reset: moving to 416f28b91f9be7799d620640f02b540c296c8525
+[33m17870c2[m HEAD@{727}: commit: Restore original background video to the main landing page
+[33m91850e6[m HEAD@{728}: commit: Published your App
+[33md55f5ce[m HEAD@{729}: commit: Update asset paths to use public URLs for reliable serving
+[33m186d117[m HEAD@{730}: commit: Speed up user login and stabilize the application
+[33mda59cb9[m HEAD@{731}: commit: Update authentication callback route to avoid infrastructure issues
+[33me9b1b49[m HEAD@{732}: commit: Published your App
+[33m247cd5a[m HEAD@{733}: commit: Improve error handling for YouTube connection issues
+[33m206eefc[m HEAD@{734}: commit: Improve error handling and logging for Google authentication
+[33m0842491[m HEAD@{735}: commit: Published your App
+[33m764c33d[m HEAD@{736}: commit: Improve error handling for Google login and user creation
+[33m8f2e39a[m HEAD@{737}: commit: Published your App
+[33me6dc2ac[m HEAD@{738}: commit: Update empty state message for video library
+[33m64f8cfb[m HEAD@{739}: commit: Add debug logging to help diagnose video display issues
+[33m49325f0[m HEAD@{740}: commit: Published your App
+[33m239a229[m HEAD@{741}: commit: Add detailed logging to video retrieval for debugging
+[33mb6a39fe[m HEAD@{742}: commit: Published your App
+[33m3488f4b[m HEAD@{743}: commit: Ensure sign-in functionality works even if external authentication fails
+[33m4f9f914[m HEAD@{744}: commit: Published your App
+[33me3e3176[m HEAD@{745}: commit: Ensure the server is fully ready before accepting traffic
+[33m1cd3ecb[m HEAD@{746}: commit: Improve favicon links and prevent server crashes on startup
+[33m866d71b[m HEAD@{747}: commit: Published your App
+[33m77b03f8[m HEAD@{748}: commit: Improve login reliability by setting proxy trust early
+[33med4409b[m HEAD@{749}: commit: Published your App
+[33m6a12521[m HEAD@{750}: commit: Make authentication setup non-fatal to prevent startup failures
+[33mfa7fe6b[m HEAD@{751}: commit: Ensure server starts correctly to handle callback requests
+[33m9e62a50[m HEAD@{752}: commit: Published your App
+[33m267ad0b[m HEAD@{753}: commit: Adjust server startup to prioritize route registration before listening
+[33m578f952[m HEAD@{754}: commit: Published your App
+[33ma1bd5c2[m HEAD@{755}: commit: Improve server startup to pass health checks immediately
+[33maeae1c9[m HEAD@{756}: commit: Add detailed logging and error handling for YouTube connection issues
+[33m3639e42[m HEAD@{757}: commit: Published your App
+[33m8ee4018[m HEAD@{758}: commit: Fix static file serving for production deployments
+[33m6476ee6[m HEAD@{759}: commit: Published your App
+[33m0f59013[m HEAD@{760}: commit: Fix application crash by improving file path resolution
+[33mee58ca5[m HEAD@{761}: commit: Enable admin bypass for content library access and approval checks
+[33mb4d8600[m HEAD@{762}: commit: Saved progress at the end of the loop
+[33m574d4db[m HEAD@{763}: commit: Update video scanning status to improve user experience
+[33m761c2de[m HEAD@{764}: commit: Simplify video scanning to use local files and public thumbnails
+[33m96b4440[m HEAD@{765}: commit: Add ability to generate thumbnails from video IDs without OAuth
+[33mcce9dcc[m HEAD@{766}: commit: Saved progress at the end of the loop
+[33md559b17[m HEAD@{767}: commit: Update video analysis to fetch and display real surface data
+[33me7781c3[m HEAD@{768}: commit: Published your App
+[33m90c6a5c[m HEAD@{769}: commit: Add logging to diagnose video scanning failures
+[33m77d223e[m HEAD@{770}: commit: Map older videos to local files for scanning
+[33m8e65dfd[m HEAD@{771}: commit: Prioritize local video files for scanning across all platforms
+[33mf37b429[m HEAD@{772}: commit: Published your App
+[33m9aa365f[m HEAD@{773}: commit: Revert Instagram scopes from Facebook authentication due to app review requirements
+[33m7e4e556[m HEAD@{774}: commit: Published your App
+[33m40d84ab[m HEAD@{775}: commit: Add Instagram data access to Facebook login
+[33m1cd3ca1[m HEAD@{776}: commit: Published your App
+[33m5dade14[m HEAD@{777}: commit: Add content import from Facebook and Instagram platforms
+[33mb6b198e[m HEAD@{778}: commit: Add ability to sync and display Facebook and Instagram content
+[33m8f311f2[m HEAD@{779}: commit: Published your App
+[33m38d9388[m HEAD@{780}: commit: Update session cookie settings for cross-site OAuth redirects
+[33m0678633[m HEAD@{781}: commit: Improve Facebook login session persistence and video display
+[33m998c340[m HEAD@{782}: commit: Improve video display and login redirect reliability
+[33ma27e9ac[m HEAD@{783}: commit: Published your App
+[33mfa90b33[m HEAD@{784}: commit: Published your App
+[33md42cdc9[m HEAD@{785}: commit: Saved progress at the end of the loop
+[33m9e676b0[m HEAD@{786}: commit: Improve authentication to support multiple login methods
+[33m645b01a[m HEAD@{787}: commit: Published your App
+[33mcf3064f[m HEAD@{788}: commit: Improve Facebook authentication callback logging and session handling
+[33mf85b7b4[m HEAD@{789}: commit: Published your App
+[33m41414c7[m HEAD@{790}: commit: Add email permission to Facebook connection
+[33mc6c0c4c[m HEAD@{791}: commit: Remove unnecessary email scope from Facebook login
+[33m81952df[m HEAD@{792}: commit: Improve Facebook account connection by adjusting permissions
+[33m6f90ccd[m HEAD@{793}: commit: Published your App
+[33m3297af7[m HEAD@{794}: commit: Improve Facebook account linking and authentication flow
+[33mc19e251[m HEAD@{795}: commit: Published your App
+[33mb32cc25[m HEAD@{796}: commit: Improve authentication to support multiple login methods and admin access
+[33mc415ee7[m HEAD@{797}: commit: Published your App
+[33m10a9467[m HEAD@{798}: commit: Fix video scan status and clarify social media connection location
+[33mfa7d2c7[m HEAD@{799}: commit: Published your App
+[33mf0f9812[m HEAD@{800}: commit: Add Facebook and Instagram data fetching and display
+[33m7db3376[m HEAD@{801}: commit: Update social media stats and display total reach
+[33mf950e17[m HEAD@{802}: commit: Published your App
+[33mfd1100a[m HEAD@{803}: commit: Add new video content for creators to manage and monetize
+[33md8a1331[m HEAD@{804}: commit: Add new videos for creators to manage and monetize content
+[33mee8b923[m HEAD@{805}: commit: Update video scanning to use database for file paths
+[33m94016a9[m HEAD@{806}: commit: Update video scanning to prioritize persistent file paths
+[33m6750adc[m HEAD@{807}: commit: Saved progress at the end of the loop
+[33mb85eb16[m HEAD@{808}: commit: Update video library to fetch real scan data instead of demo
+[33m139afb8[m HEAD@{809}: commit: Published your App
+[33m1a3c2b3[m HEAD@{810}: commit: Complete multi-platform authentication and YouTube scanner functionality
+[33m1ced83d[m HEAD@{811}: commit: Add multi-platform authentication and bypass YouTube download restrictions
+[33m482056b[m HEAD@{812}: commit: Add ability to scan user-uploaded videos and run admin-only scans
+[33m746e330[m HEAD@{813}: commit: Saved progress at the end of the loop
+[33m5b002d1[m HEAD@{814}: commit: Add multi-platform authentication and attempt YouTube download bypass
+[33m266b8f4[m HEAD@{815}: commit: Add multi-platform authentication and YouTube download bypass
+[33m856c8a4[m HEAD@{816}: commit: Saved progress at the end of the loop
+[33mf9d1794[m HEAD@{817}: commit: Add direct video upload and improve scanner persistence
+[33m0043577[m HEAD@{818}: commit: Add direct video upload functionality to the creator portal
+[33mda0d862[m HEAD@{819}: commit: Add ability for users to upload videos directly to the platform
+[33m83ea84d[m HEAD@{820}: commit: Published your App
+[33m3c2a413[m HEAD@{821}: commit: Implement a fully functional video scanning pipeline with AI analysis
+[33m02b20ac[m HEAD@{822}: commit: Add test video to local asset map for scanning functionality
+[33ma5ca4e5[m HEAD@{823}: commit: Published your App
+[33m6ac109e[m HEAD@{824}: commit: Update library to refresh content data automatically
+[33m1c46a5f[m HEAD@{825}: commit: Expand marketplace genres and fix library tab visibility issues
+[33md2a3fe9[m HEAD@{826}: commit: Improve library tab visibility by allowing them to wrap
+[33m877b26f[m HEAD@{827}: commit: Update navigation and button text to sign up for access
+[33m07a2fd9[m HEAD@{828}: commit: Expand platform support to include Twitch and Facebook integration
+[33m794d6bc[m HEAD@{829}: commit: Published your App
+[33m6aef93f[m HEAD@{830}: commit: Shorten session timeout to improve security
+[33ma1b1de5[m HEAD@{831}: commit: Published your App
+[33m6d013fd[m HEAD@{832}: commit: Add scene carousel feature to the content library videos
+[33me080db6[m HEAD@{833}: commit: Update demo videos with unique thumbnail images
+[33mb9b0626[m HEAD@{834}: commit: Published your App
+[33m45a9668[m HEAD@{835}: commit: Enhance brand marketplace filtering and simulate social connections
+[33mb4dd669[m HEAD@{836}: commit: Published your App
+[33mf14d8eb[m HEAD@{837}: commit: Add AI-powered object detection to analyze scene content
+[33mc4da06e[m HEAD@{838}: commit: Add scene analysis modal and update demo data for marketplace and dashboard
+[33m407e3d1[m HEAD@{839}: commit: Published your App
+[33m449f671[m HEAD@{840}: commit: Add a close button to the sign in and sign up page
+[33mde0d907[m HEAD@{841}: commit: Update navigation links and authentication flow for user signups
+[33mf489dfa[m HEAD@{842}: commit: Update waitlist page with Airtable form and pre-filled user data
+[33mbaa1f02[m HEAD@{843}: commit: Add required name fields and update signup redirection logic
+[33mbfc45d3[m HEAD@{844}: commit: Saved progress at the end of the loop
+[33md8cfda7[m HEAD@{845}: commit: Add Airtable integration for new user signups
+[33m6a9cb3e[m HEAD@{846}: commit: Update user registration to default to unapproved status
+[33m99321a4[m HEAD@{847}: commit: Saved progress at the end of the loop
+[33m1aaa820[m HEAD@{848}: commit: Implement waitlist functionality for new user signups
+[33m93059e0[m HEAD@{849}: commit: Enable public sign up with email/password and Google authentication
+[33m658d6dc[m HEAD@{850}: commit: Enable public sign-up with email/password and Google authentication
+[33mebfcd51[m HEAD@{851}: commit: Add public sign-up and login functionality for creators
+[33m48722b2[m HEAD@{852}: commit: Style portal name to look like a subtle enterprise badge
+[33md6ffd38[m HEAD@{853}: commit: Published your App
+[33m5958b3c[m HEAD@{854}: commit: Add app name visibility to header and meta tags for verification
+[33m2fca888[m HEAD@{855}: commit: Update website to match Google's verification requirements
+[33mf964ee7[m HEAD@{856}: commit: Published your App
+[33m10d1615[m HEAD@{857}: commit: Add visible app name and privacy link to landing page for verification
+[33m1756a4b[m HEAD@{858}: commit: Published your App
+[33mc2c273c[m HEAD@{859}: commit: Update website title, footer, and privacy link for Google verification
+[33me3b2efb[m HEAD@{860}: commit: Update app name and footer for Google verification
+[33m0921269[m HEAD@{861}: commit: Published your App
+[33m0dc435d[m HEAD@{862}: commit: Update application name and add privacy policy link for verification
+[33m5ef02ee[m HEAD@{863}: commit: Allow specific VIP emails to bypass the founding member restriction
+[33m48faf3a[m HEAD@{864}: commit: Published your App
+[33m6d5d31a[m HEAD@{865}: commit: Enhance landing page with global reach and multi-platform messaging
+[33mca109ed[m HEAD@{866}: commit: Update dashboard and video display to visually claim global platform capabilities
+[33m475074f[m HEAD@{867}: commit: Saved progress at the end of the loop
+[33m5a3fcae[m HEAD@{868}: commit: Update dashboard and library views to showcase global reach data
+[33m46a132f[m HEAD@{869}: commit: Saved progress at the end of the loop
+[33m5cbbd62[m HEAD@{870}: commit: Add sentiment and cultural context to video analysis and display
+[33m48ded06[m HEAD@{871}: commit: Update scanner to use local file for Instagram reels
+[33mcc9f9fe[m HEAD@{872}: commit: Add platform filtering and display for YouTube and Instagram content
+[33md2c487f[m HEAD@{873}: commit: Published your App
+[33m0e79493[m HEAD@{874}: commit: Add Google Analytics tracking to monitor user activity
+[33m9b71432[m HEAD@{875}: commit: Published your App
+[33md44b3ef[m HEAD@{876}: commit: Update marketplace to show demo data when not logged in
+[33m8d6824b[m HEAD@{877}: commit: Published your App
+[33mb61e62a[m HEAD@{878}: commit: Make pitch mode toggle always visible on marketplace
+[33m6e3e0ad[m HEAD@{879}: commit: Improve pitch mode visibility and admin checks in brand marketplace
+[33m02585e1[m HEAD@{880}: commit: Add pitch mode toggle to brand marketplace for easier data management
+[33me3890af[m HEAD@{881}: commit: Published your App
+[33me36a14c[m HEAD@{882}: commit: Show more demo videos in brand marketplace for pitch mode
+[33mf34a2b4[m HEAD@{883}: commit: Published your App
+[33m4389294[m HEAD@{884}: commit: Update dashboard to show demo videos synchronously in pitch mode
+[33m12c34a7[m HEAD@{885}: commit: Update application to correctly display demo content when pitch mode is active
+[33m979b1f1[m HEAD@{886}: commit: Improve display of videos when simulating content and offers
+[33m0d61261[m HEAD@{887}: commit: Add logging to track video data and pitch mode status
+[33m9ef2af2[m HEAD@{888}: commit: Update data fetching to refresh when mode changes
+[33mfc2513d[m HEAD@{889}: commit: Fix data fetching by properly handling pitch mode state
+[33m46fc839[m HEAD@{890}: commit: Update dashboard to show demo videos in pitch mode
+[33m8f011a2[m HEAD@{891}: commit: Update library and marketplace to instantly reflect pitch mode changes
+[33med7efa6[m HEAD@{892}: commit: Prioritize pitch mode over authentication for data display
+[33m4cb38a8[m HEAD@{893}: commit: Update demo data and display to use consistent naming conventions
+[33mebaba5d[m HEAD@{894}: commit: Update demo data to include both camelCase and snake_case keys
+[33mf16da43[m HEAD@{895}: commit: Update demo video and brand data to match expected formats
