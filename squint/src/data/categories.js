@@ -86,7 +86,7 @@ const categories = [
             'Chicago visionary who dropped out to produce beats',
           ],
           [
-            'Rapper-turned-billionaire married to a Houston queen',
+            'Rapper-turned-billionaire who launched a streaming empire and sports agency',
             'Harlem rapper known for diplomatic immunity',
             'Detroit rapper with rapid-fire lyrics and alter egos',
             'Baton Rouge rapper with punchlines and mixtape dominance',
@@ -204,7 +204,7 @@ const categories = [
           ],
           [
             'Fashion mogul behind the Yeezy brand and sneaker line',
-            'Roc Nation mogul married to a Houston superstar',
+            'Roc Nation mogul who launched a sports agency and streaming platform',
             'Atlanta producer behind OutKast\'s signature sound',
             'Pharrell\'s production partner behind The Neptunes sound',
           ],
@@ -215,7 +215,7 @@ const categories = [
             'Artist behind To Pimp a Butterfly and Mr. Morale',
           ],
           [
-            'Ye — Chicago producer who married into the Kardashian family',
+            'Ye — Chicago producer behind Graduation and the Yeezy brand',
             'Jay-Z — billionaire rapper and Roc Nation founder',
             'Drake — Canadian rapper and OVO Sound founder',
             'Kendrick Lamar — Pulitzer Prize-winning Compton MC',
@@ -320,8 +320,8 @@ const categories = [
             'Atlanta mumble rap pioneer with a cult following',
           ],
           [
-            'Rapper-producer who dated a Kardashian-Jenner billionaire',
-            'Chicago rapper married to reality TV royalty',
+            'Cactus Jack founder known for explosive concerts and brand deals',
+            'Chicago rapper who reinvented himself as a fashion mogul',
             'Toronto mystery artist who hides behind dark R&B',
             'Atlanta rapper known for painting his face for performances',
           ],
@@ -411,7 +411,7 @@ const categories = [
           ],
           [
             'Megan Pete — Houston rapper with a health administration degree',
-            'Belcalis Almanzar — Bronx rapper married to Offset',
+            'Belcalis Almanzar — Bronx rapper behind Bodak Yellow and Invasion of Privacy',
             'Amala Zandile — Doja Cat, viral internet sensation',
             'Gloria Woods — GloRilla from Memphis, Tennessee',
           ],
@@ -1097,7 +1097,7 @@ const categories = [
             'Hmong American gymnast who surprised the world with all-around gold in Tokyo',
           ],
           [
-            'Simone Arianne Biles — the Spring, Texas gymnast married to NFL player Jonathan Owens',
+            'Simone Arianne Biles — the Spring, Texas gymnast with four skills named after her',
             'Gabrielle Christina Victoria Douglas — the first Black all-around Olympic champion',
             'Alexandra Rose Raisman — the Needham captain who led Team USA in 2012 and 2016',
             'Sunisa Lee — the St. Paul, Minnesota gymnast who won all-around gold in Tokyo',
@@ -3253,20 +3253,20 @@ const categories = [
           '7-ring quarterback who won more Super Bowls than any franchise',
           'Sheriff of the NFL who set every passing record in Indianapolis',
           'Green Bay gunslinger with the most MVP awards among QBs',
-          'Young Chiefs QB with a cannon arm and a famous girlfriend',
+          'Young Chiefs QB with a cannon arm and back-to-back Super Bowl rings',
         ],
         hints: [
           [
             '7-ring quarterback who won more Super Bowls than any franchise',
             'Sheriff of the NFL who set every passing record in Indianapolis',
             'Green Bay gunslinger with the most MVP awards among QBs',
-            'Young Chiefs QB with a cannon arm and a famous girlfriend',
+            'Young Chiefs QB with a cannon arm and back-to-back Super Bowl rings',
           ],
           [
             'Legendary QB who left New England after 20 years and won a ring in Tampa Bay',
             'Indianapolis and Denver QB who won two Super Bowls and retired as the passing king',
             'Legendary Green Bay and Minnesota QB known for his gunslinger style and iron man streak',
-            'Kansas City QB who won back-to-back Super Bowls and is dating a pop superstar',
+            'Kansas City QB who won back-to-back Super Bowls and three MVPs before age thirty',
           ],
           [
             'Patriots and Buccaneers QB who won 7 Super Bowls and 3 MVPs before retiring at 45',
@@ -3575,7 +3575,7 @@ const categories = [
             'Dynamic Ravens QB who runs and throws like no one else',
           ],
           [
-            'Kansas City QB who won back-to-back Super Bowls and is dating a pop superstar',
+            'Kansas City QB who won back-to-back Super Bowls and three MVPs before age thirty',
             'Buffalo Bills QB Josh Allen known for his rocket arm and hurdling defenders',
             'Tom Brady — Patriots and Buccaneers legend who won 7 Super Bowls before retiring',
             'Lamar Jackson — Ravens dual-threat QB who won back-to-back MVP awards',

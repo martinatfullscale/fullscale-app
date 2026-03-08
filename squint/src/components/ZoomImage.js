@@ -17,15 +17,15 @@ const IMAGE_HEIGHT = SCREEN_HEIGHT * 0.55;
  * Stage 5: 100% — fully revealed
  */
 const SCALE_BY_STAGE = {
-  1: 0.05,
-  2: 0.15,
-  3: 0.30,
+  1: 0.03,
+  2: 0.08,
+  3: 0.22,
   4: 0.55,
   5: 1.0,
 };
 
 /** Blur radius per zoom stage — blurry when zoomed in, clear when revealed */
-const BLUR_BY_STAGE = { 1: 12, 2: 8, 3: 4, 4: 1, 5: 0 };
+const BLUR_BY_STAGE = { 1: 18, 2: 12, 3: 6, 4: 1, 5: 0 };
 
 /**
  * ZoomImage — renders a face image (or colored fallback) starting super tiny.

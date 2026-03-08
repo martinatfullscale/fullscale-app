@@ -21,9 +21,9 @@ import { getPointsForStage } from '../utils/scoring';
 import { playSFX } from '../utils/audio';
 
 const TOTAL_ROUNDS = 10;
-const TIMER_SECONDS = 30;
+const TIMER_SECONDS = 20;
 const MAX_STAGES = 5;
-const MAX_HINTS = 4; // 4 hint rounds per face (peel the onion)
+const MAX_HINTS = 3; // 3 hint rounds per face (peel the onion)
 const CORRECT_DELAY = 1500;
 const WRONG_DELAY = 600; // brief flash before new hints appear
 const ELIMINATION_TIMER = 15;
