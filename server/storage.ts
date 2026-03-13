@@ -73,6 +73,18 @@ import {
   editorialClips,
   type EditorialClip,
   type InsertEditorialClip,
+  studioSubscriptions,
+  studioUsage,
+  studioVoices,
+  studioVideos,
+  type StudioSubscription,
+  type InsertStudioSubscription,
+  type StudioUsage,
+  type InsertStudioUsage,
+  type StudioVoice,
+  type InsertStudioVoice,
+  type StudioVideo,
+  type InsertStudioVideo,
 } from "@shared/schema";
 import { users, type User, type UpsertUser } from "@shared/models/auth";
 import { encrypt, decrypt } from "./encryption";
@@ -253,6 +265,29 @@ export interface IStorage {
   getCreatorBySlug(slug: string): Promise<AllowedUser | undefined>;
   updateCreatorProfile(email: string, updates: { bio?: string; headline?: string; podcastName?: string; podcastUrl?: string; websiteUrl?: string; slug?: string }): Promise<void>;
   updateVideoSubcategory(videoId: number, subcategory: string): Promise<void>;
+
+  // ── Studio Subscription Methods ──
+  getStudioSubscription(userId: string): Promise<StudioSubscription | undefined>;
+  createStudioSubscription(data: InsertStudioSubscription): Promise<StudioSubscription>;
+  updateStudioSubscription(userId: string, updates: Partial<InsertStudioSubscription>): Promise<StudioSubscription | undefined>;
+  getStudioSubscriptionByStripeCustomer(stripeCustomerId: string): Promise<StudioSubscription | undefined>;
+  getStudioSubscriptionByStripeSubscription(stripeSubscriptionId: string): Promise<StudioSubscription | undefined>;
+
+  // ── Studio Usage Methods ──
+  getStudioUsage(userId: string, month: string): Promise<StudioUsage | undefined>;
+  createStudioUsage(data: InsertStudioUsage): Promise<StudioUsage>;
+  incrementStudioUsage(userId: string, month: string): Promise<StudioUsage>;
+
+  // ── Studio Voice Methods ──
+  getStudioVoices(maxTier?: string): Promise<StudioVoice[]>;
+  getStudioVoiceById(voiceId: string): Promise<StudioVoice | undefined>;
+  createStudioVoice(data: InsertStudioVoice): Promise<StudioVoice>;
+
+  // ── Studio Video Methods ──
+  createStudioVideo(data: InsertStudioVideo): Promise<StudioVideo>;
+  getStudioVideo(videoId: number): Promise<StudioVideo | undefined>;
+  getStudioVideosByUser(userId: string): Promise<StudioVideo[]>;
+  updateStudioVideoStatus(videoId: number, status: string, updates?: { progress?: number; outputUrl?: string; thumbnailUrl?: string; durationSeconds?: number; sceneCount?: number; errorMessage?: string }): Promise<StudioVideo | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -1563,9 +1598,13 @@ export class DatabaseStorage implements IStorage {
 
   // ─── Surface Keyframe Methods (Phase 2A Motion Tracking) ─────
 
-  async insertSurfaceKeyframe(data: InsertSurfaceKeyframe): Promise<SurfaceKeyframe> {
+  async createSurfaceKeyframe(data: InsertSurfaceKeyframe): Promise<SurfaceKeyframe> {
     const [result] = await db.insert(surfaceKeyframes).values(data).returning();
     return result;
+  }
+
+  async insertSurfaceKeyframe(data: InsertSurfaceKeyframe): Promise<SurfaceKeyframe> {
+    return this.createSurfaceKeyframe(data);
   }
 
   async bulkInsertSurfaceKeyframes(data: InsertSurfaceKeyframe[]): Promise<void> {
@@ -1656,6 +1695,169 @@ export class DatabaseStorage implements IStorage {
       .update(videoIndex)
       .set({ subcategory })
       .where(eq(videoIndex.id, videoId));
+  }
+
+  // ============================================================================
+  // STUDIO SUBSCRIPTION METHODS
+  // ============================================================================
+
+  async getStudioSubscription(userId: string): Promise<StudioSubscription | undefined> {
+    const [sub] = await db
+      .select()
+      .from(studioSubscriptions)
+      .where(eq(studioSubscriptions.userId, userId));
+    return sub;
+  }
+
+  async createStudioSubscription(data: InsertStudioSubscription): Promise<StudioSubscription> {
+    const [sub] = await db
+      .insert(studioSubscriptions)
+      .values(data)
+      .returning();
+    return sub;
+  }
+
+  async updateStudioSubscription(userId: string, updates: Partial<InsertStudioSubscription>): Promise<StudioSubscription | undefined> {
+    const [sub] = await db
+      .update(studioSubscriptions)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(studioSubscriptions.userId, userId))
+      .returning();
+    return sub;
+  }
+
+  async getStudioSubscriptionByStripeCustomer(stripeCustomerId: string): Promise<StudioSubscription | undefined> {
+    const [sub] = await db
+      .select()
+      .from(studioSubscriptions)
+      .where(eq(studioSubscriptions.stripeCustomerId, stripeCustomerId));
+    return sub;
+  }
+
+  async getStudioSubscriptionByStripeSubscription(stripeSubscriptionId: string): Promise<StudioSubscription | undefined> {
+    const [sub] = await db
+      .select()
+      .from(studioSubscriptions)
+      .where(eq(studioSubscriptions.stripeSubscriptionId, stripeSubscriptionId));
+    return sub;
+  }
+
+  // ============================================================================
+  // STUDIO USAGE METHODS
+  // ============================================================================
+
+  async getStudioUsage(userId: string, month: string): Promise<StudioUsage | undefined> {
+    const [usage] = await db
+      .select()
+      .from(studioUsage)
+      .where(and(eq(studioUsage.userId, userId), eq(studioUsage.month, month)));
+    return usage;
+  }
+
+  async createStudioUsage(data: InsertStudioUsage): Promise<StudioUsage> {
+    const [usage] = await db
+      .insert(studioUsage)
+      .values(data)
+      .returning();
+    return usage;
+  }
+
+  async incrementStudioUsage(userId: string, month: string): Promise<StudioUsage> {
+    const [usage] = await db
+      .update(studioUsage)
+      .set({ videosGenerated: sql`${studioUsage.videosGenerated} + 1` })
+      .where(and(eq(studioUsage.userId, userId), eq(studioUsage.month, month)))
+      .returning();
+    return usage;
+  }
+
+  // ============================================================================
+  // STUDIO VOICE METHODS
+  // ============================================================================
+
+  async getStudioVoices(maxTier?: string): Promise<StudioVoice[]> {
+    const tierOrder = ["free", "starter", "pro", "business"];
+    if (maxTier) {
+      const maxIndex = tierOrder.indexOf(maxTier);
+      const allowedTiers = tierOrder.slice(0, maxIndex + 1);
+      return await db
+        .select()
+        .from(studioVoices)
+        .where(and(
+          eq(studioVoices.isActive, true),
+          sql`${studioVoices.tier} = ANY(${allowedTiers})`
+        ));
+    }
+    return await db
+      .select()
+      .from(studioVoices)
+      .where(eq(studioVoices.isActive, true));
+  }
+
+  async getStudioVoiceById(voiceId: string): Promise<StudioVoice | undefined> {
+    const [voice] = await db
+      .select()
+      .from(studioVoices)
+      .where(eq(studioVoices.voiceId, voiceId));
+    return voice;
+  }
+
+  async createStudioVoice(data: InsertStudioVoice): Promise<StudioVoice> {
+    const [voice] = await db
+      .insert(studioVoices)
+      .values(data)
+      .returning();
+    return voice;
+  }
+
+  // ============================================================================
+  // STUDIO VIDEO METHODS
+  // ============================================================================
+
+  async createStudioVideo(data: InsertStudioVideo): Promise<StudioVideo> {
+    const [video] = await db
+      .insert(studioVideos)
+      .values(data)
+      .returning();
+    return video;
+  }
+
+  async getStudioVideo(videoId: number): Promise<StudioVideo | undefined> {
+    const [video] = await db
+      .select()
+      .from(studioVideos)
+      .where(eq(studioVideos.id, videoId));
+    return video;
+  }
+
+  async getStudioVideosByUser(userId: string): Promise<StudioVideo[]> {
+    return await db
+      .select()
+      .from(studioVideos)
+      .where(eq(studioVideos.userId, userId))
+      .orderBy(desc(studioVideos.createdAt));
+  }
+
+  async updateStudioVideoStatus(
+    videoId: number,
+    status: string,
+    updates?: { progress?: number; outputUrl?: string; thumbnailUrl?: string; durationSeconds?: number; sceneCount?: number; errorMessage?: string }
+  ): Promise<StudioVideo | undefined> {
+    const [video] = await db
+      .update(studioVideos)
+      .set({
+        status,
+        ...(updates?.progress !== undefined && { progress: updates.progress }),
+        ...(updates?.outputUrl && { outputUrl: updates.outputUrl }),
+        ...(updates?.thumbnailUrl && { thumbnailUrl: updates.thumbnailUrl }),
+        ...(updates?.durationSeconds !== undefined && { durationSeconds: updates.durationSeconds }),
+        ...(updates?.sceneCount !== undefined && { sceneCount: updates.sceneCount }),
+        ...(updates?.errorMessage && { errorMessage: updates.errorMessage }),
+        ...(status === "completed" && { completedAt: new Date() }),
+      })
+      .where(eq(studioVideos.id, videoId))
+      .returning();
+    return video;
   }
 }
 

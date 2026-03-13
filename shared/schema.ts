@@ -734,3 +734,105 @@ export const insertPublishingScheduleSchema = createInsertSchema(publishingSched
 
 export type PublishingSchedule = typeof publishingSchedules.$inferSelect;
 export type InsertPublishingSchedule = z.infer<typeof insertPublishingScheduleSchema>;
+
+// ============================================================================
+// FULLSCALE STUDIO: Subscriptions, Usage & Voice Tables
+// ============================================================================
+
+// Studio Subscriptions — tracks user's active plan tier
+export const studioSubscriptions = pgTable("studio_subscriptions", {
+  id: serial("id").primaryKey(),
+  userId: varchar("user_id").notNull().unique(), // References users.id
+  tier: varchar("tier").notNull().default("free"), // 'free' | 'starter' | 'pro' | 'business'
+  stripeCustomerId: varchar("stripe_customer_id"),
+  stripeSubscriptionId: varchar("stripe_subscription_id"),
+  currentPeriodStart: timestamp("current_period_start"),
+  currentPeriodEnd: timestamp("current_period_end"),
+  status: varchar("status").notNull().default("active"), // 'active' | 'canceled' | 'past_due' | 'trialing'
+  cancelAtPeriodEnd: boolean("cancel_at_period_end").default(false),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const insertStudioSubscriptionSchema = createInsertSchema(studioSubscriptions).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type StudioSubscription = typeof studioSubscriptions.$inferSelect;
+export type InsertStudioSubscription = z.infer<typeof insertStudioSubscriptionSchema>;
+
+// Studio Usage — tracks monthly video generation count per user
+export const studioUsage = pgTable("studio_usage", {
+  id: serial("id").primaryKey(),
+  userId: varchar("user_id").notNull(), // References users.id
+  month: varchar("month").notNull(), // YYYY-MM format (e.g., "2026-03")
+  videosGenerated: integer("videos_generated").notNull().default(0),
+  videosLimit: integer("videos_limit").notNull().default(1), // Derived from tier at time of creation
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertStudioUsageSchema = createInsertSchema(studioUsage).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type StudioUsage = typeof studioUsage.$inferSelect;
+export type InsertStudioUsage = z.infer<typeof insertStudioUsageSchema>;
+
+// Studio Voices — available ElevenLabs voices gated by tier
+export const studioVoices = pgTable("studio_voices", {
+  id: serial("id").primaryKey(),
+  voiceId: varchar("voice_id").notNull().unique(), // ElevenLabs voice ID
+  name: varchar("name").notNull(), // Display name (e.g., "Rachel", "Adam")
+  previewUrl: text("preview_url"), // URL to audio preview sample
+  tier: varchar("tier").notNull().default("free"), // Minimum tier required: 'free' | 'starter' | 'pro' | 'business'
+  category: varchar("category").notNull().default("professional"), // 'professional' | 'casual' | 'narrator' | 'character'
+  gender: varchar("gender"), // 'male' | 'female' | 'neutral'
+  accent: varchar("accent"), // 'american' | 'british' | 'australian' etc.
+  description: text("description"), // Short description of the voice
+  isDefault: boolean("is_default").default(false), // Default voice for free tier
+  isActive: boolean("is_active").default(true), // Can be temporarily disabled
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertStudioVoiceSchema = createInsertSchema(studioVoices).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type StudioVoice = typeof studioVoices.$inferSelect;
+export type InsertStudioVoice = z.infer<typeof insertStudioVoiceSchema>;
+
+// Studio Videos — tracks generated Studio videos (document-to-video outputs)
+export const studioVideos = pgTable("studio_videos", {
+  id: serial("id").primaryKey(),
+  userId: varchar("user_id").notNull(), // References users.id
+  title: varchar("title"), // Auto-derived from document
+  sourceFileName: varchar("source_file_name"), // Original uploaded file name
+  sourceFileUrl: text("source_file_url"), // Stored document path
+  voiceId: varchar("voice_id"), // ElevenLabs voice used
+  tier: varchar("tier").notNull().default("free"), // Tier at time of generation
+  visualQuality: varchar("visual_quality").default("720p"), // '720p' | '1080p'
+  visualMode: varchar("visual_mode").default("static"), // 'static' | 'ai_generated'
+  isWatermarked: boolean("is_watermarked").default(true),
+  status: varchar("status").notNull().default("queued"), // 'queued' | 'processing' | 'completed' | 'failed'
+  progress: integer("progress").default(0), // 0-100
+  outputUrl: text("output_url"), // Path to final MP4
+  thumbnailUrl: text("thumbnail_url"),
+  durationSeconds: real("duration_seconds"),
+  sceneCount: integer("scene_count"),
+  errorMessage: text("error_message"),
+  createdAt: timestamp("created_at").defaultNow(),
+  completedAt: timestamp("completed_at"),
+});
+
+export const insertStudioVideoSchema = createInsertSchema(studioVideos).omit({
+  id: true,
+  createdAt: true,
+  completedAt: true,
+});
+
+export type StudioVideo = typeof studioVideos.$inferSelect;
+export type InsertStudioVideo = z.infer<typeof insertStudioVideoSchema>;

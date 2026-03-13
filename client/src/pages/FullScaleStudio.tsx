@@ -117,10 +117,10 @@ export default function FullScaleStudio() {
               delivers a polished presentation video — automatically.
             </p>
             <div className="flex items-center justify-center gap-4">
-              <a href="/studio/upload">
+              <a href="/studio/pricing">
                 <Button size="lg" className="gap-2 bg-purple-600 hover:bg-purple-500">
                   <Upload className="w-4 h-4" />
-                  Try Studio
+                  Get Started — It's Free
                 </Button>
               </a>
               <Button
@@ -262,10 +262,10 @@ export default function FullScaleStudio() {
               video is free.
             </p>
             <div className="flex items-center justify-center gap-4 flex-wrap">
-              <a href="/studio/upload">
+              <a href="/studio/pricing">
                 <Button size="lg" className="gap-2 bg-purple-600 hover:bg-purple-500">
                   <Upload className="w-4 h-4" />
-                  Upload Your Document
+                  View Pricing & Get Started
                 </Button>
               </a>
               <a href="/content">

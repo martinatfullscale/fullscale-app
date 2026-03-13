@@ -267,6 +267,15 @@ export async function registerRoutes(
 
   registerObjectStorageRoutes(app);
 
+  // Setup FullScale Studio routes (auth, Stripe, quota, voices, videos)
+  try {
+    const { registerStudioRoutes } = await import("./lib/studio");
+    registerStudioRoutes(app);
+    console.log("[Routes] Studio routes registered");
+  } catch (studioError) {
+    console.error("[Routes] Studio routes failed (non-fatal):", studioError);
+  }
+
   // ============================================
   // Google Login OAuth Routes (with Allowlist)
   // ============================================

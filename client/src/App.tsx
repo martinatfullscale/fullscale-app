@@ -35,6 +35,7 @@ import ComingSoon from "@/pages/ComingSoon";
 import FullScaleCreates from "@/pages/FullScaleCreates";
 import StudioUpload from "@/pages/StudioUpload";
 import FullScaleStudio from "@/pages/FullScaleStudio";
+import StudioPricing from "@/pages/StudioPricing";
 
 interface AuthStatusResponse {
   authenticated: boolean;
@@ -153,6 +154,7 @@ function Router() {
         <Route path="/terms" component={Terms} />
         <Route path="/content" component={FullScaleCreates} />
         <Route path="/studio" component={FullScaleStudio} />
+        <Route path="/studio/pricing" component={StudioPricing} />
         <Route path="/about" component={ComingSoon} />
         <Route path="/waitlist" component={WaitlistPage} />
         <Route path="/c/:slug" component={CreatorProfile} />
@@ -201,6 +203,7 @@ function Router() {
       <Route path="/home" component={Landing} />
       <Route path="/content" component={FullScaleCreates} />
       <Route path="/studio" component={FullScaleStudio} />
+      <Route path="/studio/pricing" component={StudioPricing} />
       <Route path="/about" component={ComingSoon} />
       <Route path="/c/:slug" component={CreatorProfile} />
       <Route path="/s/:slug" component={SharedView} />
