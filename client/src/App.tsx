@@ -33,6 +33,8 @@ import RemixEngine from "@/components/RemixEngine";
 import SharedView from "@/pages/SharedView";
 import ComingSoon from "@/pages/ComingSoon";
 import FullScaleCreates from "@/pages/FullScaleCreates";
+import StudioUpload from "@/pages/StudioUpload";
+import FullScaleStudio from "@/pages/FullScaleStudio";
 
 interface AuthStatusResponse {
   authenticated: boolean;
@@ -150,6 +152,7 @@ function Router() {
         <Route path="/privacy" component={Privacy} />
         <Route path="/terms" component={Terms} />
         <Route path="/content" component={FullScaleCreates} />
+        <Route path="/studio" component={FullScaleStudio} />
         <Route path="/about" component={ComingSoon} />
         <Route path="/waitlist" component={WaitlistPage} />
         <Route path="/c/:slug" component={CreatorProfile} />
@@ -197,10 +200,12 @@ function Router() {
     <Switch>
       <Route path="/home" component={Landing} />
       <Route path="/content" component={FullScaleCreates} />
+      <Route path="/studio" component={FullScaleStudio} />
       <Route path="/about" component={ComingSoon} />
       <Route path="/c/:slug" component={CreatorProfile} />
       <Route path="/s/:slug" component={SharedView} />
       <Route path="/remix/:videoId" component={RemixEngine} />
+      <Route path="/studio/upload" component={StudioUpload} />
       <Route>
         {() => (
           <AuthenticatedLayout userType={currentRole}>

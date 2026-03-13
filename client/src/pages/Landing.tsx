@@ -1170,6 +1170,13 @@ export default function Landing() {
               FullScale Creates
             </a>
             <a
+              href="/studio"
+              className="px-5 py-2 rounded-lg font-medium text-sm border border-purple-500/30 bg-purple-500/10 backdrop-blur-sm hover:bg-purple-500/20 transition-colors text-purple-200 min-h-[44px] flex items-center"
+              data-testid="link-nav-studio"
+            >
+              FullScale Studio
+            </a>
+            <a
               href="/auth?mode=signup"
               className="px-5 py-2 rounded-lg font-medium text-sm border border-primary text-primary bg-black/20 backdrop-blur-sm hover:bg-primary/10 transition-colors min-h-[44px] flex items-center"
               data-testid="button-nav-apply"
