@@ -5,27 +5,32 @@ Building the dual-portal experience for creators and brands with the Opportuniti
 
 ---
 
-## Deep Vision Scanner (PAUSED)
+## Deep Vision Scanner (FUNCTIONAL — Last updated Feb 12 2026)
 
-### Status: YouTube Indexing 100% Functional
-- Video import from YouTube API working correctly
-- Metadata storage and retrieval operational
-- Thumbnail fetching and display working
-- Video index populated with real channel data
+### Status: Full Pipeline Working
+- YouTube video import, metadata, thumbnails all operational
+- **Gemini-powered surface detection** fully working (`server/scanner_v2.ts`)
+- Post-scan normalization pipeline for consistent bounding boxes
+- Synonym merging (Table/Desk/Studio_desk → "Table") to avoid duplicate tracks
+- Camera-cut awareness — products don't interpolate across scene changes (>4s gap)
+- False detection filtering and scene persistence in place
 
-### Issue: scanVideoForSurfaces Handshake Silent
-The Deep Vision scanner (`server/lib/scanner.ts`) is not returning expected surface detection results. The handshake between frontend scan button and backend Gemini API needs debugging.
+### RemixEngine (`client/src/components/RemixEngine.tsx`)
+- Interactive product placement on detected surfaces
+- Save Placements button persists to DB with auto-propagation to matching scene groups
+- Saved placements auto-load on mount
+- Surface hotkeys for quick assignment
 
-**Symptoms:**
-- Scan button triggers mutation correctly (frontend logs confirm)
-- Backend receives request and attempts Gemini API call
-- Response handling or surface parsing may be failing silently
-- Extensive logging added but root cause not yet identified
+### Placement Persistence
+- Frontend: Save button in PlacementPreviewModal + dedicated Saved Placements page
+- Backend: `/api/placements` with scene continuity and propagation
+- Product ingest pipeline auto-analyzes uploads for subject bounds, color, background type
+- Auto-realistic blend defaults from Gemini scene lighting analysis
 
-**Resume Point:**
-- See `client/src/pages/Library.tsx` for scan button logic (marked with TODO comment)
-- See `server/lib/scanner.ts` for verbose logging already in place
-- Check frame optimization, API timeouts, and response parsing
+### Resume Point (if continuing scanner/remix work):
+- Latest code: `server/scanner_v2.ts` (scanner), `client/src/components/RemixEngine.tsx` (remix UI)
+- `client/src/pages/Library.tsx` for scan triggers
+- All 10 commits from Feb 12 session cover scanner + remix + placement features
 
 ---
 
