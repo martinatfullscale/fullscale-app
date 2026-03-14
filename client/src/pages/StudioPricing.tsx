@@ -144,7 +144,7 @@ export default function StudioPricing() {
 
   const handleTierAction = (tierId: string) => {
     if (!isAuthenticated) {
-      window.location.href = "/studio?signup=true";
+      window.location.href = "/auth?redirect=/studio/pricing";
       return;
     }
     if (tierId === "free") return;

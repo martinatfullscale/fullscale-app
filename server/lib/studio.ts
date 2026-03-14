@@ -33,6 +33,7 @@ if (process.env.STRIPE_PRICE_ID_BUSINESS) STRIPE_PRICE_MAP[process.env.STRIPE_PR
 function getSessionEmail(req: any): string | null {
   return (
     req.session?.googleUser?.email ||
+    req.session?.email ||
     req.user?.claims?.email ||
     null
   );
@@ -41,6 +42,7 @@ function getSessionEmail(req: any): string | null {
 function getSessionUserId(req: any): string | null {
   return (
     req.session?.googleUser?.userId ||
+    req.session?.userId ||
     req.user?.claims?.sub ||
     null
   );
