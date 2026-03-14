@@ -39,7 +39,11 @@ export default function AuthPage() {
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
   const handleGoogleLogin = () => {
-    window.location.href = "/api/auth/google";
+    const redirectParam = urlParams.get("redirect");
+    const url = redirectParam
+      ? `/api/auth/google?redirect=${encodeURIComponent(redirectParam)}`
+      : "/api/auth/google";
+    window.location.href = url;
   };
 
   // Dev-only admin login bypass — skips OAuth entirely

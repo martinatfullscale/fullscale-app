@@ -18,6 +18,7 @@ import {
   Download,
   CheckCircle2,
   XCircle,
+  ShieldCheck,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -433,6 +434,25 @@ export default function StudioUpload() {
                     </p>
                   </>
                 )}
+              </div>
+            </div>
+
+            {/* Privacy notice */}
+            <div className="flex items-start gap-3 p-4 rounded-xl bg-white/[0.02] border border-white/5">
+              <ShieldCheck className="w-5 h-5 text-green-400 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  <span className="text-foreground font-medium">Your data stays yours.</span>{" "}
+                  We do not retain any uploaded documents. Our pipeline digests, converts, and
+                  permanently deletes all decks — your material is treated as proprietary
+                  and never stored beyond processing.{" "}
+                  <a
+                    href="/privacy#studio-data"
+                    className="text-purple-400 hover:text-purple-300 underline underline-offset-2 transition-colors"
+                  >
+                    Read more about our privacy commitment
+                  </a>
+                </p>
               </div>
             </div>
 

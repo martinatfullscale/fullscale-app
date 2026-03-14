@@ -385,6 +385,12 @@ export async function registerRoutes(
         return res.status(500).json({ error: "Database error during auth initialization" });
       }
       
+      // Store post-login redirect if provided (e.g. ?redirect=/studio/upload)
+      const postLoginRedirect = req.query.redirect as string | undefined;
+      if (postLoginRedirect && req.session) {
+        (req.session as any).postLoginRedirect = postLoginRedirect;
+      }
+
       // Also clear any old Google user data from session
       if (req.session) {
         delete req.session.googleUser;
@@ -596,7 +602,14 @@ export async function registerRoutes(
       
       // Redirect based on approval status — use BASE_URL so dev deploys redirect back to themselves
       const callbackBaseUrl = process.env.BASE_URL || "https://gofullscale.co";
-      const redirectPath = userIsApproved ? "/dashboard" : "/waitlist";
+      // Use stored post-login redirect if present (e.g. from /auth?redirect=/studio/upload)
+      const storedRedirect = (req.session as any)?.postLoginRedirect;
+      const defaultPath = userIsApproved ? "/dashboard" : "/waitlist";
+      const redirectPath = userIsApproved && storedRedirect ? storedRedirect : defaultPath;
+      // Clean up the stored redirect
+      if (req.session) {
+        delete (req.session as any).postLoginRedirect;
+      }
       const redirectUrl = `${callbackBaseUrl}${redirectPath}`;
 
       // Explicitly save session before redirect to ensure it persists

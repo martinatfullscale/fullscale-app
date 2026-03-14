@@ -155,6 +155,7 @@ function Router() {
         <Route path="/content" component={FullScaleCreates} />
         <Route path="/studio" component={FullScaleStudio} />
         <Route path="/studio/pricing" component={StudioPricing} />
+        <Route path="/studio/upload" component={StudioUpload} />
         <Route path="/creates" component={FullScaleCreates} />
         <Route path="/about" component={ComingSoon} />
         <Route path="/waitlist" component={WaitlistPage} />
@@ -205,6 +206,7 @@ function Router() {
       <Route path="/content" component={FullScaleCreates} />
       <Route path="/studio" component={FullScaleStudio} />
       <Route path="/studio/pricing" component={StudioPricing} />
+      <Route path="/studio/upload" component={StudioUpload} />
       <Route path="/creates" component={FullScaleCreates} />
       <Route path="/about" component={ComingSoon} />
       <Route path="/c/:slug" component={CreatorProfile} />
