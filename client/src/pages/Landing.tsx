@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence, useInView } from "framer-motion";
-import { Zap, Shield, Video, X, Ban, DollarSign, TrendingUp, Users, Sparkles, Cpu, Eye, Timer, Layers, Mail, User, Plus, Globe, ArrowRight } from "lucide-react";
+import { Zap, Shield, Video, X, Ban, DollarSign, TrendingUp, Users, Sparkles, Cpu, Eye, Timer, Layers, Mail, User, Plus, Globe, ArrowRight, Film, Wand2 } from "lucide-react";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 import logoBlackAmbition from "@assets/logo-black-ambition_1767712118620.png";
 import logoMayDavis from "@assets/logo-may-davis_1767712118621.png";
@@ -1194,7 +1194,23 @@ export default function Landing() {
 
           {/* Mobile Icon Buttons - visible below 600px with 1.5rem spacing from logo */}
           <div className="flex min-[600px]:hidden items-center gap-3 ml-6">
-            <a 
+            <a
+              href="/creates"
+              className="p-2 rounded-lg border border-white/20 bg-white/10 backdrop-blur-sm hover:bg-white/20 transition-colors text-white min-h-[44px] min-w-[44px] flex items-center justify-center"
+              data-testid="button-mobile-creates"
+              aria-label="FullScale Creates"
+            >
+              <Film className="w-5 h-5" />
+            </a>
+            <a
+              href="/studio"
+              className="p-2 rounded-lg border border-purple-500/30 bg-purple-500/10 backdrop-blur-sm hover:bg-purple-500/20 transition-colors text-purple-200 min-h-[44px] min-w-[44px] flex items-center justify-center"
+              data-testid="button-mobile-studio"
+              aria-label="FullScale Studio"
+            >
+              <Wand2 className="w-5 h-5" />
+            </a>
+            <a
               href="/auth?mode=signup"
               className="p-2 rounded-lg border border-primary text-primary bg-black/20 backdrop-blur-sm hover:bg-primary/10 transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center"
               data-testid="button-mobile-apply"
@@ -1202,7 +1218,7 @@ export default function Landing() {
             >
               <Plus className="w-5 h-5" />
             </a>
-            <button 
+            <button
               onClick={handleLoginClick}
               className="p-2 rounded-lg border border-white/20 bg-white/10 backdrop-blur-sm hover:bg-white/20 transition-colors text-white min-h-[44px] min-w-[44px] flex items-center justify-center"
               data-testid="button-mobile-signin"
