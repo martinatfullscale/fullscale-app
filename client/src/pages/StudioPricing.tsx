@@ -147,7 +147,10 @@ export default function StudioPricing() {
       window.location.href = "/auth?redirect=/studio/upload";
       return;
     }
-    if (tierId === "free") return;
+    if (tierId === "free") {
+      window.location.href = "/studio/upload";
+      return;
+    }
     if (currentTier === tierId) {
       portalMutation.mutate();
       return;

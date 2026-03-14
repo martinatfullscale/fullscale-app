@@ -389,17 +389,25 @@ export async function registerRoutes(
       const postLoginRedirect = req.query.redirect as string | undefined;
       if (postLoginRedirect && req.session) {
         (req.session as any).postLoginRedirect = postLoginRedirect;
+        console.log("[Google OAuth] Stored post-login redirect:", postLoginRedirect);
       }
 
       // Also clear any old Google user data from session
       if (req.session) {
         delete req.session.googleUser;
       }
-      
+
       console.log("[Google OAuth] ====================================");
-      
+
       const authUrl = getGoogleLoginAuthUrl(redirectUri, state);
-      res.redirect(authUrl);
+
+      // Explicitly save session before redirecting to Google (ensures postLoginRedirect persists)
+      req.session.save((saveErr: any) => {
+        if (saveErr) {
+          console.error("[Google OAuth] Session save error:", saveErr);
+        }
+        res.redirect(authUrl);
+      });
     } catch (err: any) {
       console.error("[Google OAuth] Unexpected error:", err.message, err.stack);
       res.status(500).json({ error: "Auth initialization failed", details: err.message });

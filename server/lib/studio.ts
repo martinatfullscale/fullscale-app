@@ -72,15 +72,25 @@ function getCurrentMonth(): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 }
 
+// Admin emails that get unlimited Studio access (business tier)
+const STUDIO_ADMIN_EMAILS = ["martin@gofullscale.co"];
+
 /** Ensure a Studio subscription exists for this user; create free tier if missing */
-async function ensureStudioSubscription(userId: string) {
+async function ensureStudioSubscription(userId: string, email?: string) {
   let sub = await storage.getStudioSubscription(userId);
   if (!sub) {
+    // Auto-assign business tier for admin emails
+    const isAdmin = email && STUDIO_ADMIN_EMAILS.includes(email.toLowerCase());
     sub = await storage.createStudioSubscription({
       userId,
-      tier: "free",
+      tier: isAdmin ? "business" : "free",
       status: "active",
     });
+  } else if (email && STUDIO_ADMIN_EMAILS.includes(email.toLowerCase()) && sub.tier !== "business") {
+    // Upgrade existing admin subscriptions to business
+    await storage.updateStudioSubscription(userId, { tier: "business", status: "active" });
+    sub = await storage.getStudioSubscription(userId);
+    if (!sub) throw new Error("Subscription not found after upgrade");
   }
   return sub;
 }
@@ -119,7 +129,7 @@ export function registerStudioRoutes(app: Express) {
         return res.json({ authenticated: true, email, hasStudioAccess: false });
       }
 
-      const sub = await ensureStudioSubscription(user.id);
+      const sub = await ensureStudioSubscription(user.id, email);
       const tier = (sub.tier as TierName) || "free";
       const tierConfig = STUDIO_TIERS[tier];
       const usage = await getOrCreateUsage(user.id, tier);
@@ -169,7 +179,7 @@ export function registerStudioRoutes(app: Express) {
       let user = await storage.getUserByEmail(normalizedEmail);
       if (user) {
         // User exists — ensure they have a Studio subscription
-        const sub = await ensureStudioSubscription(user.id);
+        const sub = await ensureStudioSubscription(user.id, normalizedEmail);
         return res.json({
           message: "Existing user — Studio access granted",
           userId: user.id,
@@ -261,7 +271,7 @@ export function registerStudioRoutes(app: Express) {
         return res.status(404).json({ error: "User not found" });
       }
 
-      const sub = await ensureStudioSubscription(user.id);
+      const sub = await ensureStudioSubscription(user.id, email);
 
       // Reuse existing Stripe customer or create new one
       let customerId = sub.stripeCustomerId;
@@ -446,7 +456,7 @@ export function registerStudioRoutes(app: Express) {
         return res.status(404).json({ error: "User not found" });
       }
 
-      const sub = await ensureStudioSubscription(user.id);
+      const sub = await ensureStudioSubscription(user.id, email);
       const tier = (sub.tier as TierName) || "free";
       const usage = await getOrCreateUsage(user.id, tier);
 
@@ -577,7 +587,7 @@ export function registerStudioRoutes(app: Express) {
       const documentType: "pdf" | "pptx" = fileName.endsWith(".pptx") ? "pptx" : "pdf";
 
       // ── Quota check ──
-      const sub = await ensureStudioSubscription(user.id);
+      const sub = await ensureStudioSubscription(user.id, email);
       const tier = (sub.tier as TierName) || "free";
       const tierConfig = STUDIO_TIERS[tier];
       const month = getCurrentMonth();
