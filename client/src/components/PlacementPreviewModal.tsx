@@ -21,6 +21,10 @@ import {
   Droplets,
   Blend,
   Eye,
+  EyeOff,
+  Play,
+  Pause,
+  Film,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -63,6 +67,12 @@ interface PlacementPreviewModalProps {
   videoId: number;
   videoTitle: string;
   surfaces: Surface[];
+  initialPlacement?: {
+    productImageUrl: string;
+    productId: number | null;
+    transform: PlacementTransform;
+    blend: PlacementBlend;
+  };
 }
 
 // Transform controls for product placement
@@ -182,6 +192,166 @@ const BLEND_MODES: { value: GlobalCompositeOperation; label: string }[] = [
 
 function clamp(val: number, min: number, max: number) {
   return Math.min(Math.max(val, min), max);
+}
+
+/**
+ * Global optical flow tracking — estimates camera motion by comparing
+ * small blocks distributed across the entire frame between consecutive frames.
+ *
+ * Why this works better than surface-patch template matching:
+ * - Template matching tries to find a specific surface (e.g. marble counter) which
+ *   is often uniform/reflective and gets confused by nearby high-contrast objects (laptops).
+ * - Optical flow measures HOW MUCH THE WHOLE FRAME MOVED. For camera pans/tilts,
+ *   the entire frame shifts together, so the median motion vector across many blocks
+ *   gives a very reliable estimate of camera movement.
+ *
+ * Algorithm:
+ * 1. Divide frame into a grid of small blocks (e.g. 6x5 = 30 blocks)
+ * 2. For each block, search for its best match in the new frame within a small radius
+ * 3. Compute median dx/dy across all blocks (median rejects outliers from occluded areas)
+ * 4. Apply that motion to the product position
+ */
+function computeOpticalFlowBlock(
+  prevData: ImageData,
+  currData: ImageData,
+  width: number,
+  height: number,
+): { dx: number; dy: number; confidence: number } {
+  const prevPx = prevData.data;
+  const currPx = currData.data;
+
+  // Grid of blocks for motion estimation
+  const gridCols = 6;
+  const gridRows = 5;
+  const blockW = 24; // pixel size of each comparison block
+  const blockH = 24;
+  const searchR = 30; // search radius per block (pixels)
+  const sampleStep = 3; // sample every 3rd pixel for speed
+
+  const dxValues: number[] = [];
+  const dyValues: number[] = [];
+  const sadValues: number[] = [];
+
+  for (let gy = 0; gy < gridRows; gy++) {
+    for (let gx = 0; gx < gridCols; gx++) {
+      // Block center position, distributed evenly across frame
+      const cx = Math.floor(((gx + 0.5) / gridCols) * width);
+      const cy = Math.floor(((gy + 0.5) / gridRows) * height);
+
+      // Block top-left in previous frame
+      const bx0 = cx - Math.floor(blockW / 2);
+      const by0 = cy - Math.floor(blockH / 2);
+      if (bx0 < 0 || by0 < 0 || bx0 + blockW >= width || by0 + blockH >= height) continue;
+
+      // Search for best match in current frame
+      let bestDx = 0, bestDy = 0, bestSAD = Infinity;
+
+      // Coarse pass (step=4)
+      for (let sy = -searchR; sy <= searchR; sy += 4) {
+        for (let sx = -searchR; sx <= searchR; sx += 4) {
+          const tx = bx0 + sx;
+          const ty = by0 + sy;
+          if (tx < 0 || ty < 0 || tx + blockW >= width || ty + blockH >= height) continue;
+
+          let sad = 0;
+          let n = 0;
+          for (let py = 0; py < blockH; py += sampleStep) {
+            for (let px = 0; px < blockW; px += sampleStep) {
+              const pi = ((by0 + py) * width + (bx0 + px)) * 4;
+              const ci = ((ty + py) * width + (tx + px)) * 4;
+              const pg = (prevPx[pi] + prevPx[pi + 1] + prevPx[pi + 2]);
+              const cg = (currPx[ci] + currPx[ci + 1] + currPx[ci + 2]);
+              sad += Math.abs(pg - cg);
+              n++;
+            }
+          }
+          sad /= n;
+          if (sad < bestSAD) { bestSAD = sad; bestDx = sx; bestDy = sy; }
+        }
+      }
+
+      // Fine pass around coarse best
+      const cdx = bestDx, cdy = bestDy;
+      for (let sy = cdy - 3; sy <= cdy + 3; sy += 1) {
+        for (let sx = cdx - 3; sx <= cdx + 3; sx += 1) {
+          const tx = bx0 + sx;
+          const ty = by0 + sy;
+          if (tx < 0 || ty < 0 || tx + blockW >= width || ty + blockH >= height) continue;
+
+          let sad = 0;
+          let n = 0;
+          for (let py = 0; py < blockH; py += sampleStep) {
+            for (let px = 0; px < blockW; px += sampleStep) {
+              const pi = ((by0 + py) * width + (bx0 + px)) * 4;
+              const ci = ((ty + py) * width + (tx + px)) * 4;
+              const pg = (prevPx[pi] + prevPx[pi + 1] + prevPx[pi + 2]);
+              const cg = (currPx[ci] + currPx[ci + 1] + currPx[ci + 2]);
+              sad += Math.abs(pg - cg);
+              n++;
+            }
+          }
+          sad /= n;
+          if (sad < bestSAD) { bestSAD = sad; bestDx = sx; bestDy = sy; }
+        }
+      }
+
+      dxValues.push(bestDx);
+      dyValues.push(bestDy);
+      sadValues.push(bestSAD);
+    }
+  }
+
+  if (dxValues.length === 0) return { dx: 0, dy: 0, confidence: 0 };
+
+  // Use median to reject outliers (e.g. occluded blocks, moving objects)
+  dxValues.sort((a, b) => a - b);
+  dyValues.sort((a, b) => a - b);
+  sadValues.sort((a, b) => a - b);
+  const mid = Math.floor(dxValues.length / 2);
+  const medianDx = dxValues[mid];
+  const medianDy = dyValues[mid];
+  const medianSAD = sadValues[mid];
+
+  // Confidence based on SAD and agreement between blocks
+  const confidence = Math.max(0, Math.min(1, 1 - medianSAD / 200));
+
+  return { dx: medianDx, dy: medianDy, confidence };
+}
+
+/**
+ * Capture the full frame as ImageData for optical flow comparison.
+ * Downscales to a fixed size for consistent and fast processing.
+ */
+function captureFrameForFlow(
+  videoEl: HTMLVideoElement,
+  flowCanvas: HTMLCanvasElement,
+  flowW: number,
+  flowH: number,
+): ImageData | null {
+  try {
+    flowCanvas.width = flowW;
+    flowCanvas.height = flowH;
+    const ctx = flowCanvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return null;
+    ctx.drawImage(videoEl, 0, 0, flowW, flowH);
+    return ctx.getImageData(0, 0, flowW, flowH);
+  } catch {
+    return null;
+  }
+}
+
+/** Resolve video file path from DB into a usable URL */
+function resolveVideoSrc(filePath: string | null | undefined): string | null {
+  if (!filePath) return null;
+  let src = filePath;
+  src = src.replace(/^\.\/public\//, '/');
+  src = src.replace(/^public\//, '/');
+  src = src.replace(/^\/home\/runner\/workspace\/public\//, '/');
+  src = src.replace(/\/\//g, '/');
+  if (!src.startsWith('/') && !src.startsWith('http')) {
+    src = '/' + src;
+  }
+  return src;
 }
 
 /** Apply brightness/contrast filter string for canvas */
@@ -330,6 +500,7 @@ export default function PlacementPreviewModal({
   videoId,
   videoTitle,
   surfaces,
+  initialPlacement,
 }: PlacementPreviewModalProps) {
   // Core state
   const [selectedSurface, setSelectedSurface] = useState<Surface | null>(null);
@@ -342,6 +513,7 @@ export default function PlacementPreviewModal({
   // Interactive transform + blend state
   const [transform, setTransform] = useState<PlacementTransform>({ ...DEFAULT_TRANSFORM });
   const [blend, setBlend] = useState<PlacementBlend>({ ...DEFAULT_BLEND });
+  const [showBoundingBox, setShowBoundingBox] = useState(true);
 
   // Drag interaction state
   const [dragMode, setDragMode] = useState<DragMode>("none");
@@ -353,6 +525,31 @@ export default function PlacementPreviewModal({
   const [saveSuccess, setSaveSuccess] = useState(false);
   const { toast } = useToast();
 
+  // Video playback state
+  const [isVideoMode, setIsVideoMode] = useState(false);
+  const [isVideoPlaying, setIsVideoPlaying] = useState(false);
+  const [videoCurrentTime, setVideoCurrentTime] = useState(0);
+  const [videoDuration, setVideoDuration] = useState(0);
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  // Pre-computed motion tracking data from server (Gemini keyframes or static fallback)
+  // When available, this gives smooth camera-locked placement
+  const [motionData, setMotionData] = useState<{
+    transforms: Array<{ x: number; y: number; w: number; h: number } | null>;
+    fps: number;
+    duration: number;
+    available: boolean;
+    source?: string; // "gemini-keyframes" | "static" | undefined
+  } | null>(null);
+  const [isMotionLoading, setIsMotionLoading] = useState(false);
+
+  // Video export state
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState(0);
+  const [exportStatus, setExportStatus] = useState<string | null>(null);
+  const [exportJobId, setExportJobId] = useState<number | null>(null);
+  const [exportOutputUrl, setExportOutputUrl] = useState<string | null>(null);
+
   // Refs
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -360,6 +557,183 @@ export default function PlacementPreviewModal({
   const productImgRef = useRef<HTMLImageElement | null>(null);
   const animFrameRef = useRef<number>(0);
   const canvasContainerRef = useRef<HTMLDivElement>(null);
+
+  // Client-side camera tracking state — uses global optical flow to follow camera pans
+  // This measures how the ENTIRE frame shifts between consecutive video frames,
+  // then applies that motion to keep the product anchored to the physical surface.
+  const FLOW_W = 320; // downscaled resolution for optical flow
+  const FLOW_H = 180;
+  const trackingRef = useRef<{
+    // Previous frame's pixel data for optical flow comparison
+    prevFrameData: ImageData | null;
+    // Accumulated camera offset in canvas pixel coordinates
+    cumulativeOffsetX: number;
+    cumulativeOffsetY: number;
+    // Smoothed display position (what's actually rendered)
+    displayOffsetX: number;
+    displayOffsetY: number;
+    // Smoothed display dimensions (prevents size jitter)
+    displayOffsetW: number;
+    displayOffsetH: number;
+    // Velocity for spring-damped interpolation
+    velocityX: number;
+    velocityY: number;
+    // Off-screen canvas for frame capture
+    flowCanvas: HTMLCanvasElement;
+    initialized: boolean;
+    frameCounter: number;
+  }>({
+    prevFrameData: null,
+    cumulativeOffsetX: 0,
+    cumulativeOffsetY: 0,
+    displayOffsetX: 0,
+    displayOffsetY: 0,
+    displayOffsetW: 0,
+    displayOffsetH: 0,
+    velocityX: 0,
+    velocityY: 0,
+    flowCanvas: typeof document !== "undefined" ? document.createElement("canvas") : null as any,
+    initialized: false,
+    frameCounter: 0,
+  });
+
+  // Fetch video details to get file path for playback
+  const { data: videoDetails } = useQuery<{ filePath: string | null }>({
+    queryKey: [`/api/video/${videoId}/details`],
+    queryFn: async () => {
+      const res = await fetch(`/api/video/${videoId}/details`);
+      if (!res.ok) return { filePath: null };
+      return res.json();
+    },
+    enabled: open,
+  });
+  const videoSrc = resolveVideoSrc(videoDetails?.filePath);
+
+  // Fetch dense surface keyframes for accurate motion tracking
+  const { data: denseKeyframesData, refetch: refetchKeyframes } = useQuery<{
+    keyframes: Record<string, Array<{
+      timestamp: number;
+      bbox: { x: number; y: number; w: number; h: number };
+      confidence: number;
+      surfaceId: number;
+    }>>;
+  }>({
+    queryKey: [`/api/video/${videoId}/surface-keyframes`],
+    queryFn: async () => {
+      const res = await fetch(`/api/video/${videoId}/surface-keyframes`);
+      if (!res.ok) return { keyframes: {} };
+      return res.json();
+    },
+    enabled: open,
+  });
+
+  // Dense scan state — triggers Gemini per-frame tracking when user plays video
+  const [isDenseScanning, setIsDenseScanning] = useState(false);
+  const [denseScanDone, setDenseScanDone] = useState(false);
+
+  // Trigger server-side motion analysis for smooth product placement
+  // (must be defined before triggerDenseScan which calls it)
+  // `force` parameter allows re-triggering after dense scan completes to get real Gemini data
+  const triggerMotionTrack = useCallback(async (force = false) => {
+    if (isMotionLoading) return; // Already loading
+    // Skip if we already have real (non-static) data, unless forced
+    if (!force && motionData && motionData.source !== "static") return;
+    if (!selectedSurface) return;
+
+    setIsMotionLoading(true);
+    try {
+      console.log(`[PlacementPreview] Requesting motion tracking for video ${videoId}, surface ${selectedSurface.id}${force ? " (forced re-fetch)" : ""}...`);
+      const res = await fetch(`/api/video/${videoId}/motion-track`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ surfaceId: selectedSurface.id }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.available && data.transforms?.length > 0) {
+          setMotionData({ ...data, source: data.source || "unknown" });
+          console.log(`[PlacementPreview] Got ${data.transforms.length} motion frames at ${data.fps}fps (source: ${data.source})`);
+          // If we got real Gemini keyframe data, reset tracking so spring snaps to new data
+          if (data.source === "gemini-keyframes") {
+            const tracking = trackingRef.current;
+            tracking.initialized = false;
+          }
+        } else {
+          console.log("[PlacementPreview] Motion tracking not available, using client-side fallback");
+          setMotionData({ transforms: [], fps: 30, duration: 0, available: false, source: "none" });
+        }
+      }
+    } catch (err) {
+      console.error("[PlacementPreview] Motion track request failed:", err);
+      setMotionData({ transforms: [], fps: 30, duration: 0, available: false, source: "none" });
+    } finally {
+      setIsMotionLoading(false);
+    }
+  }, [videoId, isMotionLoading, motionData, selectedSurface]);
+
+  // Trigger dense scan when user first enters video playback mode.
+  // Two-phase approach for fast results:
+  //   Phase 1: Quick scan at 2-second intervals (~13 Gemini calls for 25s video ≈ 1 min)
+  //            → gives sparse but usable keyframes for Catmull-Rom interpolation
+  //   Phase 2: Dense scan at 0.5-second intervals (runs in background after Phase 1)
+  //            → refines tracking accuracy with 4x more keyframes
+  const triggerDenseScan = useCallback(async () => {
+    if (isDenseScanning || denseScanDone) return;
+
+    // Check if we already have enough keyframes for the selected surface
+    const surfaceType = selectedSurface?.surfaceType;
+    const existingKfs = surfaceType ? denseKeyframesData?.keyframes?.[surfaceType] : null;
+    if (existingKfs && existingKfs.length >= 10) {
+      setDenseScanDone(true);
+      // Already have good data — just make sure motion track uses it
+      triggerMotionTrack(true);
+      return;
+    }
+
+    setIsDenseScanning(true);
+    try {
+      // ── Phase 1: Quick sparse scan (interval=2s) ──
+      // Gets ~13 keyframes in ~1 minute → enough for spline interpolation
+      console.log(`[PlacementPreview] Phase 1: Quick scan for video ${videoId} (interval=2s)...`);
+      const quickRes = await fetch(`/api/video/${videoId}/dense-scan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ interval: 2.0 }),
+      });
+      if (quickRes.ok) {
+        const quickData = await quickRes.json();
+        console.log(`[PlacementPreview] Phase 1 result:`, quickData);
+        await refetchKeyframes();
+        // Immediately trigger motion track with sparse keyframes — gives anchored tracking fast
+        triggerMotionTrack(true);
+      }
+
+      // ── Phase 2: Dense refine scan (interval=0.5s, fire-and-forget) ──
+      // Runs in background to improve tracking accuracy with 4x more keyframes
+      console.log(`[PlacementPreview] Phase 2: Dense scan for video ${videoId} (interval=0.5s)...`);
+      const denseRes = await fetch(`/api/video/${videoId}/dense-scan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ interval: 0.5 }),
+      });
+      if (denseRes.ok) {
+        const denseData = await denseRes.json();
+        console.log(`[PlacementPreview] Phase 2 result:`, denseData);
+        await refetchKeyframes();
+        // Re-trigger motion track with full dense keyframes for maximum accuracy
+        triggerMotionTrack(true);
+      }
+
+      setDenseScanDone(true);
+    } catch (err) {
+      console.error("[PlacementPreview] Dense scan failed:", err);
+    } finally {
+      setIsDenseScanning(false);
+    }
+  }, [videoId, isDenseScanning, denseScanDone, selectedSurface?.surfaceType, denseKeyframesData, refetchKeyframes, triggerMotionTrack]);
 
   // Fetch product catalog
   const { data: catalogProducts } = useQuery<CatalogProduct[]>({
@@ -450,8 +824,44 @@ export default function PlacementPreviewModal({
       setSaveSuccess(false);
       frameImgRef.current = null;
       productImgRef.current = null;
+      // Reset video playback + dense scan + motion tracking state
+      setIsVideoMode(false);
+      setIsDenseScanning(false);
+      setDenseScanDone(false);
+      setMotionData(null);
+      setIsMotionLoading(false);
+      setIsVideoPlaying(false);
+      setVideoCurrentTime(0);
+      setVideoDuration(0);
+      if (videoRef.current) {
+        videoRef.current.pause();
+        videoRef.current.currentTime = 0;
+      }
+      // Reset export state
+      setIsExporting(false);
+      setExportProgress(0);
+      setExportStatus(null);
+      setExportJobId(null);
+      setExportOutputUrl(null);
     }
   }, [open]);
+
+  // Apply initialPlacement when modal opens with pre-loaded data (re-edit flow)
+  useEffect(() => {
+    if (!open || !initialPlacement) return;
+    setProductImage(initialPlacement.productImageUrl);
+    setTransform({ ...initialPlacement.transform });
+    setBlend({ ...initialPlacement.blend });
+    setToolPanel("transform");
+    // If from catalog, pre-select the catalog product
+    if (initialPlacement.productId && catalogProducts) {
+      const match = catalogProducts.find((p: CatalogProduct) => p.id === initialPlacement.productId);
+      if (match) {
+        setSelectedCatalogProduct(match);
+        setProductTab("catalog");
+      }
+    }
+  }, [open, initialPlacement]);
 
   // Helper to load an image as a promise
   const loadImage = useCallback((src: string): Promise<HTMLImageElement> => {
@@ -519,17 +929,30 @@ export default function PlacementPreviewModal({
       return;
     }
 
+    // Determine frame source: video element (when playing) or static frame image
+    const videoEl = videoRef.current;
+    const useVideo = isVideoMode && videoEl && videoEl.readyState >= 2;
     const frameImg = frameImgRef.current;
-    if (!frameImg || !frameImg.complete) {
-      // Clear canvas if no frame
+
+    if (!useVideo && (!frameImg || !frameImg.complete)) {
+      // Clear canvas if no frame source
       ctx.clearRect(0, 0, canvas.width, canvas.height);
+      animFrameRef.current = requestAnimationFrame(renderFrame);
+      return;
+    }
+
+    // Get the natural dimensions of the source
+    const sourceWidth = useVideo ? videoEl!.videoWidth : frameImg!.naturalWidth;
+    const sourceHeight = useVideo ? videoEl!.videoHeight : frameImg!.naturalHeight;
+
+    if (sourceWidth === 0 || sourceHeight === 0) {
       animFrameRef.current = requestAnimationFrame(renderFrame);
       return;
     }
 
     // Size canvas to container while maintaining frame aspect ratio
     const containerRect = container.getBoundingClientRect();
-    const frameAspect = frameImg.naturalWidth / frameImg.naturalHeight;
+    const frameAspect = sourceWidth / sourceHeight;
     let displayW = containerRect.width;
     let displayH = containerRect.width / frameAspect;
 
@@ -544,77 +967,242 @@ export default function PlacementPreviewModal({
       canvas.height = Math.round(displayH);
     }
 
-    // Draw frame
+    // Draw frame (from video or static image)
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(frameImg, 0, 0, canvas.width, canvas.height);
+    if (useVideo) {
+      ctx.drawImage(videoEl!, 0, 0, canvas.width, canvas.height);
+      // Update time display
+      setVideoCurrentTime(videoEl!.currentTime);
+    } else {
+      ctx.drawImage(frameImg!, 0, 0, canvas.width, canvas.height);
+    }
 
-    // Draw bounding box
+    // Draw bounding box — during video playback, use client-side visual tracking
+    // to follow the surface as the camera moves. The product stays "placed" on the
+    // physical surface, just like a real object would.
     if (selectedSurface) {
-      const bx = selectedSurface.boundingBoxX * canvas.width;
-      const by = selectedSurface.boundingBoxY * canvas.height;
-      const bw = selectedSurface.boundingBoxWidth * canvas.width;
-      const bh = selectedSurface.boundingBoxHeight * canvas.height;
+      let bx: number, by: number, bw: number, bh: number;
+
+      // Locked bbox dimensions from initial surface detection
+      const baseBW = selectedSurface.boundingBoxWidth * canvas.width;
+      const baseBH = selectedSurface.boundingBoxHeight * canvas.height;
+      const baseBX = selectedSurface.boundingBoxX * canvas.width;
+      const baseBY = selectedSurface.boundingBoxY * canvas.height;
+
+      if (useVideo && videoEl) {
+        const tracking = trackingRef.current;
+        const hasGeminiData = motionData?.available && motionData.source === "gemini-keyframes" && motionData.transforms.length > 0;
+
+        if (hasGeminiData) {
+          // ── STRATEGY A: Pre-computed Gemini keyframe data (Anchor-Lock Mode) ──
+          // Real per-frame surface positions from Gemini AI vision analysis.
+          // Anchors the product to the top-right corner of the detected bbox
+          // so the product stays locked to the surface throughout the scene.
+          const currentTime = videoEl.currentTime;
+          const frameIndex = Math.round(currentTime * motionData!.fps);
+          const clampedIndex = Math.min(frameIndex, motionData!.transforms.length - 1);
+          const pos = motionData!.transforms[clampedIndex];
+
+          // Scene-change detection: if position is null, surface is not visible at this time
+          if (!pos) {
+            bx = -9999; by = -9999; bw = 0; bh = 0;
+          } else {
+
+          // Anchor-lock: track the top-right corner of the bbox as the fixed reference point
+          // The product's right edge stays pinned to this anchor throughout the scene
+          const anchorX = (pos.x + pos.w) * canvas.width;   // top-right X of detected bbox
+          const anchorY = pos.y * canvas.height;              // top-right Y of detected bbox
+          // Derive product position so its right edge aligns with the anchor
+          const targetBX = anchorX - baseBW;
+          const targetBY = anchorY;
+          const targetBW = pos.w * canvas.width;
+          const targetBH = pos.h * canvas.height;
+
+          // Tight drift constraint: product can't wander more than 1x bbox size from original
+          const maxDrift = Math.max(baseBW, baseBH) * 1.0;
+          const constrainedBX = clamp(targetBX, baseBX - maxDrift, baseBX + maxDrift);
+          const constrainedBY = clamp(targetBY, baseBY - maxDrift, baseBY + maxDrift);
+
+          if (!tracking.initialized) {
+            // Snap to initial position on first frame (no spring lag)
+            tracking.displayOffsetX = constrainedBX;
+            tracking.displayOffsetY = constrainedBY;
+            tracking.displayOffsetW = targetBW;
+            tracking.displayOffsetH = targetBH;
+            tracking.cumulativeOffsetX = constrainedBX;
+            tracking.cumulativeOffsetY = constrainedBY;
+            tracking.velocityX = 0;
+            tracking.velocityY = 0;
+            tracking.initialized = true;
+          }
+          tracking.cumulativeOffsetX = constrainedBX;
+          tracking.cumulativeOffsetY = constrainedBY;
+
+          // Very stiff spring for Gemini data — server already smoothed, just snap to it
+          const stiffness = 0.7;
+          const damping = 0.5;
+          const forceX = (tracking.cumulativeOffsetX - tracking.displayOffsetX) * stiffness;
+          const forceY = (tracking.cumulativeOffsetY - tracking.displayOffsetY) * stiffness;
+          tracking.velocityX = tracking.velocityX * damping + forceX;
+          tracking.velocityY = tracking.velocityY * damping + forceY;
+
+          // Velocity deadzone: eliminate micro-jitter when nearly at rest
+          if (Math.abs(tracking.velocityX) < 0.5) tracking.velocityX = 0;
+          if (Math.abs(tracking.velocityY) < 0.5) tracking.velocityY = 0;
+
+          tracking.displayOffsetX += tracking.velocityX;
+          tracking.displayOffsetY += tracking.velocityY;
+
+          // Also smooth width/height to prevent size jitter
+          const dimStiffness = 0.8;
+          tracking.displayOffsetW = (tracking.displayOffsetW || targetBW) + (targetBW - (tracking.displayOffsetW || targetBW)) * dimStiffness;
+          tracking.displayOffsetH = (tracking.displayOffsetH || targetBH) + (targetBH - (tracking.displayOffsetH || targetBH)) * dimStiffness;
+
+          bx = tracking.displayOffsetX;
+          by = tracking.displayOffsetY;
+          bw = tracking.displayOffsetW;
+          bh = tracking.displayOffsetH;
+          }
+        } else {
+          // ── STRATEGY B: Global Optical Flow (camera motion estimation) ──
+          // Measures how the ENTIRE frame shifts between consecutive video frames.
+          // Works reliably for camera pans/tilts because the whole scene moves together.
+          // The product stays anchored to the surface by compensating for camera motion.
+          tracking.frameCounter++;
+
+          // Run optical flow every 3rd frame for good balance of accuracy vs performance
+          if (tracking.frameCounter % 3 === 0) {
+            const currFrameData = captureFrameForFlow(videoEl, tracking.flowCanvas, FLOW_W, FLOW_H);
+
+            if (currFrameData && tracking.prevFrameData) {
+              const { dx, dy, confidence } = computeOpticalFlowBlock(
+                tracking.prevFrameData,
+                currFrameData,
+                FLOW_W,
+                FLOW_H,
+              );
+
+              if (confidence > 0.25) {
+                // Scale flow dx/dy from flow resolution to canvas resolution
+                const scaleX = canvas.width / FLOW_W;
+                const scaleY = canvas.height / FLOW_H;
+                // Optical flow dx/dy = where previous frame's content appears in current frame.
+                // If camera pans left → scene moves right → dx is positive → product moves right.
+                tracking.cumulativeOffsetX += dx * scaleX;
+                tracking.cumulativeOffsetY += dy * scaleY;
+              }
+
+              tracking.prevFrameData = currFrameData;
+            } else if (currFrameData && !tracking.prevFrameData) {
+              // First frame — just capture, no motion yet
+              tracking.prevFrameData = currFrameData;
+              // Initialize display position to current base position so spring doesn't jump
+              tracking.displayOffsetX = baseBX;
+              tracking.displayOffsetY = baseBY;
+              tracking.initialized = true;
+            }
+          }
+
+          // Stiff spring-damped interpolation for stable display
+          const stiffness = 0.35;
+          const damping = 0.82;
+          const targetX = baseBX + tracking.cumulativeOffsetX;
+          const targetY = baseBY + tracking.cumulativeOffsetY;
+          const forceX = (targetX - tracking.displayOffsetX) * stiffness;
+          const forceY = (targetY - tracking.displayOffsetY) * stiffness;
+          tracking.velocityX = tracking.velocityX * damping + forceX;
+          tracking.velocityY = tracking.velocityY * damping + forceY;
+
+          // Velocity deadzone: eliminate micro-jitter
+          if (Math.abs(tracking.velocityX) < 0.3) tracking.velocityX = 0;
+          if (Math.abs(tracking.velocityY) < 0.3) tracking.velocityY = 0;
+
+          tracking.displayOffsetX += tracking.velocityX;
+          tracking.displayOffsetY += tracking.velocityY;
+
+          if (!tracking.initialized) {
+            // Before first flow computation, use static position
+            bx = baseBX;
+            by = baseBY;
+          } else {
+            bx = tracking.displayOffsetX;
+            by = tracking.displayOffsetY;
+          }
+          bw = baseBW;
+          bh = baseBH;
+        }
+      } else {
+        // Static mode — use the surface's original position
+        bx = baseBX;
+        by = baseBY;
+        bw = baseBW;
+        bh = baseBH;
+      }
 
       const hasProduct = !!productImgRef.current;
 
-      // Bounding box outline
-      ctx.strokeStyle = hasProduct ? "rgba(16, 185, 129, 0.6)" : "rgba(139, 92, 246, 0.8)";
-      ctx.lineWidth = 2;
-      ctx.setLineDash(hasProduct ? [4, 4] : [6, 4]);
-      ctx.strokeRect(bx, by, bw, bh);
-      ctx.setLineDash([]);
+      // Bounding box outline (hidden when toggle is off)
+      if (showBoundingBox) {
+        ctx.strokeStyle = hasProduct ? "rgba(16, 185, 129, 0.6)" : "rgba(139, 92, 246, 0.8)";
+        ctx.lineWidth = 2;
+        ctx.setLineDash(hasProduct ? [4, 4] : [6, 4]);
+        ctx.strokeRect(bx, by, bw, bh);
+        ctx.setLineDash([]);
 
-      // Surface label
-      if (!hasProduct) {
-        ctx.font = "bold 11px Inter, system-ui, sans-serif";
-        const label = selectedSurface.surfaceType;
-        const tw = ctx.measureText(label).width;
-        ctx.fillStyle = "rgba(139, 92, 246, 0.85)";
-        ctx.fillRect(bx, by - 18, tw + 10, 18);
-        ctx.fillStyle = "#fff";
-        ctx.fillText(label, bx + 5, by - 5);
+        // Surface label
+        if (!hasProduct) {
+          ctx.font = "bold 11px Inter, system-ui, sans-serif";
+          const label = selectedSurface.surfaceType;
+          const tw = ctx.measureText(label).width;
+          ctx.fillStyle = "rgba(139, 92, 246, 0.85)";
+          ctx.fillRect(bx, by - 18, tw + 10, 18);
+          ctx.fillStyle = "#fff";
+          ctx.fillText(label, bx + 5, by - 5);
+        }
       }
 
-      // Draw product if loaded
+      // Draw product if loaded (always renders regardless of toggle)
       const prodImg = productImgRef.current;
       if (prodImg && prodImg.complete && bw > 0 && bh > 0) {
         drawProduct(ctx, prodImg, bx, by, bw, bh, transform, blend);
 
-        // Draw resize handles + rotation handle
-        const handleSize = 8;
-        ctx.fillStyle = "rgba(139, 92, 246, 0.9)";
+        // Draw resize handles + rotation handle (hidden when toggle is off)
+        if (showBoundingBox) {
+          const handleSize = 8;
+          ctx.fillStyle = "rgba(139, 92, 246, 0.9)";
 
-        // Corner handles
-        const corners = [
-          { x: bx, y: by },
-          { x: bx + bw, y: by },
-          { x: bx, y: by + bh },
-          { x: bx + bw, y: by + bh },
-        ];
-        for (const c of corners) {
-          ctx.fillRect(c.x - handleSize / 2, c.y - handleSize / 2, handleSize, handleSize);
+          // Corner handles
+          const corners = [
+            { x: bx, y: by },
+            { x: bx + bw, y: by },
+            { x: bx, y: by + bh },
+            { x: bx + bw, y: by + bh },
+          ];
+          for (const c of corners) {
+            ctx.fillRect(c.x - handleSize / 2, c.y - handleSize / 2, handleSize, handleSize);
+          }
+
+          // Rotation handle (orange dot above center)
+          ctx.beginPath();
+          ctx.arc(bx + bw / 2, by - 22, 6, 0, Math.PI * 2);
+          ctx.fillStyle = "rgba(251, 146, 60, 0.9)";
+          ctx.fill();
+          ctx.strokeStyle = "rgba(255, 255, 255, 0.8)";
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+
+          // Line from top-center to rotation handle
+          ctx.beginPath();
+          ctx.moveTo(bx + bw / 2, by);
+          ctx.lineTo(bx + bw / 2, by - 16);
+          ctx.strokeStyle = "rgba(251, 146, 60, 0.5)";
+          ctx.lineWidth = 1;
+          ctx.stroke();
         }
-
-        // Rotation handle (orange dot above center)
-        ctx.beginPath();
-        ctx.arc(bx + bw / 2, by - 22, 6, 0, Math.PI * 2);
-        ctx.fillStyle = "rgba(251, 146, 60, 0.9)";
-        ctx.fill();
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.8)";
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-
-        // Line from top-center to rotation handle
-        ctx.beginPath();
-        ctx.moveTo(bx + bw / 2, by);
-        ctx.lineTo(bx + bw / 2, by - 16);
-        ctx.strokeStyle = "rgba(251, 146, 60, 0.5)";
-        ctx.lineWidth = 1;
-        ctx.stroke();
       }
 
-      // "Drop product here" text if no product
-      if (!hasProduct) {
+      // "Drop product here" text if no product (hidden when toggle is off)
+      if (!hasProduct && showBoundingBox) {
         ctx.fillStyle = "rgba(139, 92, 246, 0.15)";
         ctx.fillRect(bx, by, bw, bh);
 
@@ -629,7 +1217,7 @@ export default function PlacementPreviewModal({
     }
 
     animFrameRef.current = requestAnimationFrame(renderFrame);
-  }, [selectedSurface, transform, blend]);
+  }, [selectedSurface, transform, blend, isVideoMode, motionData, showBoundingBox]);
 
   // Start/stop render loop
   useEffect(() => {
@@ -640,6 +1228,282 @@ export default function PlacementPreviewModal({
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     };
   }, [open, renderFrame]);
+
+  // ============================================================================
+  // VIDEO PLAYBACK CONTROLS
+  // ============================================================================
+
+  const toggleVideoPlayback = useCallback(() => {
+    const videoEl = videoRef.current;
+    if (!videoEl) return;
+
+    if (!isVideoMode) {
+      // Enter video mode — reset optical flow tracking state
+      const tracking = trackingRef.current;
+      tracking.initialized = false;
+      tracking.prevFrameData = null;
+      tracking.cumulativeOffsetX = 0;
+      tracking.cumulativeOffsetY = 0;
+      tracking.displayOffsetX = 0;
+      tracking.displayOffsetY = 0;
+      tracking.displayOffsetW = 0;
+      tracking.displayOffsetH = 0;
+      tracking.velocityX = 0;
+      tracking.velocityY = 0;
+      tracking.frameCounter = 0;
+
+      setIsVideoMode(true);
+      triggerDenseScan(); // Fire-and-forget: generates dense keyframes in background (for export)
+      triggerMotionTrack(); // Fire-and-forget: runs vidstab analysis for smooth placement preview
+      videoEl.currentTime = 0;
+      videoEl.play().then(() => {
+        setIsVideoPlaying(true);
+      }).catch(err => {
+        console.error("[PlacementPreview] Video play failed:", err);
+      });
+    } else if (isVideoPlaying) {
+      videoEl.pause();
+      setIsVideoPlaying(false);
+    } else {
+      videoEl.play().then(() => {
+        setIsVideoPlaying(true);
+      }).catch(err => {
+        console.error("[PlacementPreview] Video play failed:", err);
+      });
+    }
+  }, [isVideoMode, isVideoPlaying, triggerDenseScan, triggerMotionTrack]);
+
+  const stopVideoPlayback = useCallback(() => {
+    const videoEl = videoRef.current;
+    if (videoEl) {
+      videoEl.pause();
+      videoEl.currentTime = 0;
+    }
+    setIsVideoMode(false);
+    setIsVideoPlaying(false);
+    setVideoCurrentTime(0);
+    // Reset optical flow tracking
+    const tracking = trackingRef.current;
+    tracking.initialized = false;
+    tracking.prevFrameData = null;
+    tracking.cumulativeOffsetX = 0;
+    tracking.cumulativeOffsetY = 0;
+    tracking.displayOffsetX = 0;
+    tracking.displayOffsetY = 0;
+    tracking.displayOffsetW = 0;
+    tracking.displayOffsetH = 0;
+    tracking.velocityX = 0;
+    tracking.velocityY = 0;
+    tracking.frameCounter = 0;
+  }, []);
+
+  // ============================================================================
+  // KEYBOARD SHORTCUTS FOR VIDEO PLAYBACK
+  // ============================================================================
+
+  useEffect(() => {
+    if (!isVideoMode) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const videoEl = videoRef.current;
+      if (!videoEl) return;
+
+      // Ignore if user is typing in an input
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+
+      switch (e.key) {
+        case " ":
+        case "k":
+        case "K":
+          e.preventDefault();
+          if (isVideoPlaying) {
+            videoEl.pause();
+            setIsVideoPlaying(false);
+          } else {
+            videoEl.play().then(() => setIsVideoPlaying(true)).catch(() => {});
+          }
+          break;
+        case "ArrowLeft":
+          e.preventDefault();
+          {
+            const step = e.shiftKey ? 1 : 5;
+            const newTime = Math.max(0, videoEl.currentTime - step);
+            videoEl.currentTime = newTime;
+            setVideoCurrentTime(newTime);
+            // Reset tracking so product snaps to correct position
+            const tracking = trackingRef.current;
+            tracking.initialized = false;
+            tracking.prevFrameData = null;
+            tracking.velocityX = 0;
+            tracking.velocityY = 0;
+          }
+          break;
+        case "ArrowRight":
+          e.preventDefault();
+          {
+            const step = e.shiftKey ? 1 : 5;
+            const newTime = Math.min(videoDuration, videoEl.currentTime + step);
+            videoEl.currentTime = newTime;
+            setVideoCurrentTime(newTime);
+            const tracking = trackingRef.current;
+            tracking.initialized = false;
+            tracking.prevFrameData = null;
+            tracking.velocityX = 0;
+            tracking.velocityY = 0;
+          }
+          break;
+        case "Home":
+        case "0":
+          e.preventDefault();
+          videoEl.currentTime = 0;
+          setVideoCurrentTime(0);
+          {
+            const tracking = trackingRef.current;
+            tracking.initialized = false;
+            tracking.prevFrameData = null;
+            tracking.velocityX = 0;
+            tracking.velocityY = 0;
+          }
+          break;
+        case "End":
+          e.preventDefault();
+          videoEl.currentTime = videoDuration;
+          setVideoCurrentTime(videoDuration);
+          break;
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isVideoMode, isVideoPlaying, videoDuration]);
+
+  // ============================================================================
+  // VIDEO EXPORT
+  // ============================================================================
+
+  const handleVideoExport = useCallback(async () => {
+    if (!selectedSurface || !productImage) return;
+
+    // Send the user's placed position as a fallback keyframe.
+    // The server will run denseScanRange() to get per-frame surface tracking data
+    // so the product follows the surface as the camera moves.
+    const surfaceType = selectedSurface.surfaceType;
+    const rawX = selectedSurface.boundingBoxX;
+    const rawY = selectedSurface.boundingBoxY;
+    const rawW = selectedSurface.boundingBoxWidth;
+    const rawH = selectedSurface.boundingBoxHeight;
+    const isNormalized = rawX <= 1 && rawY <= 1 && rawW <= 1 && rawH <= 1;
+    const scale = isNormalized ? 100 : 1;
+
+    const keyframes = [{
+      timestamp: 0,
+      bbox: {
+        x: rawX * scale,
+        y: rawY * scale,
+        w: rawW * scale,
+        h: rawH * scale,
+      },
+      confidence: selectedSurface.confidence,
+    }];
+    console.log(`[PlacementPreview] Exporting "${surfaceType}" — server will run dense tracking`);
+
+    // Get product aspect ratio
+    const prodImg = productImgRef.current;
+    const productAspectRatio = prodImg ? prodImg.naturalWidth / prodImg.naturalHeight : 1;
+
+    // Canvas dimensions for server-side scaling
+    const canvas = canvasRef.current;
+    const canvasWidth = canvas?.width || 640;
+    const canvasHeight = canvas?.height || 360;
+
+    const placementData = [{
+      surfaceType,
+      productImageUrl: productImage,
+      transform,
+      blend,
+      keyframes,
+      productAspectRatio,
+      // Send pre-computed motion-track data so export uses identical positions as preview
+      motionTrackData: motionData?.available && motionData.transforms.length > 0 ? {
+        transforms: motionData.transforms,
+        fps: motionData.fps,
+        duration: motionData.duration,
+      } : null,
+    }];
+
+    try {
+      setIsExporting(true);
+      setExportStatus("queued");
+      setExportProgress(0);
+      setExportOutputUrl(null);
+
+      const res = await fetch(`/api/video/${videoId}/export`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          placements: placementData,
+          canvasWidth,
+          canvasHeight,
+        }),
+      });
+
+      if (!res.ok) {
+        const errBody = await res.text().catch(() => "");
+        let errMsg = `HTTP ${res.status}`;
+        try {
+          const parsed = JSON.parse(errBody);
+          errMsg = parsed.error || parsed.message || errMsg;
+        } catch {
+          errMsg = errBody.length > 0 ? `${errMsg}: ${errBody.substring(0, 200)}` : errMsg;
+        }
+        throw new Error(errMsg);
+      }
+
+      const { exportId } = await res.json();
+      setExportJobId(exportId);
+      setExportStatus("processing");
+      toast({ title: "Video export started", description: "This may take a few minutes..." });
+    } catch (err: any) {
+      setIsExporting(false);
+      setExportStatus("failed");
+      console.error("[PlacementPreview] Export failed:", err);
+      toast({ title: "Export failed", description: err.message || "Unknown error", variant: "destructive" });
+    }
+  }, [selectedSurface, productImage, transform, blend, videoId, motionData, toast]);
+
+  // Poll export progress
+  useEffect(() => {
+    if (!exportJobId || !isExporting) return;
+    if (exportStatus === "complete" || exportStatus === "failed") return;
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/exports/${exportJobId}`, { credentials: "include" });
+        if (!res.ok) return;
+        const data = await res.json();
+
+        setExportProgress(data.progress || 0);
+        setExportStatus(data.status);
+
+        if (data.status === "complete") {
+          setExportOutputUrl(data.outputUrl);
+          setIsExporting(false);
+          toast({ title: "Video export complete!", description: "Your video with product placement is ready to download." });
+          clearInterval(interval);
+        } else if (data.status === "failed") {
+          setIsExporting(false);
+          toast({ title: "Export failed", description: data.error || "Unknown error", variant: "destructive" });
+          clearInterval(interval);
+        }
+      } catch (err) {
+        console.error("[PlacementPreview] Export poll error:", err);
+      }
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [exportJobId, isExporting, exportStatus, toast]);
 
   // ============================================================================
   // CANVAS MOUSE INTERACTION
@@ -877,8 +1741,15 @@ export default function PlacementPreviewModal({
         }),
       });
       if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: "Save failed" }));
-        throw new Error(err.error || "Failed to save placement");
+        const errBody = await res.text().catch(() => "");
+        let errMsg = `HTTP ${res.status}`;
+        try {
+          const parsed = JSON.parse(errBody);
+          errMsg = parsed.error || parsed.message || errMsg;
+        } catch {
+          errMsg = errBody.length > 0 ? `${errMsg}: ${errBody.substring(0, 200)}` : errMsg;
+        }
+        throw new Error(errMsg);
       }
       const result = await res.json().catch(() => ({}));
       setSaveSuccess(true);
@@ -891,7 +1762,8 @@ export default function PlacementPreviewModal({
       });
       setTimeout(() => setSaveSuccess(false), 3000);
     } catch (err: any) {
-      toast({ title: "Save failed", description: err.message, variant: "destructive" });
+      console.error("[PlacementPreview] Save failed:", err);
+      toast({ title: "Save failed", description: err.message || "Unknown error", variant: "destructive" });
     } finally {
       setIsSaving(false);
     }
@@ -920,57 +1792,96 @@ export default function PlacementPreviewModal({
             className="relative w-full max-w-6xl max-h-[90vh] bg-card border border-white/10 rounded-2xl overflow-hidden shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Header */}
-            <div className="flex items-center justify-between px-6 py-3 border-b border-white/10">
-              <div>
-                <h2 className="text-lg font-bold text-white">Placement Preview</h2>
-                <p className="text-sm text-muted-foreground line-clamp-1">{videoTitle}</p>
+            {/* Header — responsive: stacks on narrow screens */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between px-3 sm:px-6 py-2 sm:py-3 border-b border-white/10 gap-2">
+              <div className="min-w-0">
+                <h2 className="text-base sm:text-lg font-bold text-white truncate">Placement Preview</h2>
+                <p className="text-xs sm:text-sm text-muted-foreground line-clamp-1">{videoTitle}</p>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1.5 sm:gap-3 flex-wrap shrink-0">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="gap-1.5 text-xs sm:text-sm h-8"
+                  onClick={() => setShowBoundingBox(!showBoundingBox)}
+                  title={showBoundingBox ? "Hide bounding box" : "Show bounding box"}
+                >
+                  {showBoundingBox ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  <span className="hidden sm:inline">{showBoundingBox ? "Hide" : "Show"} Box</span>
+                </Button>
                 {hasProduct && (
                   <>
                     <Button
                       size="sm"
                       variant={saveSuccess ? "default" : "secondary"}
-                      className={cn("gap-2", saveSuccess && "bg-emerald-600 hover:bg-emerald-700")}
+                      className={cn("gap-1.5 text-xs sm:text-sm h-8", saveSuccess && "bg-emerald-600 hover:bg-emerald-700")}
                       onClick={savePlacement}
                       disabled={isSaving}
                     >
                       {isSaving ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
                       ) : saveSuccess ? (
-                        <CheckCircle className="w-4 h-4" />
+                        <CheckCircle className="w-3.5 h-3.5" />
                       ) : (
-                        <Save className="w-4 h-4" />
+                        <Save className="w-3.5 h-3.5" />
                       )}
-                      {isSaving ? "Saving..." : saveSuccess ? "Saved" : "Save"}
+                      <span className="hidden sm:inline">{isSaving ? "Saving..." : saveSuccess ? "Saved" : "Save"}</span>
+                      <span className="sm:hidden">{isSaving ? "..." : saveSuccess ? "✓" : "Save"}</span>
                     </Button>
                     <Button
                       size="sm"
-                      className="gap-2"
+                      variant="secondary"
+                      className="gap-1.5 text-xs sm:text-sm h-8"
                       onClick={downloadPreview}
                     >
-                      <Download className="w-4 h-4" />
-                      Export
+                      <Download className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline">Export Frame</span>
                     </Button>
+                    {videoSrc && (
+                      exportStatus === "complete" && exportOutputUrl ? (
+                        <a href={`/api/exports/${exportJobId}/download`} download>
+                          <Button size="sm" className="gap-1.5 text-xs sm:text-sm h-8 bg-emerald-600 hover:bg-emerald-700">
+                            <Download className="w-3.5 h-3.5" />
+                            <span className="hidden sm:inline">Download MP4</span>
+                            <span className="sm:hidden">MP4</span>
+                          </Button>
+                        </a>
+                      ) : isExporting ? (
+                        <Button size="sm" className="gap-1.5 text-xs h-8" disabled>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          {exportProgress}%
+                        </Button>
+                      ) : (
+                        <Button
+                          size="sm"
+                          className="gap-1.5 text-xs sm:text-sm h-8 bg-green-600 hover:bg-green-700"
+                          onClick={handleVideoExport}
+                          disabled={exportStatus === "failed"}
+                        >
+                          <Film className="w-3.5 h-3.5" />
+                          <span className="hidden sm:inline">Export Video</span>
+                          <span className="sm:hidden">Video</span>
+                        </Button>
+                      )
+                    )}
                   </>
                 )}
                 <button
                   onClick={onClose}
-                  className="p-2 rounded-full bg-black/50 hover:bg-black/70 text-white transition-colors"
+                  className="p-1.5 sm:p-2 rounded-full bg-black/50 hover:bg-black/70 text-white transition-colors"
                 >
-                  <X className="w-5 h-5" />
+                  <X className="w-4 h-4 sm:w-5 sm:h-5" />
                 </button>
               </div>
             </div>
 
-            <div className="flex flex-col lg:flex-row overflow-hidden" style={{ height: "calc(90vh - 60px)" }}>
+            <div className="flex flex-col md:flex-row overflow-hidden" style={{ height: "calc(90vh - 70px)" }}>
               {/* Main canvas area */}
-              <div className="flex-1 min-w-0 flex flex-col p-4">
+              <div className="flex-1 min-w-0 flex flex-col p-2 sm:p-4">
                 <div
                   ref={canvasContainerRef}
                   className="relative flex-1 bg-black rounded-lg overflow-hidden flex items-center justify-center"
-                  style={{ minHeight: "300px" }}
+                  style={{ minHeight: "200px" }}
                   onDragOver={(e) => e.preventDefault()}
                   onDrop={handleDrop}
                 >
@@ -985,10 +1896,137 @@ export default function PlacementPreviewModal({
                     onMouseMove={handleCanvasMouseMove}
                     onMouseUp={handleCanvasMouseUp}
                     onMouseLeave={handleCanvasMouseUp}
+                    style={isVideoMode ? { pointerEvents: "none" } : undefined}
                   />
 
+                    {/* Hidden video element for playback mode */}
+                  {videoSrc && (
+                    <video
+                      ref={videoRef}
+                      src={videoSrc}
+                      className="hidden"
+                      muted
+                      playsInline
+                      onLoadedMetadata={(e) => {
+                        setVideoDuration((e.target as HTMLVideoElement).duration);
+                      }}
+                      onEnded={() => {
+                        setIsVideoPlaying(false);
+                      }}
+                      onError={() => {
+                        console.error("[PlacementPreview] Video failed to load:", videoSrc);
+                      }}
+                    />
+                  )}
+
+                  {/* Video playback controls overlay */}
+                  {hasProduct && videoSrc && (
+                    <div className="absolute bottom-0 left-0 right-0 flex items-center gap-1.5 sm:gap-2 z-20 px-3 py-2.5 bg-gradient-to-t from-black/80 via-black/50 to-transparent" style={{ pointerEvents: "auto" }}>
+                      <Button
+                        size="sm"
+                        variant={isVideoPlaying ? "default" : "secondary"}
+                        className="gap-1 sm:gap-1.5 h-7 sm:h-8 px-2 sm:px-3 text-xs bg-black/70 hover:bg-black/90 border border-white/20 text-white"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleVideoPlayback();
+                        }}
+                      >
+                        {isVideoPlaying ? (
+                          <><Pause className="w-3 h-3 sm:w-3.5 sm:h-3.5" /> <span className="hidden sm:inline">Pause</span></>
+                        ) : (
+                          <><Play className="w-3 h-3 sm:w-3.5 sm:h-3.5" /> <span className="hidden sm:inline">{isVideoMode ? "Resume" : "Play Video"}</span></>
+                        )}
+                      </Button>
+                      {isVideoMode && (
+                        <>
+                          {/* Custom seek bar — wide hit area, visible track, drag support */}
+                          <div
+                            className="flex-1 relative h-8 flex items-center cursor-pointer group"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+                              const time = pct * (videoDuration || 1);
+                              if (videoRef.current) {
+                                videoRef.current.currentTime = time;
+                                setVideoCurrentTime(time);
+                                // Reset tracking state so product snaps to correct position
+                                const tracking = trackingRef.current;
+                                tracking.initialized = false;
+                                tracking.prevFrameData = null;
+                                tracking.cumulativeOffsetX = 0;
+                                tracking.cumulativeOffsetY = 0;
+                                tracking.displayOffsetX = 0;
+                                tracking.displayOffsetY = 0;
+                                tracking.displayOffsetW = 0;
+                                tracking.displayOffsetH = 0;
+                                tracking.velocityX = 0;
+                                tracking.velocityY = 0;
+                              }
+                            }}
+                            onMouseDown={(e) => {
+                              e.stopPropagation();
+                              e.preventDefault();
+                              const bar = e.currentTarget;
+                              const seek = (ev: MouseEvent) => {
+                                const rect = bar.getBoundingClientRect();
+                                const pct = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
+                                const time = pct * (videoDuration || 1);
+                                if (videoRef.current) {
+                                  videoRef.current.currentTime = time;
+                                  setVideoCurrentTime(time);
+                                }
+                              };
+                              const up = () => {
+                                window.removeEventListener("mousemove", seek);
+                                window.removeEventListener("mouseup", up);
+                                // Reset tracking after drag
+                                const tracking = trackingRef.current;
+                                tracking.initialized = false;
+                                tracking.prevFrameData = null;
+                                tracking.velocityX = 0;
+                                tracking.velocityY = 0;
+                              };
+                              window.addEventListener("mousemove", seek);
+                              window.addEventListener("mouseup", up);
+                            }}
+                          >
+                            {/* Track background */}
+                            <div className="absolute left-0 right-0 h-2 bg-white/30 rounded-full group-hover:h-3 transition-all">
+                              {/* Progress fill */}
+                              <div
+                                className="h-full bg-purple-500 rounded-full relative"
+                                style={{ width: `${videoDuration ? (videoCurrentTime / videoDuration) * 100 : 0}%` }}
+                              >
+                                {/* Thumb indicator — always visible */}
+                                <div className="absolute right-0 top-1/2 -translate-y-1/2 w-4 h-4 bg-white rounded-full shadow-lg border-2 border-purple-500 transition-transform group-hover:scale-110" />
+                              </div>
+                            </div>
+                          </div>
+                          <span className="text-[10px] text-white/70 tabular-nums min-w-[60px] text-right">
+                            {Math.floor(videoCurrentTime / 60)}:{String(Math.floor(videoCurrentTime % 60)).padStart(2, "0")}
+                            {" / "}
+                            {Math.floor(videoDuration / 60)}:{String(Math.floor(videoDuration % 60)).padStart(2, "0")}
+                          </span>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 px-1.5 text-white/60 hover:text-white"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              stopVideoPlayback();
+                            }}
+                            title="Stop and return to frame view"
+                          >
+                            <X className="w-3 h-3" />
+                          </Button>
+                        </>
+                      )}
+                    </div>
+                  )}
+
                   {/* Overlay hint when no frame */}
-                  {!selectedSurface?.frameUrl && (
+                  {!selectedSurface?.frameUrl && !isVideoMode && (
                     <div className="absolute inset-0 flex items-center justify-center">
                       <div className="text-center text-muted-foreground">
                         <ImageIcon className="w-12 h-12 mx-auto mb-2 opacity-50" />
@@ -1035,16 +2073,29 @@ export default function PlacementPreviewModal({
 
                 {/* Interaction hint */}
                 {hasProduct && (
-                  <div className="mt-2 text-center">
+                  <div className="mt-2 text-center px-2">
                     <p className="text-[10px] text-muted-foreground">
-                      Drag to move | Corner handles to resize | Orange dot to rotate
+                      {isDenseScanning
+                        ? "Analyzing video frames... Product tracking will improve once complete."
+                        : isVideoMode && motionData?.source === "gemini-keyframes"
+                        ? "Playing with AI surface tracking — product follows the physical surface"
+                        : isVideoMode
+                        ? "Playing with camera motion tracking — product follows camera movement"
+                        : "Drag to move | Corner handles to resize | Orange dot to rotate | Play to preview"
+                      }
                     </p>
+                    {isDenseScanning && (
+                      <div className="flex items-center justify-center gap-1.5 mt-1">
+                        <Loader2 className="w-3 h-3 animate-spin text-primary" />
+                        <span className="text-[10px] text-primary">Scanning frames for surface tracking...</span>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
 
               {/* Right panel — Tool panels */}
-              <div className="lg:w-80 flex-shrink-0 bg-gradient-to-b from-card to-secondary/20 border-l border-white/10 flex flex-col overflow-hidden">
+              <div className="md:w-72 lg:w-80 flex-shrink-0 bg-gradient-to-b from-card to-secondary/20 border-t md:border-t-0 md:border-l border-white/10 flex flex-col overflow-hidden max-h-[40vh] md:max-h-none">
                 {/* Panel tabs */}
                 <div className="flex border-b border-white/10">
                   {[

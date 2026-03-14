@@ -10,6 +10,8 @@ import { processVideoScan, scanPendingVideos, addToLocalAssetMap, getYouTubeThum
 // import { queueVideoScan, getScanJobStatus, getQueueStatus, initializeScanWorker } from "./lib/scanWorker";
 // import { detectSurfacesFromVideo } from "./lib/surfaceDetector";
 import { extractThumbnailForVideo, extractAndUpdateThumbnails } from "./lib/thumbnailExtractor";
+import { processVideoExport } from "./lib/videoExporter";
+import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 import { hashPassword, verifyPassword } from "./lib/password";
 import { addSignupToAirtable } from "./lib/airtable";
 import { setupPlatformAuth, importFacebookVideos, importInstagramMedia, importPersonalVideos } from "./lib/platformAuth";
@@ -19,19 +21,23 @@ import fs from "fs";
 import ytdl from "@distube/ytdl-core";
 import { decrypt, encrypt } from "./encryption";
 import { db } from "./db";
-import { users } from "@shared/schema";
+import { users, allowedUsers as allowedUsersTable, videoIndex as videoIndexTable } from "@shared/schema";
 import { eq, sql } from "drizzle-orm";
 import crypto from "crypto";
 import sharp from "sharp";
+import { uploadFileToStorage, fileExistsInStorage, objectKeyFromServeUrl, getStorageStream } from "./lib/objectStorage";
+import { runTranscriptPipeline } from "./lib/remix/transcriptPipeline";
+import { analyzeEditorial } from "./lib/ai/claude-dense/editorialAnalyzer";
+import { rankClips, deduplicateClips } from "./lib/remix/clipRanker";
 
-// Configure multer for video uploads
+// Configure multer for video uploads (temp dir, then uploaded to Object Storage)
 const uploadStorage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const uploadDir = path.join(process.cwd(), "public", "uploads");
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
+    const tmpDir = path.join(require("os").tmpdir(), "video-uploads");
+    if (!fs.existsSync(tmpDir)) {
+      fs.mkdirSync(tmpDir, { recursive: true });
     }
-    cb(null, uploadDir);
+    cb(null, tmpDir);
   },
   filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
@@ -88,6 +94,17 @@ const GOOGLE_LOGIN_SCOPES = [
 
 function generateOAuthState(): string {
   return crypto.randomBytes(32).toString('hex');
+}
+
+/** Generate a short random slug for shareable links (8 chars, URL-safe) */
+function generateSlug(): string {
+  const chars = 'abcdefghijkmnpqrstuvwxyz23456789'; // No confusing chars (0/O, 1/l/I)
+  let slug = '';
+  const bytes = crypto.randomBytes(8);
+  for (let i = 0; i < 8; i++) {
+    slug += chars[bytes[i] % chars.length];
+  }
+  return slug;
 }
 
 // Database-backed OAuth state storage (survives server restarts)
@@ -248,6 +265,17 @@ export async function registerRoutes(
     console.error("[Routes] Platform Auth setup failed (non-fatal):", platformError);
   }
 
+  registerObjectStorageRoutes(app);
+
+  // Setup FullScale Studio routes (auth, Stripe, quota, voices, videos)
+  try {
+    const { registerStudioRoutes } = await import("./lib/studio");
+    registerStudioRoutes(app);
+    console.log("[Routes] Studio routes registered");
+  } catch (studioError) {
+    console.error("[Routes] Studio routes failed (non-fatal):", studioError);
+  }
+
   // ============================================
   // Google Login OAuth Routes (with Allowlist)
   // ============================================
@@ -255,6 +283,54 @@ export async function registerRoutes(
   // Helper to check if email is a VIP/Founding member (uses FOUNDING_MEMBERS from top of file)
   const isVipEmail = (email: string) => 
     FOUNDING_MEMBERS.some(vip => vip.toLowerCase() === email.toLowerCase().trim());
+
+  app.post("/api/admin/migrate-surfaces", async (req: any, res) => {
+    try {
+      const adminEmails = ['martin@gofullscale.co', 'martin@whtwrks.com', 'martincekechukwu@gmail.com', 'thekimkwilson@gmail.com', 'tamara@whtwrks.com'];
+      const email = req.session?.googleUser?.email || req.user?.claims?.email;
+      if (!email || !adminEmails.map((e: string) => e.toLowerCase()).includes(email.toLowerCase())) {
+        return res.status(403).json({ error: "Admin access required" });
+      }
+
+      const migrationPath = path.join(process.cwd(), 'server', 'migration-detected-surfaces.json');
+      if (!fs.existsSync(migrationPath)) {
+        return res.status(404).json({ error: "Migration file not found" });
+      }
+
+      const rows = JSON.parse(fs.readFileSync(migrationPath, 'utf-8'));
+      let inserted = 0;
+      let skipped = 0;
+
+      for (const row of rows) {
+        try {
+          const result = await db.execute(sql`
+            INSERT INTO detected_surfaces (id, video_id, timestamp, surface_type, confidence, bounding_box_x, bounding_box_y, bounding_box_width, bounding_box_height, frame_url, created_at, surroundings, scene_context, lighting_direction, lighting_intensity, camera_angle)
+            VALUES (${row.id}, ${row.video_id}, ${row.timestamp}, ${row.surface_type}, ${row.confidence}, ${row.bounding_box_x}, ${row.bounding_box_y}, ${row.bounding_box_width}, ${row.bounding_box_height}, ${row.frame_url}, ${row.created_at}, ${row.surroundings ? sql`ARRAY[${sql.join(row.surroundings.map((s: string) => sql`${s}`), sql`, `)}]::text[]` : sql`NULL`}, ${row.scene_context}, ${row.lighting_direction}, ${row.lighting_intensity}, ${row.camera_angle})
+            ON CONFLICT (id) DO NOTHING
+          `);
+          inserted++;
+        } catch (e: any) {
+          if (e.code === '23505') {
+            skipped++;
+          } else {
+            console.error(`[Migration] Error inserting row ${row.id}:`, e.message);
+            skipped++;
+          }
+        }
+      }
+
+      const maxIdResult = await db.execute(sql`SELECT MAX(id) as max_id FROM detected_surfaces`);
+      const maxId = (maxIdResult as any).rows?.[0]?.max_id || 0;
+      if (maxId > 0) {
+        await db.execute(sql`SELECT setval('detected_surfaces_id_seq', ${maxId}, true)`);
+      }
+
+      res.json({ success: true, total: rows.length, inserted, skipped });
+    } catch (err: any) {
+      console.error("[Migration] Error:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
 
   // Check Google login status (for hybrid mode)
   app.get("/api/auth/google/status", (req: any, res) => {
@@ -309,15 +385,29 @@ export async function registerRoutes(
         return res.status(500).json({ error: "Database error during auth initialization" });
       }
       
+      // Store post-login redirect if provided (e.g. ?redirect=/studio/upload)
+      const postLoginRedirect = req.query.redirect as string | undefined;
+      if (postLoginRedirect && req.session) {
+        (req.session as any).postLoginRedirect = postLoginRedirect;
+        console.log("[Google OAuth] Stored post-login redirect:", postLoginRedirect);
+      }
+
       // Also clear any old Google user data from session
       if (req.session) {
         delete req.session.googleUser;
       }
-      
+
       console.log("[Google OAuth] ====================================");
-      
+
       const authUrl = getGoogleLoginAuthUrl(redirectUri, state);
-      res.redirect(authUrl);
+
+      // Explicitly save session before redirecting to Google (ensures postLoginRedirect persists)
+      req.session.save((saveErr: any) => {
+        if (saveErr) {
+          console.error("[Google OAuth] Session save error:", saveErr);
+        }
+        res.redirect(authUrl);
+      });
     } catch (err: any) {
       console.error("[Google OAuth] Unexpected error:", err.message, err.stack);
       res.status(500).json({ error: "Auth initialization failed", details: err.message });
@@ -451,9 +541,29 @@ export async function registerRoutes(
           return res.redirect("/?error=user_creation_failed");
         }
         
-        // Defer Airtable sync to after login completes (non-blocking)
+        // Send emails to new user and admin (non-blocking)
         const nameParts2 = (userInfo.name || "").split(" ");
-        setTimeout(() => {
+        const newUserFirstName = nameParts2[0] || "there";
+        const newUserLastName = nameParts2.slice(1).join(" ") || "User";
+        
+        setTimeout(async () => {
+          try {
+            const { sendWelcomeEmail, sendAdminNotification } = await import("./lib/resend");
+            
+            sendWelcomeEmail(normalizedEmail, newUserFirstName).catch(err =>
+              console.error("[Resend] Welcome email failed for Google signup:", err)
+            );
+            
+            sendAdminNotification({
+              email: normalizedEmail,
+              firstName: newUserFirstName,
+              lastName: newUserLastName,
+              userType: "creator",
+            }).catch(err => console.error("[Resend] Admin notification failed for Google signup:", err));
+          } catch (err) {
+            console.error("[Resend] Failed to load email module:", err);
+          }
+          
           addSignupToAirtable({
             email: normalizedEmail,
             firstName: nameParts2[0] || null,
@@ -461,7 +571,7 @@ export async function registerRoutes(
             authProvider: "google",
             isApproved: userIsApproved,
           }).catch(err => console.error("[Airtable] Sync failed:", err));
-        }, 5000);
+        }, 3000);
       } else {
         // Existing user - use their current approval status
         userIsApproved = existingUser.isApproved ?? false;
@@ -500,7 +610,14 @@ export async function registerRoutes(
       
       // Redirect based on approval status — use BASE_URL so dev deploys redirect back to themselves
       const callbackBaseUrl = process.env.BASE_URL || "https://gofullscale.co";
-      const redirectPath = userIsApproved ? "/dashboard" : "/waitlist";
+      // Use stored post-login redirect if present (e.g. from /auth?redirect=/studio/upload)
+      const storedRedirect = (req.session as any)?.postLoginRedirect;
+      const defaultPath = userIsApproved ? "/dashboard" : "/waitlist";
+      const redirectPath = userIsApproved && storedRedirect ? storedRedirect : defaultPath;
+      // Clean up the stored redirect
+      if (req.session) {
+        delete (req.session as any).postLoginRedirect;
+      }
       const redirectUrl = `${callbackBaseUrl}${redirectPath}`;
 
       // Explicitly save session before redirect to ensure it persists
@@ -892,8 +1009,14 @@ export async function registerRoutes(
         req.isAdmin = true;
         return next();
       }
+      // Auto-pass in development when no auth is available (default to first admin)
+      const defaultAdmin = adminEmails[0];
+      req.authEmail = defaultAdmin;
+      req.authUserId = (await storage.getUserByEmail(defaultAdmin))?.id || 1;
+      req.isAdmin = true;
+      return next();
     }
-    
+
     return res.status(401).json({ message: "Unauthorized - Please login" });
   };
   
@@ -1108,6 +1231,95 @@ export async function registerRoutes(
     console.log(`[Clear Library] Clearing all videos for userId: ${userId}, email: ${userEmail}`);
     await storage.deleteVideoIndex(userId, userEmail);
     res.json({ success: true, message: "All videos cleared from library" });
+  });
+
+  // Delete a single video by ID (and its surfaces, placements, file on disk)
+  app.delete("/api/videos/:videoId", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+
+      // Verify ownership (admins can delete any video)
+      const userId = req.authEmail || req.authUserId;
+      if (video.userId !== userId && !req.isAdmin) {
+        console.log(`[Delete Video] Ownership mismatch: video.userId="${video.userId}" vs userId="${userId}", isAdmin=${req.isAdmin}`);
+        return res.status(403).json({ error: "Not authorized to delete this video" });
+      }
+
+      // Delete file from disk if it's a local upload
+      if (video.filePath) {
+        const absolutePath = path.resolve(video.filePath);
+        if (fs.existsSync(absolutePath)) {
+          fs.unlinkSync(absolutePath);
+          console.log(`[Delete Video] Removed file: ${absolutePath}`);
+        }
+      }
+
+      // Delete DB records (surfaces, placements, then video)
+      const deleted = await storage.deleteVideoById(videoId);
+      console.log(`[Delete Video] Deleted video ID ${videoId}: ${deleted?.title}`);
+      res.json({ success: true, deleted: { id: videoId, title: deleted?.title } });
+    } catch (err: any) {
+      console.error("[Delete Video] Error:", err.message);
+      res.status(500).json({ error: "Failed to delete video" });
+    }
+  });
+
+  // Rename / update a video title (also renames local file on disk)
+  app.patch("/api/videos/:videoId", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+
+      const userId = req.authEmail || req.authUserId;
+      if (video.userId !== userId) {
+        return res.status(403).json({ error: "Not authorized to update this video" });
+      }
+
+      const { title, category, subcategory } = req.body;
+      if (!title && !category && subcategory === undefined) return res.status(400).json({ error: "title, category, or subcategory is required" });
+
+      const updates: any = {};
+
+      // Rename file on disk if local upload and title changed
+      if (title) {
+        updates.title = title;
+        let newFilePath = video.filePath;
+        if (video.filePath) {
+          const oldPath = path.resolve(video.filePath);
+          if (fs.existsSync(oldPath)) {
+            const ext = path.extname(oldPath);
+            const dir = path.dirname(oldPath);
+            const safeName = title.replace(/[^a-zA-Z0-9\s\-_]/g, "").replace(/\s+/g, "-");
+            const newPath = path.join(dir, `${safeName}${ext}`);
+            fs.renameSync(oldPath, newPath);
+            newFilePath = newPath;
+            console.log(`[Update Video] Renamed file: ${oldPath} → ${newPath}`);
+          }
+        }
+        updates.filePath = newFilePath;
+      }
+
+      if (category) {
+        updates.category = category;
+      }
+
+      if (subcategory !== undefined) {
+        updates.subcategory = subcategory;
+      }
+
+      await storage.updateVideoIndex(videoId, updates);
+      res.json({ success: true, title: title || video.title, category: category || video.category, subcategory: subcategory !== undefined ? subcategory : video.subcategory });
+    } catch (err: any) {
+      console.error("[Rename Video] Error:", err.message);
+      res.status(500).json({ error: "Failed to rename video" });
+    }
   });
 
   // Admin endpoint to add a video entry directly (for local files)
@@ -1378,6 +1590,105 @@ export async function registerRoutes(
     { id: 4004, userId: "demo-creator", user_id: "demo-creator", youtubeId: "fb-4", youtube_id: "fb-4", title: "Behind the Scenes Vlog", description: "A day in the life of a content creator.", viewCount: 540000, view_count: 540000, thumbnailUrl: "https://images.unsplash.com/photo-1600494603989-9650cf6ddd3d?w=480&h=270&fit=crop", thumbnail_url: "https://images.unsplash.com/photo-1600494603989-9650cf6ddd3d?w=480&h=270&fit=crop", videoUrl: "/hero_video.mp4", video_url: "/hero_video.mp4", status: "Scan Complete", scan_status: "completed", priorityScore: 68, priority_score: 68, publishedAt: "2025-12-28T10:00:00Z", published_at: "2025-12-28T10:00:00Z", category: "Vlog", isEvergreen: false, is_evergreen: false, duration: "0:15:45", adOpportunities: 4, opportunities_count: 4, surfaceCount: 4, surface_count: 4, platform: "facebook", brandName: "Canon", brand_name: "Canon", createdAt: "2025-12-28T10:00:00Z", created_at: "2025-12-28T10:00:00Z", updatedAt: "2025-12-28T10:00:00Z", updated_at: "2025-12-28T10:00:00Z" },
   ];
 
+  // Generate realistic mock surfaces for demo/pitch mode videos
+  function generateDemoSurfaces(videoId: number, demoVideo: { title: string; category: string; thumbnailUrl: string; surfaceCount: number; adOpportunities: number }) {
+    const surfaceCount = demoVideo.surfaceCount || demoVideo.adOpportunities || 5;
+    if (surfaceCount === 0) return []; // "Scanning" status videos have 0 surfaces
+
+    // Category-specific surface types and scene context
+    const CATEGORY_SURFACES: Record<string, Array<{ type: string; context: string; confidence: number }>> = {
+      Tech: [
+        { type: "Monitor/Screen", context: "Large display visible on desk — ideal for digital product overlay", confidence: 0.94 },
+        { type: "Desk Surface", context: "Clean desk surface with good lighting — great for product placement", confidence: 0.91 },
+        { type: "Laptop", context: "Laptop visible in frame — screen replacement opportunity", confidence: 0.88 },
+        { type: "Keyboard/Peripheral", context: "Mechanical keyboard visible — peripheral brand placement", confidence: 0.85 },
+        { type: "Wall Space", context: "Wall behind setup — poster or brand signage placement", confidence: 0.82 },
+        { type: "Shelf/Display", context: "Shelf with items — product staging opportunity", confidence: 0.79 },
+        { type: "Mouse/Mousepad", context: "Mouse pad area — subtle accessory placement", confidence: 0.76 },
+        { type: "Cable Area", context: "Cable management visible — cable brand opportunity", confidence: 0.72 },
+      ],
+      Gaming: [
+        { type: "Gaming Monitor", context: "Ultra-wide gaming display — dynamic ad overlay opportunity", confidence: 0.95 },
+        { type: "Gaming Chair", context: "Gaming chair visible — chair brand placement", confidence: 0.92 },
+        { type: "RGB Setup", context: "RGB lighting visible — peripheral brand integration", confidence: 0.89 },
+        { type: "Desk Mat", context: "Large desk mat surface — custom brand mat placement", confidence: 0.86 },
+        { type: "Headset Stand", context: "Headset on stand — audio brand opportunity", confidence: 0.83 },
+        { type: "Console/PC", context: "Gaming system visible — hardware brand placement", confidence: 0.80 },
+        { type: "Controller", context: "Controller in frame — controller skin/brand opportunity", confidence: 0.77 },
+        { type: "Poster/Banner", context: "Gaming poster on wall — brand poster replacement", confidence: 0.73 },
+      ],
+      Lifestyle: [
+        { type: "Coffee Table", context: "Coffee table surface — product staging area", confidence: 0.93 },
+        { type: "Sofa/Seating", context: "Furniture visible — home brand placement", confidence: 0.90 },
+        { type: "Wall Art", context: "Wall art frame — digital art replacement opportunity", confidence: 0.87 },
+        { type: "Shelf/Bookcase", context: "Bookshelf visible — product display staging", confidence: 0.84 },
+        { type: "Plant/Decor", context: "Decorative item — lifestyle brand integration", confidence: 0.81 },
+        { type: "Window Area", context: "Window with natural light — outdoor brand overlay", confidence: 0.78 },
+      ],
+      Fitness: [
+        { type: "Gym Equipment", context: "Exercise equipment visible — fitness brand placement", confidence: 0.94 },
+        { type: "Yoga Mat", context: "Yoga/exercise mat — mat brand replacement", confidence: 0.91 },
+        { type: "Water Bottle", context: "Water bottle in frame — beverage brand opportunity", confidence: 0.88 },
+        { type: "Activewear", context: "Athletic clothing visible — apparel brand placement", confidence: 0.85 },
+        { type: "Mirror/Wall", context: "Gym mirror or wall — signage placement area", confidence: 0.82 },
+      ],
+      Beauty: [
+        { type: "Vanity/Mirror", context: "Vanity area visible — beauty brand staging", confidence: 0.94 },
+        { type: "Product Display", context: "Beauty products arranged — product swap opportunity", confidence: 0.92 },
+        { type: "Skin Surface", context: "Close-up skin visible — skincare brand overlay", confidence: 0.89 },
+        { type: "Countertop", context: "Clean counter surface — product staging area", confidence: 0.85 },
+        { type: "Lighting Setup", context: "Ring light/studio light — lighting brand placement", confidence: 0.80 },
+      ],
+      Food: [
+        { type: "Countertop", context: "Kitchen counter — ingredient/product staging", confidence: 0.94 },
+        { type: "Plate/Bowl", context: "Serving ware visible — kitchenware brand opportunity", confidence: 0.91 },
+        { type: "Appliance", context: "Kitchen appliance in frame — appliance brand placement", confidence: 0.88 },
+        { type: "Cutting Board", context: "Prep surface — brand-name cutting board placement", confidence: 0.84 },
+        { type: "Ingredient Display", context: "Ingredients laid out — grocery/brand placement", confidence: 0.80 },
+      ],
+      Fashion: [
+        { type: "Outfit Display", context: "Full outfit visible — clothing brand placement", confidence: 0.95 },
+        { type: "Accessory", context: "Watch/jewelry/bag visible — accessory brand opportunity", confidence: 0.91 },
+        { type: "Footwear", context: "Shoes visible — footwear brand placement", confidence: 0.88 },
+        { type: "Background Wall", context: "Clean background — brand backdrop opportunity", confidence: 0.83 },
+        { type: "Mirror", context: "Full-length mirror — fashion overlay opportunity", confidence: 0.80 },
+      ],
+      default: [
+        { type: "Flat Surface", context: "Flat surface detected — product placement opportunity", confidence: 0.88 },
+        { type: "Wall Space", context: "Wall area visible — signage or poster placement", confidence: 0.85 },
+        { type: "Table/Counter", context: "Horizontal surface — product staging area", confidence: 0.82 },
+        { type: "Screen/Display", context: "Screen visible — digital overlay opportunity", confidence: 0.79 },
+        { type: "Background Area", context: "Open background — brand integration area", confidence: 0.75 },
+      ],
+    };
+
+    const category = demoVideo.category || "default";
+    const templates = CATEGORY_SURFACES[category] || CATEGORY_SURFACES["default"];
+    const surfaces = [];
+
+    for (let i = 0; i < Math.min(surfaceCount, templates.length); i++) {
+      const tmpl = templates[i % templates.length];
+      surfaces.push({
+        id: videoId * 100 + i + 1,
+        videoId,
+        timestamp: (i * 15) + Math.floor(Math.random() * 10),
+        surfaceType: tmpl.type,
+        confidence: tmpl.confidence,
+        sceneContext: tmpl.context,
+        surroundings: [demoVideo.title, category, "Well-lit scene"],
+        frameUrl: demoVideo.thumbnailUrl,
+        boundingBoxX: (0.1 + (i * 0.15) % 0.6).toFixed(3),
+        boundingBoxY: (0.15 + (i * 0.1) % 0.5).toFixed(3),
+        boundingBoxWidth: (0.2 + Math.random() * 0.15).toFixed(3),
+        boundingBoxHeight: (0.15 + Math.random() * 0.1).toFixed(3),
+        frameExists: true,
+        createdAt: new Date().toISOString(),
+      });
+    }
+
+    return surfaces;
+  }
+
   // Public demo endpoint - returns STATIC demo videos + real videos with local files
   // Shows Local File badge for videos that have actual local files
   app.get("/api/demo/videos", async (req, res) => {
@@ -1389,7 +1700,12 @@ export async function registerRoutes(
           let fileExists = false;
           if (video.filePath) {
             try {
-              fileExists = fs.existsSync(video.filePath);
+              if (video.filePath.startsWith('/storage/')) {
+                const objectKey = objectKeyFromServeUrl(video.filePath);
+                fileExists = await fileExistsInStorage(objectKey);
+              } else {
+                fileExists = fs.existsSync(video.filePath);
+              }
             } catch {
               fileExists = false;
             }
@@ -1409,8 +1725,8 @@ export async function registerRoutes(
               view_count: video.viewCount || 0,
               thumbnailUrl: video.thumbnailUrl || "",
               thumbnail_url: video.thumbnailUrl || "",
-              videoUrl: video.filePath || "",
-              video_url: video.filePath || "",
+              videoUrl: video.filePath ? normalizeVideoUrl(video.filePath) : "",
+              video_url: video.filePath ? normalizeVideoUrl(video.filePath) : "",
               status: video.status || "Ready (0 Spots)",
               scan_status: count > 0 ? "completed" : "pending",
               priorityScore: video.priorityScore || 50,
@@ -1735,8 +2051,9 @@ export async function registerRoutes(
   });
 
   // Direct video upload endpoint - bypass YouTube download
-  app.post("/api/upload", isGoogleAuthenticated, uploadMiddleware.single("video"), async (req: any, res) => {
-    console.log(`[UPLOAD] ===== VIDEO UPLOAD RECEIVED =====`);
+  app.post("/api/upload", isFlexibleAuthenticated, uploadMiddleware.single("video"), async (req: any, res) => {
+
+    console.log(`[UPLOAD] User: ${req.authEmail || req.googleUser?.email}`);
     console.log(`[UPLOAD] User: ${req.googleUser?.email}`);
     
     if (!req.file) {
@@ -1744,45 +2061,47 @@ export async function registerRoutes(
       return res.status(400).json({ error: "No video file uploaded" });
     }
 
-    const userId = req.googleUser.email;
+    const userId = req.authEmail || req.googleUser?.email;
     const file = req.file;
     const title = req.body.title || file.originalname.replace(/\.[^/.]+$/, "");
-    
+    const category = req.body.category || "Other";
+    const subcategory = req.body.subcategory || null;
+
     console.log(`[UPLOAD] File: ${file.originalname} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
     console.log(`[UPLOAD] Saved as: ${file.filename}`);
     console.log(`[UPLOAD] Title: ${title}`);
+    console.log(`[UPLOAD] Category: ${category}${subcategory ? ` / ${subcategory}` : ""}`);
 
     try {
-      // Generate a unique video ID for LOCAL_ASSET_MAP
       const uploadVideoId = `upload-${Date.now()}-${Math.random().toString(36).substring(7)}`;
-      const filePath = `./public/uploads/${file.filename}`;
-      const videoUrl = `/uploads/${file.filename}`;
 
-      // Add to LOCAL_ASSET_MAP so scanner can find it
-      addToLocalAssetMap(uploadVideoId, filePath);
+      const objectKey = `public/videos/${file.filename}`;
+      const storageUrl = await uploadFileToStorage(file.path, objectKey);
+      console.log(`[UPLOAD] Uploaded to Object Storage: ${storageUrl}`);
 
-      // Insert into video_index table with persistent file path
+      try { fs.unlinkSync(file.path); } catch {}
+
       const video = await storage.insertVideo({
         userId,
         youtubeId: uploadVideoId,
         title,
         description: `Uploaded video: ${file.originalname}`,
-        thumbnailUrl: "/uploads/default-thumbnail.png",
+        thumbnailUrl: "/storage/uploads/default-thumbnail.png",
         viewCount: 0,
         publishedAt: new Date(),
         status: "Pending Scan",
         priorityScore: 80,
         platform: "fullscale",
-        category: "Uploaded",
+        category,
+        subcategory,
         isEvergreen: true,
         duration: "0:00",
-        filePath, // Store file path in DB for persistence across server restarts
+        filePath: storageUrl,
       });
 
       console.log(`[UPLOAD] Video inserted with ID: ${video.id}`);
       console.log(`[UPLOAD] Starting auto-scan...`);
 
-      // AUTO-SCAN: Trigger scan immediately after upload (non-blocking)
       processVideoScan(video.id, true).then(result => {
         console.log(`[UPLOAD] Auto-scan complete for ${video.id}: ${result.surfacesDetected} surfaces`);
       }).catch(err => {
@@ -1795,18 +2114,15 @@ export async function registerRoutes(
           id: video.id,
           title: video.title,
           youtubeId: uploadVideoId,
-          videoUrl,
+          videoUrl: storageUrl,
           status: video.status,
           platform: "fullscale"
         },
         message: "Video uploaded successfully. Click 'Scan' to analyze for ad placements."
       });
     } catch (error: any) {
-      console.error(`[UPLOAD] Database error:`, error);
-      // Clean up uploaded file on error
-      try {
-        fs.unlinkSync(path.join(process.cwd(), "public", "uploads", file.filename));
-      } catch {}
+      console.error(`[UPLOAD] Error:`, error);
+      try { fs.unlinkSync(file.path); } catch {}
       res.status(500).json({ error: "Failed to save video record" });
     }
   });
@@ -1837,11 +2153,140 @@ export async function registerRoutes(
   });
 
   // Get detected surfaces for a video (Ad Opportunities)
+  // On-demand frame extraction: generate a single frame thumbnail from a video if it doesn't exist
+  // This ensures the Scene Analysis Modal always has a frame to show
+  app.get("/api/video/:id/frame/:timestamp", async (req: any, res) => {
+    const videoId = parseInt(req.params.id);
+    const timestamp = parseInt(req.params.timestamp) || 0;
+    if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+
+    const video = await storage.getVideoById(videoId);
+    if (!video) return res.status(404).json({ error: "Video not found" });
+
+    const framesDir = path.join(process.cwd(), "public", "uploads", "frames", videoId.toString());
+    const frameFilename = `frame_${timestamp}s.jpg`;
+    const framePath = path.join(framesDir, frameFilename);
+
+    // If frame already exists, serve it
+    if (fs.existsSync(framePath)) {
+      return res.sendFile(framePath);
+    }
+
+    // Generate frame from video file using FFmpeg
+    const videoPath = video.filePath;
+    if (!videoPath) {
+      return res.status(404).json({ error: "No video file available for frame extraction" });
+    }
+
+    const absoluteVideoPath = path.resolve(videoPath);
+    if (!fs.existsSync(absoluteVideoPath)) {
+      return res.status(404).json({ error: "Video file not found on disk" });
+    }
+
+    fs.mkdirSync(framesDir, { recursive: true });
+
+    try {
+      const { spawn } = require("child_process");
+      await new Promise<void>((resolve, reject) => {
+        const ffmpeg = spawn("ffmpeg", [
+          "-nostdin", "-y",
+          "-ss", timestamp.toString(),
+          "-i", absoluteVideoPath,
+          "-frames:v", "1",
+          "-q:v", "2",
+          "-pix_fmt", "yuvj420p",
+          framePath,
+        ]);
+        let stderr = "";
+        ffmpeg.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
+        const timeout = setTimeout(() => { ffmpeg.kill("SIGKILL"); reject(new Error("FFmpeg timeout")); }, 15000);
+        ffmpeg.on("close", (code: number) => {
+          clearTimeout(timeout);
+          if (code === 0) resolve();
+          else reject(new Error(`FFmpeg exit code ${code}`));
+        });
+        ffmpeg.on("error", (err: Error) => { clearTimeout(timeout); reject(err); });
+      });
+
+      if (fs.existsSync(framePath)) {
+        return res.sendFile(framePath);
+      }
+      return res.status(500).json({ error: "Frame generation failed" });
+    } catch (err: any) {
+      console.error(`[Frame] Failed to extract frame:`, err.message);
+      return res.status(500).json({ error: "Frame extraction failed" });
+    }
+  });
+
+  // Stream a video file by ID (no auth required — for public creator profiles)
+  // Resolves filePath from DB and serves from Object Storage or local filesystem
+  app.get("/api/video/:id/stream", async (req: any, res) => {
+    const videoId = parseInt(req.params.id);
+    if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+
+    try {
+      const video = await storage.getVideoById(videoId);
+      if (!video || !video.filePath) {
+        return res.status(404).json({ error: "Video file not found" });
+      }
+
+      // Try Object Storage first (Replit)
+      const objectKey = video.filePath.replace(/^\.?\/?public\//, "public/");
+      try {
+        if (await fileExistsInStorage(objectKey)) {
+          const { file, stream } = getStorageStream(objectKey);
+          const [metadata] = await file.getMetadata();
+          res.set({
+            "Content-Type": metadata.contentType || "video/mp4",
+            "Content-Length": metadata.size?.toString(),
+            "Cache-Control": "public, max-age=86400",
+            "Accept-Ranges": "bytes",
+          });
+          stream.on("error", (err: any) => {
+            console.error("[Stream] Storage stream error:", err.message);
+            if (!res.headersSent) res.status(500).json({ error: "Stream failed" });
+          });
+          return stream.pipe(res);
+        }
+      } catch (e) {
+        // Object Storage not available, fall through to local
+      }
+
+      // Fall back to local filesystem
+      const absolutePath = path.resolve(video.filePath);
+      if (fs.existsSync(absolutePath)) {
+        const stat = fs.statSync(absolutePath);
+        res.set({
+          "Content-Type": "video/mp4",
+          "Content-Length": stat.size.toString(),
+          "Cache-Control": "public, max-age=86400",
+          "Accept-Ranges": "bytes",
+        });
+        return fs.createReadStream(absolutePath).pipe(res);
+      }
+
+      return res.status(404).json({ error: "Video file not found on disk or storage" });
+    } catch (err: any) {
+      console.error("[Stream] Error:", err.message);
+      return res.status(500).json({ error: "Failed to stream video" });
+    }
+  });
+
   // PUBLIC endpoint - surfaces are viewable by brands on creator profiles
   app.get("/api/video/:id/surfaces", async (req: any, res) => {
     const videoId = parseInt(req.params.id);
     if (isNaN(videoId)) {
       return res.status(400).json({ error: "Invalid video ID" });
+    }
+
+    // Demo video IDs (1001-1099) — return realistic mock surfaces for pitch mode
+    // IMPORTANT: Only check the specific demo range, NOT all IDs >= 1000,
+    // because real production videos can have IDs in the tens of thousands
+    if (videoId >= 1001 && videoId <= 1099) {
+      const demoVideo = STATIC_DEMO_VIDEOS.find((v: any) => v.id === videoId);
+      if (!demoVideo) return res.status(404).json({ error: "Demo video not found" });
+      const mockSurfaces = generateDemoSurfaces(videoId, demoVideo as any);
+      return res.json({ surfaces: mockSurfaces, count: mockSurfaces.length });
     }
 
     const video = await storage.getVideoById(videoId);
@@ -1988,7 +2433,7 @@ export async function registerRoutes(
     const authEmail = req.authEmail;
     console.log(`[VideoIndex] Fetching videos for userId: ${userId}, authEmail: ${authEmail}`);
     
-    const videos = await storage.getVideoIndex(userId);
+    const videos = await storage.getVideoIndex(userId, authEmail);
     console.log(`[VideoIndex] Found ${videos.length} videos for user`);
     
     const videosWithCounts = await Promise.all(
@@ -1997,7 +2442,13 @@ export async function registerRoutes(
         let fileExists = false;
         if (video.filePath) {
           try {
-            fileExists = fs.existsSync(video.filePath);
+            if (video.filePath.startsWith('/storage/')) {
+              // Object Storage file — check async
+              const objectKey = objectKeyFromServeUrl(video.filePath);
+              fileExists = await fileExistsInStorage(objectKey);
+            } else {
+              fileExists = fs.existsSync(video.filePath);
+            }
           } catch {
             fileExists = false;
           }
@@ -2168,6 +2619,149 @@ export async function registerRoutes(
     }
   });
 
+  // ── BID REVIEW LIFECYCLE ──
+
+  // Get bid details (creator viewing an offer)
+  app.get("/api/bids/:bidId", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const bidId = parseInt(req.params.bidId);
+      if (isNaN(bidId)) return res.status(400).json({ error: "Invalid bid ID" });
+
+      const bid = await storage.getBidById(bidId);
+      if (!bid) return res.status(404).json({ error: "Bid not found" });
+
+      // Enrich with video data
+      let videoData = null;
+      if (bid.videoId) {
+        const video = await storage.getVideoById(bid.videoId);
+        if (video) {
+          const surfaceCount = await storage.getSurfaceCountByVideo(video.id);
+          videoData = {
+            id: video.id,
+            title: video.title,
+            thumbnailUrl: video.thumbnailUrl,
+            viewCount: video.viewCount,
+            surfaceCount,
+          };
+        }
+      }
+
+      res.json({ ...bid, video: videoData });
+    } catch (err: any) {
+      console.error("[Bids] Error fetching bid:", err.message);
+      res.status(500).json({ error: "Failed to fetch bid" });
+    }
+  });
+
+  // Link a saved placement to a bid (creator fulfilling an offer)
+  app.post("/api/bids/:bidId/link-placement", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const bidId = parseInt(req.params.bidId);
+      if (isNaN(bidId)) return res.status(400).json({ error: "Invalid bid ID" });
+
+      const { placementId } = req.body;
+      if (!placementId) return res.status(400).json({ error: "placementId is required" });
+
+      const bid = await storage.getBidById(bidId);
+      if (!bid) return res.status(404).json({ error: "Bid not found" });
+      if (bid.status !== "pending" && bid.status !== "revision_requested") {
+        return res.status(400).json({ error: `Bid is in '${bid.status}' state and cannot be linked to a placement` });
+      }
+
+      const placement = await storage.getPlacement(placementId);
+      if (!placement) return res.status(404).json({ error: "Placement not found" });
+
+      // Auto-create a shared link for the brand to review
+      const slug = generateSlug();
+      await storage.createSharedLink({
+        slug,
+        placementId: placement.id,
+        exportId: null,
+        videoId: placement.videoId,
+        createdBy: req.authEmail || "system",
+        title: `Placement review for ${bid.brandName || "brand"}`,
+        isActive: true,
+        expiresAt: null,
+      });
+
+      // Update the bid to "placed" status with the review link
+      const updatedBid = await storage.updateBidStatus(bidId, "placed", {
+        placementId: placement.id,
+        reviewSlug: slug,
+      });
+
+      console.log(`[Bids] Linked placement ${placementId} to bid ${bidId}, review slug: ${slug}`);
+      res.json({ success: true, reviewSlug: slug, bid: updatedBid });
+    } catch (err: any) {
+      console.error("[Bids] Error linking placement:", err.message);
+      res.status(500).json({ error: "Failed to link placement to bid" });
+    }
+  });
+
+  // Brand reviews a placement (approve or request changes)
+  app.post("/api/bids/:bidId/review", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const bidId = parseInt(req.params.bidId);
+      if (isNaN(bidId)) return res.status(400).json({ error: "Invalid bid ID" });
+
+      const { action, note } = req.body;
+      if (!action || !["approve", "request_revision"].includes(action)) {
+        return res.status(400).json({ error: "action must be 'approve' or 'request_revision'" });
+      }
+
+      const bid = await storage.getBidById(bidId);
+      if (!bid) return res.status(404).json({ error: "Bid not found" });
+      if (bid.status !== "placed") {
+        return res.status(400).json({ error: `Bid must be in 'placed' state to review (current: '${bid.status}')` });
+      }
+
+      // Verify the caller is the brand who owns this bid
+      const callerEmail = req.authEmail;
+      if (callerEmail !== bid.brandEmail) {
+        return res.status(403).json({ error: "Only the brand who placed this bid can review it" });
+      }
+
+      const newStatus = action === "approve" ? "accepted" : "revision_requested";
+      const updatedBid = await storage.updateBidStatus(bidId, newStatus, {
+        reviewNote: action === "request_revision" ? (note || "Changes requested") : undefined,
+      });
+
+      console.log(`[Bids] Bid ${bidId} reviewed: ${action} by ${callerEmail}`);
+      res.json({ success: true, bid: updatedBid });
+    } catch (err: any) {
+      console.error("[Bids] Error reviewing bid:", err.message);
+      res.status(500).json({ error: "Failed to review bid" });
+    }
+  });
+
+  // Get review context for a shared link (public — used by SharedView to show approve/reject UI)
+  app.get("/api/share/:slug/review-context", async (req: any, res) => {
+    try {
+      const { slug } = req.params;
+      if (!slug) return res.status(400).json({ error: "Slug is required" });
+
+      // Find the monetization item that uses this slug as its review link
+      const allBids = await storage.getMonetizationItems();
+      const bid = allBids.find((b: any) => b.reviewSlug === slug);
+
+      if (!bid) {
+        return res.json({ bidId: null });
+      }
+
+      res.json({
+        bidId: bid.id,
+        bidStatus: bid.status,
+        brandEmail: bid.brandEmail,
+        brandName: bid.brandName,
+        bidAmount: bid.bidAmount,
+        reviewNote: bid.reviewNote || null,
+      });
+    } catch (err: any) {
+      console.error("[Share] Error fetching review context:", err.message);
+      res.status(500).json({ error: "Failed to fetch review context" });
+    }
+  });
+
   // Map category to creator display names for demo
   const CREATOR_NAMES: Record<string, string> = {
     "Tech Guru": "TechVision Pro",
@@ -2214,28 +2808,73 @@ export async function registerRoutes(
     res.json({ opportunities: STATIC_DEMO_CAMPAIGNS, total: STATIC_DEMO_CAMPAIGNS.length });
   });
 
+  // Normalize video file paths to browser-safe URLs
+  function normalizeVideoUrl(filePath: string): string {
+    return filePath
+      .replace(/^\.\/public\//, '/')
+      .replace(/^public\//, '/')
+      .replace(/^\/home\/runner\/workspace\/public\//, '/')
+      .replace(/\/\//g, '/');
+  }
+
   // BRAND MARKETPLACE: Get Ready videos for discovery (brand view)
   app.get("/api/brand/discovery", isGoogleAuthenticated, async (req: any, res) => {
     try {
       const videos = await storage.getReadyVideosForMarketplace();
-      
+
       // Transform videos into marketplace opportunities format
-      const opportunities = videos.map((video) => ({
+      const opportunities = await Promise.all(videos.map(async (video) => {
+        // For local uploads, prefer extracted frame or on-demand frame endpoint over DB thumbnail (which may be a stock photo)
+        let thumbnailUrl = video.thumbnailUrl;
+        if (video.filePath || video.platform === "fullscale") {
+          // Check if a frame exists — support both Object Storage and local filesystem
+          const frameUrl = `/uploads/frames/${video.id}/frame_0s.jpg`;
+          const storageFrameKey = `public/uploads/frames/${video.id}/frame_0s.jpg`;
+          let frameExists = false;
+          try {
+            if (await fileExistsInStorage(storageFrameKey)) {
+              thumbnailUrl = `/storage/uploads/frames/${video.id}/frame_0s.jpg`;
+              frameExists = true;
+            } else {
+              const framePath = path.join(process.cwd(), "public", frameUrl);
+              frameExists = fs.existsSync(framePath);
+              if (frameExists) thumbnailUrl = frameUrl;
+            }
+          } catch {
+            frameExists = false;
+          }
+          if (!frameExists) {
+            // Use on-demand frame endpoint as fallback
+            thumbnailUrl = `/api/video/${video.id}/frame/0`;
+          }
+        }
+
+        // Look up creator slug from allowedUsers by video owner email
+        const creatorUser = await storage.getAllowedUser(video.userId);
+        const creatorSlug = creatorUser?.slug || null;
+
+        return {
         id: video.id,
         videoId: video.id,
         youtubeId: video.youtubeId,
         title: video.title,
-        thumbnailUrl: video.thumbnailUrl,
-        creatorName: CREATOR_NAMES[video.category || ""] || video.category || "Pro Creator",
+        thumbnailUrl,
+        creatorName: creatorUser?.name || CREATOR_NAMES[video.category || ""] || video.category || "Pro Creator",
+        creatorSlug,
         viewCount: video.viewCount,
         sceneValue: Math.round(video.priorityScore * 1.2), // Derive value from priority
         context: video.contexts?.[0] || video.category || "General",
         genre: video.category || "Lifestyle",
         sceneType: video.surfaces?.[0]?.surfaceType || "Desk",
-        surfaces: video.surfaces?.map(s => s.surfaceType) || [],
+        surfaces: Array.from(new Set(video.surfaces?.filter(s => s.surfaceType !== "Filtered").map(s => s.surfaceType) || [])),
         duration: video.duration || "10:00",
+        platform: video.platform === "fullscale" || video.filePath ? "fullscale" : (video.platform || "youtube"),
+        filePath: video.filePath || null,
+        videoUrl: video.filePath ? (video.filePath.startsWith('/storage/') ? video.filePath : normalizeVideoUrl(video.filePath)) : null,
+        subcategory: video.subcategory || null,
+      };
       }));
-      
+
       res.json({ opportunities, total: opportunities.length });
     } catch (err: any) {
       console.error("Error fetching brand discovery:", err);
@@ -2882,34 +3521,111 @@ export async function registerRoutes(
 
   // Get brand's campaigns (bids they've placed)
   app.get("/api/brand/campaigns", isGoogleAuthenticated, async (req: any, res) => {
-    const brandEmail = req.googleUser.email;
-    const campaigns = await storage.getBrandCampaigns(brandEmail);
-    
-    // Enrich campaigns with video data for estimated reach
-    const enrichedCampaigns = await Promise.all(campaigns.map(async (campaign) => {
-      let viewCount = 0;
-      let videoTitle = campaign.title;
-      let thumbnailUrl = campaign.thumbnailUrl;
-      
-      if (campaign.videoId) {
-        const video = await storage.getVideoById(campaign.videoId);
-        if (video) {
-          viewCount = video.viewCount || 0;
-          videoTitle = video.title || campaign.title;
-          thumbnailUrl = video.thumbnailUrl || campaign.thumbnailUrl;
+    try {
+      const brandEmail = req.googleUser.email;
+      const results: any[] = [];
+
+      // ── SOURCE 1: Actual saved placements (Live selections) ──
+      const placements = await storage.getPlacementsByCreator(brandEmail);
+
+      // Deduplicate: one entry per video (keep the most recent placement per videoId)
+      // Each scan creates new surfaceIds, so we group by videoId only
+      const seen = new Map<number, typeof placements[0]>();
+      for (const p of placements) {
+        const existing = seen.get(p.videoId);
+        if (!existing || (p.createdAt && existing.createdAt && new Date(p.createdAt) > new Date(existing.createdAt))) {
+          seen.set(p.videoId, p);
         }
       }
-      
-      return {
-        ...campaign,
-        title: videoTitle,
-        thumbnailUrl,
-        viewCount,
-        creatorName: CREATOR_NAMES[campaign.genre || ""] || campaign.genre || "Pro Creator",
-      };
-    }));
-    
-    res.json(enrichedCampaigns);
+      const uniquePlacements = Array.from(seen.values());
+      console.log(`[Brand Campaigns] ${placements.length} total placements → ${uniquePlacements.length} unique videos`);
+
+      // Track which videoIds have live placements (to avoid showing duplicate bids)
+      const placedVideoIds = new Set<number>();
+
+      for (const placement of uniquePlacements) {
+        placedVideoIds.add(placement.videoId);
+
+        const video = await storage.getVideoById(placement.videoId);
+        const surfaces = await storage.getDetectedSurfaces(placement.videoId);
+        const surface = surfaces.find(s => s.id === placement.surfaceId);
+
+        let productName = "Custom Product";
+        let productImageUrl = placement.productImageUrl;
+        if (placement.productId) {
+          const product = await storage.getBrandProduct(placement.productId);
+          if (product) {
+            productName = product.name;
+            productImageUrl = product.thumbnailUrl || product.imageUrl;
+          }
+        }
+
+        // Check for linked bid amount
+        let bidAmount: string | null = null;
+        if (placement.bidId) {
+          const bid = await storage.getBidById(placement.bidId);
+          if (bid) bidAmount = bid.bidAmount;
+        }
+
+        results.push({
+          id: placement.id,
+          source: "placement",
+          title: video?.title || "Unknown Video",
+          thumbnailUrl: surface?.frameUrl || video?.thumbnailUrl || null,
+          productName,
+          productImageUrl,
+          surfaceType: surface?.surfaceType || "Surface",
+          videoId: placement.videoId,
+          creatorUserId: video?.userId || null,
+          bidAmount,
+          viewCount: video?.viewCount || 0,
+          status: "live",
+          createdAt: placement.createdAt,
+        });
+      }
+
+      // ── SOURCE 2: Pending bids / pitches (not yet fulfilled with a placement) ──
+      const bids = await storage.getBrandCampaigns(brandEmail);
+      for (const bid of bids) {
+        // Skip bids for videos that already have a live placement
+        if (bid.videoId && placedVideoIds.has(bid.videoId)) continue;
+
+        const video = bid.videoId ? await storage.getVideoById(bid.videoId) : null;
+
+        results.push({
+          id: bid.id + 1000000, // Offset to avoid ID collision with placements
+          source: "bid",
+          title: video?.title || bid.title || "Pending Pitch",
+          thumbnailUrl: video?.thumbnailUrl || bid.thumbnailUrl || null,
+          productName: bid.brandName || "Brand Product",
+          productImageUrl: null,
+          surfaceType: bid.sceneType || "Surface",
+          videoId: bid.videoId,
+          creatorUserId: video?.userId || null,
+          bidAmount: bid.bidAmount,
+          viewCount: video?.viewCount || 0,
+          status: bid.status || "pending",
+          createdAt: bid.date,
+        });
+      }
+
+      // Sort: pending first, then live, most recent first within each group
+      results.sort((a, b) => {
+        // Pending items first
+        const aPending = a.status === "pending" ? 0 : 1;
+        const bPending = b.status === "pending" ? 0 : 1;
+        if (aPending !== bPending) return aPending - bPending;
+        // Then by date descending
+        const da = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const db = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return db - da;
+      });
+
+      res.json(results);
+    } catch (err: any) {
+      console.error("[Brand Campaigns] Error:", err.message);
+      res.status(500).json({ error: "Failed to fetch campaigns" });
+    }
   });
 
   // Get full YouTube channel data (with profile picture and stats)
@@ -3321,23 +4037,12 @@ export async function registerRoutes(
     const { slug } = req.params;
 
     try {
-      // Dynamic slug mapping: check allowed_users where email starts with slug
-      const emailMappings: Record<string, string> = {
-        "martin": "martin@gofullscale.co",
-        "kim": "thekimkwilson@gmail.com",
-        "tamara": "tamara@whtwrks.com",
-      };
-
-      const email = emailMappings[slug.toLowerCase()];
-      if (!email) {
-        return res.status(404).json({ error: "Creator not found" });
-      }
-
-      // Get creator info from allowed_users
-      const creator = await storage.getAllowedUser(email);
+      // Look up creator by slug in database (replaces hardcoded mapping)
+      const creator = await storage.getCreatorBySlug(slug);
       if (!creator) {
         return res.status(404).json({ error: "Creator not found" });
       }
+      const email = creator.email;
 
       // Get user profile for avatar and social stats
       const userProfile = await storage.getUserByEmail(email);
@@ -3368,8 +4073,19 @@ export async function registerRoutes(
         };
       }
 
-      // Get videos that are "Ready" with detected surfaces
-      const videos = await storage.getVideosWithSurfacesPublic(email);
+      // Get ALL videos for creator (including those without surfaces)
+      // so the full portfolio is shown on the public profile
+      const allCreatorVideos = await storage.getVideoIndex(email);
+      // Enrich each with surfaces
+      const videos: any[] = [];
+      for (const v of allCreatorVideos) {
+        const surfaces = await storage.getDetectedSurfaces(v.id);
+        videos.push({
+          ...v,
+          surfaces,
+          surfaceCount: surfaces.length,
+        });
+      }
 
       // Compute aggregate stats
       const totalViews = videos.reduce((sum: number, v: any) => sum + (v.viewCount || 0), 0);
@@ -3385,18 +4101,51 @@ export async function registerRoutes(
         if (v.category) allCategories.add(v.category);
       });
 
-      // Enrich videos with frame existence and surface type breakdown
-      const enrichedVideos = videos.map((v: any) => {
+      // Enrich videos with frame existence, surface type breakdown, and playback URLs
+      // Deduplicate by title (keep the one with most surfaces)
+      const seenTitles = new Set<string>();
+      const deduped = videos.filter((v: any) => {
+        const key = v.title?.toLowerCase().trim();
+        if (seenTitles.has(key)) return false;
+        seenTitles.add(key);
+        return true;
+      });
+
+      const enrichedVideos = await Promise.all(deduped.map(async (v: any) => {
         const surfaceTypes = Array.from(new Set((v.surfaces || []).map((s: any) => s.surfaceType).filter(Boolean)));
-        // Use extracted frame as thumbnail for local files
-        const thumbnail = v.filePath
-          ? `/uploads/frames/${v.id}/frame_0s.jpg`
-          : v.thumbnailUrl;
+
+        // Resolve thumbnail — check Object Storage, then local filesystem, then on-demand
+        let thumbnail = null;
+        if (v.filePath || v.platform === "fullscale") {
+          const storageKey = `public/uploads/frames/${v.id}/frame_0s.jpg`;
+          const localPath = path.join(process.cwd(), "public", "uploads", "frames", v.id.toString(), "frame_0s.jpg");
+          try {
+            if (await fileExistsInStorage(storageKey)) {
+              thumbnail = `/storage/uploads/frames/${v.id}/frame_0s.jpg`;
+            } else if (fs.existsSync(localPath)) {
+              thumbnail = `/uploads/frames/${v.id}/frame_0s.jpg`;
+            } else {
+              thumbnail = `/api/video/${v.id}/frame/0`;
+            }
+          } catch {
+            thumbnail = fs.existsSync(localPath)
+              ? `/uploads/frames/${v.id}/frame_0s.jpg`
+              : `/api/video/${v.id}/frame/0`;
+          }
+        } else {
+          thumbnail = v.thumbnailUrl || null;
+        }
+
+        // Use streaming endpoint for reliable video playback on public profiles
+        // This avoids filePath resolution issues across environments
+        const videoUrl = v.filePath ? `/api/video/${v.id}/stream` : null;
 
         return {
           id: v.id,
           title: v.title,
           thumbnail,
+          videoUrl,
+          filePath: v.filePath || null,
           platform: v.platform || "youtube",
           viewCount: v.viewCount || 0,
           surfaceCount: v.surfaceCount || 0,
@@ -3416,15 +4165,19 @@ export async function registerRoutes(
           category: v.category || null,
           duration: v.duration || null,
         };
-      });
+      }));
 
       res.json({
         creator: {
           name: creator.name || email.split("@")[0],
           email: creator.email,
-          slug,
+          slug: creator.slug || slug,
           profileImage: userProfile?.profileImageUrl || null,
-          bio: (creator as any).bio || null,
+          bio: creator.bio || null,
+          headline: creator.headline || null,
+          podcastName: creator.podcastName || null,
+          podcastUrl: creator.podcastUrl || null,
+          websiteUrl: creator.websiteUrl || null,
           userType: creator.userType || "creator",
         },
         stats: {
@@ -3442,7 +4195,127 @@ export async function registerRoutes(
       res.status(500).json({ error: "Failed to fetch creator" });
     }
   });
-  
+
+  // Get featured creators for marketplace display
+  app.get("/api/public/featured-creators", async (_req, res) => {
+    try {
+      const featuredUsers = await storage.getFeaturedCreators();
+
+      // Enrich each creator with stats and social data
+      const creators = await Promise.all(featuredUsers.map(async (creator) => {
+        const userProfile = await storage.getUserByEmail(creator.email);
+        const ytConnection = await storage.getYoutubeConnectionByEmail(creator.email);
+        const videosWithSurfaces = await storage.getVideosWithSurfacesPublic(creator.email);
+
+        // Also get ALL videos for this creator (for thumbnails — not filtered by status/surfaces)
+        const allCreatorVideos = await storage.getVideoIndex(creator.email);
+
+        const totalViews = videosWithSurfaces.reduce((sum: number, v: any) => sum + (v.viewCount || 0), 0);
+        const totalSurfaces = videosWithSurfaces.reduce((sum: number, v: any) => sum + (v.surfaceCount || 0), 0);
+
+        // Get up to 4 video thumbnails — prioritize landscape videos with cached frames
+        // Sort: videos with larger cached frames first (landscape frames are bigger than portrait)
+        const videosWithFrameInfo = allCreatorVideos.map((v: any) => {
+          const framePath = path.join(process.cwd(), "public", "uploads", "frames", v.id.toString(), "frame_0s.jpg");
+          let frameSize = 0;
+          try { if (fs.existsSync(framePath)) frameSize = fs.statSync(framePath).size; } catch {}
+          return { ...v, framePath, frameSize };
+        }).sort((a: any, b: any) => b.frameSize - a.frameSize); // Biggest frames first (landscape > portrait)
+
+        const thumbnails = videosWithFrameInfo
+          .slice(0, 4)
+          .map((v: any) => {
+            // Check if a cached frame already exists on disk
+            if (v.frameSize > 0) {
+              return `/uploads/frames/${v.id}/frame_0s.jpg`;
+            }
+            // Use stored thumbnailUrl
+            if (v.thumbnailUrl) return v.thumbnailUrl;
+            // For YouTube videos, construct thumbnail URL
+            if (v.youtubeId && !v.youtubeId.startsWith("test-") && !v.youtubeId.startsWith("local-")) {
+              return `https://img.youtube.com/vi/${v.youtubeId}/mqdefault.jpg`;
+            }
+            // For local videos, use on-demand frame endpoint
+            if (v.filePath) return `/api/video/${v.id}/frame/0`;
+            return null;
+          })
+          .filter(Boolean);
+
+        return {
+          name: creator.name || creator.email.split("@")[0],
+          slug: creator.slug,
+          headline: creator.headline || null,
+          profileImage: userProfile?.profileImageUrl || null,
+          thumbnails,
+          stats: {
+            totalVideos: allCreatorVideos.length,
+            totalViews,
+            totalSurfaces,
+            subscribers: ytConnection?.subscriberCount || 0,
+          },
+        };
+      }));
+
+      res.json({ creators });
+    } catch (err: any) {
+      console.error("[Public] Error fetching featured creators:", err);
+      res.status(500).json({ error: "Failed to fetch featured creators" });
+    }
+  });
+
+  // Update creator profile (authenticated)
+  app.patch("/api/creator/profile", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const email = req.session?.googleUser?.email || req.user?.claims?.email;
+      if (!email) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { bio, headline, podcastName, podcastUrl, websiteUrl, slug } = req.body;
+      const updates: any = {};
+      if (bio !== undefined) updates.bio = bio;
+      if (headline !== undefined) updates.headline = headline;
+      if (podcastName !== undefined) updates.podcastName = podcastName;
+      if (podcastUrl !== undefined) updates.podcastUrl = podcastUrl;
+      if (websiteUrl !== undefined) updates.websiteUrl = websiteUrl;
+      if (slug !== undefined) {
+        // Validate slug: lowercase, alphanumeric + hyphens only
+        const cleanSlug = slug.toLowerCase().replace(/[^a-z0-9-]/g, "");
+        if (cleanSlug.length < 2) {
+          return res.status(400).json({ error: "Slug must be at least 2 characters" });
+        }
+        // Check uniqueness
+        const existing = await storage.getCreatorBySlug(cleanSlug);
+        if (existing && existing.email !== email.toLowerCase().trim()) {
+          return res.status(409).json({ error: "Slug already taken" });
+        }
+        updates.slug = cleanSlug;
+      }
+
+      await storage.updateCreatorProfile(email, updates);
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("Error updating creator profile:", err);
+      res.status(500).json({ error: "Failed to update profile" });
+    }
+  });
+
+  // Update video subcategory (authenticated)
+  app.patch("/api/videos/:videoId/subcategory", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const { subcategory } = req.body;
+      if (!subcategory) {
+        return res.status(400).json({ error: "Subcategory is required" });
+      }
+      await storage.updateVideoSubcategory(videoId, subcategory);
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("Error updating video subcategory:", err);
+      res.status(500).json({ error: "Failed to update subcategory" });
+    }
+  });
+
   // Submit a placement request (public - no auth)
   app.post("/api/public/placement-request", async (req, res) => {
     const { videoId, brandName, brandEmail, message } = req.body;
@@ -3497,33 +4370,23 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Product name is required" });
       }
 
-      // Ensure uploads/products directory exists
-      const productsDir = "./public/uploads/products";
-      if (!fs.existsSync(productsDir)) {
-        fs.mkdirSync(productsDir, { recursive: true });
-      }
-
-      // Use Sharp to validate and extract metadata
       const imageBuffer = req.file.buffer;
       const metadata = await sharp(imageBuffer).metadata();
       const width = metadata.width || 0;
       const height = metadata.height || 0;
       const hasAlpha = metadata.hasAlpha || false;
 
-      // Save original image
       const timestamp = Date.now();
       const ext = metadata.format === "png" ? "png" : metadata.format === "webp" ? "webp" : "jpg";
       const filename = `product_${timestamp}.${ext}`;
-      const imagePath = path.join(productsDir, filename);
-      await sharp(imageBuffer).toFile(imagePath);
-
-      // Generate thumbnail (200px wide)
       const thumbFilename = `product_${timestamp}_thumb.${ext}`;
-      const thumbPath = path.join(productsDir, thumbFilename);
-      await sharp(imageBuffer).resize(200).toFile(thumbPath);
 
-      const imageUrl = `/uploads/products/${filename}`;
-      const thumbnailUrl = `/uploads/products/${thumbFilename}`;
+      const originalBuffer = await sharp(imageBuffer).toBuffer();
+      const thumbBuffer = await sharp(imageBuffer).resize(200).toBuffer();
+
+      const { uploadBufferToStorage } = await import("./lib/objectStorage");
+      const imageUrl = await uploadBufferToStorage(originalBuffer, `public/uploads/products/${filename}`);
+      const thumbnailUrl = await uploadBufferToStorage(thumbBuffer, `public/uploads/products/${thumbFilename}`);
 
       // ── Product Ingest Analysis ──
       let subjectBoundsX: number | null = null;
@@ -3746,7 +4609,7 @@ export async function registerRoutes(
   app.post("/api/placements", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const userEmail = req.authEmail || "unknown";
-      const { videoId, surfaceId, productId, productImageUrl, transform, blend, sceneGroupId, role } = req.body;
+      const { videoId, surfaceId, productId, productImageUrl, transform, blend, sceneGroupId, role, bidId } = req.body;
 
       if (!videoId || !surfaceId || !productImageUrl || !transform || !blend) {
         return res.status(400).json({ error: "Missing required fields: videoId, surfaceId, productImageUrl, transform, blend" });
@@ -3772,6 +4635,7 @@ export async function registerRoutes(
         productImageUrl,
         createdBy: userEmail,
         role: role || "creator",
+        bidId: bidId || null,
         sceneGroupId: computedGroupId,
         transform,
         blend,
@@ -3827,8 +4691,37 @@ export async function registerRoutes(
         }
       }
 
+      // Auto-link to bid if bidId was provided (creator fulfilling a brand offer)
+      let reviewSlug: string | null = null;
+      if (bidId) {
+        try {
+          const bid = await storage.getBidById(bidId);
+          if (bid && (bid.status === "pending" || bid.status === "revision_requested")) {
+            const slug = generateSlug();
+            await storage.createSharedLink({
+              slug,
+              placementId: placement.id,
+              exportId: null,
+              videoId,
+              createdBy: userEmail,
+              title: `Placement review for ${bid.brandName || "brand"}`,
+              isActive: true,
+              expiresAt: null,
+            });
+            await storage.updateBidStatus(bidId, "placed", {
+              placementId: placement.id,
+              reviewSlug: slug,
+            });
+            reviewSlug = slug;
+            console.log(`[Placements] Auto-linked placement ${placement.id} to bid ${bidId}, review slug: ${slug}`);
+          }
+        } catch (linkErr: any) {
+          console.warn(`[Placements] Failed to auto-link bid ${bidId}:`, linkErr.message);
+        }
+      }
+
       console.log(`[Placements] Saved placement ${placement.id} for video ${videoId} surface ${surfaceId} by ${userEmail} (propagated to ${propagatedCount} additional surfaces)`);
-      res.json({ placement, propagatedCount });
+      res.json({ placement, propagatedCount, reviewSlug });
     } catch (err: any) {
       console.error("[Placements] Save error:", err.message);
       res.status(500).json({ error: "Failed to save placement" });
@@ -4066,10 +4959,2902 @@ export async function registerRoutes(
     }
   });
 
+  // ── Video Export Pipeline ──
+
+  // Trigger dense surface scanning for accurate camera-tracking keyframes
+  // Called when user plays the video preview — generates Gemini detections at specified interval.
+  // Supports `interval` body param (default 0.5). Client calls with interval=2 first for fast
+  // sparse keyframes (~13 calls for 25s video = ~1 min), then optionally refines with interval=0.5.
+  app.post("/api/video/:videoId/dense-scan", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+
+      // Support configurable interval: 2.0 = fast/sparse, 0.5 = dense/slow
+      const interval = parseFloat(req.body?.interval) || 0.5;
+      const clampedInterval = Math.max(0.5, Math.min(5.0, interval));
+
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+      if (!video.filePath) return res.status(400).json({ error: "Video has no local file" });
+
+      // Get all detected surfaces for this video
+      const detectedSurfs = await storage.getDetectedSurfaces(videoId);
+      if (detectedSurfs.length === 0) {
+        return res.status(400).json({ error: "No surfaces detected for this video" });
+      }
+
+      // Determine minimum keyframes needed based on interval:
+      // - Quick scan (interval≥1.5): need ≥4 keyframes to be useful (Catmull-Rom)
+      // - Dense scan (interval<1.5): need ≥30 keyframes for smooth frame-by-frame tracking
+      //   (a 25s video at 0.5s intervals should produce ~50 keyframes)
+      const minKeyframes = clampedInterval >= 1.5 ? 4 : 30;
+      const existingKfs = await storage.getKeyframesByVideo(videoId);
+      if (existingKfs.length >= minKeyframes) {
+        console.log(`[Dense Scan] Video ${videoId} already has ${existingKfs.length} keyframes (need ${minKeyframes} for interval=${clampedInterval}s), skipping`);
+        return res.json({ status: "already_scanned", keyframesCount: existingKfs.length });
+      }
+
+      const surfaceIds = detectedSurfs.map(s => s.id);
+
+      // Get video duration
+      const { spawn: spawnProbe } = await import("child_process");
+      const videoDuration = await new Promise<number>((resolve) => {
+        if (video.filePath!.startsWith('/storage/')) {
+          resolve(60); // Default for Object Storage files
+          return;
+        }
+        const videoFilePath = path.resolve(video.filePath!);
+        const proc = spawnProbe("ffprobe", [
+          "-v", "quiet", "-print_format", "json", "-show_format", videoFilePath,
+        ]);
+        let stdout = "";
+        proc.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
+        proc.on("close", () => {
+          try { resolve(parseFloat(JSON.parse(stdout).format.duration) || 30); }
+          catch { resolve(30); }
+        });
+        proc.on("error", () => resolve(30));
+      });
+
+      console.log(`[Dense Scan] Starting for video ${videoId}: ${videoDuration.toFixed(1)}s, ${surfaceIds.length} surfaces, interval=${clampedInterval}s`);
+
+      // Run dense scan — interval controls cost vs accuracy:
+      // interval=2.0: ~13 Gemini calls for 25s video (~1 min) — sparse but fast
+      // interval=0.5: ~50 Gemini calls for 25s video (~4 min) — dense and accurate
+      const { denseScanRange } = await import("./scanner_v2");
+      const result = await denseScanRange(videoId, 0, videoDuration, surfaceIds, clampedInterval);
+
+      console.log(`[Dense Scan] Complete: ${result.keyframesCreated} keyframes created for video ${videoId}`);
+      res.json({ status: "complete", keyframesCreated: result.keyframesCreated });
+    } catch (err: any) {
+      console.error("[Dense Scan] Error:", err.message);
+      res.status(500).json({ error: "Dense scan failed" });
+    }
+  });
+
+  // ── Motion Tracking (Gemini-anchored) ──
+  // Uses the dense Gemini surface keyframes (actual surface detections at 0.5s intervals)
+  // as anchor points, applies the same stabilization pipeline used for video export
+  // (outlier rejection → dimension lock → bidirectional EMA smoothing → Catmull-Rom spline),
+  // then pre-computes the exact surface position at 30fps.
+  //
+  // This is fundamentally different from vidstab (global camera motion) — Gemini
+  // actually SEES the table/surface in each frame, so the product is anchored to
+  // a real physical feature, not just compensating for camera movement.
+  //
+  // Returns: { transforms: [{x, y, w, h}...], fps, duration, available }
+  app.post("/api/video/:videoId/motion-track", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+
+      const surfaceId = req.body.surfaceId ? parseInt(req.body.surfaceId) : undefined;
+      if (!surfaceId) return res.status(400).json({ error: "surfaceId required" });
+
+      // Get video duration
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+
+      const videoDuration = parseFloat(video.duration as string) || 30;
+      const fps = 30;
+
+      // Get dense keyframes for this specific surface
+      const allKeyframes = await storage.getKeyframesByVideo(videoId);
+      const surfaceKeyframes = allKeyframes.filter(kf => kf.surfaceId === surfaceId);
+
+      if (surfaceKeyframes.length < 2) {
+        // Not enough keyframes — tell client to wait for dense scan to complete
+        console.log(`[MotionTrack] Only ${surfaceKeyframes.length} keyframes for surface ${surfaceId}, need at least 2`);
+
+        // Fall back to the static surface detection position
+        const allSurfaces = await storage.getDetectedSurfaces(videoId);
+        const surface = allSurfaces.find(s => s.id === surfaceId);
+        if (surface) {
+          const staticPos = {
+            x: parseFloat(String(surface.boundingBoxX)) || 0.3,
+            y: parseFloat(String(surface.boundingBoxY)) || 0.3,
+            w: parseFloat(String(surface.boundingBoxWidth)) || 0.3,
+            h: parseFloat(String(surface.boundingBoxHeight)) || 0.3,
+          };
+          // Return static position for every frame
+          const totalFrames = Math.ceil(videoDuration * fps);
+          const transforms = new Array(totalFrames).fill(staticPos);
+          return res.json({ transforms, fps, duration: videoDuration, available: true, source: "static" });
+        }
+        return res.json({ transforms: [], fps, duration: videoDuration, available: false });
+      }
+
+      console.log(`[MotionTrack] Processing ${surfaceKeyframes.length} Gemini keyframes for surface ${surfaceId}`);
+
+      // Convert DB keyframes to the format expected by the stabilization pipeline
+      // Keyframes are stored as 0-1 normalized coordinates
+      type PlacementKeyframe = { time: number; x: number; y: number; width: number; height: number };
+
+      const rawKfs: PlacementKeyframe[] = surfaceKeyframes
+        .map(kf => ({
+          time: parseFloat(String(kf.timestamp)),
+          x: parseFloat(String(kf.boundingBoxX)),
+          y: parseFloat(String(kf.boundingBoxY)),
+          width: parseFloat(String(kf.boundingBoxWidth)),
+          height: parseFloat(String(kf.boundingBoxHeight)),
+        }))
+        .filter(kf => !isNaN(kf.time) && !isNaN(kf.x) && !isNaN(kf.y))
+        .sort((a, b) => a.time - b.time);
+
+      if (rawKfs.length < 2) {
+        return res.json({ transforms: [], fps, duration: videoDuration, available: false });
+      }
+
+      // ── Stabilization Pipeline (Anchor-Lock Mode) ──
+      // Step 1: Outlier rejection (relaxed threshold to keep more valid keyframes)
+      let kfs = rawKfs;
+      if (kfs.length > 3) {
+        const filtered: PlacementKeyframe[] = [kfs[0]];
+        for (let i = 1; i < kfs.length - 1; i++) {
+          const expectedX = (kfs[i - 1].x + kfs[i + 1].x) / 2;
+          const expectedY = (kfs[i - 1].y + kfs[i + 1].y) / 2;
+          if (Math.abs(kfs[i].x - expectedX) > 0.15 || Math.abs(kfs[i].y - expectedY) > 0.15) {
+            continue; // Skip outlier
+          }
+          filtered.push(kfs[i]);
+        }
+        filtered.push(kfs[kfs.length - 1]);
+        console.log(`[MotionTrack] Outlier rejection: ${rawKfs.length} → ${filtered.length} keyframes`);
+        kfs = filtered;
+      }
+
+      // Step 2: Lock dimensions to median (tight threshold to prevent size jitter)
+      const widths = kfs.map(k => k.width).sort((a, b) => a - b);
+      const heights = kfs.map(k => k.height).sort((a, b) => a - b);
+      const medianW = widths[Math.floor(widths.length / 2)];
+      const medianH = heights[Math.floor(heights.length / 2)];
+      kfs = kfs.map(k => ({
+        ...k,
+        width: Math.abs(k.width - medianW) / medianW > 0.08 ? medianW : k.width,
+        height: Math.abs(k.height - medianH) / medianH > 0.08 ? medianH : k.height,
+      }));
+
+      // Step 2B: Anchor persistence — lock top-right corner to highest-confidence keyframe
+      // Prevents the entire bbox from drifting to a different part of the surface
+      if (kfs.length > 1) {
+        // Find highest-confidence keyframe as the anchor reference
+        const anchorKf = rawKfs.reduce((best, kf) => {
+          const bestConf = (best as any).confidence || 0;
+          const kfConf = (kf as any).confidence || 0;
+          return kfConf > bestConf ? kf : best;
+        });
+        const anchorTopRightX = anchorKf.x + anchorKf.width;
+        const anchorTopRightY = anchorKf.y;
+
+        // Constrain all keyframes so top-right doesn't drift >2% from anchor
+        for (const kf of kfs) {
+          const trX = kf.x + kf.width;
+          const trY = kf.y;
+          const driftX = Math.abs(trX - anchorTopRightX);
+          const driftY = Math.abs(trY - anchorTopRightY);
+          if (driftX > 0.02) {
+            kf.x = anchorTopRightX - kf.width + Math.sign(trX - anchorTopRightX) * 0.02;
+          }
+          if (driftY > 0.02) {
+            kf.y = anchorTopRightY + Math.sign(trY - anchorTopRightY) * 0.02;
+          }
+        }
+        console.log(`[MotionTrack] Anchor-lock: top-right pinned at (${anchorTopRightX.toFixed(3)}, ${anchorTopRightY.toFixed(3)})`);
+      }
+
+      // Step 3: Bidirectional EMA smoothing (very heavy smoothing for rock-solid positions)
+      const alpha = 0.15;
+      const fwd: PlacementKeyframe[] = [{ ...kfs[0] }];
+      for (let i = 1; i < kfs.length; i++) {
+        fwd.push({
+          time: kfs[i].time,
+          x: alpha * kfs[i].x + (1 - alpha) * fwd[i - 1].x,
+          y: alpha * kfs[i].y + (1 - alpha) * fwd[i - 1].y,
+          width: alpha * kfs[i].width + (1 - alpha) * fwd[i - 1].width,
+          height: alpha * kfs[i].height + (1 - alpha) * fwd[i - 1].height,
+        });
+      }
+      const bwd: PlacementKeyframe[] = new Array(fwd.length);
+      bwd[fwd.length - 1] = { ...fwd[fwd.length - 1] };
+      for (let i = fwd.length - 2; i >= 0; i--) {
+        bwd[i] = {
+          time: fwd[i].time,
+          x: alpha * fwd[i].x + (1 - alpha) * bwd[i + 1].x,
+          y: alpha * fwd[i].y + (1 - alpha) * bwd[i + 1].y,
+          width: alpha * fwd[i].width + (1 - alpha) * bwd[i + 1].width,
+          height: alpha * fwd[i].height + (1 - alpha) * bwd[i + 1].height,
+        };
+      }
+      kfs = fwd.map((f, i) => ({
+        time: f.time,
+        x: (f.x + bwd[i].x) / 2,
+        y: (f.y + bwd[i].y) / 2,
+        width: (f.width + bwd[i].width) / 2,
+        height: (f.height + bwd[i].height) / 2,
+      }));
+
+      // ── Catmull-Rom spline interpolation to 30fps ──
+      function catmullRom(p0: number, p1: number, p2: number, p3: number, t: number): number {
+        const t2 = t * t, t3 = t2 * t;
+        return 0.5 * ((2 * p1) + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 + (-p0 + 3 * p1 - 3 * p2 + p3) * t3);
+      }
+
+      const totalFrames = Math.ceil(videoDuration * fps);
+      const framePositions: Array<{ x: number; y: number; w: number; h: number } | null> = [];
+      const SCENE_GAP = 2.0; // seconds — gap > this means surface left frame
+
+      for (let f = 0; f < totalFrames; f++) {
+        const t = f / fps; // current time in seconds
+
+        // Before first keyframe: null if too far away (surface not yet visible)
+        if (t <= kfs[0].time) {
+          if (t < kfs[0].time - SCENE_GAP) {
+            framePositions.push(null);
+          } else {
+            framePositions.push({ x: kfs[0].x, y: kfs[0].y, w: kfs[0].width, h: kfs[0].height });
+          }
+          continue;
+        }
+
+        // After last keyframe: null if too far away (surface gone / scene cut)
+        if (t >= kfs[kfs.length - 1].time) {
+          if (t > kfs[kfs.length - 1].time + SCENE_GAP) {
+            framePositions.push(null);
+          } else {
+            const last = kfs[kfs.length - 1];
+            framePositions.push({ x: last.x, y: last.y, w: last.width, h: last.height });
+          }
+          continue;
+        }
+
+        // Find segment
+        let seg = 0;
+        for (; seg < kfs.length - 1; seg++) {
+          if (t >= kfs[seg].time && t < kfs[seg + 1].time) break;
+        }
+
+        const segDur = kfs[seg + 1].time - kfs[seg].time;
+        const segT = segDur > 0 ? (t - kfs[seg].time) / segDur : 0;
+
+        // Large gap = scene cut — surface disappeared and reappeared
+        if (segDur > SCENE_GAP * 2) {
+          const midpoint = kfs[seg].time + segDur / 2;
+          const distFromNearest = Math.min(t - kfs[seg].time, kfs[seg + 1].time - t);
+          if (distFromNearest > SCENE_GAP) {
+            framePositions.push(null); // In the dead zone — surface not visible
+            continue;
+          }
+          // Near the edge — use nearest keyframe
+          if (t < midpoint) {
+            framePositions.push({ x: kfs[seg].x, y: kfs[seg].y, w: kfs[seg].width, h: kfs[seg].height });
+          } else {
+            framePositions.push({ x: kfs[seg + 1].x, y: kfs[seg + 1].y, w: kfs[seg + 1].width, h: kfs[seg + 1].height });
+          }
+          continue;
+        }
+
+        if (kfs.length === 2) {
+          // Linear interpolation
+          framePositions.push({
+            x: kfs[0].x + (kfs[1].x - kfs[0].x) * segT,
+            y: kfs[0].y + (kfs[1].y - kfs[0].y) * segT,
+            w: kfs[0].width + (kfs[1].width - kfs[0].width) * segT,
+            h: kfs[0].height + (kfs[1].height - kfs[0].height) * segT,
+          });
+        } else {
+          // Catmull-Rom spline
+          const p0 = kfs[Math.max(0, seg - 1)];
+          const p1 = kfs[seg];
+          const p2 = kfs[seg + 1];
+          const p3 = kfs[Math.min(kfs.length - 1, seg + 2)];
+
+          framePositions.push({
+            x: catmullRom(p0.x, p1.x, p2.x, p3.x, segT),
+            y: catmullRom(p0.y, p1.y, p2.y, p3.y, segT),
+            w: Math.max(0.01, catmullRom(p0.width, p1.width, p2.width, p3.width, segT)),
+            h: Math.max(0.01, catmullRom(p0.height, p1.height, p2.height, p3.height, segT)),
+          });
+        }
+      }
+
+      console.log(`[MotionTrack] Interpolated ${surfaceKeyframes.length} Gemini keyframes → ${framePositions.length} frames at ${fps}fps for video ${videoId}`);
+
+      res.json({
+        transforms: framePositions,
+        fps,
+        duration: videoDuration,
+        available: true,
+        source: "gemini-keyframes",
+        keyframeCount: surfaceKeyframes.length,
+      });
+    } catch (err: any) {
+      console.error("[MotionTrack] Error:", err.message);
+      res.status(500).json({ error: "Motion tracking failed", message: err.message });
+    }
+  });
+
+  // Start a new video export job
+  // Get dense surface keyframes for a video (used by PlacementPreviewModal for accurate tracking)
+  app.get("/api/video/:videoId/surface-keyframes", async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+
+      // Get all dense keyframes for this video
+      const keyframes = await storage.getKeyframesByVideo(videoId);
+
+      // Also get detected surfaces to map surfaceId → surfaceType
+      const detectedSurfs = await storage.getDetectedSurfaces(videoId);
+      const surfaceTypeMap = new Map<number, string>();
+      for (const s of detectedSurfs) {
+        surfaceTypeMap.set(s.id, s.surfaceType);
+      }
+
+      // Group keyframes by surfaceType and format for client
+      const grouped: Record<string, Array<{
+        timestamp: number;
+        bbox: { x: number; y: number; w: number; h: number };
+        confidence: number;
+        surfaceId: number;
+      }>> = {};
+
+      for (const kf of keyframes) {
+        const surfaceType = surfaceTypeMap.get(kf.surfaceId) || "unknown";
+        if (!grouped[surfaceType]) grouped[surfaceType] = [];
+        // Keyframes are stored as 0-1 normalized; convert to 0-100 for video exporter
+        grouped[surfaceType].push({
+          timestamp: parseFloat(String(kf.timestamp)),
+          bbox: {
+            x: parseFloat(String(kf.boundingBoxX)) * 100,
+            y: parseFloat(String(kf.boundingBoxY)) * 100,
+            w: parseFloat(String(kf.boundingBoxWidth)) * 100,
+            h: parseFloat(String(kf.boundingBoxHeight)) * 100,
+          },
+          confidence: parseFloat(String(kf.confidence)),
+          surfaceId: kf.surfaceId,
+        });
+      }
+
+      // Sort each group by timestamp
+      for (const key of Object.keys(grouped)) {
+        grouped[key].sort((a, b) => a.timestamp - b.timestamp);
+      }
+
+      console.log(`[Surface Keyframes] Video ${videoId}: ${keyframes.length} keyframes across ${Object.keys(grouped).length} surface types`);
+      res.json({ keyframes: grouped });
+    } catch (err: any) {
+      console.error("[Surface Keyframes] Error:", err.message);
+      res.status(500).json({ error: "Failed to fetch surface keyframes" });
+    }
+  });
+
+  app.post("/api/video/:videoId/export", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+
+      // Brand users cannot export videos — only creators can
+      if (req.authEmail) {
+        const viewRole = (req.session as any)?.viewRole;
+        const allowedUser = await storage.getAllowedUser(req.authEmail);
+        const effectiveRole = viewRole || allowedUser?.userType || "creator";
+        if (effectiveRole === "brand") {
+          return res.status(403).json({ error: "Video export is not available for brand accounts. Please contact the creator for exported content." });
+        }
+      }
+
+      const { placements, canvasWidth, canvasHeight } = req.body;
+      if (!placements || !Array.isArray(placements) || placements.length === 0) {
+        return res.status(400).json({ error: "At least one placement is required" });
+      }
+
+      // Verify video exists and has a file path
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+      if (!video.filePath) return res.status(400).json({ error: "Video has no local file — only locally uploaded videos can be exported" });
+
+      // Verify video file is accessible (Object Storage or local disk)
+      // Object Storage paths (/storage/...) are downloaded at export time by processVideoExport
+      if (!video.filePath.startsWith('/storage/')) {
+        const absolutePath = path.resolve(video.filePath);
+        if (!fs.existsSync(absolutePath)) {
+          return res.status(400).json({ error: "Video file not found on disk" });
+        }
+      }
+
+      // ── Dense surface tracking for video export ──
+      // Skip when client sends pre-computed motion-track data (from Gemini keyframes).
+      // The motion-track positions match preview EXACTLY, eliminating export/preview mismatch.
+      const hasMotionTrack = placements.every((p: any) => p.motionTrackData?.transforms?.length > 0);
+      if (hasMotionTrack) {
+        console.log(`[Video Export] Using pre-computed motion-track data — skipping dense scan (export will match preview)`);
+      }
+
+      // Only run dense scan when motion-track data is NOT available
+      const detectedSurfs = hasMotionTrack ? [] : await storage.getDetectedSurfaces(videoId);
+      const surfaceTypeMap = new Map<number, string>();
+      const surfaceIdsByType = new Map<string, number[]>();
+      for (const s of detectedSurfs) {
+        surfaceTypeMap.set(s.id, s.surfaceType);
+        if (!surfaceIdsByType.has(s.surfaceType)) surfaceIdsByType.set(s.surfaceType, []);
+        surfaceIdsByType.get(s.surfaceType)!.push(s.id);
+      }
+
+      // Determine which surface types need dense tracking
+      const surfaceTypesNeeded = new Set<string>();
+      const surfaceIdsNeeded: number[] = [];
+      for (const placement of placements) {
+        surfaceTypesNeeded.add(placement.surfaceType);
+        const ids = surfaceIdsByType.get(placement.surfaceType) || [];
+        for (const id of ids) {
+          if (!surfaceIdsNeeded.includes(id)) surfaceIdsNeeded.push(id);
+        }
+      }
+
+      // Check if we already have enough dense keyframes (>= 10 per surface type)
+      const existingKeyframes = await storage.getKeyframesByVideo(videoId);
+      const kfCountByType = new Map<string, number>();
+      for (const kf of existingKeyframes) {
+        const type = surfaceTypeMap.get(kf.surfaceId) || "unknown";
+        kfCountByType.set(type, (kfCountByType.get(type) || 0) + 1);
+      }
+
+      const needsDenseScan = Array.from(surfaceTypesNeeded).some(
+        type => (kfCountByType.get(type) || 0) < 10
+      );
+
+      if (needsDenseScan && surfaceIdsNeeded.length > 0) {
+        // Run dense scan for the full video to get per-frame surface tracking
+        console.log(`[Video Export] Running dense scan for ${surfaceIdsNeeded.length} surfaces (need camera tracking)...`);
+        try {
+          const { denseScanRange } = await import("./scanner_v2");
+          // Get video duration via ffprobe
+          const { spawn: spawnProbe } = await import("child_process");
+          const videoDuration = await new Promise<number>((resolve) => {
+            let videoFilePath = video.filePath!;
+            if (!videoFilePath.startsWith('/storage/')) {
+              videoFilePath = path.resolve(videoFilePath);
+            }
+            // For Object Storage paths, we can't probe directly — use a generous default
+            if (video.filePath!.startsWith('/storage/')) {
+              resolve(60); // Default to 60s, dense scan handles shorter videos gracefully
+              return;
+            }
+            const proc = spawnProbe("ffprobe", [
+              "-v", "quiet", "-print_format", "json", "-show_format", videoFilePath,
+            ]);
+            let stdout = "";
+            proc.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
+            proc.on("close", () => {
+              try { resolve(parseFloat(JSON.parse(stdout).format.duration) || 30); }
+              catch { resolve(30); }
+            });
+            proc.on("error", () => resolve(30));
+          });
+
+          const denseScanResult = await denseScanRange(
+            videoId, 0, videoDuration, surfaceIdsNeeded, 0.5
+          );
+          console.log(`[Video Export] Dense scan complete: ${denseScanResult.keyframesCreated} keyframes created`);
+        } catch (denseScanErr: any) {
+          console.warn(`[Video Export] Dense scan failed (will use sparse data): ${denseScanErr.message}`);
+        }
+      }
+
+      // Now fetch all keyframes (including newly created dense ones) and build smoothed tracks
+      const allKeyframes = await storage.getKeyframesByVideo(videoId);
+
+      // EMA smoothing helper — reduces Gemini detection noise while preserving camera motion
+      const smoothKeyframes = (kfs: Array<{ timestamp: number; bbox: { x: number; y: number; w: number; h: number }; confidence: number }>, alpha: number = 0.3) => {
+        if (kfs.length <= 1) return kfs;
+        const sorted = [...kfs].sort((a, b) => a.timestamp - b.timestamp);
+        const smoothed = [sorted[0]];
+        for (let i = 1; i < sorted.length; i++) {
+          const prev = smoothed[i - 1];
+          const curr = sorted[i];
+          smoothed.push({
+            timestamp: curr.timestamp,
+            bbox: {
+              x: prev.bbox.x + alpha * (curr.bbox.x - prev.bbox.x),
+              y: prev.bbox.y + alpha * (curr.bbox.y - prev.bbox.y),
+              w: prev.bbox.w + alpha * (curr.bbox.w - prev.bbox.w),
+              h: prev.bbox.h + alpha * (curr.bbox.h - prev.bbox.h),
+            },
+            confidence: curr.confidence,
+          });
+        }
+        return smoothed;
+      };
+
+      for (const placement of placements) {
+        // Collect all keyframes for this surface type
+        const rawKfs: Array<{ timestamp: number; bbox: { x: number; y: number; w: number; h: number }; confidence: number }> = [];
+
+        for (const kf of allKeyframes) {
+          if (surfaceTypeMap.get(kf.surfaceId) === placement.surfaceType) {
+            rawKfs.push({
+              timestamp: parseFloat(String(kf.timestamp)),
+              bbox: {
+                x: parseFloat(String(kf.boundingBoxX)) * 100,
+                y: parseFloat(String(kf.boundingBoxY)) * 100,
+                w: parseFloat(String(kf.boundingBoxWidth)) * 100,
+                h: parseFloat(String(kf.boundingBoxHeight)) * 100,
+              },
+              confidence: parseFloat(String(kf.confidence)),
+            });
+          }
+        }
+
+        if (rawKfs.length > 0) {
+          // Apply EMA smoothing to reduce detection noise
+          const smoothed = smoothKeyframes(rawKfs, 0.3);
+          placement.keyframes = smoothed;
+          console.log(`[Video Export] "${placement.surfaceType}" → ${smoothed.length} smoothed tracking keyframes (camera-following)`);
+        } else {
+          // Fallback: use the client-sent keyframes (user's placed position)
+          console.log(`[Video Export] "${placement.surfaceType}" → using client-sent keyframes (no dense data available)`);
+        }
+      }
+
+      const userId = req.authUserId || req.googleUser?.email || "anonymous";
+
+      // Create export job in DB
+      const exportJob = await storage.createVideoExport({
+        videoId,
+        requestedBy: userId,
+        status: "queued",
+        progress: 0,
+        placementData: placements,
+        outputPath: null,
+        outputUrl: null,
+        error: null,
+      });
+
+      console.log(`[Video Export] Created export job ${exportJob.id} for video ${videoId} (${placements.length} placements)`);
+
+      // Kick off async processing (don't await)
+      processVideoExport(exportJob.id, video.filePath, placements, {
+        canvasWidth: canvasWidth || 640,
+        canvasHeight: canvasHeight || 360,
+      }).catch((err) => {
+        console.error(`[Video Export] Background processing failed for export ${exportJob.id}:`, err.message);
+      });
+
+      res.json({ exportId: exportJob.id, status: "queued" });
+    } catch (err: any) {
+      console.error("[Video Export] Start error:", err.message);
+      res.status(500).json({ error: "Failed to start export" });
+    }
+  });
+
+  // Poll export job status
+  app.get("/api/exports/:exportId", async (req: any, res) => {
+    try {
+      const exportId = parseInt(req.params.exportId);
+      if (isNaN(exportId)) return res.status(400).json({ error: "Invalid export ID" });
+
+      const exportJob = await storage.getVideoExport(exportId);
+      if (!exportJob) return res.status(404).json({ error: "Export not found" });
+
+      res.json({
+        id: exportJob.id,
+        videoId: exportJob.videoId,
+        status: exportJob.status,
+        progress: exportJob.progress,
+        outputUrl: exportJob.outputUrl,
+        error: exportJob.error,
+        createdAt: exportJob.createdAt,
+        completedAt: exportJob.completedAt,
+      });
+    } catch (err: any) {
+      console.error("[Video Export] Status error:", err.message);
+      res.status(500).json({ error: "Failed to get export status" });
+    }
+  });
+
+  // Download completed export
+  app.get("/api/exports/:exportId/download", async (req: any, res) => {
+    try {
+      const exportId = parseInt(req.params.exportId);
+      if (isNaN(exportId)) return res.status(400).json({ error: "Invalid export ID" });
+
+      const exportJob = await storage.getVideoExport(exportId);
+      if (!exportJob) return res.status(404).json({ error: "Export not found" });
+      if (exportJob.status !== "complete" || !exportJob.outputPath) {
+        return res.status(400).json({ error: "Export not yet complete" });
+      }
+
+      const filename = `fullscale-remix-${exportJob.videoId}-${exportJob.id}.mp4`;
+      res.setHeader("Content-Type", "video/mp4");
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+
+      // Handle Object Storage paths vs local disk
+      if (exportJob.outputPath.startsWith('/storage/')) {
+        const { objectKeyFromServeUrl, getStorageStream } = await import("./lib/objectStorage");
+        const objectKey = objectKeyFromServeUrl(exportJob.outputPath);
+        const { stream } = getStorageStream(objectKey);
+        stream.on("error", (err: any) => {
+          console.error("[Video Export] Storage stream error:", err.message);
+          if (!res.headersSent) {
+            res.status(404).json({ error: "Export file not found in storage" });
+          }
+        });
+        stream.pipe(res);
+      } else {
+        const absolutePath = path.resolve(exportJob.outputPath);
+        if (!fs.existsSync(absolutePath)) {
+          return res.status(404).json({ error: "Export file not found on disk" });
+        }
+        const stream = fs.createReadStream(absolutePath);
+        stream.pipe(res);
+      }
+    } catch (err: any) {
+      console.error("[Video Export] Download error:", err.message);
+      res.status(500).json({ error: "Failed to download export" });
+    }
+  });
+
+  // ── SHARED LINKS ──
+
+  // Create a shareable link for a placement or export
+  app.post("/api/share", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.authEmail || req.googleUser?.email;
+      if (!userId) return res.status(401).json({ error: "Authentication required" });
+
+      const { placementId, exportId, videoId, title } = req.body;
+      if (!videoId) return res.status(400).json({ error: "videoId is required" });
+
+      // Generate unique 8-char slug
+      const slug = generateSlug();
+
+      const link = await storage.createSharedLink({
+        slug,
+        placementId: placementId || null,
+        exportId: exportId || null,
+        videoId,
+        createdBy: userId,
+        title: title || null,
+        isActive: true,
+        expiresAt: null,
+      });
+
+      const shareUrl = `/s/${slug}`;
+      res.json({ slug, url: shareUrl, id: link.id });
+    } catch (err: any) {
+      console.error("[Share] Create error:", err.message);
+      res.status(500).json({ error: "Failed to create share link" });
+    }
+  });
+
+  // Get shared content (PUBLIC — no auth required)
+  app.get("/api/share/:slug", async (req: any, res) => {
+    try {
+      const { slug } = req.params;
+      const link = await storage.getSharedLinkBySlug(slug);
+      if (!link) return res.status(404).json({ error: "Share link not found" });
+      if (!link.isActive) return res.status(410).json({ error: "This share link has been deactivated" });
+      if (link.expiresAt && new Date(link.expiresAt) < new Date()) {
+        return res.status(410).json({ error: "This share link has expired" });
+      }
+
+      // Increment view count
+      await storage.incrementSharedLinkViews(slug);
+
+      // Fetch associated data
+      const video = await storage.getVideoById(link.videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+
+      let placement = null;
+      if (link.placementId) {
+        placement = await storage.getPlacementById(link.placementId);
+      }
+
+      let exportData = null;
+      if (link.exportId) {
+        exportData = await storage.getVideoExport(link.exportId);
+      }
+
+      // Get surfaces for the video
+      const surfaces = await storage.getDetectedSurfaces(link.videoId);
+
+      res.json({
+        slug: link.slug,
+        title: link.title || video.title,
+        createdBy: link.createdBy,
+        viewCount: (link.viewCount || 0) + 1,
+        createdAt: link.createdAt,
+        video: {
+          id: video.id,
+          title: video.title,
+          thumbnailUrl: video.thumbnailUrl,
+          duration: video.duration,
+          platform: video.platform,
+        },
+        placement: placement ? {
+          id: placement.id,
+          productImageUrl: placement.productImageUrl,
+          surfaceId: placement.surfaceId,
+          transform: placement.transform,
+          blend: placement.blend,
+        } : null,
+        export: exportData ? {
+          id: exportData.id,
+          status: exportData.status,
+          outputUrl: exportData.outputUrl,
+          progress: exportData.progress,
+        } : null,
+        surfaces: surfaces.map(s => ({
+          id: s.id,
+          surfaceType: s.surfaceType,
+          timestamp: s.timestamp,
+          boundingBoxX: s.boundingBoxX,
+          boundingBoxY: s.boundingBoxY,
+          boundingBoxWidth: s.boundingBoxWidth,
+          boundingBoxHeight: s.boundingBoxHeight,
+          frameUrl: s.frameUrl,
+        })),
+      });
+    } catch (err: any) {
+      console.error("[Share] Fetch error:", err.message);
+      res.status(500).json({ error: "Failed to fetch shared content" });
+    }
+  });
+
+  // Get all share links for current user
+  app.get("/api/shares", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.authEmail || req.googleUser?.email;
+      if (!userId) return res.status(401).json({ error: "Authentication required" });
+
+      const links = await storage.getSharedLinksByUser(userId);
+      res.json({ links });
+    } catch (err: any) {
+      console.error("[Share] List error:", err.message);
+      res.status(500).json({ error: "Failed to list share links" });
+    }
+  });
+
+  // Deactivate a share link
+  app.delete("/api/share/:id", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ error: "Invalid share link ID" });
+
+      await storage.deactivateSharedLink(id);
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("[Share] Deactivate error:", err.message);
+      res.status(500).json({ error: "Failed to deactivate share link" });
+    }
+  });
+
+  // ============================================================================
+  // SCENE ANALYSIS & BRAND MATCHING (Claude Dense)
+  // ============================================================================
+
+  // Trigger Claude Dense narrative analysis for all surfaces on a video
+  app.post("/api/scenes/:videoId/analyze", isAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+
+      const surfaces = await storage.getDetectedSurfaces(videoId);
+      const validSurfaces = surfaces.filter(s => s.surfaceType !== "Filtered");
+      if (validSurfaces.length === 0) {
+        return res.status(400).json({ error: "No detected surfaces to analyze. Run a scan first." });
+      }
+
+      // Import dynamically to avoid loading Anthropic SDK at startup
+      const { analyzeNarrative } = await import("./lib/ai/claude-dense/narrativeAnalyzer");
+      const { analyzeCulturalRelevance } = await import("./lib/ai/claude-dense/culturalRelevance");
+
+      const results: any[] = [];
+
+      // Group surfaces by unique timestamp to avoid re-analyzing the same frame
+      const timestampMap = new Map<number, typeof validSurfaces>();
+      for (const surface of validSurfaces) {
+        const ts = Math.floor(Number(surface.timestamp));
+        if (!timestampMap.has(ts)) timestampMap.set(ts, []);
+        timestampMap.get(ts)!.push(surface);
+      }
+
+      for (const [timestamp, surfacesAtTime] of timestampMap) {
+        const frameFilename = `frame_${timestamp}s.jpg`;
+        const framePath = path.join(process.cwd(), "public", "uploads", "frames", videoId.toString(), frameFilename);
+
+        if (!fs.existsSync(framePath)) {
+          console.log(`[Scene Analysis] Frame not found: ${frameFilename}, skipping`);
+          continue;
+        }
+
+        const frameBuffer = fs.readFileSync(framePath);
+        const frameBase64 = frameBuffer.toString('base64');
+        const bestSurface = surfacesAtTime.reduce((a, b) =>
+          parseFloat(String(a.confidence)) > parseFloat(String(b.confidence)) ? a : b
+        );
+
+        // Parse scene context from existing surface data
+        const sceneContextParts = (bestSurface.sceneContext || '').split(' | ');
+
+        const narrativeInput = {
+          videoId,
+          frameIndex: timestamp,
+          frameBase64,
+          detectedSurfaces: surfacesAtTime.map(s => ({
+            id: s.id,
+            surfaceType: s.surfaceType,
+            confidence: parseFloat(String(s.confidence)),
+            boundingBox: {
+              x: parseFloat(String(s.boundingBoxX)),
+              y: parseFloat(String(s.boundingBoxY)),
+              width: parseFloat(String(s.boundingBoxWidth)),
+              height: parseFloat(String(s.boundingBoxHeight)),
+            },
+            lightingDirection: s.lightingDirection || undefined,
+            lightingIntensity: s.lightingIntensity ? parseFloat(String(s.lightingIntensity)) : undefined,
+            cameraAngle: s.cameraAngle || undefined,
+          })),
+          sceneContext: {
+            sceneType: sceneContextParts[0] || 'Unknown',
+            brightness: { overall: 128, top: 128, bottom: 128 },
+            edgeDensity: 0.1,
+            colorWarmth: 0,
+            surroundings: bestSurface.surroundings || [],
+            brandCategorySuggestions: sceneContextParts[2] ? sceneContextParts[2].replace('Brands: ', '').split(', ') : [],
+          },
+        };
+
+        const narrative = await analyzeNarrative(narrativeInput);
+        if (!narrative) continue;
+
+        const cultural = analyzeCulturalRelevance(narrative);
+
+        // Save to DB for each surface at this timestamp
+        for (const surface of surfacesAtTime) {
+          const saved = await storage.createSceneAnalysis({
+            videoId,
+            surfaceId: surface.id,
+            frameStart: timestamp,
+            frameEnd: timestamp + 2, // 2s frame interval
+            narrativeContext: narrative.narrativeContext,
+            emotionalTone: narrative.emotionalTone,
+            culturalTags: [...narrative.culturalTags, ...cultural.culturalMoments],
+            placementViability: narrative.placementViability,
+            suggestedCategories: narrative.suggestedProductCategories,
+            reasoning: narrative.reasoning,
+            claudeResponseRaw: { narrative, cultural },
+          });
+          results.push(saved);
+        }
+      }
+
+      res.json({ success: true, analyzed: results.length, results });
+    } catch (err: any) {
+      console.error("[Scene Analysis] Error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to analyze scenes" });
+    }
+  });
+
+  // Get all narrative analysis results for a video
+  app.get("/api/scenes/:videoId/analysis", isAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const analyses = await storage.getSceneAnalysisByVideo(videoId);
+      res.json(analyses);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Get analysis for a specific surface
+  app.get("/api/scenes/:videoId/analysis/:surfaceId", isAuthenticated, async (req: any, res) => {
+    try {
+      const surfaceId = parseInt(req.params.surfaceId);
+      const analysis = await storage.getSceneAnalysisBySurface(surfaceId);
+      if (!analysis) return res.status(404).json({ error: "No analysis found for this surface" });
+      res.json(analysis);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Run brand matching for a scene analysis
+  app.post("/api/scenes/:sceneId/match-brands", isAuthenticated, async (req: any, res) => {
+    try {
+      const sceneId = parseInt(req.params.sceneId);
+
+      // Get the scene analysis
+      const scenes = await storage.getSceneAnalysisByVideo(0); // We need to find by ID
+      // Actually get scene directly via DB
+      const allScenes = await db.select().from((await import("@shared/schema")).sceneAnalysis)
+        .where(eq((await import("@shared/schema")).sceneAnalysis.id, sceneId));
+      const scene = allScenes[0];
+      if (!scene) return res.status(404).json({ error: "Scene analysis not found" });
+
+      // Get all brand products
+      const brands = await storage.getAllBrandProducts();
+      if (brands.length === 0) {
+        return res.json({ matches: [], message: "No brand products available" });
+      }
+
+      // Get the surface for this scene
+      const surface = scene.surfaceId ? (await storage.getDetectedSurfaces(scene.videoId))
+        .find(s => s.id === scene.surfaceId) : null;
+
+      const { matchBrands } = await import("./lib/ai/claude-dense/brandMatcher");
+
+      const brandMatchResult = await matchBrands({
+        narrativeAnalysis: {
+          narrativeContext: scene.narrativeContext || '',
+          emotionalTone: scene.emotionalTone || 'neutral',
+          culturalTags: (scene.culturalTags as string[]) || [],
+          placementViability: scene.placementViability || 0,
+          suggestedProductCategories: (scene.suggestedCategories as string[]) || [],
+          reasoning: scene.reasoning || '',
+        },
+        availableBrands: brands.map(b => ({
+          id: b.id,
+          name: b.name,
+          category: b.category,
+          imageUrl: b.imageUrl,
+        })),
+        surfaceDetails: {
+          surfaceType: surface?.surfaceType || 'Table',
+          boundingBox: {
+            x: parseFloat(String(surface?.boundingBoxX || 0)),
+            y: parseFloat(String(surface?.boundingBoxY || 0)),
+            width: parseFloat(String(surface?.boundingBoxWidth || 0)),
+            height: parseFloat(String(surface?.boundingBoxHeight || 0)),
+          },
+          confidence: parseFloat(String(surface?.confidence || 0)),
+          lightingDirection: surface?.lightingDirection || 'ambient',
+        },
+      });
+
+      // Save matches to DB
+      const savedMatches = [];
+      for (const match of brandMatchResult.matches) {
+        const saved = await storage.createBrandMatchScore({
+          sceneAnalysisId: sceneId,
+          brandProductId: match.brandProductId,
+          compatibilityScore: match.compatibilityScore,
+          reasoning: match.reasoning,
+          suggestedPlacementStyle: match.suggestedPlacementStyle,
+        });
+        savedMatches.push(saved);
+      }
+
+      res.json({ matches: savedMatches });
+    } catch (err: any) {
+      console.error("[Brand Match] Error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to match brands" });
+    }
+  });
+
+  // Get ranked brand matches for a scene
+  app.get("/api/scenes/:sceneId/matches", isAuthenticated, async (req: any, res) => {
+    try {
+      const sceneId = parseInt(req.params.sceneId);
+      const matches = await storage.getBrandMatchesByScene(sceneId);
+      res.json(matches);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Approve a brand match
+  app.post("/api/scenes/:sceneId/matches/:matchId/approve", isAuthenticated, async (req: any, res) => {
+    try {
+      const matchId = parseInt(req.params.matchId);
+      const approvedBy = req.user?.email || req.body.approvedBy || 'system';
+      const updated = await storage.approveBrandMatch(matchId, approvedBy);
+      if (!updated) return res.status(404).json({ error: "Match not found" });
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Auto-generate placements from approved brand matches for a video
+  app.post("/api/scenes/:videoId/auto-place", isAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const userEmail = req.user?.email || '';
+
+      // Get all approved brand matches for this video
+      const matches = await storage.getBrandMatchesByVideo(videoId);
+      const approvedMatches = matches.filter(m => m.approved);
+
+      if (approvedMatches.length === 0) {
+        return res.status(400).json({ error: "No approved brand matches found. Approve matches first." });
+      }
+
+      const createdPlacements = [];
+
+      for (const match of approvedMatches) {
+        // Get the scene analysis to find the surface
+        const scenes = await db.select().from((await import("@shared/schema")).sceneAnalysis)
+          .where(eq((await import("@shared/schema")).sceneAnalysis.id, match.sceneAnalysisId));
+        const scene = scenes[0];
+        if (!scene || !scene.surfaceId) continue;
+
+        // Get the brand product
+        const product = await storage.getBrandProduct(match.brandProductId);
+        if (!product) continue;
+
+        // Get the surface for bbox data
+        const surfaces = await storage.getDetectedSurfaces(videoId);
+        const surface = surfaces.find(s => s.id === scene.surfaceId);
+        if (!surface) continue;
+
+        // Compute scene group ID (same logic as existing placement propagation)
+        const centerX = parseFloat(String(surface.boundingBoxX)) + parseFloat(String(surface.boundingBoxWidth)) / 2;
+        const centerY = parseFloat(String(surface.boundingBoxY)) + parseFloat(String(surface.boundingBoxHeight)) / 2;
+        const sceneGroupId = `video-${videoId}-${surface.surfaceType}-${centerX.toFixed(1)}-${centerY.toFixed(1)}`;
+
+        const placement = await storage.savePlacement({
+          videoId,
+          surfaceId: surface.id,
+          productId: product.id,
+          productImageUrl: product.imageUrl,
+          createdBy: userEmail,
+          role: 'system',
+          sceneGroupId,
+          transform: { offsetX: 0, offsetY: 0, scale: 1, rotation: 0, flipH: false },
+          blend: {
+            opacity: 0.9,
+            blendMode: 'source-over',
+            shadowEnabled: true,
+            shadowBlur: 8,
+            shadowOffsetX: 2,
+            shadowOffsetY: 4,
+            shadowColor: 'rgba(0,0,0,0.3)',
+            featherRadius: 0,
+            brightness: 1,
+            contrast: 1,
+          },
+          status: 'active',
+        });
+        createdPlacements.push(placement);
+      }
+
+      res.json({ success: true, created: createdPlacements.length, placements: createdPlacements });
+    } catch (err: any) {
+      console.error("[Auto-Place] Error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to auto-place" });
+    }
+  });
+
+  // ─── Image Generation (Seeddance 2.0) ───────────────────────────
+
+  // POST /api/generate/product-asset — Generate a product asset for a surface
+  app.post("/api/generate/product-asset", isAuthenticated, async (req: any, res) => {
+    try {
+      const { videoId, surfaceId, brandProductId } = req.body;
+      if (!videoId || !surfaceId || !brandProductId) {
+        return res.status(400).json({ error: "videoId, surfaceId, and brandProductId are required" });
+      }
+
+      // Get surface and scene analysis data
+      const surfaces = await storage.getSurfacesForVideo(videoId);
+      const surface = surfaces.find((s: any) => s.id === surfaceId);
+      if (!surface) return res.status(404).json({ error: "Surface not found" });
+
+      const analyses = await storage.getSceneAnalysisBySurface(surfaceId);
+      const analysis = analyses[0];
+      if (!analysis) return res.status(404).json({ error: "No scene analysis for this surface. Run analysis first." });
+
+      // Get brand product
+      const items = await storage.getMonetizationItems();
+      const brandProduct = items.find((i: any) => i.id === brandProductId);
+      if (!brandProduct) return res.status(404).json({ error: "Brand product not found" });
+
+      const { generateProductAsset } = await import("./lib/ai/image-gen/assetGenerator");
+      const result = await generateProductAsset({
+        videoId,
+        surfaceId,
+        brandProduct: { id: brandProduct.id, name: brandProduct.name, category: brandProduct.category || null },
+        sceneContext: {
+          narrativeContext: analysis.narrativeContext || "",
+          emotionalTone: analysis.emotionalTone || "neutral",
+          culturalTags: (analysis.culturalTags as string[]) || [],
+          suggestedProductCategories: (analysis.suggestedCategories as string[]) || [],
+        },
+        surfaceDimensions: {
+          width: Math.round((surface.bboxWidth || 0.2) * 1920),
+          height: Math.round((surface.bboxHeight || 0.2) * 1080),
+          aspectRatio: (surface.bboxWidth || 0.2) / Math.max(surface.bboxHeight || 0.2, 0.001),
+        },
+        sceneAesthetic: {
+          colorWarmth: surface.colorWarmth || 0,
+          brightness: { overall: surface.brightness || 128, top: 128, bottom: 128 },
+          dominantColors: [],
+        },
+      });
+
+      if (result.success && result.assetPath) {
+        // Save to DB
+        const asset = await storage.createGeneratedAsset({
+          videoId,
+          surfaceId,
+          brandProductId,
+          assetPath: result.assetPath,
+          generationPrompt: result.prompt,
+          assetType: result.assetType,
+          seeddanceJobId: result.jobId || undefined,
+          videoDuration: result.duration || undefined,
+          videoAspectRatio: result.promptDetails?.aspectRatio || undefined,
+          videoResolution: result.promptDetails?.resolution || undefined,
+          needsManualReview: true,
+        });
+        res.json({ success: true, asset, prompt: result.prompt, assetType: result.assetType });
+      } else {
+        res.status(500).json({ success: false, error: result.error, prompt: result.prompt });
+      }
+    } catch (err: any) {
+      console.error("[Generate] Error:", err.message);
+      res.status(500).json({ error: err.message || "Asset generation failed" });
+    }
+  });
+
+  // POST /api/generate/composite-preview — Composite asset onto frame and evaluate
+  app.post("/api/generate/composite-preview", isAuthenticated, async (req: any, res) => {
+    try {
+      const { videoId, surfaceId, assetId } = req.body;
+      if (!videoId || !surfaceId || !assetId) {
+        return res.status(400).json({ error: "videoId, surfaceId, and assetId are required" });
+      }
+
+      const assets = await storage.getAssetsByVideo(videoId);
+      const asset = assets.find((a: any) => a.id === assetId);
+      if (!asset || !asset.assetPath) return res.status(404).json({ error: "Asset not found" });
+
+      const surfaces = await storage.getSurfacesForVideo(videoId);
+      const surface = surfaces.find((s: any) => s.id === surfaceId);
+      if (!surface) return res.status(404).json({ error: "Surface not found" });
+
+      // Build frame path from video's local file
+      const video = await storage.getVideoById(videoId);
+      if (!video || !video.localFilePath) return res.status(404).json({ error: "Video local file not found" });
+
+      const { compositeAssetOnFrame } = await import("./lib/ai/image-gen/compositing");
+      const path = await import("path");
+      const outputDir = path.join(process.cwd(), "public", "generated-assets", videoId.toString());
+      const fullAssetPath = path.join(process.cwd(), "public", asset.assetPath.replace(/^\//, ""));
+
+      const result = await compositeAssetOnFrame({
+        framePath: video.localFilePath,
+        assetPath: fullAssetPath,
+        surfaceBbox: {
+          x: surface.bboxX || 0,
+          y: surface.bboxY || 0,
+          width: surface.bboxWidth || 0.2,
+          height: surface.bboxHeight || 0.2,
+        },
+        frameDimensions: { width: 1920, height: 1080 },
+        outputDir,
+        videoId,
+        surfaceId,
+      });
+
+      res.json({
+        success: true,
+        compositePath: "/" + path.relative(path.join(process.cwd(), "public"), result.compositePath),
+        previewPath: "/" + path.relative(path.join(process.cwd(), "public"), result.previewPath),
+        placedRegion: result.placedRegion,
+      });
+    } catch (err: any) {
+      console.error("[Composite] Error:", err.message);
+      res.status(500).json({ error: err.message || "Compositing failed" });
+    }
+  });
+
+  // POST /api/generate/:assetId/approve — Approve a generated asset
+  app.post("/api/generate/:assetId/approve", isAuthenticated, async (req: any, res) => {
+    try {
+      const assetId = parseInt(req.params.assetId);
+      const approved = await storage.approveAsset(assetId);
+      if (!approved) return res.status(404).json({ error: "Asset not found" });
+      res.json(approved);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Approval failed" });
+    }
+  });
+
+  // GET /api/generate/video/:videoId/assets — List generated assets for a video
+  app.get("/api/generate/video/:videoId/assets", isAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const assets = await storage.getAssetsByVideo(videoId);
+      res.json(assets);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to fetch assets" });
+    }
+  });
+
+  // ─── CDense Content Synthesis ──────────────────────────────────
+
+  // POST /api/synthesize/:videoId — Run full synthesis pipeline for a video
+  app.post("/api/synthesize/:videoId", isAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const { surfaceId, brandProductId, skipEvaluation } = req.body;
+
+      if (!surfaceId || !brandProductId) {
+        return res.status(400).json({ error: "surfaceId and brandProductId are required" });
+      }
+
+      const surfaces = await storage.getSurfacesForVideo(videoId);
+      const surface = surfaces.find((s: any) => s.id === surfaceId);
+      if (!surface) return res.status(404).json({ error: "Surface not found" });
+
+      const analyses = await storage.getSceneAnalysisBySurface(surfaceId);
+      const analysis = analyses[0];
+      if (!analysis) return res.status(404).json({ error: "No scene analysis. Run analysis first." });
+
+      const items = await storage.getMonetizationItems();
+      const brandProduct = items.find((i: any) => i.id === brandProductId);
+      if (!brandProduct) return res.status(404).json({ error: "Brand product not found" });
+
+      const video = await storage.getVideoById(videoId);
+      if (!video || !video.localFilePath) return res.status(404).json({ error: "Video local file not found" });
+
+      const { synthesizeContent } = await import("./lib/ai/cdense/contentSynthesis");
+
+      const result = await synthesizeContent({
+        videoId,
+        surfaceId,
+        brandProduct: { id: brandProduct.id, name: brandProduct.name, category: brandProduct.category || null },
+        sceneContext: {
+          narrativeContext: analysis.narrativeContext || "",
+          emotionalTone: analysis.emotionalTone || "neutral",
+          culturalTags: (analysis.culturalTags as string[]) || [],
+          suggestedProductCategories: (analysis.suggestedCategories as string[]) || [],
+        },
+        surfaceBbox: {
+          x: surface.bboxX || 0,
+          y: surface.bboxY || 0,
+          width: surface.bboxWidth || 0.2,
+          height: surface.bboxHeight || 0.2,
+        },
+        sceneAesthetic: {
+          colorWarmth: surface.colorWarmth || 0,
+          brightness: { overall: surface.brightness || 128, top: 128, bottom: 128 },
+          dominantColors: [],
+        },
+        lightingDirection: surface.lightingDirection || "ambient",
+        framePath: video.localFilePath,
+        frameDimensions: { width: 1920, height: 1080 },
+        skipEvaluation: skipEvaluation || false,
+      });
+
+      if (result.success && result.assetPath) {
+        // Save the generated asset with video metadata
+        await storage.createGeneratedAsset({
+          videoId,
+          surfaceId,
+          brandProductId,
+          assetPath: result.assetPath,
+          compositePath: result.compositePath || undefined,
+          generationPrompt: result.prompt,
+          assetType: result.assetType,
+          seeddanceJobId: result.jobId || undefined,
+          videoDuration: result.videoDuration || undefined,
+          videoAspectRatio: result.videoAspectRatio || undefined,
+          qualityScore: result.evaluation?.qualityScore || undefined,
+          needsManualReview: result.evaluation?.needsManualReview ?? true,
+          approved: result.evaluation ? !result.evaluation.needsManualReview : false,
+        });
+      }
+
+      res.json(result);
+    } catch (err: any) {
+      console.error("[Synthesize] Error:", err.message);
+      res.status(500).json({ error: err.message || "Synthesis failed" });
+    }
+  });
+
+  // POST /api/synthesize/:videoId/decide — Get placement decisions for all surfaces
+  app.post("/api/synthesize/:videoId/decide", isAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const scanMode = req.body.scanMode || "standard";
+
+      const surfaces = await storage.getSurfacesForVideo(videoId);
+      const allAnalyses = await storage.getSceneAnalysisByVideo(videoId);
+
+      if (allAnalyses.length === 0) {
+        return res.status(400).json({ error: "No scene analyses found. Run narrative analysis first." });
+      }
+
+      const { decidePlacement } = await import("./lib/ai/cdense/connector");
+
+      const decisions = [];
+      for (const analysis of allAnalyses) {
+        const surface = surfaces.find((s: any) => s.id === analysis.surfaceId);
+        if (!surface) continue;
+
+        const brandMatches = await storage.getBrandMatchesByScene(analysis.id);
+        const existingPlacements = await storage.getPlacementsForVideo(videoId);
+        const hasExisting = existingPlacements.some((p: any) => p.detectedSurfaceId === surface.id);
+
+        const decision = decidePlacement({
+          videoId,
+          surfaceId: surface.id,
+          narrativeAnalysis: {
+            narrativeContext: analysis.narrativeContext || "",
+            emotionalTone: analysis.emotionalTone || "neutral",
+            culturalTags: (analysis.culturalTags as string[]) || [],
+            placementViability: analysis.placementViability || 0,
+            suggestedProductCategories: (analysis.suggestedCategories as string[]) || [],
+            reasoning: analysis.reasoning || "",
+          },
+          brandMatches: {
+            matches: brandMatches.map((m: any) => ({
+              brandProductId: m.brandProductId,
+              compatibilityScore: m.compatibilityScore || 0,
+              reasoning: m.reasoning || "",
+              suggestedPlacementStyle: m.suggestedPlacementStyle || "natural tabletop",
+            })),
+          },
+          surfaceDetails: {
+            surfaceType: surface.surfaceType || "table",
+            boundingBox: {
+              x: surface.bboxX || 0,
+              y: surface.bboxY || 0,
+              width: surface.bboxWidth || 0.2,
+              height: surface.bboxHeight || 0.2,
+            },
+            confidence: surface.confidence || 0,
+            lightingDirection: surface.lightingDirection || "ambient",
+          },
+          sceneAesthetic: {
+            colorWarmth: surface.colorWarmth || 0,
+            brightness: { overall: surface.brightness || 128, top: 128, bottom: 128 },
+            dominantColors: [],
+          },
+          hasExistingPlacement: hasExisting,
+          scanMode,
+        });
+
+        decisions.push({ surfaceId: surface.id, analysisId: analysis.id, decision });
+      }
+
+      res.json({ decisions, total: decisions.length });
+    } catch (err: any) {
+      console.error("[Decide] Error:", err.message);
+      res.status(500).json({ error: err.message || "Decision failed" });
+    }
+  });
+
+  // ─── Editorial Intelligence: Transcript Pipeline ────────────────
+
+  // POST /api/video/:videoId/transcribe — Run audio extraction + speech-to-text
+  app.post("/api/video/:videoId/transcribe", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const { language = "en", provider } = req.body || {};
+
+      // Validate video exists
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+      if (!video.filePath) return res.status(400).json({ error: "Video has no file path" });
+
+      // Check if transcript already exists
+      const existing = await storage.getVideoTranscript(videoId);
+      if (existing && existing.status === "completed") {
+        return res.json({
+          message: "Transcript already exists",
+          transcript: existing,
+        });
+      }
+
+      // Create pending transcript record
+      const transcriptRecord = await storage.createVideoTranscript({
+        videoId,
+        provider: provider || "auto",
+        language,
+        status: "processing",
+      });
+
+      console.log(`[API] Transcription started for video ${videoId} (transcript ID: ${transcriptRecord.id})`);
+
+      // Run pipeline asynchronously (don't block response)
+      res.json({
+        message: "Transcription started",
+        transcriptId: transcriptRecord.id,
+        status: "processing",
+      });
+
+      // Execute pipeline in background
+      try {
+        const result = await runTranscriptPipeline({
+          videoId,
+          filePath: video.filePath,
+          language,
+          provider: provider || undefined,
+        });
+
+        if (result.success) {
+          await storage.updateVideoTranscript(transcriptRecord.id, {
+            provider: result.provider,
+            fullText: result.fullText,
+            segments: result.segments,
+            speakerMap: result.speakerMap,
+            audioDuration: result.audioDuration,
+            wordCount: result.wordCount,
+            segmentCount: result.segmentCount,
+            status: "completed",
+            processingTimeMs: result.totalProcessingTimeMs,
+          });
+          console.log(`[API] Transcription completed for video ${videoId}: ${result.wordCount} words, ${result.segmentCount} segments`);
+        } else {
+          await storage.updateVideoTranscriptStatus(transcriptRecord.id, "failed", result.error);
+          console.error(`[API] Transcription failed for video ${videoId}: ${result.error}`);
+        }
+      } catch (err: any) {
+        await storage.updateVideoTranscriptStatus(transcriptRecord.id, "failed", err.message);
+        console.error(`[API] Transcription pipeline error for video ${videoId}:`, err.message);
+      }
+    } catch (err: any) {
+      console.error("[API] /api/video/:videoId/transcribe error:", err.message);
+      res.status(500).json({ error: err.message || "Transcription failed" });
+    }
+  });
+
+  // GET /api/video/:videoId/transcript — Get transcript for a video
+  app.get("/api/video/:videoId/transcript", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const transcript = await storage.getVideoTranscript(videoId);
+
+      if (!transcript) {
+        return res.status(404).json({ error: "No transcript found for this video" });
+      }
+
+      res.json(transcript);
+    } catch (err: any) {
+      console.error("[API] /api/video/:videoId/transcript error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to get transcript" });
+    }
+  });
+
+  // POST /api/scenes/:videoId/editorial-analysis — Run Claude Dense editorial clip analysis
+  app.post("/api/scenes/:videoId/editorial-analysis", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const { maxClips = 10 } = req.body || {};
+
+      // Validate video exists
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+
+      // Get transcript (required for editorial analysis)
+      const transcript = await storage.getVideoTranscript(videoId);
+      if (!transcript || transcript.status !== "completed" || !transcript.segments) {
+        return res.status(400).json({
+          error: "Completed transcript required. Run POST /api/video/:videoId/transcribe first.",
+        });
+      }
+
+      // Get detected surfaces for cross-reference
+      const surfaces = await storage.getDetectedSurfaces(videoId);
+
+      // Get brand products for matching
+      const brandProducts = await storage.getAllBrandProducts();
+
+      console.log(
+        `[API] Editorial analysis for video ${videoId}: ` +
+          `${transcript.segments.length} transcript segments, ` +
+          `${surfaces.length} surfaces, ${brandProducts.length} brand products`
+      );
+
+      // Run Claude Dense editorial analysis
+      const editorialMoments = await analyzeEditorial({
+        videoId,
+        transcript: transcript.segments,
+        surfaces: surfaces.map((s) => ({
+          id: s.id,
+          timestamp: parseFloat(String(s.timestamp)),
+          surfaceType: s.surfaceType,
+          confidence: parseFloat(String(s.confidence)),
+          boundingBox: {
+            x: parseFloat(String(s.boundingBoxX)),
+            y: parseFloat(String(s.boundingBoxY)),
+            width: parseFloat(String(s.boundingBoxWidth)),
+            height: parseFloat(String(s.boundingBoxHeight)),
+          },
+        })),
+        brandCatalog: brandProducts.map((b) => ({
+          id: b.id,
+          name: b.name,
+          category: b.category,
+          dominantColor: b.dominantColor,
+        })),
+        maxClips,
+      });
+
+      if (editorialMoments.length === 0) {
+        return res.json({
+          message: "No editorial clip moments found",
+          moments: [],
+          rankedClips: [],
+        });
+      }
+
+      // Get brand matches for surface cross-reference
+      const brandMatches = await storage.getBrandMatchesByVideo(videoId);
+
+      // Cross-reference with surfaces and rank clips
+      const rankedClips = deduplicateClips(
+        rankClips(
+          editorialMoments,
+          surfaces.map((s) => ({
+            id: s.id,
+            videoId: s.videoId,
+            timestamp: parseFloat(String(s.timestamp)),
+            surfaceType: s.surfaceType,
+            confidence: parseFloat(String(s.confidence)),
+          })),
+          brandMatches.map((bm) => ({
+            id: bm.id,
+            sceneAnalysisId: bm.sceneAnalysisId,
+            brandProductId: bm.brandProductId,
+            compatibilityScore: bm.compatibilityScore ?? 0,
+            reasoning: bm.reasoning ?? "",
+            suggestedPlacementStyle: bm.suggestedPlacementStyle ?? undefined,
+          })),
+          transcript.segments,
+          maxClips
+        )
+      );
+
+      console.log(
+        `[API] Editorial analysis complete for video ${videoId}: ` +
+          `${editorialMoments.length} moments → ${rankedClips.length} ranked clips`
+      );
+
+      // Persist editorial clips to the database so they survive page reloads
+      const userId = req.user?.id || 1;
+      try {
+        await storage.saveEditorialClips(videoId, userId, rankedClips);
+        console.log(`[API] Saved ${rankedClips.length} editorial clips to DB for video ${videoId}`);
+      } catch (saveErr: any) {
+        // Non-fatal — still return the results even if DB save fails (table may not exist yet)
+        console.warn(`[API] Failed to persist editorial clips: ${saveErr.message}`);
+      }
+
+      res.json({
+        message: `Found ${rankedClips.length} editorial clip moments`,
+        moments: editorialMoments,
+        rankedClips,
+      });
+    } catch (err: any) {
+      console.error("[API] /api/scenes/:videoId/editorial-analysis error:", err.message);
+      res.status(500).json({ error: err.message || "Editorial analysis failed" });
+    }
+  });
+
+  // GET /api/scenes/:videoId/editorial-clips — Load previously saved editorial clips
+  app.get("/api/scenes/:videoId/editorial-clips", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+
+      const clips = await storage.getEditorialClipsByVideo(videoId);
+      res.json({ clips });
+    } catch (err: any) {
+      // Gracefully handle table not existing yet
+      if (err.message?.includes("editorial_clips") && err.message?.includes("does not exist")) {
+        return res.json({ clips: [] });
+      }
+      console.error("[API] /api/scenes/:videoId/editorial-clips error:", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ─── Clip Feedback Endpoints ──────────────────────────────────
+
+  // POST /api/remix/clips/:clipId/feedback — Submit creator/brand feedback
+  app.post("/api/remix/clips/:clipId/feedback", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const clipId = parseInt(req.params.clipId);
+      const { feedbackType, approved, rating, rejectionReason, views, engagementRate, shareCount, completionRate, clickThroughRate } = req.body;
+
+      if (!feedbackType || !["creator", "brand", "performance"].includes(feedbackType)) {
+        return res.status(400).json({ error: "feedbackType must be 'creator', 'brand', or 'performance'" });
+      }
+
+      const feedback = await storage.createClipFeedback({
+        generatedClipId: clipId,
+        feedbackType,
+        approved: approved ?? null,
+        rating: rating ?? null,
+        rejectionReason: rejectionReason ?? null,
+        views: views ?? null,
+        engagementRate: engagementRate ?? null,
+        shareCount: shareCount ?? null,
+        completionRate: completionRate ?? null,
+        clickThroughRate: clickThroughRate ?? null,
+      });
+
+      res.json(feedback);
+    } catch (err: any) {
+      console.error("[API] /api/remix/clips/:clipId/feedback error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to submit feedback" });
+    }
+  });
+
+  // GET /api/remix/clips/:clipId/feedback — Get feedback for a clip
+  app.get("/api/remix/clips/:clipId/feedback", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const clipId = parseInt(req.params.clipId);
+      const feedback = await storage.getClipFeedback(clipId);
+      res.json(feedback);
+    } catch (err: any) {
+      console.error("[API] GET /api/remix/clips/:clipId/feedback error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to get feedback" });
+    }
+  });
+
+  // GET /api/remix/analytics/rubric-performance — Analyze rubric scores vs performance
+  app.get("/api/remix/analytics/rubric-performance", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const performanceFeedback = await storage.getPerformanceFeedback();
+      // Return raw data — frontend or a future analyticsCollector will compute correlations
+      res.json({
+        feedbackCount: performanceFeedback.length,
+        feedback: performanceFeedback,
+      });
+    } catch (err: any) {
+      console.error("[API] /api/remix/analytics/rubric-performance error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to get analytics" });
+    }
+  });
+
+  // ─── Auto-Remix Engine ──────────────────────────────────────────
+
+  // POST /api/remix/:videoId/start — Kick off a remix job
+  // Supports: clipRange (direct editorial clip), editorialMode (full editorial pipeline), or legacy (per-frame)
+  app.post("/api/remix/:videoId/start", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      // authUserId can be an email string or numeric ID — ensure we have a numeric userId
+      const rawUserId = req.authUserId || req.user?.id || 1;
+      const userId = typeof rawUserId === "number" ? rawUserId : parseInt(rawUserId) || 1;
+      const config = req.body || {};
+
+      // Validate video exists
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+
+      // For editorial mode with clipRange, we don't require scene analyses
+      // For legacy mode, check for scene analyses
+      const isEditorial = !!config.clipRange || config.editorialMode;
+      if (!isEditorial) {
+        const analyses = await storage.getSceneAnalysisByVideo(videoId);
+        if (analyses.length === 0) {
+          return res.status(400).json({ error: "No scene analyses found. Run Claude Dense analysis first via Narrative Insights." });
+        }
+      }
+
+      // Start the remix pipeline in the background
+      const { runRemixPipeline } = await import("./lib/remix/remixOrchestrator");
+
+      // Build pipeline config — pass through clipRange and editorialMode
+      const pipelineConfig = {
+        minClipDuration: config.minClipDuration || 15,
+        maxClipDuration: config.maxClipDuration || 60,
+        maxClips: config.maxClips || 5,
+        platformTargets: config.platformTargets || ["tiktok", "youtube_shorts"],
+        captionsEnabled: config.captionsEnabled !== false,
+        captionStyle: config.captionStyle || "highlight",
+        clipRange: config.clipRange || undefined,
+        editorialMode: isEditorial,
+      };
+
+      // Return the job ID immediately, process async
+      const job = await storage.createRemixJob({
+        videoId,
+        userId,
+        status: "queued",
+        config: pipelineConfig,
+        platformTargets: pipelineConfig.platformTargets,
+      });
+
+      // Run pipeline asynchronously
+      runRemixPipeline(videoId, userId, pipelineConfig).catch(async (err) => {
+        console.error(`[Remix] Background job ${job.id} failed:`, err);
+        try {
+          await storage.updateRemixJobStatus(job.id, "failed", err.message || "Pipeline crashed");
+        } catch (dbErr) {
+          console.error(`[Remix] Failed to update job ${job.id} status to failed:`, dbErr);
+        }
+      });
+
+      const mode = config.clipRange ? "editorial-clip" : isEditorial ? "editorial" : "legacy";
+      res.json({ jobId: job.id, status: "queued", mode, message: "Remix job started" });
+    } catch (err: any) {
+      console.error("[Remix Start] Error:", err.message, err.stack);
+      res.status(500).json({ error: err.message || "Failed to start remix" });
+    }
+  });
+
+  // GET /api/remix/jobs/:jobId — Get job status and clips
+  app.get("/api/remix/jobs/:jobId", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const jobId = parseInt(req.params.jobId);
+      const job = await storage.getRemixJob(jobId);
+      if (!job) return res.status(404).json({ error: "Remix job not found" });
+
+      const clips = await storage.getClipsByJob(jobId);
+      res.json({ job, clips });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to fetch job" });
+    }
+  });
+
+  // GET /api/remix/video/:videoId/jobs — List all remix jobs for a video
+  app.get("/api/remix/video/:videoId/jobs", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const userId = req.user?.id || 1;
+      const jobs = await storage.getRemixJobsByUser(userId);
+      const videoJobs = jobs.filter(j => j.videoId === videoId);
+      res.json(videoJobs);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to fetch jobs" });
+    }
+  });
+
+  // GET /api/remix/clips/:videoId — List all generated clips for a video
+  app.get("/api/remix/clips/:videoId", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const clips = await storage.getClipsByVideo(videoId);
+      res.json(clips);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to fetch clips" });
+    }
+  });
+
+  // POST /api/remix/clips/:clipId/approve — Approve a clip for publishing
+  app.post("/api/remix/clips/:clipId/approve", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const clipId = parseInt(req.params.clipId);
+      const updated = await storage.updateClipStatus(clipId, "ready");
+      if (!updated) return res.status(404).json({ error: "Clip not found" });
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Approval failed" });
+    }
+  });
+
+  // POST /api/remix/clips/:clipId/reject — Reject a clip
+  app.post("/api/remix/clips/:clipId/reject", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const clipId = parseInt(req.params.clipId);
+      const updated = await storage.updateClipStatus(clipId, "rejected");
+      if (!updated) return res.status(404).json({ error: "Clip not found" });
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Rejection failed" });
+    }
+  });
+
+  // POST /api/remix/clips/:clipId/publish — Mark clip as published
+  app.post("/api/remix/clips/:clipId/publish", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const clipId = parseInt(req.params.clipId);
+      const { platform, url } = req.body;
+      if (!platform) return res.status(400).json({ error: "platform is required" });
+
+      const published = await storage.publishClip(clipId, platform, url || "");
+      if (!published) return res.status(404).json({ error: "Clip not found" });
+      res.json(published);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Publishing failed" });
+    }
+  });
+
+  // GET /api/remix/clips/:clipId/download — Stream clip file (Object Storage or local)
+  app.get("/api/remix/clips/:clipId/download", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const clipId = parseInt(req.params.clipId);
+      const clip = await findClipById(clipId);
+      if (!clip || !clip.exportPath) {
+        return res.status(404).json({ error: "Clip not found or not exported" });
+      }
+
+      const filename = `fullscale-clip-${clip.videoId}-${clipId}.mp4`;
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      res.setHeader("Content-Type", "video/mp4");
+
+      // Check if stored in Object Storage (/storage/... paths)
+      if (clip.exportPath.startsWith("/storage/")) {
+        const { getStorageStream } = await import("./lib/objectStorage");
+        const objectKey = clip.exportPath.replace(/^\/storage\//, "public/");
+        const { stream } = getStorageStream(objectKey);
+        stream.on("error", (err: any) => {
+          console.error(`[Remix Download] Object Storage stream error: ${err.message}`);
+          if (!res.headersSent) {
+            res.status(404).json({ error: "Clip file not found in storage" });
+          }
+        });
+        stream.pipe(res);
+      } else {
+        // Fallback: local file path
+        const fullPath = path.join(process.cwd(), "public", clip.exportPath.replace(/^\//, ""));
+        if (!fs.existsSync(fullPath)) {
+          return res.status(404).json({ error: "Clip file not found on disk" });
+        }
+        const fileStream = fs.createReadStream(fullPath);
+        fileStream.pipe(res);
+      }
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Download failed" });
+    }
+  });
+
+  // ─── Phase 2C: Clip Re-Render ──────────────────────────────────
+
+  // POST /api/remix/clips/:clipId/re-render — Re-render an existing clip with modifications
+  app.post("/api/remix/clips/:clipId/re-render", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const clipId = parseInt(req.params.clipId);
+
+      // Validate clip exists
+      const clip = await storage.getClipById(clipId);
+      if (!clip) return res.status(404).json({ error: "Clip not found" });
+
+      const { newStart, newEnd, captionsEnabled, captionStyle, platformTarget } = req.body;
+
+      // Basic validation
+      if (newStart !== undefined && newEnd !== undefined && newEnd <= newStart) {
+        return res.status(400).json({ error: "newEnd must be greater than newStart" });
+      }
+
+      const { reRenderClip } = await import("./lib/remix/remixOrchestrator");
+
+      // Run re-render asynchronously
+      const modifications = {
+        newStart: newStart !== undefined ? parseFloat(newStart) : undefined,
+        newEnd: newEnd !== undefined ? parseFloat(newEnd) : undefined,
+        captionsEnabled: captionsEnabled !== undefined ? captionsEnabled : undefined,
+        captionStyle: captionStyle || undefined,
+        platformTarget: platformTarget || undefined,
+      };
+
+      res.json({
+        status: "rendering",
+        originalClipId: clipId,
+        modifications,
+        message: "Re-render started",
+      });
+
+      // Run in background after response
+      reRenderClip(clipId, modifications).catch(async (err) => {
+        console.error(`[Re-Render] Background re-render for clip ${clipId} failed:`, err);
+        try {
+          const clip = await storage.getClipById(clipId);
+          if (clip?.remixJobId) {
+            await storage.updateRemixJobStatus(clip.remixJobId, "failed", `Re-render failed: ${err.message || "unknown"}`);
+          }
+        } catch (dbErr) {
+          console.error(`[Re-Render] Failed to update job status for clip ${clipId}:`, dbErr);
+        }
+      });
+    } catch (err: any) {
+      console.error("[Re-Render Route] Error:", err.message);
+      res.status(500).json({ error: err.message || "Re-render failed" });
+    }
+  });
+
+  // ─── Phase 2B: Multi-Segment Stitching ───────────────────────
+
+  // POST /api/remix/:videoId/narrative-thread — Run Claude narrative threading analysis
+  app.post("/api/remix/:videoId/narrative-thread", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+
+      // Validate video exists
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+
+      // Load transcript
+      const transcript = await storage.getVideoTranscript(videoId);
+      if (!transcript || transcript.status !== "completed" || !transcript.segments) {
+        return res.status(400).json({ error: "No completed transcript. Run transcript analysis first." });
+      }
+
+      // Load surfaces and brand catalog
+      const surfaces = await storage.getDetectedSurfaces(videoId);
+      const brandCatalog = await storage.getAllBrandProducts();
+
+      const { analyzeNarrativeThread } = await import("./lib/ai/claude-dense/editorialAnalyzer");
+
+      const targetDuration = req.body.targetDuration || 90;
+      const segmentCount = req.body.segmentCount || 4;
+
+      const result = await analyzeNarrativeThread({
+        videoId,
+        transcript: transcript.segments as any[],
+        surfaces: surfaces.map(s => ({
+          id: s.id,
+          timestamp: parseFloat(String(s.timestamp)),
+          surfaceType: s.surfaceType || "unknown",
+          confidence: parseFloat(String(s.confidence)) || 0,
+          boundingBox: {
+            x: parseFloat(String(s.boundingBoxX)) || 0,
+            y: parseFloat(String(s.boundingBoxY)) || 0,
+            width: parseFloat(String(s.boundingBoxWidth)) || 0,
+            height: parseFloat(String(s.boundingBoxHeight)) || 0,
+          },
+        })),
+        brandCatalog: brandCatalog.map(b => ({
+          id: b.id,
+          name: b.name,
+          category: b.category || null,
+          dominantColor: null,
+        })),
+        targetDuration,
+        segmentCount,
+      });
+
+      if (!result) {
+        return res.status(500).json({ error: "Narrative thread analysis returned no results" });
+      }
+
+      res.json(result);
+    } catch (err: any) {
+      console.error("[Narrative Thread Route] Error:", err.message, err.stack);
+      res.status(500).json({ error: err.message || "Narrative thread analysis failed" });
+    }
+  });
+
+  // POST /api/remix/:videoId/stitch — Generate a stitched highlight reel
+  app.post("/api/remix/:videoId/stitch", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const rawUserId = req.authUserId || req.user?.id || 1;
+      const userId = typeof rawUserId === "number" ? rawUserId : parseInt(rawUserId) || 1;
+
+      // Validate video exists
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+
+      const {
+        segments,
+        transitions = "crossfade",
+        platformTarget = "tiktok",
+        captionsEnabled = true,
+        narrativeArc,
+        suggestedTitle,
+      } = req.body;
+
+      if (!segments || !Array.isArray(segments) || segments.length < 2) {
+        return res.status(400).json({ error: "At least 2 segments required" });
+      }
+
+      // Validate segment structure
+      for (const seg of segments) {
+        if (typeof seg.start !== "number" || typeof seg.end !== "number" || seg.end <= seg.start) {
+          return res.status(400).json({ error: "Each segment must have valid start and end timestamps" });
+        }
+      }
+
+      // Create stitch plan record
+      const plan = await storage.createStitchPlan({
+        videoId,
+        userId,
+        status: "generating",
+        narrativeArc: narrativeArc || null,
+        suggestedTitle: suggestedTitle || null,
+        segments: segments.map((seg: any) => ({
+          start: seg.start,
+          end: seg.end,
+          role: seg.role || "development",
+          narrativePurpose: seg.narrativePurpose || "",
+          connectionToNext: seg.connectionToNext || undefined,
+          suggestedTransition: seg.suggestedTransition || transitions,
+          enabled: seg.enabled !== false,
+        })),
+        totalDuration: segments.reduce((sum: number, seg: any) => sum + (seg.end - seg.start), 0),
+        transitionStyle: transitions,
+        platformTarget,
+      });
+
+      // Return immediately with plan ID
+      res.json({
+        planId: plan.id,
+        status: "generating",
+        message: "Stitch job started",
+      });
+
+      // Run stitching in background
+      (async () => {
+        try {
+          const { PLATFORM_CONFIGS } = await import("./lib/remix/clipDetector");
+          const { stitchSegments } = await import("./lib/remix/clipStitcher");
+
+          const filePath = video.filePath;
+          if (!filePath) throw new Error("Video has no file path");
+
+          // Note: resolveVideoPath is not exported — inline the logic
+          const { objectKeyFromServeUrl, downloadToTempFile, uploadFileToStorage } = await import("./lib/objectStorage");
+
+          let videoPath: string;
+          let isTempFile = false;
+
+          if (filePath.startsWith("/storage/")) {
+            const objectKey = objectKeyFromServeUrl(filePath);
+            videoPath = await downloadToTempFile(objectKey, "/tmp/remix-videos");
+            isTempFile = true;
+          } else {
+            videoPath = filePath;
+            if (filePath.startsWith("/") && !fs.existsSync(filePath)) {
+              const publicPath = path.join(process.cwd(), "public", filePath);
+              if (fs.existsSync(publicPath)) videoPath = publicPath;
+            }
+          }
+
+          const platformConfig = PLATFORM_CONFIGS[platformTarget];
+          if (!platformConfig) throw new Error(`Unknown platform: ${platformTarget}`);
+
+          const outputDir = path.join(process.cwd(), "public", "exported-clips", `stitch_${plan.id}`);
+
+          // Build stitch segments with transition types
+          const stitchSegs = segments
+            .filter((_: any, i: number) => {
+              const planSeg = plan.segments?.[i];
+              return !planSeg || planSeg.enabled !== false;
+            })
+            .map((seg: any, i: number) => ({
+              start: seg.start,
+              end: seg.end,
+              transitionIn: i === 0 ? "cut" as const : (seg.suggestedTransition || transitions) as "cut" | "crossfade" | "branded_wipe",
+              transitionDuration: 0.5,
+            }));
+
+          const result = await stitchSegments({
+            videoPath,
+            videoId,
+            segments: stitchSegs,
+            platformConfig,
+            captionsEnabled,
+            outputDir,
+            planId: plan.id,
+          });
+
+          // Clean up temp video
+          if (isTempFile) {
+            try { fs.unlinkSync(videoPath); } catch { /* non-fatal */ }
+          }
+
+          if (!result.success) {
+            await storage.updateStitchPlanStatus(plan.id, "failed", {
+              errorMessage: result.error || "Stitching failed",
+            });
+            return;
+          }
+
+          // Upload to Object Storage
+          let storagePath: string | null = null;
+          let thumbStoragePath: string | null = null;
+
+          if (result.outputPath && fs.existsSync(result.outputPath)) {
+            try {
+              const filename = path.basename(result.outputPath);
+              const objectKey = `public/exported-clips/stitch_${plan.id}/${filename}`;
+              storagePath = await uploadFileToStorage(result.outputPath, objectKey);
+              fs.unlinkSync(result.outputPath);
+            } catch (uploadErr: any) {
+              console.warn(`[Stitch] Upload failed: ${uploadErr.message}`);
+              storagePath = "/" + path.relative(path.join(process.cwd(), "public"), result.outputPath);
+            }
+          }
+
+          if (result.thumbnailPath && fs.existsSync(result.thumbnailPath)) {
+            try {
+              const filename = path.basename(result.thumbnailPath);
+              const objectKey = `public/exported-clips/stitch_${plan.id}/${filename}`;
+              thumbStoragePath = await uploadFileToStorage(result.thumbnailPath, objectKey);
+              fs.unlinkSync(result.thumbnailPath);
+            } catch (uploadErr: any) {
+              thumbStoragePath = result.thumbnailPath ? "/" + path.relative(path.join(process.cwd(), "public"), result.thumbnailPath) : null;
+            }
+          }
+
+          // Create a remix job + generated clip record for the stitched output
+          const stitchJob = await storage.createRemixJob({
+            videoId,
+            userId,
+            status: "completed",
+            config: {
+              minClipDuration: 0,
+              maxClipDuration: 300,
+              maxClips: 1,
+              platformTargets: [platformTarget],
+              captionsEnabled,
+            },
+            platformTargets: [platformTarget],
+          });
+
+          const dbClip = await storage.createGeneratedClip({
+            remixJobId: stitchJob.id,
+            videoId,
+            clipStart: segments[0].start,
+            clipEnd: segments[segments.length - 1].end,
+            duration: result.duration,
+            format: "mp4",
+            platformTarget,
+            captionsEnabled,
+            qualityScore: 0.8, // Default for stitched content
+            exportPath: storagePath,
+            thumbnailPath: thumbStoragePath,
+            status: "ready",
+          });
+
+          await storage.updateStitchPlanStatus(plan.id, "completed", {
+            outputPath: storagePath || undefined,
+            thumbnailPath: thumbStoragePath || undefined,
+            qualityScore: 0.8,
+            generatedClipId: dbClip.id,
+          });
+
+          console.log(`[Stitch] Plan ${plan.id} complete — clip #${dbClip.id}`);
+        } catch (err: any) {
+          console.error(`[Stitch] Background stitch for plan ${plan.id} failed:`, err);
+          await storage.updateStitchPlanStatus(plan.id, "failed", {
+            errorMessage: err.message,
+          });
+        }
+      })();
+    } catch (err: any) {
+      // Gracefully handle missing stitch_plans table
+      if (err.message?.includes("stitch_plans") && err.message?.includes("does not exist")) {
+        console.warn("[Stitch] Table not yet created — run `npm run db:push` to migrate");
+        return res.status(503).json({ error: "Stitch plans feature requires database migration. Run `npm run db:push` on Replit." });
+      }
+      console.error("[Stitch Route] Error:", err.message, err.stack);
+      res.status(500).json({ error: err.message || "Stitch failed" });
+    }
+  });
+
+  // GET /api/remix/:videoId/stitch-plans — List stitch plans for a video
+  app.get("/api/remix/:videoId/stitch-plans", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const plans = await storage.getStitchPlansByVideo(videoId);
+      res.json(plans);
+    } catch (err: any) {
+      // Gracefully handle missing stitch_plans table (needs db:push migration)
+      if (err.message?.includes("stitch_plans") && err.message?.includes("does not exist")) {
+        console.warn("[StitchPlans] Table not yet created — run `npm run db:push` to migrate");
+        return res.json([]);
+      }
+      res.status(500).json({ error: err.message || "Failed to fetch stitch plans" });
+    }
+  });
+
+  // GET /api/remix/stitch-plans/:planId — Get a specific stitch plan
+  app.get("/api/remix/stitch-plans/:planId", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const planId = parseInt(req.params.planId);
+      const plan = await storage.getStitchPlan(planId);
+      if (!plan) return res.status(404).json({ error: "Stitch plan not found" });
+      res.json(plan);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to fetch stitch plan" });
+    }
+  });
+
+  // DELETE /api/remix/stitch-plans/:planId — Delete a stitch plan (highlight reel)
+  app.delete("/api/remix/stitch-plans/:planId", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const planId = parseInt(req.params.planId);
+      if (isNaN(planId)) return res.status(400).json({ error: "Invalid plan ID" });
+
+      const plan = await storage.getStitchPlan(planId);
+      if (!plan) return res.status(404).json({ error: "Stitch plan not found" });
+
+      await storage.deleteStitchPlan(planId);
+      res.json({ success: true, message: "Highlight reel deleted" });
+    } catch (err: any) {
+      console.error(`[StitchPlans] Delete failed for plan ${req.params.planId}:`, err);
+      res.status(500).json({ error: err.message || "Failed to delete stitch plan" });
+    }
+  });
+
+  // ─── AI Co-Pilot (Phase 4) ───────────────────────────────────
+
+  // POST /api/remix/:videoId/copilot/ask — Ask the co-pilot (SSE streaming)
+  app.post("/api/remix/:videoId/copilot/ask", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const { trigger, userMessage, clipId } = req.body;
+
+      if (!trigger || !["post_generation", "post_trim", "low_score", "user_question"].includes(trigger)) {
+        return res.status(400).json({ error: "Invalid trigger. Must be one of: post_generation, post_trim, low_score, user_question" });
+      }
+
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+
+      // Build session context from DB
+      const { streamCopilot } = await import("./lib/ai/remixCopilot");
+
+      // Load transcript
+      const videoTranscript = await storage.getVideoTranscript(videoId);
+      const transcript = videoTranscript?.segments
+        ? (videoTranscript.segments as any[])
+        : [];
+
+      // Load surfaces
+      const allSurfaces = await storage.getDetectedSurfaces(videoId);
+      const surfaces = allSurfaces.map((s: any) => ({
+        id: s.id,
+        timestamp: s.timestamp || 0,
+        surfaceType: s.surfaceType || "unknown",
+        confidence: s.confidence || 0.5,
+      }));
+
+      // Load brand catalog — use authUserId from flexible auth (not req.user which is Passport-only)
+      const userId = String(req.authUserId || req.user?.id || 1);
+      const allBrands = await storage.getBrandProducts(userId);
+      const brandCatalog = allBrands.map((b: any) => ({
+        id: b.id,
+        name: b.name,
+        category: b.category || null,
+      }));
+
+      // Load current clip if specified
+      let currentClip: any = undefined;
+      if (clipId) {
+        const clip = await storage.getClipById(parseInt(clipId));
+        if (clip) {
+          currentClip = {
+            clipId: clip.id,
+            start: clip.clipStart || 0,
+            end: clip.clipEnd || 0,
+            duration: clip.duration || 0,
+            platform: clip.platformTarget || "tiktok",
+            qualityScore: clip.qualityScore || 0,
+            scores: (clip as any).qualityBreakdown || undefined,
+            placements: [],
+            captions: undefined,
+            exportPath: clip.exportPath || undefined,
+          };
+        }
+      }
+
+      // Load existing clips for this video (for stitch suggestions)
+      const allClips = await storage.getClipsByVideo(videoId);
+      const existingClips = allClips.slice(0, 20).map((c: any) => ({
+        clipId: c.id,
+        start: c.clipStart || 0,
+        end: c.clipEnd || 0,
+        platform: c.platformTarget || "tiktok",
+        qualityScore: c.qualityScore || 0,
+      }));
+
+      const sessionContext = {
+        videoId,
+        videoTitle: video.title || `Video ${videoId}`,
+        videoDuration: parseFloat(video.duration as string) || 0,
+        transcript,
+        currentClip,
+        surfaces,
+        brandCatalog,
+        existingClips,
+        editorialAnalysis: undefined,
+        editHistory: [],
+      };
+
+      // Verify Anthropic API key is available before starting SSE stream
+      const apiKey = process.env.ANTHROPIC_API_KEY;
+      const anthropicBaseURL = process.env.AI_INTEGRATIONS_ANTHROPIC_BASE_URL || process.env.ANTHROPIC_BASE_URL;
+      if (!apiKey) {
+        console.error("[CopilotRoute] ANTHROPIC_API_KEY is not set. Set it in Secrets/Environment.");
+        // Log all env vars that start with ANTHROPIC or AI_INTEGRATIONS for debugging
+        const relevantVars = Object.keys(process.env).filter(k => k.includes('ANTHROPIC') || k.includes('AI_INTEGRATIONS'));
+        console.error(`[CopilotRoute] Relevant env vars found: ${relevantVars.join(', ') || 'NONE'}`);
+        return res.status(500).json({ error: "AI Co-Pilot is not configured. Please add ANTHROPIC_API_KEY to your environment secrets." });
+      }
+      // Log key prefix for debugging (safe: only first 8 chars)
+      console.log(`[CopilotRoute] API key present: ${apiKey.substring(0, 8)}... (${apiKey.length} chars)`);
+      if (anthropicBaseURL) console.log(`[CopilotRoute] Custom base URL: ${anthropicBaseURL}`);
+      console.log(`[CopilotRoute] Starting SSE stream for video ${videoId}, trigger="${trigger}", user="${userId}", clipId=${clipId || "none"}`);
+      console.log(`[CopilotRoute] Context: transcript=${transcript.length} segs, surfaces=${surfaces.length}, brands=${brandCatalog.length}, clips=${existingClips.length}`);
+
+      // Set up SSE headers
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+      });
+
+      // Stream the response
+      const generator = streamCopilot({
+        sessionContext,
+        trigger,
+        userMessage: userMessage || undefined,
+      });
+
+      for await (const chunk of generator) {
+        res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+      }
+
+      res.write("data: [DONE]\n\n");
+      res.end();
+    } catch (err: any) {
+      const errorDetail = err.message || "Unknown error";
+      const errorType = err.constructor?.name || "Error";
+      const httpStatus = err.status || err.statusCode || null;
+      console.error(`[CopilotRoute] SSE Error (${errorType}):`, errorDetail);
+      if (httpStatus) console.error(`[CopilotRoute] HTTP Status: ${httpStatus}`);
+      if (err.error) console.error(`[CopilotRoute] API Error body:`, JSON.stringify(err.error));
+      if (err.stack) console.error("[CopilotRoute] Stack:", err.stack);
+
+      // Check for specific Anthropic API errors — match both HTTP status codes and error text
+      let userMessage = `Something went wrong (${errorType}). Please try again.`;
+      if (httpStatus === 401 || errorDetail.includes("401") || errorDetail.includes("authentication") || errorDetail.includes("invalid x-api-key") || errorDetail.includes("api_key")) {
+        userMessage = "AI service authentication failed. The Anthropic API key may be invalid or expired. Check ANTHROPIC_API_KEY in your environment secrets.";
+      } else if (httpStatus === 429 || errorDetail.includes("429") || errorDetail.includes("rate")) {
+        userMessage = "AI service rate limited. Please wait a moment and try again.";
+      } else if (errorDetail.includes("timeout") || errorDetail.includes("ECONNREFUSED") || errorDetail.includes("ENOTFOUND") || errorDetail.includes("fetch failed")) {
+        userMessage = "AI service is temporarily unreachable. Please try again in a moment.";
+      } else if (httpStatus === 500 || httpStatus === 503 || errorDetail.includes("overloaded")) {
+        userMessage = "AI service is temporarily unavailable. Please try again in a moment.";
+      } else if (errorDetail.includes("model")) {
+        userMessage = "AI model is unavailable. Please try again later.";
+      } else if (errorDetail.includes("ANTHROPIC_API_KEY") || errorDetail.includes("api key")) {
+        userMessage = "AI Co-Pilot is not configured. Please add ANTHROPIC_API_KEY to your environment secrets.";
+      }
+
+      // If headers already sent, end the stream with error
+      if (res.headersSent) {
+        try {
+          res.write(`data: ${JSON.stringify({ type: "done", data: JSON.stringify({ message: userMessage, suggestions: [], followUpQuestions: ["Can you retry?"] }) })}\n\n`);
+          res.write("data: [DONE]\n\n");
+          res.end();
+        } catch (writeErr) {
+          console.error("[CopilotRoute] Failed to write SSE error:", writeErr);
+          try { res.end(); } catch {}
+        }
+      } else {
+        res.status(500).json({ error: userMessage });
+      }
+    }
+  });
+
+  // POST /api/remix/:videoId/copilot/suggestions — Get suggestions (non-streaming)
+  app.post("/api/remix/:videoId/copilot/suggestions", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const { trigger, userMessage, clipId } = req.body;
+
+      if (!trigger || !["post_generation", "post_trim", "low_score", "user_question"].includes(trigger)) {
+        return res.status(400).json({ error: "Invalid trigger" });
+      }
+
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+
+      const { askCopilot } = await import("./lib/ai/remixCopilot");
+
+      // Load context (same as SSE route but more concise)
+      const videoTranscript = await storage.getVideoTranscript(videoId);
+      const transcript = videoTranscript?.segments
+        ? (videoTranscript.segments as any[])
+        : [];
+
+      const allSurfaces = await storage.getDetectedSurfaces(videoId);
+      const surfaces = allSurfaces.map((s: any) => ({
+        id: s.id,
+        timestamp: s.timestamp || 0,
+        surfaceType: s.surfaceType || "unknown",
+        confidence: s.confidence || 0.5,
+      }));
+
+      const userId = String(req.authUserId || req.user?.id || 1);
+      const allBrands = await storage.getBrandProducts(userId);
+      const brandCatalog = allBrands.map((b: any) => ({
+        id: b.id,
+        name: b.name,
+        category: b.category || null,
+      }));
+
+      let currentClip: any = undefined;
+      if (clipId) {
+        const clip = await storage.getClipById(parseInt(clipId));
+        if (clip) {
+          currentClip = {
+            clipId: clip.id,
+            start: clip.clipStart || 0,
+            end: clip.clipEnd || 0,
+            duration: clip.duration || 0,
+            platform: clip.platformTarget || "tiktok",
+            qualityScore: clip.qualityScore || 0,
+            scores: (clip as any).qualityBreakdown || undefined,
+            placements: [],
+            captions: undefined,
+            exportPath: clip.exportPath || undefined,
+          };
+        }
+      }
+
+      const sessionContext = {
+        videoId,
+        videoTitle: video.title || `Video ${videoId}`,
+        videoDuration: parseFloat(video.duration as string) || 0,
+        transcript,
+        currentClip,
+        surfaces,
+        brandCatalog,
+        existingClips: [],
+        editorialAnalysis: undefined,
+        editHistory: [],
+      };
+
+      const response = await askCopilot({
+        sessionContext,
+        trigger,
+        userMessage: userMessage || undefined,
+      });
+
+      res.json(response);
+    } catch (err: any) {
+      console.error("[CopilotRoute] Error:", err.message);
+      res.status(500).json({ error: err.message || "Co-pilot request failed" });
+    }
+  });
+
+  // ─── Remix Templates ──────────────────────────────────────────
+
+  // GET /api/remix/templates — List user's remix templates
+  app.get("/api/remix/templates", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user?.id || 1;
+      const templates = await storage.getRemixTemplates(userId);
+      res.json(templates);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to fetch templates" });
+    }
+  });
+
+  // POST /api/remix/templates — Create a new remix template
+  app.post("/api/remix/templates", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user?.id || 1;
+      const { name, description, formatRules, transitionStyle, captionStyle } = req.body;
+      if (!name) return res.status(400).json({ error: "name is required" });
+
+      const template = await storage.createRemixTemplate({
+        userId,
+        name,
+        description: description || null,
+        formatRules: formatRules || null,
+        transitionStyle: transitionStyle || null,
+        captionStyle: captionStyle || null,
+      });
+      res.json(template);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to create template" });
+    }
+  });
+
+  // PUT /api/remix/templates/:id — Update a template
+  app.put("/api/remix/templates/:id", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const updated = await storage.updateRemixTemplate(id, req.body);
+      if (!updated) return res.status(404).json({ error: "Template not found" });
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Update failed" });
+    }
+  });
+
+  // DELETE /api/remix/templates/:id — Delete a template
+  app.delete("/api/remix/templates/:id", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      await storage.deleteRemixTemplate(id);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Delete failed" });
+    }
+  });
+
+  // ─── Distribution & Publishing ──────────────────────────────────
+
+  // Distribution Profiles (connected social accounts)
+
+  // GET /api/distribution/profiles — List user's connected platforms
+  app.get("/api/distribution/profiles", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user?.id || 1;
+      const profiles = await storage.getDistributionProfiles(userId);
+      // Strip sensitive tokens from response
+      const safe = profiles.map(p => ({
+        ...p,
+        accessToken: p.accessToken ? "••••••" : null,
+        refreshToken: undefined,
+      }));
+      res.json(safe);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to fetch profiles" });
+    }
+  });
+
+  // POST /api/distribution/profiles — Connect a platform
+  app.post("/api/distribution/profiles", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user?.id || 1;
+      const { platform, accountName, accountId, accessToken, refreshToken, tokenExpiresAt, metadata } = req.body;
+
+      if (!platform) return res.status(400).json({ error: "platform is required" });
+
+      const profile = await storage.createDistributionProfile({
+        userId,
+        platform,
+        accountName: accountName || null,
+        accountId: accountId || null,
+        accessToken: accessToken || null,
+        refreshToken: refreshToken || null,
+        tokenExpiresAt: tokenExpiresAt ? new Date(tokenExpiresAt) : null,
+        isActive: true,
+        metadata: metadata || null,
+      });
+
+      res.json({ ...profile, accessToken: "••••••", refreshToken: undefined });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to connect platform" });
+    }
+  });
+
+  // PUT /api/distribution/profiles/:id — Update a profile
+  app.put("/api/distribution/profiles/:id", isAuthenticated, async (req: any, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const updated = await storage.updateDistributionProfile(id, req.body);
+      if (!updated) return res.status(404).json({ error: "Profile not found" });
+      res.json({ ...updated, accessToken: "••••••", refreshToken: undefined });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Update failed" });
+    }
+  });
+
+  // DELETE /api/distribution/profiles/:id — Disconnect a platform
+  app.delete("/api/distribution/profiles/:id", isAuthenticated, async (req: any, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      await storage.deleteDistributionProfile(id);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Delete failed" });
+    }
+  });
+
+  // Publishing
+
+  // POST /api/distribution/publish — Publish a clip to a platform
+  app.post("/api/distribution/publish", isAuthenticated, async (req: any, res) => {
+    try {
+      const { clipId, profileId, caption, hashtags } = req.body;
+      if (!clipId || !profileId) {
+        return res.status(400).json({ error: "clipId and profileId are required" });
+      }
+
+      const profile = await storage.getDistributionProfile(profileId);
+      if (!profile || !profile.accessToken) {
+        return res.status(404).json({ error: "Distribution profile not found or no access token" });
+      }
+
+      // Find clip
+      const clip = await findClipById(clipId);
+      if (!clip || !clip.exportPath) {
+        return res.status(404).json({ error: "Clip not found or not exported" });
+      }
+
+      const clipPath = path.join(process.cwd(), "public", clip.exportPath.replace(/^\//, ""));
+      if (!fs.existsSync(clipPath)) {
+        return res.status(404).json({ error: "Clip file not found on disk" });
+      }
+
+      // Format caption if not provided
+      let finalCaption = caption || "";
+      let finalHashtags = hashtags || [];
+
+      if (!finalCaption) {
+        const { formatCaption } = await import("./lib/distribution/captionFormatter");
+        const analyses = await storage.getSceneAnalysisByVideo(clip.videoId);
+        const analysis = analyses[0];
+
+        const formatted = await formatCaption({
+          platform: profile.platform,
+          brandNames: [],
+          narrativeContext: analysis?.narrativeContext || "",
+          emotionalTone: analysis?.emotionalTone || "neutral",
+          culturalTags: (analysis?.culturalTags as string[]) || [],
+        });
+
+        finalCaption = formatted.captionText;
+        finalHashtags = formatted.hashtags;
+      }
+
+      // Publish
+      const { publishToPlaftorm } = await import("./lib/distribution/platformPublisher");
+      const result = await publishToPlaftorm(profile.platform, {
+        clipPath,
+        caption: finalCaption,
+        hashtags: finalHashtags,
+        accessToken: profile.accessToken,
+        accountId: profile.accountId || "",
+        metadata: profile.metadata as Record<string, any> || {},
+      });
+
+      if (result.success) {
+        const post = await storage.createPublishedPost({
+          clipId,
+          videoId: clip.videoId,
+          profileId,
+          platform: profile.platform,
+          platformPostId: result.platformPostId,
+          postUrl: result.postUrl,
+          caption: finalCaption,
+          hashtags: finalHashtags,
+          publishedAt: new Date(),
+          status: "published",
+        });
+        res.json({ success: true, post, postUrl: result.postUrl });
+      } else {
+        const post = await storage.createPublishedPost({
+          clipId,
+          videoId: clip.videoId,
+          profileId,
+          platform: profile.platform,
+          caption: finalCaption,
+          hashtags: finalHashtags,
+          status: "failed",
+          errorMessage: result.error,
+        });
+        res.status(500).json({ success: false, error: result.error, post });
+      }
+    } catch (err: any) {
+      console.error("[Publish] Error:", err.message);
+      res.status(500).json({ error: err.message || "Publishing failed" });
+    }
+  });
+
+  // Scheduling
+
+  // POST /api/distribution/schedule — Schedule a clip for future publishing
+  app.post("/api/distribution/schedule", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user?.id || 1;
+      const { clipId, profileId, platform, scheduledFor, caption, hashtags } = req.body;
+
+      if (!clipId || !profileId || !scheduledFor) {
+        return res.status(400).json({ error: "clipId, profileId, and scheduledFor are required" });
+      }
+
+      const { schedulePost } = await import("./lib/distribution/scheduler");
+      const schedule = await schedulePost({
+        userId,
+        clipId,
+        profileId,
+        platform: platform || "tiktok",
+        scheduledFor: new Date(scheduledFor),
+        caption,
+        hashtags,
+      });
+
+      res.json(schedule);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Scheduling failed" });
+    }
+  });
+
+  // POST /api/distribution/schedule/batch — Schedule across multiple platforms
+  app.post("/api/distribution/schedule/batch", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user?.id || 1;
+      const { clipId, platformProfiles, baseTime, staggerMinutes, caption, hashtags } = req.body;
+
+      if (!clipId || !platformProfiles || !baseTime) {
+        return res.status(400).json({ error: "clipId, platformProfiles, and baseTime are required" });
+      }
+
+      const { batchSchedule } = await import("./lib/distribution/scheduler");
+      const schedules = await batchSchedule({
+        userId,
+        clipId,
+        platformProfiles,
+        baseTime: new Date(baseTime),
+        staggerMinutes,
+        caption,
+        hashtags,
+      });
+
+      res.json(schedules);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Batch scheduling failed" });
+    }
+  });
+
+  // GET /api/distribution/schedules — List user's scheduled posts
+  app.get("/api/distribution/schedules", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user?.id || 1;
+      const schedules = await storage.getSchedulesByUser(userId);
+      res.json(schedules);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to fetch schedules" });
+    }
+  });
+
+  // DELETE /api/distribution/schedules/:id — Cancel a scheduled post
+  app.delete("/api/distribution/schedules/:id", isAuthenticated, async (req: any, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      await storage.cancelSchedule(id);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Cancel failed" });
+    }
+  });
+
+  // Caption Formatting
+
+  // POST /api/distribution/format-caption — Generate platform-specific caption
+  app.post("/api/distribution/format-caption", isAuthenticated, async (req: any, res) => {
+    try {
+      const { platform, clipId, brandNames, customCaption } = req.body;
+      if (!platform) return res.status(400).json({ error: "platform is required" });
+
+      let narrativeContext = "";
+      let emotionalTone = "neutral";
+      let culturalTags: string[] = [];
+
+      if (clipId) {
+        const clip = await findClipById(clipId);
+        if (clip) {
+          const analyses = await storage.getSceneAnalysisByVideo(clip.videoId);
+          const analysis = analyses[0];
+          if (analysis) {
+            narrativeContext = analysis.narrativeContext || "";
+            emotionalTone = analysis.emotionalTone || "neutral";
+            culturalTags = (analysis.culturalTags as string[]) || [];
+          }
+        }
+      }
+
+      const { formatCaption } = await import("./lib/distribution/captionFormatter");
+      const result = await formatCaption({
+        platform,
+        brandNames: brandNames || [],
+        narrativeContext,
+        emotionalTone,
+        culturalTags,
+        customCaption,
+      });
+
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Caption formatting failed" });
+    }
+  });
+
+  // Analytics
+
+  // GET /api/distribution/analytics/video/:videoId — Get aggregate analytics for a video
+  app.get("/api/distribution/analytics/video/:videoId", isAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const { computeAggregateMetrics } = await import("./lib/distribution/analyticsCollector");
+      const metrics = await computeAggregateMetrics(videoId);
+      res.json(metrics);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to fetch analytics" });
+    }
+  });
+
+  // POST /api/distribution/analytics/video/:videoId/refresh — Refresh analytics from platforms
+  app.post("/api/distribution/analytics/video/:videoId/refresh", isAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const { collectVideoAnalytics, computeAggregateMetrics } = await import("./lib/distribution/analyticsCollector");
+
+      await collectVideoAnalytics(videoId);
+      const metrics = await computeAggregateMetrics(videoId);
+      res.json(metrics);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Analytics refresh failed" });
+    }
+  });
+
+  // GET /api/distribution/analytics/clip/:clipId — Get analytics for a specific clip
+  app.get("/api/distribution/analytics/clip/:clipId", isAuthenticated, async (req: any, res) => {
+    try {
+      const clipId = parseInt(req.params.clipId);
+      const analytics = await storage.getAnalyticsByClip(clipId);
+      res.json(analytics);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to fetch clip analytics" });
+    }
+  });
+
+  // Published Posts
+
+  // GET /api/distribution/posts/video/:videoId — List published posts for a video
+  app.get("/api/distribution/posts/video/:videoId", isAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      const posts = await storage.getPublishedPostsByVideo(videoId);
+      res.json(posts);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to fetch posts" });
+    }
+  });
+
+  // POST /api/distribution/suggest-time — Get optimal posting time for a platform
+  app.post("/api/distribution/suggest-time", isAuthenticated, async (req: any, res) => {
+    try {
+      const { platform, timezone } = req.body;
+      if (!platform) return res.status(400).json({ error: "platform is required" });
+
+      const { suggestPostingTime } = await import("./lib/distribution/scheduler");
+      const suggestedTime = suggestPostingTime(platform, timezone);
+      res.json({ platform, suggestedTime: suggestedTime.toISOString() });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to suggest time" });
+    }
+  });
+
   // Seed Data
   await seedDatabase();
 
   return httpServer;
+}
+
+// Helper to find a clip by ID across all jobs
+async function findClipById(clipId: number) {
+  // Get all videos, then search clips — not ideal but works without a dedicated storage method
+  try {
+    const { db } = await import("./db");
+    const { generatedClips } = await import("../shared/schema");
+    const { eq } = await import("drizzle-orm");
+    const [clip] = await db.select().from(generatedClips).where(eq(generatedClips.id, clipId)).limit(1);
+    return clip || null;
+  } catch {
+    return null;
+  }
 }
 
 async function seedDatabase() {
@@ -4113,6 +7898,32 @@ async function seedDatabase() {
       }
     }
     console.log("Allowed users seeded!");
+  }
+
+  // Seed creator slugs and featured status for existing creators
+  try {
+    const creatorSlugs: Record<string, string> = {
+      "martin@gofullscale.co": "martin",
+      "thekimkwilson@gmail.com": "kim",
+      "tamara@whtwrks.com": "tamara",
+    };
+    for (const [email, slug] of Object.entries(creatorSlugs)) {
+      const user = await storage.getAllowedUser(email);
+      if (user) {
+        // Always ensure slug is set
+        if (!user.slug) {
+          await storage.updateCreatorProfile(email, { slug });
+          console.log(`[Seed] Set slug="${slug}" for ${email}`);
+        }
+        // Always ensure isFeatured is true
+        if (!user.isFeatured) {
+          await db.update(allowedUsersTable).set({ isFeatured: true }).where(eq(allowedUsersTable.email, email));
+          console.log(`[Seed] Set isFeatured=true for ${email}`);
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[Seed] Error seeding creator slugs:", err);
   }
 
   // Seed local video files into library if not already present

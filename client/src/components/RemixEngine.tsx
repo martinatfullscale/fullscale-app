@@ -4,7 +4,8 @@ import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft, Play, Pause, Download, Layers, Save,
   CheckCircle, Package, Eye, EyeOff, ChevronRight,
-  Move, RotateCw, Maximize2, Sun, Droplets, Blend, FlipHorizontal
+  Move, RotateCw, Maximize2, Sun, Droplets, Blend, FlipHorizontal,
+  Film, Loader2, X as XIcon, Share2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -238,7 +239,23 @@ function formatTime(seconds: number): string {
 
 function resolveVideoSrc(filePath: string | null | undefined): string | null {
   if (!filePath) return null;
-  return filePath.replace("./public/", "/").replace("public/", "/");
+  let src = filePath;
+  // Handle all possible filePath formats from DB:
+  // "./public/uploads/file.mp4" → "/uploads/file.mp4"
+  // "public/uploads/file.mp4" → "/uploads/file.mp4"
+  // "/home/runner/workspace/public/uploads/file.mp4" → "/uploads/file.mp4"
+  // "/uploads/file.mp4" → "/uploads/file.mp4" (already correct)
+  // "/videos/file.mov" → "/videos/file.mov" (already correct)
+  src = src.replace(/^\.\/public\//, '/');
+  src = src.replace(/^public\//, '/');
+  src = src.replace(/^\/home\/runner\/workspace\/public\//, '/');
+  // Fix any double slashes
+  src = src.replace(/\/\//g, '/');
+  // Ensure starts with /
+  if (!src.startsWith('/') && !src.startsWith('http')) {
+    src = '/' + src;
+  }
+  return src;
 }
 
 function clamp(val: number, min: number, max: number) {
@@ -396,6 +413,31 @@ export default function RemixEngine() {
   const { toast } = useToast();
   const videoId = params?.videoId ? parseInt(params.videoId) : null;
 
+  // ── User role detection (brands cannot export video) ──
+  const { data: userTypeData } = useQuery<{ userType?: "creator" | "brand" | null }>({
+    queryKey: ["/api/auth/user-type"],
+    queryFn: async () => {
+      const res = await fetch("/api/auth/user-type", { credentials: "include" });
+      if (!res.ok) return { userType: null };
+      return res.json();
+    },
+  });
+  const isBrand = userTypeData?.userType === "brand";
+
+  // ── Bid context (when creator is fulfilling a brand offer) ──
+  const urlParams = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
+  const bidId = urlParams?.get("bidId") ? parseInt(urlParams.get("bidId")!) : undefined;
+
+  const { data: bidData } = useQuery<any>({
+    queryKey: ["/api/bids", bidId],
+    queryFn: async () => {
+      const res = await fetch(`/api/bids/${bidId}`, { credentials: "include" });
+      if (!res.ok) return null;
+      return res.json();
+    },
+    enabled: !!bidId,
+  });
+
   // Refs
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -412,6 +454,13 @@ export default function RemixEngine() {
   const [showBoundingBoxes, setShowBoundingBoxes] = useState(true);
   const [videoReady, setVideoReady] = useState(false);
   const [toolPanel, setToolPanel] = useState<ToolPanel>("catalog");
+
+  // Video export state
+  const [exportJobId, setExportJobId] = useState<number | null>(null);
+  const [exportProgress, setExportProgress] = useState(0);
+  const [exportStatus, setExportStatus] = useState<string | null>(null);
+  const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  const [exportOutputUrl, setExportOutputUrl] = useState<string | null>(null);
 
   // Drag interaction state
   const [dragMode, setDragMode] = useState<DragMode>("none");
@@ -466,6 +515,7 @@ export default function RemixEngine() {
   const surfaceTracks = useMemo(() => buildSurfaceTracks(surfaces), [surfaces]);
   const sceneTimestamps = useMemo(() => getUniqueTimestamps(surfaces), [surfaces]);
   const videoSrc = useMemo(() => resolveVideoSrc(video?.filePath), [video?.filePath]);
+  const [videoError, setVideoError] = useState<string | null>(null);
   const trackNames = useMemo(() => Array.from(surfaceTracks.keys()).sort(), [surfaceTracks]);
 
   const selectedAssignment = selectedTrack ? assignments.get(selectedTrack) : undefined;
@@ -899,6 +949,63 @@ export default function RemixEngine() {
   }, [selectedTrack]);
 
   // ============================================================================
+  // SAVE PLACEMENT FOR BRAND REVIEW (when fulfilling a bid)
+  // ============================================================================
+
+  const [savingForBrand, setSavingForBrand] = useState(false);
+
+  const handleSaveForBrandReview = useCallback(async () => {
+    if (!videoId || !selectedTrack || assignments.size === 0) return;
+    setSavingForBrand(true);
+
+    try {
+      // Save each assignment as a placement linked to the bid
+      for (const [surfaceType, assignment] of assignments) {
+        const track = surfaceTracks.get(surfaceType);
+        if (!track) continue;
+
+        const anchorSurface = surfacesData?.surfaces?.find(
+          (s: any) => s.surfaceType === surfaceType || `${s.surfaceType} (${s.id})` === surfaceType
+        );
+        if (!anchorSurface) continue;
+
+        const res = await fetch("/api/placements", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            videoId,
+            surfaceId: anchorSurface.id,
+            productId: assignment.productId || null,
+            productImageUrl: assignment.imageUrl,
+            transform: assignment.transform,
+            blend: assignment.blend,
+            role: "creator",
+            bidId: bidId || undefined,
+          }),
+        });
+
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.error || "Failed to save placement");
+        }
+
+        const data = await res.json();
+        if (data.reviewSlug) {
+          toast({
+            title: "Placement submitted for brand review",
+            description: `${bidData?.brandName || "Brand"} will be notified to review your placement.`,
+          });
+        }
+        break; // Save the first assignment linked to bid — additional placements are propagated server-side
+      }
+    } catch (err: any) {
+      toast({ title: "Save failed", description: err.message, variant: "destructive" });
+    }
+    setSavingForBrand(false);
+  }, [videoId, selectedTrack, assignments, surfaceTracks, surfacesData, bidId, bidData, toast]);
+
+  // ============================================================================
   // EXPORT
   // ============================================================================
 
@@ -940,6 +1047,101 @@ export default function RemixEngine() {
     link.click();
     toast({ title: "Screenshot exported" });
   }, [assignments, surfaceTracks, video?.title, toast]);
+
+  // ── Video Export (Server-Side FFmpeg) ──
+
+  const handleVideoExport = useCallback(async () => {
+    if (!videoId || assignments.size === 0) return;
+
+    // Capture canvas display dimensions so server can scale offsets correctly
+    const canvas = canvasRef.current;
+    const canvasDisplayWidth = canvas?.width || 640;
+    const canvasDisplayHeight = canvas?.height || 360;
+
+    const placementData = [];
+    for (const [surfaceType, assignment] of assignments) {
+      const track = surfaceTracks.get(surfaceType);
+      if (!track || !assignment.imageElement) continue;
+
+      // Send product aspect ratio so server can match client-side fitting
+      const prodAspect = assignment.imageElement.naturalWidth / assignment.imageElement.naturalHeight;
+
+      placementData.push({
+        surfaceType,
+        productImageUrl: assignment.imageUrl,
+        transform: assignment.transform,
+        blend: assignment.blend,
+        keyframes: track.keyframes,
+        productAspectRatio: prodAspect,
+      });
+    }
+
+    if (placementData.length === 0) {
+      toast({ title: "No placements to export", variant: "destructive" });
+      return;
+    }
+
+    try {
+      setExportDialogOpen(true);
+      setExportStatus("queued");
+      setExportProgress(0);
+      setExportOutputUrl(null);
+
+      const res = await fetch(`/api/video/${videoId}/export`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          placements: placementData,
+          canvasWidth: canvasDisplayWidth,
+          canvasHeight: canvasDisplayHeight,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Export failed to start");
+      }
+
+      const { exportId } = await res.json();
+      setExportJobId(exportId);
+      setExportStatus("processing");
+      toast({ title: "Video export started", description: "This may take a few minutes..." });
+    } catch (err: any) {
+      setExportStatus("failed");
+      toast({ title: "Export failed", description: err.message, variant: "destructive" });
+    }
+  }, [videoId, assignments, surfaceTracks, toast]);
+
+  // Poll for export progress
+  useEffect(() => {
+    if (!exportJobId || !exportDialogOpen) return;
+    if (exportStatus === "complete" || exportStatus === "failed") return;
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/exports/${exportJobId}`, { credentials: "include" });
+        if (!res.ok) return;
+
+        const data = await res.json();
+        setExportProgress(data.progress || 0);
+        setExportStatus(data.status);
+
+        if (data.status === "complete") {
+          setExportOutputUrl(data.outputUrl);
+          toast({ title: "Video export complete!", description: "Your remixed video is ready to download." });
+          clearInterval(interval);
+        } else if (data.status === "failed") {
+          toast({ title: "Export failed", description: data.error || "Unknown error", variant: "destructive" });
+          clearInterval(interval);
+        }
+      } catch {
+        // Silently retry on next interval
+      }
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [exportJobId, exportDialogOpen, exportStatus, toast]);
 
   // ============================================================================
   // SAVE ALL PLACEMENTS
@@ -1088,8 +1290,48 @@ export default function RemixEngine() {
             <Download className="w-3.5 h-3.5" />
             Export Frame
           </button>
+
+          {/* Video export — only available to creators, not brands */}
+          {!isBrand && (
+            <button
+              onClick={handleVideoExport}
+              disabled={assignments.size === 0}
+              className="flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-medium bg-green-600 text-white hover:bg-green-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              <Film className="w-3.5 h-3.5" />
+              Export Video
+            </button>
+          )}
+
+          {/* Submit to brand — shown when fulfilling a bid */}
+          {bidId && !isBrand && (
+            <button
+              onClick={handleSaveForBrandReview}
+              disabled={assignments.size === 0 || savingForBrand}
+              className="flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              {savingForBrand ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle className="w-3.5 h-3.5" />}
+              Submit to Brand
+            </button>
+          )}
         </div>
       </div>
+
+      {/* Bid context banner — when creator is fulfilling a brand offer */}
+      {bidId && bidData && !isBrand && (
+        <div className="bg-blue-500/10 border-b border-blue-500/20 px-6 py-2 flex items-center gap-3">
+          <Package className="w-4 h-4 text-blue-400" />
+          <span className="text-sm text-blue-300">
+            Placing product for <strong className="text-blue-200">{bidData.brandName || "brand"}</strong>'s offer
+            {bidData.bidAmount && <span className="text-blue-400 ml-1">(${Number(bidData.bidAmount).toLocaleString()})</span>}
+          </span>
+          {bidData.status === "revision_requested" && bidData.reviewNote && (
+            <span className="text-xs text-orange-400 ml-4">
+              Revision requested: {bidData.reviewNote}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Main content */}
       <div className="flex h-[calc(100vh-57px)]">
@@ -1098,7 +1340,7 @@ export default function RemixEngine() {
           {/* Video + canvas container */}
           <div className="flex-1 flex items-center justify-center bg-black/90 p-4 relative">
             <div ref={containerRef} className="relative max-w-full max-h-full">
-              {videoSrc ? (
+              {videoSrc && !videoError ? (
                 <>
                   <video
                     ref={videoRef}
@@ -1109,6 +1351,10 @@ export default function RemixEngine() {
                     onPlay={() => setIsPlaying(true)}
                     onPause={() => setIsPlaying(false)}
                     onEnded={() => setIsPlaying(false)}
+                    onError={(e) => {
+                      console.error("[RemixEngine] Video load error:", e.currentTarget.error?.message);
+                      setVideoError(e.currentTarget.error?.message || "Video format not supported");
+                    }}
                     playsInline
                     preload="auto"
                   />
@@ -1126,7 +1372,17 @@ export default function RemixEngine() {
                 </>
               ) : (
                 <div className="w-[640px] h-[360px] bg-zinc-900 rounded-lg flex items-center justify-center">
-                  <p className="text-zinc-500 text-sm">No video file available</p>
+                  <div className="text-center">
+                    <p className="text-zinc-400 text-sm font-medium mb-1">
+                      {videoError ? "Video playback error" : "No video file available"}
+                    </p>
+                    {videoError && (
+                      <p className="text-zinc-500 text-xs">{videoError}</p>
+                    )}
+                    {videoSrc && (
+                      <p className="text-zinc-600 text-xs mt-2">Source: {videoSrc}</p>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
@@ -1600,6 +1856,123 @@ export default function RemixEngine() {
           )}
         </div>
       </div>
+
+      {/* ── Video Export Progress Dialog ── */}
+      {exportDialogOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-card border border-border rounded-xl shadow-2xl p-6 w-96 max-w-[90vw]">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-foreground">
+                {exportStatus === "complete" ? "Export Complete" :
+                 exportStatus === "failed" ? "Export Failed" :
+                 "Exporting Video..."}
+              </h3>
+              {(exportStatus === "complete" || exportStatus === "failed") && (
+                <button
+                  onClick={() => {
+                    setExportDialogOpen(false);
+                    setExportJobId(null);
+                    setExportStatus(null);
+                    setExportProgress(0);
+                    setExportOutputUrl(null);
+                  }}
+                  className="p-1 rounded hover:bg-muted transition-colors"
+                >
+                  <XIcon className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+
+            {/* Progress bar */}
+            {exportStatus !== "failed" && (
+              <div className="mb-4">
+                <div className="flex items-center justify-between text-xs text-muted-foreground mb-1.5">
+                  <span>
+                    {exportProgress < 10 ? "Extracting frames..." :
+                     exportProgress < 90 ? "Compositing products..." :
+                     exportProgress < 100 ? "Encoding MP4..." :
+                     "Done!"}
+                  </span>
+                  <span className="tabular-nums font-medium">{exportProgress}%</span>
+                </div>
+                <div className="w-full bg-muted rounded-full h-2.5 overflow-hidden">
+                  <div
+                    className="bg-green-500 h-full rounded-full transition-all duration-500 ease-out"
+                    style={{ width: `${exportProgress}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Status-specific content */}
+            {exportStatus === "processing" || exportStatus === "queued" ? (
+              <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                <Loader2 className="w-4 h-4 animate-spin text-primary" />
+                <span>This may take a few minutes for longer videos...</span>
+              </div>
+            ) : exportStatus === "complete" && exportOutputUrl ? (
+              <div className="space-y-3">
+                <p className="text-sm text-green-500 font-medium">
+                  <CheckCircle className="w-4 h-4 inline mr-1.5" />
+                  Your remixed video is ready!
+                </p>
+                <div className="flex gap-2">
+                  <a
+                    href={`/api/exports/${exportJobId}/download`}
+                    className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium bg-green-600 text-white hover:bg-green-700 transition-colors"
+                  >
+                    <Download className="w-4 h-4" />
+                    Download
+                  </a>
+                  <button
+                    onClick={async () => {
+                      try {
+                        const res = await fetch("/api/share", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          credentials: "include",
+                          body: JSON.stringify({
+                            exportId: exportJobId,
+                            videoId: videoDetails?.id,
+                            title: videoDetails?.title || "Remixed Video",
+                          }),
+                        });
+                        if (!res.ok) throw new Error("Failed to create share link");
+                        const { slug } = await res.json();
+                        const fullUrl = `${window.location.origin}/s/${slug}`;
+                        await navigator.clipboard.writeText(fullUrl);
+                        toast({ title: "Share link copied!", description: fullUrl });
+                      } catch (err: any) {
+                        toast({ title: "Share failed", description: err.message, variant: "destructive" });
+                      }
+                    }}
+                    className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+                  >
+                    <Share2 className="w-4 h-4" />
+                    Share
+                  </button>
+                </div>
+              </div>
+            ) : exportStatus === "failed" ? (
+              <div className="space-y-3">
+                <p className="text-sm text-red-500">
+                  Export failed. Please try again.
+                </p>
+                <button
+                  onClick={() => {
+                    setExportDialogOpen(false);
+                    setExportJobId(null);
+                    setExportStatus(null);
+                  }}
+                  className="w-full px-4 py-2 rounded-lg text-sm font-medium bg-muted hover:bg-muted/80 transition-colors"
+                >
+                  Close
+                </button>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

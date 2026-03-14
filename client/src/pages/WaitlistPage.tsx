@@ -92,8 +92,8 @@ export default function WaitlistPage() {
         </div>
       </header>
 
-      <main className="flex-1 flex flex-col items-center p-4 pt-8">
-        <div className="w-full max-w-2xl text-center mb-6">
+      <main className="flex-1 flex flex-col items-center p-4 pt-8 overflow-auto">
+        <div className="w-full max-w-2xl text-center mb-6 shrink-0">
           <h1 
             className="text-2xl font-bold text-foreground mb-2"
             data-testid="text-waitlist-title"
@@ -111,13 +111,12 @@ export default function WaitlistPage() {
           </p>
         </div>
 
-        <Card className="w-full max-w-2xl border-border/50 flex-1 min-h-[600px]">
-          <CardContent className="p-0 h-full">
+        <Card className="w-full max-w-2xl border-border/50 shrink-0">
+          <CardContent className="p-0">
             <iframe
               src={getAirtableUrl()}
               width="100%"
-              height="100%"
-              style={{ minHeight: "600px", border: "none", borderRadius: "8px" }}
+              style={{ height: "1200px", border: "none", borderRadius: "8px" }}
               title="Creator Profile Form"
               data-testid="iframe-airtable-form"
             />

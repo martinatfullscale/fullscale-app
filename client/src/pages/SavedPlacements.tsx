@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -10,6 +10,13 @@ import {
   Image as ImageIcon,
   Layers,
   Filter,
+  Pencil,
+  Video,
+  RefreshCw,
+  Share2,
+  Copy,
+  Check,
+  Download,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -23,6 +30,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
+import PlacementPreviewModal from "@/components/PlacementPreviewModal";
 
 interface SavedPlacementEnriched {
   id: number;
@@ -76,6 +84,36 @@ export default function SavedPlacements() {
   const queryClient = useQueryClient();
   const [deleteId, setDeleteId] = useState<number | null>(null);
   const [previewPlacement, setPreviewPlacement] = useState<SavedPlacementEnriched | null>(null);
+  const [quickEditPlacement, setQuickEditPlacement] = useState<SavedPlacementEnriched | null>(null);
+  const [quickEditSurfaces, setQuickEditSurfaces] = useState<any[]>([]);
+  const [loadingSurfaces, setLoadingSurfaces] = useState(false);
+  const [sharingId, setSharingId] = useState<number | null>(null);
+  const [copiedSlug, setCopiedSlug] = useState<string | null>(null);
+
+  // Fetch surfaces when Quick Edit is triggered
+  useEffect(() => {
+    if (!quickEditPlacement) {
+      setQuickEditSurfaces([]);
+      return;
+    }
+    const fetchSurfaces = async () => {
+      setLoadingSurfaces(true);
+      try {
+        const res = await fetch(`/api/video/${quickEditPlacement.videoId}/surfaces`, { credentials: "include" });
+        if (res.ok) {
+          const surfaces = await res.json();
+          // Filter to just the surface this placement is on
+          const targetSurface = surfaces.find((s: any) => s.id === quickEditPlacement.surfaceId);
+          setQuickEditSurfaces(targetSurface ? [targetSurface] : surfaces.slice(0, 1));
+        }
+      } catch (err) {
+        console.error("[SavedPlacements] Failed to fetch surfaces:", err);
+      } finally {
+        setLoadingSurfaces(false);
+      }
+    };
+    fetchSurfaces();
+  }, [quickEditPlacement]);
 
   const { data, isLoading } = useQuery<{ placements: SavedPlacementEnriched[] }>({
     queryKey: ["/api/placements"],
@@ -105,6 +143,137 @@ export default function SavedPlacements() {
     },
   });
 
+  // Share placement handler
+  const handleShare = async (placement: SavedPlacementEnriched) => {
+    setSharingId(placement.id);
+    try {
+      const res = await fetch("/api/share", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          placementId: placement.id,
+          videoId: placement.videoId,
+          title: placement.videoTitle || `Placement on ${placement.surfaceType}`,
+        }),
+      });
+      if (!res.ok) throw new Error("Failed to create share link");
+      const { slug } = await res.json();
+      const fullUrl = `${window.location.origin}/s/${slug}`;
+      await navigator.clipboard.writeText(fullUrl);
+      setCopiedSlug(slug);
+      toast({ title: "Share link copied!", description: fullUrl });
+      setTimeout(() => setCopiedSlug(null), 3000);
+    } catch (err: any) {
+      toast({ title: "Share failed", description: err.message, variant: "destructive" });
+    } finally {
+      setSharingId(null);
+    }
+  };
+
+  // Detect user role — creators can export video
+  const { data: userTypeData } = useQuery<{ userType?: "creator" | "brand" | null }>({
+    queryKey: ["/api/auth/user-type"],
+    queryFn: async () => {
+      const res = await fetch("/api/auth/user-type", { credentials: "include" });
+      if (!res.ok) return { userType: null };
+      return res.json();
+    },
+  });
+  const isCreator = userTypeData?.userType === "creator";
+
+  // Export state
+  const [exportingId, setExportingId] = useState<number | null>(null);
+  const [exportProgress, setExportProgress] = useState<number>(0);
+  const [exportStatus, setExportStatus] = useState<string | null>(null);
+
+  // Direct export handler — triggers server-side video export with placement
+  const handleExport = async (placement: SavedPlacementEnriched) => {
+    setExportingId(placement.id);
+    setExportProgress(0);
+    setExportStatus("Starting export...");
+    try {
+      // Build placement data for export endpoint
+      const placementData = [{
+        surfaceId: placement.surfaceId,
+        productImageUrl: placement.productImageUrl,
+        transform: placement.transform,
+        blend: placement.blend,
+      }];
+
+      const res = await fetch(`/api/video/${placement.videoId}/export`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          placements: placementData,
+          canvasWidth: 1920,
+          canvasHeight: 1080,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Export failed");
+      }
+
+      const { exportId } = await res.json();
+      setExportStatus("Processing video...");
+
+      // Poll for progress
+      const pollInterval = setInterval(async () => {
+        try {
+          const pollRes = await fetch(`/api/exports/${exportId}`, { credentials: "include" });
+          if (!pollRes.ok) return;
+          const exportData = await pollRes.json();
+
+          if (exportData.progress) {
+            setExportProgress(exportData.progress);
+          }
+
+          if (exportData.status === "completed" && exportData.outputUrl) {
+            clearInterval(pollInterval);
+            setExportStatus("Download ready!");
+            setExportProgress(100);
+
+            // Trigger download
+            const link = document.createElement("a");
+            link.href = exportData.outputUrl;
+            link.download = `${placement.videoTitle || "export"}_with_placement.mp4`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+
+            toast({ title: "Export complete!", description: "Your video with product placement is downloading." });
+            setTimeout(() => {
+              setExportingId(null);
+              setExportStatus(null);
+            }, 2000);
+          } else if (exportData.status === "failed") {
+            clearInterval(pollInterval);
+            throw new Error(exportData.error || "Export processing failed");
+          }
+        } catch (pollErr) {
+          // Continue polling unless it's a definitive failure
+        }
+      }, 3000);
+
+      // Safety timeout — stop polling after 10 minutes
+      setTimeout(() => {
+        clearInterval(pollInterval);
+        if (exportingId === placement.id) {
+          setExportingId(null);
+          setExportStatus(null);
+          toast({ title: "Export timeout", description: "Export is taking longer than expected. Check back later.", variant: "destructive" });
+        }
+      }, 600000);
+    } catch (err: any) {
+      toast({ title: "Export failed", description: err.message, variant: "destructive" });
+      setExportingId(null);
+      setExportStatus(null);
+    }
+  };
+
   const placements = data?.placements || [];
 
   // Group placements by video
@@ -132,6 +301,27 @@ export default function SavedPlacements() {
           {placements.length} placement{placements.length !== 1 ? "s" : ""}
         </Badge>
       </div>
+
+      {/* Export Progress Banner */}
+      {exportingId && exportStatus && (
+        <div className="mb-4 p-3 rounded-lg border border-purple-500/30 bg-purple-500/10">
+          <div className="flex items-center gap-3">
+            <Loader2 className="w-4 h-4 animate-spin text-purple-400" />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-purple-300">{exportStatus}</p>
+              {exportProgress > 0 && (
+                <div className="mt-1.5 h-1.5 bg-white/10 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-purple-500 rounded-full transition-all duration-500"
+                    style={{ width: `${exportProgress}%` }}
+                  />
+                </div>
+              )}
+            </div>
+            <span className="text-xs text-purple-400">{exportProgress}%</span>
+          </div>
+        </div>
+      )}
 
       {/* Content */}
       {isLoading ? (
@@ -256,6 +446,70 @@ export default function SavedPlacements() {
                               <Clock className="w-3 h-3" />
                               {placement.createdAt ? formatDate(placement.createdAt) : "Unknown"}
                             </div>
+                            {/* Action buttons */}
+                            <div className="flex items-center gap-1.5 mt-2">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="flex-1 gap-1 text-[10px] h-7"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setQuickEditPlacement(placement);
+                                }}
+                              >
+                                <Pencil className="w-3 h-3" />
+                                Quick Edit
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="flex-1 gap-1 text-[10px] h-7"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  window.location.href = `/remix/${placement.videoId}`;
+                                }}
+                              >
+                                <Video className="w-3 h-3" />
+                                Full Editor
+                              </Button>
+                              {isCreator && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="gap-1 text-[10px] h-7 px-2"
+                                  title="Export Video with Placement"
+                                  disabled={exportingId === placement.id}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleExport(placement);
+                                  }}
+                                >
+                                  {exportingId === placement.id ? (
+                                    <Loader2 className="w-3 h-3 animate-spin" />
+                                  ) : (
+                                    <Download className="w-3 h-3" />
+                                  )}
+                                </Button>
+                              )}
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="gap-1 text-[10px] h-7 px-2"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleShare(placement);
+                                }}
+                                disabled={sharingId === placement.id}
+                              >
+                                {sharingId === placement.id ? (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : copiedSlug ? (
+                                  <Check className="w-3 h-3 text-green-500" />
+                                ) : (
+                                  <Share2 className="w-3 h-3" />
+                                )}
+                              </Button>
+                            </div>
                           </CardContent>
                         </Card>
                       </motion.div>
@@ -328,7 +582,57 @@ export default function SavedPlacements() {
                 </div>
               </div>
 
-              <DialogFooter>
+              <DialogFooter className="flex-row gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1"
+                  onClick={() => {
+                    setQuickEditPlacement(previewPlacement);
+                    setPreviewPlacement(null);
+                  }}
+                >
+                  <Pencil className="w-3.5 h-3.5" />
+                  Quick Edit
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1"
+                  onClick={() => {
+                    window.location.href = `/remix/${previewPlacement.videoId}`;
+                  }}
+                >
+                  <Video className="w-3.5 h-3.5" />
+                  Full Editor
+                </Button>
+                {isCreator && (
+                  <Button
+                    variant="default"
+                    size="sm"
+                    className="gap-1"
+                    onClick={() => {
+                      window.location.href = `/remix/${previewPlacement.videoId}`;
+                    }}
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    Export Video
+                  </Button>
+                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1"
+                  onClick={() => handleShare(previewPlacement)}
+                  disabled={sharingId === previewPlacement.id}
+                >
+                  {sharingId === previewPlacement.id ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Share2 className="w-3.5 h-3.5" />
+                  )}
+                  Share
+                </Button>
                 <Button
                   variant="destructive"
                   size="sm"
@@ -373,6 +677,39 @@ export default function SavedPlacements() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Quick Edit loading state */}
+      {quickEditPlacement && loadingSurfaces && (
+        <Dialog open={true} onOpenChange={() => { setQuickEditPlacement(null); setLoadingSurfaces(false); }}>
+          <DialogContent className="sm:max-w-sm">
+            <div className="flex flex-col items-center justify-center py-8">
+              <Loader2 className="h-8 w-8 animate-spin text-primary mb-3" />
+              <p className="text-sm text-muted-foreground">Loading scene data...</p>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* Quick Edit — opens PlacementPreviewModal with saved data */}
+      {quickEditPlacement && quickEditSurfaces.length > 0 && !loadingSurfaces && (
+        <PlacementPreviewModal
+          open={true}
+          onClose={() => {
+            setQuickEditPlacement(null);
+            setQuickEditSurfaces([]);
+            queryClient.invalidateQueries({ queryKey: ["/api/placements"] });
+          }}
+          videoId={quickEditPlacement.videoId}
+          videoTitle={quickEditPlacement.videoTitle}
+          surfaces={quickEditSurfaces}
+          initialPlacement={{
+            productImageUrl: quickEditPlacement.productImageUrl,
+            productId: quickEditPlacement.productId,
+            transform: quickEditPlacement.transform as any,
+            blend: quickEditPlacement.blend as any,
+          }}
+        />
+      )}
     </div>
   );
 }

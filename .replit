@@ -40,9 +40,11 @@ args = "npm run dev"
 waitForPort = 5000
 
 [agent]
-integrations = ["javascript_log_in_with_replit:2.0.0", "javascript_gemini_ai_integrations:2.0.0", "resend:1.0.0"]
+integrations = ["javascript_log_in_with_replit:2.0.0", "javascript_gemini_ai_integrations:2.0.0", "resend:1.0.0", "javascript_object_storage:2.0.0"]
 
 [userenv]
 
 [userenv.shared]
 VITE_GOOGLE_ANALYTICS_ID = "G-BBWVGBC782"
+
+[userenv.production]

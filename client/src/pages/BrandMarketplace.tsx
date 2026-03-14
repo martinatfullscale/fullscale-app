@@ -1,10 +1,10 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
-import { 
-  Search, Filter, DollarSign, Tag, Play, 
+import {
+  Search, Filter, DollarSign, Tag, Play,
   ShoppingCart, TrendingUp, Eye, Clock,
-  Briefcase, Palette, Monitor, Sparkles, X, Globe, ExternalLink
+  Briefcase, Palette, Monitor, Sparkles, X, Globe, ExternalLink, Mic
 } from "lucide-react";
 import { SiYoutube, SiTwitch, SiFacebook } from "react-icons/si";
 import { Button } from "@/components/ui/button";
@@ -30,6 +30,8 @@ import { useHybridMode } from "@/hooks/use-hybrid-mode";
 import { usePitchMode } from "@/contexts/pitch-mode-context";
 import { apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/hooks/use-auth";
+import { Link } from "wouter";
+import EditorialClips from "@/components/EditorialClips";
 
 const SUPER_ADMIN_EMAIL = "martin@gofullscale.co";
 
@@ -40,6 +42,7 @@ interface MarketplaceOpportunity {
   title: string;
   thumbnailUrl: string;
   creatorName: string;
+  creatorSlug?: string | null;
   creatorAvatar?: string;
   viewCount: number;
   sceneValue: number;
@@ -50,6 +53,24 @@ interface MarketplaceOpportunity {
   duration: string;
   platform?: string;
   platforms?: string[];
+  videoUrl?: string | null;
+  filePath?: string | null;
+  subcategory?: string | null;
+}
+
+interface FeaturedCreator {
+  name: string;
+  slug: string;
+  headline: string | null;
+  profileImage: string | null;
+  thumbnails: string[];
+  category?: string;
+  stats: {
+    totalVideos: number;
+    totalViews: number;
+    totalSurfaces: number;
+    subscribers: number;
+  };
 }
 
 // Static demo opportunities for pitch mode - 20 items with unique creator space images
@@ -74,11 +95,36 @@ const STATIC_DEMO_OPPORTUNITIES: MarketplaceOpportunity[] = [
   { id: 18, videoId: 118, youtubeId: "demo18", title: "4K Monitor Comparison", thumbnailUrl: "https://images.unsplash.com/photo-1527443224154-c4a3942d3acf?w=640&h=360&fit=crop", creatorName: "DisplayMasters", viewCount: 934000, sceneValue: 110, context: "Comparison", genre: "Tech", sceneType: "Product", surfaces: ["Monitors", "Desk", "Wall"], duration: "21:50", platform: "youtube", platforms: ["youtube", "twitch"] },
   { id: 19, videoId: 119, youtubeId: "demo19", title: "Day in My Creative Life", thumbnailUrl: "https://images.unsplash.com/photo-1600494603989-9650cf6ddd3d?w=640&h=360&fit=crop", creatorName: "CreatorLife", viewCount: 1340000, sceneValue: 90, context: "Vlog", genre: "Lifestyle", sceneType: "Interior", surfaces: ["Camera", "Room", "Equipment"], duration: "15:40", platform: "youtube", platforms: ["youtube"] },
   { id: 20, videoId: 120, youtubeId: "demo20", title: "Webcam Setup for Streamers", thumbnailUrl: "https://images.unsplash.com/photo-1587825140708-dfaf72ae4b04?w=640&h=360&fit=crop", creatorName: "WebcamReview", viewCount: 567000, sceneValue: 70, context: "Comparison", genre: "Tech", sceneType: "Product", surfaces: ["Webcams", "Desk", "Screen"], duration: "18:20", platform: "youtube", platforms: ["youtube", "twitch"] },
+  // Gaming — expanded for "Gaming Hardware" category
+  { id: 21, videoId: 121, youtubeId: "demo21", title: "Gaming Setup RGB Tour", thumbnailUrl: "https://images.unsplash.com/photo-1542751371-adc38448a05e?w=640&h=360&fit=crop", creatorName: "RGBMaster", viewCount: 1890000, sceneValue: 105, context: "Gaming Setup", genre: "Gaming", sceneType: "Desk", surfaces: ["Gaming PC", "Monitors", "RGB Lighting"], duration: "14:22", platform: "twitch", platforms: ["twitch", "youtube"] },
+  { id: 22, videoId: 122, youtubeId: "demo22", title: "Esports Arena Tour", thumbnailUrl: "https://images.unsplash.com/photo-1612287230202-1ff1d85d1bdf?w=640&h=360&fit=crop", creatorName: "EsportsDaily", viewCount: 2400000, sceneValue: 140, context: "Gaming Arena", genre: "Gaming", sceneType: "Interior", surfaces: ["Gaming Chairs", "Monitors", "Banners"], duration: "22:10", platform: "youtube", platforms: ["youtube", "twitch"] },
+  { id: 23, videoId: 123, youtubeId: "demo23", title: "Console vs PC Showdown", thumbnailUrl: "https://images.unsplash.com/photo-1593305841991-05c297ba4575?w=640&h=360&fit=crop", creatorName: "GameDebate", viewCount: 1350000, sceneValue: 90, context: "Gaming Comparison", genre: "Gaming", sceneType: "Product", surfaces: ["Console", "Gaming PC", "Controllers"], duration: "19:45", platform: "youtube", platforms: ["youtube"] },
+  // Beauty — expanded
+  { id: 24, videoId: 124, youtubeId: "demo24", title: "Full Glam Transformation", thumbnailUrl: "https://images.unsplash.com/photo-1596462502278-27bfdc403348?w=640&h=360&fit=crop", creatorName: "GlamByLisa", viewCount: 2100000, sceneValue: 115, context: "Beauty Studio", genre: "Beauty", sceneType: "Interior", surfaces: ["Vanity", "Products", "Mirror"], duration: "16:30", platform: "youtube", platforms: ["youtube"] },
+  { id: 25, videoId: 125, youtubeId: "demo25", title: "Skincare Routine Night Edition", thumbnailUrl: "https://images.unsplash.com/photo-1556228578-0d85b1a4d571?w=640&h=360&fit=crop", creatorName: "SkinCareSarah", viewCount: 890000, sceneValue: 80, context: "Beauty Bathroom", genre: "Beauty", sceneType: "Interior", surfaces: ["Counter", "Products", "Mirror"], duration: "12:15", platform: "youtube", platforms: ["youtube", "facebook"] },
+  // Fitness
+  { id: 26, videoId: 126, youtubeId: "demo26", title: "Home Gym Setup Tour", thumbnailUrl: "https://images.unsplash.com/photo-1534438327276-14e5300c3a48?w=640&h=360&fit=crop", creatorName: "FitLife", viewCount: 1560000, sceneValue: 95, context: "Fitness Gym", genre: "Fitness", sceneType: "Interior", surfaces: ["Equipment", "Mat", "Mirror"], duration: "13:40", platform: "youtube", platforms: ["youtube"] },
+  { id: 27, videoId: 127, youtubeId: "demo27", title: "Morning Yoga Flow", thumbnailUrl: "https://images.unsplash.com/photo-1544367567-0f2fcb009e0b?w=640&h=360&fit=crop", creatorName: "YogaWithJen", viewCount: 2800000, sceneValue: 125, context: "Fitness Yoga", genre: "Fitness", sceneType: "Interior", surfaces: ["Yoga Mat", "Props", "Wall"], duration: "28:00", platform: "youtube", platforms: ["youtube", "facebook"] },
+  // Food
+  { id: 28, videoId: 128, youtubeId: "demo28", title: "Kitchen Gadgets Ranked", thumbnailUrl: "https://images.unsplash.com/photo-1556909114-f6e7ad7d3136?w=640&h=360&fit=crop", creatorName: "FoodTechReview", viewCount: 1200000, sceneValue: 85, context: "Food Kitchen", genre: "Food", sceneType: "Interior", surfaces: ["Counter", "Appliances", "Gadgets"], duration: "17:50", platform: "youtube", platforms: ["youtube"] },
+  { id: 29, videoId: 129, youtubeId: "demo29", title: "Meal Prep Sunday", thumbnailUrl: "https://images.unsplash.com/photo-1490645935967-10de6ba17061?w=640&h=360&fit=crop", creatorName: "PrepWithMike", viewCount: 780000, sceneValue: 60, context: "Food Prep", genre: "Food", sceneType: "Interior", surfaces: ["Cutting Board", "Containers", "Ingredients"], duration: "21:30", platform: "youtube", platforms: ["youtube", "facebook"] },
+  // Fashion
+  { id: 30, videoId: 130, youtubeId: "demo30", title: "Streetwear Haul 2026", thumbnailUrl: "https://images.unsplash.com/photo-1558171813-4c088753af8f?w=640&h=360&fit=crop", creatorName: "StreetStyleKing", viewCount: 1900000, sceneValue: 110, context: "Fashion Haul", genre: "Fashion", sceneType: "Interior", surfaces: ["Closet", "Mirror", "Clothing"], duration: "15:20", platform: "youtube", platforms: ["youtube"] },
+  { id: 31, videoId: 131, youtubeId: "demo31", title: "Sneaker Collection Tour", thumbnailUrl: "https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=640&h=360&fit=crop", creatorName: "SneakerHeadz", viewCount: 3100000, sceneValue: 160, context: "Fashion Sneakers", genre: "Fashion", sceneType: "Product", surfaces: ["Shoe Wall", "Display", "Boxes"], duration: "18:45", platform: "youtube", platforms: ["youtube", "twitch"] },
+  // Travel
+  { id: 32, videoId: 132, youtubeId: "demo32", title: "Bali Travel Vlog", thumbnailUrl: "https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=640&h=360&fit=crop", creatorName: "TravelWithTom", viewCount: 4500000, sceneValue: 180, context: "Travel Destination", genre: "Travel", sceneType: "Interior", surfaces: ["Hotel Room", "Pool", "Beach"], duration: "25:40", platform: "youtube", platforms: ["youtube", "facebook"] },
+  // Automotive
+  { id: 33, videoId: 133, youtubeId: "demo33", title: "Dream Garage Tour", thumbnailUrl: "https://images.unsplash.com/photo-1492144534655-ae79c964c9d7?w=640&h=360&fit=crop", creatorName: "AutoReviewsPro", viewCount: 1780000, sceneValue: 200, context: "Automotive Garage", genre: "Automotive", sceneType: "Interior", surfaces: ["Car Hood", "Garage Wall", "Tools"], duration: "20:15", platform: "youtube", platforms: ["youtube"] },
+  // Finance / Education
+  { id: 34, videoId: 134, youtubeId: "demo34", title: "Trading Setup Explained", thumbnailUrl: "https://images.unsplash.com/photo-1554224155-6726b3ff858f?w=640&h=360&fit=crop", creatorName: "FinanceGuru", viewCount: 920000, sceneValue: 130, context: "Finance Trading", genre: "Finance", sceneType: "Desk", surfaces: ["Multi-Monitor", "Desk", "Whiteboard"], duration: "16:30", platform: "youtube", platforms: ["youtube"] },
+  // Podcast
+  { id: 35, videoId: 135, youtubeId: "demo35", title: "The Deep Dive - Episode 42", thumbnailUrl: "https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?w=640&h=360&fit=crop", creatorName: "DeepDivePod", viewCount: 560000, sceneValue: 75, context: "Podcast Studio", genre: "Podcast", sceneType: "Interior", surfaces: ["Microphone", "Acoustic Panel", "Logo Wall"], duration: "1:12:00", platform: "fullscale", platforms: ["fullscale", "youtube"] },
+  { id: 36, videoId: 136, youtubeId: "demo36", title: "Tech Talk Weekly", thumbnailUrl: "https://images.unsplash.com/photo-1478737270239-2f02b77fc618?w=640&h=360&fit=crop", creatorName: "TechTalkPod", viewCount: 340000, sceneValue: 65, context: "Podcast Studio", genre: "Podcast", sceneType: "Interior", surfaces: ["Desk", "Microphone", "Camera"], duration: "0:58:00", platform: "fullscale", platforms: ["fullscale"] },
 ];
 
-const PLATFORMS = ["All", "YouTube", "Twitch", "Facebook"];
+const PLATFORMS = ["All", "Podcasts", "YouTube", "Twitch", "Facebook"];
 
-const GENRES = ["All", "Tech", "Gaming", "Lifestyle", "DIY", "Education", "Entertainment", "Fashion", "Beauty", "Fitness", "Food", "Travel", "Vlog", "Productivity", "Finance", "Sports", "Music", "Art", "Science", "Health"];
+const GENRES = ["All", "Tech", "Gaming", "Lifestyle", "DIY", "Education", "Entertainment", "Fashion", "Beauty", "Fitness", "Food", "Travel", "Vlog", "Productivity", "Finance", "Automotive", "Podcast", "Sports", "Music", "Art", "Science", "Health"];
 const BUDGETS = ["All", "Under $50", "$50-$100", "$100-$200", "Over $200"];
 const SCENE_TYPES = ["All", "Desk", "Wall", "Interior", "Product"];
 
@@ -91,6 +137,7 @@ interface BrandCategory {
 }
 
 const BRAND_CATEGORIES: BrandCategory[] = [
+  { id: "podcasts", name: "Podcasts", description: "Podcast & Audio Content Placements", imageUrl: "https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?w=400&h=250&fit=crop", brandCount: 42 },
   { id: "tech", name: "Technology", description: "Electronics & Software", imageUrl: "https://images.unsplash.com/photo-1518770660439-4636190af475?w=400&h=250&fit=crop", brandCount: 156 },
   { id: "gaming", name: "Gaming Hardware", description: "Consoles, PCs & Peripherals", imageUrl: "https://images.unsplash.com/photo-1612287230202-1ff1d85d1bdf?w=400&h=250&fit=crop", brandCount: 89 },
   { id: "lifestyle", name: "Lifestyle", description: "Home & Living Products", imageUrl: "https://images.unsplash.com/photo-1556909114-f6e7ad7d3136?w=400&h=250&fit=crop", brandCount: 234 },
@@ -139,6 +186,7 @@ export default function BrandMarketplace() {
   const [budgetFilter, setBudgetFilter] = useState("All");
   const [sceneTypeFilter, setSceneTypeFilter] = useState("All");
   const [platformFilter, setPlatformFilter] = useState("All");
+  const [subcategoryFilter, setSubcategoryFilter] = useState("All");
   const [buyingId, setBuyingId] = useState<number | null>(null);
   const [showCategories, setShowCategories] = useState(true);
   const [activeTab, setActiveTab] = useState<"categories" | "opportunities">("categories");
@@ -190,6 +238,120 @@ export default function BrandMarketplace() {
     staleTime: 0,
   });
 
+  // Fetch featured creators for the spotlight section
+  const { data: featuredCreatorsData } = useQuery<{ creators: FeaturedCreator[] }>({
+    queryKey: ["featured-creators"],
+    queryFn: async () => {
+      const res = await fetch("/api/public/featured-creators");
+      if (!res.ok) throw new Error("Failed to fetch featured creators");
+      return res.json();
+    },
+    staleTime: 5 * 60 * 1000, // Cache for 5 minutes
+  });
+
+  // Dummy featured creators — 8 slots for 2 rows of 4
+  const DUMMY_FEATURED_CREATORS: FeaturedCreator[] = [
+    {
+      name: "Jaylen Carter",
+      slug: "jaylen",
+      headline: "Culture & Lifestyle Creator",
+      category: "Lifestyle",
+      profileImage: null,
+      thumbnails: ["https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=640&h=360&fit=crop"],
+      stats: { totalVideos: 24, totalViews: 1850000, totalSurfaces: 87, subscribers: 145000 },
+    },
+    {
+      name: "Aisha Monet",
+      slug: "aisha",
+      headline: "Podcast Host · Sports & Entertainment",
+      category: "Sports",
+      profileImage: null,
+      thumbnails: ["https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?w=640&h=360&fit=crop"],
+      stats: { totalVideos: 38, totalViews: 3200000, totalSurfaces: 142, subscribers: 290000 },
+    },
+    {
+      name: "Derek Thompson",
+      slug: "derek",
+      headline: "Tech Reviews & Unboxing",
+      category: "Tech",
+      profileImage: null,
+      thumbnails: ["https://images.unsplash.com/photo-1593642702821-c8da6771f0c6?w=640&h=360&fit=crop"],
+      stats: { totalVideos: 52, totalViews: 5400000, totalSurfaces: 210, subscribers: 420000 },
+    },
+    {
+      name: "Nina Brooks",
+      slug: "nina",
+      headline: "Home & Interior Design",
+      category: "Home",
+      profileImage: null,
+      thumbnails: ["https://images.unsplash.com/photo-1618221195710-dd6b41faaea6?w=640&h=360&fit=crop"],
+      stats: { totalVideos: 31, totalViews: 2400000, totalSurfaces: 115, subscribers: 198000 },
+    },
+    {
+      name: "Marcus Cole",
+      slug: "marcus",
+      headline: "Music Production & Beats",
+      category: "Music",
+      profileImage: null,
+      thumbnails: ["https://images.unsplash.com/photo-1478737270239-2f02b77fc618?w=640&h=360&fit=crop"],
+      stats: { totalVideos: 67, totalViews: 8100000, totalSurfaces: 290, subscribers: 560000 },
+    },
+    {
+      name: "Keyla Voss",
+      slug: "keyla",
+      headline: "Fitness & Wellness Coach",
+      category: "Fitness",
+      profileImage: null,
+      thumbnails: ["https://images.unsplash.com/photo-1571019614242-c5c5dee9f50b?w=640&h=360&fit=crop"],
+      stats: { totalVideos: 45, totalViews: 4700000, totalSurfaces: 178, subscribers: 340000 },
+    },
+    {
+      name: "Trey Okonkwo",
+      slug: "trey",
+      headline: "Auto & Motorsport",
+      category: "Auto",
+      profileImage: null,
+      thumbnails: ["https://images.unsplash.com/photo-1494976388531-d1058494cdd8?w=640&h=360&fit=crop"],
+      stats: { totalVideos: 29, totalViews: 1600000, totalSurfaces: 64, subscribers: 125000 },
+    },
+    {
+      name: "Sasha Kim",
+      slug: "sasha",
+      headline: "Food & Cooking",
+      category: "Food",
+      profileImage: null,
+      thumbnails: ["https://images.unsplash.com/photo-1556909114-f6e7ad7d3136?w=640&h=360&fit=crop"],
+      stats: { totalVideos: 41, totalViews: 3900000, totalSurfaces: 155, subscribers: 275000 },
+    },
+  ];
+
+  // Helper to format view counts
+  const formatViews = (views: number) => {
+    if (views >= 1000000) return `${(views / 1000000).toFixed(1)}M`;
+    if (views >= 1000) return `${(views / 1000).toFixed(0)}K`;
+    return String(views);
+  };
+
+  // Derive category from headline if not explicitly set
+  const getCategory = (creator: FeaturedCreator) => {
+    if (creator.category) return creator.category;
+    const h = (creator.headline || "").toLowerCase();
+    if (h.includes("tech")) return "Tech";
+    if (h.includes("music")) return "Music";
+    if (h.includes("sport")) return "Sports";
+    if (h.includes("lifestyle") || h.includes("culture")) return "Lifestyle";
+    if (h.includes("food") || h.includes("cook")) return "Food";
+    if (h.includes("fitness") || h.includes("wellness")) return "Fitness";
+    return "Creator";
+  };
+
+  // Merge real featured creators from API with dummy placeholders — 2 rows of 4 (8 total)
+  const apiFeaturedCreators = featuredCreatorsData?.creators || [];
+  const featuredCreators = [
+    ...apiFeaturedCreators,
+    ...DUMMY_FEATURED_CREATORS.filter(d => !apiFeaturedCreators.some(a => a.slug === d.slug)),
+  ].slice(0, 8);
+
   const buyMutation = useMutation({
     mutationFn: async (opportunity: MarketplaceOpportunity) => {
       const res = await apiRequest("POST", "/api/marketplace/buy", {
@@ -228,27 +390,28 @@ export default function BrandMarketplace() {
   // Debug logging
   console.log("[BrandMarketplace] isPitchMode:", isPitchMode, "opportunities.length:", allOpportunities.length, "isLoading:", isLoadingOpportunities);
 
-  const categoryToGenreMap: Record<string, string> = {
-    "tech": "Tech",
-    "gaming": "Gaming",
-    "lifestyle": "Lifestyle",
-    "education": "Education",
-    "software": "Tech",
-    "streaming": "Gaming",
-    "fitness": "Lifestyle",
-    "beauty": "Lifestyle",
-    "fashion": "Lifestyle",
-    "food": "Lifestyle",
-    "beverage": "Lifestyle",
-    "snack": "Lifestyle",
-    "health": "Lifestyle",
-    "home-improvement": "DIY",
-    "automotive": "Tech",
-    "pet": "Lifestyle",
-    "travel": "Lifestyle",
-    "finance": "Education",
-    "luxury": "Lifestyle",
-    "crypto": "Tech",
+  const categoryToGenreMap: Record<string, string[]> = {
+    "podcasts": ["Podcast"],
+    "tech": ["Tech"],
+    "gaming": ["Gaming"],
+    "lifestyle": ["Lifestyle", "DIY", "Vlog"],
+    "education": ["Education"],
+    "software": ["Tech"],
+    "streaming": ["Gaming", "Tech"],
+    "fitness": ["Fitness", "Lifestyle"],
+    "beauty": ["Beauty", "Lifestyle"],
+    "fashion": ["Fashion", "Lifestyle"],
+    "food": ["Food", "Lifestyle"],
+    "beverage": ["Food", "Lifestyle"],
+    "snack": ["Food", "Lifestyle"],
+    "health": ["Fitness", "Lifestyle"],
+    "home-improvement": ["DIY", "Lifestyle"],
+    "automotive": ["Automotive", "Tech"],
+    "pet": ["Lifestyle"],
+    "travel": ["Travel", "Lifestyle"],
+    "finance": ["Finance", "Education"],
+    "luxury": ["Fashion", "Lifestyle"],
+    "crypto": ["Tech", "Finance"],
   };
 
   const filteredOpportunities = allOpportunities.filter((opp: MarketplaceOpportunity) => {
@@ -257,16 +420,26 @@ export default function BrandMarketplace() {
     const matchesGenre = genreFilter === "All" || opp.genre === genreFilter;
     const matchesSceneType = sceneTypeFilter === "All" || opp.sceneType === sceneTypeFilter;
     
-    const matchesCategory = !selectedCategory || 
-      opp.genre === categoryToGenreMap[selectedCategory] ||
-      opp.context.toLowerCase().includes(selectedCategory.toLowerCase());
+    // Category matching: Podcasts requires BOTH fullscale platform AND Podcast genre
+    // Other categories match by genre mapping or direct name match
+    const matchesCategory = !selectedCategory ||
+      (selectedCategory === "podcasts" && opp.platform === "fullscale" && opp.genre === "Podcast") ||
+      (selectedCategory !== "podcasts" && (
+        (categoryToGenreMap[selectedCategory]?.includes(opp.genre)) ||
+        opp.genre?.toLowerCase() === selectedCategory.toLowerCase() ||
+        opp.context.toLowerCase().includes(selectedCategory.toLowerCase())
+      ));
     
-    // Platform filter - check both primary platform and platforms array
+    // Platform filter - Podcasts requires fullscale platform + Podcast genre
     let matchesPlatform = true;
     if (platformFilter !== "All") {
-      const filterValue = platformFilter.toLowerCase();
-      matchesPlatform = opp.platform === filterValue || 
-        (opp.platforms?.includes(filterValue) ?? false);
+      if (platformFilter === "Podcasts") {
+        matchesPlatform = opp.platform === "fullscale" && opp.genre === "Podcast";
+      } else {
+        const filterValue = platformFilter.toLowerCase();
+        matchesPlatform = opp.platform === filterValue ||
+          (opp.platforms?.includes(filterValue) ?? false);
+      }
     }
     
     let matchesBudget = true;
@@ -275,8 +448,13 @@ export default function BrandMarketplace() {
     else if (budgetFilter === "$100-$200") matchesBudget = opp.sceneValue > 100 && opp.sceneValue <= 200;
     else if (budgetFilter === "Over $200") matchesBudget = opp.sceneValue > 200;
     
-    return matchesSearch && matchesGenre && matchesBudget && matchesSceneType && matchesCategory && matchesPlatform;
+    const matchesSubcategory = subcategoryFilter === "All" || opp.subcategory === subcategoryFilter;
+
+    return matchesSearch && matchesGenre && matchesBudget && matchesSceneType && matchesCategory && matchesPlatform && matchesSubcategory;
   });
+
+  // Derive available subcategories from the data
+  const availableSubcategories = ["All", ...Array.from(new Set(allOpportunities.map(o => o.subcategory).filter(Boolean) as string[])).sort()];
 
   const formatViewCount = (count: number) => {
     if (count >= 1000000) return `${(count / 1000000).toFixed(1)}M`;
@@ -352,7 +530,10 @@ export default function BrandMarketplace() {
             {selectedCategory && (
               <Badge 
                 className="bg-primary/20 text-primary gap-1 cursor-pointer"
-                onClick={() => setSelectedCategory(null)}
+                onClick={() => {
+                  if (selectedCategory === "podcasts") setPlatformFilter("All");
+                  setSelectedCategory(null);
+                }}
                 data-testid="badge-selected-category"
               >
                 {BRAND_CATEGORIES.find(c => c.id === selectedCategory)?.name || selectedCategory}
@@ -420,11 +601,84 @@ export default function BrandMarketplace() {
                 ))}
               </SelectContent>
             </Select>
+
+            {availableSubcategories.length > 1 && (
+              <Select value={subcategoryFilter} onValueChange={setSubcategoryFilter}>
+                <SelectTrigger className="w-[150px]" data-testid="select-subcategory">
+                  <Filter className="w-4 h-4 mr-2" />
+                  <SelectValue placeholder="Subcategory" />
+                </SelectTrigger>
+                <SelectContent>
+                  {availableSubcategories.map((sub) => (
+                    <SelectItem key={sub} value={sub}>{sub}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
           </div>
         </div>
       </div>
 
       <div className="max-w-7xl mx-auto px-4 py-6">
+        {/* Featured Creators Section — always visible on both tabs */}
+        {featuredCreators.length > 0 && (
+          <div className="mb-8">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                  <Sparkles className="w-5 h-5 text-purple-400" />
+                  Featured Creators
+                </h2>
+                <p className="text-sm text-white/60">Discover top creators with premium placement surfaces</p>
+              </div>
+              <Badge className="bg-purple-500/20 text-purple-400 border-purple-500/30">
+                {featuredCreators.length} Creators
+              </Badge>
+            </div>
+            {/* 2-row grid: 4 per row on desktop, 3 on tablet, 2 on mobile — shows up to 8 creators */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+              {featuredCreators.slice(0, 8).map((creator, idx) => (
+                <motion.div
+                  key={creator.slug}
+                  initial={{ opacity: 0, y: 15 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: idx * 0.06 }}
+                >
+                  <Link href={`/c/${creator.slug}`}>
+                    <Card className="group overflow-hidden cursor-pointer border-white/10 hover:border-purple-500/40 transition-all duration-300">
+                      {/* Single key image with name overlay */}
+                      <div className="relative aspect-video overflow-hidden">
+                        <img
+                          src={creator.thumbnails?.[0] || "https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?w=640&h=360&fit=crop"}
+                          alt={creator.name}
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).src = "https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?w=640&h=360&fit=crop";
+                          }}
+                        />
+                        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent p-3">
+                          <h3 className="font-semibold text-white text-sm truncate">{creator.name}</h3>
+                        </div>
+                      </div>
+                      {/* Category badge + view count */}
+                      <div className="px-3 py-2 flex items-center justify-between">
+                        <Badge variant="secondary" className="text-[10px] px-1.5 py-0.5 bg-white/10 text-white/70 border-white/10">
+                          {getCategory(creator)}
+                        </Badge>
+                        <span className="text-xs text-white/50 flex items-center gap-1">
+                          <Eye className="w-3 h-3" />
+                          {formatViews(creator.stats.totalViews)}
+                        </span>
+                      </div>
+                    </Card>
+                  </Link>
+                </motion.div>
+              ))}
+            </div>
+            <div className="border-b border-white/10 mt-6 mb-2" />
+          </div>
+        )}
+
         {activeTab === "categories" && (
           <div className="mb-8">
             <div className="flex items-center justify-between mb-4">
@@ -444,10 +698,13 @@ export default function BrandMarketplace() {
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: idx * 0.03 }}
                 >
-                  <Card 
+                  <Card
                     className="group overflow-hidden cursor-pointer hover-elevate"
                     onClick={() => {
                       setSelectedCategory(category.id);
+                      if (category.id === "podcasts") {
+                        setPlatformFilter("Podcasts");
+                      }
                       setActiveTab("opportunities");
                     }}
                     data-testid={`card-category-${category.id}`}
@@ -478,6 +735,7 @@ export default function BrandMarketplace() {
 
         {activeTab === "opportunities" && (
         <>
+
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
           <AnimatePresence mode="popLayout">
             {filteredOpportunities.map((opportunity, idx) => (
@@ -489,19 +747,37 @@ export default function BrandMarketplace() {
                 transition={{ delay: idx * 0.05 }}
               >
                 <Card className="group overflow-visible hover-elevate cursor-pointer" data-testid={`card-opportunity-${opportunity.id}`}>
-                  <div 
-                    className="aspect-video relative overflow-hidden rounded-t-md cursor-pointer"
+                  <div
+                    className="relative overflow-hidden rounded-t-md cursor-pointer bg-black flex items-center justify-center"
+                    style={{ minHeight: '160px' }}
                     onClick={() => setSelectedOpportunity(opportunity)}
                     data-testid={`thumbnail-opportunity-${opportunity.id}`}
                   >
-                    <img
-                      src={(opportunity as any).thumbnailUrl || (opportunity as any).thumbnail_url || `https://picsum.photos/seed/${opportunity.id}/640/360`}
-                      alt={opportunity.title}
-                      className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).src = `https://picsum.photos/seed/${opportunity.id}/640/360`;
-                      }}
-                    />
+                    {/* For fullscale/local videos: show video element to display actual content */}
+                    {opportunity.videoUrl ? (
+                      <video
+                        src={opportunity.videoUrl}
+                        className="w-full h-auto max-h-[240px] object-contain"
+                        muted
+                        playsInline
+                        preload="metadata"
+                        poster={(opportunity as any).thumbnailUrl || undefined}
+                        onLoadedMetadata={(e) => {
+                          // Seek to 1 second to show a meaningful frame
+                          const vid = e.currentTarget;
+                          vid.currentTime = 1;
+                        }}
+                      />
+                    ) : (
+                      <img
+                        src={(opportunity as any).thumbnailUrl || (opportunity as any).thumbnail_url || `https://picsum.photos/seed/${opportunity.id}/640/360`}
+                        alt={opportunity.title}
+                        className="w-full h-auto max-h-[240px] object-contain"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).src = `https://picsum.photos/seed/${opportunity.id}/640/360`;
+                        }}
+                      />
+                    )}
                     {/* Overlay play icon on hover */}
                     <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200 bg-black/30">
                       <div className="w-12 h-12 rounded-full bg-white/90 flex items-center justify-center">
@@ -520,16 +796,18 @@ export default function BrandMarketplace() {
                     <div className="absolute top-2 right-2 flex items-center gap-1">
                       {/* Platform icons with exact brand colors */}
                       {(opportunity.platforms || [opportunity.platform]).filter(Boolean).map((p) => (
-                        <div 
-                          key={p} 
+                        <div
+                          key={p}
                           className={`w-5 h-5 rounded-full flex items-center justify-center ${
-                            p === 'twitch' ? 'bg-[#9146FF]' : 
-                            p === 'facebook' ? 'bg-[#1877F2]' : 
+                            p === 'twitch' ? 'bg-[#9146FF]' :
+                            p === 'facebook' ? 'bg-[#1877F2]' :
+                            p === 'fullscale' ? 'bg-[#8B5CF6]' :
                             'bg-[#FF0000]'
                           }`}
                         >
                           {p === 'twitch' ? <SiTwitch className="w-2.5 h-2.5 text-white" /> :
                            p === 'facebook' ? <SiFacebook className="w-2.5 h-2.5 text-white" /> :
+                           p === 'fullscale' ? <Mic className="w-2.5 h-2.5 text-white" /> :
                            <SiYoutube className="w-2.5 h-2.5 text-white" />}
                         </div>
                       ))}
@@ -615,25 +893,48 @@ export default function BrandMarketplace() {
               </DialogHeader>
               
               <div className="space-y-6 py-4">
-                {/* Video thumbnail with platform badges */}
-                <div className="aspect-video relative rounded-lg overflow-hidden bg-black">
+                {/* Video player / thumbnail — flex container for natural aspect ratio */}
+                <div className="relative rounded-lg overflow-hidden bg-black flex items-center justify-center" style={{ minHeight: '200px', maxHeight: '60vh' }}>
+                  {selectedOpportunity.videoUrl ? (
+                    <video
+                      key={selectedOpportunity.id}
+                      src={selectedOpportunity.videoUrl}
+                      poster={selectedOpportunity.thumbnailUrl || undefined}
+                      controls
+                      className="w-full h-auto max-h-[60vh] object-contain"
+                      playsInline
+                      muted
+                      autoPlay
+                      onError={(e) => {
+                        console.warn("[Marketplace] Video error:", e.currentTarget.error?.message);
+                        // Hide video and show poster image instead
+                        e.currentTarget.style.display = 'none';
+                        const fallback = e.currentTarget.nextElementSibling as HTMLElement;
+                        if (fallback) fallback.style.display = 'block';
+                      }}
+                    />
+                  ) : null}
+                  {/* Image fallback — shown if no video URL, or as hidden fallback if video fails */}
                   <img
-                    src={(selectedOpportunity as any).thumbnailUrl || (selectedOpportunity as any).thumbnail_url || `https://picsum.photos/seed/${selectedOpportunity.id}/1280/720`}
+                    src={selectedOpportunity.thumbnailUrl || `https://picsum.photos/seed/${selectedOpportunity.id}/1280/720`}
                     alt={selectedOpportunity.title}
-                    className="w-full h-full object-cover"
+                    className="w-full h-auto max-h-[60vh] object-contain"
+                    style={{ display: selectedOpportunity.videoUrl ? 'none' : 'block' }}
                   />
                   <div className="absolute top-3 right-3 flex items-center gap-2">
                     {(selectedOpportunity.platforms || [selectedOpportunity.platform]).filter(Boolean).map((p) => (
-                      <div 
-                        key={p} 
+                      <div
+                        key={p}
                         className={`w-8 h-8 rounded-full flex items-center justify-center shadow-lg ${
-                          p === 'twitch' ? 'bg-[#9146FF]' : 
-                          p === 'facebook' ? 'bg-[#1877F2]' : 
+                          p === 'twitch' ? 'bg-[#9146FF]' :
+                          p === 'facebook' ? 'bg-[#1877F2]' :
+                          p === 'fullscale' ? 'bg-[#8B5CF6]' :
                           'bg-[#FF0000]'
                         }`}
                       >
                         {p === 'twitch' ? <SiTwitch className="w-4 h-4 text-white" /> :
                          p === 'facebook' ? <SiFacebook className="w-4 h-4 text-white" /> :
+                         p === 'fullscale' ? <Mic className="w-4 h-4 text-white" /> :
                          <SiYoutube className="w-4 h-4 text-white" />}
                       </div>
                     ))}
@@ -650,8 +951,25 @@ export default function BrandMarketplace() {
                       {(selectedOpportunity.creatorName || "C").charAt(0)}
                     </div>
                     <div>
-                      <p className="font-semibold">{selectedOpportunity.creatorName}</p>
-                      <p className="text-sm text-muted-foreground">Creator</p>
+                      {selectedOpportunity.creatorSlug ? (
+                        <Link href={`/c/${selectedOpportunity.creatorSlug}`} onClick={() => setSelectedOpportunity(null)}>
+                          <p className="font-semibold text-purple-400 hover:text-purple-300 cursor-pointer transition-colors">
+                            {selectedOpportunity.creatorName}
+                          </p>
+                        </Link>
+                      ) : (
+                        <p className="font-semibold">{selectedOpportunity.creatorName}</p>
+                      )}
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm text-muted-foreground">Creator</p>
+                        {selectedOpportunity.creatorSlug && (
+                          <Link href={`/c/${selectedOpportunity.creatorSlug}`} onClick={() => setSelectedOpportunity(null)}>
+                            <span className="text-xs text-purple-400 hover:text-purple-300 cursor-pointer transition-colors flex items-center gap-0.5">
+                              View Portfolio <ExternalLink className="w-3 h-3" />
+                            </span>
+                          </Link>
+                        )}
+                      </div>
                     </div>
                   </div>
                   <div className="flex items-center gap-4 text-sm">
@@ -660,6 +978,9 @@ export default function BrandMarketplace() {
                       <span>{formatViewCount(selectedOpportunity.viewCount)}</span>
                     </div>
                     <Badge variant="outline">{selectedOpportunity.genre}</Badge>
+                    {selectedOpportunity.subcategory && (
+                      <Badge variant="outline" className="border-purple-500/30 text-purple-400">{selectedOpportunity.subcategory}</Badge>
+                    )}
                   </div>
                 </div>
 
@@ -670,7 +991,8 @@ export default function BrandMarketplace() {
                     Placement Opportunities
                   </h3>
                   <div className="grid grid-cols-2 gap-3">
-                    {selectedOpportunity.surfaces.map((surface, idx) => (
+                    {/* Deduplicate surfaces — show unique types only */}
+                    {Array.from(new Set(selectedOpportunity.surfaces)).map((surface, idx) => (
                       <div key={idx} className="flex items-center justify-between p-3 bg-background rounded-lg border">
                         <div className="flex items-center gap-2">
                           <Monitor className="w-4 h-4 text-muted-foreground" />
@@ -696,25 +1018,69 @@ export default function BrandMarketplace() {
                   </div>
                 </div>
 
-                {/* Price and Buy */}
+                {/* Viral Clips Section — Editorial Intelligence for brands */}
+                <div className="bg-card rounded-lg border p-4">
+                  <h3 className="font-semibold mb-3 flex items-center gap-2">
+                    <TrendingUp className="w-4 h-4 text-primary" />
+                    Viral Clips
+                  </h3>
+                  <p className="text-xs text-muted-foreground mb-3">
+                    AI-ranked clips with viral potential — buy placements in premium moments.
+                  </p>
+                  <EditorialClips
+                    videoId={selectedOpportunity.videoId}
+                    mode="brand"
+                    onBuyPlacement={(clip) => {
+                      toast({
+                        title: "Placement Request",
+                        description: `Requesting placement in "${clip.suggestedTitle}" (${clip.monetizationTier} tier)`,
+                      });
+                      // Use the existing buy mutation with clip context
+                      buyMutation.mutate({
+                        ...selectedOpportunity,
+                        sceneValue: clip.monetizationTier === "premium"
+                          ? selectedOpportunity.sceneValue * 1.5
+                          : selectedOpportunity.sceneValue,
+                      });
+                    }}
+                  />
+                </div>
+
+                {/* Price and Actions */}
                 <div className="flex items-center justify-between p-4 bg-primary/5 rounded-lg border border-primary/20">
                   <div>
                     <p className="text-sm text-muted-foreground">Placement Value</p>
                     <p className="text-3xl font-bold text-emerald-500">${selectedOpportunity.sceneValue}</p>
                   </div>
-                  <Button 
-                    size="lg" 
-                    className="gap-2"
-                    onClick={() => {
-                      handleBuy(selectedOpportunity);
-                      setSelectedOpportunity(null);
-                    }}
-                    disabled={buyingId === selectedOpportunity.id}
-                    data-testid="button-buy-modal"
-                  >
-                    <ShoppingCart className="w-5 h-5" />
-                    {buyingId === selectedOpportunity.id ? "Processing..." : "Purchase Placement"}
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    {selectedOpportunity.videoUrl && (
+                      <Button
+                        size="lg"
+                        variant="outline"
+                        className="gap-2"
+                        onClick={() => {
+                          window.location.href = `/remix/${selectedOpportunity.videoId}`;
+                        }}
+                        data-testid="button-place-product"
+                      >
+                        <Palette className="w-5 h-5" />
+                        Place Product
+                      </Button>
+                    )}
+                    <Button
+                      size="lg"
+                      className="gap-2"
+                      onClick={() => {
+                        handleBuy(selectedOpportunity);
+                        setSelectedOpportunity(null);
+                      }}
+                      disabled={buyingId === selectedOpportunity.id}
+                      data-testid="button-buy-modal"
+                    >
+                      <ShoppingCart className="w-5 h-5" />
+                      {buyingId === selectedOpportunity.id ? "Processing..." : "Purchase Placement"}
+                    </Button>
+                  </div>
                 </div>
               </div>
             </>

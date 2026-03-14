@@ -1,11 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence, useInView } from "framer-motion";
-import { Zap, Shield, Video, X, Ban, DollarSign, TrendingUp, Users, Sparkles, Cpu, Eye, Timer, Layers, Mail, User, Plus, Globe, ArrowRight } from "lucide-react";
+import { Zap, Shield, Video, X, Ban, DollarSign, TrendingUp, Users, Sparkles, Cpu, Eye, Timer, Layers, Mail, User, Plus, Globe, ArrowRight, Film, Wand2 } from "lucide-react";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 import logoBlackAmbition from "@assets/logo-black-ambition_1767712118620.png";
 import logoMayDavis from "@assets/logo-may-davis_1767712118621.png";
 import logoElementa from "@assets/logo-elementa_1767712118620.png";
-import logoNue from "@assets/logo-nue_1767712118621.png";
+import { SmithFamilyCircleLogo } from "@/components/SmithFamilyCircleLogo";
 import heroVideo from "@assets/generated_videos/creator_studio_cinematic_loop.mp4";
 import realityImg from "@assets/unnamed_1769147394407.JPEG";
 import aiAugmentedImg from "@assets/Gemini_Generated_Image_rykd4crykd4crykd_1769147394406.PNG";
@@ -1069,7 +1069,7 @@ function GlassMetricCard({ icon: Icon, label, value, sublabel, color = "primary"
       whileInView={{ opacity: 1, y: 0 }}
       viewport={{ once: true }}
       transition={{ duration: 0.5 }}
-      className={`relative p-1.5 md:p-4 rounded-lg md:rounded-2xl backdrop-blur-xl border ${colorClasses[color]} shadow-lg max-[480px]:h-[55px] max-[480px]:flex max-[480px]:items-center`}
+      className={`relative p-2 md:p-4 rounded-lg md:rounded-2xl backdrop-blur-xl border ${colorClasses[color]} shadow-lg`}
       data-testid={testId}
     >
       <div className="absolute inset-0 rounded-xl md:rounded-2xl bg-gradient-to-br from-white/5 to-transparent pointer-events-none" />
@@ -1078,7 +1078,7 @@ function GlassMetricCard({ icon: Icon, label, value, sublabel, color = "primary"
           <Icon className={`w-3 h-3 md:w-4 md:h-4 ${color === 'primary' ? 'text-primary' : color === 'emerald' ? 'text-emerald-400' : 'text-yellow-400'}`} />
           <span className="text-[10px] md:text-xs uppercase tracking-wider text-muted-foreground font-medium">{label}</span>
         </div>
-        <p className={`text-lg md:text-2xl font-bold ${color === 'primary' ? 'text-primary' : color === 'emerald' ? 'text-emerald-400' : 'text-yellow-400'}`} data-testid={testId ? `${testId}-value` : undefined}>{value}</p>
+        <p className={`text-sm md:text-2xl font-bold ${color === 'primary' ? 'text-primary' : color === 'emerald' ? 'text-emerald-400' : 'text-yellow-400'}`} data-testid={testId ? `${testId}-value` : undefined}>{value}</p>
         <p className="text-[10px] md:text-xs text-muted-foreground mt-0.5 md:mt-1">{sublabel}</p>
       </div>
     </motion.div>
@@ -1121,7 +1121,7 @@ export default function Landing() {
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col relative">
       {/* Cinematic Hero Section */}
-      <section className="relative min-h-[500px] md:min-h-[700px] lg:h-screen overflow-hidden pb-8 md:pb-0">
+      <section className="relative min-h-[650px] md:min-h-[700px] lg:h-screen overflow-hidden pb-8 md:pb-0">
         <video
           ref={videoRef}
           src={heroVideo}
@@ -1162,7 +1162,21 @@ export default function Landing() {
           
           {/* Desktop Navigation - visible at 600px and above */}
           <div className="hidden min-[600px]:flex items-center gap-3">
-            <a 
+            <a
+              href="/creates"
+              className="px-5 py-2 rounded-lg font-medium text-sm border border-white/20 bg-white/10 backdrop-blur-sm hover:bg-white/20 transition-colors text-white min-h-[44px] flex items-center"
+              data-testid="link-nav-creates"
+            >
+              FullScale Creates
+            </a>
+            <a
+              href="/studio"
+              className="px-5 py-2 rounded-lg font-medium text-sm border border-purple-500/30 bg-purple-500/10 backdrop-blur-sm hover:bg-purple-500/20 transition-colors text-purple-200 min-h-[44px] flex items-center"
+              data-testid="link-nav-studio"
+            >
+              FullScale Studio
+            </a>
+            <a
               href="/auth?mode=signup"
               className="px-5 py-2 rounded-lg font-medium text-sm border border-primary text-primary bg-black/20 backdrop-blur-sm hover:bg-primary/10 transition-colors min-h-[44px] flex items-center"
               data-testid="button-nav-apply"
@@ -1180,7 +1194,23 @@ export default function Landing() {
 
           {/* Mobile Icon Buttons - visible below 600px with 1.5rem spacing from logo */}
           <div className="flex min-[600px]:hidden items-center gap-3 ml-6">
-            <a 
+            <a
+              href="/creates"
+              className="p-2 rounded-lg border border-white/20 bg-white/10 backdrop-blur-sm hover:bg-white/20 transition-colors text-white min-h-[44px] min-w-[44px] flex items-center justify-center"
+              data-testid="button-mobile-creates"
+              aria-label="FullScale Creates"
+            >
+              <Film className="w-5 h-5" />
+            </a>
+            <a
+              href="/studio"
+              className="p-2 rounded-lg border border-purple-500/30 bg-purple-500/10 backdrop-blur-sm hover:bg-purple-500/20 transition-colors text-purple-200 min-h-[44px] min-w-[44px] flex items-center justify-center"
+              data-testid="button-mobile-studio"
+              aria-label="FullScale Studio"
+            >
+              <Wand2 className="w-5 h-5" />
+            </a>
+            <a
               href="/auth?mode=signup"
               className="p-2 rounded-lg border border-primary text-primary bg-black/20 backdrop-blur-sm hover:bg-primary/10 transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center"
               data-testid="button-mobile-apply"
@@ -1188,7 +1218,7 @@ export default function Landing() {
             >
               <Plus className="w-5 h-5" />
             </a>
-            <button 
+            <button
               onClick={handleLoginClick}
               className="p-2 rounded-lg border border-white/20 bg-white/10 backdrop-blur-sm hover:bg-white/20 transition-colors text-white min-h-[44px] min-w-[44px] flex items-center justify-center"
               data-testid="button-mobile-signin"
@@ -1222,8 +1252,8 @@ export default function Landing() {
                 <span className="bg-gradient-to-r from-primary via-emerald-400 to-primary bg-clip-text text-transparent">Into Revenue</span>
               </h1>
               
-              <p className="text-base md:text-2xl text-white/70 max-w-3xl mx-auto mb-6 md:mb-10 leading-relaxed max-[480px]:hidden">
-                AI-powered product placement that dreams products into your existing content with perfect lighting, occlusion, and tracking—scaling your reach for a global economy.
+              <p className="text-base md:text-2xl text-white/70 max-w-3xl mx-auto mb-6 md:mb-10 leading-relaxed">
+                AI-powered product placement that places products into your existing content with perfect lighting, occlusion, and tracking—scaling your reach for a global economy.
               </p>
 
               <div className="flex flex-col sm:flex-row gap-3 md:gap-4 items-center justify-center">
@@ -1240,12 +1270,12 @@ export default function Landing() {
                   data-testid="button-view-demo"
                 >
                   <Eye className="w-4 h-4 md:w-5 md:h-5" />
-                  Interactive Tour
+                  Interactive Demo
                 </button>
               </div>
 
-              {/* Mobile Metric Cards - ultra-compact stacked layout on mobile only */}
-              <div className="lg:hidden flex flex-col gap-1 mt-4 w-full px-4">
+              {/* Mobile Metric Cards - horizontal row on mobile only */}
+              <div className="lg:hidden grid grid-cols-3 gap-2 mt-4 w-full px-6">
                 <GlassMetricCard icon={Eye} label="Lighting" value="98%" sublabel="Match" color="emerald" testId="metric-lighting-mobile" />
                 <GlassMetricCard icon={Timer} label="Latency" value="0.02ms" sublabel="Tracking" color="primary" testId="metric-latency-mobile" />
                 <GlassMetricCard icon={Cpu} label="Inpainting" value="Active" sublabel="AI" color="yellow" testId="metric-inpainting-mobile" />
@@ -1327,7 +1357,7 @@ export default function Landing() {
                   <img src={logoElementa} alt="Elementa" loading="lazy" className="h-8 md:h-12 w-auto opacity-70 hover:opacity-100 transition-opacity" />
                 </div>
                 <div className="p-3 md:p-4 rounded-xl backdrop-blur-md bg-white/5 border border-white/10 hover:bg-white/10 hover:scale-105 hover:shadow-lg hover:shadow-white/5 transition-all duration-300">
-                  <img src={logoNue} alt="Nue Agency" loading="lazy" className="h-6 md:h-10 w-auto opacity-70 hover:opacity-100 transition-opacity" />
+                  <SmithFamilyCircleLogo className="h-6 md:h-10 w-auto opacity-70 hover:opacity-100 transition-opacity" />
                 </div>
               </div>
             ))}

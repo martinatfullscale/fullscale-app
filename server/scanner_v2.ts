@@ -24,13 +24,21 @@ import sharp from "sharp";
 import { storage } from "./storage";
 import type { InsertDetectedSurface } from "@shared/schema";
 import { GoogleGenAI } from "@google/genai";
+import { uploadFileToStorage, downloadToTempFile, storageServeUrl } from "./lib/objectStorage";
 
 // ============================================================================
 // GEMINI AI CLIENT
 // ============================================================================
 
+// Startup diagnostics — logs once at module load time so you can see the config in Replit logs
+console.log(`[Scanner V2] =============================================`);
+console.log(`[Scanner V2] AI_INTEGRATIONS_GEMINI_API_KEY exists: ${!!process.env.AI_INTEGRATIONS_GEMINI_API_KEY}`);
+console.log(`[Scanner V2] AI_INTEGRATIONS_GEMINI_API_KEY length: ${process.env.AI_INTEGRATIONS_GEMINI_API_KEY?.length || 0}`);
+console.log(`[Scanner V2] AI_INTEGRATIONS_GEMINI_BASE_URL: ${process.env.AI_INTEGRATIONS_GEMINI_BASE_URL || '(NOT SET — will use Google default)'}`);
+console.log(`[Scanner V2] =============================================`);
+
 const ai = new GoogleGenAI({
-  apiKey: process.env.AI_INTEGRATIONS_GEMINI_API_KEY || "dummy-key",
+  apiKey: process.env.AI_INTEGRATIONS_GEMINI_API_KEY,
   httpOptions: {
     apiVersion: "",
     baseUrl: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL,
@@ -61,8 +69,9 @@ const CONFIG = {
   HORIZONTAL_LINE_MIN_LENGTH: 0.20,
   SURFACE_CONFIDENCE_THRESHOLD: 0.25, // Require reasonable confidence
 
-  // Fallback detection - only add if Gemini found ZERO surfaces in entire video
-  MIN_SURFACES_BEFORE_FALLBACK: 0,
+  // Fallback detection - add placeholder surfaces when Gemini finds fewer than this count
+  // Set to 1 so that videos scanned without Gemini (missing API key) still get placeholders
+  MIN_SURFACES_BEFORE_FALLBACK: 1,
   FALLBACK_CONFIDENCE: 0.15,
   
   // Timeouts
@@ -74,6 +83,40 @@ const CONFIG = {
   VERTICAL_ASPECT_THRESHOLD: 1.0,
   VERTICAL_ROI_TOP: 0.4,
 } as const;
+
+// ============================================================================
+// SCAN MODE CONFIGURATION
+// ============================================================================
+// Standard mode: strict rules for manual placement flow
+// AutoRemix mode: relaxed rules for narrative-first approach (auto-remix engine)
+
+export interface ScanModeConfig {
+  maxPersonOccupancy: number;
+  minSurfaceArea: number;
+  maxBboxHeight: number;
+  requireTableEdge: boolean;
+  allowBackgroundPlacements: boolean;
+  fallbackToGeneration: boolean;
+}
+
+export const scanModes: Record<string, ScanModeConfig> = {
+  standard: {
+    maxPersonOccupancy: 0.5,
+    minSurfaceArea: 0.08,
+    maxBboxHeight: 0.3,
+    requireTableEdge: true,
+    allowBackgroundPlacements: false,
+    fallbackToGeneration: false,
+  },
+  autoRemix: {
+    maxPersonOccupancy: 0.7,
+    minSurfaceArea: 0.05,
+    maxBboxHeight: 0.4,
+    requireTableEdge: false,
+    allowBackgroundPlacements: true,
+    fallbackToGeneration: true,
+  },
+};
 
 // ============================================================================
 // TYPES
@@ -147,24 +190,35 @@ interface GeminiSurfaceDetectionResult {
 // GEMINI AI PROMPT
 // ============================================================================
 
-const SURFACE_DETECTION_PROMPT = `You are analyzing a video frame to identify REAL, PHYSICAL flat surfaces where a product could naturally be placed.
+const SURFACE_DETECTION_PROMPT = `You are analyzing a video frame to identify the SINGLE most prominent REAL, PHYSICAL flat surface where a product could naturally be placed.
 
-TASK: Find actual flat surfaces (tables, desks, countertops, shelves) visible in the frame where a small product like a beverage bottle, phone, or gadget could physically sit.
+TASK: Find the ONE best flat surface (table, desk, countertop, shelf) visible in the frame where a small product like a beverage bottle, phone, or gadget could physically sit. Return ONLY the single most prominent and clearly visible surface.
 
-CRITICAL RULES:
+CRITICAL RULES — RETURN MAXIMUM 1 SURFACE:
 - Only detect REAL physical surfaces that exist in the 3D scene
+- Return ONLY the single best surface — the largest, clearest, most prominent flat horizontal surface
+- If multiple surfaces exist, pick the ONE that is most suitable for product placement (largest visible area, best lit, most natural for a product)
 - The bounding box must tightly wrap ONLY the visible, FLAT, HORIZONTAL surface area
-- The surface must occupy at least 8% of the total frame area (width * height) to be valid
+- The surface must occupy at least 5% of the total frame area (width * height) to be valid
 - Do NOT flag roads, sidewalks, floors, or ground surfaces
 - Do NOT flag walls, ceilings, curtains, or vertical surfaces (unless it's a shelf)
 - Do NOT flag bridges, buildings, vehicles, or outdoor structures
 - Do NOT flag areas with heavy motion blur or out-of-focus regions
 - Do NOT flag surfaces blocked by people's bodies or hands
 - Do NOT flag surfaces that are too small to place a product on
-- If a person occupies more than 50% of the frame (close-up, medium shot, or bust shot), return surfaces_found: false UNLESS a clear table/desk surface is ALSO prominently visible
+- If a person occupies more than 50% of the frame (close-up, medium shot, or bust shot), return surfaces_found: false UNLESS a clear table/desk surface is ALSO prominently visible SEPARATE FROM the person's body
 - If the frame is an exterior/outdoor shot with no furniture, return surfaces_found: false
 - If the frame is a close-up of a person with no visible surfaces, return surfaces_found: false
-- Maximum 2 surfaces per frame — only the most prominent and clearly visible ones
+
+ANTI-HALLUCINATION RULES (CRITICAL — READ CAREFULLY):
+- You MUST be able to clearly see the physical surface material (wood, glass, metal, stone, etc.)
+- The bounding box MUST NOT overlap with any person's body, clothing, arms, hands, or lap
+- If a laptop is on someone's lap, that is NOT a desk surface — it is a laptop on a person
+- If someone is wearing dark clothing, the dark area is NOT a desk — it is clothing
+- A microphone boom arm, monitor arm, or equipment mount is NOT a surface
+- Do NOT draw a bounding box that covers a person's chest, torso, or lap area and call it a "desk"
+- The surface must be GEOMETRICALLY SEPARATE from any person in the frame — there must be clear visual separation between the person's body and the surface edge
+- If you are unsure whether something is a real surface or just a dark/shadowy region near a person, return surfaces_found: false
 
 BOUNDING BOX RULES:
 - x, y = top-left corner of the surface as percentage of frame (0-100)
@@ -176,12 +230,13 @@ BOUNDING BOX RULES:
 - A wide table seen at eye level might be: x:15, y:55, width:70, height:10 (THIN horizontal strip)
 - A desk seen from slightly above might be: x:20, y:50, width:40, height:20
 - Do NOT make bounding boxes taller than 30% of frame height unless viewed from directly above (top-down)
+- The bounding box center (y + height/2) should be in the LOWER portion of the frame (y > 40%) for tables/desks at eye level
 
-GOOD SURFACES (flag these):
-- Desks, tables, countertops with visible flat area
+GOOD SURFACES (flag the single best one):
+- Studio desks in podcast/recording setups — but ONLY if you can see the actual desk surface (the flat top where objects sit), not just equipment or a person sitting
+- Desks, tables, countertops with visible flat area and clear surface material visible
 - Shelves or ledges with clear space
 - Nightstands, side tables, coffee tables
-- Studio desks in podcast/recording setups
 - Kitchen counters with some clear space
 
 PODCAST / INTERVIEW / TALKING-HEAD RULES:
@@ -193,6 +248,7 @@ PODCAST / INTERVIEW / TALKING-HEAD RULES:
 - A dark area below a person's torso is NOT a desk — it is clothing, lap, shadow, or dark background
 - Microphones, monitor stands, and equipment edges are NOT surfaces
 - Only flag a desk/table if you can clearly see: (1) the horizontal front edge of the table AND (2) some of the flat top surface behind that edge
+- If the desk is behind/below a person but you can only see a tiny sliver of it, return surfaces_found: false — the surface is not prominent enough
 
 BAD "SURFACES" (do NOT flag):
 - Roads, highways, pavement
@@ -203,12 +259,14 @@ BAD "SURFACES" (do NOT flag):
 - Any area where a product would look unnatural
 - Dark regions below a person's chest/torso (these are NOT desks)
 - Inferred/assumed surfaces that are not clearly visible in the frame
+- A person's lap, thighs, or clothing — even if a laptop or object is resting on them
+- Equipment surfaces like laptop screens, monitor backs, or camera housings
 
-For each suitable surface found, provide:
+For the surface found, provide:
 - **location**: Tight bounding box as {x, y, width, height} in percentages (0-100)
 - **surface_type**: desk, table, shelf, counter, nightstand, coffee_table, studio_desk
 - **confidence**: 0.0 to 1.0 — use >0.7 only if the surface is clearly, unambiguously visible. Use 0.4-0.6 if partially visible. Use <0.4 if uncertain (these will be filtered out).
-- **reasoning**: Brief explanation
+- **reasoning**: Brief explanation of why this is the best surface
 - **lighting_direction**: Where the main light source is coming from relative to the surface. One of: "left", "right", "top", "top-left", "top-right", "ambient" (if diffuse/even lighting)
 - **lighting_intensity**: 0.0 to 1.0 — how bright the scene is (0.0 = very dark, 0.5 = moderate, 1.0 = very bright/overexposed)
 - **camera_angle**: The camera's viewing angle relative to the surface. One of: "eye-level", "slightly-above", "top-down", "low-angle"
@@ -220,9 +278,9 @@ RESPOND IN THIS EXACT JSON FORMAT (no markdown, no code fences):
   "surfaces": [
     {
       "location": {"x": 20, "y": 55, "width": 30, "height": 20},
-      "surface_type": "desk",
+      "surface_type": "studio_desk",
       "confidence": 0.85,
-      "reasoning": "Clear wooden desk surface, well-lit, partially visible",
+      "reasoning": "Clear studio desk surface, well-lit, main placement area in podcast setup",
       "lighting_direction": "top-left",
       "lighting_intensity": 0.7,
       "camera_angle": "slightly-above"
@@ -809,9 +867,49 @@ async function analyzeFrameWithGemini(
       return { ...defaultResult, aiAnalyzed: true };
     }
 
-    // Map Gemini surfaces, filter low-confidence, sort by confidence, take top 2
+    // Map Gemini surfaces, filter low-confidence, validate against ghost patterns
+    // We want exactly 1 prominent surface per frame to avoid ghost/duplicate detections
     const allSurfaces: DetectedSurface[] = parsed.surfaces
-      .filter((s: GeminiDetectedSurface) => s.confidence >= 0.5) // Skip low/medium-confidence — only use high-quality detections
+      .filter((s: GeminiDetectedSurface) => s.confidence >= 0.6) // Higher threshold: only high-quality detections
+      .filter((s: GeminiDetectedSurface) => {
+        // GHOST SURFACE FILTER — reject bounding boxes that likely overlap a person's body
+        const bbX = s.location.x / 100;
+        const bbY = s.location.y / 100;
+        const bbW = s.location.width / 100;
+        const bbH = s.location.height / 100;
+        const centerX = bbX + bbW / 2;
+        const centerY = bbY + bbH / 2;
+        const area = bbW * bbH;
+
+        // Ghost pattern 1: Bounding box centered on person's torso area
+        // In podcast setups, person typically occupies frame center (x: 25-75%, y: 15-60%)
+        // A real desk/table surface should be BELOW the person (y > 55%) or to the SIDE
+        const isInPersonZone = centerX > 0.20 && centerX < 0.80 && centerY > 0.15 && centerY < 0.55;
+        const isSmallArea = area < 0.10; // Small surfaces in person zone are very suspect
+        if (isInPersonZone && isSmallArea) {
+          console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — bbox center (${(centerX*100).toFixed(0)}%, ${(centerY*100).toFixed(0)}%) is in person zone with small area ${(area*100).toFixed(1)}%`);
+          return false;
+        }
+
+        // Ghost pattern 2: Tall bounding box overlapping person center
+        // Real desk surfaces seen at eye level should be thin (height < 25%)
+        // A bbox that is both tall AND centered on person area is likely on the person
+        if (bbH > 0.25 && centerY < 0.55 && centerX > 0.25 && centerX < 0.75) {
+          console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — tall bbox (h=${(bbH*100).toFixed(0)}%) centered on person area`);
+          return false;
+        }
+
+        // Ghost pattern 3: Surface entirely in the upper half of frame
+        // Real tables/desks are almost always in the lower portion (y > 40%)
+        // unless it's a shelf (which is fine)
+        const isShelf = s.surface_type.toLowerCase().includes('shelf');
+        if (!isShelf && bbY + bbH < 0.40) {
+          console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — bbox entirely in upper frame (bottom edge at ${((bbY+bbH)*100).toFixed(0)}%)`);
+          return false;
+        }
+
+        return true;
+      })
       .map((s: GeminiDetectedSurface) => ({
         surfaceType: s.surface_type.charAt(0).toUpperCase() + s.surface_type.slice(1),
         confidence: s.confidence,
@@ -828,7 +926,7 @@ async function analyzeFrameWithGemini(
         cameraAngle: s.camera_angle || undefined,
       }))
       .sort((a: DetectedSurface, b: DetectedSurface) => b.confidence - a.confidence)
-      .slice(0, 2); // Max 2 surfaces per frame to avoid clutter
+      .slice(0, 1); // Max 1 surface per frame — only the single most prominent surface
 
     if (allSurfaces.length === 0) {
       return { ...defaultResult, aiAnalyzed: true };
@@ -844,8 +942,14 @@ async function analyzeFrameWithGemini(
       aiAnalyzed: true,
     };
     
-  } catch (err) {
-    console.error(`[Gemini] Frame analysis error:`, err);
+  } catch (err: any) {
+    // Log detailed error info to diagnose production issues (API key, base URL, connectivity)
+    const errMsg = err?.message || String(err);
+    const errStatus = err?.status || err?.statusCode || 'unknown';
+    const errBody = err?.body || err?.response?.data || '';
+    console.error(`[Gemini] Frame analysis error at ${timestamp}s: ${errMsg}`);
+    console.error(`[Gemini] Error details — status: ${errStatus}, body: ${typeof errBody === 'string' ? errBody.substring(0, 300) : JSON.stringify(errBody).substring(0, 300)}`);
+    console.error(`[Gemini] Base URL: ${process.env.AI_INTEGRATIONS_GEMINI_BASE_URL || '(not set)'}, API key set: ${!!process.env.AI_INTEGRATIONS_GEMINI_API_KEY}`);
     return defaultResult;
   }
 }
@@ -1177,6 +1281,87 @@ async function enrichSurfacesWithContext(
 }
 
 // ============================================================================
+// PHASE 2A: SURFACE KEYFRAME CAPTURE — Preserve Raw Per-Frame Bounding Boxes
+// ============================================================================
+//
+// Before normalization overwrites all bboxes with the median, we capture each
+// surface's raw per-frame position as a "keyframe". During remix clip generation,
+// these keyframes are used for smooth spline interpolation so placed products
+// follow natural camera movement instead of sitting static.
+//
+// Keyframes are linked to the canonical surface ID from each cluster, enabling
+// N-point motion tracking per surface across the clip's time range.
+
+async function captureSurfaceKeyframes(videoId: number): Promise<void> {
+  console.log(`[Keyframes] Capturing raw per-frame bounding boxes for video ${videoId}`);
+
+  const surfaces = await storage.getDetectedSurfaces(videoId);
+  const validSurfaces = surfaces.filter(
+    (s) => s.surfaceType !== "Filtered" && s.surfaceType !== "Potential Surface"
+  );
+
+  if (validSurfaces.length === 0) {
+    console.log(`[Keyframes] No valid surfaces to capture`);
+    return;
+  }
+
+  // Cluster surfaces to identify which ones represent the same physical surface
+  // Use the same clustering logic as normalization
+  const clusters = clusterSurfaces(validSurfaces as any);
+  console.log(`[Keyframes] Found ${clusters.length} cluster(s) across ${validSurfaces.length} surfaces`);
+
+  const keyframeBatch: Array<{
+    surfaceId: number;
+    videoId: number;
+    timestamp: string;
+    boundingBoxX: string;
+    boundingBoxY: string;
+    boundingBoxWidth: string;
+    boundingBoxHeight: string;
+    confidence: string;
+  }> = [];
+
+  for (const cluster of clusters) {
+    if (cluster.surfaces.length === 0) continue;
+
+    // The canonical surface is the highest-confidence one in the cluster
+    const canonical = cluster.surfaces.reduce((best, s) =>
+      s.confidence > best.confidence ? s : best
+    );
+    const canonicalId = canonical.id;
+
+    // Create a keyframe for EVERY surface in the cluster, linked to the canonical ID
+    // Each surface entry represents a different timestamp (frame)
+    for (const member of cluster.surfaces) {
+      // Find the original surface record to get the timestamp
+      const original = validSurfaces.find((s) => s.id === member.id);
+      if (!original) continue;
+
+      keyframeBatch.push({
+        surfaceId: canonicalId,
+        videoId,
+        timestamp: String(original.timestamp),
+        boundingBoxX: member.bbX.toFixed(6),
+        boundingBoxY: member.bbY.toFixed(6),
+        boundingBoxWidth: member.bbW.toFixed(6),
+        boundingBoxHeight: member.bbH.toFixed(6),
+        confidence: member.confidence.toFixed(4),
+      });
+    }
+
+    console.log(
+      `[Keyframes] Cluster "${cluster.surfaceType}" → ${cluster.surfaces.length} keyframe(s) linked to surface #${canonicalId}`
+    );
+  }
+
+  // Bulk insert all keyframes
+  if (keyframeBatch.length > 0) {
+    await storage.bulkInsertSurfaceKeyframes(keyframeBatch);
+    console.log(`[Keyframes] Saved ${keyframeBatch.length} keyframes for video ${videoId}`);
+  }
+}
+
+// ============================================================================
 // POST-SCAN NORMALIZATION — Cluster & Normalize Bounding Boxes
 // ============================================================================
 //
@@ -1362,12 +1547,156 @@ async function normalizeSurfaceBoundingBoxes(videoId: number): Promise<void> {
 }
 
 // ============================================================================
+// TEMPORAL SURFACE GROUPING
+// ============================================================================
+
+/**
+ * Groups surfaces across frames into temporal tracks based on surface type
+ * and bounding box similarity. This identifies when a surface "starts" and
+ * "ends" in the video. Keeps only the single best track (longest duration,
+ * highest confidence) and marks the rest as Filtered.
+ *
+ * This prevents ghost/duplicate surfaces and ensures we show 1 prominent
+ * surface with clear start/end timestamps.
+ */
+async function groupSurfacesTemporally(videoId: number): Promise<void> {
+  console.log(`[Temporal] Starting temporal grouping for video ${videoId}`);
+
+  const surfaces = await storage.getDetectedSurfaces(videoId);
+  const validSurfaces = surfaces.filter(s => s.surfaceType !== "Filtered" && s.surfaceType !== "Potential Surface");
+
+  if (validSurfaces.length < 2) {
+    console.log(`[Temporal] Only ${validSurfaces.length} valid surface(s), skipping temporal grouping`);
+    return;
+  }
+
+  // Sort by timestamp
+  const sorted = [...validSurfaces].sort((a, b) => parseFloat(String(a.timestamp)) - parseFloat(String(b.timestamp)));
+
+  // Build tracks: consecutive frames with same surface type and overlapping bounding boxes
+  interface SurfaceTrack {
+    surfaceType: string;
+    surfaces: typeof sorted;
+    startTime: number;
+    endTime: number;
+    avgConfidence: number;
+  }
+
+  const tracks: SurfaceTrack[] = [];
+  let currentTrack: typeof sorted = [sorted[0]];
+
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = sorted[i - 1];
+    const curr = sorted[i];
+    const prevTs = parseFloat(String(prev.timestamp));
+    const currTs = parseFloat(String(curr.timestamp));
+    const timeDiff = currTs - prevTs;
+
+    // Check if surfaces are consecutive (within 1.5x frame interval) and same type
+    const isSameType = curr.surfaceType.toLowerCase() === prev.surfaceType.toLowerCase();
+    const isConsecutive = timeDiff <= CONFIG.FRAME_INTERVAL_SECONDS * 1.5;
+
+    // Check bounding box overlap (center Y within 15% tolerance)
+    const prevCenterY = parseFloat(String(prev.boundingBoxY)) + parseFloat(String(prev.boundingBoxHeight)) / 2;
+    const currCenterY = parseFloat(String(curr.boundingBoxY)) + parseFloat(String(curr.boundingBoxHeight)) / 2;
+    const isSimilarPosition = Math.abs(prevCenterY - currCenterY) < 0.15;
+
+    if (isConsecutive && (isSameType || isSimilarPosition)) {
+      currentTrack.push(curr);
+    } else {
+      // Close current track and start a new one
+      const timestamps = currentTrack.map(s => parseFloat(String(s.timestamp)));
+      tracks.push({
+        surfaceType: currentTrack[0].surfaceType,
+        surfaces: [...currentTrack],
+        startTime: Math.min(...timestamps),
+        endTime: Math.max(...timestamps),
+        avgConfidence: currentTrack.reduce((sum, s) => sum + parseFloat(String(s.confidence)), 0) / currentTrack.length,
+      });
+      currentTrack = [curr];
+    }
+  }
+
+  // Close the last track
+  const timestamps = currentTrack.map(s => parseFloat(String(s.timestamp)));
+  tracks.push({
+    surfaceType: currentTrack[0].surfaceType,
+    surfaces: [...currentTrack],
+    startTime: Math.min(...timestamps),
+    endTime: Math.max(...timestamps),
+    avgConfidence: currentTrack.reduce((sum, s) => sum + parseFloat(String(s.confidence)), 0) / currentTrack.length,
+  });
+
+  console.log(`[Temporal] Found ${tracks.length} surface track(s):`);
+  for (const track of tracks) {
+    const duration = track.endTime - track.startTime + CONFIG.FRAME_INTERVAL_SECONDS;
+    console.log(`[Temporal]   ${track.surfaceType}: ${track.startTime}s - ${track.endTime}s (${duration}s, ${track.surfaces.length} frames, ${(track.avgConfidence * 100).toFixed(0)}% avg confidence)`);
+  }
+
+  if (tracks.length <= 1) {
+    console.log(`[Temporal] Only 1 track, no filtering needed`);
+    // Store temporal range in scene_context for the surfaces in this track
+    if (tracks.length === 1) {
+      const track = tracks[0];
+      const duration = track.endTime - track.startTime + CONFIG.FRAME_INTERVAL_SECONDS;
+      const contextNote = `Visible: ${track.startTime}s - ${track.endTime + CONFIG.FRAME_INTERVAL_SECONDS}s (${duration}s)`;
+      for (const s of track.surfaces) {
+        try {
+          await storage.updateDetectedSurface(s.id, { sceneContext: contextNote });
+        } catch (err) { /* non-fatal */ }
+      }
+    }
+    return;
+  }
+
+  // Score tracks: prefer longer duration and higher confidence
+  const scoredTracks = tracks.map(track => {
+    const duration = track.endTime - track.startTime + CONFIG.FRAME_INTERVAL_SECONDS;
+    // Score = duration (in seconds) * average confidence
+    const score = duration * track.avgConfidence;
+    return { ...track, score, duration };
+  }).sort((a, b) => b.score - a.score);
+
+  // Keep only the best track
+  const bestTrack = scoredTracks[0];
+  const bestDuration = bestTrack.duration;
+  console.log(`[Temporal] Best track: ${bestTrack.surfaceType} (${bestTrack.startTime}s - ${bestTrack.endTime}s, ${bestDuration}s, score=${bestTrack.score.toFixed(2)})`);
+
+  // Store temporal range in the best track's surfaces
+  const contextNote = `Visible: ${bestTrack.startTime}s - ${bestTrack.endTime + CONFIG.FRAME_INTERVAL_SECONDS}s (${bestDuration}s)`;
+  for (const s of bestTrack.surfaces) {
+    try {
+      await storage.updateDetectedSurface(s.id, { sceneContext: contextNote });
+    } catch (err) { /* non-fatal */ }
+  }
+
+  // Filter out surfaces from non-best tracks
+  for (let i = 1; i < scoredTracks.length; i++) {
+    const track = scoredTracks[i];
+    console.log(`[Temporal] Filtering out track: ${track.surfaceType} (${track.startTime}s - ${track.endTime}s, score=${track.score.toFixed(2)})`);
+    for (const s of track.surfaces) {
+      try {
+        await storage.updateDetectedSurface(s.id, {
+          surfaceType: "Filtered",
+          sceneContext: `Removed: lower-priority track (${track.surfaceType}, ${track.duration}s) — best track is ${bestTrack.surfaceType} (${bestDuration}s)`,
+        });
+      } catch (err) {
+        console.warn(`[Temporal] Failed to filter surface ${s.id}:`, err);
+      }
+    }
+  }
+
+  console.log(`[Temporal] Kept ${bestTrack.surfaces.length} surfaces, filtered ${validSurfaces.length - bestTrack.surfaces.length} from weaker tracks`);
+}
+
+// ============================================================================
 // MAIN SCAN FUNCTIONS
 // ============================================================================
 
 export async function processVideoScan(
   videoId: number,
-  forceRescan: boolean = false
+  forceRescan: boolean = false,
+  scanMode: keyof typeof scanModes = "standard"
 ): Promise<ScanResult> {
   console.log(`[Scanner V2] ========== STARTING SCAN ==========`);
   console.log(`[Scanner V2] Video ID: ${videoId}, Force Rescan: ${forceRescan}`);
@@ -1409,7 +1738,15 @@ export async function processVideoScan(
     // LOCATE VIDEO FILE
     let videoPath: string | undefined;
     
-    if ((video as any).filePath) {
+    if ((video as any).filePath?.startsWith('/storage/')) {
+      try {
+        const objectKey = (video as any).filePath.replace(/^\/storage\//, 'public/');
+        videoPath = await downloadToTempFile(objectKey, tempDir);
+        console.log(`[Scanner V2] Downloaded from Object Storage to: ${videoPath}`);
+      } catch (e: any) {
+        console.error(`[Scanner V2] Object Storage download failed:`, e.message);
+      }
+    } else if ((video as any).filePath) {
       videoPath = path.resolve(process.cwd(), (video as any).filePath);
       console.log(`[Scanner V2] Using DB filePath: ${videoPath}`);
     }
@@ -1426,7 +1763,7 @@ export async function processVideoScan(
         console.log(`[Scanner V2] Using description fallback: ${videoPath}`);
       }
     }
-    
+
     // DEBUG LOGGING
     console.log('[Scanner V2] DEBUG - youtubeId:', video.youtubeId);
     console.log('[Scanner V2] DEBUG - LOCAL_ASSET_MAP keys:', Object.keys(LOCAL_ASSET_MAP));
@@ -1466,25 +1803,17 @@ export async function processVideoScan(
     const { isVertical } = await getFrameMetadata(frames[0]);
     console.log(`[Scanner V2] Video orientation: ${isVertical ? "VERTICAL (9:16)" : "HORIZONTAL (16:9)"}`);
     
-    const permanentFramesDir = path.join(process.cwd(), "public", "uploads", "frames", videoId.toString());
-    if (!fs.existsSync(permanentFramesDir)) {
-      fs.mkdirSync(permanentFramesDir, { recursive: true });
-    }
-    
-    // Clear old frames from permanent directory before re-extracting
-    try {
-      const existingFrames = fs.readdirSync(permanentFramesDir).filter(f => f.endsWith('.jpg'));
-      for (const f of existingFrames) {
-        safeUnlink(path.join(permanentFramesDir, f));
-      }
-      console.log(`[Scanner V2] Cleared ${existingFrames.length} old frames from permanent directory`);
-    } catch (clearErr) {
-      console.warn(`[Scanner V2] Could not clear old frames:`, clearErr);
-    }
+    // Frames uploaded to Object Storage instead of local disk
 
     // PROCESS FRAMES ONE BY ONE (with immediate cleanup)
     let totalSurfaces = 0;
+    const geminiKeyPresent = !!process.env.AI_INTEGRATIONS_GEMINI_API_KEY
+      && process.env.AI_INTEGRATIONS_GEMINI_API_KEY !== 'dummy-key';
     console.log(`[Scanner V2] Detection method: ${CONFIG.DETECTION_METHOD.toUpperCase()}`);
+    console.log(`[Scanner V2] Gemini API key: ${geminiKeyPresent ? 'CONFIGURED (' + process.env.AI_INTEGRATIONS_GEMINI_API_KEY!.substring(0, 8) + '...)' : 'NOT SET — will use edge detection fallback (less accurate)'}`);
+    if (!geminiKeyPresent) {
+      console.warn(`[Scanner V2] ⚠️  AI_INTEGRATIONS_GEMINI_API_KEY not set. Surface detection will be limited. Set this env var for accurate AI-powered scanning.`);
+    }
 
     for (let i = 0; i < frames.length; i++) {
       const framePath = frames[i];
@@ -1495,17 +1824,17 @@ export async function processVideoScan(
 
         // Save ALL valid frames to permanent directory for thumbnail strip
         const frameFilename = `frame_${timestamp}s.jpg`;
-        const permanentPath = path.join(permanentFramesDir, frameFilename);
 
         try {
           const frameSize = fs.statSync(framePath).size;
-          if (frameSize > 5000) { // Skip corrupt/blank frames under 5KB
-            fs.copyFileSync(framePath, permanentPath);
+          if (frameSize > 5000) {
+            const objectKey = `public/uploads/frames/${videoId}/${frameFilename}`;
+            await uploadFileToStorage(framePath, objectKey);
           } else {
             console.warn(`[Scanner V2] Skipping tiny frame ${frameFilename} (${frameSize} bytes)`);
           }
         } catch (copyErr) {
-          console.error(`[Scanner V2] Failed to save frame:`, copyErr);
+          console.error(`[Scanner V2] Failed to upload frame to storage:`, copyErr);
         }
 
         // Use Gemini AI or edge detection based on config
@@ -1517,10 +1846,10 @@ export async function processVideoScan(
         let analysis: FrameAnalysisResult;
         if (useGemini) {
           analysis = await analyzeFrameWithGemini(framePath, timestamp, isVertical);
-          // Only fall back to edge if Gemini API actually failed (not if it found no surfaces)
+          // Only fall back to edge if Gemini API actually failed (not if it just found no surfaces)
           // If aiAnalyzed=true, Gemini worked fine — it just said "no surfaces here"
           if (!analysis.aiAnalyzed && !analysis.hasSurface) {
-            console.log(`[Scanner V2] Gemini API failed for frame ${timestamp}s, trying edge detection fallback...`);
+            console.warn(`[Scanner V2] ⚠️  Gemini API FAILED for frame ${timestamp}s (aiAnalyzed=false). This likely means the API request failed (wrong base URL, auth error, or timeout). Falling back to edge detection...`);
             analysis = await analyzeFrameForSurfaces(framePath, timestamp, isVertical);
           }
         } else {
@@ -1529,7 +1858,7 @@ export async function processVideoScan(
         }
 
         if (analysis.hasSurface && analysis.surfaces.length > 0) {
-          const frameUrl = `/uploads/frames/${videoId}/${frameFilename}`;
+          const frameUrl = `/storage/uploads/frames/${videoId}/${frameFilename}`;
 
           for (const surface of analysis.surfaces) {
             const dbSurface: InsertDetectedSurface = {
@@ -1572,10 +1901,7 @@ export async function processVideoScan(
       for (let i = 0; i < frames.length && totalSurfaces < CONFIG.MIN_SURFACES_BEFORE_FALLBACK + 2; i++) {
         const timestamp = i * CONFIG.FRAME_INTERVAL_SECONDS;
         if (!framesWithSurfaces.has(timestamp)) {
-          // Only add fallback surface if the frame file actually exists on disk
           const fallbackFrameFilename = `frame_${timestamp}s.jpg`;
-          const fallbackFramePath = path.join(permanentFramesDir, fallbackFrameFilename);
-          const fallbackFrameExists = fs.existsSync(fallbackFramePath);
 
           const dbSurface = {
             videoId,
@@ -1586,24 +1912,40 @@ export async function processVideoScan(
             boundingBoxY: "0.6", // Bottom 40%
             boundingBoxWidth: "0.9",
             boundingBoxHeight: "0.35",
-            frameUrl: fallbackFrameExists ? `/uploads/frames/${videoId}/${fallbackFrameFilename}` : null,
+            frameUrl: `/storage/uploads/frames/${videoId}/${fallbackFrameFilename}`,
             surroundings: null,
             sceneContext: "Fallback detection - potential placement area",
           };
 
           await storage.insertDetectedSurface(dbSurface);
-          console.log(`[Scanner V2] *** FALLBACK SURFACE at ${timestamp}s (confidence: ${(CONFIG.FALLBACK_CONFIDENCE * 100).toFixed(1)}%, frameExists: ${fallbackFrameExists}) ***`);
+          console.log(`[Scanner V2] *** FALLBACK SURFACE at ${timestamp}s (confidence: ${(CONFIG.FALLBACK_CONFIDENCE * 100).toFixed(1)}%) ***`);
           totalSurfaces++;
         }
       }
     }
     
+    // PHASE 2A: CAPTURE SURFACE KEYFRAMES — Save raw per-frame bboxes for motion tracking
+    // Must happen BEFORE normalization overwrites bboxes with the median
+    try {
+      await captureSurfaceKeyframes(videoId);
+    } catch (kfErr) {
+      console.error(`[Scanner V2] Keyframe capture failed (non-fatal):`, kfErr);
+    }
+
     // POST-SCAN NORMALIZATION — Cluster similar surfaces and normalize bounding boxes
     // This ensures consistent product placement across frames of the same camera angle
     try {
       await normalizeSurfaceBoundingBoxes(videoId);
     } catch (normErr) {
       console.error(`[Scanner V2] Bounding box normalization failed (non-fatal):`, normErr);
+    }
+
+    // TEMPORAL SURFACE GROUPING — Group consecutive surfaces into tracks
+    // Keep only the best track (longest duration, highest confidence) and mark others as Filtered
+    try {
+      await groupSurfacesTemporally(videoId);
+    } catch (temporalErr) {
+      console.error(`[Scanner V2] Temporal grouping failed (non-fatal):`, temporalErr);
     }
 
     // Remove filtered/phantom surfaces from count
@@ -1614,18 +1956,202 @@ export async function processVideoScan(
     // SCENE CONTEXT ENRICHMENT — FullScale Edge image analysis
     // Uses Sharp to analyze brightness, edges, and color to infer scene context
     try {
-      await enrichSurfacesWithContext(videoId, permanentFramesDir);
+      const enrichmentDir = path.join(tempDir, "enrichment_frames");
+      fs.mkdirSync(enrichmentDir, { recursive: true });
+      const enrichmentSurfaces = await storage.getDetectedSurfaces(videoId);
+      const enrichmentTimestamps = new Set(enrichmentSurfaces.map(s => Math.floor(Number(s.timestamp))));
+      for (const ts of enrichmentTimestamps) {
+        try {
+          const objKey = `public/uploads/frames/${videoId}/frame_${ts}s.jpg`;
+          const tempPath = await downloadToTempFile(objKey, enrichmentDir);
+          console.log(`[Scanner V2] Downloaded frame for enrichment: ${tempPath}`);
+        } catch { /* frame may not exist */ }
+      }
+      await enrichSurfacesWithContext(videoId, enrichmentDir);
     } catch (enrichErr) {
       console.error(`[Scanner V2] Scene context enrichment failed (non-fatal):`, enrichErr);
     }
 
+    // CLAUDE DENSE + GENERATION DECISION BRANCH
+    // If in autoRemix mode and ANTHROPIC_API_KEY is set, run narrative analysis
+    // and decide whether to generate assets for surfaces without natural product moments
+    if (scanMode === "autoRemix" && process.env.ANTHROPIC_API_KEY) {
+      try {
+        console.log(`[Scanner V2] Running Claude Dense narrative analysis (autoRemix mode)...`);
+        const enrichedSurfaces = await storage.getDetectedSurfaces(videoId);
+        const activeSurfaces = enrichedSurfaces.filter(s => s.surfaceType !== "Filtered");
+
+        if (activeSurfaces.length > 0) {
+          const { analyzeNarrative } = await import("./lib/ai/claude-dense/narrativeAnalyzer");
+          const { decidePlacement } = await import("./lib/ai/cdense/connector");
+
+          let analysisCount = 0;
+          let generateCount = 0;
+
+          for (const surface of activeSurfaces.slice(0, 10)) {
+            try {
+              // Build frame path for this surface's timestamp
+              const frameTimestamp = Math.round(surface.timestampStart || 0);
+              const claudeFrameDir = path.join(tempDir, "claude_frames");
+              if (!fs.existsSync(claudeFrameDir)) fs.mkdirSync(claudeFrameDir, { recursive: true });
+              let framePath: string;
+              try {
+                const claudeObjKey = `public/uploads/frames/${videoId}/frame_${frameTimestamp}s.jpg`;
+                framePath = await downloadToTempFile(claudeObjKey, claudeFrameDir);
+              } catch {
+                continue;
+              }
+
+              if (!fs.existsSync(framePath)) continue;
+
+              const frameBase64 = fs.readFileSync(framePath).toString("base64");
+
+              const narrativeResult = await analyzeNarrative({
+                videoId,
+                frameIndex: frameTimestamp,
+                frameBase64,
+                detectedSurfaces: [{
+                  id: surface.id,
+                  surfaceType: surface.surfaceType || "table",
+                  confidence: surface.confidence || 0.5,
+                  boundingBox: {
+                    x: surface.bboxX || 0,
+                    y: surface.bboxY || 0,
+                    width: surface.bboxWidth || 0.2,
+                    height: surface.bboxHeight || 0.2,
+                  },
+                  lightingDirection: surface.lightingDirection || undefined,
+                }],
+                sceneContext: {
+                  sceneType: surface.sceneType || "unknown",
+                  brightness: { overall: surface.brightness || 128, top: 128, bottom: 128 },
+                  edgeDensity: surface.edgeDensity || 0,
+                  colorWarmth: surface.colorWarmth || 0,
+                  surroundings: [],
+                  brandCategorySuggestions: [],
+                },
+              });
+
+              // Save analysis to DB
+              await storage.createSceneAnalysis({
+                videoId,
+                surfaceId: surface.id,
+                frameStart: frameTimestamp,
+                narrativeContext: narrativeResult.narrativeContext,
+                emotionalTone: narrativeResult.emotionalTone,
+                culturalTags: narrativeResult.culturalTags,
+                placementViability: narrativeResult.placementViability,
+                suggestedCategories: narrativeResult.suggestedProductCategories,
+                reasoning: narrativeResult.reasoning,
+              });
+              analysisCount++;
+
+              // Check placement decision
+              const existingPlacements = await storage.getPlacementsForVideo(videoId);
+              const hasExisting = existingPlacements.some(p => p.detectedSurfaceId === surface.id);
+
+              const decision = decidePlacement({
+                videoId,
+                surfaceId: surface.id,
+                narrativeAnalysis: narrativeResult,
+                brandMatches: { matches: [] }, // No brand matching during scan — done later via UI
+                surfaceDetails: {
+                  surfaceType: surface.surfaceType || "table",
+                  boundingBox: {
+                    x: surface.bboxX || 0,
+                    y: surface.bboxY || 0,
+                    width: surface.bboxWidth || 0.2,
+                    height: surface.bboxHeight || 0.2,
+                  },
+                  confidence: surface.confidence || 0.5,
+                  lightingDirection: surface.lightingDirection || "ambient",
+                },
+                sceneAesthetic: {
+                  colorWarmth: surface.colorWarmth || 0,
+                  brightness: { overall: surface.brightness || 128, top: 128, bottom: 128 },
+                  dominantColors: [],
+                },
+                hasExistingPlacement: hasExisting,
+                scanMode: "autoRemix",
+              });
+
+              if (decision.type === "generate_asset") generateCount++;
+              console.log(`[Scanner V2] Surface ${surface.id}: ${decision.type} — ${decision.reason}`);
+
+            } catch (surfaceErr) {
+              console.warn(`[Scanner V2] Claude Dense failed for surface ${surface.id} (non-fatal):`, surfaceErr);
+            }
+          }
+
+          console.log(`[Scanner V2] Claude Dense: analyzed ${analysisCount} surfaces, ${generateCount} flagged for generation`);
+        }
+      } catch (claudeErr) {
+        console.error(`[Scanner V2] Claude Dense pipeline failed (non-fatal):`, claudeErr);
+      }
+    }
+
     // FINALIZE
-    const finalStatus = totalSurfaces > 0 ? `Ready (${totalSurfaces} Spots)` : "Ready (0 Spots)";
+    let finalStatus: string;
+    if (totalSurfaces > 0) {
+      finalStatus = `Ready (${totalSurfaces} Spots)`;
+    } else if (!geminiKeyPresent) {
+      finalStatus = "Ready (0 Spots)";
+      console.warn(`[Scanner V2] ⚠️  0 surfaces found — Gemini API key is NOT configured. Set AI_INTEGRATIONS_GEMINI_API_KEY for AI-powered surface detection.`);
+    } else {
+      finalStatus = "Ready (0 Spots)";
+      console.warn(`[Scanner V2] 0 surfaces found despite Gemini being available. The video may not contain clear flat surfaces, or ghost filters may be too aggressive.`);
+    }
     await storage.updateVideoStatus(videoId, finalStatus);
-    
+
     console.log(`[Scanner V2] ========== SCAN COMPLETE ==========`);
-    console.log(`[Scanner V2] Video ID: ${videoId}, Surfaces: ${totalSurfaces}`);
-    
+    console.log(`[Scanner V2] Video ID: ${videoId}, Surfaces: ${totalSurfaces}, Gemini: ${geminiKeyPresent ? 'YES' : 'NO'}`);
+
+    // AUTO-TRIGGER TRANSCRIPTION — kick off transcript pipeline in background after scan
+    // This ensures editorial clips are ready when the creator opens the video
+    try {
+      const existingTranscript = await storage.getVideoTranscript(videoId);
+      if (!existingTranscript && video.filePath) {
+        console.log(`[Scanner V2] Auto-triggering transcription for video ${videoId}...`);
+        // Dynamic import to avoid circular dependency — transcriptPipeline.ts is in remix module
+        const { runTranscriptPipeline } = await import("./lib/remix/transcriptPipeline");
+
+        // Create initial transcript record
+        const transcript = await storage.createVideoTranscript({
+          videoId,
+          provider: "deepgram",
+          language: "en",
+          status: "processing",
+        });
+
+        // Run in background — don't block scan completion
+        runTranscriptPipeline({ videoId, filePath: video.filePath, language: "en" })
+          .then(async (result) => {
+            await storage.updateVideoTranscript(transcript.id, {
+              segments: result.segments,
+              fullText: result.fullText,
+              speakerMap: result.speakerMap ?? null,
+              wordCount: result.wordCount,
+              segmentCount: result.segmentCount,
+              audioDuration: result.audioDuration ?? null,
+              processingTimeMs: result.totalProcessingTimeMs ?? null,
+              provider: result.provider,
+              status: "completed",
+            });
+            console.log(`[Scanner V2] Auto-transcription completed for video ${videoId}: ${result.wordCount} words`);
+          })
+          .catch(async (err) => {
+            console.warn(`[Scanner V2] Auto-transcription failed for video ${videoId} (non-fatal):`, err.message);
+            await storage.updateVideoTranscriptStatus(transcript.id, "failed", err.message);
+          });
+      } else if (!video.filePath) {
+        console.log(`[Scanner V2] No file path for video ${videoId}, skipping auto-transcription`);
+      } else {
+        console.log(`[Scanner V2] Transcript already exists for video ${videoId}, skipping auto-transcription`);
+      }
+    } catch (transcriptErr) {
+      console.warn(`[Scanner V2] Auto-transcription setup failed (non-fatal):`, transcriptErr);
+    }
+
     return {
       success: true,
       videoId,
@@ -1651,6 +2177,185 @@ export async function processVideoScan(
     
   } finally {
     // CLEANUP - Always runs, even on error
+    safeRmdir(tempDir);
+  }
+}
+
+/**
+ * Phase 2A: Dense re-scan for a specific time range at higher frame density.
+ * Used before remix clip generation to get smoother motion tracking keyframes.
+ *
+ * Extracts frames at 0.5s intervals (4x denser than standard 2s scan),
+ * runs Gemini surface detection on each, and creates keyframe entries
+ * linked to existing surface IDs.
+ *
+ * @param videoId - The video to re-scan
+ * @param startTime - Clip start time in seconds
+ * @param endTime - Clip end time in seconds
+ * @param surfaceIds - Which surfaces to track (only create keyframes for matching surfaces)
+ * @param intervalSeconds - Frame interval (default 0.5s)
+ */
+export async function denseScanRange(
+  videoId: number,
+  startTime: number,
+  endTime: number,
+  surfaceIds: number[],
+  intervalSeconds: number = 0.5
+): Promise<{ keyframesCreated: number }> {
+  console.log(`[DenseScan] Starting dense scan for video ${videoId}: ${startTime.toFixed(1)}s-${endTime.toFixed(1)}s @ ${intervalSeconds}s intervals`);
+
+  const video = await storage.getVideoById(videoId);
+  if (!video || !(video as any).filePath) {
+    console.error(`[DenseScan] Video not found or no file path`);
+    return { keyframesCreated: 0 };
+  }
+
+  const tempDir = path.join(os.tmpdir(), `dense-scan-${videoId}-${Date.now()}`);
+  const framesDir = path.join(tempDir, "frames");
+  fs.mkdirSync(framesDir, { recursive: true });
+
+  let videoPath: string | undefined;
+  try {
+    // Resolve video path (Object Storage or local)
+    const filePath = (video as any).filePath;
+    if (filePath.startsWith("/storage/")) {
+      const objectKey = filePath.replace(/^\/storage\//, "public/");
+      videoPath = await downloadToTempFile(objectKey, tempDir);
+    } else {
+      videoPath = path.resolve(process.cwd(), filePath);
+    }
+
+    if (!videoPath || !fs.existsSync(videoPath)) {
+      console.error(`[DenseScan] Video file not found: ${videoPath}`);
+      return { keyframesCreated: 0 };
+    }
+
+    // Load reference surfaces to match against
+    const refSurfaces = await storage.getDetectedSurfaces(videoId);
+    const targetSurfaces = refSurfaces.filter((s) => surfaceIds.includes(s.id));
+    if (targetSurfaces.length === 0) {
+      console.warn(`[DenseScan] No matching surfaces found for IDs: ${surfaceIds.join(", ")}`);
+      return { keyframesCreated: 0 };
+    }
+
+    // Extract frames at dense interval for the specified range
+    const duration = endTime - startTime;
+    const fpsFilter = `fps=1/${intervalSeconds}`;
+    const framePattern = path.join(framesDir, "frame_%05d.jpg");
+
+    await new Promise<void>((resolve, reject) => {
+      const proc = spawn("ffmpeg", [
+        "-nostdin", "-y",
+        "-ss", startTime.toString(),
+        "-i", videoPath!,
+        "-t", duration.toString(),
+        "-vf", `${fpsFilter},scale='min(1280,iw)':'min(1280,ih)':force_original_aspect_ratio=decrease`,
+        "-q:v", "3",
+        framePattern,
+      ]);
+      proc.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`FFmpeg exited ${code}`))));
+      proc.on("error", reject);
+    });
+
+    const frames = fs.readdirSync(framesDir).filter((f) => f.endsWith(".jpg")).sort();
+    console.log(`[DenseScan] Extracted ${frames.length} frames`);
+
+    // For dense tracking, we need a wider spatial tolerance because the camera can move
+    // the surface significantly across the frame. When there's only one target surface of
+    // a given type, we rely on type matching alone (the surface is unique).
+    const CLUSTER_TOLERANCE = 0.40; // 40% tolerance for camera movement
+    const keyframeBatch: Array<{
+      surfaceId: number;
+      videoId: number;
+      timestamp: string;
+      boundingBoxX: string;
+      boundingBoxY: string;
+      boundingBoxWidth: string;
+      boundingBoxHeight: string;
+      confidence: string;
+    }> = [];
+
+    // Count how many target surfaces share each type (for matching strategy)
+    const typeCounts = new Map<string, number>();
+    for (const t of targetSurfaces) {
+      const key = t.surfaceType.toLowerCase();
+      typeCounts.set(key, (typeCounts.get(key) || 0) + 1);
+    }
+
+    for (let i = 0; i < frames.length; i++) {
+      const framePath = path.join(framesDir, frames[i]);
+      const timestamp = startTime + i * intervalSeconds;
+
+      try {
+        const analysis = await analyzeFrameWithGemini(framePath, timestamp, false);
+
+        if (analysis.hasSurface && analysis.surfaces.length > 0) {
+          // Match detected surfaces to our target surfaces
+          for (const detected of analysis.surfaces) {
+            const centerX = detected.boundingBox.x + detected.boundingBox.width / 2;
+            const centerY = detected.boundingBox.y + detected.boundingBox.height / 2;
+
+            for (const target of targetSurfaces) {
+              const typeMatch = detected.surfaceType.toLowerCase() === target.surfaceType.toLowerCase();
+              if (!typeMatch) continue;
+
+              // If this is the only surface of its type, match by type alone —
+              // the surface is unique so spatial proximity is unnecessary
+              // (and would reject valid matches when camera moves significantly)
+              const typeCount = typeCounts.get(target.surfaceType.toLowerCase()) || 1;
+              let shouldMatch = false;
+
+              if (typeCount === 1) {
+                // Unique surface type → type match is sufficient
+                shouldMatch = true;
+              } else {
+                // Multiple surfaces of same type → also require spatial proximity
+                const targetCX = parseFloat(String(target.boundingBoxX)) + parseFloat(String(target.boundingBoxWidth)) / 2;
+                const targetCY = parseFloat(String(target.boundingBoxY)) + parseFloat(String(target.boundingBoxHeight)) / 2;
+                const posMatch = Math.abs(centerX - targetCX) < CLUSTER_TOLERANCE && Math.abs(centerY - targetCY) < CLUSTER_TOLERANCE;
+                shouldMatch = posMatch;
+              }
+
+              if (shouldMatch) {
+                keyframeBatch.push({
+                  surfaceId: target.id,
+                  videoId,
+                  timestamp: timestamp.toFixed(2),
+                  boundingBoxX: detected.boundingBox.x.toFixed(6),
+                  boundingBoxY: detected.boundingBox.y.toFixed(6),
+                  boundingBoxWidth: detected.boundingBox.width.toFixed(6),
+                  boundingBoxHeight: detected.boundingBox.height.toFixed(6),
+                  confidence: detected.confidence.toFixed(4),
+                });
+                break; // matched, move to next detected surface
+              }
+            }
+          }
+        }
+      } finally {
+        safeUnlink(framePath);
+      }
+    }
+
+    // Remove existing keyframes in this time range to prevent duplicates
+    // (if dense scan runs twice for the same range, old keyframes are replaced)
+    if (keyframeBatch.length > 0) {
+      for (const surfaceId of surfaceIds) {
+        try {
+          await storage.deleteSurfaceKeyframesInRange(surfaceId, startTime, endTime);
+        } catch (delErr: any) {
+          console.warn(`[DenseScan] Failed to clear old keyframes for surface ${surfaceId}: ${delErr.message}`);
+        }
+      }
+      await storage.bulkInsertSurfaceKeyframes(keyframeBatch);
+    }
+
+    console.log(`[DenseScan] Created ${keyframeBatch.length} keyframes for ${targetSurfaces.length} surface(s)`);
+    return { keyframesCreated: keyframeBatch.length };
+  } catch (err: any) {
+    console.error(`[DenseScan] Failed: ${err.message}`);
+    return { keyframesCreated: 0 };
+  } finally {
     safeRmdir(tempDir);
   }
 }
@@ -1687,13 +2392,25 @@ export async function detectSurface(
   const framesDir = path.join(tempDir, "frames");
   
   try {
-    if (!fs.existsSync(videoPath)) {
+    let resolvedPath = videoPath;
+    if (videoPath.startsWith('/storage/')) {
+      try {
+        const objectKey = videoPath.replace(/^\/storage\//, 'public/');
+        resolvedPath = await downloadToTempFile(objectKey, tempDir);
+        console.log(`[Scanner V2] detectSurface: Downloaded from Object Storage: ${resolvedPath}`);
+      } catch (e: any) {
+        console.error(`[Scanner V2] detectSurface: Object Storage download failed:`, e.message);
+        return { hasSurface: false, confidence: 0 };
+      }
+    }
+
+    if (!fs.existsSync(resolvedPath)) {
       return { hasSurface: false, confidence: 0 };
     }
     
     fs.mkdirSync(framesDir, { recursive: true });
     
-    const frames = await extractFrames(videoPath, framesDir);
+    const frames = await extractFrames(resolvedPath, framesDir);
     
     if (frames.length === 0) {
       return { hasSurface: false, confidence: 0 };

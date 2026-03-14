@@ -30,6 +30,12 @@ import CreatorProfile from "@/pages/CreatorProfile";
 import BrandProducts from "@/pages/BrandProducts";
 import SavedPlacements from "@/pages/SavedPlacements";
 import RemixEngine from "@/components/RemixEngine";
+import SharedView from "@/pages/SharedView";
+import ComingSoon from "@/pages/ComingSoon";
+import FullScaleCreates from "@/pages/FullScaleCreates";
+import StudioUpload from "@/pages/StudioUpload";
+import FullScaleStudio from "@/pages/FullScaleStudio";
+import StudioPricing from "@/pages/StudioPricing";
 
 interface AuthStatusResponse {
   authenticated: boolean;
@@ -146,8 +152,15 @@ function Router() {
         <Route path="/signup" component={AuthPage} />
         <Route path="/privacy" component={Privacy} />
         <Route path="/terms" component={Terms} />
+        <Route path="/content" component={FullScaleCreates} />
+        <Route path="/studio" component={FullScaleStudio} />
+        <Route path="/studio/pricing" component={StudioPricing} />
+        <Route path="/studio/upload" component={StudioUpload} />
+        <Route path="/creates" component={FullScaleCreates} />
+        <Route path="/about" component={ComingSoon} />
         <Route path="/waitlist" component={WaitlistPage} />
         <Route path="/c/:slug" component={CreatorProfile} />
+        <Route path="/s/:slug" component={SharedView} />
         <Route path="/dashboard" component={Landing} />
         <Route path="/:rest*" component={Landing} />
       </Switch>
@@ -169,6 +182,7 @@ function Router() {
     return (
       <Switch>
         <Route path="/waitlist" component={WaitlistPage} />
+        <Route path="/s/:slug" component={SharedView} />
         <Route path="/privacy" component={Privacy} />
         <Route path="/terms" component={Terms} />
         <Route component={WaitlistPage} />
@@ -189,7 +203,14 @@ function Router() {
   return (
     <Switch>
       <Route path="/home" component={Landing} />
+      <Route path="/content" component={FullScaleCreates} />
+      <Route path="/studio" component={FullScaleStudio} />
+      <Route path="/studio/pricing" component={StudioPricing} />
+      <Route path="/studio/upload" component={StudioUpload} />
+      <Route path="/creates" component={FullScaleCreates} />
+      <Route path="/about" component={ComingSoon} />
       <Route path="/c/:slug" component={CreatorProfile} />
+      <Route path="/s/:slug" component={SharedView} />
       <Route path="/remix/:videoId" component={RemixEngine} />
       <Route>
         {() => (

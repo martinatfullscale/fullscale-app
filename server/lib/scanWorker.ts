@@ -3,6 +3,7 @@ import { detectSurfacesFromVideo, SurfaceDetectionResult, warmupModel } from './
 import { storage } from '../storage';
 import * as fs from 'fs';
 import * as path from 'path';
+import { downloadToTempFile } from './objectStorage';
 
 interface ScanJob {
   id: string;
@@ -89,12 +90,20 @@ class ScanWorkerQueue extends EventEmitter {
     
     console.log(`[ScanWorker] Processing job: ${job.id}`);
     
+    let tempFile: string | null = null;
     try {
-      if (!fs.existsSync(job.filePath)) {
+      let scanPath = job.filePath;
+
+      if (job.filePath.startsWith('/storage/')) {
+        const objectKey = job.filePath.replace(/^\/storage\//, 'public/');
+        tempFile = await downloadToTempFile(objectKey);
+        scanPath = tempFile;
+        console.log(`[ScanWorker] Downloaded from Object Storage: ${scanPath}`);
+      } else if (!fs.existsSync(job.filePath)) {
         throw new Error(`Video file not found: ${job.filePath}`);
       }
       
-      const result = await detectSurfacesFromVideo(job.filePath);
+      const result = await detectSurfacesFromVideo(scanPath);
       
       job.status = 'completed';
       job.result = result;
@@ -115,6 +124,10 @@ class ScanWorkerQueue extends EventEmitter {
       console.error(`[ScanWorker] Job failed: ${job.id}`, err.message);
       
       this.emit('jobFailed', job);
+    } finally {
+      if (tempFile) {
+        try { fs.unlinkSync(tempFile); } catch {}
+      }
     }
     
     this.activeJobs--;

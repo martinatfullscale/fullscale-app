@@ -28,7 +28,13 @@ import {
   Clock,
   ArrowRight,
   Sparkles,
+  Mic,
+  Globe,
+  ExternalLink,
+  Mail,
+  X,
 } from "lucide-react";
+import { useLocation } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
 import fullscaleLogo from "@assets/fullscale-logo_1767679525676.png";
 
@@ -49,6 +55,8 @@ interface VideoData {
   id: number;
   title: string;
   thumbnail: string | null;
+  videoUrl: string | null;
+  filePath: string | null;
   platform: string;
   viewCount: number;
   surfaceCount: number;
@@ -56,6 +64,18 @@ interface VideoData {
   surfaces: Surface[];
   category: string | null;
   duration: number | null;
+}
+
+// Normalize filePath to a browser-playable URL (same logic as VideoPreviewModal)
+function normalizeVideoSrc(filePath: string | null | undefined): string | null {
+  if (!filePath) return null;
+  let src = filePath;
+  src = src.replace(/^\/home\/runner\/workspace\/public\//, '/');
+  src = src.replace(/^\.\/public\//, '/');
+  src = src.replace(/^public\//, '/');
+  src = src.replace(/\/\//g, '/');
+  if (!src.startsWith('/') && !src.startsWith('http')) src = '/' + src;
+  return src;
 }
 
 interface SocialStats {
@@ -82,6 +102,10 @@ interface CreatorData {
     slug: string;
     profileImage: string | null;
     bio: string | null;
+    headline: string | null;
+    podcastName: string | null;
+    podcastUrl: string | null;
+    websiteUrl: string | null;
     userType: string;
   };
   stats: {
@@ -102,8 +126,12 @@ function formatNumber(num: number): string {
 }
 
 function getInitials(name: string): string {
+  // Strip parentheses and non-letter chars, then take first letter of each word
   return name
-    .split(" ")
+    .replace(/[^a-zA-Z\s]/g, "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
     .map((w) => w[0])
     .join("")
     .toUpperCase()
@@ -213,17 +241,35 @@ export default function CreatorProfile() {
       <header className="border-b bg-card/80 backdrop-blur-md sticky top-0 z-20">
         <div className="max-w-6xl mx-auto px-6 py-3 flex items-center justify-between">
           <img src={fullscaleLogo} alt="FullScale" className="h-7" />
-          <Button
-            size="sm"
-            variant="outline"
-            className="text-xs"
-            onClick={() => {
-              const el = document.getElementById("video-portfolio");
-              el?.scrollIntoView({ behavior: "smooth" });
-            }}
-          >
-            View Portfolio
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              className="text-xs"
+              onClick={() => {
+                const el = document.getElementById("video-portfolio");
+                el?.scrollIntoView({ behavior: "smooth" });
+              }}
+            >
+              View Portfolio
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
+              onClick={() => {
+                // Go back to marketplace, or browser history if available
+                if (window.history.length > 1) {
+                  window.history.back();
+                } else {
+                  window.location.href = "/marketplace";
+                }
+              }}
+              title="Close"
+            >
+              <X className="h-5 w-5" />
+            </Button>
+          </div>
         </div>
       </header>
 
@@ -243,7 +289,7 @@ export default function CreatorProfile() {
 
             {/* Name + bio */}
             <div className="flex-1">
-              <div className="flex items-center gap-3 mb-2">
+              <div className="flex items-center gap-3 mb-1">
                 <h1
                   className="text-3xl md:text-4xl font-bold text-foreground tracking-tight"
                   data-testid="text-creator-name"
@@ -254,6 +300,9 @@ export default function CreatorProfile() {
                   {creator.userType}
                 </Badge>
               </div>
+              {creator.headline && (
+                <p className="text-primary font-medium text-base mb-2">{creator.headline}</p>
+              )}
               {creator.bio ? (
                 <p className="text-muted-foreground text-lg max-w-2xl">{creator.bio}</p>
               ) : (
@@ -262,22 +311,64 @@ export default function CreatorProfile() {
                   {stats.totalVideos !== 1 ? "s" : ""} available for brand placements
                 </p>
               )}
+              {/* Quick links */}
+              <div className="flex items-center gap-3 mt-3 flex-wrap">
+                {creator.podcastName && (
+                  <a
+                    href={creator.podcastUrl || "#"}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <Mic className="h-3.5 w-3.5" />
+                    {creator.podcastName}
+                  </a>
+                )}
+                {creator.websiteUrl && (
+                  <a
+                    href={creator.websiteUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <Globe className="h-3.5 w-3.5" />
+                    Website
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                )}
+              </div>
             </div>
 
-            {/* CTA */}
-            {videos.length > 0 && (
+            {/* CTA buttons */}
+            <div className="hidden md:flex flex-col gap-2">
+              {videos.length > 0 && (
+                <Button
+                  size="lg"
+                  className="gap-2"
+                  onClick={() => {
+                    const el = document.getElementById("video-portfolio");
+                    el?.scrollIntoView({ behavior: "smooth" });
+                  }}
+                >
+                  Browse Videos
+                  <ArrowRight className="h-4 w-4" />
+                </Button>
+              )}
               <Button
                 size="lg"
-                className="hidden md:flex gap-2"
+                variant="outline"
+                className="gap-2"
                 onClick={() => {
-                  const el = document.getElementById("video-portfolio");
-                  el?.scrollIntoView({ behavior: "smooth" });
+                  // Open placement request with first available video
+                  if (videos.length > 0) {
+                    openPlacementRequest(videos[0]);
+                  }
                 }}
               >
-                Browse Videos
-                <ArrowRight className="h-4 w-4" />
+                <Mail className="h-4 w-4" />
+                Get in Touch
               </Button>
-            )}
+            </div>
           </div>
         </div>
       </section>
@@ -379,6 +470,37 @@ export default function CreatorProfile() {
         </section>
       )}
 
+      {/* ── Podcast section (if applicable) ── */}
+      {creator.podcastName && (
+        <section className="border-b bg-gradient-to-r from-primary/5 to-transparent">
+          <div className="max-w-6xl mx-auto px-6 py-8">
+            <div className="flex items-center gap-4">
+              <div className="w-14 h-14 rounded-xl bg-primary/10 flex items-center justify-center flex-shrink-0">
+                <Mic className="h-7 w-7 text-primary" />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-lg font-semibold text-foreground">{creator.podcastName}</h3>
+                <p className="text-sm text-muted-foreground mt-0.5">
+                  {creator.headline || `Podcast by ${creator.name}`}
+                </p>
+              </div>
+              {creator.podcastUrl && (
+                <a
+                  href={creator.podcastUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <Button variant="outline" size="sm" className="gap-1.5">
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    Listen Now
+                  </Button>
+                </a>
+              )}
+            </div>
+          </div>
+        </section>
+      )}
+
       {/* ── Video portfolio grid ── */}
       <main className="max-w-6xl mx-auto px-6 py-12" id="video-portfolio">
         <div className="flex items-center justify-between mb-8">
@@ -417,9 +539,30 @@ export default function CreatorProfile() {
                 className="overflow-hidden group border border-border/50 hover:border-primary/30 transition-all duration-300 hover:shadow-lg"
                 data-testid={`card-video-${video.id}`}
               >
-                {/* Thumbnail */}
-                <div className="relative aspect-video bg-muted overflow-hidden">
-                  {video.thumbnail ? (
+                {/* Video / Thumbnail */}
+                <div className="relative aspect-video bg-black overflow-hidden">
+                  {(video.videoUrl || video.filePath) ? (
+                    <video
+                      src={video.videoUrl || normalizeVideoSrc(video.filePath) || ""}
+                      poster={video.thumbnail || undefined}
+                      controls
+                      preload="metadata"
+                      playsInline
+                      muted
+                      className="w-full h-full object-contain"
+                      onLoadedMetadata={(e) => {
+                        const vid = e.currentTarget;
+                        if (vid.currentTime === 0) vid.currentTime = 0.5;
+                      }}
+                      onError={(e) => {
+                        const videoEl = e.currentTarget;
+                        const fallbackSrc = normalizeVideoSrc(video.filePath);
+                        if (fallbackSrc && videoEl.src !== window.location.origin + fallbackSrc) {
+                          videoEl.src = fallbackSrc;
+                        }
+                      }}
+                    />
+                  ) : video.thumbnail ? (
                     <img
                       src={video.thumbnail}
                       alt={video.title}

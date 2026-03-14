@@ -1,20 +1,25 @@
 import { useState, useEffect } from "react";
 import { TopBar } from "@/components/TopBar";
-import { Upload, Eye, CheckCircle, Loader2, AlertTriangle, X, Shield, Sun, Tag, Box, DollarSign, Sparkles, RefreshCw, Play, Globe, HardDrive, Scan, Video, Wand2 } from "lucide-react";
+import { Upload, Eye, CheckCircle, Loader2, AlertTriangle, X, Shield, Sun, Tag, Box, DollarSign, Sparkles, RefreshCw, Play, Globe, HardDrive, Scan, Video, Wand2, Trash2, Pencil, Brain, Scissors, Send } from "lucide-react";
 import { useLocation } from "wouter";
 import { SiInstagram, SiYoutube, SiTwitch, SiFacebook } from "react-icons/si";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "@/hooks/use-auth";
 import { useHybridMode } from "@/hooks/use-hybrid-mode";
 import { usePitchMode } from "@/contexts/pitch-mode-context";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import { UploadModal } from "@/components/UploadModal";
+import { UploadModal, CONTENT_CATEGORIES, SUBCATEGORIES } from "@/components/UploadModal";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SceneAnalysisModal, VideoWithScenes } from "@/components/SceneAnalysisModal";
+import NarrativeInsights from "@/components/NarrativeInsights";
+import EditorialClips from "@/components/EditorialClips";
+import RemixStudio from "@/components/RemixStudio";
+import DistributionDashboard from "@/components/DistributionDashboard";
 import { VideoPreviewModal } from "@/components/VideoPreviewModal";
 
 interface IndexedVideo {
@@ -29,6 +34,7 @@ interface IndexedVideo {
   priorityScore: number;
   publishedAt: string | null;
   category: string | null;
+  subcategory?: string | null;
   isEvergreen: boolean | null;
   duration: string | null;
   platform?: string;
@@ -198,6 +204,8 @@ interface DisplayVideo {
   hasLocalFile: boolean;
   filePath?: string | null;
   thumbnailUrl?: string | null;
+  category?: string;
+  subcategory?: string | null;
 }
 
 function getVideoStatusInfo(video: IndexedVideo): { status: string; statusColor: string; statusDot: string; aiStatus: string; aiText: string } {
@@ -264,7 +272,9 @@ function formatIndexedVideo(video: IndexedVideo): DisplayVideo {
   // For local files, prefer the extracted frame (correct orientation) over YouTube thumbnail
   // YouTube thumbnails are always 16:9 landscape regardless of actual video orientation
   const hasLocalFile = !!(filePath && fileExists);
-  const extractedFrame = `/uploads/frames/${video.id}/frame_0s.jpg`;
+  // Object Storage frames use /storage/ prefix, legacy local frames use /uploads/
+  const extractedFrame = `/storage/uploads/frames/${video.id}/frame_0s.jpg`;
+  const legacyFrame = `/uploads/frames/${video.id}/frame_0s.jpg`;
   const thumbnailUrl = hasLocalFile
     ? extractedFrame
     : (rawThumbnailUrl && (rawThumbnailUrl.startsWith('http') || rawThumbnailUrl.startsWith('/')))
@@ -295,6 +305,8 @@ function formatIndexedVideo(video: IndexedVideo): DisplayVideo {
     hasLocalFile: fileExists,
     filePath,
     thumbnailUrl,
+    category: video.category || undefined,
+    subcategory: video.subcategory || undefined,
   };
 }
 
@@ -532,7 +544,7 @@ function EmptyLibrary({ onSync, isSyncing }: { onSync: () => void; isSyncing: bo
 
 export default function Library() {
   const { user } = useAuth();
-  const { mode: hybridMode } = useHybridMode();
+  const { mode: hybridMode, isLoading: isAuthLoading } = useHybridMode();
   const { isPitchMode } = usePitchMode();
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -545,6 +557,12 @@ export default function Library() {
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
   const [previewVideo, setPreviewVideo] = useState<DisplayVideo | null>(null);
   const [previewStartTime, setPreviewStartTime] = useState(0);
+  const [narrativeInsightsOpen, setNarrativeInsightsOpen] = useState(false);
+  const [narrativeVideoId, setNarrativeVideoId] = useState<number | null>(null);
+  const [remixStudioOpen, setRemixStudioOpen] = useState(false);
+  const [remixVideoId, setRemixVideoId] = useState<number | null>(null);
+  const [distributionOpen, setDistributionOpen] = useState(false);
+  const [distributionVideoId, setDistributionVideoId] = useState<number | null>(null);
   
   // Admin emails for flexible auth fallback (supports URL param bypass in dev)
   const ADMIN_EMAILS = ['martin@gofullscale.co', 'martin@whtwrks.com', 'martincekechukwu@gmail.com'];
@@ -627,10 +645,13 @@ export default function Library() {
           // Normalize frame URLs from DB (may have absolute Replit paths or ./public/ prefixes)
           const normalizeFrameUrl = (url: string | null | undefined): string | null => {
             if (!url) return null;
-            if (url.startsWith('/home/runner/workspace/public/')) return '/' + url.replace('/home/runner/workspace/public/', '');
-            if (url.startsWith('./public/')) return url.replace('./public', '');
-            if (url.startsWith('/') || url.startsWith('http')) return url;
-            return null;
+            let src = url;
+            src = src.replace(/^\/home\/runner\/workspace\/public\//, '/');
+            src = src.replace(/^\.\/public\//, '/');
+            src = src.replace(/^public\//, '/');
+            src = src.replace(/\/\//g, '/');
+            if (!src.startsWith('/') && !src.startsWith('http')) src = '/' + src;
+            return src;
           };
 
           // Build frame URL from timestamp when DB has no frameUrl (batch/admin inserts)
@@ -724,7 +745,7 @@ export default function Library() {
   // Version key to force refetch when demo data changes - increment when adding new videos
   const DEMO_DATA_VERSION = 2;
   
-  const { data: videoData, isLoading: isLoadingVideos, isError: isVideosError } = useQuery<VideoIndexResponse>({
+  const { data: videoData, isLoading: isLoadingVideos, isError: isVideosError, isFetching: isFetchingVideos, refetch: refetchVideos } = useQuery<VideoIndexResponse>({
     queryKey: ["videos", isPitchMode, mode, DEMO_DATA_VERSION, isAdminUser, userEmail] as const,
     queryFn: async ({ queryKey }) => {
       // Extract isPitchMode and mode from queryKey to avoid stale closure
@@ -757,6 +778,9 @@ export default function Library() {
     },
     retry: 2,
     staleTime: 0,
+    // Don't fetch until auth state is resolved — prevents briefly hitting /api/demo/videos
+    // when hybridMode is "demo" while auth is still loading after a hard redirect
+    enabled: !isAuthLoading || isPitchMode || isUrlAdminBypass,
   });
 
   const syncMutation = useMutation({
@@ -966,19 +990,59 @@ export default function Library() {
     onSuccess: (data, videoId) => {
       toast({
         title: "Surface Scan Started",
-        description: "Analyzing your video for placement surfaces. This takes about 15-30 seconds.",
+        description: "Analyzing your video for placement surfaces. This may take 1-2 minutes.",
       });
-      
-      // Poll for scan completion by checking video status
+
+      // Poll for scan completion by checking actual video status
       const pollInterval = setInterval(async () => {
         try {
-          queryClient.invalidateQueries({ queryKey: ["videos"] });
+          const pollUrl = isAdminUser
+            ? `/api/video-index/with-opportunities?admin_email=${encodeURIComponent(userEmail)}`
+            : `/api/video-index/with-opportunities`;
+          const res = await fetch(pollUrl, { credentials: "include" });
+          if (!res.ok) return;
+          const freshData = await res.json();
+
+          queryClient.setQueryData(
+            ["videos", isPitchMode, mode, DEMO_DATA_VERSION, isAdminUser, userEmail],
+            freshData
+          );
+
+          const video = freshData.videos?.find((v: IndexedVideo) => v.id === videoId);
+
+          if (video && !video.status?.toLowerCase().includes("scanning")) {
+            clearInterval(pollInterval);
+            setScanningVideoIds(prev => {
+              const next = new Set(prev);
+              next.delete(videoId);
+              return next;
+            });
+            queryClient.invalidateQueries({ queryKey: ["videos"] });
+
+            if (video.status?.toLowerCase().includes("ready") && video.adOpportunities > 0) {
+              toast({
+                title: "Scan Complete",
+                description: `Found ${video.adOpportunities} placement surfaces. Click the video to view details.`,
+              });
+            } else if (video.status?.toLowerCase() === "scan failed") {
+              toast({
+                title: "Scan Failed",
+                description: "Could not analyze this video. Please try again.",
+                variant: "destructive",
+              });
+            } else {
+              toast({
+                title: "No Surfaces Found",
+                description: "No suitable placement surfaces detected in this video.",
+              });
+            }
+          }
         } catch (err) {
           console.error("Poll error:", err);
         }
       }, 5000);
-      
-      // Stop scanning state after 30 seconds
+
+      // Safety timeout: 3 minutes for long videos
       setTimeout(() => {
         clearInterval(pollInterval);
         setScanningVideoIds(prev => {
@@ -986,12 +1050,7 @@ export default function Library() {
           next.delete(videoId);
           return next;
         });
-        queryClient.invalidateQueries({ queryKey: ["videos"] });
-        toast({
-          title: "Scan Complete",
-          description: "Check the video for detected surfaces.",
-        });
-      }, 30000);
+      }, 180000);
     },
     onError: (error: Error, videoId) => {
       setScanningVideoIds(prev => {
@@ -1004,6 +1063,59 @@ export default function Library() {
         description: error.message,
         variant: "destructive",
       });
+    },
+  });
+
+  const [deletingVideoId, setDeletingVideoId] = useState<number | null>(null);
+  const [renamingVideo, setRenamingVideo] = useState<{ id: number; title: string; category?: string; subcategory?: string } | null>(null);
+  const [renameInput, setRenameInput] = useState("");
+  const [renameCategoryInput, setRenameCategoryInput] = useState("");
+  const [renameSubcategoryInput, setRenameSubcategoryInput] = useState("");
+
+  const deleteVideoMutation = useMutation({
+    mutationFn: async (videoId: number) => {
+      const deleteUrl = isAdminUser
+        ? `/api/videos/${videoId}?admin_email=${encodeURIComponent(userEmail)}`
+        : `/api/videos/${videoId}`;
+      const res = await fetch(deleteUrl, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error("Failed to delete video");
+      return res.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["videos"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/brand/discovery"] });
+      toast({ title: "Video deleted", description: data.deleted?.title || "Video removed from library" });
+      setDeletingVideoId(null);
+    },
+    onError: (err: Error) => {
+      toast({ title: "Delete failed", description: err.message, variant: "destructive" });
+      setDeletingVideoId(null);
+    },
+  });
+
+  const renameVideoMutation = useMutation({
+    mutationFn: async ({ videoId, title, category, subcategory }: { videoId: number; title?: string; category?: string; subcategory?: string }) => {
+      const renameUrl = isAdminUser
+        ? `/api/videos/${videoId}?admin_email=${encodeURIComponent(userEmail)}`
+        : `/api/videos/${videoId}`;
+      const res = await fetch(renameUrl, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ title, category, subcategory }),
+      });
+      if (!res.ok) throw new Error("Failed to update video");
+      return res.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["videos"] });
+      toast({ title: "Video updated", description: `Updated: ${data.title}${data.category ? ` (${data.category})` : ""}` });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Update failed", description: err.message, variant: "destructive" });
     },
   });
 
@@ -1069,17 +1181,22 @@ export default function Library() {
           </div>
           <div className="flex items-center gap-3">
             {isRealMode && (
-              <Button 
-                variant="outline" 
-                className="gap-2" 
+              <Button
+                variant="outline"
+                className="gap-2"
                 onClick={() => {
-                  console.log('[FRONTEND] Refresh button clicked - invalidating videos query');
-                  queryClient.invalidateQueries({ queryKey: ["videos"] });
+                  console.log('[FRONTEND] Refresh button clicked - refetching videos');
+                  refetchVideos();
                 }}
+                disabled={isFetchingVideos}
                 data-testid="button-refresh-library"
               >
-                <RefreshCw className="w-4 h-4" />
-                Refresh
+                {isFetchingVideos ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="w-4 h-4" />
+                )}
+                {isFetchingVideos ? "Refreshing..." : "Refresh"}
               </Button>
             )}
             {isRealMode && pendingCount > 0 && (
@@ -1183,12 +1300,25 @@ export default function Library() {
               >
                 {/* Local file indicator - shows when video has local file ready for scanning */}
                 {video.hasLocalFile && (
-                  <div className="absolute top-2 left-2 z-10">
+                  <div className="absolute top-2 left-2 z-10 flex items-center gap-1.5">
                     <div className="px-2 py-1 rounded-md bg-emerald-500/90 text-white text-xs font-medium flex items-center gap-1">
                       <HardDrive className="w-3 h-3" />
                       Local File
                     </div>
                   </div>
+                )}
+                {/* Delete button — visible on hover */}
+                {isRealMode && video.id && (
+                  <button
+                    className="absolute top-2 right-10 z-20 w-7 h-7 rounded-full bg-red-600/80 hover:bg-red-600 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                    title="Delete video"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setDeletingVideoId(video.id!);
+                    }}
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
                 )}
                 {/* Platform icon overlay for All view */}
                 {platformFilter === "all" && (
@@ -1220,21 +1350,26 @@ export default function Library() {
                     )}
                   </div>
                 )}
-                <div className="relative overflow-hidden bg-zinc-900">
+                <div className="relative overflow-hidden bg-zinc-900 aspect-video">
                   {video.image ? (
                     <img
                       src={video.image}
                       alt={video.title}
-                      className="w-full block transition-transform duration-300 group-hover:scale-105"
+                      className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                       onError={(e) => {
                         const el = e.target as HTMLImageElement;
+                        // Try legacy /uploads/ path if /storage/ path failed
+                        if (el.src.includes('/storage/uploads/frames/')) {
+                          el.src = el.src.replace('/storage/uploads/frames/', '/uploads/frames/');
+                          return;
+                        }
                         el.style.display = 'none';
                         const placeholder = el.parentElement?.querySelector('.img-placeholder');
                         if (placeholder) (placeholder as HTMLElement).style.display = 'flex';
                       }}
                     />
                   ) : null}
-                  <div className={`img-placeholder items-center justify-center gap-2 text-zinc-500 ${video.image ? 'hidden' : 'flex'}`} style={{ height: '200px' }}>
+                  <div className={`img-placeholder absolute inset-0 items-center justify-center gap-2 text-zinc-500 ${video.image ? 'hidden' : 'flex'}`}>
                     <Video className="w-10 h-10" />
                     <span className="text-xs">No thumbnail</span>
                   </div>
@@ -1247,7 +1382,7 @@ export default function Library() {
                   {isRealMode && video.id && (
                     <>
                       {/* Local files: Show scan/rescan button */}
-                      {video.hasLocalFile && (video.aiStatus === "pending" || video.aiStatus === "retry" || video.aiStatus === "complete" || scanningVideoIds.has(video.id)) && (
+                      {video.hasLocalFile && (video.aiStatus === "pending" || video.aiStatus === "retry" || video.aiStatus === "complete" || video.aiStatus === "scanning" || scanningVideoIds.has(video.id)) && (
                         <div
                           className="absolute bottom-12 right-2 z-20"
                           onClick={(e) => {
@@ -1270,6 +1405,11 @@ export default function Library() {
                               <>
                                 <Loader2 className="w-3 h-3 animate-spin" />
                                 Scanning...
+                              </>
+                            ) : video.aiStatus === "scanning" ? (
+                              <>
+                                <RefreshCw className="w-3 h-3" />
+                                Re-scan
                               </>
                             ) : video.aiStatus === "complete" ? (
                               <>
@@ -1295,25 +1435,11 @@ export default function Library() {
                         </div>
                       )}
                       {video.aiStatus === "ready" && (
-                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
+                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
                           <Button variant="outline" size="sm" className="gap-2">
                             <Eye className="w-4 h-4" />
                             View Analysis
                           </Button>
-                          {video.hasLocalFile && (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="gap-2 border-primary/50 text-primary hover:bg-primary/10"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setLocation(`/remix/${video.id}`);
-                              }}
-                            >
-                              <Wand2 className="w-4 h-4" />
-                              Remix
-                            </Button>
-                          )}
                         </div>
                       )}
                     </>
@@ -1328,19 +1454,84 @@ export default function Library() {
                   )}
                 </div>
                 <div className="p-4">
-                  <h3 className="font-semibold text-white mb-1 truncate">{video.title}</h3>
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <h3 className="font-semibold text-white truncate flex-1">{video.title}</h3>
+                    {isRealMode && video.id && (
+                      <button
+                        className="shrink-0 w-5 h-5 rounded text-muted-foreground hover:text-white hover:bg-white/10 flex items-center justify-center transition-colors"
+                        title="Rename"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setRenamingVideo({ id: video.id!, title: video.title, category: video.category, subcategory: video.subcategory });
+                          setRenameInput(video.title);
+                          setRenameCategoryInput(video.category || "Other");
+                          setRenameSubcategoryInput(video.subcategory || "none");
+                        }}
+                      >
+                        <Pencil className="w-3 h-3" />
+                      </button>
+                    )}
+                  </div>
                   <p className="text-sm text-muted-foreground mb-2">{video.views}</p>
                   <div className="flex items-center gap-2 flex-wrap mb-2">
                     <span className={`w-2 h-2 rounded-full ${video.statusDot}`}></span>
                     <span className={`px-2 py-0.5 rounded-full ${video.statusColor} text-xs font-medium`}>
                       {video.status}
                     </span>
+                    {video.category && video.category !== "Uploaded" && video.category !== "Other" && (
+                      <span className="px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-400 text-xs font-medium">
+                        {video.category}
+                      </span>
+                    )}
+                    {video.subcategory && (
+                      <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-400 text-xs font-medium">
+                        {video.subcategory}
+                      </span>
+                    )}
                     {/* Global reach badge - shows MENA for Dubai/Saudi content */}
                     <span className="px-2 py-0.5 rounded-full bg-primary/20 text-primary text-xs font-medium flex items-center gap-1">
                       <Globe className="w-3 h-3" />
                       {video.title.toLowerCase().includes('dubai') || video.title.toLowerCase().includes('saudi') ? 'MENA' : 'Global'}
                     </span>
                   </div>
+                  {/* Action buttons — show on hover for any scanned video */}
+                  {isRealMode && video.id && video.aiStatus === "ready" && (
+                    <div className="flex items-center gap-1.5 mb-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        className="flex items-center gap-1 px-2 py-1 rounded-md bg-purple-500/15 text-purple-400 hover:bg-purple-500/25 text-xs font-medium transition-colors"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setNarrativeVideoId(video.id!);
+                          setNarrativeInsightsOpen(true);
+                        }}
+                      >
+                        <Brain className="w-3 h-3" />
+                        Insights
+                      </button>
+                      <button
+                        className="flex items-center gap-1 px-2 py-1 rounded-md bg-pink-500/15 text-pink-400 hover:bg-pink-500/25 text-xs font-medium transition-colors"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setRemixVideoId(video.id!);
+                          setRemixStudioOpen(true);
+                        }}
+                      >
+                        <Scissors className="w-3 h-3" />
+                        Remix
+                      </button>
+                      <button
+                        className="flex items-center gap-1 px-2 py-1 rounded-md bg-green-500/15 text-green-400 hover:bg-green-500/25 text-xs font-medium transition-colors"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDistributionVideoId(video.id!);
+                          setDistributionOpen(true);
+                        }}
+                      >
+                        <Send className="w-3 h-3" />
+                        Distribute
+                      </button>
+                    </div>
+                  )}
                   {/* Sentiment and Cultural Context badges */}
                   {(video.sentiment || video.culturalContext) && (
                     <div className="flex flex-col gap-1.5 text-xs">
@@ -1410,7 +1601,84 @@ export default function Library() {
         } : undefined}
       />
 
-      <UploadModal 
+      {/* Insights Modal — NarrativeInsights (surface analysis) + EditorialClips (transcript-first viral clips) */}
+      {narrativeInsightsOpen && narrativeVideoId && (
+        <AnimatePresence>
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
+            onClick={(e) => { if (e.target === e.currentTarget) { setNarrativeInsightsOpen(false); setNarrativeVideoId(null); } }}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-zinc-900 rounded-xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col border border-white/10"
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between p-5 border-b border-white/10">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center">
+                    <Brain className="w-5 h-5 text-white" />
+                  </div>
+                  <div>
+                    <h2 className="text-lg font-bold text-white">Editorial Intelligence</h2>
+                    <p className="text-xs text-muted-foreground">Transcript-based viral clip analysis + narrative surface insights</p>
+                  </div>
+                </div>
+                <button onClick={() => { setNarrativeInsightsOpen(false); setNarrativeVideoId(null); }} className="text-zinc-400 hover:text-white">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Content — Editorial Clips first, then Narrative Insights below */}
+              <div className="flex-1 overflow-y-auto p-5 space-y-6">
+                {/* Editorial Clips — transcript-first viral clip identification */}
+                <div>
+                  <h3 className="text-sm font-semibold text-zinc-300 mb-3 flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-yellow-400" />
+                    Viral Clip Analysis
+                  </h3>
+                  <EditorialClips videoId={narrativeVideoId} mode="creator" />
+                </div>
+
+                {/* Separator */}
+                <div className="border-t border-white/5 pt-4">
+                  <h3 className="text-sm font-semibold text-zinc-300 mb-3 flex items-center gap-2">
+                    <Brain className="w-4 h-4 text-purple-400" />
+                    Surface Narrative Analysis
+                  </h3>
+                  <p className="text-xs text-zinc-500 mb-3">
+                    Per-frame surface analysis with brand matching — complements the transcript-based editorial analysis above.
+                  </p>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        </AnimatePresence>
+      )}
+
+      <RemixStudio
+        videoId={remixVideoId || 0}
+        open={remixStudioOpen}
+        onClose={() => {
+          setRemixStudioOpen(false);
+          setRemixVideoId(null);
+        }}
+      />
+
+      <DistributionDashboard
+        videoId={distributionVideoId || 0}
+        open={distributionOpen}
+        onClose={() => {
+          setDistributionOpen(false);
+          setDistributionVideoId(null);
+        }}
+      />
+
+      <UploadModal
         open={uploadModalOpen}
         onClose={() => setUploadModalOpen(false)}
         onUploadComplete={() => {
@@ -1439,6 +1707,120 @@ export default function Library() {
         isScanning={previewVideo?.id ? scanningVideoIds.has(previewVideo.id) : false}
         startTime={previewStartTime}
       />
+
+      {/* Delete confirmation dialog */}
+      <Dialog open={deletingVideoId !== null} onOpenChange={(open) => { if (!open) setDeletingVideoId(null); }}>
+        <DialogContent className="sm:max-w-sm">
+          <div className="space-y-4">
+            <h3 className="text-lg font-semibold">Delete Video</h3>
+            <p className="text-sm text-muted-foreground">
+              This will permanently delete this video, its detected surfaces, and any saved placements. The uploaded file will also be removed.
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" size="sm" onClick={() => setDeletingVideoId(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={deleteVideoMutation.isPending}
+                onClick={() => {
+                  if (deletingVideoId) deleteVideoMutation.mutate(deletingVideoId);
+                }}
+              >
+                {deleteVideoMutation.isPending ? (
+                  <><Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> Deleting...</>
+                ) : (
+                  <><Trash2 className="w-3.5 h-3.5 mr-1.5" /> Delete</>
+                )}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit video dialog (rename + category + subcategory) */}
+      <Dialog open={renamingVideo !== null} onOpenChange={(open) => { if (!open) setRenamingVideo(null); }}>
+        <DialogContent className="sm:max-w-md">
+          <div className="space-y-4">
+            <h3 className="text-lg font-semibold">Edit Video</h3>
+            <div>
+              <label className="text-sm text-muted-foreground mb-1.5 block">Title</label>
+              <Input
+                value={renameInput}
+                onChange={(e) => setRenameInput(e.target.value)}
+                placeholder="Enter new title"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && renameInput.trim() && renamingVideo) {
+                    renameVideoMutation.mutate({ videoId: renamingVideo.id, title: renameInput.trim(), category: renameCategoryInput, subcategory: renameSubcategoryInput || undefined });
+                    setRenamingVideo(null);
+                  }
+                }}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-sm text-muted-foreground mb-1.5 block">Category</label>
+                <Select value={renameCategoryInput} onValueChange={setRenameCategoryInput}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select category" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {CONTENT_CATEGORIES.map((cat) => (
+                      <SelectItem key={cat.value} value={cat.value}>
+                        {cat.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <label className="text-sm text-muted-foreground mb-1.5 block">Subcategory</label>
+                <Select value={renameSubcategoryInput} onValueChange={setRenameSubcategoryInput}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="e.g. Sports" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">None</SelectItem>
+                    {SUBCATEGORIES.map((sub) => (
+                      <SelectItem key={sub} value={sub}>
+                        {sub}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" size="sm" onClick={() => setRenamingVideo(null)}>
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                disabled={(!renameInput.trim() && !renameCategoryInput && !renameSubcategoryInput) || renameVideoMutation.isPending}
+                onClick={() => {
+                  if (renamingVideo) {
+                    renameVideoMutation.mutate({
+                      videoId: renamingVideo.id,
+                      title: renameInput.trim() || undefined,
+                      category: renameCategoryInput || undefined,
+                      subcategory: renameSubcategoryInput === "none" ? "" : (renameSubcategoryInput || undefined),
+                    });
+                    setRenamingVideo(null);
+                  }
+                }}
+              >
+                {renameVideoMutation.isPending ? (
+                  <><Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> Saving...</>
+                ) : (
+                  "Save"
+                )}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
