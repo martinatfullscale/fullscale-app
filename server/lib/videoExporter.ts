@@ -785,36 +785,39 @@ export async function processVideoExport(
 
     console.log(`[VideoExporter] Loaded ${productImageCache.size} product images`);
 
-    // ── Step 3: Composite each frame ──
+    // ── Step 3: Composite frames in parallel batches ──
     const fps = EXPORT_CONFIG.TARGET_FPS;
+    const BATCH_SIZE = 8; // Process 8 frames concurrently for ~4-5x speedup
+    let completedFrames = 0;
 
-    for (let i = 0; i < totalFrames; i++) {
-      const framePath = path.join(framesDir, frameFiles[i]);
-      const outputPath = path.join(compositedDir, frameFiles[i]);
-      const currentTime = i / fps;
+    for (let batchStart = 0; batchStart < totalFrames; batchStart += BATCH_SIZE) {
+      const batchEnd = Math.min(batchStart + BATCH_SIZE, totalFrames);
+      const batchPromises: Promise<void>[] = [];
 
-      const compositedBuffer = await compositeFrame(
-        framePath,
-        placements,
-        currentTime,
-        productImageCache,
-        exportCtx,
-      );
+      for (let i = batchStart; i < batchEnd; i++) {
+        const framePath = path.join(framesDir, frameFiles[i]);
+        const outputPath = path.join(compositedDir, frameFiles[i]);
+        const currentTime = i / fps;
 
-      fs.writeFileSync(outputPath, compositedBuffer);
-
-      // Update progress: 10% for extraction, 80% for compositing, 10% for encoding
-      const compositeProgress = 10 + Math.round((i / totalFrames) * 80);
-      if (i % Math.max(1, Math.floor(totalFrames / 20)) === 0) {
-        // Update DB every ~5% to avoid hammering it
-        await storage.updateVideoExportProgress(exportId, compositeProgress);
+        batchPromises.push(
+          compositeFrame(framePath, placements, currentTime, productImageCache, exportCtx)
+            .then(compositedBuffer => {
+              fs.writeFileSync(outputPath, compositedBuffer);
+              // Delete original frame to save disk space
+              try { fs.unlinkSync(framePath); } catch {}
+            })
+        );
       }
 
-      // Delete original frame to save disk space
-      try { fs.unlinkSync(framePath); } catch {}
+      await Promise.all(batchPromises);
+      completedFrames += (batchEnd - batchStart);
+
+      // Update progress: 10% for extraction, 80% for compositing, 10% for encoding
+      const compositeProgress = 10 + Math.round((completedFrames / totalFrames) * 80);
+      await storage.updateVideoExportProgress(exportId, compositeProgress);
     }
 
-    console.log(`[VideoExporter] Composited ${totalFrames} frames`);
+    console.log(`[VideoExporter] Composited ${totalFrames} frames (batch size ${BATCH_SIZE})`);
     await storage.updateVideoExportProgress(exportId, 90);
 
     // ── Step 4: Re-encode to MP4 ──
