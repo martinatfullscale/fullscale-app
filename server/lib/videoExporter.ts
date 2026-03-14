@@ -196,6 +196,291 @@ function runFFmpeg(args: string[], timeoutMs: number = EXPORT_CONFIG.FFMPEG_TIME
   });
 }
 
+/** Get video resolution using ffprobe */
+async function getVideoResolution(videoPath: string): Promise<{ width: number; height: number }> {
+  return new Promise((resolve) => {
+    const proc = spawn("ffprobe", [
+      "-v", "quiet",
+      "-print_format", "json",
+      "-show_streams",
+      "-select_streams", "v:0",
+      videoPath,
+    ]);
+    let stdout = "";
+    proc.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
+    proc.on("close", () => {
+      try {
+        const info = JSON.parse(stdout);
+        const stream = info.streams?.[0];
+        resolve({ width: stream?.width || 1920, height: stream?.height || 1080 });
+      } catch {
+        resolve({ width: 1920, height: 1080 });
+      }
+    });
+    proc.on("error", () => resolve({ width: 1920, height: 1080 }));
+  });
+}
+
+/**
+ * Build a piecewise-linear FFmpeg expression for overlay position.
+ * Samples motion data at ~1s intervals and generates nested if(lt(t,...)) expressions.
+ * FFmpeg evaluates these per-frame for smooth position interpolation.
+ */
+function buildOverlayExpr(samples: Array<{ t: number; v: number }>): string {
+  if (samples.length === 0) return "0";
+  if (samples.length === 1) return Math.round(samples[0].v).toString();
+
+  // Build nested if expression for piecewise linear interpolation
+  // if(lt(t,t1), lerp(v0,v1), if(lt(t,t2), lerp(v1,v2), ...))
+  let expr = Math.round(samples[samples.length - 1].v).toString();
+
+  for (let i = samples.length - 2; i >= 0; i--) {
+    const s0 = samples[i];
+    const s1 = samples[i + 1];
+    const dt = s1.t - s0.t;
+    if (dt <= 0) continue;
+
+    const v0 = Math.round(s0.v);
+    const v1 = Math.round(s1.v);
+
+    if (v0 === v1) {
+      // Static segment
+      expr = `if(lt(t\\,${s1.t.toFixed(2)})\\,${v0}\\,${expr})`;
+    } else {
+      // Linear interpolation: v0 + (v1-v0) * (t-t0) / (t1-t0)
+      const slope = ((v1 - v0) / dt).toFixed(2);
+      expr = `if(lt(t\\,${s1.t.toFixed(2)})\\,${v0}+${slope}*(t-${s0.t.toFixed(2)})\\,${expr})`;
+    }
+  }
+
+  return expr;
+}
+
+/**
+ * Fast export path: single FFmpeg overlay command instead of frame-by-frame compositing.
+ * Pre-renders product image once, uses FFmpeg overlay filter with position expressions.
+ * Returns true if fast path succeeded, false to fall back to slow path.
+ */
+async function tryFastExport(
+  exportId: number,
+  absoluteVideoPath: string,
+  placements: ExportPlacementData[],
+  exportCtx: ExportContext,
+  duration: number,
+  tempDir: string,
+): Promise<string | null> {
+  // Only works when ALL placements have pre-computed motion track data
+  const allHaveMotion = placements.every(p => p.motionTrackData?.transforms?.length);
+  if (!allHaveMotion) {
+    console.log(`[VideoExporter] Fast path unavailable — missing motion track data`);
+    return null;
+  }
+
+  console.log(`[VideoExporter] Using FAST export path (single FFmpeg overlay command)`);
+  await storage.updateVideoExportProgress(exportId, 10);
+
+  const { width, height } = await getVideoResolution(absoluteVideoPath);
+  const scaleX = width / exportCtx.canvasWidth;
+  const scaleY = height / exportCtx.canvasHeight;
+
+  // Pre-render each placement's product image and build overlay expressions
+  const overlayPaths: string[] = [];
+  const overlayExprs: Array<{ x: string; y: string; enable: string }> = [];
+
+  for (let pi = 0; pi < placements.length; pi++) {
+    const placement = placements[pi];
+    const mtd = placement.motionTrackData!;
+
+    // Load product image
+    let imageBuffer: Buffer | null = null;
+    const url = placement.productImageUrl;
+
+    if (url.startsWith("/storage/")) {
+      try {
+        const { fileExistsInStorage, getStorageStream } = await import("./objectStorage");
+        const objectKey = url.replace(/^\/storage\//, "public/");
+        if (await fileExistsInStorage(objectKey)) {
+          const { file } = getStorageStream(objectKey);
+          const [buf] = await file.download();
+          imageBuffer = buf;
+        }
+      } catch {}
+    } else if (url.startsWith("/")) {
+      const localPath = path.join("./public", url);
+      if (fs.existsSync(localPath)) imageBuffer = fs.readFileSync(localPath);
+    } else if (url.startsWith("http")) {
+      const resp = await fetch(url);
+      if (resp.ok) imageBuffer = Buffer.from(await resp.arrayBuffer());
+    } else if (url.startsWith("data:")) {
+      const b64 = url.split(",")[1];
+      if (b64) imageBuffer = Buffer.from(b64, "base64");
+    }
+
+    if (!imageBuffer) {
+      console.warn(`[VideoExporter] Fast path: could not load product image for placement ${pi}`);
+      return null; // Fall back to slow path
+    }
+
+    const imgMeta = await sharp(imageBuffer).metadata();
+    const imgW = imgMeta.width || 100;
+    const imgH = imgMeta.height || 100;
+
+    // Calculate product dimensions from median bbox (same logic as compositeFrame)
+    const validPositions = mtd.transforms.filter((t): t is NonNullable<typeof t> => t !== null);
+    if (validPositions.length === 0) continue;
+
+    const sortedWs = validPositions.map(p => p.w).sort((a, b) => a - b);
+    const sortedHs = validPositions.map(p => p.h).sort((a, b) => a - b);
+    const medW = sortedWs[Math.floor(sortedWs.length / 2)] * width;
+    const medH = sortedHs[Math.floor(sortedHs.length / 2)] * height;
+
+    const prodAspect = placement.productAspectRatio || (imgW / imgH);
+    const boxAspect = medW / medH;
+
+    let drawWidth: number, drawHeight: number;
+    if (prodAspect > boxAspect) {
+      drawWidth = medW * placement.transform.scale;
+      drawHeight = (medW / prodAspect) * placement.transform.scale;
+    } else {
+      drawHeight = medH * placement.transform.scale;
+      drawWidth = (medH * prodAspect) * placement.transform.scale;
+    }
+
+    const finalW = Math.max(1, Math.round(drawWidth));
+    const finalH = Math.max(1, Math.round(drawHeight));
+
+    // Pre-render product with all transforms applied
+    let product = sharp(imageBuffer)
+      .resize(finalW, finalH, { fit: "fill", background: { r: 0, g: 0, b: 0, alpha: 0 } });
+
+    // Brightness/contrast
+    if (placement.blend.brightness !== 0 || placement.blend.contrast !== 0) {
+      const brightnessFactor = (100 + placement.blend.brightness) / 100;
+      const contrastFactor = (100 + placement.blend.contrast) / 100;
+      product = product.linear(contrastFactor * brightnessFactor, 128 * (1 - contrastFactor) * brightnessFactor);
+    }
+
+    // Rotation
+    if (placement.transform.rotation !== 0) {
+      product = product.rotate(placement.transform.rotation, { background: { r: 0, g: 0, b: 0, alpha: 0 } });
+    }
+
+    // Horizontal flip
+    if (placement.transform.flipH) {
+      product = product.flop();
+    }
+
+    // Opacity
+    const blendOpacity = Math.max(0, Math.min(100, placement.blend.opacity)) / 100;
+    if (blendOpacity <= 0.01) continue;
+    if (blendOpacity < 1) {
+      const { data, info } = await product.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+      for (let i = 3; i < data.length; i += 4) {
+        data[i] = Math.round(data[i] * blendOpacity);
+      }
+      product = sharp(data, { raw: { width: info.width, height: info.height, channels: 4 } });
+    }
+
+    // Save pre-rendered product as PNG
+    const overlayPath = path.join(tempDir, `overlay_${pi}.png`);
+    await product.ensureAlpha().png().toFile(overlayPath);
+    overlayPaths.push(overlayPath);
+
+    // Get final rendered size (may differ after rotation)
+    const renderedMeta = await sharp(overlayPath).metadata();
+    const renderedW = renderedMeta.width || finalW;
+    const renderedH = renderedMeta.height || finalH;
+
+    // Sample positions from motion data at ~1s intervals
+    const xSamples: Array<{ t: number; v: number }> = [];
+    const ySamples: Array<{ t: number; v: number }> = [];
+    const sampleInterval = 1.0; // seconds
+    let hasNull = false;
+
+    for (let t = 0; t <= mtd.duration; t += sampleInterval) {
+      const frameIdx = Math.min(Math.round(t * mtd.fps), mtd.transforms.length - 1);
+      const pos = mtd.transforms[Math.max(0, frameIdx)];
+      if (!pos) { hasNull = true; continue; }
+
+      const centerX = pos.x * width + pos.w * width / 2 + placement.transform.offsetX * scaleX;
+      const centerY = pos.y * height + pos.h * height / 2 + placement.transform.offsetY * scaleY;
+      xSamples.push({ t, v: centerX - renderedW / 2 });
+      ySamples.push({ t, v: centerY - renderedH / 2 });
+    }
+
+    if (xSamples.length === 0) continue;
+
+    const xExpr = buildOverlayExpr(xSamples);
+    const yExpr = buildOverlayExpr(ySamples);
+    // Enable for the full duration (skip null segments if needed)
+    const enable = hasNull ? `between(t\\,0\\,${mtd.duration.toFixed(2)})` : "1";
+
+    overlayExprs.push({ x: xExpr, y: yExpr, enable });
+    console.log(`[VideoExporter] Fast path: placement ${pi} "${placement.surfaceType}" → ${xSamples.length} position keypoints`);
+  }
+
+  if (overlayPaths.length === 0) {
+    console.warn(`[VideoExporter] Fast path: no valid overlays, falling back`);
+    return null;
+  }
+
+  await storage.updateVideoExportProgress(exportId, 30);
+
+  // Build FFmpeg command with chained overlays
+  const outputFilename = `export_${exportId}.mp4`;
+  const outputMp4 = path.join("./public/exports", outputFilename);
+  fs.mkdirSync("./public/exports", { recursive: true });
+
+  const inputs: string[] = ["-nostdin", "-y", "-i", absoluteVideoPath];
+  for (const op of overlayPaths) {
+    inputs.push("-i", op);
+  }
+
+  // Build filter_complex chain: [0][1]overlay=...[tmp1]; [tmp1][2]overlay=...[tmp2]; ...
+  let filterChain = "";
+  for (let i = 0; i < overlayPaths.length; i++) {
+    const srcLabel = i === 0 ? "[0]" : `[tmp${i}]`;
+    const overlayLabel = `[${i + 1}]`;
+    const outLabel = i === overlayPaths.length - 1 ? "" : `[tmp${i + 1}]`;
+    const e = overlayExprs[i];
+
+    filterChain += `${srcLabel}${overlayLabel}overlay=x='${e.x}':y='${e.y}':enable='${e.enable}':format=auto${outLabel}`;
+    if (i < overlayPaths.length - 1) filterChain += "; ";
+  }
+
+  const ffmpegArgs = [
+    ...inputs,
+    "-filter_complex", filterChain,
+    "-c:v", "libx264",
+    "-pix_fmt", "yuv420p",
+    "-preset", EXPORT_CONFIG.PRESET,
+    "-crf", EXPORT_CONFIG.CRF.toString(),
+    "-c:a", "aac",
+    "-shortest",
+    "-movflags", "+faststart",
+    outputMp4,
+  ];
+
+  console.log(`[VideoExporter] Fast path: running single FFmpeg overlay command...`);
+  await storage.updateVideoExportProgress(exportId, 40);
+  await runFFmpeg(ffmpegArgs);
+
+  // Verify output
+  if (!fs.existsSync(outputMp4)) {
+    console.warn(`[VideoExporter] Fast path: FFmpeg produced no output, falling back`);
+    return null;
+  }
+  const stats = fs.statSync(outputMp4);
+  if (stats.size < 1000) {
+    console.warn(`[VideoExporter] Fast path: output too small (${stats.size}b), falling back`);
+    try { fs.unlinkSync(outputMp4); } catch {}
+    return null;
+  }
+
+  console.log(`[VideoExporter] Fast path: complete! ${(stats.size / 1024 / 1024).toFixed(1)}MB`);
+  return outputMp4;
+}
+
 /** Get video duration in seconds using ffprobe */
 async function getVideoDuration(videoPath: string): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -691,6 +976,25 @@ export async function processVideoExport(
 
     console.log(`[VideoExporter] Starting export ${exportId}: ${duration.toFixed(1)}s video, ${placements.length} placements`);
     console.log(`[VideoExporter] Preview canvas: ${exportCtx.canvasWidth}×${exportCtx.canvasHeight}`);
+
+    // ── FAST PATH: Single FFmpeg overlay command (skips frame extraction entirely) ──
+    try {
+      const fastResult = await tryFastExport(exportId, absoluteVideoPath, placements, exportCtx, duration, tempDir);
+      if (fastResult) {
+        await storage.updateVideoExportProgress(exportId, 90);
+        const outputFilename = path.basename(fastResult);
+        const objectKey = `public/exports/${outputFilename}`;
+        const storageUrl = await uploadFileToStorage(fastResult, objectKey);
+        console.log(`[VideoExporter] Fast path uploaded: ${storageUrl}`);
+        await storage.updateVideoExportComplete(exportId, storageUrl, storageUrl);
+        try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
+        return; // Done — skip slow path entirely
+      }
+    } catch (fastErr: any) {
+      console.warn(`[VideoExporter] Fast path failed, falling back to frame-by-frame: ${fastErr.message}`);
+    }
+
+    console.log(`[VideoExporter] Using slow path (frame-by-frame compositing)...`);
 
     // ── Step 1: Extract frames ──
     await storage.updateVideoExportProgress(exportId, 5);
