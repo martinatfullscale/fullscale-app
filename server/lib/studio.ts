@@ -95,17 +95,23 @@ async function ensureStudioSubscription(userId: string, email?: string) {
   return sub;
 }
 
-/** Get or create usage row for the current month */
+/** Get or create usage row for the current month; sync limit if tier changed */
 async function getOrCreateUsage(userId: string, tier: TierName) {
   const month = getCurrentMonth();
+  const expectedLimit = STUDIO_TIERS[tier].videosPerMonth;
   let usage = await storage.getStudioUsage(userId, month);
   if (!usage) {
     usage = await storage.createStudioUsage({
       userId,
       month,
       videosGenerated: 0,
-      videosLimit: STUDIO_TIERS[tier].videosPerMonth,
+      videosLimit: expectedLimit,
     });
+  } else if (usage.videosLimit !== expectedLimit) {
+    // Tier changed (e.g. upgrade) — sync the limit
+    await storage.updateStudioUsageLimit(userId, month, expectedLimit);
+    usage = await storage.getStudioUsage(userId, month);
+    if (!usage) throw new Error("Usage not found after limit update");
   }
   return usage;
 }

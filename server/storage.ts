@@ -277,6 +277,7 @@ export interface IStorage {
   getStudioUsage(userId: string, month: string): Promise<StudioUsage | undefined>;
   createStudioUsage(data: InsertStudioUsage): Promise<StudioUsage>;
   incrementStudioUsage(userId: string, month: string): Promise<StudioUsage>;
+  updateStudioUsageLimit(userId: string, month: string, newLimit: number): Promise<void>;
 
   // ── Studio Voice Methods ──
   getStudioVoices(maxTier?: string): Promise<StudioVoice[]>;
@@ -1769,6 +1770,13 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(studioUsage.userId, userId), eq(studioUsage.month, month)))
       .returning();
     return usage;
+  }
+
+  async updateStudioUsageLimit(userId: string, month: string, newLimit: number): Promise<void> {
+    await db
+      .update(studioUsage)
+      .set({ videosLimit: newLimit })
+      .where(and(eq(studioUsage.userId, userId), eq(studioUsage.month, month)));
   }
 
   // ============================================================================
