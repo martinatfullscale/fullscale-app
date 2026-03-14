@@ -4,10 +4,29 @@
  */
 import type { Express, Request, Response } from "express";
 import Stripe from "stripe";
+import multer from "multer";
 import { storage } from "../storage";
 import { db } from "../db";
 import { users } from "@shared/models/auth";
 import { eq } from "drizzle-orm";
+
+// Multer setup for file uploads (memory storage — buffer available as req.file.buffer)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB max
+  fileFilter: (_req, file, cb) => {
+    const allowed = [
+      "application/pdf",
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      "application/vnd.ms-powerpoint",
+    ];
+    if (allowed.includes(file.mimetype) || file.originalname.endsWith(".pdf") || file.originalname.endsWith(".pptx")) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only PDF and PPTX files are allowed"));
+    }
+  },
+});
 
 // ── Tier Configuration ──────────────────────────────────────────────
 export const STUDIO_TIERS = {
@@ -534,9 +553,9 @@ export function registerStudioRoutes(app: Express) {
   });
 
   // ──────────────────────────────────────────────────────────────────
-  // GENERATE: Upload document + trigger pipeline (with quota check)
+  // GENERATE: Upload document + run full pipeline (with quota check)
   // ──────────────────────────────────────────────────────────────────
-  app.post("/api/studio/generate", async (req: any, res: Response) => {
+  app.post("/api/studio/generate", upload.single("file"), async (req: any, res: Response) => {
     try {
       const email = getSessionEmail(req);
       if (!email) {
@@ -547,6 +566,15 @@ export function registerStudioRoutes(app: Express) {
       if (!user) {
         return res.status(404).json({ error: "User not found" });
       }
+
+      // ── Validate file ──
+      if (!req.file) {
+        return res.status(400).json({ error: "No file uploaded. Please upload a PDF or PPTX." });
+      }
+
+      const fileName = req.file.originalname || "document";
+      const fileBuffer: Buffer = req.file.buffer;
+      const documentType: "pdf" | "pptx" = fileName.endsWith(".pptx") ? "pptx" : "pdf";
 
       // ── Quota check ──
       const sub = await ensureStudioSubscription(user.id);
@@ -566,49 +594,146 @@ export function registerStudioRoutes(app: Express) {
       }
 
       // ── Create video record ──
-      const { voiceId, fileName } = req.body;
+      const voiceId = req.body?.voiceId || null;
 
       const video = await storage.createStudioVideo({
         userId: user.id,
-        sourceFileName: fileName || "document",
-        voiceId: voiceId || null,
+        title: fileName.replace(/\.(pdf|pptx)$/i, ""),
+        sourceFileName: fileName,
+        voiceId,
         tier,
         visualQuality: tierConfig.quality,
         visualMode: tierConfig.visualMode,
         isWatermarked: tierConfig.watermark,
-        status: "queued",
+        status: "processing",
         progress: 0,
       });
 
       // ── Increment usage ──
       await storage.incrementStudioUsage(user.id, month);
 
-      // Pipeline options that will be passed to the pipeline when it runs
-      const pipelineOptions = {
-        videoId: video.id,
-        visualTier: tier === "free" ? "mvp" : "v1",
-        voiceId: voiceId || process.env.ELEVENLABS_VOICE_ID || null,
-        quality: tierConfig.quality,
-        watermark: tierConfig.watermark,
-      };
+      const visualTier = tier === "free" ? "mvp" : "v1";
 
-      console.log(`[Studio] Video ${video.id} queued for ${email} (tier: ${tier}, visual: ${pipelineOptions.visualTier})`);
+      console.log(`[Studio] Video ${video.id} starting for ${email} (tier: ${tier}, visual: ${visualTier}, file: ${fileName})`);
 
-      // Note: Actual pipeline execution will be triggered separately
-      // (either via file upload endpoint or background job processor)
-      // This endpoint just creates the record and reserves quota
-
-      return res.json({
+      // ── Respond immediately, run pipeline in background ──
+      res.json({
         video,
-        pipelineOptions,
+        message: "Video generation started. Check status at /api/studio/videos/" + video.id,
         usage: {
           videosGenerated: usage.videosGenerated + 1,
           videosLimit: usage.videosLimit,
         },
       });
+
+      // ── Run pipeline in background (after response sent) ──
+      runPipelineInBackground(video.id, fileBuffer, documentType, visualTier, voiceId);
+
     } catch (err: any) {
       console.error("[Studio] /api/studio/generate error:", err);
       res.status(500).json({ error: "Failed to start generation" });
+    }
+  });
+
+  /**
+   * Run the Studio pipeline in the background.
+   * Updates the video record with progress and final output.
+   */
+  async function runPipelineInBackground(
+    videoId: number,
+    fileBuffer: Buffer,
+    documentType: "pdf" | "pptx",
+    visualTier: "mvp" | "v1" | "v2",
+    voiceId: string | null
+  ) {
+    try {
+      // Dynamically import the pipeline (it lives in studio-pipeline/)
+      const { runPipeline } = await import("../../studio-pipeline/src/pipeline/index.js");
+
+      // Set voice ID env var if provided (pipeline reads from env)
+      if (voiceId) {
+        process.env.ELEVENLABS_VOICE_ID = voiceId;
+      }
+
+      const result = await runPipeline(fileBuffer, documentType, {
+        visualTier,
+        onStageChange: async (stage: string, progress: number) => {
+          // Update video record with progress
+          try {
+            await storage.updateStudioVideoStatus(videoId, "processing", {
+              progress,
+            });
+          } catch (updateErr) {
+            console.error(`[Studio] Failed to update progress for video ${videoId}:`, updateErr);
+          }
+        },
+      });
+
+      // ── Pipeline succeeded — update video record ──
+      console.log(`[Studio] Video ${videoId} complete: ${result.outputPath}`);
+
+      await storage.updateStudioVideoStatus(videoId, "completed", {
+        outputUrl: result.outputPath,
+        durationSeconds: result.metadata.estimatedDurationSeconds,
+        sceneCount: result.metadata.sceneCount,
+        progress: 100,
+      });
+
+    } catch (err: any) {
+      console.error(`[Studio] Pipeline failed for video ${videoId}:`, err.message);
+      await storage.updateStudioVideoStatus(videoId, "failed", {
+        errorMessage: err.message || "Pipeline error",
+        progress: 0,
+      });
+    }
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // VIDEOS: Download completed video file
+  // ──────────────────────────────────────────────────────────────────
+  app.get("/api/studio/videos/:videoId/download", async (req: any, res: Response) => {
+    try {
+      const email = getSessionEmail(req);
+      if (!email) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const videoId = parseInt(req.params.videoId, 10);
+      if (isNaN(videoId)) {
+        return res.status(400).json({ error: "Invalid video ID" });
+      }
+
+      const video = await storage.getStudioVideo(videoId);
+      if (!video) {
+        return res.status(404).json({ error: "Video not found" });
+      }
+
+      // Verify ownership
+      const user = await storage.getUserByEmail(email);
+      if (!user || video.userId !== user.id) {
+        return res.status(403).json({ error: "Access denied" });
+      }
+
+      if (video.status !== "completed" || !video.outputUrl) {
+        return res.status(400).json({ error: "Video is not ready for download" });
+      }
+
+      const fs = await import("fs");
+      const path = await import("path");
+
+      if (!fs.existsSync(video.outputUrl)) {
+        return res.status(404).json({ error: "Video file not found on server" });
+      }
+
+      const fileName = `${video.title || "studio-video"}.mp4`;
+      res.setHeader("Content-Type", "video/mp4");
+      res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+
+      const fileStream = fs.createReadStream(video.outputUrl);
+      fileStream.pipe(res);
+    } catch (err: any) {
+      console.error("[Studio] /api/studio/videos/:videoId/download error:", err);
+      res.status(500).json({ error: "Download failed" });
     }
   });
 

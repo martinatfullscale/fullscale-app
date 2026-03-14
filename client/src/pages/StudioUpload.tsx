@@ -1,5 +1,5 @@
-import { useState, useCallback } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { useState, useCallback, useEffect, useRef } from "react";
+import { motion } from "framer-motion";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import {
   Upload,
@@ -13,12 +13,16 @@ import {
   ArrowRight,
   Volume2,
   Crown,
+  Film,
+  Mic,
+  Download,
+  CheckCircle2,
+  XCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import { apiRequest } from "@/lib/queryClient";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 
 interface Voice {
@@ -59,11 +63,50 @@ interface StudioMeResponse {
   };
 }
 
+interface VideoRecord {
+  id: number;
+  userId: string;
+  title: string | null;
+  sourceFileName: string | null;
+  status: string; // 'queued' | 'processing' | 'completed' | 'failed'
+  progress: number;
+  outputUrl: string | null;
+  thumbnailUrl: string | null;
+  durationSeconds: number | null;
+  sceneCount: number | null;
+  errorMessage: string | null;
+  createdAt: string;
+}
+
+interface GenerateResponse {
+  video: VideoRecord;
+  message: string;
+  usage: {
+    videosGenerated: number;
+    videosLimit: number;
+  };
+}
+
+// Pipeline stages in order
+const PIPELINE_STAGES = [
+  { key: "parsing", label: "Parsing Document", icon: FileText, description: "Extracting text and structure..." },
+  { key: "extracting", label: "Writing Script", icon: Wand2, description: "AI is crafting the story..." },
+  { key: "generating", label: "Generating Visuals", icon: Film, description: "Creating scene visuals..." },
+  { key: "adding-voice", label: "Adding Voice", icon: Mic, description: "Synthesizing narration..." },
+  { key: "assembling", label: "Assembling Video", icon: Film, description: "Combining everything..." },
+] as const;
+
 export default function StudioUpload() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [selectedVoice, setSelectedVoice] = useState<string | null>(null);
   const [playingPreview, setPlayingPreview] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
+
+  // Generation state
+  const [generatingVideoId, setGeneratingVideoId] = useState<number | null>(null);
+  const [videoStatus, setVideoStatus] = useState<VideoRecord | null>(null);
+  const [generationError, setGenerationError] = useState<string | null>(null);
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const { data: studioMe, isLoading: isLoadingMe } = useQuery<StudioMeResponse>({
     queryKey: ["/api/studio/me"],
@@ -83,6 +126,101 @@ export default function StudioUpload() {
   const userTier = voicesData?.userTier || "free";
   const isAuthenticated = studioMe?.authenticated;
   const canGenerate = quotaData?.canGenerate ?? true;
+
+  // ── Generate mutation ──
+  const generateMutation = useMutation<GenerateResponse, Error>({
+    mutationFn: async () => {
+      if (!selectedFile) throw new Error("No file selected");
+
+      const formData = new FormData();
+      formData.append("file", selectedFile);
+      if (selectedVoice) {
+        formData.append("voiceId", selectedVoice);
+      }
+
+      const response = await fetch("/api/studio/generate", {
+        method: "POST",
+        body: formData,
+        credentials: "include",
+      });
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({ error: "Generation failed" }));
+        throw new Error(err.error || `HTTP ${response.status}`);
+      }
+
+      return response.json();
+    },
+    onSuccess: (data) => {
+      setGeneratingVideoId(data.video.id);
+      setVideoStatus(data.video);
+      setGenerationError(null);
+    },
+    onError: (err) => {
+      setGenerationError(err.message);
+    },
+  });
+
+  // ── Poll for video status ──
+  useEffect(() => {
+    if (!generatingVideoId) return;
+
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/studio/videos/${generatingVideoId}`, {
+          credentials: "include",
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setVideoStatus(data.video);
+
+          // Stop polling when done
+          if (data.video.status === "completed" || data.video.status === "failed") {
+            if (pollingRef.current) {
+              clearInterval(pollingRef.current);
+              pollingRef.current = null;
+            }
+          }
+        }
+      } catch {
+        // Silently retry on network errors
+      }
+    };
+
+    // Poll every 3 seconds
+    pollingRef.current = setInterval(poll, 3000);
+    // Initial fetch
+    poll();
+
+    return () => {
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current);
+        pollingRef.current = null;
+      }
+    };
+  }, [generatingVideoId]);
+
+  // Determine current pipeline stage from progress
+  const getCurrentStage = (progress: number): string => {
+    if (progress <= 5) return "parsing";
+    if (progress <= 20) return "extracting";
+    if (progress <= 50) return "generating";
+    if (progress <= 85) return "adding-voice";
+    return "assembling";
+  };
+
+  const handleGenerate = () => {
+    if (!selectedFile || !canGenerate) return;
+    setGenerationError(null);
+    generateMutation.mutate();
+  };
+
+  const handleReset = () => {
+    setGeneratingVideoId(null);
+    setVideoStatus(null);
+    setGenerationError(null);
+    setSelectedFile(null);
+  };
 
   // Group voices by category
   const voicesByCategory = voices.reduce<Record<string, Voice[]>>((acc, voice) => {
@@ -398,75 +536,243 @@ export default function StudioUpload() {
             </div>
           </div>
 
-          {/* Right column: Summary + Generate */}
+          {/* Right column: Summary + Generate / Progress */}
           <div className="space-y-4">
-            <Card className="border-white/5 sticky top-20">
-              <CardContent className="p-6 space-y-5">
-                <h3 className="font-semibold text-foreground">Generation Summary</h3>
+            {/* ── Generation Progress UI ── */}
+            {(generatingVideoId || generateMutation.isPending) && videoStatus ? (
+              <Card className="border-white/5 sticky top-20">
+                <CardContent className="p-6 space-y-5">
+                  {videoStatus.status === "completed" ? (
+                    /* ── Completed ── */
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.95 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      className="text-center space-y-4"
+                    >
+                      <div className="w-14 h-14 rounded-full bg-green-500/10 flex items-center justify-center mx-auto">
+                        <CheckCircle2 className="w-7 h-7 text-green-400" />
+                      </div>
+                      <div>
+                        <h3 className="font-semibold text-lg text-foreground">Video Ready!</h3>
+                        <p className="text-sm text-muted-foreground mt-1">
+                          {videoStatus.sceneCount} scenes &middot; ~{Math.round((videoStatus.durationSeconds || 0) / 60)} min
+                        </p>
+                      </div>
+                      {videoStatus.outputUrl && (
+                        <a
+                          href={`/api/studio/videos/${videoStatus.id}/download`}
+                          className="block"
+                        >
+                          <Button className="w-full gap-2 bg-green-600 hover:bg-green-500" size="lg">
+                            <Download className="w-4 h-4" />
+                            Download MP4
+                          </Button>
+                        </a>
+                      )}
+                      <Button
+                        variant="outline"
+                        className="w-full"
+                        onClick={handleReset}
+                      >
+                        Create Another Video
+                      </Button>
+                    </motion.div>
+                  ) : videoStatus.status === "failed" ? (
+                    /* ── Failed ── */
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.95 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      className="text-center space-y-4"
+                    >
+                      <div className="w-14 h-14 rounded-full bg-red-500/10 flex items-center justify-center mx-auto">
+                        <XCircle className="w-7 h-7 text-red-400" />
+                      </div>
+                      <div>
+                        <h3 className="font-semibold text-lg text-foreground">Generation Failed</h3>
+                        <p className="text-sm text-red-400/80 mt-1">
+                          {videoStatus.errorMessage || "An unexpected error occurred"}
+                        </p>
+                      </div>
+                      <Button
+                        variant="outline"
+                        className="w-full"
+                        onClick={handleReset}
+                      >
+                        Try Again
+                      </Button>
+                    </motion.div>
+                  ) : (
+                    /* ── Processing ── */
+                    <div className="space-y-5">
+                      <div className="text-center">
+                        <Loader2 className="w-8 h-8 animate-spin text-purple-400 mx-auto mb-3" />
+                        <h3 className="font-semibold text-foreground">Generating Your Video</h3>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          This may take a few minutes
+                        </p>
+                      </div>
 
-                {/* File */}
-                <div className="flex items-center gap-3">
-                  <div className={cn("w-9 h-9 rounded-lg flex items-center justify-center", selectedFile ? "bg-green-500/10" : "bg-white/5")}>
-                    <FileText className={cn("w-4 h-4", selectedFile ? "text-green-400" : "text-muted-foreground")} />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate">
-                      {selectedFile ? selectedFile.name : "No file selected"}
-                    </p>
-                    <p className="text-xs text-muted-foreground">Document</p>
-                  </div>
-                </div>
+                      {/* Overall progress bar */}
+                      <div className="space-y-1.5">
+                        <div className="flex justify-between text-xs text-muted-foreground">
+                          <span>Progress</span>
+                          <span>{videoStatus.progress || 0}%</span>
+                        </div>
+                        <div className="w-full h-2 bg-white/5 rounded-full overflow-hidden">
+                          <motion.div
+                            className="h-full bg-purple-500 rounded-full"
+                            initial={{ width: 0 }}
+                            animate={{ width: `${videoStatus.progress || 0}%` }}
+                            transition={{ duration: 0.5, ease: "easeOut" }}
+                          />
+                        </div>
+                      </div>
 
-                {/* Voice */}
-                <div className="flex items-center gap-3">
-                  <div className={cn("w-9 h-9 rounded-lg flex items-center justify-center", selectedVoice ? "bg-purple-500/10" : "bg-white/5")}>
-                    <Volume2 className={cn("w-4 h-4", selectedVoice ? "text-purple-400" : "text-muted-foreground")} />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate">
-                      {selectedVoice
-                        ? voices.find((v) => v.voiceId === selectedVoice)?.name || "Selected"
-                        : "Default voice"}
-                    </p>
-                    <p className="text-xs text-muted-foreground">Narration</p>
-                  </div>
-                </div>
+                      {/* Pipeline stages */}
+                      <div className="space-y-2">
+                        {PIPELINE_STAGES.map((stage, idx) => {
+                          const currentStage = getCurrentStage(videoStatus.progress || 0);
+                          const stageIdx = PIPELINE_STAGES.findIndex((s) => s.key === currentStage);
+                          const thisIdx = idx;
+                          const isComplete = thisIdx < stageIdx;
+                          const isActive = thisIdx === stageIdx;
+                          const isPending = thisIdx > stageIdx;
+                          const Icon = stage.icon;
 
-                {/* Tier info */}
-                <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-lg bg-white/5 flex items-center justify-center">
-                    <Crown className="w-4 h-4 text-muted-foreground" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium capitalize">{userTier} Plan</p>
-                    <p className="text-xs text-muted-foreground">
-                      {quotaData
-                        ? `${quotaData.videosGenerated}/${quotaData.videosLimit} videos used`
-                        : "Checking usage..."}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="border-t border-white/5 pt-4">
-                  <Button
-                    className="w-full gap-2 bg-purple-600 hover:bg-purple-500"
-                    size="lg"
-                    disabled={!selectedFile || !canGenerate}
-                  >
-                    <Wand2 className="w-4 h-4" />
-                    Generate Video
-                  </Button>
-                  {!canGenerate && (
-                    <p className="text-xs text-center text-red-400 mt-2">
-                      <a href="/studio/pricing" className="underline">
-                        Upgrade
-                      </a>{" "}
-                      to generate more videos
-                    </p>
+                          return (
+                            <div
+                              key={stage.key}
+                              className={cn(
+                                "flex items-center gap-3 p-2.5 rounded-lg transition-all",
+                                isActive && "bg-purple-500/10 border border-purple-500/20",
+                                isComplete && "opacity-60",
+                                isPending && "opacity-30"
+                              )}
+                            >
+                              <div
+                                className={cn(
+                                  "w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0",
+                                  isComplete && "bg-green-500/10",
+                                  isActive && "bg-purple-500/10",
+                                  isPending && "bg-white/5"
+                                )}
+                              >
+                                {isComplete ? (
+                                  <Check className="w-3.5 h-3.5 text-green-400" />
+                                ) : isActive ? (
+                                  <Loader2 className="w-3.5 h-3.5 text-purple-400 animate-spin" />
+                                ) : (
+                                  <Icon className="w-3.5 h-3.5 text-muted-foreground" />
+                                )}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className={cn(
+                                  "text-xs font-medium",
+                                  isActive ? "text-purple-300" : isComplete ? "text-green-400/80" : "text-muted-foreground"
+                                )}>
+                                  {stage.label}
+                                </p>
+                                {isActive && (
+                                  <p className="text-[10px] text-purple-400/60 mt-0.5">
+                                    {stage.description}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
                   )}
-                </div>
-              </CardContent>
-            </Card>
+                </CardContent>
+              </Card>
+            ) : (
+              /* ── Default Summary Card ── */
+              <Card className="border-white/5 sticky top-20">
+                <CardContent className="p-6 space-y-5">
+                  <h3 className="font-semibold text-foreground">Generation Summary</h3>
+
+                  {/* File */}
+                  <div className="flex items-center gap-3">
+                    <div className={cn("w-9 h-9 rounded-lg flex items-center justify-center", selectedFile ? "bg-green-500/10" : "bg-white/5")}>
+                      <FileText className={cn("w-4 h-4", selectedFile ? "text-green-400" : "text-muted-foreground")} />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate">
+                        {selectedFile ? selectedFile.name : "No file selected"}
+                      </p>
+                      <p className="text-xs text-muted-foreground">Document</p>
+                    </div>
+                  </div>
+
+                  {/* Voice */}
+                  <div className="flex items-center gap-3">
+                    <div className={cn("w-9 h-9 rounded-lg flex items-center justify-center", selectedVoice ? "bg-purple-500/10" : "bg-white/5")}>
+                      <Volume2 className={cn("w-4 h-4", selectedVoice ? "text-purple-400" : "text-muted-foreground")} />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate">
+                        {selectedVoice
+                          ? voices.find((v) => v.voiceId === selectedVoice)?.name || "Selected"
+                          : "Default voice"}
+                      </p>
+                      <p className="text-xs text-muted-foreground">Narration</p>
+                    </div>
+                  </div>
+
+                  {/* Tier info */}
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-lg bg-white/5 flex items-center justify-center">
+                      <Crown className="w-4 h-4 text-muted-foreground" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium capitalize">{userTier} Plan</p>
+                      <p className="text-xs text-muted-foreground">
+                        {quotaData
+                          ? `${quotaData.videosGenerated}/${quotaData.videosLimit} videos used`
+                          : "Checking usage..."}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Error message */}
+                  {generationError && (
+                    <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20">
+                      <p className="text-xs text-red-400">{generationError}</p>
+                    </div>
+                  )}
+
+                  <div className="border-t border-white/5 pt-4">
+                    <Button
+                      className="w-full gap-2 bg-purple-600 hover:bg-purple-500"
+                      size="lg"
+                      disabled={!selectedFile || !canGenerate || generateMutation.isPending}
+                      onClick={handleGenerate}
+                    >
+                      {generateMutation.isPending ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Starting...
+                        </>
+                      ) : (
+                        <>
+                          <Wand2 className="w-4 h-4" />
+                          Generate Video
+                        </>
+                      )}
+                    </Button>
+                    {!canGenerate && (
+                      <p className="text-xs text-center text-red-400 mt-2">
+                        <a href="/studio/pricing" className="underline">
+                          Upgrade
+                        </a>{" "}
+                        to generate more videos
+                      </p>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
           </div>
         </div>
       </div>
