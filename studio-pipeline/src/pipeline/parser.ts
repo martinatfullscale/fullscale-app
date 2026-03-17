@@ -1,4 +1,3 @@
-import pdf from "pdf-parse";
 import fs from "fs";
 import path from "path";
 import { createRequire } from "module";
@@ -17,11 +16,52 @@ export interface ParsedDocument {
 }
 
 /**
+ * Wrap a promise with a timeout.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise.then(
+      (val) => { clearTimeout(timer); resolve(val); },
+      (err) => { clearTimeout(timer); reject(err); },
+    );
+  });
+}
+
+/**
  * Parse a PDF buffer into structured document pages.
  * Uses pdf-parse to extract text, then splits into per-page chunks.
+ *
+ * NOTE: pdf-parse default export hangs in esbuild-bundled environments
+ * because it tries to load a test PDF at require time. We import the
+ * inner implementation directly via require() to bypass that.
  */
 export async function parsePDF(buffer: Buffer): Promise<ParsedDocument> {
-  const data = await pdf(buffer);
+  console.log("[Parser] Starting PDF parse...");
+
+  // Use require() to load pdf-parse's inner module, bypassing the
+  // default entry point which tries to load a test PDF and hangs in
+  // bundled environments.
+  let pdfParse: (buffer: Buffer, options?: any) => Promise<any>;
+  try {
+    const require = createRequire(import.meta.url);
+    pdfParse = require("pdf-parse/lib/pdf-parse.js");
+    console.log("[Parser] pdf-parse/lib/pdf-parse.js loaded via require()");
+  } catch (requireErr: any) {
+    console.log("[Parser] require() failed, trying dynamic import fallback:", requireErr.message);
+    // Fallback: try the default import (may work in non-bundled env)
+    const mod = await import("pdf-parse");
+    pdfParse = mod.default || mod;
+    console.log("[Parser] pdf-parse loaded via dynamic import");
+  }
+
+  const data = await withTimeout(
+    pdfParse(buffer, { max: 0 }),
+    60_000,
+    "PDF parsing"
+  );
+
+  console.log(`[Parser] PDF parsed: ${data.numpages} pages, ${data.text.length} chars`);
 
   const pageCount = data.numpages;
   const fullText = data.text;
