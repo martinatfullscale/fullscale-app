@@ -419,7 +419,7 @@ export async function registerRoutes(
     console.log("[Auth Error] Clearing session due to error:", errorCode);
     req.session.destroy((err: any) => {
       if (err) console.error("[Auth Error] Session destroy failed:", err);
-      res.clearCookie("connect.sid");
+      res.clearCookie("connect.sid", { domain: process.env.COOKIE_DOMAIN || undefined });
       res.redirect("/?error=" + encodeURIComponent(errorCode));
     });
   };
@@ -609,7 +609,7 @@ export async function registerRoutes(
       console.log(`Access set for: ${userInfo.email}, approved: ${userIsApproved}`);
       
       // Redirect based on approval status — use BASE_URL so dev deploys redirect back to themselves
-      const callbackBaseUrl = process.env.BASE_URL || "https://gofullscale.co";
+      const callbackBaseUrl = process.env.STUDIO_URL || process.env.BASE_URL || "https://gofullscale.co";
       // Use stored post-login redirect if present (e.g. from /auth?redirect=/studio/upload)
       const storedRedirect = (req.session as any)?.postLoginRedirect;
       const defaultPath = userIsApproved ? "/dashboard" : "/waitlist";
@@ -642,7 +642,7 @@ export async function registerRoutes(
     console.log("[Auth] Session reset requested");
     req.session.destroy((err: any) => {
       if (err) console.error("[Auth] Session reset failed:", err);
-      res.clearCookie("connect.sid");
+      res.clearCookie("connect.sid", { domain: process.env.COOKIE_DOMAIN || undefined });
       res.redirect("/");
     });
   });
@@ -710,6 +710,7 @@ export async function registerRoutes(
         httpOnly: true,
         secure: true,
         sameSite: "lax" as const,
+        domain: process.env.COOKIE_DOMAIN || undefined,
       });
       console.log("[Auth] User logged out successfully");
       res.json({ success: true });

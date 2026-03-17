@@ -72,6 +72,7 @@ export function getSession() {
       secure: true,
       sameSite: 'lax' as const,
       maxAge: sessionTtl,
+      domain: process.env.COOKIE_DOMAIN || undefined,
     },
   });
 }
