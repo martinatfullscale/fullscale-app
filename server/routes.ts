@@ -609,7 +609,7 @@ export async function registerRoutes(
       console.log(`Access set for: ${userInfo.email}, approved: ${userIsApproved}`);
       
       // Redirect based on approval status — use BASE_URL so dev deploys redirect back to themselves
-      const callbackBaseUrl = process.env.STUDIO_URL || process.env.BASE_URL || "https://gofullscale.co";
+      const callbackBaseUrl = process.env.BASE_URL || "https://gofullscale.co";
       // Use stored post-login redirect if present (e.g. from /auth?redirect=/studio/upload)
       const storedRedirect = (req.session as any)?.postLoginRedirect;
       const defaultPath = userIsApproved ? "/dashboard" : "/waitlist";

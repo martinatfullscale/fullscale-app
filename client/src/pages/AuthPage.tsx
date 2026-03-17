@@ -12,7 +12,7 @@ import { SiGoogle } from "react-icons/si";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 
 const DESTINATIONS = {
-  dashboard: { label: "Dashboard", path: "/dashboard", icon: LayoutDashboard },
+  dashboard: { label: "Creator Portal", path: "/dashboard", icon: LayoutDashboard },
   studio: { label: "Studio", path: "/studio/upload", icon: Video },
 } as const;
 
