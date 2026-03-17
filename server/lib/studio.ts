@@ -9,7 +9,21 @@ import { storage } from "../storage";
 import { db } from "../db";
 import { users } from "@shared/models/auth";
 import { eq } from "drizzle-orm";
-import { runPipeline } from "../../studio-pipeline/src/pipeline/index.js";
+// Lazy-loaded pipeline module (loaded on first use, not at startup)
+let _runPipeline: typeof import("../../studio-pipeline/src/pipeline/index.js").runPipeline | null = null;
+async function loadPipeline() {
+  if (!_runPipeline) {
+    try {
+      const mod = await import("../../studio-pipeline/src/pipeline/index.js");
+      _runPipeline = mod.runPipeline;
+      console.log("[Studio] Pipeline module loaded successfully");
+    } catch (err: any) {
+      console.error("[Studio] Failed to load pipeline module:", err.message);
+      throw new Error(`Pipeline module failed to load: ${err.message}`);
+    }
+  }
+  return _runPipeline;
+}
 
 // Multer setup for file uploads (memory storage — buffer available as req.file.buffer)
 const upload = multer({
@@ -664,6 +678,8 @@ export function registerStudioRoutes(app: Express) {
     voiceId: string | null
   ) {
     try {
+      console.log(`[Studio] Video ${videoId}: loading pipeline module...`);
+      const runPipeline = await loadPipeline();
       console.log(`[Studio] Video ${videoId}: starting pipeline...`);
 
       // Set voice ID env var if provided (pipeline reads from env)
