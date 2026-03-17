@@ -36,7 +36,7 @@ export async function extractStory(parsedDocument: ParsedDocument): Promise<Stor
     throw new Error("ANTHROPIC_API_KEY environment variable is required");
   }
 
-  const client = new Anthropic({ apiKey });
+  const client = new Anthropic({ apiKey, timeout: 120_000 });
 
   // Build the pages content string
   const pagesContent = parsedDocument.pages

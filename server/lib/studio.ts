@@ -664,20 +664,38 @@ export function registerStudioRoutes(app: Express) {
   ) {
     try {
       // Dynamically import the pipeline (it lives in studio-pipeline/)
+      console.log(`[Studio] Video ${videoId}: importing pipeline module...`);
       const { runPipeline } = await import("../../studio-pipeline/src/pipeline/index.js");
+      console.log(`[Studio] Video ${videoId}: pipeline module loaded, starting...`);
 
       // Set voice ID env var if provided (pipeline reads from env)
       if (voiceId) {
         process.env.ELEVENLABS_VOICE_ID = voiceId;
       }
 
+      // Map stage-local progress (0-100 per stage) to global progress (0-100 overall)
+      const stageWeights: Record<string, [number, number]> = {
+        parsing:       [0, 5],
+        extracting:    [5, 25],
+        generating:    [25, 55],
+        "adding-voice": [55, 85],
+        assembling:    [85, 99],
+        complete:      [100, 100],
+      };
+      let lastGlobalProgress = 0;
+
       const result = await runPipeline(fileBuffer, documentType, {
         visualTier,
         onStageChange: async (stage: string, progress: number) => {
-          // Update video record with progress
+          const [rangeStart, rangeEnd] = stageWeights[stage] || [0, 100];
+          const globalProgress = Math.round(rangeStart + (progress / 100) * (rangeEnd - rangeStart));
+          // Never let progress go backward
+          const safeProgress = Math.max(globalProgress, lastGlobalProgress);
+          lastGlobalProgress = safeProgress;
+
           try {
             await storage.updateStudioVideoStatus(videoId, "processing", {
-              progress,
+              progress: safeProgress,
             });
           } catch (updateErr) {
             console.error(`[Studio] Failed to update progress for video ${videoId}:`, updateErr);
@@ -697,8 +715,10 @@ export function registerStudioRoutes(app: Express) {
 
     } catch (err: any) {
       console.error(`[Studio] Pipeline failed for video ${videoId}:`, err.message);
+      console.error(`[Studio] Stack:`, err.stack);
+      const errorMsg = err.message || "Pipeline error";
       await storage.updateStudioVideoStatus(videoId, "failed", {
-        errorMessage: err.message || "Pipeline error",
+        errorMessage: errorMsg.slice(0, 500),
         progress: 0,
       });
     }
