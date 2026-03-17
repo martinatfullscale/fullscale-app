@@ -7,9 +7,16 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, Mail, Lock, User, X, Eye, EyeOff } from "lucide-react";
+import { Loader2, Mail, Lock, User, X, Eye, EyeOff, LayoutDashboard, Video } from "lucide-react";
 import { SiGoogle } from "react-icons/si";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
+
+const DESTINATIONS = {
+  dashboard: { label: "Dashboard", path: "/dashboard", icon: LayoutDashboard },
+  studio: { label: "Studio", path: "/studio/upload", icon: Video },
+} as const;
+
+type Destination = keyof typeof DESTINATIONS;
 
 export default function AuthPage() {
   const [, setLocation] = useLocation();
@@ -20,6 +27,11 @@ export default function AuthPage() {
   const urlParams = new URLSearchParams(window.location.search);
   const initialMode = urlParams.get("mode") === "signup" ? "register" : "login";
   const [activeTab, setActiveTab] = useState(initialMode);
+
+  // Destination selector — where to go after login
+  const redirectParam = urlParams.get("redirect");
+  const initialDest: Destination = redirectParam?.startsWith("/studio") ? "studio" : "dashboard";
+  const [destination, setDestination] = useState<Destination>(initialDest);
 
   // Login form state
   const [loginEmail, setLoginEmail] = useState("");
@@ -38,12 +50,11 @@ export default function AuthPage() {
   const [showRegisterPassword, setShowRegisterPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
+  const getDestinationPath = () => DESTINATIONS[destination].path;
+
   const handleGoogleLogin = () => {
-    const redirectParam = urlParams.get("redirect");
-    const url = redirectParam
-      ? `/api/auth/google?redirect=${encodeURIComponent(redirectParam)}`
-      : "/api/auth/google";
-    window.location.href = url;
+    const destPath = getDestinationPath();
+    window.location.href = `/api/auth/google?redirect=${encodeURIComponent(destPath)}`;
   };
 
   // Dev-only admin login bypass — skips OAuth entirely
@@ -60,7 +71,7 @@ export default function AuthPage() {
       const data = await response.json();
       if (response.ok) {
         toast({ title: "Dev Login", description: `Logged in as ${data.email}` });
-        setTimeout(() => setLocation("/dashboard"), 300);
+        setTimeout(() => setLocation(getDestinationPath()), 300);
       } else {
         toast({ title: "Dev Login Failed", description: data.error, variant: "destructive" });
       }
@@ -105,10 +116,10 @@ export default function AuthPage() {
       } else {
         toast({
           title: "Welcome back!",
-          description: "Redirecting to dashboard...",
+          description: `Redirecting to ${DESTINATIONS[destination].label}...`,
         });
         setTimeout(() => {
-          setLocation("/dashboard");
+          setLocation(getDestinationPath());
         }, 500);
       }
     } catch (error) {
@@ -190,10 +201,10 @@ export default function AuthPage() {
       } else {
         toast({
           title: "Account created!",
-          description: "Welcome to FullScale. Redirecting to dashboard...",
+          description: `Welcome to FullScale. Redirecting to ${DESTINATIONS[destination].label}...`,
         });
         setTimeout(() => {
-          setLocation("/dashboard");
+          setLocation(getDestinationPath());
         }, 500);
       }
     } catch (error) {
@@ -231,6 +242,32 @@ export default function AuthPage() {
             <CardDescription>Sign in or create an account to get started</CardDescription>
           </CardHeader>
           <CardContent>
+            {/* Destination selector */}
+            <div className="mb-6">
+              <Label className="text-xs text-muted-foreground uppercase tracking-wider mb-2 block">
+                Sign in to
+              </Label>
+              <div className="grid grid-cols-2 gap-2">
+                {(Object.entries(DESTINATIONS) as [Destination, typeof DESTINATIONS[Destination]][]).map(
+                  ([key, { label, icon: Icon }]) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => setDestination(key)}
+                      className={`flex items-center justify-center gap-2 rounded-lg border px-4 py-3 text-sm font-medium transition-all ${
+                        destination === key
+                          ? "border-primary bg-primary/10 text-white"
+                          : "border-white/10 text-muted-foreground hover:border-white/20 hover:text-white"
+                      }`}
+                    >
+                      <Icon className="h-4 w-4" />
+                      {label}
+                    </button>
+                  )
+                )}
+              </div>
+            </div>
+
             <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
               <TabsList className="grid w-full grid-cols-2 mb-6">
                 <TabsTrigger value="login" data-testid="tab-login">Sign In</TabsTrigger>
