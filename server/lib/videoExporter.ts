@@ -235,14 +235,7 @@ async function tryFastExport(
   duration: number,
   tempDir: string,
 ): Promise<string | null> {
-  // Only works when ALL placements have pre-computed motion track data
-  const allHaveMotion = placements.every(p => p.motionTrackData?.transforms?.length);
-  if (!allHaveMotion) {
-    console.log(`[VideoExporter] Fast path unavailable — missing motion track data`);
-    return null;
-  }
-
-  console.log(`[VideoExporter] Using FAST export path (single FFmpeg overlay command)`);
+  console.log(`[VideoExporter] Using FAST export path (static FFmpeg overlay)`);
   await storage.updateVideoExportProgress(exportId, 10);
 
   const { width, height } = await getVideoResolution(absoluteVideoPath);
@@ -254,7 +247,6 @@ async function tryFastExport(
 
   for (let pi = 0; pi < placements.length; pi++) {
     const placement = placements[pi];
-    const mtd = placement.motionTrackData!;
 
     // Load product image
     let imageBuffer: Buffer | null = null;
@@ -290,37 +282,62 @@ async function tryFastExport(
     const imgW = imgMeta.width || 100;
     const imgH = imgMeta.height || 100;
 
-    // Get median bbox from motion data
-    const validPositions = mtd.transforms.filter((t): t is NonNullable<typeof t> => t !== null);
-    if (validPositions.length === 0) continue;
+    // Get position: use motion data median if available, otherwise client keyframe bbox
+    let bboxX: number, bboxY: number, bboxW: number, bboxH: number;
 
-    const sortedWs = validPositions.map(p => p.w).sort((a, b) => a - b);
-    const sortedHs = validPositions.map(p => p.h).sort((a, b) => a - b);
-    const sortedXs = validPositions.map(p => p.x).sort((a, b) => a - b);
-    const sortedYs = validPositions.map(p => p.y).sort((a, b) => a - b);
+    if (placement.motionTrackData?.transforms?.length) {
+      // Motion data available — use median position
+      const validPositions = placement.motionTrackData.transforms.filter(
+        (t): t is NonNullable<typeof t> => t !== null
+      );
+      if (validPositions.length > 0) {
+        const sortedXs = validPositions.map(p => p.x).sort((a, b) => a - b);
+        const sortedYs = validPositions.map(p => p.y).sort((a, b) => a - b);
+        const sortedWs = validPositions.map(p => p.w).sort((a, b) => a - b);
+        const sortedHs = validPositions.map(p => p.h).sort((a, b) => a - b);
+        // Motion data is 0-1 normalized
+        bboxX = sortedXs[Math.floor(sortedXs.length / 2)] * width;
+        bboxY = sortedYs[Math.floor(sortedYs.length / 2)] * height;
+        bboxW = sortedWs[Math.floor(sortedWs.length / 2)] * width;
+        bboxH = sortedHs[Math.floor(sortedHs.length / 2)] * height;
+        console.log(`[VideoExporter] Placement ${pi}: using motion data median position`);
+      } else {
+        // Fallback to keyframes
+        const kf = placement.keyframes[0]?.bbox || { x: 10, y: 10, w: 20, h: 20 };
+        // Client keyframes are 0-100 percentage
+        bboxX = (kf.x / 100) * width;
+        bboxY = (kf.y / 100) * height;
+        bboxW = (kf.w / 100) * width;
+        bboxH = (kf.h / 100) * height;
+      }
+    } else {
+      // No motion data — use client-sent keyframe (surface bounding box)
+      const kf = placement.keyframes[0]?.bbox || { x: 10, y: 10, w: 20, h: 20 };
+      // Client keyframes are 0-100 percentage
+      bboxX = (kf.x / 100) * width;
+      bboxY = (kf.y / 100) * height;
+      bboxW = (kf.w / 100) * width;
+      bboxH = (kf.h / 100) * height;
+      console.log(`[VideoExporter] Placement ${pi}: using client keyframe position (no motion data)`);
+    }
 
-    const medW = sortedWs[Math.floor(sortedWs.length / 2)] * width;
-    const medH = sortedHs[Math.floor(sortedHs.length / 2)] * height;
-    const medX = sortedXs[Math.floor(sortedXs.length / 2)] * width;
-    const medY = sortedYs[Math.floor(sortedYs.length / 2)] * height;
-
-    // Fit product to bbox
+    // Fit product to bbox (same logic as preview)
     const prodAspect = placement.productAspectRatio || (imgW / imgH);
-    const boxAspect = medW / medH;
+    const boxAspect = bboxW / bboxH;
 
     let drawWidth: number, drawHeight: number;
     if (prodAspect > boxAspect) {
-      drawWidth = medW * placement.transform.scale;
-      drawHeight = (medW / prodAspect) * placement.transform.scale;
+      drawWidth = bboxW * placement.transform.scale;
+      drawHeight = (bboxW / prodAspect) * placement.transform.scale;
     } else {
-      drawHeight = medH * placement.transform.scale;
-      drawWidth = (medH * prodAspect) * placement.transform.scale;
+      drawHeight = bboxH * placement.transform.scale;
+      drawWidth = (bboxH * prodAspect) * placement.transform.scale;
     }
 
     const finalW = Math.max(1, Math.round(drawWidth));
     const finalH = Math.max(1, Math.round(drawHeight));
 
-    // Pre-render product with all transforms
+    // Pre-render product with all transforms applied ONCE
     let product = sharp(imageBuffer)
       .resize(finalW, finalH, { fit: "fill", background: { r: 0, g: 0, b: 0, alpha: 0 } });
 
@@ -350,13 +367,13 @@ async function tryFastExport(
     await product.ensureAlpha().png().toFile(overlayPath);
     overlayPaths.push(overlayPath);
 
-    // Calculate static overlay position (median of all motion data positions)
+    // Calculate fixed overlay position
     const renderedMeta = await sharp(overlayPath).metadata();
     const renderedW = renderedMeta.width || finalW;
     const renderedH = renderedMeta.height || finalH;
 
-    const centerX = medX + medW / 2 + placement.transform.offsetX * scaleX;
-    const centerY = medY + medH / 2 + placement.transform.offsetY * scaleY;
+    const centerX = bboxX + bboxW / 2 + placement.transform.offsetX * scaleX;
+    const centerY = bboxY + bboxH / 2 + placement.transform.offsetY * scaleY;
     const left = Math.max(0, Math.round(centerX - renderedW / 2));
     const top = Math.max(0, Math.round(centerY - renderedH / 2));
 
