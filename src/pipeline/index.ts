@@ -57,6 +57,7 @@ export async function runPipeline(
   try {
     // ─── Stage 1: Parse document ─────────────────────────
     logStage("parsing", 0);
+    console.log(`[Pipeline] Parsing ${documentType} document (${documentBuffer.length} bytes)...`);
 
     let parsedDoc: ParsedDocument;
     if (documentType === "pdf") {
