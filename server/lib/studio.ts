@@ -9,6 +9,7 @@ import { storage } from "../storage";
 import { db } from "../db";
 import { users } from "@shared/models/auth";
 import { eq } from "drizzle-orm";
+import { runPipeline } from "../../studio-pipeline/src/pipeline/index.js";
 
 // Multer setup for file uploads (memory storage — buffer available as req.file.buffer)
 const upload = multer({
@@ -663,10 +664,7 @@ export function registerStudioRoutes(app: Express) {
     voiceId: string | null
   ) {
     try {
-      // Dynamically import the pipeline (it lives in studio-pipeline/)
-      console.log(`[Studio] Video ${videoId}: importing pipeline module...`);
-      const { runPipeline } = await import("../../studio-pipeline/src/pipeline/index.js");
-      console.log(`[Studio] Video ${videoId}: pipeline module loaded, starting...`);
+      console.log(`[Studio] Video ${videoId}: starting pipeline...`);
 
       // Set voice ID env var if provided (pipeline reads from env)
       if (voiceId) {
