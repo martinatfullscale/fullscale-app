@@ -36,6 +36,7 @@ import FullScaleCreates from "@/pages/FullScaleCreates";
 import StudioUpload from "@/pages/StudioUpload";
 import FullScaleStudio from "@/pages/FullScaleStudio";
 import StudioPricing from "@/pages/StudioPricing";
+import StudioLibrary from "@/pages/StudioLibrary";
 
 interface AuthStatusResponse {
   authenticated: boolean;
@@ -156,6 +157,7 @@ function Router() {
         <Route path="/studio" component={FullScaleStudio} />
         <Route path="/studio/pricing" component={StudioPricing} />
         <Route path="/studio/upload" component={StudioUpload} />
+        <Route path="/studio/library" component={StudioLibrary} />
         <Route path="/creates" component={FullScaleCreates} />
         <Route path="/about" component={ComingSoon} />
         <Route path="/waitlist" component={WaitlistPage} />

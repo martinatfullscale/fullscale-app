@@ -330,6 +330,12 @@ export default function StudioUpload() {
           </a>
           <div className="flex items-center gap-3">
             <a
+              href="/studio/library"
+              className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+            >
+              My Videos
+            </a>
+            <a
               href="/studio/pricing"
               className="text-sm text-muted-foreground hover:text-foreground transition-colors"
             >
@@ -596,6 +602,14 @@ export default function StudioUpload() {
                       >
                         Create Another Video
                       </Button>
+                      <a href="/studio/library" className="block">
+                        <Button
+                          variant="ghost"
+                          className="w-full text-xs text-muted-foreground"
+                        >
+                          View All Videos →
+                        </Button>
+                      </a>
                     </motion.div>
                   ) : videoStatus.status === "failed" ? (
                     /* ── Failed ── */
