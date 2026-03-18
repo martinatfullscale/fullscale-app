@@ -1,5 +1,10 @@
 import fs from "fs";
 import path from "path";
+import os from "os";
+import { execFile } from "child_process";
+import { promisify } from "util";
+
+const execFileAsync = promisify(execFile);
 
 export interface ParsedPage {
   pageNumber: number;
@@ -15,118 +20,55 @@ export interface ParsedDocument {
 }
 
 /**
- * Wrap a promise with a timeout.
- */
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
-    promise.then(
-      (val) => { clearTimeout(timer); resolve(val); },
-      (err) => { clearTimeout(timer); reject(err); },
-    );
-  });
-}
-
-/**
- * Load pdf-parse safely, bypassing esbuild's CJS→ESM interop.
- *
- * Problem: esbuild bundles the server as CJS (dist/index.cjs) and marks
- * pdf-parse as external. When the bundled code does `import("pdf-parse")`,
- * esbuild wraps it with __toESM() which creates a proxy where .default
- * is undefined — because pdf-parse uses `module.exports = fn` with no
- * .default. This causes "e is not a function" at runtime.
- *
- * Solution: Use `new Function("return require")()` to get the raw Node.js
- * require function that esbuild cannot statically analyze or transform.
- */
-let _pdfParse: ((buf: Buffer, opts?: any) => Promise<any>) | null = null;
-
-/**
- * Get the real Node.js require function, bypassing esbuild's static analysis.
- *
- * In esbuild CJS output, `require` exists as a module-scoped variable.
- * - `new Function("return require")()` FAILS because require isn't global
- * - `eval("require")` WORKS because eval runs in the current scope
- * - esbuild cannot analyze eval string contents, so it won't transform it
- */
-function getRawRequire(): NodeRequire | null {
-  try {
-    // eslint-disable-next-line no-eval
-    return eval("typeof require !== 'undefined' ? require : null");
-  } catch {
-    return null;
-  }
-}
-
-async function loadPdfParse() {
-  if (_pdfParse) return _pdfParse;
-
-  const rawRequire = getRawRequire();
-
-  // Strategy 1: eval-based require (bypasses esbuild's __toESM wrapper)
-  if (rawRequire) {
-    try {
-      const mod = rawRequire("pdf-parse");
-      if (typeof mod === "function") {
-        _pdfParse = mod;
-        console.log("[Parser] pdf-parse loaded via eval require() — v1 API (function)");
-        return _pdfParse;
-      }
-      // v2 pdf-parse has a different API — check for .default or .PdfParse
-      if (mod && typeof mod.default === "function") {
-        _pdfParse = mod.default;
-        console.log("[Parser] pdf-parse loaded via eval require() — v2 API (.default)");
-        return _pdfParse;
-      }
-      console.log("[Parser] Strategy 1: require returned:", typeof mod, "keys:", mod ? Object.keys(mod).slice(0, 10) : "null");
-    } catch (err: any) {
-      console.log("[Parser] Strategy 1 (eval require) failed:", err.message);
-    }
-  } else {
-    console.log("[Parser] Strategy 1 skipped: require not available in scope");
-  }
-
-  // Strategy 2: Dynamic import with manual unwrapping of __toESM
-  try {
-    const mod: any = await import("pdf-parse");
-    const fn = typeof mod === "function" ? mod
-      : typeof mod.default === "function" ? mod.default
-      : typeof mod.default?.default === "function" ? mod.default.default
-      : null;
-    if (fn) {
-      _pdfParse = fn;
-      console.log("[Parser] pdf-parse loaded via dynamic import");
-      return _pdfParse!;
-    }
-    throw new Error(`Module shape: type=${typeof mod}, keys=[${Object.keys(mod)}], default type=${typeof mod.default}`);
-  } catch (err: any) {
-    console.log("[Parser] Strategy 2 (dynamic import) failed:", err.message);
-  }
-
-  throw new Error("All pdf-parse loading strategies failed — check that pdf-parse is installed");
-}
-
-/**
  * Parse a PDF buffer into structured document pages.
- * Uses pdf-parse to extract text, then splits into per-page chunks.
+ *
+ * Uses `pdftotext` (from poppler-utils) — a system binary that avoids all
+ * esbuild/CJS/ESM module-loading headaches. Falls back to raw text extraction
+ * if pdftotext is unavailable.
  */
 export async function parsePDF(buffer: Buffer): Promise<ParsedDocument> {
   console.log(`[Parser] Starting PDF parse (${(buffer.length / 1024).toFixed(1)} KB)...`);
 
-  const pdfParse = await loadPdfParse();
+  // Write buffer to a temp file (pdftotext needs a file path)
+  const tmpDir = path.join(os.tmpdir(), "studio-parser");
+  fs.mkdirSync(tmpDir, { recursive: true });
+  const tmpPdf = path.join(tmpDir, `input-${Date.now()}.pdf`);
+  fs.writeFileSync(tmpPdf, buffer);
 
-  const data = await withTimeout(
-    pdfParse(buffer, { max: 0 }),
-    60_000,
-    "PDF parsing"
-  );
+  let fullText: string;
+  let pageCount: number;
 
-  console.log(`[Parser] PDF parsed: ${data.numpages} pages, ${data.text.length} chars`);
+  try {
+    // Get page count via pdfinfo
+    const { stdout: infoOut } = await execFileAsync("pdfinfo", [tmpPdf]);
+    const pagesMatch = infoOut.match(/Pages:\s+(\d+)/);
+    pageCount = pagesMatch ? parseInt(pagesMatch[1], 10) : 1;
 
-  const pageCount = data.numpages;
-  const fullText = data.text;
+    // Extract text with page breaks (form-feed characters between pages)
+    const { stdout } = await execFileAsync("pdftotext", ["-layout", tmpPdf, "-"]);
+    fullText = stdout;
 
-  // pdf-parse concatenates all pages. Try to split by page breaks or heuristics.
+    console.log(`[Parser] pdftotext extracted ${pageCount} pages, ${fullText.length} chars`);
+  } catch (err: any) {
+    console.warn(`[Parser] pdftotext failed (${err.message}), trying pdftotext without -layout...`);
+    try {
+      const { stdout } = await execFileAsync("pdftotext", [tmpPdf, "-"]);
+      fullText = stdout;
+      pageCount = (fullText.match(/\f/g) || []).length + 1;
+      console.log(`[Parser] pdftotext (no layout) extracted ${pageCount} pages, ${fullText.length} chars`);
+    } catch (err2: any) {
+      console.error(`[Parser] pdftotext not available: ${err2.message}`);
+      throw new Error(
+        "PDF text extraction failed — pdftotext (poppler-utils) is not installed. " +
+        "Add poppler_utils to .replit nix packages."
+      );
+    }
+  } finally {
+    // Clean up temp file
+    try { fs.unlinkSync(tmpPdf); } catch {}
+  }
+
+  // Split into pages
   const pages = splitIntoPages(fullText, pageCount);
 
   // Derive document title from first meaningful line
@@ -262,7 +204,7 @@ function extractTextFromXml(xml: string): string[] {
  * Uses form feed characters (\f) if present, otherwise splits evenly.
  */
 export function splitIntoPages(text: string, pageCount: number): ParsedPage[] {
-  // pdf-parse often inserts form feeds between pages
+  // pdftotext inserts form feeds between pages
   const formFeedPages = text.split("\f").filter((p) => p.trim().length > 0);
 
   let rawPages: string[];
