@@ -29,31 +29,71 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 }
 
 /**
+ * Load pdf-parse safely.
+ *
+ * pdf-parse uses `module.exports = fn` (CommonJS). When esbuild bundles
+ * the server as CJS with pdf-parse as external, `import X from "pdf-parse"`
+ * may generate `(0, X.default)(buffer)` which fails because there's no
+ * .default property — resulting in "e is not a function" at runtime.
+ *
+ * Additionally, pdf-parse's main index.js tries to load a test PDF at
+ * require time which can hang in bundled environments.
+ *
+ * Solution: try multiple loading strategies in order of reliability.
+ */
+let _pdfParse: ((buf: Buffer, opts?: any) => Promise<any>) | null = null;
+async function loadPdfParse() {
+  if (_pdfParse) return _pdfParse;
+
+  // Strategy 1: Use createRequire to load the inner module directly
+  // (bypasses the test-PDF-loading main entry point)
+  try {
+    const _require = createRequire(
+      typeof __filename !== "undefined" ? __filename : import.meta.url
+    );
+    _pdfParse = _require("pdf-parse/lib/pdf-parse.js");
+    console.log("[Parser] pdf-parse loaded via require(pdf-parse/lib/pdf-parse.js)");
+    return _pdfParse!;
+  } catch (err: any) {
+    console.log("[Parser] Strategy 1 (require inner) failed:", err.message);
+  }
+
+  // Strategy 2: Use createRequire to load the main module
+  try {
+    const _require = createRequire(
+      typeof __filename !== "undefined" ? __filename : import.meta.url
+    );
+    _pdfParse = _require("pdf-parse");
+    console.log("[Parser] pdf-parse loaded via require(pdf-parse)");
+    return _pdfParse!;
+  } catch (err: any) {
+    console.log("[Parser] Strategy 2 (require main) failed:", err.message);
+  }
+
+  // Strategy 3: Dynamic import with CJS interop
+  try {
+    const mod: any = await import("pdf-parse");
+    _pdfParse = typeof mod === "function" ? mod : (mod.default || mod);
+    if (typeof _pdfParse !== "function") {
+      throw new Error(`Not a function after import (type: ${typeof _pdfParse}, keys: ${Object.keys(mod).join(",")})`);
+    }
+    console.log("[Parser] pdf-parse loaded via dynamic import");
+    return _pdfParse!;
+  } catch (err: any) {
+    console.log("[Parser] Strategy 3 (dynamic import) failed:", err.message);
+  }
+
+  throw new Error("All pdf-parse loading strategies failed");
+}
+
+/**
  * Parse a PDF buffer into structured document pages.
  * Uses pdf-parse to extract text, then splits into per-page chunks.
- *
- * NOTE: pdf-parse default export hangs in esbuild-bundled environments
- * because it tries to load a test PDF at require time. We import the
- * inner implementation directly via require() to bypass that.
  */
 export async function parsePDF(buffer: Buffer): Promise<ParsedDocument> {
-  console.log("[Parser] Starting PDF parse...");
+  console.log(`[Parser] Starting PDF parse (${(buffer.length / 1024).toFixed(1)} KB)...`);
 
-  // Use require() to load pdf-parse's inner module, bypassing the
-  // default entry point which tries to load a test PDF and hangs in
-  // bundled environments.
-  let pdfParse: (buffer: Buffer, options?: any) => Promise<any>;
-  try {
-    const require = createRequire(import.meta.url);
-    pdfParse = require("pdf-parse/lib/pdf-parse.js");
-    console.log("[Parser] pdf-parse/lib/pdf-parse.js loaded via require()");
-  } catch (requireErr: any) {
-    console.log("[Parser] require() failed, trying dynamic import fallback:", requireErr.message);
-    // Fallback: try the default import (may work in non-bundled env)
-    const mod = await import("pdf-parse");
-    pdfParse = mod.default || mod;
-    console.log("[Parser] pdf-parse loaded via dynamic import");
-  }
+  const pdfParse = await loadPdfParse();
 
   const data = await withTimeout(
     pdfParse(buffer, { max: 0 }),
@@ -156,13 +196,9 @@ function extractTextFromXml(xml: string): string[] {
   // Match all <a:t>...</a:t> text runs
   const regex = /<a:t>([\s\S]*?)<\/a:t>/g;
   let match;
-  let currentParagraph = "";
-  let lastIndex = 0;
 
   // Also track paragraph breaks via <a:p> elements
-  const paragraphs: string[] = [];
   const pRegex = /<a:p[\s>]/g;
-  const pEndRegex = /<\/a:p>/g;
 
   // Simple approach: collect all text runs, group by paragraph
   const fullMatches: Array<{ text: string; index: number }> = [];
