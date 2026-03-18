@@ -9,6 +9,10 @@ export interface AssemblyScene {
   durationSeconds: number;
 }
 
+// Timeout per scene clip (3 minutes) and concat (5 minutes)
+const SCENE_TIMEOUT_MS = 3 * 60 * 1000;
+const CONCAT_TIMEOUT_MS = 5 * 60 * 1000;
+
 /**
  * Assemble a final MP4 video from scene images and audio tracks.
  *
@@ -37,6 +41,7 @@ export async function assembleVideo(
     console.log(`[Assembler] Encoding scene ${i + 1}/${scenes.length} (${scene.durationSeconds}s)...`);
 
     await createSceneClip(scene, clipPath);
+    console.log(`[Assembler] Scene ${i + 1}/${scenes.length} done.`);
   }
 
   // Step 2: Concatenate all scene clips
@@ -48,6 +53,8 @@ export async function assembleVideo(
   } else {
     await concatClips(sceneClips, outputPath, outputDir);
   }
+
+  console.log(`[Assembler] Concatenation done.`);
 
   // Step 3: Clean up temp scene clips
   for (const clip of sceneClips) {
@@ -76,6 +83,63 @@ function createSceneClip(scene: AssemblyScene, outputPath: string): Promise<void
 }
 
 /**
+ * Run an ffmpeg command with a timeout. Kills the process if it exceeds the limit.
+ */
+function runWithTimeout(cmd: ffmpeg.FfmpegCommand, timeoutMs: number, label: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let ffmpegProcess: any = null;
+
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        console.error(`[Assembler] TIMEOUT: ${label} exceeded ${timeoutMs / 1000}s`);
+        try {
+          if (ffmpegProcess) ffmpegProcess.kill("SIGKILL");
+          else cmd.kill("SIGKILL");
+        } catch {}
+        reject(new Error(`FFmpeg timeout: ${label} exceeded ${timeoutMs / 1000}s limit`));
+      }
+    }, timeoutMs);
+
+    cmd
+      .on("start", (commandLine: string) => {
+        console.log(`[Assembler] ${label} cmd: ${commandLine.substring(0, 200)}...`);
+      })
+      .on("end", () => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          resolve();
+        }
+      })
+      .on("error", (err: Error) => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          reject(new Error(`FFmpeg ${label} failed: ${err.message}`));
+        }
+      })
+      .on("progress", (progress: any) => {
+        if (progress?.timemark) {
+          console.log(`[Assembler] ${label} progress: ${progress.timemark}`);
+        }
+      });
+
+    // Capture the spawned process
+    try {
+      ffmpegProcess = cmd.run();
+    } catch (err: any) {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        reject(new Error(`FFmpeg ${label} spawn failed: ${err.message}`));
+      }
+    }
+  });
+}
+
+/**
  * Loop a static image for the scene duration with audio overlay (MVP).
  */
 function createImageSceneClip(
@@ -84,26 +148,23 @@ function createImageSceneClip(
   durationSeconds: number,
   outputPath: string
 ): Promise<void> {
-  return new Promise((resolve, reject) => {
-    ffmpeg()
-      .input(imageFile)
-      .inputOptions(["-loop", "1", "-framerate", "24"])
-      .input(audioFile)
-      .outputOptions([
-        "-c:v", "libx264",
-        "-tune", "stillimage",
-        "-c:a", "aac",
-        "-b:a", "192k",
-        "-pix_fmt", "yuv420p",
-        "-shortest",
-        "-t", String(durationSeconds),
-        "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black",
-      ])
-      .output(outputPath)
-      .on("end", () => resolve())
-      .on("error", (err) => reject(new Error(`FFmpeg image scene encode failed: ${err.message}`)))
-      .run();
-  });
+  const cmd = ffmpeg()
+    .input(imageFile)
+    .inputOptions(["-loop", "1", "-framerate", "24"])
+    .input(audioFile)
+    .outputOptions([
+      "-c:v", "libx264",
+      "-tune", "stillimage",
+      "-c:a", "aac",
+      "-b:a", "192k",
+      "-pix_fmt", "yuv420p",
+      "-shortest",
+      "-t", String(durationSeconds),
+      "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black",
+    ])
+    .output(outputPath);
+
+  return runWithTimeout(cmd, SCENE_TIMEOUT_MS, `image-scene`);
 }
 
 /**
@@ -116,25 +177,22 @@ function createVideoSceneClip(
   durationSeconds: number,
   outputPath: string
 ): Promise<void> {
-  return new Promise((resolve, reject) => {
-    ffmpeg()
-      .input(videoFile)
-      .inputOptions(["-stream_loop", "-1"]) // Loop video indefinitely
-      .input(audioFile)
-      .outputOptions([
-        "-c:v", "libx264",
-        "-c:a", "aac",
-        "-b:a", "192k",
-        "-pix_fmt", "yuv420p",
-        "-shortest",
-        "-t", String(durationSeconds),
-        "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black",
-      ])
-      .output(outputPath)
-      .on("end", () => resolve())
-      .on("error", (err) => reject(new Error(`FFmpeg video scene encode failed: ${err.message}`)))
-      .run();
-  });
+  const cmd = ffmpeg()
+    .input(videoFile)
+    .inputOptions(["-stream_loop", "-1"]) // Loop video indefinitely
+    .input(audioFile)
+    .outputOptions([
+      "-c:v", "libx264",
+      "-c:a", "aac",
+      "-b:a", "192k",
+      "-pix_fmt", "yuv420p",
+      "-shortest",
+      "-t", String(durationSeconds),
+      "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black",
+    ])
+    .output(outputPath);
+
+  return runWithTimeout(cmd, SCENE_TIMEOUT_MS, `video-scene`);
 }
 
 /**
@@ -152,22 +210,19 @@ function concatClips(
     .join("\n");
   fs.writeFileSync(listPath, listContent);
 
-  return new Promise((resolve, reject) => {
-    ffmpeg()
-      .input(listPath)
-      .inputOptions([
-        "-f", "concat",
-        "-safe", "0",
-      ])
-      .outputOptions([
-        "-c:v", "libx264",
-        "-c:a", "aac",
-        "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart",
-      ])
-      .output(outputPath)
-      .on("end", () => resolve())
-      .on("error", (err) => reject(new Error(`FFmpeg concat failed: ${err.message}`)))
-      .run();
-  });
+  const cmd = ffmpeg()
+    .input(listPath)
+    .inputOptions([
+      "-f", "concat",
+      "-safe", "0",
+    ])
+    .outputOptions([
+      "-c:v", "libx264",
+      "-c:a", "aac",
+      "-pix_fmt", "yuv420p",
+      "-movflags", "+faststart",
+    ])
+    .output(outputPath);
+
+  return runWithTimeout(cmd, CONCAT_TIMEOUT_MS, `concat-${clipPaths.length}-clips`);
 }
