@@ -680,7 +680,7 @@ export function registerStudioRoutes(app: Express) {
     try {
       console.log(`[Studio] Video ${videoId}: loading pipeline module...`);
       const runPipeline = await loadPipeline();
-      console.log(`[Studio] Video ${videoId}: starting pipeline...`);
+      console.log(`[Studio] Video ${videoId}: pipeline loaded, starting...`);
 
       // Set voice ID env var if provided (pipeline reads from env)
       if (voiceId) {
