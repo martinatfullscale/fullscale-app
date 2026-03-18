@@ -41,33 +41,48 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
  */
 let _pdfParse: ((buf: Buffer, opts?: any) => Promise<any>) | null = null;
 
-// Get the real Node.js require, hidden from esbuild's static analysis
-const nodeRequire: NodeRequire = new Function("return typeof require !== 'undefined' ? require : null")();
+/**
+ * Get the real Node.js require function, bypassing esbuild's static analysis.
+ *
+ * In esbuild CJS output, `require` exists as a module-scoped variable.
+ * - `new Function("return require")()` FAILS because require isn't global
+ * - `eval("require")` WORKS because eval runs in the current scope
+ * - esbuild cannot analyze eval string contents, so it won't transform it
+ */
+function getRawRequire(): NodeRequire | null {
+  try {
+    // eslint-disable-next-line no-eval
+    return eval("typeof require !== 'undefined' ? require : null");
+  } catch {
+    return null;
+  }
+}
 
 async function loadPdfParse() {
   if (_pdfParse) return _pdfParse;
 
-  // Strategy 1: Raw require (bypasses esbuild completely)
-  if (nodeRequire) {
+  const rawRequire = getRawRequire();
+
+  // Strategy 1: eval-based require (bypasses esbuild's __toESM wrapper)
+  if (rawRequire) {
     try {
-      _pdfParse = nodeRequire("pdf-parse");
-      if (typeof _pdfParse !== "function") {
-        // Might be wrapped — unwrap
-        _pdfParse = (_pdfParse as any).default || _pdfParse;
-      }
-      if (typeof _pdfParse === "function") {
-        console.log("[Parser] pdf-parse loaded via raw require()");
+      const mod = rawRequire("pdf-parse");
+      if (typeof mod === "function") {
+        _pdfParse = mod;
+        console.log("[Parser] pdf-parse loaded via eval require()");
         return _pdfParse;
       }
+      console.log("[Parser] Strategy 1: require returned non-function:", typeof mod);
     } catch (err: any) {
-      console.log("[Parser] Strategy 1 (raw require) failed:", err.message);
+      console.log("[Parser] Strategy 1 (eval require) failed:", err.message);
     }
+  } else {
+    console.log("[Parser] Strategy 1 skipped: require not available");
   }
 
-  // Strategy 2: Dynamic import with manual unwrapping
+  // Strategy 2: Dynamic import with manual unwrapping of __toESM
   try {
     const mod: any = await import("pdf-parse");
-    // Walk the module to find the actual function
     const fn = typeof mod === "function" ? mod
       : typeof mod.default === "function" ? mod.default
       : typeof mod.default?.default === "function" ? mod.default.default
@@ -77,7 +92,7 @@ async function loadPdfParse() {
       console.log("[Parser] pdf-parse loaded via dynamic import");
       return _pdfParse!;
     }
-    throw new Error(`Could not find function in module (type: ${typeof mod}, keys: ${Object.keys(mod)}, default type: ${typeof mod.default})`);
+    throw new Error(`Module shape: type=${typeof mod}, keys=[${Object.keys(mod)}], default type=${typeof mod.default}`);
   } catch (err: any) {
     console.log("[Parser] Strategy 2 (dynamic import) failed:", err.message);
   }
