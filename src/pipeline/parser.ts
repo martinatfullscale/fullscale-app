@@ -1,6 +1,5 @@
 import fs from "fs";
 import path from "path";
-import { createRequire } from "module";
 
 export interface ParsedPage {
   pageNumber: number;
@@ -29,61 +28,61 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 }
 
 /**
- * Load pdf-parse safely.
+ * Load pdf-parse safely, bypassing esbuild's CJS→ESM interop.
  *
- * pdf-parse uses `module.exports = fn` (CommonJS). When esbuild bundles
- * the server as CJS with pdf-parse as external, `import X from "pdf-parse"`
- * may generate `(0, X.default)(buffer)` which fails because there's no
- * .default property — resulting in "e is not a function" at runtime.
+ * Problem: esbuild bundles the server as CJS (dist/index.cjs) and marks
+ * pdf-parse as external. When the bundled code does `import("pdf-parse")`,
+ * esbuild wraps it with __toESM() which creates a proxy where .default
+ * is undefined — because pdf-parse uses `module.exports = fn` with no
+ * .default. This causes "e is not a function" at runtime.
  *
- * Additionally, pdf-parse's main index.js tries to load a test PDF at
- * require time which can hang in bundled environments.
- *
- * Solution: try multiple loading strategies in order of reliability.
+ * Solution: Use `new Function("return require")()` to get the raw Node.js
+ * require function that esbuild cannot statically analyze or transform.
  */
 let _pdfParse: ((buf: Buffer, opts?: any) => Promise<any>) | null = null;
+
+// Get the real Node.js require, hidden from esbuild's static analysis
+const nodeRequire: NodeRequire = new Function("return typeof require !== 'undefined' ? require : null")();
+
 async function loadPdfParse() {
   if (_pdfParse) return _pdfParse;
 
-  // Strategy 1: Use createRequire to load the inner module directly
-  // (bypasses the test-PDF-loading main entry point)
-  try {
-    const _require = createRequire(
-      typeof __filename !== "undefined" ? __filename : import.meta.url
-    );
-    _pdfParse = _require("pdf-parse/lib/pdf-parse.js");
-    console.log("[Parser] pdf-parse loaded via require(pdf-parse/lib/pdf-parse.js)");
-    return _pdfParse!;
-  } catch (err: any) {
-    console.log("[Parser] Strategy 1 (require inner) failed:", err.message);
+  // Strategy 1: Raw require (bypasses esbuild completely)
+  if (nodeRequire) {
+    try {
+      _pdfParse = nodeRequire("pdf-parse");
+      if (typeof _pdfParse !== "function") {
+        // Might be wrapped — unwrap
+        _pdfParse = (_pdfParse as any).default || _pdfParse;
+      }
+      if (typeof _pdfParse === "function") {
+        console.log("[Parser] pdf-parse loaded via raw require()");
+        return _pdfParse;
+      }
+    } catch (err: any) {
+      console.log("[Parser] Strategy 1 (raw require) failed:", err.message);
+    }
   }
 
-  // Strategy 2: Use createRequire to load the main module
-  try {
-    const _require = createRequire(
-      typeof __filename !== "undefined" ? __filename : import.meta.url
-    );
-    _pdfParse = _require("pdf-parse");
-    console.log("[Parser] pdf-parse loaded via require(pdf-parse)");
-    return _pdfParse!;
-  } catch (err: any) {
-    console.log("[Parser] Strategy 2 (require main) failed:", err.message);
-  }
-
-  // Strategy 3: Dynamic import with CJS interop
+  // Strategy 2: Dynamic import with manual unwrapping
   try {
     const mod: any = await import("pdf-parse");
-    _pdfParse = typeof mod === "function" ? mod : (mod.default || mod);
-    if (typeof _pdfParse !== "function") {
-      throw new Error(`Not a function after import (type: ${typeof _pdfParse}, keys: ${Object.keys(mod).join(",")})`);
+    // Walk the module to find the actual function
+    const fn = typeof mod === "function" ? mod
+      : typeof mod.default === "function" ? mod.default
+      : typeof mod.default?.default === "function" ? mod.default.default
+      : null;
+    if (fn) {
+      _pdfParse = fn;
+      console.log("[Parser] pdf-parse loaded via dynamic import");
+      return _pdfParse!;
     }
-    console.log("[Parser] pdf-parse loaded via dynamic import");
-    return _pdfParse!;
+    throw new Error(`Could not find function in module (type: ${typeof mod}, keys: ${Object.keys(mod)}, default type: ${typeof mod.default})`);
   } catch (err: any) {
-    console.log("[Parser] Strategy 3 (dynamic import) failed:", err.message);
+    console.log("[Parser] Strategy 2 (dynamic import) failed:", err.message);
   }
 
-  throw new Error("All pdf-parse loading strategies failed");
+  throw new Error("All pdf-parse loading strategies failed — check that pdf-parse is installed");
 }
 
 /**
