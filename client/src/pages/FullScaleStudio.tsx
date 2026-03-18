@@ -82,10 +82,17 @@ export default function FullScaleStudio() {
           <a href="/">
             <img src={logoUrl} alt="FullScale" className="h-7" />
           </a>
-          <Badge variant="outline" className="text-xs font-medium">
-            <Wand2 className="w-3 h-3 mr-1" />
-            Studio
-          </Badge>
+          <div className="flex items-center gap-4">
+            <a href="/studio/pricing" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
+              Pricing
+            </a>
+            <a href="/auth?redirect=/studio/upload">
+              <Button size="sm" variant="outline" className="gap-1.5 text-xs">
+                <Wand2 className="w-3 h-3" />
+                Sign In to Studio
+              </Button>
+            </a>
+          </div>
         </div>
       </header>
 
@@ -117,7 +124,7 @@ export default function FullScaleStudio() {
               delivers a polished presentation video — automatically.
             </p>
             <div className="flex items-center justify-center gap-4">
-              <a href="/studio/pricing">
+              <a href="/studio/upload">
                 <Button size="lg" className="gap-2 bg-purple-600 hover:bg-purple-500">
                   <Upload className="w-4 h-4" />
                   Get Started — It's Free
@@ -262,14 +269,19 @@ export default function FullScaleStudio() {
               video is free.
             </p>
             <div className="flex items-center justify-center gap-4 flex-wrap">
-              <a href="/studio/pricing">
+              <a href="/studio/upload">
                 <Button size="lg" className="gap-2 bg-purple-600 hover:bg-purple-500">
                   <Upload className="w-4 h-4" />
-                  View Pricing & Get Started
+                  Start Creating
+                </Button>
+              </a>
+              <a href="/studio/pricing">
+                <Button size="lg" variant="outline" className="gap-2 border-purple-500/30 text-purple-300 hover:bg-purple-500/10">
+                  View Pricing
                 </Button>
               </a>
               <a href="/content">
-                <Button size="lg" variant="outline" className="gap-2">
+                <Button size="lg" variant="ghost" className="gap-2 text-white/60 hover:text-white hover:bg-white/5">
                   Explore Creates
                   <ArrowRight className="w-4 h-4" />
                 </Button>
