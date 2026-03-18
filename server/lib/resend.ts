@@ -200,6 +200,117 @@ export async function sendCohortInviteEmail(toEmail: string, firstName: string) 
   }
 }
 
+// Send Studio video completion email
+export async function sendStudioVideoReadyEmail(
+  toEmail: string,
+  videoTitle: string,
+  videoId: number,
+  sceneCount: number,
+  durationSeconds: number
+) {
+  try {
+    const { client, fromEmail } = await getResendClient();
+    const durationMin = Math.max(1, Math.round(durationSeconds / 60));
+    const videoUrl = `https://gofullscale.co/studio/upload`;
+
+    const result = await client.emails.send({
+      from: fromEmail || 'FullScale Studio <noreply@gofullscale.co>',
+      to: toEmail,
+      subject: `Your video "${videoTitle}" is ready!`,
+      html: `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin: 0; padding: 0; background-color: #030712; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #030712;">
+    <tr>
+      <td align="center" style="padding: 40px 20px;">
+        <table role="presentation" width="600" cellspacing="0" cellpadding="0" style="background-color: #0a1628; border-radius: 12px; border: 1px solid #1e293b;">
+
+          <!-- Header -->
+          <tr>
+            <td style="padding: 30px 40px; border-bottom: 1px solid #1e293b; text-align: center;">
+              <h1 style="margin: 0; font-size: 32px; font-weight: 700; letter-spacing: -0.5px;">
+                <span style="color: #ffffff;">Full</span><span style="color: #D90429;">Scale</span>
+              </h1>
+              <p style="margin: 8px 0 0; color: #64748b; font-size: 13px; text-transform: uppercase; letter-spacing: 2px;">Studio</p>
+            </td>
+          </tr>
+
+          <!-- Body -->
+          <tr>
+            <td style="padding: 40px;">
+              <div style="text-align: center; margin-bottom: 30px;">
+                <div style="display: inline-block; width: 60px; height: 60px; background-color: rgba(34, 197, 94, 0.1); border-radius: 50%; line-height: 60px; font-size: 28px;">
+                  &#10003;
+                </div>
+              </div>
+
+              <h2 style="margin: 0 0 15px; color: #ffffff; font-size: 22px; font-weight: 600; text-align: center;">
+                Your Video is Ready!
+              </h2>
+
+              <p style="margin: 0 0 25px; color: #94a3b8; font-size: 16px; line-height: 1.8; text-align: center;">
+                Your narrated video <strong style="color: #ffffff;">"${videoTitle}"</strong> has been generated and is ready to download.
+              </p>
+
+              <!-- Stats -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin: 0 0 30px;">
+                <tr>
+                  <td width="50%" style="padding: 14px 18px; background-color: #0f172a; border-radius: 8px 0 0 8px; text-align: center; border-right: 1px solid #1e293b;">
+                    <div style="color: #D90429; font-size: 24px; font-weight: 700;">${sceneCount}</div>
+                    <div style="color: #64748b; font-size: 12px; text-transform: uppercase; letter-spacing: 1px;">Scenes</div>
+                  </td>
+                  <td width="50%" style="padding: 14px 18px; background-color: #0f172a; border-radius: 0 8px 8px 0; text-align: center;">
+                    <div style="color: #D90429; font-size: 24px; font-weight: 700;">~${durationMin} min</div>
+                    <div style="color: #64748b; font-size: 12px; text-transform: uppercase; letter-spacing: 1px;">Duration</div>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- CTA Button -->
+              <div style="text-align: center; margin-bottom: 20px;">
+                <a href="${videoUrl}" style="display: inline-block; background-color: #7c3aed; color: #ffffff; padding: 14px 36px; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 16px;">
+                  Download Your Video
+                </a>
+              </div>
+
+              <p style="margin: 0; color: #64748b; font-size: 13px; text-align: center;">
+                You can also find your video in your Studio dashboard.
+              </p>
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="padding: 25px 40px; background-color: #030712; border-radius: 0 0 12px 12px; text-align: center; border-top: 1px solid #1e293b;">
+              <p style="margin: 0; color: #64748b; font-size: 13px;">
+                FullScale Studio — Turn Decks Into Videos<br/>
+                <a href="https://gofullscale.co" style="color: #D90429; text-decoration: none;">gofullscale.co</a>
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+      `
+    });
+
+    console.log('[Resend] Studio video ready email sent to:', toEmail, result);
+    return result;
+  } catch (error) {
+    console.error('[Resend] Failed to send studio video ready email:', error);
+    // Don't throw — email failure shouldn't break the pipeline
+  }
+}
+
 // Send notification to admin about new signup
 export async function sendAdminNotification(userData: {
   email: string;

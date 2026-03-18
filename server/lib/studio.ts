@@ -9,6 +9,7 @@ import { storage } from "../storage";
 import { db } from "../db";
 import { users } from "@shared/models/auth";
 import { eq } from "drizzle-orm";
+import { sendStudioVideoReadyEmail } from "./resend";
 // Lazy-loaded pipeline module (loaded on first use, not at startup)
 let _runPipeline: typeof import("../../studio-pipeline/src/pipeline/index.js").runPipeline | null = null;
 async function loadPipeline() {
@@ -658,7 +659,7 @@ export function registerStudioRoutes(app: Express) {
       });
 
       // ── Run pipeline in background (after response sent) ──
-      runPipelineInBackground(video.id, fileBuffer, documentType, visualTier, voiceId);
+      runPipelineInBackground(video.id, fileBuffer, documentType, visualTier, voiceId, email);
 
     } catch (err: any) {
       console.error("[Studio] /api/studio/generate error:", err);
@@ -675,7 +676,8 @@ export function registerStudioRoutes(app: Express) {
     fileBuffer: Buffer,
     documentType: "pdf" | "pptx",
     visualTier: "mvp" | "v1" | "v2",
-    voiceId: string | null
+    voiceId: string | null,
+    userEmail: string
   ) {
     try {
       console.log(`[Studio] Video ${videoId}: loading pipeline module...`);
@@ -726,6 +728,20 @@ export function registerStudioRoutes(app: Express) {
         sceneCount: result.metadata.sceneCount,
         progress: 100,
       });
+
+      // ── Send email notification ──
+      try {
+        await sendStudioVideoReadyEmail(
+          userEmail,
+          result.metadata.title || "Your Video",
+          videoId,
+          result.metadata.sceneCount,
+          result.metadata.estimatedDurationSeconds
+        );
+        console.log(`[Studio] Video ready email sent to ${userEmail}`);
+      } catch (emailErr: any) {
+        console.warn(`[Studio] Email notification failed (non-fatal): ${emailErr.message}`);
+      }
 
     } catch (err: any) {
       console.error(`[Studio] Pipeline failed for video ${videoId}:`, err.message);
