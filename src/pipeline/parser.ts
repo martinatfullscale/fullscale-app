@@ -69,15 +69,21 @@ async function loadPdfParse() {
       const mod = rawRequire("pdf-parse");
       if (typeof mod === "function") {
         _pdfParse = mod;
-        console.log("[Parser] pdf-parse loaded via eval require()");
+        console.log("[Parser] pdf-parse loaded via eval require() — v1 API (function)");
         return _pdfParse;
       }
-      console.log("[Parser] Strategy 1: require returned non-function:", typeof mod);
+      // v2 pdf-parse has a different API — check for .default or .PdfParse
+      if (mod && typeof mod.default === "function") {
+        _pdfParse = mod.default;
+        console.log("[Parser] pdf-parse loaded via eval require() — v2 API (.default)");
+        return _pdfParse;
+      }
+      console.log("[Parser] Strategy 1: require returned:", typeof mod, "keys:", mod ? Object.keys(mod).slice(0, 10) : "null");
     } catch (err: any) {
       console.log("[Parser] Strategy 1 (eval require) failed:", err.message);
     }
   } else {
-    console.log("[Parser] Strategy 1 skipped: require not available");
+    console.log("[Parser] Strategy 1 skipped: require not available in scope");
   }
 
   // Strategy 2: Dynamic import with manual unwrapping of __toESM
