@@ -720,7 +720,17 @@ export function registerStudioRoutes(app: Express) {
       });
 
       // ── Pipeline succeeded — update video record ──
-      console.log(`[Studio] Video ${videoId} complete: ${result.outputPath}`);
+      console.log(`[Studio] Video ${videoId} pipeline done. Output: ${result.outputPath}`);
+
+      // Verify the output file actually exists
+      const fs = await import("fs");
+      const fileExists = fs.existsSync(result.outputPath);
+      const fileSize = fileExists ? fs.statSync(result.outputPath).size : 0;
+      console.log(`[Studio] Video ${videoId} file exists: ${fileExists}, size: ${fileSize} bytes`);
+
+      if (!fileExists || fileSize === 0) {
+        throw new Error(`Pipeline reported success but output file missing or empty: ${result.outputPath}`);
+      }
 
       await storage.updateStudioVideoStatus(videoId, "completed", {
         outputUrl: result.outputPath,
@@ -728,6 +738,7 @@ export function registerStudioRoutes(app: Express) {
         sceneCount: result.metadata.sceneCount,
         progress: 100,
       });
+      console.log(`[Studio] Video ${videoId} status updated to COMPLETED`);
 
       // ── Send email notification ──
       try {
