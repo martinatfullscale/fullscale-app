@@ -111,19 +111,27 @@ export async function runPipeline(
 
     logStage("generating", 100);
 
-    // ─── Stage 4: Generate voice per scene ───────────────
+    // ─── Stage 4: Generate voice per scene (parallel, 3 at a time) ──
     logStage("adding-voice", 10);
 
     const audioDir = path.join(workDir, "audio");
-    const audioPaths: string[] = [];
+    const audioPaths: string[] = new Array(storyScript.scenes.length);
+    const CONCURRENCY = 3;
+    let completedVoice = 0;
 
-    for (let i = 0; i < storyScript.scenes.length; i++) {
-      const scene = storyScript.scenes[i];
-      const audioPath = await generateVoice(scene.narration, scene.sceneNumber, audioDir);
-      audioPaths.push(audioPath);
-
-      const progress = 10 + Math.round(((i + 1) / storyScript.scenes.length) * 80);
-      logStage("adding-voice", progress);
+    for (let batch = 0; batch < storyScript.scenes.length; batch += CONCURRENCY) {
+      const batchScenes = storyScript.scenes.slice(batch, batch + CONCURRENCY);
+      const batchPromises = batchScenes.map((scene, idx) => {
+        const globalIdx = batch + idx;
+        return generateVoice(scene.narration, scene.sceneNumber, audioDir)
+          .then((audioPath) => {
+            audioPaths[globalIdx] = audioPath;
+            completedVoice++;
+            const progress = 10 + Math.round((completedVoice / storyScript.scenes.length) * 80);
+            logStage("adding-voice", progress);
+          });
+      });
+      await Promise.all(batchPromises);
     }
 
     logStage("adding-voice", 100);
