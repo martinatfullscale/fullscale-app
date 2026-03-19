@@ -700,10 +700,15 @@ export function registerStudioRoutes(app: Express) {
         complete:      [100, 100],
       };
       let lastGlobalProgress = 0;
+      let pipelineComplete = false;
 
       const result = await runPipeline(fileBuffer, documentType, {
         visualTier,
         onStageChange: async (stage: string, progress: number) => {
+          // Skip progress updates after pipeline completes to avoid race condition
+          // where a late "processing" update overwrites the "completed" status
+          if (pipelineComplete || stage === "complete") return;
+
           const [rangeStart, rangeEnd] = stageWeights[stage] || [0, 100];
           const globalProgress = Math.round(rangeStart + (progress / 100) * (rangeEnd - rangeStart));
           // Never let progress go backward
@@ -719,6 +724,9 @@ export function registerStudioRoutes(app: Express) {
           }
         },
       });
+
+      // Prevent any late-arriving progress callbacks from overwriting completed status
+      pipelineComplete = true;
 
       // ── Pipeline succeeded — update video record ──
       console.log(`[Studio] Video ${videoId} pipeline done. Output: ${result.outputPath}`);
