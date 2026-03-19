@@ -156,6 +156,7 @@ function createImageSceneClip(
       "-c:v", "libx264",
       "-preset", "ultrafast",
       "-tune", "stillimage",
+      "-r", "1",              // 1fps output — image doesn't change
       "-c:a", "aac",
       "-b:a", "128k",
       "-pix_fmt", "yuv420p",
