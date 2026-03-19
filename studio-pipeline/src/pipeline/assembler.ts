@@ -150,17 +150,18 @@ function createImageSceneClip(
 ): Promise<void> {
   const cmd = ffmpeg()
     .input(imageFile)
-    .inputOptions(["-loop", "1", "-framerate", "24"])
+    .inputOptions(["-loop", "1", "-framerate", "1"])
     .input(audioFile)
     .outputOptions([
       "-c:v", "libx264",
+      "-preset", "ultrafast",
       "-tune", "stillimage",
       "-c:a", "aac",
-      "-b:a", "192k",
+      "-b:a", "128k",
       "-pix_fmt", "yuv420p",
       "-shortest",
       "-t", String(durationSeconds),
-      "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black",
+      "-vf", "scale=854:480:force_original_aspect_ratio=decrease,pad=854:480:(ow-iw)/2:(oh-ih)/2:color=black",
     ])
     .output(outputPath);
 
@@ -183,12 +184,13 @@ function createVideoSceneClip(
     .input(audioFile)
     .outputOptions([
       "-c:v", "libx264",
+      "-preset", "ultrafast",
       "-c:a", "aac",
-      "-b:a", "192k",
+      "-b:a", "128k",
       "-pix_fmt", "yuv420p",
       "-shortest",
       "-t", String(durationSeconds),
-      "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black",
+      "-vf", "scale=854:480:force_original_aspect_ratio=decrease,pad=854:480:(ow-iw)/2:(oh-ih)/2:color=black",
     ])
     .output(outputPath);
 
