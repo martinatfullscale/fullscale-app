@@ -9,9 +9,9 @@ export interface AssemblyScene {
   durationSeconds: number;
 }
 
-// Timeout per scene clip (3 minutes) and concat (5 minutes)
-const SCENE_TIMEOUT_MS = 3 * 60 * 1000;
-const CONCAT_TIMEOUT_MS = 5 * 60 * 1000;
+// Timeout per scene clip (5 minutes) and concat (10 minutes)
+const SCENE_TIMEOUT_MS = 5 * 60 * 1000;
+const CONCAT_TIMEOUT_MS = 10 * 60 * 1000;
 
 /**
  * Assemble a final MP4 video from scene images and audio tracks.
@@ -217,9 +217,7 @@ function concatClips(
       "-safe", "0",
     ])
     .outputOptions([
-      "-c:v", "libx264",
-      "-c:a", "aac",
-      "-pix_fmt", "yuv420p",
+      "-c", "copy",           // stream copy — no re-encoding needed
       "-movflags", "+faststart",
     ])
     .output(outputPath);
