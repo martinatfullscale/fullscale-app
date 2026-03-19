@@ -644,7 +644,8 @@ export function registerStudioRoutes(app: Express) {
       // ── Increment usage ──
       await storage.incrementStudioUsage(user.id, month);
 
-      const visualTier = tier === "free" ? "mvp" : "v1";
+      // Use V1 (Seedance AI video) when FAL_KEY is available, MVP (static slides) otherwise
+      const visualTier = process.env.FAL_KEY ? "v1" : "mvp";
 
       console.log(`[Studio] Video ${video.id} starting for ${email} (tier: ${tier}, visual: ${visualTier}, file: ${fileName})`);
 

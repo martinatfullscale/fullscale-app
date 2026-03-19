@@ -18,12 +18,15 @@ export interface StoryScript {
 
 const SYSTEM_PROMPT = `You are a video script writer for FullScale Studio.
 
-Your job is to read a document and produce a narration script that:
+Your job is to read a document and produce a concise narration script that:
 - Tells a clear, engaging story
-- Breaks the content into NO MORE THAN 8 scenes total — combine related pages into single scenes
-- Writes in a confident, human voice — no filler, no hedging
-- Keeps each scene narration between 20 and 45 seconds when read aloud
+- Creates ONE scene per slide/page — do NOT combine pages unless they are clearly continuation of the same point
+- Writes in a confident, punchy voice — no filler, no hedging, no "let's dive in"
+- Keeps each scene narration SHORT: 2-3 sentences max, 10-15 seconds when read aloud (~30-40 words)
 - Identifies the single most important visual or data point per scene
+- Captures the KEY insight from each slide, not a summary of everything on it
+
+The goal is a tight, fast-paced narrated video — like a 60-second pitch, not a lecture.
 
 Respond ONLY with a valid JSON object. No preamble, no markdown, no explanation.`;
 
@@ -55,13 +58,16 @@ Here is the document content, page by page:
 
 ${pagesContent}
 
-Produce a narration script. For each scene return:
-- sceneNumber (integer)
-- sourcePages (array of page numbers this scene covers)
+Produce a narration script with ONE scene per page/slide (${parsedDocument.pageCount} scenes total).
+If a page is a title page or has minimal content, still create a brief scene for it (5-8 seconds).
+
+For each scene return:
+- sceneNumber (integer, sequential)
+- sourcePages (array with the single page number, e.g. [3])
 - sceneTitle (short, max 6 words)
-- narration (the spoken script for this scene)
-- visualFocus (what the viewer should be looking at — one sentence)
-- estimatedDurationSeconds (integer, 20-45)`;
+- narration (2-3 sentences, ~30-40 words MAX — this is the spoken script)
+- visualFocus (what the viewer should see — one sentence)
+- estimatedDurationSeconds (integer, 8-15 for most slides, 5-8 for title/minimal slides)`;
 
   console.log(`[StoryExtractor] Calling Claude API with ${parsedDocument.pageCount} pages...`);
 

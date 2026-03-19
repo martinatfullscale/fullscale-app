@@ -100,17 +100,28 @@ export async function runPipeline(
       slideImages = await createTextSlideImages(storyScript, path.join(workDir, "slides"));
     }
 
-    // Map scenes to visuals (apply tier processing)
-    const sceneVisuals: string[] = [];
-    for (let i = 0; i < storyScript.scenes.length; i++) {
-      const scene = storyScript.scenes[i];
-      // Map scene to closest slide image
-      const slideIndex = Math.min(
-        (scene.sourcePages[0] || 1) - 1,
-        slideImages.length - 1
-      );
-      const visualPath = await generateVisual(scene, slideImages[slideIndex], tier);
-      sceneVisuals.push(visualPath);
+    // Map scenes to visuals (apply tier processing, 2 at a time for V1)
+    const sceneVisuals: string[] = new Array(storyScript.scenes.length);
+    const VISUAL_CONCURRENCY = tier === "mvp" ? storyScript.scenes.length : 2;
+    let completedVisuals = 0;
+
+    for (let batch = 0; batch < storyScript.scenes.length; batch += VISUAL_CONCURRENCY) {
+      const batchScenes = storyScript.scenes.slice(batch, batch + VISUAL_CONCURRENCY);
+      const batchPromises = batchScenes.map((scene, idx) => {
+        const globalIdx = batch + idx;
+        const slideIndex = Math.min(
+          (scene.sourcePages[0] || 1) - 1,
+          slideImages.length - 1
+        );
+        return generateVisual(scene, slideImages[slideIndex], tier)
+          .then((visualPath) => {
+            sceneVisuals[globalIdx] = visualPath;
+            completedVisuals++;
+            const progress = 10 + Math.round((completedVisuals / storyScript.scenes.length) * 80);
+            logStage("generating", progress);
+          });
+      });
+      await Promise.all(batchPromises);
     }
 
     logStage("generating", 100);
