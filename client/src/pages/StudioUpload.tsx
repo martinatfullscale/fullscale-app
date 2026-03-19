@@ -305,7 +305,7 @@ export default function StudioUpload() {
               Create an account or sign in to start generating videos.
             </p>
             <div className="flex gap-3 justify-center">
-              <a href="/auth?redirect=/studio/upload">
+              <a href="/api/auth/google?redirect=/studio/upload">
                 <Button className="bg-purple-600 hover:bg-purple-500">
                   Sign In
                 </Button>

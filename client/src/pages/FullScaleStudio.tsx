@@ -86,7 +86,7 @@ export default function FullScaleStudio() {
             <a href="/studio/pricing" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
               Pricing
             </a>
-            <a href="/auth?redirect=/studio/upload">
+            <a href="/api/auth/google?redirect=/studio/upload">
               <Button size="sm" variant="outline" className="gap-1.5 text-xs">
                 <Wand2 className="w-3 h-3" />
                 Sign In to Studio
