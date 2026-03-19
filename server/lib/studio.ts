@@ -137,6 +137,42 @@ export function registerStudioRoutes(app: Express) {
   console.log("[Studio] Registering Studio API routes...");
 
   // ──────────────────────────────────────────────────────────────────
+  // ADMIN: Fix stuck videos (one-time cleanup)
+  // ──────────────────────────────────────────────────────────────────
+  app.post("/api/studio/fix-stuck-videos", async (req: any, res: Response) => {
+    try {
+      const email = getSessionEmail(req);
+      if (email !== "martin@gofullscale.co") {
+        return res.status(403).json({ error: "Admin only" });
+      }
+      const { db } = await import("../db.js");
+      const { sql } = await import("drizzle-orm");
+      const result = await db.execute(sql`
+        UPDATE studio_videos
+        SET status = 'completed'
+        WHERE output_url IS NOT NULL
+          AND status != 'completed'
+          AND completed_at IS NOT NULL
+      `);
+      const failResult = await db.execute(sql`
+        UPDATE studio_videos
+        SET status = 'failed',
+            error_message = COALESCE(error_message, 'Stuck during processing - cleaned up')
+        WHERE status NOT IN ('completed', 'failed', 'queued')
+          AND output_url IS NULL
+          AND created_at < NOW() - INTERVAL '1 hour'
+      `);
+      res.json({
+        fixed: result.rowCount,
+        markedFailed: failResult.rowCount,
+      });
+    } catch (err: any) {
+      console.error("[Studio] fix-stuck-videos error:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────────────────
   // AUTH: Get current Studio subscription status
   // ──────────────────────────────────────────────────────────────────
   app.get("/api/studio/me", async (req: any, res: Response) => {
@@ -741,13 +777,21 @@ export function registerStudioRoutes(app: Express) {
         throw new Error(`Pipeline reported success but output file missing or empty: ${result.outputPath}`);
       }
 
-      await storage.updateStudioVideoStatus(videoId, "completed", {
-        outputUrl: result.outputPath,
-        durationSeconds: result.metadata.estimatedDurationSeconds,
-        sceneCount: result.metadata.sceneCount,
-        progress: 100,
-      });
-      console.log(`[Studio] Video ${videoId} status updated to COMPLETED`);
+      // Use raw SQL to guarantee the status update — the ORM update has a race
+      // condition or silent failure that leaves status as "processing"
+      const { db } = await import("../db.js");
+      const { sql } = await import("drizzle-orm");
+      await db.execute(sql`
+        UPDATE studio_videos
+        SET status = 'completed',
+            progress = 100,
+            output_url = ${result.outputPath},
+            duration_seconds = ${result.metadata.estimatedDurationSeconds},
+            scene_count = ${result.metadata.sceneCount},
+            completed_at = NOW()
+        WHERE id = ${videoId}
+      `);
+      console.log(`[Studio] Video ${videoId} status SET TO COMPLETED via raw SQL`);
 
       // ── Send email notification ──
       try {
