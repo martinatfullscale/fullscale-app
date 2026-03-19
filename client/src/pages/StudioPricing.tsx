@@ -144,7 +144,7 @@ export default function StudioPricing() {
 
   const handleTierAction = (tierId: string) => {
     if (!isAuthenticated) {
-      window.location.href = "/auth?redirect=/studio/upload";
+      window.location.href = "/api/auth/google?redirect=/studio/upload";
       return;
     }
     if (tierId === "free") {
