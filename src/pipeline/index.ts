@@ -37,8 +37,12 @@ export async function runPipeline(
   options: PipelineOptions = {}
 ): Promise<PipelineResult> {
   const jobId = randomUUID();
+  // Use persistent directory for output (survives Replit redeploys)
+  // Work files go to /tmp, but final output goes to persistent storage
   const workDir = path.join(os.tmpdir(), "studio-pipeline", jobId);
   fs.mkdirSync(workDir, { recursive: true });
+  const persistentDir = path.join(process.cwd(), "studio-output", jobId);
+  fs.mkdirSync(persistentDir, { recursive: true });
 
   const tier = options.visualTier || (process.env.VISUAL_TIER as "mvp" | "v1" | "v2") || "mvp";
   const notify = options.onStageChange || (() => {});
@@ -149,7 +153,7 @@ export async function runPipeline(
       };
     });
 
-    const outputPath = path.join(workDir, "output.mp4");
+    const outputPath = path.join(persistentDir, "output.mp4");
     await assembleVideo(assemblyScenes, outputPath);
 
     logStage("assembling", 100);
