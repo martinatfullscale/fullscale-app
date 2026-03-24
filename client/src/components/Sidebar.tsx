@@ -1,13 +1,15 @@
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, FolderOpen, Zap, DollarSign, LogOut, Settings, ArrowLeftRight } from "lucide-react";
+import { LayoutDashboard, FolderOpen, Zap, DollarSign, LogOut, Settings, ArrowLeftRight, Globe } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 
-interface UserTypeResponse {
+export interface UserTypeResponse {
   email: string;
+  name?: string | null;
+  slug?: string | null;
   userType: "creator" | "brand";
   baseUserType: "creator" | "brand";
   companyName?: string;
@@ -58,9 +60,9 @@ export function Sidebar() {
           const Icon = link.icon;
           const isActive = location === link.href;
           return (
-            <Link 
-              key={link.href} 
-              href={link.href} 
+            <Link
+              key={link.href}
+              href={link.href}
               className={cn("sidebar-link", isActive && "active")}
               data-testid={`link-${link.label.toLowerCase().replace(/\s/g, "-")}`}
             >
@@ -69,6 +71,29 @@ export function Sidebar() {
             </Link>
           );
         })}
+
+        {/* Portfolio link */}
+        <div className="pt-4 mt-4 border-t border-border/50">
+          {userTypeData?.slug ? (
+            <Link
+              href={`/c/${userTypeData.slug}`}
+              className={cn("sidebar-link", location === `/c/${userTypeData.slug}` && "active")}
+              data-testid="link-my-portfolio"
+            >
+              <Globe className="w-5 h-5 stroke-2" />
+              My Portfolio
+            </Link>
+          ) : (
+            <Link
+              href="/settings"
+              className="sidebar-link text-muted-foreground/60"
+              data-testid="link-setup-portfolio"
+            >
+              <Globe className="w-5 h-5 stroke-2" />
+              Set Up Portfolio
+            </Link>
+          )}
+        </div>
       </nav>
 
       <div className="pt-6 border-t border-border space-y-2">

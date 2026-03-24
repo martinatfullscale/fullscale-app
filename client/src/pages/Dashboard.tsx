@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { TopBar } from "@/components/TopBar";
-import { Video, Youtube, CheckCircle, Unlink, TrendingUp, Gavel, BarChart3, Loader2, ToggleLeft, ToggleRight, Link2, RefreshCw } from "lucide-react";
+import { Video, Youtube, CheckCircle, Unlink, TrendingUp, Gavel, BarChart3, Loader2, ToggleLeft, ToggleRight, Link2, RefreshCw, Globe, Copy, ExternalLink } from "lucide-react";
 import { SiFacebook, SiInstagram } from "react-icons/si";
 import { motion } from "framer-motion";
 import { useAuth } from "@/hooks/use-auth";
@@ -185,6 +185,12 @@ export default function Dashboard() {
   
   // Use global pitch mode context for simulation toggle
   const { isPitchMode, setPitchMode } = usePitchMode();
+
+  // Portfolio data
+  const { data: userTypeData } = useQuery<{ slug?: string | null; name?: string | null }>({
+    queryKey: ["/api/auth/user-type"],
+  });
+  const [copiedLink, setCopiedLink] = useState(false);
 
   const handleVideoClick = async (video: IndexedVideo) => {
     // For all videos (including pitch mode), fetch actual detected surfaces from backend
@@ -803,6 +809,63 @@ export default function Dashboard() {
                   View API Documentation
                 </Button>
               </div>
+            </motion.div>
+
+            {/* My Portfolio */}
+            <motion.div
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ delay: 0.32 }}
+              className="bg-card rounded-2xl p-6 border border-border"
+            >
+              <div className="flex items-center gap-2 mb-4">
+                <Globe className="w-4 h-4 text-primary" />
+                <h3 className="font-semibold">My Portfolio</h3>
+              </div>
+              {userTypeData?.slug ? (
+                <div className="space-y-3">
+                  <div className="bg-muted/50 rounded-lg px-3 py-2 text-sm text-muted-foreground font-mono truncate">
+                    /c/{userTypeData.slug}
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      onClick={() => setLocation(`/c/${userTypeData.slug}`)}
+                      className="flex-1"
+                      data-testid="button-view-portfolio"
+                    >
+                      <ExternalLink className="w-4 h-4 mr-2" />
+                      View
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={async () => {
+                        const fullUrl = `${window.location.origin}/c/${userTypeData.slug}`;
+                        await navigator.clipboard.writeText(fullUrl);
+                        setCopiedLink(true);
+                        toast({ title: "Portfolio link copied!", description: fullUrl });
+                        setTimeout(() => setCopiedLink(false), 3000);
+                      }}
+                      data-testid="button-copy-portfolio-link"
+                    >
+                      <Copy className="w-4 h-4 mr-1" />
+                      {copiedLink ? "Copied!" : "Copy Link"}
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <p className="text-sm text-muted-foreground">Set up your public creator portfolio to share with brands.</p>
+                  <Button
+                    variant="outline"
+                    className="w-full justify-start"
+                    onClick={() => setLocation("/settings")}
+                    data-testid="button-setup-portfolio"
+                  >
+                    <Globe className="w-4 h-4 mr-2" />
+                    Set Up Portfolio
+                  </Button>
+                </div>
+              )}
             </motion.div>
 
             {/* Social Connect Shortcuts */}

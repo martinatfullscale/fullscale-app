@@ -2922,6 +2922,8 @@ export async function registerRoutes(
     res.json({
       authenticated: true,
       email,
+      name: allowedUser?.name || null,
+      slug: allowedUser?.slug || null,
       userType: effectiveRole,
       baseUserType: allowedUser?.userType || "creator",
       companyName: allowedUser?.companyName,
