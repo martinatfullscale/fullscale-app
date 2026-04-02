@@ -13,6 +13,7 @@ import {
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 
 import heroVideoUrl from "@assets/fullscale_creates_hero_loop.mp4";
+import heroVideoMobileUrl from "@assets/fullscale_creates_hero_loop_mobile.mp4";
 
 // Video showcase — real Vimeo content from vimeo.com/whtwrks
 const VIDEO_SHOWCASE = [
@@ -108,37 +109,35 @@ export default function FullScaleCreates() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [videoFailed, setVideoFailed] = useState(false);
   const [activeVideo, setActiveVideo] = useState<typeof VIDEO_SHOWCASE[number] | null>(null);
+  const [isMobile, setIsMobile] = useState(false);
 
-  // Mobile browsers often ignore autoPlay — explicitly trigger playback
+  // Detect mobile viewport for serving compressed video
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 768px)");
+    setIsMobile(mq.matches);
+    const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
+
+  // Explicitly trigger playback — mobile browsers ignore autoPlay
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
-    // Vendor attributes for older iOS
     video.setAttribute("webkit-playsinline", "");
-    video.setAttribute("playsinline", "");
-
-    // Force muted via property (some mobile browsers only check the property, not the attribute)
     video.muted = true;
 
     const tryPlay = () => {
-      video.play().catch(() => {
-        // Autoplay blocked — video stays visible at first frame as fallback
-      });
+      video.play().catch(() => {});
     };
 
-    // Try on multiple events — different browsers fire different ones
     video.addEventListener("loadeddata", tryPlay);
     video.addEventListener("canplay", tryPlay);
-
-    // If already ready (e.g. cached)
     if (video.readyState >= 2) tryPlay();
 
-    // Also retry on first user touch anywhere (covers data-saver mode)
-    const onTouch = () => {
-      tryPlay();
-      document.removeEventListener("touchstart", onTouch);
-    };
+    // Retry on first touch (covers data-saver / low-power mode)
+    const onTouch = () => tryPlay();
     document.addEventListener("touchstart", onTouch, { once: true });
 
     return () => {
@@ -146,7 +145,7 @@ export default function FullScaleCreates() {
       video.removeEventListener("canplay", tryPlay);
       document.removeEventListener("touchstart", onTouch);
     };
-  }, [videoFailed]);
+  }, [videoFailed, isMobile]);
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -169,7 +168,7 @@ export default function FullScaleCreates() {
         {heroVideoUrl && !videoFailed ? (
           <video
             ref={videoRef}
-            src={heroVideoUrl}
+            src={isMobile ? heroVideoMobileUrl : heroVideoUrl}
             preload="auto"
             autoPlay
             loop
