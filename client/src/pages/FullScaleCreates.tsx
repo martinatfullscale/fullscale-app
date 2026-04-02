@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { motion } from "framer-motion";
 import { Film, Play, Sparkles, Users, Zap, ArrowRight, Globe } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -109,6 +109,21 @@ export default function FullScaleCreates() {
   const [videoFailed, setVideoFailed] = useState(false);
   const [activeVideo, setActiveVideo] = useState<typeof VIDEO_SHOWCASE[number] | null>(null);
 
+  // Mobile browsers often ignore autoPlay — explicitly play once loadable
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const tryPlay = () => {
+      video.play().catch(() => {
+        // Autoplay blocked — still show video paused at first frame
+      });
+    };
+    video.addEventListener("canplay", tryPlay);
+    // If already ready (cached)
+    if (video.readyState >= 3) tryPlay();
+    return () => video.removeEventListener("canplay", tryPlay);
+  }, [videoFailed]);
+
   return (
     <div className="min-h-screen bg-background text-foreground">
       {/* Header */}
@@ -128,14 +143,17 @@ export default function FullScaleCreates() {
       <section className="relative min-h-[500px] md:min-h-[600px] overflow-hidden">
         {/* Video background (falls back to gradient if video not available) */}
         {heroVideoUrl && !videoFailed ? (
+          {/* eslint-disable-next-line react/no-unknown-property */}
           <video
             ref={videoRef}
             src={heroVideoUrl}
-            preload="auto"
+            preload="metadata"
             autoPlay
             loop
             muted
             playsInline
+            // @ts-expect-error — webkit vendor attribute for older iOS
+            webkit-playsinline=""
             className="absolute inset-0 w-full h-full object-cover"
             onError={() => setVideoFailed(true)}
             data-testid="video-creates-hero"

@@ -13,7 +13,7 @@ import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 
 const DESTINATIONS = {
   dashboard: { label: "Creator Portal", path: "/dashboard", icon: LayoutDashboard },
-  studio: { label: "Studio", path: "/studio/upload", icon: Video },
+  studio: { label: "Studio", path: "/studio/waitlist", icon: Video },
 } as const;
 
 type Destination = keyof typeof DESTINATIONS;

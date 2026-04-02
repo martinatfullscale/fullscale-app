@@ -610,10 +610,14 @@ export async function registerRoutes(
       
       // Redirect based on approval status — use BASE_URL so dev deploys redirect back to themselves
       const callbackBaseUrl = process.env.BASE_URL || "https://gofullscale.co";
-      // Use stored post-login redirect if present (e.g. from /auth?redirect=/studio/upload)
+      // Use stored post-login redirect if present (e.g. from /auth?redirect=/studio/waitlist)
       const storedRedirect = (req.session as any)?.postLoginRedirect;
+      const isStudioRedirect = storedRedirect?.startsWith("/studio");
       const defaultPath = userIsApproved ? "/dashboard" : "/waitlist";
-      const redirectPath = userIsApproved && storedRedirect ? storedRedirect : defaultPath;
+      // Allow studio redirects even for non-approved users (Studio has its own access gate)
+      const redirectPath = (storedRedirect && (userIsApproved || isStudioRedirect))
+        ? storedRedirect
+        : defaultPath;
       // Clean up the stored redirect
       if (req.session) {
         delete (req.session as any).postLoginRedirect;

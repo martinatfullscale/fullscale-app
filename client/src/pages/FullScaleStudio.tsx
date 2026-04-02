@@ -86,10 +86,10 @@ export default function FullScaleStudio() {
             <a href="/studio/pricing" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
               Pricing
             </a>
-            <a href="/api/auth/google?redirect=/studio/upload">
-              <Button size="sm" variant="outline" className="gap-1.5 text-xs">
+            <a href="/studio/waitlist">
+              <Button size="sm" variant="outline" className="gap-1.5 text-xs border-purple-500/40 text-purple-300 hover:bg-purple-500/10">
                 <Wand2 className="w-3 h-3" />
-                Sign In to Studio
+                Request Access
               </Button>
             </a>
           </div>
@@ -124,10 +124,10 @@ export default function FullScaleStudio() {
               delivers a polished presentation video — automatically.
             </p>
             <div className="flex items-center justify-center gap-4">
-              <a href="/studio/upload">
+              <a href="/studio/waitlist">
                 <Button size="lg" className="gap-2 bg-purple-600 hover:bg-purple-500">
-                  <Upload className="w-4 h-4" />
-                  Get Started — It's Free
+                  <ArrowRight className="w-4 h-4" />
+                  Request Early Access
                 </Button>
               </a>
               <Button
@@ -269,10 +269,10 @@ export default function FullScaleStudio() {
               video is free.
             </p>
             <div className="flex items-center justify-center gap-4 flex-wrap">
-              <a href="/studio/upload">
+              <a href="/studio/waitlist">
                 <Button size="lg" className="gap-2 bg-purple-600 hover:bg-purple-500">
-                  <Upload className="w-4 h-4" />
-                  Start Creating
+                  <ArrowRight className="w-4 h-4" />
+                  Join the Waitlist
                 </Button>
               </a>
               <a href="/studio/pricing">

@@ -300,14 +300,14 @@ export default function StudioUpload() {
         <Card className="max-w-md border-white/5">
           <CardContent className="p-8 text-center">
             <Wand2 className="w-12 h-12 text-purple-400 mx-auto mb-4" />
-            <h2 className="text-xl font-semibold mb-2">Sign in to Studio</h2>
+            <h2 className="text-xl font-semibold mb-2">Get Early Access</h2>
             <p className="text-muted-foreground text-sm mb-6">
-              Create an account or sign in to start generating videos.
+              Studio is currently in early access. Request an invite to start generating videos.
             </p>
             <div className="flex gap-3 justify-center">
-              <a href="/api/auth/google?redirect=/studio/upload">
+              <a href="/studio/waitlist">
                 <Button className="bg-purple-600 hover:bg-purple-500">
-                  Sign In
+                  Request Access
                 </Button>
               </a>
               <a href="/studio/pricing">

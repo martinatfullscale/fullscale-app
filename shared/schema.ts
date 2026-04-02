@@ -836,3 +836,26 @@ export const insertStudioVideoSchema = createInsertSchema(studioVideos).omit({
 
 export type StudioVideo = typeof studioVideos.$inferSelect;
 export type InsertStudioVideo = z.infer<typeof insertStudioVideoSchema>;
+
+// ── Studio Waitlist ─────────────────────────────────────────────────
+export const studioWaitlist = pgTable("studio_waitlist", {
+  id: serial("id").primaryKey(),
+  userId: varchar("user_id"),
+  name: varchar("name").notNull(),
+  email: varchar("email").notNull(),
+  useCase: text("use_case"),
+  status: varchar("status").notNull().default("pending"), // 'pending' | 'approved' | 'rejected'
+  submittedAt: timestamp("submitted_at").defaultNow(),
+  reviewedAt: timestamp("reviewed_at"),
+  reviewedBy: varchar("reviewed_by"),
+});
+
+export const insertStudioWaitlistSchema = createInsertSchema(studioWaitlist).omit({
+  id: true,
+  submittedAt: true,
+  reviewedAt: true,
+  reviewedBy: true,
+});
+
+export type StudioWaitlistEntry = typeof studioWaitlist.$inferSelect;
+export type InsertStudioWaitlistEntry = z.infer<typeof insertStudioWaitlistSchema>;

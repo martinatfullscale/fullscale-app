@@ -85,6 +85,9 @@ import {
   type InsertStudioVoice,
   type StudioVideo,
   type InsertStudioVideo,
+  studioWaitlist,
+  type StudioWaitlistEntry,
+  type InsertStudioWaitlistEntry,
 } from "@shared/schema";
 import { users, type User, type UpsertUser } from "@shared/models/auth";
 import { encrypt, decrypt } from "./encryption";
@@ -289,6 +292,11 @@ export interface IStorage {
   getStudioVideo(videoId: number): Promise<StudioVideo | undefined>;
   getStudioVideosByUser(userId: string): Promise<StudioVideo[]>;
   updateStudioVideoStatus(videoId: number, status: string, updates?: { progress?: number; outputUrl?: string; thumbnailUrl?: string; durationSeconds?: number; sceneCount?: number; errorMessage?: string }): Promise<StudioVideo | undefined>;
+
+  // ── Studio Waitlist Methods ──
+  createStudioWaitlistEntry(data: InsertStudioWaitlistEntry): Promise<StudioWaitlistEntry>;
+  getStudioWaitlistByEmail(email: string): Promise<StudioWaitlistEntry | undefined>;
+  hasApprovedStudioAccess(email: string): Promise<boolean>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -1866,6 +1874,39 @@ export class DatabaseStorage implements IStorage {
       .where(eq(studioVideos.id, videoId))
       .returning();
     return video;
+  }
+
+  // ── Studio Waitlist ────────────────────────────────────────────────
+
+  async createStudioWaitlistEntry(data: InsertStudioWaitlistEntry): Promise<StudioWaitlistEntry> {
+    const [entry] = await db.insert(studioWaitlist).values(data).returning();
+    return entry;
+  }
+
+  async getStudioWaitlistByEmail(email: string): Promise<StudioWaitlistEntry | undefined> {
+    const [entry] = await db
+      .select()
+      .from(studioWaitlist)
+      .where(eq(studioWaitlist.email, email.toLowerCase().trim()))
+      .orderBy(desc(studioWaitlist.submittedAt))
+      .limit(1);
+    return entry;
+  }
+
+  async hasApprovedStudioAccess(email: string): Promise<boolean> {
+    const normalized = email.toLowerCase().trim();
+    if (["martin@gofullscale.co"].includes(normalized)) return true;
+    const [entry] = await db
+      .select({ status: studioWaitlist.status })
+      .from(studioWaitlist)
+      .where(
+        and(
+          eq(studioWaitlist.email, normalized),
+          eq(studioWaitlist.status, "approved"),
+        ),
+      )
+      .limit(1);
+    return !!entry;
   }
 }
 

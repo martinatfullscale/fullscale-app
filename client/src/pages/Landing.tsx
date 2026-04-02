@@ -1117,7 +1117,7 @@ export default function Landing() {
   };
 
   const handleActualLogin = () => {
-    const redirect = signInDest === "studio" ? "/studio/upload" : "/dashboard";
+    const redirect = signInDest === "studio" ? "/studio/waitlist" : "/dashboard";
     window.location.href = `/api/auth/google?redirect=${encodeURIComponent(redirect)}`;
   };
 

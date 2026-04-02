@@ -37,6 +37,7 @@ import StudioUpload from "@/pages/StudioUpload";
 import FullScaleStudio from "@/pages/FullScaleStudio";
 import StudioPricing from "@/pages/StudioPricing";
 import StudioLibrary from "@/pages/StudioLibrary";
+import StudioWaitlistPage from "@/pages/StudioWaitlistPage";
 
 interface AuthStatusResponse {
   authenticated: boolean;
@@ -63,6 +64,31 @@ function AuthenticatedLayout({ children, userType }: { children: React.ReactNode
       </main>
     </div>
   );
+}
+
+function StudioAccessGuard({ children }: { children: React.ReactNode }) {
+  const [, setLocation] = useLocation();
+  const { data: studioMe, isLoading } = useQuery<{ hasStudioAccess?: boolean; authenticated?: boolean }>({
+    queryKey: ["/api/studio/me"],
+    staleTime: 30000,
+    retry: false,
+  });
+
+  useEffect(() => {
+    if (!isLoading && studioMe?.authenticated && !studioMe.hasStudioAccess) {
+      setLocation("/studio/waitlist");
+    }
+  }, [studioMe, isLoading, setLocation]);
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen w-full flex items-center justify-center bg-background">
+        <Loader2 className="w-10 h-10 text-primary animate-spin" />
+      </div>
+    );
+  }
+
+  return <>{children}</>;
 }
 
 function Router() {
@@ -156,8 +182,9 @@ function Router() {
         <Route path="/content" component={FullScaleCreates} />
         <Route path="/studio" component={FullScaleStudio} />
         <Route path="/studio/pricing" component={StudioPricing} />
-        <Route path="/studio/upload" component={StudioUpload} />
-        <Route path="/studio/library" component={StudioLibrary} />
+        <Route path="/studio/waitlist" component={StudioWaitlistPage} />
+        <Route path="/studio/upload">{() => <StudioAccessGuard><StudioUpload /></StudioAccessGuard>}</Route>
+        <Route path="/studio/library">{() => <StudioAccessGuard><StudioLibrary /></StudioAccessGuard>}</Route>
         <Route path="/creates" component={FullScaleCreates} />
         <Route path="/about" component={ComingSoon} />
         <Route path="/waitlist" component={WaitlistPage} />
@@ -208,8 +235,9 @@ function Router() {
       <Route path="/content" component={FullScaleCreates} />
       <Route path="/studio" component={FullScaleStudio} />
       <Route path="/studio/pricing" component={StudioPricing} />
-      <Route path="/studio/upload" component={StudioUpload} />
-      <Route path="/studio/library" component={StudioLibrary} />
+      <Route path="/studio/waitlist" component={StudioWaitlistPage} />
+      <Route path="/studio/upload">{() => <StudioAccessGuard><StudioUpload /></StudioAccessGuard>}</Route>
+      <Route path="/studio/library">{() => <StudioAccessGuard><StudioLibrary /></StudioAccessGuard>}</Route>
       <Route path="/creates" component={FullScaleCreates} />
       <Route path="/about" component={ComingSoon} />
       <Route path="/c/:slug" component={CreatorProfile} />

@@ -187,6 +187,12 @@ export function registerStudioRoutes(app: Express) {
         return res.json({ authenticated: true, email, hasStudioAccess: false });
       }
 
+      // Gate behind waitlist approval
+      const hasWaitlistApproval = await storage.hasApprovedStudioAccess(email);
+      if (!hasWaitlistApproval) {
+        return res.json({ authenticated: true, email, hasStudioAccess: false });
+      }
+
       const sub = await ensureStudioSubscription(user.id, email);
       const tier = (sub.tier as TierName) || "free";
       const tierConfig = STUDIO_TIERS[tier];
@@ -218,6 +224,77 @@ export function registerStudioRoutes(app: Express) {
     } catch (err: any) {
       console.error("[Studio] /api/studio/me error:", err);
       res.status(500).json({ error: "Failed to get studio status" });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────────────────
+  // WAITLIST: Submit a request for Studio access
+  // ──────────────────────────────────────────────────────────────────
+  app.post("/api/studio/waitlist", async (req: any, res: Response) => {
+    try {
+      const { name, email, useCase } = req.body;
+      if (!name || !email) {
+        return res.status(400).json({ error: "Name and email are required" });
+      }
+      const normalizedEmail = email.toLowerCase().trim();
+
+      // Check for existing entry
+      const existing = await storage.getStudioWaitlistByEmail(normalizedEmail);
+      if (existing) {
+        return res.json({
+          success: true,
+          alreadySubmitted: true,
+          status: existing.status,
+          message: existing.status === "approved"
+            ? "You already have Studio access!"
+            : "You're already on the waitlist.",
+        });
+      }
+
+      // Resolve userId if logged in
+      const sessionEmail = getSessionEmail(req);
+      let userId: string | null = null;
+      if (sessionEmail) {
+        const user = await storage.getUserByEmail(sessionEmail);
+        if (user) userId = user.id;
+      }
+
+      await storage.createStudioWaitlistEntry({
+        userId: userId || undefined,
+        name,
+        email: normalizedEmail,
+        useCase: useCase || null,
+        status: "pending",
+      });
+
+      return res.json({ success: true, alreadySubmitted: false, status: "pending" });
+    } catch (err: any) {
+      console.error("[Studio] /api/studio/waitlist POST error:", err);
+      res.status(500).json({ error: "Failed to submit waitlist request" });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────────────────
+  // WAITLIST: Check current user's Studio access status
+  // ──────────────────────────────────────────────────────────────────
+  app.get("/api/studio/waitlist/status", async (req: any, res: Response) => {
+    try {
+      const email = getSessionEmail(req);
+      if (!email) {
+        return res.json({ authenticated: false, hasAccess: false, status: null });
+      }
+
+      const hasAccess = await storage.hasApprovedStudioAccess(email);
+      const entry = await storage.getStudioWaitlistByEmail(email);
+
+      return res.json({
+        authenticated: true,
+        hasAccess,
+        status: entry?.status || null,
+      });
+    } catch (err: any) {
+      console.error("[Studio] /api/studio/waitlist/status error:", err);
+      res.status(500).json({ error: "Failed to check waitlist status" });
     }
   });
 
