@@ -113,6 +113,8 @@ export default function FullScaleCreates() {
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
+    // Older iOS Safari needs this vendor attribute
+    video.setAttribute("webkit-playsinline", "");
     const tryPlay = () => {
       video.play().catch(() => {
         // Autoplay blocked — still show video paused at first frame
@@ -143,7 +145,6 @@ export default function FullScaleCreates() {
       <section className="relative min-h-[500px] md:min-h-[600px] overflow-hidden">
         {/* Video background (falls back to gradient if video not available) */}
         {heroVideoUrl && !videoFailed ? (
-          {/* eslint-disable-next-line react/no-unknown-property */}
           <video
             ref={videoRef}
             src={heroVideoUrl}
@@ -152,8 +153,6 @@ export default function FullScaleCreates() {
             loop
             muted
             playsInline
-            // @ts-expect-error — webkit vendor attribute for older iOS
-            webkit-playsinline=""
             className="absolute inset-0 w-full h-full object-cover"
             onError={() => setVideoFailed(true)}
             data-testid="video-creates-hero"
