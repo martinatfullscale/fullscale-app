@@ -23,10 +23,18 @@ export async function setupVite(server: Server, app: Express) {
       },
     },
     server: {
-      ...viteConfig.server,
       middlewareMode: true,
       hmr: { server, path: "/vite-hmr" },
       allowedHosts: true as const,
+      fs: {
+        strict: true,
+        allow: [
+          path.resolve(import.meta.dirname, "..", "client"),
+          path.resolve(import.meta.dirname, "..", "attached_assets"),
+          path.resolve(import.meta.dirname, "..", "shared"),
+        ],
+        deny: ["**/.*"],
+      },
     },
     appType: "custom",
   });
