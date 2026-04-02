@@ -109,21 +109,43 @@ export default function FullScaleCreates() {
   const [videoFailed, setVideoFailed] = useState(false);
   const [activeVideo, setActiveVideo] = useState<typeof VIDEO_SHOWCASE[number] | null>(null);
 
-  // Mobile browsers often ignore autoPlay — explicitly play once loadable
+  // Mobile browsers often ignore autoPlay — explicitly trigger playback
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
-    // Older iOS Safari needs this vendor attribute
+
+    // Vendor attributes for older iOS
     video.setAttribute("webkit-playsinline", "");
+    video.setAttribute("playsinline", "");
+
+    // Force muted via property (some mobile browsers only check the property, not the attribute)
+    video.muted = true;
+
     const tryPlay = () => {
       video.play().catch(() => {
-        // Autoplay blocked — still show video paused at first frame
+        // Autoplay blocked — video stays visible at first frame as fallback
       });
     };
+
+    // Try on multiple events — different browsers fire different ones
+    video.addEventListener("loadeddata", tryPlay);
     video.addEventListener("canplay", tryPlay);
-    // If already ready (cached)
-    if (video.readyState >= 3) tryPlay();
-    return () => video.removeEventListener("canplay", tryPlay);
+
+    // If already ready (e.g. cached)
+    if (video.readyState >= 2) tryPlay();
+
+    // Also retry on first user touch anywhere (covers data-saver mode)
+    const onTouch = () => {
+      tryPlay();
+      document.removeEventListener("touchstart", onTouch);
+    };
+    document.addEventListener("touchstart", onTouch, { once: true });
+
+    return () => {
+      video.removeEventListener("loadeddata", tryPlay);
+      video.removeEventListener("canplay", tryPlay);
+      document.removeEventListener("touchstart", onTouch);
+    };
   }, [videoFailed]);
 
   return (
@@ -148,7 +170,7 @@ export default function FullScaleCreates() {
           <video
             ref={videoRef}
             src={heroVideoUrl}
-            preload="metadata"
+            preload="auto"
             autoPlay
             loop
             muted
