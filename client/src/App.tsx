@@ -236,8 +236,6 @@ function Router() {
       <Route path="/studio" component={FullScaleStudio} />
       <Route path="/studio/pricing" component={StudioPricing} />
       <Route path="/studio/waitlist" component={StudioWaitlistPage} />
-      <Route path="/studio/upload">{() => <StudioAccessGuard><StudioUpload /></StudioAccessGuard>}</Route>
-      <Route path="/studio/library">{() => <StudioAccessGuard><StudioLibrary /></StudioAccessGuard>}</Route>
       <Route path="/creates" component={FullScaleCreates} />
       <Route path="/about" component={ComingSoon} />
       <Route path="/c/:slug" component={CreatorProfile} />
@@ -259,6 +257,8 @@ function Router() {
               <Route path="/saved-placements" component={SavedPlacements} />
               <Route path="/settings" component={Settings} />
               <Route path="/earnings" component={Dashboard} />
+              <Route path="/studio/upload">{() => <StudioAccessGuard><StudioUpload /></StudioAccessGuard>}</Route>
+              <Route path="/studio/library">{() => <StudioAccessGuard><StudioLibrary /></StudioAccessGuard>}</Route>
               <Route component={NotFound} />
             </Switch>
           </AuthenticatedLayout>

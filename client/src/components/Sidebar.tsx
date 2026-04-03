@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, FolderOpen, Zap, DollarSign, LogOut, Settings, ArrowLeftRight, Globe } from "lucide-react";
+import { LayoutDashboard, FolderOpen, Zap, DollarSign, LogOut, Settings, ArrowLeftRight, Globe, Wand2 } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
@@ -91,6 +91,18 @@ export function Sidebar() {
             >
               <Globe className="w-5 h-5 stroke-2" />
               Set Up Portfolio
+            </Link>
+          )}
+
+          {/* Studio — admin only */}
+          {userTypeData?.isAdmin && (
+            <Link
+              href="/studio/upload"
+              className={cn("sidebar-link", location.startsWith("/studio") && "active")}
+              data-testid="link-studio"
+            >
+              <Wand2 className="w-5 h-5 stroke-2" />
+              Studio
             </Link>
           )}
         </div>
