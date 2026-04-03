@@ -241,6 +241,7 @@ function Router() {
       <Route path="/c/:slug" component={CreatorProfile} />
       <Route path="/s/:slug" component={SharedView} />
       <Route path="/remix/:videoId" component={RemixEngine} />
+      <Route path="/studio/upload" component={StudioUpload} />
       <Route>
         {() => (
           <AuthenticatedLayout userType={currentRole}>

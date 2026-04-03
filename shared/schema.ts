@@ -1,8 +1,9 @@
-import { pgTable, text, serial, timestamp, boolean, varchar, integer, numeric, uniqueIndex, jsonb, real } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, timestamp, boolean, varchar, integer, numeric, uniqueIndex, jsonb, real, uuid } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
 // Import Auth Definitions
+import { users } from "./models/auth";
 export * from "./models/auth";
 
 // Import Chat Definitions (for Gemini integration)
@@ -836,6 +837,27 @@ export const insertStudioVideoSchema = createInsertSchema(studioVideos).omit({
 
 export type StudioVideo = typeof studioVideos.$inferSelect;
 export type InsertStudioVideo = z.infer<typeof insertStudioVideoSchema>;
+
+// Studio Jobs Table — tracks pipeline job progress
+export const studioJobs = pgTable('studio_jobs', {
+  id: serial("id").primaryKey(),
+  videoId: integer('video_id'),
+  status: text('status').default('queued'), // queued | parsing | extracting | generating | adding-voice | assembling | complete | failed
+  currentStage: text('current_stage'),
+  progress: integer('progress').default(0),
+  errorMessage: text('error_message'),
+  startedAt: timestamp('started_at'),
+  completedAt: timestamp('completed_at'),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const insertStudioJobSchema = createInsertSchema(studioJobs).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type StudioJob = typeof studioJobs.$inferSelect;
+export type InsertStudioJob = z.infer<typeof insertStudioJobSchema>;
 
 // ── Studio Waitlist ─────────────────────────────────────────────────
 export const studioWaitlist = pgTable("studio_waitlist", {
