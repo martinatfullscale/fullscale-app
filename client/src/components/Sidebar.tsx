@@ -81,7 +81,7 @@ export function Sidebar() {
               data-testid="link-my-portfolio"
             >
               <Globe className="w-5 h-5 stroke-2" />
-              My Portfolio
+              My Profile
             </Link>
           ) : (
             <Link
