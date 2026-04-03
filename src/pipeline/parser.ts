@@ -1,10 +1,7 @@
+import pdf from "pdf-parse";
 import fs from "fs";
 import path from "path";
-import os from "os";
-import { execFile } from "child_process";
-import { promisify } from "util";
-
-const execFileAsync = promisify(execFile);
+import { createRequire } from "module";
 
 export interface ParsedPage {
   pageNumber: number;
@@ -21,54 +18,15 @@ export interface ParsedDocument {
 
 /**
  * Parse a PDF buffer into structured document pages.
- *
- * Uses `pdftotext` (from poppler-utils) — a system binary that avoids all
- * esbuild/CJS/ESM module-loading headaches. Falls back to raw text extraction
- * if pdftotext is unavailable.
+ * Uses pdf-parse to extract text, then splits into per-page chunks.
  */
 export async function parsePDF(buffer: Buffer): Promise<ParsedDocument> {
-  console.log(`[Parser] Starting PDF parse (${(buffer.length / 1024).toFixed(1)} KB)...`);
+  const data = await pdf(buffer);
 
-  // Write buffer to a temp file (pdftotext needs a file path)
-  const tmpDir = path.join(os.tmpdir(), "studio-parser");
-  fs.mkdirSync(tmpDir, { recursive: true });
-  const tmpPdf = path.join(tmpDir, `input-${Date.now()}.pdf`);
-  fs.writeFileSync(tmpPdf, buffer);
+  const pageCount = data.numpages;
+  const fullText = data.text;
 
-  let fullText: string;
-  let pageCount: number;
-
-  try {
-    // Get page count via pdfinfo
-    const { stdout: infoOut } = await execFileAsync("pdfinfo", [tmpPdf]);
-    const pagesMatch = infoOut.match(/Pages:\s+(\d+)/);
-    pageCount = pagesMatch ? parseInt(pagesMatch[1], 10) : 1;
-
-    // Extract text with page breaks (form-feed characters between pages)
-    const { stdout } = await execFileAsync("pdftotext", ["-layout", tmpPdf, "-"]);
-    fullText = stdout;
-
-    console.log(`[Parser] pdftotext extracted ${pageCount} pages, ${fullText.length} chars`);
-  } catch (err: any) {
-    console.warn(`[Parser] pdftotext failed (${err.message}), trying pdftotext without -layout...`);
-    try {
-      const { stdout } = await execFileAsync("pdftotext", [tmpPdf, "-"]);
-      fullText = stdout;
-      pageCount = (fullText.match(/\f/g) || []).length + 1;
-      console.log(`[Parser] pdftotext (no layout) extracted ${pageCount} pages, ${fullText.length} chars`);
-    } catch (err2: any) {
-      console.error(`[Parser] pdftotext not available: ${err2.message}`);
-      throw new Error(
-        "PDF text extraction failed — pdftotext (poppler-utils) is not installed. " +
-        "Add poppler_utils to .replit nix packages."
-      );
-    }
-  } finally {
-    // Clean up temp file
-    try { fs.unlinkSync(tmpPdf); } catch {}
-  }
-
-  // Split into pages
+  // pdf-parse concatenates all pages. Try to split by page breaks or heuristics.
   const pages = splitIntoPages(fullText, pageCount);
 
   // Derive document title from first meaningful line
@@ -158,9 +116,13 @@ function extractTextFromXml(xml: string): string[] {
   // Match all <a:t>...</a:t> text runs
   const regex = /<a:t>([\s\S]*?)<\/a:t>/g;
   let match;
+  let currentParagraph = "";
+  let lastIndex = 0;
 
   // Also track paragraph breaks via <a:p> elements
+  const paragraphs: string[] = [];
   const pRegex = /<a:p[\s>]/g;
+  const pEndRegex = /<\/a:p>/g;
 
   // Simple approach: collect all text runs, group by paragraph
   const fullMatches: Array<{ text: string; index: number }> = [];
@@ -204,7 +166,7 @@ function extractTextFromXml(xml: string): string[] {
  * Uses form feed characters (\f) if present, otherwise splits evenly.
  */
 export function splitIntoPages(text: string, pageCount: number): ParsedPage[] {
-  // pdftotext inserts form feeds between pages
+  // pdf-parse often inserts form feeds between pages
   const formFeedPages = text.split("\f").filter((p) => p.trim().length > 0);
 
   let rawPages: string[];

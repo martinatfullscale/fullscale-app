@@ -12,8 +12,9 @@ const execFileAsync = promisify(execFile);
  * Generate a visual for a scene based on the current tier.
  *
  * MVP:  Pass the slide image straight through (zero cost, no API call).
- * V1:   Seedance 1.5 Pro text-to-video via fal.ai — AI-generated scene visuals.
- * V2:   Seedance 2.0 (not yet available).
+ * V1:   Kling 3.0 image-to-video via fal.ai — animates the actual slide image.
+ *       Text-heavy slides stay static (AI mangles text/numbers).
+ * V2:   Reserved for future upgrades.
  */
 export async function generateVisual(
   scene: Scene,
@@ -29,10 +30,10 @@ export async function generateVisual(
       return slideImagePath;
 
     case "v1":
-      return generateSeeddanceClip(scene, slideImagePath);
+      return generateKlingClip(scene, slideImagePath);
 
     case "v2":
-      throw new Error("Seedance 2.0 API not yet available. Set VISUAL_TIER=v1.");
+      throw new Error("V2 tier not yet configured. Using V1 (Kling 3.0).");
 
     default:
       return slideImagePath;
@@ -40,13 +41,22 @@ export async function generateVisual(
 }
 
 /**
- * Generate an AI video clip using Seedance 1.5 Pro text-to-video via fal.ai.
- * Falls back to the static slide image if FAL_KEY is not set.
+ * Generate an AI video clip using Kling 3.0 image-to-video via fal.ai.
+ * Takes the actual slide image and animates it into a video clip.
+ * Text-heavy slides are kept static — AI mangles text and numbers.
+ * Falls back to the static slide image if FAL_KEY is not set or on error.
  */
-async function generateSeeddanceClip(
+async function generateKlingClip(
   scene: Scene,
   slideImagePath: string
 ): Promise<string> {
+  // Skip AI animation for text-heavy slides — keeps text crisp and readable
+  const slideType = (scene as any).slideType || "text-heavy";
+  if (slideType === "text-heavy") {
+    console.log(`[VisualLayer] Scene ${scene.sceneNumber}: text-heavy slide — keeping static (no AI animation)`);
+    return slideImagePath;
+  }
+
   const falKey = process.env.FAL_KEY;
   if (!falKey) {
     console.warn("[VisualLayer] No FAL_KEY — falling back to MVP (static slides)");
@@ -59,19 +69,30 @@ async function generateSeeddanceClip(
   const videoPath = path.join(outputDir, `scene_${scene.sceneNumber}_video.mp4`);
   const prompt = buildVideoPrompt(scene);
 
-  console.log(`[VisualLayer] Generating Seedance clip for scene ${scene.sceneNumber}...`);
-  console.log(`[VisualLayer] Prompt: "${prompt.slice(0, 120)}..."`);
+  console.log(`[VisualLayer] Scene ${scene.sceneNumber}: visual slide — animating with Kling 3.0 image-to-video`);
+  console.log(`[VisualLayer] Prompt: "${prompt.slice(0, 200)}..."`);
 
   try {
+    // Upload the slide image to fal.ai storage so it can be used as input
+    const imageBuffer = fs.readFileSync(slideImagePath);
+    const imageFile = new File(
+      [imageBuffer],
+      path.basename(slideImagePath),
+      { type: "image/jpeg" }
+    );
+    const imageUrl = await fal.storage.upload(imageFile);
+    console.log(`[VisualLayer] Uploaded slide image for scene ${scene.sceneNumber}`);
+
     const result = await fal.subscribe(
-      "fal-ai/bytedance/seedance/v1.5/pro/text-to-video",
+      "fal-ai/kling-video/v3/standard/image-to-video",
       {
         input: {
+          start_image_url: imageUrl,
           prompt,
           duration: "5",
-          resolution: "720p",
-          aspect_ratio: "16:9",
           generate_audio: false,
+          negative_prompt: "blur, distort, low quality, watermark, morphing text, changing letters, garbled words",
+          cfg_scale: 0.5,
         },
         logs: true,
         onQueueUpdate: (update) => {
@@ -98,25 +119,37 @@ async function generateSeeddanceClip(
 
     const fileSizeKB = Math.round(fs.statSync(videoPath).size / 1024);
     console.log(`[VisualLayer] Scene ${scene.sceneNumber} video: ${videoPath} (${fileSizeKB} KB)`);
-
     return videoPath;
   } catch (err: any) {
-    console.error(`[VisualLayer] Seedance generation failed for scene ${scene.sceneNumber}: ${err.message}`);
+    console.error(`[VisualLayer] Kling generation failed for scene ${scene.sceneNumber}: ${err.message}`);
     console.warn("[VisualLayer] Falling back to static slide image");
     return slideImagePath;
   }
 }
 
 /**
- * Build a cinematic video prompt from scene data.
+ * Build a motion/camera prompt for image-to-video.
+ * Since the actual slide image is the visual input, the prompt focuses on
+ * HOW to animate it — camera movement, subtle motion, and cinematic feel.
+ * We do NOT describe what's in the image (Kling already sees it).
  */
 function buildVideoPrompt(scene: Scene): string {
-  return (
-    `Professional cinematic visual: ${scene.visualFocus}. ` +
-    `Scene context: "${scene.sceneTitle}". ` +
-    `High production value, smooth camera movement, modern corporate style, ` +
-    `clean design, photorealistic, 4K quality, presentation video.`
+  const camera = (scene as any).cameraDirection || "slow cinematic push-in";
+
+  const parts: string[] = [];
+
+  // Describe the desired motion/animation, not the content
+  parts.push(`${camera}.`);
+
+  // Add subtle life to the image
+  parts.push(
+    "Subtle natural motion, gentle parallax depth effect. " +
+    "Cinematic lighting with soft highlights. " +
+    "Smooth, professional camera movement. " +
+    "Keep all text and graphics sharp and stable — do not warp or distort any elements."
   );
+
+  return parts.join(" ");
 }
 
 /**
@@ -135,7 +168,6 @@ export async function slidesToImages(
   fs.mkdirSync(outputDir, { recursive: true });
 
   const outputPrefix = path.join(outputDir, "slide");
-
   console.log(`[VisualLayer] Converting PDF slides to images...`);
 
   try {
@@ -168,7 +200,6 @@ export async function slidesToImages(
   }
 
   console.log(`[VisualLayer] Generated ${imagePaths.length} slide images`);
-
   return imagePaths;
 }
 

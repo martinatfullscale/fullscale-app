@@ -26,38 +26,32 @@ export async function generateVoice(
 
   console.log(`[VoiceSynth] Generating voice for scene ${sceneNumber} (${narrationText.length} chars)...`);
 
-  try {
-    const response = await axios.post(
-      `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
-      {
-        text: narrationText,
-        model_id: "eleven_multilingual_v2",
-        voice_settings: {
-          stability: 0.5,
-          similarity_boost: 0.75,
-        },
+  const response = await axios.post(
+    `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
+    {
+      text: narrationText,
+      model_id: "eleven_multilingual_v2",
+      voice_settings: {
+        stability: 0.5,
+        similarity_boost: 0.75,
       },
-      {
-        headers: {
-          "xi-api-key": apiKey,
-          "Content-Type": "application/json",
-          Accept: "audio/mpeg",
-        },
-        responseType: "arraybuffer",
-        timeout: 60_000, // 60 second timeout per scene
-      }
-    );
+    },
+    {
+      headers: {
+        "xi-api-key": apiKey,
+        "Content-Type": "application/json",
+        Accept: "audio/mpeg",
+      },
+      responseType: "arraybuffer",
+    }
+  );
 
-    fs.writeFileSync(outputPath, Buffer.from(response.data));
+  fs.writeFileSync(outputPath, Buffer.from(response.data));
 
-    const fileSizeKB = Math.round(fs.statSync(outputPath).size / 1024);
-    console.log(`[VoiceSynth] Scene ${sceneNumber} audio: ${outputPath} (${fileSizeKB} KB)`);
+  const fileSizeKB = Math.round(fs.statSync(outputPath).size / 1024);
+  console.log(`[VoiceSynth] Scene ${sceneNumber} audio: ${outputPath} (${fileSizeKB} KB)`);
 
-    return outputPath;
-  } catch (err: any) {
-    console.warn(`[VoiceSynth] ElevenLabs failed for scene ${sceneNumber}: ${err.message} — falling back to silent audio`);
-    return generateSilentAudio(narrationText, sceneNumber, outputPath);
-  }
+  return outputPath;
 }
 
 /**

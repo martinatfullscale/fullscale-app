@@ -26,10 +26,11 @@ export interface PipelineResult {
 /**
  * Run the full FullScale Studio pipeline:
  *   Stage 1: Parse document → ParsedDocument
- *   Stage 2: Extract story via Claude → StoryScript
- *   Stage 3: Convert slides to images → string[]
- *   Stage 4: Generate voice per scene → string[] (audio paths)
- *   Stage 5: Assemble video → MP4 at outputPath
+ *   Stage 2: Convert slides to images (needed for Claude Vision)
+ *   Stage 3: Extract story via Claude Vision (sees actual slides) → StoryScript
+ *   Stage 4: Generate visuals — animate "visual" slides, keep "text-heavy" static
+ *   Stage 5: Generate voice per scene
+ *   Stage 6: Assemble video → MP4 at outputPath
  */
 export async function runPipeline(
   documentBuffer: Buffer,
@@ -69,36 +70,41 @@ export async function runPipeline(
     } else {
       parsedDoc = await parsePPTX(documentBuffer);
     }
-
     logStage("parsing", 100);
     console.log(`  → ${parsedDoc.pageCount} pages, title: "${parsedDoc.documentTitle}"`);
 
-    // ─── Stage 2: Extract story via Claude ───────────────
-    logStage("extracting", 10);
-
-    const storyScript = await extractStory(parsedDoc);
-
-    logStage("extracting", 100);
-    console.log(`  → ${storyScript.totalScenes} scenes extracted`);
-
-    // ─── Stage 3: Generate visuals (slide images) ────────
-    logStage("generating", 10);
+    // ─── Stage 2: Convert slides to images FIRST ─────────
+    // We need slide images before calling Claude so it can SEE them
+    logStage("extracting", 5);
+    console.log(`[Pipeline] Converting slides to images for Claude Vision...`);
 
     let slideImages: string[];
-
     if (documentType === "pdf") {
-      // Write buffer to temp file for pdftoppm
       const tempPdfPath = path.join(workDir, "source.pdf");
       fs.writeFileSync(tempPdfPath, documentBuffer);
-
       const imagesDir = path.join(workDir, "slides");
       slideImages = await slidesToImages(tempPdfPath, imagesDir);
     } else {
-      // For PPTX, we need to convert to PDF first for slide images.
-      // MVP: Use a placeholder approach — create simple title cards per slide.
+      // For PPTX, create placeholder images
       // TODO: Use LibreOffice headless to convert PPTX → PDF → images
-      slideImages = await createTextSlideImages(storyScript, path.join(workDir, "slides"));
+      slideImages = await createTextSlideImages(
+        { documentTitle: parsedDoc.documentTitle, totalScenes: parsedDoc.pageCount, scenes: [] } as StoryScript,
+        path.join(workDir, "slides")
+      );
     }
+    logStage("extracting", 15);
+    console.log(`  → ${slideImages.length} slide images ready for Claude Vision`);
+
+    // ─── Stage 3: Extract story via Claude Vision ────────
+    // Claude now SEES each slide image and can accurately classify
+    // which slides have photos (visual) vs. text-heavy content
+    logStage("extracting", 20);
+    const storyScript = await extractStory(parsedDoc, slideImages);
+    logStage("extracting", 100);
+    console.log(`  → ${storyScript.totalScenes} scenes extracted`);
+
+    // ─── Stage 4: Generate visuals (animate visual slides) ────
+    logStage("generating", 10);
 
     // Map scenes to visuals (apply tier processing, 2 at a time for V1)
     const sceneVisuals: string[] = new Array(storyScript.scenes.length);
@@ -123,12 +129,10 @@ export async function runPipeline(
       });
       await Promise.all(batchPromises);
     }
-
     logStage("generating", 100);
 
-    // ─── Stage 4: Generate voice per scene (parallel, 3 at a time) ──
+    // ─── Stage 5: Generate voice per scene (parallel, 3 at a time) ──
     logStage("adding-voice", 10);
-
     const audioDir = path.join(workDir, "audio");
     const audioPaths: string[] = new Array(storyScript.scenes.length);
     const CONCURRENCY = 3;
@@ -148,12 +152,10 @@ export async function runPipeline(
       });
       await Promise.all(batchPromises);
     }
-
     logStage("adding-voice", 100);
 
-    // ─── Stage 5: Assemble final video ───────────────────
+    // ─── Stage 6: Assemble final video ───────────────────
     logStage("assembling", 10);
-
     const assemblyScenes: AssemblyScene[] = storyScript.scenes.map((scene, i) => {
       const visualPath = sceneVisuals[i];
       const isVideo = visualPath.endsWith(".mp4");
@@ -166,7 +168,6 @@ export async function runPipeline(
 
     const outputPath = path.join(persistentDir, "output.mp4");
     await assembleVideo(assemblyScenes, outputPath);
-
     logStage("assembling", 100);
 
     // ─── Done ────────────────────────────────────────────
@@ -203,27 +204,19 @@ async function createTextSlideImages(
   storyScript: StoryScript,
   outputDir: string
 ): Promise<string[]> {
-  // We'll use a simple approach: create SVG → convert to JPEG
-  // For MVP without sharp/canvas, write placeholder images
   fs.mkdirSync(outputDir, { recursive: true });
-
   const images: string[] = [];
 
   for (const scene of storyScript.scenes) {
     const imagePath = path.join(outputDir, `slide-${String(scene.sceneNumber).padStart(2, "0")}.jpg`);
-
-    // Create a simple SVG with the scene title
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720">
       <rect width="1280" height="720" fill="#1a1a2e"/>
       <text x="640" y="320" text-anchor="middle" fill="white" font-size="48" font-family="Arial, sans-serif">${escapeXml(scene.sceneTitle)}</text>
       <text x="640" y="400" text-anchor="middle" fill="#8888aa" font-size="24" font-family="Arial, sans-serif">${escapeXml(scene.visualFocus.slice(0, 80))}</text>
     </svg>`;
 
-    // Use ffmpeg to convert SVG to JPEG
     const svgPath = imagePath.replace(".jpg", ".svg");
     fs.writeFileSync(svgPath, svg);
-
-    // For MVP, we'll create the JPEG with ffmpeg
     const { execFileSync } = await import("child_process");
     try {
       execFileSync("ffmpeg", [
@@ -232,14 +225,11 @@ async function createTextSlideImages(
         imagePath,
       ], { stdio: "pipe" });
     } catch {
-      // Fallback: copy SVG path (assembler will handle it)
       fs.copyFileSync(svgPath, imagePath);
     }
-
     images.push(imagePath);
     try { fs.unlinkSync(svgPath); } catch {}
   }
-
   return images;
 }
 
