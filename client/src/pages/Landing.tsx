@@ -7,6 +7,7 @@ import logoMayDavis from "@assets/logo-may-davis_1767712118621.png";
 import logoElementa from "@assets/logo-elementa_1767712118620.png";
 import { SmithFamilyCircleLogo } from "@/components/SmithFamilyCircleLogo";
 import heroVideo from "@assets/generated_videos/creator_studio_cinematic_loop.mp4";
+import heroVideoMobile from "@assets/generated_videos/creator_studio_cinematic_loop_mobile.mp4";
 import realityImg from "@assets/unnamed_1769147394407.JPEG";
 import aiAugmentedImg from "@assets/Gemini_Generated_Image_rykd4crykd4crykd_1769147394406.PNG";
 import surfaceEngineImg from "@assets/generated_images/desk_with_ai_tracking_grid.png";
@@ -1092,12 +1093,21 @@ export default function Landing() {
   const [showSignInOptions, setShowSignInOptions] = useState(false);
   const [signInDest, setSignInDest] = useState<"dashboard" | "studio">("dashboard");
   const videoRef = useRef<HTMLVideoElement>(null);
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 768px)");
+    setIsMobile(mq.matches);
+    const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const error = params.get("error");
     const email = params.get("email");
-    
+
     if (error === "access_restricted") {
       setAccessError(email || "your email");
       setShowBetaModal(true);
@@ -1105,11 +1115,24 @@ export default function Landing() {
     }
   }, []);
 
+  // Mobile browsers ignore autoPlay — explicitly trigger playback
   useEffect(() => {
-    if (videoRef.current) {
-      videoRef.current.play().catch(() => {});
-    }
-  }, []);
+    const video = videoRef.current;
+    if (!video) return;
+    video.setAttribute("webkit-playsinline", "");
+    video.muted = true;
+    const tryPlay = () => { video.play().catch(() => {}); };
+    video.addEventListener("loadeddata", tryPlay);
+    video.addEventListener("canplay", tryPlay);
+    if (video.readyState >= 2) tryPlay();
+    const onTouch = () => tryPlay();
+    document.addEventListener("touchstart", onTouch, { once: true });
+    return () => {
+      video.removeEventListener("loadeddata", tryPlay);
+      video.removeEventListener("canplay", tryPlay);
+      document.removeEventListener("touchstart", onTouch);
+    };
+  }, [isMobile]);
 
   const handleLoginClick = () => {
     setAccessError(null);
@@ -1127,7 +1150,7 @@ export default function Landing() {
       <section className="relative min-h-[650px] md:min-h-[700px] lg:h-screen overflow-hidden pb-8 md:pb-0">
         <video
           ref={videoRef}
-          src={heroVideo}
+          src={isMobile ? heroVideoMobile : heroVideo}
           preload="auto"
           autoPlay
           loop
