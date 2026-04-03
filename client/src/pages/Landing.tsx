@@ -1093,7 +1093,9 @@ export default function Landing() {
   const [showSignInOptions, setShowSignInOptions] = useState(false);
   const [signInDest, setSignInDest] = useState<"dashboard" | "studio">("dashboard");
   const videoRef = useRef<HTMLVideoElement>(null);
-  const [isMobile, setIsMobile] = useState(false);
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== "undefined" && window.matchMedia("(max-width: 768px)").matches
+  );
 
   useEffect(() => {
     const mq = window.matchMedia("(max-width: 768px)");
@@ -1101,6 +1103,19 @@ export default function Landing() {
     const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches);
     mq.addEventListener("change", handler);
     return () => mq.removeEventListener("change", handler);
+  }, []);
+
+  // Ref callback — fires the instant the <video> mounts in the DOM.
+  // Sets muted + playsinline BEFORE the browser evaluates autoplay policy.
+  const videoRefCallback = useCallback((node: HTMLVideoElement | null) => {
+    videoRef.current = node;
+    if (!node) return;
+    node.muted = true;
+    node.setAttribute("muted", "");
+    node.setAttribute("playsinline", "");
+    node.setAttribute("webkit-playsinline", "");
+    node.defaultMuted = true;
+    node.play().catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -1115,13 +1130,11 @@ export default function Landing() {
     }
   }, []);
 
-  // Mobile browsers ignore autoPlay — explicitly trigger playback
+  // Retry playback once data arrives or on first touch
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
-    video.setAttribute("webkit-playsinline", "");
-    video.muted = true;
-    const tryPlay = () => { video.play().catch(() => {}); };
+    const tryPlay = () => { video.muted = true; video.play().catch(() => {}); };
     video.addEventListener("loadeddata", tryPlay);
     video.addEventListener("canplay", tryPlay);
     if (video.readyState >= 2) tryPlay();
@@ -1149,7 +1162,8 @@ export default function Landing() {
       {/* Cinematic Hero Section */}
       <section className="relative min-h-[650px] md:min-h-[700px] lg:h-screen overflow-hidden pb-8 md:pb-0">
         <video
-          ref={videoRef}
+          ref={videoRefCallback}
+          key={isMobile ? "mobile" : "desktop"}
           src={isMobile ? heroVideoMobile : heroVideo}
           preload="auto"
           autoPlay

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
 import { Film, Play, Sparkles, Users, Zap, ArrowRight, Globe } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -109,9 +109,10 @@ export default function FullScaleCreates() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [videoFailed, setVideoFailed] = useState(false);
   const [activeVideo, setActiveVideo] = useState<typeof VIDEO_SHOWCASE[number] | null>(null);
-  const [isMobile, setIsMobile] = useState(false);
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== "undefined" && window.matchMedia("(max-width: 768px)").matches
+  );
 
-  // Detect mobile viewport for serving compressed video
   useEffect(() => {
     const mq = window.matchMedia("(max-width: 768px)");
     setIsMobile(mq.matches);
@@ -120,26 +121,28 @@ export default function FullScaleCreates() {
     return () => mq.removeEventListener("change", handler);
   }, []);
 
-  // Explicitly trigger playback — mobile browsers ignore autoPlay
+  // Ref callback — sets muted BEFORE browser evaluates autoplay policy
+  const videoRefCallback = useCallback((node: HTMLVideoElement | null) => {
+    videoRef.current = node;
+    if (!node) return;
+    node.muted = true;
+    node.setAttribute("muted", "");
+    node.setAttribute("playsinline", "");
+    node.setAttribute("webkit-playsinline", "");
+    node.defaultMuted = true;
+    node.play().catch(() => {});
+  }, []);
+
+  // Retry playback once data arrives or on first touch
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
-
-    video.setAttribute("webkit-playsinline", "");
-    video.muted = true;
-
-    const tryPlay = () => {
-      video.play().catch(() => {});
-    };
-
+    const tryPlay = () => { video.muted = true; video.play().catch(() => {}); };
     video.addEventListener("loadeddata", tryPlay);
     video.addEventListener("canplay", tryPlay);
     if (video.readyState >= 2) tryPlay();
-
-    // Retry on first touch (covers data-saver / low-power mode)
     const onTouch = () => tryPlay();
     document.addEventListener("touchstart", onTouch, { once: true });
-
     return () => {
       video.removeEventListener("loadeddata", tryPlay);
       video.removeEventListener("canplay", tryPlay);
@@ -167,7 +170,8 @@ export default function FullScaleCreates() {
         {/* Video background (falls back to gradient if video not available) */}
         {heroVideoUrl && !videoFailed ? (
           <video
-            ref={videoRef}
+            ref={videoRefCallback}
+            key={isMobile ? "mobile" : "desktop"}
             src={isMobile ? heroVideoMobileUrl : heroVideoUrl}
             preload="auto"
             autoPlay
