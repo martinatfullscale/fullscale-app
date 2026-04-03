@@ -457,6 +457,14 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
     }
   };
 
+  // Lock body scroll when modal is open to prevent background from scrolling
+  useEffect(() => {
+    if (!open) return;
+    const original = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = original; };
+  }, [open]);
+
   if (!open) return null;
 
   const activeJob = jobs.find(j =>
@@ -467,11 +475,12 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
   return (
     <AnimatePresence>
       <motion.div
-        className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
+        className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4 overflow-hidden touch-none"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+        onTouchMove={(e) => e.stopPropagation()}
       >
         <motion.div
           className="bg-gray-900 rounded-2xl w-full max-w-6xl max-h-[90vh] overflow-hidden flex flex-col"
