@@ -3,13 +3,14 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import { parsePDF, parsePPTX, type ParsedDocument } from "./parser.js";
-import { extractStory, type StoryScript } from "./storyExtractor.js";
+import { extractStory, type StoryScript, type DeckIntent } from "./storyExtractor.js";
 import { slidesToImages, generateVisual } from "./visualLayer.js";
 import { generateVoice } from "./voiceSynth.js";
 import { assembleVideo, type AssemblyScene } from "./assembler.js";
 
 export interface PipelineOptions {
   visualTier?: "mvp" | "v1" | "v2";
+  deckIntent?: DeckIntent;
   onStageChange?: (stage: string, progress: number) => void;
 }
 
@@ -46,7 +47,10 @@ export async function runPipeline(
   fs.mkdirSync(persistentDir, { recursive: true });
 
   const tier = options.visualTier || (process.env.VISUAL_TIER as "mvp" | "v1" | "v2") || "mvp";
+  const deckIntent: DeckIntent = options.deckIntent || "investor-pitch";
   const notify = options.onStageChange || (() => {});
+
+  console.log(`[Pipeline] Deck intent: ${deckIntent}, Visual tier: ${tier}`);
 
   const logStage = (stage: string, progress: number) => {
     const timestamp = new Date().toLocaleTimeString("en-US", {
@@ -99,7 +103,7 @@ export async function runPipeline(
     // Claude now SEES each slide image and can accurately classify
     // which slides have photos (visual) vs. text-heavy content
     logStage("extracting", 20);
-    const storyScript = await extractStory(parsedDoc, slideImages);
+    const storyScript = await extractStory(parsedDoc, slideImages, deckIntent);
     logStage("extracting", 100);
     console.log(`  → ${storyScript.totalScenes} scenes extracted`);
 
@@ -244,5 +248,5 @@ function escapeXml(str: string): string {
 
 // Re-export types for convenience
 export type { ParsedDocument } from "./parser.js";
-export type { StoryScript, Scene } from "./storyExtractor.js";
+export type { StoryScript, Scene, DeckIntent, SlideCategory } from "./storyExtractor.js";
 export type { AssemblyScene } from "./assembler.js";

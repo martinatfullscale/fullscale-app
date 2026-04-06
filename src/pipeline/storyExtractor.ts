@@ -4,6 +4,28 @@ import path from "path";
 import { execSync } from "child_process";
 import type { ParsedDocument } from "./parser.js";
 
+/**
+ * Slide categories — Claude classifies each slide into one of these.
+ * Each category has specific animation rules in visualLayer.ts.
+ */
+export type SlideCategory =
+  | "person"        // Slide features a photo of a person/people → subtle animation (blink, head turn)
+  | "product"       // Product screenshot, app UI, demo → gentle parallax/zoom into key feature
+  | "graphic"       // Illustrations, icons, imagery, lifestyle photos → ken burns / cinematic pan
+  | "data"          // Charts, graphs, metrics, numbers → keep static, VO carries it
+  | "text"          // Bullet points, paragraphs, lists → keep static, clean
+  | "title";        // Title slide, section divider → dramatic camera move, transition moment
+
+/**
+ * Deck intent — what the founder is using this deck for.
+ * Changes narration tone and pacing.
+ */
+export type DeckIntent =
+  | "investor-pitch"   // Fast, punchy, confident — "here's why you should invest"
+  | "sales-deck"       // Persuasive, benefits-focused — "here's how we solve your problem"
+  | "team-update"      // Calm, authoritative — "here's where we stand"
+  | "marketing";       // Energetic, inspiring — "here's what we're building"
+
 export interface Scene {
   sceneNumber: number;
   sourcePages: number[];
@@ -11,7 +33,7 @@ export interface Scene {
   narration: string;
   visualFocus: string;
   cameraDirection: string;
-  slideType: "visual" | "text-heavy";
+  slideCategory: SlideCategory;
   estimatedDurationSeconds: number;
 }
 
@@ -21,38 +43,68 @@ export interface StoryScript {
   scenes: Scene[];
 }
 
-const SYSTEM_PROMPT = `You are a video script writer for FullScale Studio.
+function buildSystemPrompt(deckIntent: DeckIntent): string {
+  const toneGuide: Record<DeckIntent, string> = {
+    "investor-pitch":
+      "Narration tone: CONFIDENT and PUNCHY. You're pitching to investors. " +
+      "Lead with the opportunity, emphasize traction and market size. " +
+      "Pacing: fast, 8-12 seconds per slide. No hedging. Every sentence should build conviction.",
+    "sales-deck":
+      "Narration tone: PERSUASIVE and BENEFIT-FOCUSED. You're selling to a prospect. " +
+      "Lead with their pain point, show the solution, prove it works. " +
+      "Pacing: moderate, 10-15 seconds per slide. Speak to outcomes, not features.",
+    "team-update":
+      "Narration tone: CALM and AUTHORITATIVE. You're updating leadership or the board. " +
+      "Lead with key metrics, be transparent about challenges, end with next steps. " +
+      "Pacing: measured, 12-15 seconds per slide. No hype — just clarity.",
+    "marketing":
+      "Narration tone: ENERGETIC and INSPIRING. You're telling a brand story. " +
+      "Lead with vision, make the audience feel something, end with a call to action. " +
+      "Pacing: dynamic, 8-12 seconds per slide. Use vivid language.",
+  };
+
+  return `You are a video director and script writer for FullScale Studio.
 You will receive BOTH the text content AND the actual slide images from a presentation.
 LOOK AT EACH IMAGE CAREFULLY — your job depends on accurately seeing what's on each slide.
+
+${toneGuide[deckIntent]}
 
 Your job is to produce a concise narration script that:
 - Tells a clear, engaging story
 - Creates ONE scene per slide/page — do NOT combine pages
 - Writes in a confident, punchy voice — no filler, no hedging, no "let's dive in"
-- Keeps each scene narration SHORT: 2-3 sentences max, 10-15 seconds when read aloud (~30-40 words)
+- Keeps each scene narration SHORT: 2-3 sentences max, ~30-40 words
 - Captures the KEY insight from each slide, not a summary of everything on it
 
-SLIDE TYPE CLASSIFICATION — this is the MOST IMPORTANT part of your job:
-Look at each slide image and classify it:
-- "visual" = the slide has PHOTOS of real people, product screenshots with images, graphics, illustrations, or any visual imagery that would look good animated. Examples: headshots, team photos, product demos with screenshots, lifestyle imagery.
-- "text-heavy" = the slide is MOSTLY text, bullet points, numbers, data tables, charts, logos, or branding. These slides will stay STATIC because AI animation mangles text and numbers.
+SLIDE CATEGORY CLASSIFICATION — this is the MOST IMPORTANT part of your job:
+Look at each slide image and classify it into EXACTLY ONE category:
 
-BE AGGRESSIVE about marking slides as "visual" — if a slide has BOTH text AND photos/images, mark it "visual". Only mark as "text-heavy" if the slide is genuinely 80%+ text with no meaningful imagery.
+- "person" = the slide has a PHOTO of a real person or people. Headshots, team photos, founder photos, customer photos. If you see a human face, this is "person".
+- "product" = the slide shows a PRODUCT SCREENSHOT, app UI, software demo, website screenshot, or device mockup. The visual is a product being shown.
+- "graphic" = the slide has ILLUSTRATIONS, icons, lifestyle imagery, stock photos (not of specific people), diagrams, or visual graphics that aren't data.
+- "data" = the slide has CHARTS, GRAPHS, METRICS, NUMBERS, data tables, or financial figures. The point of the slide is quantitative.
+- "text" = the slide is MOSTLY TEXT — bullet points, paragraphs, lists, quotes. 80%+ text with no meaningful imagery.
+- "title" = this is a TITLE SLIDE or SECTION DIVIDER. Big text, minimal content. Used as a transition.
 
-CAMERA DIRECTION — for each scene, provide a DYNAMIC and UNIQUE camera movement:
-- "slow push-in" / "dolly forward"
-- "wide establishing shot pulling back"
-- "tracking shot following subject left to right"
-- "close-up with shallow depth of field"
-- "aerial/overhead looking down"
-- "handheld documentary style"
-- "steadicam orbit around subject"
-- "low angle looking up"
-- "rack focus from foreground to background"
-- "crane shot rising upward"
+RULES:
+- If a slide has a person's face AND text, classify as "person" (the face is the visual anchor)
+- If a slide has a product screenshot AND text, classify as "product"
+- If a slide has both a chart AND text, classify as "data"
+- Only use "text" if the slide is genuinely JUST text with no meaningful visual
+- Title slides / section dividers are always "title"
+- When in doubt between "graphic" and "text", choose "graphic" — we want to animate when possible
+
+CAMERA DIRECTION — for each scene, provide a camera movement that matches the slide category:
+- "person" slides: "slow push-in on subject" or "close-up with shallow depth of field" or "steadicam orbit"
+- "product" slides: "slow zoom into key feature" or "gentle parallax depth" or "tracking shot across interface"
+- "graphic" slides: "wide establishing shot" or "crane shot rising" or "dolly forward"
+- "data" slides: "static — clean hold" (no camera movement)
+- "text" slides: "static — clean hold" (no camera movement)
+- "title" slides: "dramatic push-in" or "crane shot rising" or "wide pull-back"
 Never use the same camera direction twice in a row.
 
 Respond ONLY with a valid JSON object. No preamble, no markdown, no explanation.`;
+}
 
 /**
  * Resize an image to max 800px wide using ImageMagick (available on Replit).
@@ -80,7 +132,8 @@ function resizeForVision(imagePath: string): string {
  */
 export async function extractStory(
   parsedDocument: ParsedDocument,
-  slideImages?: string[]
+  slideImages?: string[],
+  deckIntent: DeckIntent = "investor-pitch"
 ): Promise<StoryScript> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
@@ -104,7 +157,7 @@ export async function extractStory(
 
   contentBlocks.push({
     type: "text",
-    text: `Document title: ${parsedDocument.documentTitle}\nTotal pages: ${parsedDocument.pageCount}\n\nHere is the text content extracted from the document:\n\n${pagesText}\n\n--- SLIDE IMAGES FOLLOW ---\nBelow are the actual slide images. LOOK AT EACH ONE to determine slideType and write accurate narration.\n`,
+    text: `Document title: ${parsedDocument.documentTitle}\nTotal pages: ${parsedDocument.pageCount}\nDeck intent: ${deckIntent}\n\nHere is the text content extracted from the document:\n\n${pagesText}\n\n--- SLIDE IMAGES FOLLOW ---\nBelow are the actual slide images. LOOK AT EACH ONE to determine slideCategory and write accurate narration.\n`,
   });
 
   // Add each slide image if available — resize first to keep payload small
@@ -149,7 +202,7 @@ export async function extractStory(
     text: `\nProduce a narration script with ONE scene per page/slide (${parsedDocument.pageCount} scenes total).
 If a page is a title page or has minimal content, still create a brief scene for it (5-8 seconds).
 
-CRITICAL: Look at each slide image above. If it has photos of people, product screenshots, or visual imagery — mark it "visual". If it's mostly text/bullets/numbers — mark it "text-heavy".
+CRITICAL: Look at each slide image above and classify it into one of: "person", "product", "graphic", "data", "text", "title".
 
 For each scene return:
 - sceneNumber (integer, sequential)
@@ -157,19 +210,19 @@ For each scene return:
 - sceneTitle (short, max 6 words)
 - narration (2-3 sentences, ~30-40 words MAX — this is the spoken script)
 - visualFocus (describe what you SEE on the slide — one sentence)
-- cameraDirection (a specific, dynamic camera movement — different for each scene)
-- slideType ("visual" or "text-heavy" based on what you SEE in the image)
-- estimatedDurationSeconds (integer, 8-15 for most slides, 5-8 for title/minimal slides)`,
+- cameraDirection (a specific camera movement matching the slide category)
+- slideCategory ("person" | "product" | "graphic" | "data" | "text" | "title")
+- estimatedDurationSeconds (integer, based on deck intent pacing)`,
   });
 
   const imageCount = slideImages?.filter((p) => fs.existsSync(p)).length || 0;
-  console.log(`[StoryExtractor] Calling Claude Vision API with ${parsedDocument.pageCount} pages and ${imageCount} slide images...`);
+  console.log(`[StoryExtractor] Calling Claude Vision API with ${parsedDocument.pageCount} pages, ${imageCount} images, intent: ${deckIntent}`);
 
   try {
     const response = await client.messages.create({
       model: "claude-sonnet-4-20250514",
       max_tokens: 8192,
-      system: SYSTEM_PROMPT,
+      system: buildSystemPrompt(deckIntent),
       messages: [
         {
           role: "user",
@@ -207,10 +260,23 @@ For each scene return:
       throw new Error("Claude response missing 'scenes' array");
     }
 
-    // Log slideType breakdown
-    const visualCount = storyScript.scenes.filter((s) => s.slideType === "visual").length;
-    const textCount = storyScript.scenes.filter((s) => s.slideType === "text-heavy").length;
-    console.log(`[StoryExtractor] Got ${storyScript.scenes.length} scenes: ${visualCount} visual, ${textCount} text-heavy`);
+    // Log category breakdown
+    const categories = storyScript.scenes.reduce((acc, s) => {
+      const cat = s.slideCategory || "unknown";
+      acc[cat] = (acc[cat] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+    const breakdown = Object.entries(categories).map(([k, v]) => `${v} ${k}`).join(", ");
+    console.log(`[StoryExtractor] Got ${storyScript.scenes.length} scenes: ${breakdown}`);
+
+    // Count animated vs static
+    const animatedCount = storyScript.scenes.filter((s) =>
+      ["person", "product", "graphic", "title"].includes(s.slideCategory)
+    ).length;
+    const staticCount = storyScript.scenes.filter((s) =>
+      ["data", "text"].includes(s.slideCategory)
+    ).length;
+    console.log(`[StoryExtractor] Animation plan: ${animatedCount} animated, ${staticCount} static`);
 
     // Ensure documentTitle and totalScenes are set
     storyScript.documentTitle = storyScript.documentTitle || parsedDocument.documentTitle;
