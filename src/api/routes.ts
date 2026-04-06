@@ -64,6 +64,11 @@ export function registerStudioRoutes(app: Express): void {
         const documentType = getDocumentType(req.file.originalname);
         const documentBuffer = fs.readFileSync(req.file.path);
 
+        // Read deck intent from form data (default: investor-pitch)
+        const deckIntent = (req.body?.deckIntent as string) || "investor-pitch";
+        const validIntents = ["investor-pitch", "sales-deck", "team-update", "marketing"];
+        const safeIntent = validIntents.includes(deckIntent) ? deckIntent : "investor-pitch";
+
         // Generate a job ID
         const { randomUUID } = await import("crypto");
         const jobId = randomUUID();
@@ -71,8 +76,10 @@ export function registerStudioRoutes(app: Express): void {
         // Create job record
         createJob(jobId);
 
+        console.log(`[Studio] Job ${jobId.slice(0, 8)}: ${req.file.originalname}, intent: ${safeIntent}`);
+
         // Fire pipeline in background (don't await)
-        runPipelineInBackground(jobId, documentBuffer, documentType);
+        runPipelineInBackground(jobId, documentBuffer, documentType, safeIntent);
 
         // Clean up the uploaded temp file
         try {
@@ -158,10 +165,12 @@ export function registerStudioRoutes(app: Express): void {
 async function runPipelineInBackground(
   jobId: string,
   documentBuffer: Buffer,
-  documentType: "pdf" | "pptx"
+  documentType: "pdf" | "pptx",
+  deckIntent: string = "investor-pitch"
 ): Promise<void> {
   try {
     const result = await runPipeline(documentBuffer, documentType, {
+      deckIntent: deckIntent as any,
       onStageChange: (stage, progress) => {
         // Map pipeline stage names to job status values
         const statusMap: Record<string, JobState["status"]> = {
