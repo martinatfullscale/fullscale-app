@@ -84,7 +84,7 @@ export default function StudioUpload() {
       formData.append("file", file);
       formData.append("deckIntent", deckIntent);
 
-      const response = await fetch("/api/studio/videos/upload", {
+      const response = await fetch("/api/studio/generate", {
         method: "POST",
         body: formData,
       });
@@ -95,11 +95,13 @@ export default function StudioUpload() {
       }
 
       const data = await response.json();
-      setJobId(data.jobId);
+      const videoId = data.video?.id;
+      if (!videoId) throw new Error("No video ID returned");
+      setJobId(String(videoId));
       setStatus("queued");
 
       // Start polling
-      startPolling(data.jobId);
+      startPolling(String(videoId));
     } catch (err: any) {
       setStatus("failed");
       setError(err.message || "Upload failed");
@@ -111,22 +113,31 @@ export default function StudioUpload() {
 
     pollRef.current = window.setInterval(async () => {
       try {
-        const response = await fetch(`/api/studio/videos/${id}/status`);
+        const response = await fetch(`/api/studio/videos/${id}`);
         if (!response.ok) return;
 
         const data = await response.json();
-        setStatus(data.status);
-        setProgress(data.progress || 0);
+        const video = data.video;
+        if (!video) return;
 
-        if (data.metadata) {
-          setMetadata(data.metadata);
+        // Map server status to client status (server uses "completed", client uses "complete")
+        const clientStatus = video.status === "completed" ? "complete" : video.status;
+        setStatus(clientStatus as PipelineStatus);
+        setProgress(video.progress || 0);
+
+        if (video.title || video.sceneCount) {
+          setMetadata({
+            title: video.title,
+            sceneCount: video.sceneCount,
+            durationSeconds: video.durationSeconds,
+          });
         }
 
-        if (data.status === "complete") {
+        if (video.status === "completed") {
           setVideoUrl(`/api/studio/videos/${id}/download`);
           stopPolling();
-        } else if (data.status === "failed") {
-          setError(data.error || "Pipeline failed");
+        } else if (video.status === "failed") {
+          setError(video.errorMessage || "Pipeline failed");
           stopPolling();
         }
       } catch {
