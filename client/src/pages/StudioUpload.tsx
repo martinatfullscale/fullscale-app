@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { Upload, FileVideo, Loader2, CheckCircle, AlertCircle, Download, Play, Rocket, ShoppingCart, Users, Megaphone } from "lucide-react";
 
-type PipelineStatus = "idle" | "uploading" | "queued" | "parsing" | "extracting" | "generating" | "adding-voice" | "assembling" | "complete" | "failed";
+type PipelineStatus = "idle" | "uploading" | "queued" | "processing" | "parsing" | "extracting" | "generating" | "adding-voice" | "assembling" | "complete" | "failed";
 
 type DeckIntent = "investor-pitch" | "sales-deck" | "team-update" | "marketing";
 
@@ -16,6 +16,7 @@ const STAGE_LABELS: Record<string, string> = {
   idle: "Ready",
   uploading: "Uploading...",
   queued: "Queued",
+  processing: "Processing...",
   parsing: "Parsing document...",
   extracting: "Extracting story...",
   generating: "Generating visuals...",
@@ -33,6 +34,38 @@ const STAGE_ORDER: PipelineStatus[] = [
   "assembling",
   "complete",
 ];
+
+function StudioUsageBadge() {
+  const [usage, setUsage] = useState<{ videosGenerated: number; videosLimit: number; tier: string } | null>(null);
+  useEffect(() => {
+    fetch("/api/studio/me")
+      .then(r => r.json())
+      .then(data => {
+        if (data.usage && data.subscription) {
+          setUsage({
+            videosGenerated: data.usage.videosGenerated,
+            videosLimit: data.usage.videosLimit,
+            tier: data.subscription.tier,
+          });
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  if (!usage) return null;
+  const remaining = Math.max(0, usage.videosLimit - usage.videosGenerated);
+  const isUnlimited = usage.videosLimit >= 1000;
+
+  return (
+    <div className="text-center mb-8">
+      <span className="inline-block bg-purple-900/30 border border-purple-800/50 text-purple-300 text-sm px-4 py-1.5 rounded-full">
+        {isUnlimited
+          ? `Unlimited videos (${usage.tier})`
+          : `${remaining} of ${usage.videosLimit} videos remaining this month`}
+      </span>
+    </div>
+  );
+}
 
 export default function StudioUpload() {
   const [file, setFile] = useState<File | null>(null);
@@ -169,8 +202,10 @@ export default function StudioUpload() {
   };
 
   const currentStageIndex = STAGE_ORDER.indexOf(status);
+  // Server sends global progress (0-100) directly — use it when status is "processing"
   const overallProgress = status === "complete" ? 100
     : status === "failed" ? 0
+    : status === "processing" ? progress
     : currentStageIndex >= 0
     ? Math.round(((currentStageIndex + (progress / 100)) / STAGE_ORDER.length) * 100)
     : 0;
@@ -188,12 +223,8 @@ export default function StudioUpload() {
           </p>
         </div>
 
-        {/* Usage meter */}
-        <div className="text-center mb-8">
-          <span className="inline-block bg-purple-900/30 border border-purple-800/50 text-purple-300 text-sm px-4 py-1.5 rounded-full">
-            1 of 1 free videos remaining this month
-          </span>
-        </div>
+        {/* Usage meter — fetched from /api/studio/me */}
+        <StudioUsageBadge />
 
         {/* Upload zone */}
         {status === "idle" && (
@@ -274,7 +305,9 @@ export default function StudioUpload() {
           <div className="bg-gray-900/50 border border-gray-800 rounded-xl p-8">
             <div className="flex items-center justify-between mb-6">
               <span className="text-lg font-medium">
-                {STAGE_LABELS[status] || status}
+                {status === "processing"
+                  ? STAGE_LABELS[STAGE_ORDER[progress < 5 ? 0 : progress < 25 ? 1 : progress < 55 ? 2 : progress < 85 ? 3 : 4]] || "Processing..."
+                  : STAGE_LABELS[status] || status}
               </span>
               <span className="text-gray-400 text-sm">{overallProgress}%</span>
             </div>
@@ -290,8 +323,12 @@ export default function StudioUpload() {
             {/* Stage indicators */}
             <div className="space-y-3">
               {STAGE_ORDER.slice(0, -1).map((stage, i) => {
-                const isActive = stage === status;
-                const isDone = currentStageIndex > i;
+                // Map server "processing" progress (0-100) to pipeline stage index
+                const processingStageIndex = status === "processing"
+                  ? (progress < 5 ? 0 : progress < 25 ? 1 : progress < 55 ? 2 : progress < 85 ? 3 : 4)
+                  : currentStageIndex;
+                const isActive = status === "processing" ? processingStageIndex === i : stage === status;
+                const isDone = status === "processing" ? processingStageIndex > i : currentStageIndex > i;
                 return (
                   <div
                     key={stage}
