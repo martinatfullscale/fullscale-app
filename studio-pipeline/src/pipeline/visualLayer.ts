@@ -4,16 +4,57 @@ import fs from "fs";
 import path from "path";
 import axios from "axios";
 import { fal } from "@fal-ai/client";
-import type { Scene } from "./storyExtractor.js";
+import type { Scene, SlideCategory } from "./storyExtractor.js";
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Categories that get AI animation via Kling 3.0.
+ * "data" and "text" stay static — AI mangles text/numbers.
+ */
+const ANIMATED_CATEGORIES: SlideCategory[] = ["person", "product", "graphic", "title"];
+const STATIC_CATEGORIES: SlideCategory[] = ["data", "text"];
+
+/**
+ * Category-specific prompt templates for Kling image-to-video.
+ * Each template tells Kling HOW to animate the slide — not WHAT's in it.
+ * The actual slide image provides the visual content.
+ */
+const CATEGORY_PROMPTS: Record<SlideCategory, string> = {
+  person:
+    "Subtle lifelike animation. Person blinks naturally, slight head movement, " +
+    "gentle breathing motion. Maintain facial features perfectly — no morphing or distortion. " +
+    "Background stays completely still. Cinematic shallow depth of field.",
+
+  product:
+    "Gentle parallax depth effect revealing layers of the interface. " +
+    "Subtle zoom into the key feature area. Screen content stays sharp and readable. " +
+    "Smooth, professional camera drift. No warping of UI elements or text.",
+
+  graphic:
+    "Cinematic ken burns effect — slow, elegant camera movement across the visual. " +
+    "Subtle depth separation between foreground and background elements. " +
+    "Colors gently shift with cinematic lighting. Smooth and polished.",
+
+  data:
+    "Static hold. No animation. Clean presentation of data.",
+
+  text:
+    "Static hold. No animation. Clean presentation of text.",
+
+  title:
+    "Dramatic, cinematic camera movement. Bold entrance energy. " +
+    "Subtle particle effects or light rays in background. " +
+    "Text stays crisp and centered — no warping. " +
+    "Feels like the opening of a premium keynote.",
+};
 
 /**
  * Generate a visual for a scene based on the current tier.
  *
  * MVP:  Pass the slide image straight through (zero cost, no API call).
- * V1:   Kling 3.0 image-to-video via fal.ai — animates the actual slide image.
- *       Text-heavy slides stay static (AI mangles text/numbers).
+ * V1:   Kling 3.0 image-to-video via fal.ai — animates based on slide category.
+ *       Static categories (data, text) stay as images (AI mangles text/numbers).
  * V2:   Reserved for future upgrades.
  */
 export async function generateVisual(
@@ -42,18 +83,22 @@ export async function generateVisual(
 
 /**
  * Generate an AI video clip using Kling 3.0 image-to-video via fal.ai.
- * Takes the actual slide image and animates it into a video clip.
- * Text-heavy slides are kept static — AI mangles text and numbers.
- * Falls back to the static slide image if FAL_KEY is not set or on error.
+ * Animation style is determined by the slide category:
+ * - person: subtle life (blink, breathe)
+ * - product: parallax zoom into feature
+ * - graphic: ken burns cinematic pan
+ * - title: dramatic camera movement
+ * - data/text: SKIP — return static image
  */
 async function generateKlingClip(
   scene: Scene,
   slideImagePath: string
 ): Promise<string> {
-  // Skip AI animation for text-heavy slides — keeps text crisp and readable
-  const slideType = (scene as any).slideType || "text-heavy";
-  if (slideType === "text-heavy") {
-    console.log(`[VisualLayer] Scene ${scene.sceneNumber}: text-heavy slide — keeping static (no AI animation)`);
+  const category: SlideCategory = scene.slideCategory || "text";
+
+  // Static categories skip AI animation entirely
+  if (STATIC_CATEGORIES.includes(category)) {
+    console.log(`[VisualLayer] Scene ${scene.sceneNumber}: ${category} slide — keeping static`);
     return slideImagePath;
   }
 
@@ -67,10 +112,14 @@ async function generateKlingClip(
 
   const outputDir = path.dirname(slideImagePath);
   const videoPath = path.join(outputDir, `scene_${scene.sceneNumber}_video.mp4`);
-  const prompt = buildVideoPrompt(scene);
 
-  console.log(`[VisualLayer] Scene ${scene.sceneNumber}: visual slide — animating with Kling 3.0 image-to-video`);
-  console.log(`[VisualLayer] Prompt: "${prompt.slice(0, 200)}..."`);
+  // Build category-specific prompt
+  const categoryPrompt = CATEGORY_PROMPTS[category];
+  const cameraDirection = scene.cameraDirection || "";
+  const prompt = `${cameraDirection}. ${categoryPrompt}`;
+
+  console.log(`[VisualLayer] Scene ${scene.sceneNumber}: ${category} slide — animating with Kling 3.0`);
+  console.log(`[VisualLayer] Prompt: "${prompt.slice(0, 150)}..."`);
 
   try {
     // Upload the slide image to fal.ai storage so it can be used as input
@@ -83,6 +132,16 @@ async function generateKlingClip(
     const imageUrl = await fal.storage.upload(imageFile);
     console.log(`[VisualLayer] Uploaded slide image for scene ${scene.sceneNumber}`);
 
+    // Tune cfg_scale based on category:
+    // - person: lower (0.3) = more faithful to source face
+    // - product: lower (0.3) = preserve UI details
+    // - graphic: medium (0.5) = allow creative motion
+    // - title: higher (0.7) = more dramatic
+    const cfgScale = category === "person" ? 0.3
+      : category === "product" ? 0.3
+      : category === "title" ? 0.7
+      : 0.5;
+
     const result = await fal.subscribe(
       "fal-ai/kling-video/v3/standard/image-to-video",
       {
@@ -91,8 +150,10 @@ async function generateKlingClip(
           prompt,
           duration: "5",
           generate_audio: false,
-          negative_prompt: "blur, distort, low quality, watermark, morphing text, changing letters, garbled words",
-          cfg_scale: 0.5,
+          negative_prompt:
+            "blur, distort, low quality, watermark, morphing text, changing letters, " +
+            "garbled words, face deformation, extra fingers, melting, glitch",
+          cfg_scale: cfgScale,
         },
         logs: true,
         onQueueUpdate: (update) => {
@@ -125,31 +186,6 @@ async function generateKlingClip(
     console.warn("[VisualLayer] Falling back to static slide image");
     return slideImagePath;
   }
-}
-
-/**
- * Build a motion/camera prompt for image-to-video.
- * Since the actual slide image is the visual input, the prompt focuses on
- * HOW to animate it — camera movement, subtle motion, and cinematic feel.
- * We do NOT describe what's in the image (Kling already sees it).
- */
-function buildVideoPrompt(scene: Scene): string {
-  const camera = (scene as any).cameraDirection || "slow cinematic push-in";
-
-  const parts: string[] = [];
-
-  // Describe the desired motion/animation, not the content
-  parts.push(`${camera}.`);
-
-  // Add subtle life to the image
-  parts.push(
-    "Subtle natural motion, gentle parallax depth effect. " +
-    "Cinematic lighting with soft highlights. " +
-    "Smooth, professional camera movement. " +
-    "Keep all text and graphics sharp and stable — do not warp or distort any elements."
-  );
-
-  return parts.join(" ");
 }
 
 /**
