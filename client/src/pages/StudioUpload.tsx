@@ -1,7 +1,16 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Upload, FileVideo, Loader2, CheckCircle, AlertCircle, Download, Play } from "lucide-react";
+import { Upload, FileVideo, Loader2, CheckCircle, AlertCircle, Download, Play, Rocket, ShoppingCart, Users, Megaphone } from "lucide-react";
 
 type PipelineStatus = "idle" | "uploading" | "queued" | "parsing" | "extracting" | "generating" | "adding-voice" | "assembling" | "complete" | "failed";
+
+type DeckIntent = "investor-pitch" | "sales-deck" | "team-update" | "marketing";
+
+const DECK_INTENTS: { value: DeckIntent; label: string; description: string; icon: typeof Rocket }[] = [
+  { value: "investor-pitch", label: "Investor Pitch", description: "Fast, confident — built to raise", icon: Rocket },
+  { value: "sales-deck", label: "Sales Deck", description: "Persuasive — show the solution", icon: ShoppingCart },
+  { value: "team-update", label: "Team Update", description: "Clear, measured — status report", icon: Users },
+  { value: "marketing", label: "Marketing", description: "Energetic — tell your story", icon: Megaphone },
+];
 
 const STAGE_LABELS: Record<string, string> = {
   idle: "Ready",
@@ -27,6 +36,7 @@ const STAGE_ORDER: PipelineStatus[] = [
 
 export default function StudioUpload() {
   const [file, setFile] = useState<File | null>(null);
+  const [deckIntent, setDeckIntent] = useState<DeckIntent>("investor-pitch");
   const [status, setStatus] = useState<PipelineStatus>("idle");
   const [progress, setProgress] = useState(0);
   const [jobId, setJobId] = useState<string | null>(null);
@@ -72,6 +82,7 @@ export default function StudioUpload() {
     try {
       const formData = new FormData();
       formData.append("file", file);
+      formData.append("deckIntent", deckIntent);
 
       const response = await fetch("/api/studio/videos/upload", {
         method: "POST",
@@ -190,18 +201,44 @@ export default function StudioUpload() {
             />
 
             {file ? (
-              <div>
+              <div onClick={(e) => e.stopPropagation()}>
                 <FileVideo className="w-12 h-12 text-purple-400 mx-auto mb-4" />
                 <p className="text-lg font-medium mb-1">{file.name}</p>
-                <p className="text-gray-400 text-sm mb-6">
+                <p className="text-gray-400 text-sm mb-4">
                   {(file.size / (1024 * 1024)).toFixed(1)} MB &middot;{" "}
                   {file.name.endsWith(".pdf") ? "PDF" : "PPTX"}
                 </p>
+
+                {/* Deck Intent Selector */}
+                <div className="mb-6">
+                  <p className="text-sm text-gray-400 mb-3">What's this deck for?</p>
+                  <div className="grid grid-cols-2 gap-2 max-w-md mx-auto">
+                    {DECK_INTENTS.map((intent) => {
+                      const Icon = intent.icon;
+                      const isSelected = deckIntent === intent.value;
+                      return (
+                        <button
+                          key={intent.value}
+                          onClick={() => setDeckIntent(intent.value)}
+                          className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-left text-sm transition-all ${
+                            isSelected
+                              ? "border-purple-500 bg-purple-900/30 text-white"
+                              : "border-gray-700 bg-gray-900/30 text-gray-400 hover:border-gray-500"
+                          }`}
+                        >
+                          <Icon className={`w-4 h-4 flex-shrink-0 ${isSelected ? "text-purple-400" : "text-gray-500"}`} />
+                          <div>
+                            <div className="font-medium">{intent.label}</div>
+                            <div className="text-xs text-gray-500">{intent.description}</div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
                 <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleUpload();
-                  }}
+                  onClick={handleUpload}
                   className="bg-purple-600 hover:bg-purple-500 text-white font-semibold px-8 py-3 rounded-lg transition-colors"
                 >
                   Generate Video
