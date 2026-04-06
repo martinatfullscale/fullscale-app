@@ -49,7 +49,7 @@ export const STUDIO_TIERS = {
   free: { label: "Free", price: 0, videosPerMonth: 1, voiceTier: "free", quality: "720p", visualMode: "static", watermark: true },
   starter: { label: "Starter", price: 9, videosPerMonth: 5, voiceTier: "starter", quality: "720p", visualMode: "ai_generated", watermark: false },
   pro: { label: "Pro", price: 29, videosPerMonth: 20, voiceTier: "pro", quality: "1080p", visualMode: "ai_generated", watermark: false },
-  business: { label: "Business", price: 99, videosPerMonth: 999, voiceTier: "business", quality: "1080p", visualMode: "ai_generated", watermark: false },
+  business: { label: "Business", price: 99, videosPerMonth: 99999, voiceTier: "business", quality: "1080p", visualMode: "ai_generated", watermark: false },
 } as const;
 
 type TierName = keyof typeof STUDIO_TIERS;
