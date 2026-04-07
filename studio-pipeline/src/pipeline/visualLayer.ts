@@ -147,10 +147,10 @@ async function generateSeedanceClip(
         const dlRes = await axios.get(submitData.output[0], { responseType: "arraybuffer" });
         fs.writeFileSync(videoPath, Buffer.from(dlRes.data));
       } else if (submitData.status === "processing" && submitData.fetch_result) {
-        console.log(`[VisualLayer] Scene ${scene.sceneNumber} queued — polling (3-min max)...`);
+        console.log(`[VisualLayer] Scene ${scene.sceneNumber} queued — polling (10-min max)...`);
         const fetchUrl = submitData.fetch_result;
         const startTime = Date.now();
-        const timeout = 3 * 60 * 1000; // 3 min (not 5)
+        const timeout = 10 * 60 * 1000; // 10 min — ModelsLab queue can be slow
         let completed = false;
 
         while (Date.now() - startTime < timeout) {
@@ -169,7 +169,7 @@ async function generateSeedanceClip(
           console.log(`[VisualLayer] Scene ${scene.sceneNumber} still processing...`);
         }
 
-        if (!completed) throw new Error("Seedance timed out after 3 minutes");
+        if (!completed) throw new Error("Seedance timed out after 10 minutes");
       } else {
         throw new Error(`Unexpected response: ${JSON.stringify(submitData).slice(0, 200)}`);
       }
