@@ -41,6 +41,8 @@ export interface RemixConfig {
   clipRange?: { start: number; end: number };
   /** When true, use editorial intelligence pipeline instead of legacy per-frame detection */
   editorialMode?: boolean;
+  /** Enable face-tracking smart reframing for portrait clips (default: true) */
+  faceTrackingEnabled?: boolean;
 }
 
 export interface RemixResult {
@@ -68,6 +70,7 @@ const DEFAULT_CONFIG: RemixConfig = {
   platformTargets: ["tiktok", "youtube_shorts"],
   captionsEnabled: true,
   captionStyle: "highlight",
+  faceTrackingEnabled: true,
 };
 
 /**
@@ -642,6 +645,10 @@ export async function runRemixPipeline(
         outputDir,
         jobId,
         cameraMotion: clipMotionData.get(i),
+        faceTracking: {
+          enabled: mergedConfig.faceTrackingEnabled ?? true,
+          sampleIntervalSec: 0.5,
+        },
       });
 
       if (!clipResult.success) {
@@ -1042,7 +1049,7 @@ export async function reRenderClip(
       }
     }
 
-    // Step 5: Generate clip (with VFX motion tracking if available)
+    // Step 5: Generate clip (with VFX motion tracking + face reframing if available)
     const clipResult = await generateClip({
       videoPath,
       videoId: originalClip.videoId,
@@ -1054,6 +1061,7 @@ export async function reRenderClip(
       outputDir,
       jobId: originalClip.remixJobId,
       cameraMotion: reRenderMotionData,
+      faceTracking: { enabled: true, sampleIntervalSec: 0.5 },
     });
 
     if (!clipResult.success) {

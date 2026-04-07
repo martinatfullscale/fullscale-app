@@ -19,6 +19,7 @@ import sharp from "sharp";
 import { storage } from "../../storage";
 import type { ClipCandidate, PlatformConfig, PLATFORM_CONFIGS } from "./clipDetector";
 import type { CameraMotionData, CumulativeTransform } from "./motionTracker";
+import { detectFacesInClip, computeCropTrajectory, buildCropFilterExpr, getVideoSize } from "./faceTracker";
 
 export interface ClipGeneratorInput {
   /** Source video path */
@@ -41,6 +42,11 @@ export interface ClipGeneratorInput {
   jobId: number;
   /** Camera motion data from vidstab analysis (VFX matchmoving) */
   cameraMotion?: CameraMotionData;
+  /** Face tracking for smart reframing (portrait clips) */
+  faceTracking?: {
+    enabled: boolean;
+    sampleIntervalSec?: number;
+  };
 }
 
 export interface PlacementKeyframe {
@@ -116,7 +122,7 @@ export async function generateClip(input: ClipGeneratorInput): Promise<ClipGener
       await generateWithPlacements(input, clipPath);
     } else {
       // Simple path: direct FFmpeg clip extraction + reformat
-      await generateCleanClip(videoPath, clip, platformConfig, captionsEnabled, captionSegments, clipPath);
+      await generateCleanClip(videoPath, clip, platformConfig, captionsEnabled, captionSegments, clipPath, input.faceTracking);
     }
 
     // Verify output exists
@@ -157,7 +163,8 @@ async function generateCleanClip(
   config: PlatformConfig,
   captionsEnabled: boolean,
   captionSegments: CaptionSegment[] | undefined,
-  outputPath: string
+  outputPath: string,
+  faceTracking?: { enabled: boolean; sampleIntervalSec?: number }
 ): Promise<void> {
   const args = [
     "-nostdin", "-y",
@@ -169,16 +176,25 @@ async function generateCleanClip(
   // Build video filter chain
   const filters: string[] = [];
 
-  // Scale + pad/crop for target aspect ratio
+  // Scale + crop for target aspect ratio
   const [arW, arH] = config.aspectRatio.split(":").map(Number);
   const targetAR = arW / arH;
 
   if (targetAR < 1) {
-    // Portrait (9:16) — scale to fit width, pad vertically
-    filters.push(`scale=${config.targetWidth}:-2`);
-    filters.push(`pad=${config.targetWidth}:${config.targetHeight}:(ow-iw)/2:(oh-ih)/2:black`);
+    // Portrait (9:16) — smart crop with face tracking or center crop
+    const cropFilter = await buildSmartCropFilter(
+      videoPath, clip, config, faceTracking
+    );
+    if (cropFilter) {
+      filters.push(cropFilter);
+      filters.push(`scale=${config.targetWidth}:${config.targetHeight}`);
+    } else {
+      // Fallback: center crop (still no black bars)
+      filters.push(`scale=-2:${config.targetHeight}`);
+      filters.push(`crop=${config.targetWidth}:${config.targetHeight}`);
+    }
   } else {
-    // Landscape (16:9) — scale to fit height, pad horizontally
+    // Landscape (16:9) — scale to fit height, pad horizontally if needed
     filters.push(`scale=-2:${config.targetHeight}`);
     filters.push(`pad=${config.targetWidth}:${config.targetHeight}:(ow-iw)/2:(oh-ih)/2:black`);
   }
@@ -200,6 +216,52 @@ async function generateCleanClip(
   args.push(outputPath);
 
   await runFFmpeg(args);
+}
+
+/**
+ * Build a smart crop filter using face detection.
+ * Returns a crop filter string, or null to fall back to center crop.
+ */
+async function buildSmartCropFilter(
+  videoPath: string,
+  clip: ClipCandidate,
+  config: PlatformConfig,
+  faceTracking?: { enabled: boolean; sampleIntervalSec?: number }
+): Promise<string | null> {
+  try {
+    // Get source video dimensions
+    const srcSize = await getVideoSize(videoPath);
+
+    // Compute crop dimensions for target AR
+    const targetAR = config.targetWidth / config.targetHeight;
+    const cropW = Math.min(Math.round(srcSize.height * targetAR), srcSize.width);
+    const cropH = srcSize.height;
+
+    if (faceTracking?.enabled) {
+      console.log(`[ClipGenerator] Running face detection for smart reframe (${clip.duration.toFixed(1)}s clip)...`);
+      const interval = faceTracking.sampleIntervalSec || 0.5;
+      const frames = await detectFacesInClip(videoPath, clip.startTime, clip.duration, interval);
+      const totalFaces = frames.reduce((sum, f) => sum + f.faces.length, 0);
+
+      if (totalFaces > 0) {
+        console.log(`[ClipGenerator] Detected ${totalFaces} person instances across ${frames.length} samples — computing crop trajectory`);
+        const trajectory = computeCropTrajectory(
+          frames, srcSize.width, srcSize.height,
+          config.targetWidth, config.targetHeight
+        );
+        return buildCropFilterExpr(trajectory);
+      }
+
+      console.log("[ClipGenerator] No faces detected — using center crop");
+    }
+
+    // Center crop fallback
+    const centerX = Math.round((srcSize.width - cropW) / 2);
+    return `crop=${cropW}:${cropH}:${centerX}:0`;
+  } catch (err: any) {
+    console.warn(`[ClipGenerator] Smart crop failed: ${err.message} — using center crop`);
+    return null;
+  }
 }
 
 /**
