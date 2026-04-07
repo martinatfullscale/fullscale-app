@@ -102,12 +102,12 @@ async function generateSeedanceClip(
     return slideImagePath;
   }
 
-  // Kling 3.0 (primary — fast, reliable) or Seedance 2.0 via ModelsLab (secondary)
-  const falKey = process.env.FAL_KEY;
+  // Seedance 2.0 via ModelsLab (primary) with Kling 3.0 fallback (3-min timeout)
   const modelsLabKey = process.env.MODELSLAB_API_KEY;
+  const falKey = process.env.FAL_KEY;
 
-  if (!falKey && !modelsLabKey) {
-    console.warn("[VisualLayer] No FAL_KEY or MODELSLAB_API_KEY — falling back to MVP (static slides)");
+  if (!modelsLabKey && !falKey) {
+    console.warn("[VisualLayer] No MODELSLAB_API_KEY or FAL_KEY — falling back to MVP (static slides)");
     return slideImagePath;
   }
 
@@ -119,7 +119,79 @@ async function generateSeedanceClip(
   const cameraDirection = scene.cameraDirection || "";
   const prompt = `${cameraDirection}. ${categoryPrompt}`;
 
-  // PRIMARY: Kling 3.0 via fal.ai (fast, reliable for image-to-video)
+  // PRIMARY: Seedance 2.0 via ModelsLab (3-min timeout, then Kling fallback)
+  if (modelsLabKey) {
+    console.log(`[VisualLayer] Scene ${scene.sceneNumber}: ${category} slide — animating with Seedance 2.0 (ModelsLab)`);
+    console.log(`[VisualLayer] Prompt: "${prompt.slice(0, 150)}..."`);
+
+    try {
+      const imageBuffer = fs.readFileSync(slideImagePath);
+      const base64Image = imageBuffer.toString("base64");
+
+      const submitRes = await axios.post("https://modelslab.com/api/v6/video/img2video", {
+        key: modelsLabKey,
+        model_id: "seedance-i2v",
+        prompt,
+        init_image: base64Image,
+        base64: true,
+        height: 720,
+        width: 1280,
+        num_inference_steps: 25,
+        guidance_scale: 7.5,
+        output_type: "mp4",
+      }, { timeout: 30000 });
+
+      const submitData = submitRes.data;
+
+      if (submitData.status === "success" && submitData.output?.[0]) {
+        const dlRes = await axios.get(submitData.output[0], { responseType: "arraybuffer" });
+        fs.writeFileSync(videoPath, Buffer.from(dlRes.data));
+      } else if (submitData.status === "processing" && submitData.fetch_result) {
+        console.log(`[VisualLayer] Scene ${scene.sceneNumber} queued — polling (3-min max)...`);
+        const fetchUrl = submitData.fetch_result;
+        const startTime = Date.now();
+        const timeout = 3 * 60 * 1000; // 3 min (not 5)
+        let completed = false;
+
+        while (Date.now() - startTime < timeout) {
+          await new Promise(r => setTimeout(r, 10000));
+          const pollRes = await axios.post(fetchUrl, { key: modelsLabKey }, { timeout: 15000 });
+          const pollData = pollRes.data;
+
+          if (pollData.status === "success" && pollData.output?.[0]) {
+            const dlRes = await axios.get(pollData.output[0], { responseType: "arraybuffer" });
+            fs.writeFileSync(videoPath, Buffer.from(dlRes.data));
+            completed = true;
+            break;
+          } else if (pollData.status === "failed" || pollData.status === "error") {
+            throw new Error(`ModelsLab job failed: ${pollData.message || "unknown"}`);
+          }
+          console.log(`[VisualLayer] Scene ${scene.sceneNumber} still processing...`);
+        }
+
+        if (!completed) throw new Error("Seedance timed out after 3 minutes");
+      } else {
+        throw new Error(`Unexpected response: ${JSON.stringify(submitData).slice(0, 200)}`);
+      }
+
+      if (fs.existsSync(videoPath) && fs.statSync(videoPath).size > 1000) {
+        const fileSizeKB = Math.round(fs.statSync(videoPath).size / 1024);
+        console.log(`[VisualLayer] Scene ${scene.sceneNumber} video (Seedance): ${videoPath} (${fileSizeKB} KB)`);
+        return videoPath;
+      }
+      throw new Error("Video file not created or too small");
+    } catch (err: any) {
+      console.error(`[VisualLayer] Seedance 2.0 failed for scene ${scene.sceneNumber}: ${err.message}`);
+      if (falKey) {
+        console.log(`[VisualLayer] Falling back to Kling 3.0...`);
+      } else {
+        console.warn("[VisualLayer] No Kling fallback — using static slide image");
+        return slideImagePath;
+      }
+    }
+  }
+
+  // FALLBACK: Kling 3.0 via fal.ai
   if (falKey) {
     console.log(`[VisualLayer] Scene ${scene.sceneNumber}: ${category} slide — animating with Kling 3.0`);
     console.log(`[VisualLayer] Prompt: "${prompt.slice(0, 150)}..."`);
