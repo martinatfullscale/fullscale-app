@@ -102,12 +102,12 @@ async function generateSeedanceClip(
     return slideImagePath;
   }
 
-  // ModelsLab API key (for Seedance 2.0) or FAL_KEY (fallback to Kling)
-  const modelsLabKey = process.env.MODELSLAB_API_KEY;
+  // Kling 3.0 (primary — fast, reliable) or Seedance 2.0 via ModelsLab (secondary)
   const falKey = process.env.FAL_KEY;
+  const modelsLabKey = process.env.MODELSLAB_API_KEY;
 
-  if (!modelsLabKey && !falKey) {
-    console.warn("[VisualLayer] No MODELSLAB_API_KEY or FAL_KEY — falling back to MVP (static slides)");
+  if (!falKey && !modelsLabKey) {
+    console.warn("[VisualLayer] No FAL_KEY or MODELSLAB_API_KEY — falling back to MVP (static slides)");
     return slideImagePath;
   }
 
@@ -119,84 +119,9 @@ async function generateSeedanceClip(
   const cameraDirection = scene.cameraDirection || "";
   const prompt = `${cameraDirection}. ${categoryPrompt}`;
 
-  // Try Seedance 2.0 via ModelsLab first, fall back to Kling via fal.ai
-  if (modelsLabKey) {
-    console.log(`[VisualLayer] Scene ${scene.sceneNumber}: ${category} slide — animating with Seedance 2.0 (ModelsLab)`);
-    console.log(`[VisualLayer] Prompt: "${prompt.slice(0, 150)}..."`);
-
-    try {
-      const imageBuffer = fs.readFileSync(slideImagePath);
-      const base64Image = imageBuffer.toString("base64");
-
-      // Submit job to ModelsLab with base64 flag
-      const submitRes = await axios.post("https://modelslab.com/api/v6/video/img2video", {
-        key: modelsLabKey,
-        model_id: "seedance-i2v",
-        prompt,
-        init_image: base64Image,
-        base64: true,
-        height: 720,
-        width: 1280,
-        num_inference_steps: 25,
-        guidance_scale: 7.5,
-        output_type: "mp4",
-      }, { timeout: 30000 });
-
-      const submitData = submitRes.data;
-
-      if (submitData.status === "success" && submitData.output?.[0]) {
-        // Completed immediately
-        const videoUrl = submitData.output[0];
-        console.log(`[VisualLayer] Scene ${scene.sceneNumber} completed immediately`);
-        const dlRes = await axios.get(videoUrl, { responseType: "arraybuffer" });
-        fs.writeFileSync(videoPath, Buffer.from(dlRes.data));
-      } else if (submitData.status === "processing" && submitData.fetch_result) {
-        // Poll for completion
-        console.log(`[VisualLayer] Scene ${scene.sceneNumber} queued — polling...`);
-        const fetchUrl = submitData.fetch_result;
-        const startTime = Date.now();
-        const timeout = 5 * 60 * 1000; // 5 min
-
-        while (Date.now() - startTime < timeout) {
-          await new Promise(r => setTimeout(r, 10000)); // 10s interval
-          const pollRes = await axios.post(fetchUrl, { key: modelsLabKey }, { timeout: 15000 });
-          const pollData = pollRes.data;
-
-          if (pollData.status === "success" && pollData.output?.[0]) {
-            const videoUrl = pollData.output[0];
-            console.log(`[VisualLayer] Scene ${scene.sceneNumber} ready — downloading...`);
-            const dlRes = await axios.get(videoUrl, { responseType: "arraybuffer" });
-            fs.writeFileSync(videoPath, Buffer.from(dlRes.data));
-            break;
-          } else if (pollData.status === "failed" || pollData.status === "error") {
-            throw new Error(`ModelsLab job failed: ${pollData.message || "unknown"}`);
-          }
-          console.log(`[VisualLayer] Scene ${scene.sceneNumber} still processing...`);
-        }
-      } else {
-        throw new Error(`Unexpected ModelsLab response: ${JSON.stringify(submitData).slice(0, 200)}`);
-      }
-
-      if (fs.existsSync(videoPath)) {
-        const fileSizeKB = Math.round(fs.statSync(videoPath).size / 1024);
-        console.log(`[VisualLayer] Scene ${scene.sceneNumber} video: ${videoPath} (${fileSizeKB} KB)`);
-        return videoPath;
-      }
-      throw new Error("Video file not created after polling");
-    } catch (err: any) {
-      console.error(`[VisualLayer] Seedance 2.0 (ModelsLab) failed for scene ${scene.sceneNumber}: ${err.message}`);
-      if (falKey) {
-        console.log(`[VisualLayer] Falling back to Kling 3.0 via fal.ai...`);
-      } else {
-        console.warn("[VisualLayer] No FAL_KEY fallback — using static slide image");
-        return slideImagePath;
-      }
-    }
-  }
-
-  // Fallback: Kling 3.0 via fal.ai
+  // PRIMARY: Kling 3.0 via fal.ai (fast, reliable for image-to-video)
   if (falKey) {
-    console.log(`[VisualLayer] Scene ${scene.sceneNumber}: ${category} slide — animating with Kling 3.0 (fal.ai)`);
+    console.log(`[VisualLayer] Scene ${scene.sceneNumber}: ${category} slide — animating with Kling 3.0`);
     console.log(`[VisualLayer] Prompt: "${prompt.slice(0, 150)}..."`);
 
     try {
