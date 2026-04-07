@@ -101,19 +101,10 @@ export interface CardGenerationOutput {
   error?: string;
 }
 
-// ─── fal.ai Client Setup ───────────────────────────────────────
+// ─── API Config ────────────────────────────────────────────────
 
-let falClient: any = null;
-
-async function getFal() {
-  if (!falClient) {
-    const { fal } = await import("@fal-ai/client");
-    const falKey = process.env.FAL_KEY;
-    if (!falKey) return null;
-    fal.config({ credentials: falKey });
-    falClient = fal;
-  }
-  return falClient;
+function getModelsLabKey(): string | null {
+  return process.env.MODELSLAB_API_KEY || null;
 }
 
 // ─── Main Generator ─────────────────────────────────────────────
@@ -136,43 +127,61 @@ export async function generateProductAsset(input: AssetGenerationInput): Promise
   console.log(`[Seedance] Prompt: "${promptOutput.prompt.substring(0, 120)}..."`);
   console.log(`[Seedance] Config: ${promptOutput.aspectRatio} @ ${promptOutput.resolution}, ${promptOutput.duration}s`);
 
-  const fal = await getFal();
-  if (!fal) {
-    console.warn("[Seedance] No FAL_KEY set — returning placeholder for development");
+  const modelsLabKey = getModelsLabKey();
+  if (!modelsLabKey) {
+    console.warn("[Seedance] No MODELSLAB_API_KEY set — returning placeholder for development");
     return createPlaceholder(input, promptOutput);
   }
 
   try {
-    const result = await fal.subscribe(
-      "fal-ai/bytedance/seedance-2.0/text-to-video",
-      {
-        input: {
-          prompt: promptOutput.prompt,
-          duration: promptOutput.duration,
-          resolution: "720p",
-          aspect_ratio: promptOutput.aspectRatio,
-          generate_audio: false,
-        },
-        logs: true,
-        onQueueUpdate: (update: any) => {
-          if (update.status === "IN_PROGRESS") {
-            const msgs = update.logs;
-            if (msgs) {
-              msgs.map((log: any) => log.message).forEach((msg: string) => {
-                console.log(`[Seedance/fal] ${msg}`);
-              });
-            }
-          }
-        },
-      }
-    );
+    // Submit to ModelsLab Seedance 2.0 text-to-video
+    const submitRes = await fetch("https://modelslab.com/api/v6/video/text2video", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        key: modelsLabKey,
+        model_id: "seedance-t2v",
+        prompt: promptOutput.prompt,
+        negative_prompt: promptOutput.negativePrompt,
+        height: 720,
+        width: 1280,
+        num_inference_steps: 30,
+        guidance_scale: 7.5,
+        output_type: "mp4",
+      }),
+    });
 
-    const videoUrl = result?.data?.video?.url || result?.video?.url;
-    if (!videoUrl) {
-      throw new Error("No video URL in Seedance 2.0 fal.ai response");
+    const submitData = await submitRes.json() as any;
+    let videoUrl: string | null = null;
+
+    if (submitData.status === "success" && submitData.output?.[0]) {
+      videoUrl = submitData.output[0];
+    } else if (submitData.status === "processing" && submitData.fetch_result) {
+      // Poll for completion
+      console.log(`[Seedance] Job queued — polling ${submitData.fetch_result}...`);
+      const startTime = Date.now();
+      while (Date.now() - startTime < VIDEO_GEN_TIMEOUT_MS) {
+        await new Promise(r => setTimeout(r, 10000));
+        const pollRes = await fetch(submitData.fetch_result, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key: modelsLabKey }),
+        });
+        const pollData = await pollRes.json() as any;
+        if (pollData.status === "success" && pollData.output?.[0]) {
+          videoUrl = pollData.output[0];
+          break;
+        } else if (pollData.status === "failed" || pollData.status === "error") {
+          throw new Error(`ModelsLab job failed: ${pollData.message || "unknown"}`);
+        }
+        console.log(`[Seedance] Still processing...`);
+      }
+    } else {
+      throw new Error(`Unexpected ModelsLab response: ${JSON.stringify(submitData).slice(0, 200)}`);
     }
 
-    // Download and save
+    if (!videoUrl) throw new Error("No video URL after polling");
+
     const savedPath = await downloadAndSaveVideo(videoUrl, input);
     if (!savedPath) {
       return {
@@ -182,12 +191,10 @@ export async function generateProductAsset(input: AssetGenerationInput): Promise
       };
     }
 
-    const jobId = result?.request_id || `fal_${Date.now()}`;
-    console.log(`[Seedance] Video saved: ${savedPath} (job: ${jobId})`);
-
+    console.log(`[Seedance] Video saved: ${savedPath}`);
     return {
       success: true, assetPath: savedPath, prompt: promptOutput.prompt,
-      promptDetails: promptOutput, jobId, assetType: "video",
+      promptDetails: promptOutput, jobId: `modelslab_${Date.now()}`, assetType: "video",
       duration: promptOutput.duration,
     };
   } catch (err: any) {
@@ -240,32 +247,52 @@ async function generateCardClip(
   duration: number,
   aspectRatio: string
 ): Promise<CardGenerationOutput> {
-  const fal = await getFal();
-  if (!fal) {
+  const modelsLabKey = getModelsLabKey();
+  if (!modelsLabKey) {
     return createCardPlaceholder(videoId, brandProduct, prompt, assetType, duration);
   }
 
   try {
-    const result = await fal.subscribe(
-      "fal-ai/bytedance/seedance-2.0/text-to-video",
-      {
-        input: {
-          prompt,
-          duration,
-          resolution: "720p",
-          aspect_ratio: aspectRatio,
-          generate_audio: false,
-        },
-        logs: true,
-      }
-    );
+    const [h, w] = aspectRatio === "9:16" ? [1280, 720] : [720, 1280];
+    const submitRes = await fetch("https://modelslab.com/api/v6/video/text2video", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        key: modelsLabKey,
+        model_id: "seedance-t2v",
+        prompt,
+        height: h,
+        width: w,
+        num_inference_steps: 30,
+        guidance_scale: 7.5,
+        output_type: "mp4",
+      }),
+    });
 
-    const videoUrl = result?.data?.video?.url || result?.video?.url;
-    if (!videoUrl) throw new Error("No video URL in response");
+    const submitData = await submitRes.json() as any;
+    let videoUrl: string | null = null;
+
+    if (submitData.status === "success" && submitData.output?.[0]) {
+      videoUrl = submitData.output[0];
+    } else if (submitData.status === "processing" && submitData.fetch_result) {
+      const startTime = Date.now();
+      while (Date.now() - startTime < VIDEO_GEN_TIMEOUT_MS) {
+        await new Promise(r => setTimeout(r, 10000));
+        const pollRes = await fetch(submitData.fetch_result, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key: modelsLabKey }),
+        });
+        const pollData = await pollRes.json() as any;
+        if (pollData.status === "success" && pollData.output?.[0]) { videoUrl = pollData.output[0]; break; }
+        if (pollData.status === "failed" || pollData.status === "error") throw new Error("Job failed");
+      }
+    }
+
+    if (!videoUrl) throw new Error("No video URL after polling");
 
     const response = await fetch(videoUrl);
     if (!response.ok) throw new Error(`Download failed: ${response.status}`);
-
     const arrayBuffer = await response.arrayBuffer();
     const videoBuffer = Buffer.from(arrayBuffer);
 
@@ -277,7 +304,6 @@ async function generateCardClip(
 
     const relativePath = `/generated-assets/${videoId}/${filename}`;
     console.log(`[Seedance] ${assetType} saved: ${relativePath}`);
-
     return { success: true, assetPath: relativePath, prompt, assetType, duration };
   } catch (err: any) {
     console.error(`[Seedance] ${assetType} generation failed:`, err.message);
@@ -332,8 +358,8 @@ function createPlaceholder(
   const placeholderPath = path.join(outputDir, filename);
   fs.writeFileSync(placeholderPath, JSON.stringify({
     type: "seedance_placeholder",
-    status: "fal_key_not_set",
-    message: "FAL_KEY not configured. Set FAL_KEY to enable Seedance 2.0 video generation via fal.ai.",
+    status: "api_key_not_set",
+    message: "MODELSLAB_API_KEY not configured. Set it to enable Seedance 2.0 video generation.",
     prompt: promptOutput.prompt,
     negativePrompt: promptOutput.negativePrompt,
     aspectRatio: promptOutput.aspectRatio,

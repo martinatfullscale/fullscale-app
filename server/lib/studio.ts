@@ -757,8 +757,8 @@ export function registerStudioRoutes(app: Express) {
       // ── Increment usage ──
       await storage.incrementStudioUsage(user.id, month);
 
-      // Use V1 (Seedance AI video) when FAL_KEY is available, MVP (static slides) otherwise
-      const visualTier = process.env.FAL_KEY ? "v1" : "mvp";
+      // Use V1 (Seedance 2.0 via ModelsLab, or Kling via fal.ai) when API key is available
+      const visualTier = (process.env.MODELSLAB_API_KEY || process.env.FAL_KEY) ? "v1" : "mvp";
 
       console.log(`[Studio] Video ${video.id} starting for ${email} (tier: ${tier}, visual: ${visualTier}, file: ${fileName})`);
 
