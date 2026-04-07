@@ -9,27 +9,27 @@ import type { Scene, SlideCategory } from "./storyExtractor.js";
 const execFileAsync = promisify(execFile);
 
 /**
- * Categories that get AI animation via Kling 3.0.
+ * Categories that get AI animation via Seedance 2.0.
  * "data" and "text" stay static — AI mangles text/numbers.
  */
 const ANIMATED_CATEGORIES: SlideCategory[] = ["person", "product", "graphic", "title"];
 const STATIC_CATEGORIES: SlideCategory[] = ["data", "text"];
 
 /**
- * Category-specific prompt templates for Kling image-to-video.
- * Each template tells Kling HOW to animate the slide — not WHAT's in it.
+ * Category-specific prompt templates for Seedance 2.0 image-to-video.
+ * Each template describes HOW to animate the slide — not WHAT's in it.
  * The actual slide image provides the visual content.
  */
 const CATEGORY_PROMPTS: Record<SlideCategory, string> = {
   person:
     "Subtle lifelike animation. Person blinks naturally, slight head movement, " +
-    "gentle breathing motion. Maintain facial features perfectly — no morphing or distortion. " +
+    "gentle breathing motion. Preserve the original face and features exactly — no morphing or distortion. " +
     "Background stays completely still. Cinematic shallow depth of field.",
 
   product:
     "Gentle parallax depth effect revealing layers of the interface. " +
-    "Subtle zoom into the key feature area. Screen content stays sharp and readable. " +
-    "Smooth, professional camera drift. No warping of UI elements or text.",
+    "Subtle zoom into the key feature area. Preserve all text, UI elements, and screen content exactly as shown. " +
+    "Smooth, professional camera drift. No warping or distortion.",
 
   graphic:
     "Cinematic ken burns effect — slow, elegant camera movement across the visual. " +
@@ -53,7 +53,7 @@ const CATEGORY_PROMPTS: Record<SlideCategory, string> = {
  * Generate a visual for a scene based on the current tier.
  *
  * MVP:  Pass the slide image straight through (zero cost, no API call).
- * V1:   Kling 3.0 image-to-video via fal.ai — animates based on slide category.
+ * V1:   Seedance 2.0 image-to-video via fal.ai — animates based on slide category.
  *       Static categories (data, text) stay as images (AI mangles text/numbers).
  * V2:   Reserved for future upgrades.
  */
@@ -71,10 +71,10 @@ export async function generateVisual(
       return slideImagePath;
 
     case "v1":
-      return generateKlingClip(scene, slideImagePath);
+      return generateSeedanceClip(scene, slideImagePath);
 
     case "v2":
-      throw new Error("V2 tier not yet configured. Using V1 (Kling 3.0).");
+      throw new Error("V2 tier not yet configured.");
 
     default:
       return slideImagePath;
@@ -82,7 +82,7 @@ export async function generateVisual(
 }
 
 /**
- * Generate an AI video clip using Kling 3.0 image-to-video via fal.ai.
+ * Generate an AI video clip using Seedance 2.0 image-to-video via fal.ai.
  * Animation style is determined by the slide category:
  * - person: subtle life (blink, breathe)
  * - product: parallax zoom into feature
@@ -90,7 +90,7 @@ export async function generateVisual(
  * - title: dramatic camera movement
  * - data/text: SKIP — return static image
  */
-async function generateKlingClip(
+async function generateSeedanceClip(
   scene: Scene,
   slideImagePath: string
 ): Promise<string> {
@@ -118,7 +118,7 @@ async function generateKlingClip(
   const cameraDirection = scene.cameraDirection || "";
   const prompt = `${cameraDirection}. ${categoryPrompt}`;
 
-  console.log(`[VisualLayer] Scene ${scene.sceneNumber}: ${category} slide — animating with Kling 3.0`);
+  console.log(`[VisualLayer] Scene ${scene.sceneNumber}: ${category} slide — animating with Seedance 2.0`);
   console.log(`[VisualLayer] Prompt: "${prompt.slice(0, 150)}..."`);
 
   try {
@@ -132,28 +132,20 @@ async function generateKlingClip(
     const imageUrl = await fal.storage.upload(imageFile);
     console.log(`[VisualLayer] Uploaded slide image for scene ${scene.sceneNumber}`);
 
-    // Tune cfg_scale based on category:
-    // - person: lower (0.3) = more faithful to source face
-    // - product: lower (0.3) = preserve UI details
-    // - graphic: medium (0.5) = allow creative motion
-    // - title: higher (0.7) = more dramatic
-    const cfgScale = category === "person" ? 0.3
-      : category === "product" ? 0.3
-      : category === "title" ? 0.7
-      : 0.5;
+    // For person/product slides, lock camera to preserve content fidelity
+    const cameraFixed = category === "person" || category === "product";
 
     const result = await fal.subscribe(
-      "fal-ai/kling-video/v3/standard/image-to-video",
+      "fal-ai/bytedance/seedance-2.0/image-to-video",
       {
         input: {
-          start_image_url: imageUrl,
+          image_url: imageUrl,
           prompt,
-          duration: "5",
+          duration: 5,
+          resolution: "720p",
+          aspect_ratio: "16:9",
           generate_audio: false,
-          negative_prompt:
-            "blur, distort, low quality, watermark, morphing text, changing letters, " +
-            "garbled words, face deformation, extra fingers, melting, glitch",
-          cfg_scale: cfgScale,
+          camera_fixed: cameraFixed,
         },
         logs: true,
         onQueueUpdate: (update) => {
@@ -169,9 +161,10 @@ async function generateKlingClip(
       }
     );
 
-    const videoUrl = (result as any).data?.video?.url;
+    // Seedance 2.0 fal.ai response: { video: { url: "..." }, seed: ... }
+    const videoUrl = (result as any).data?.video?.url || (result as any).video?.url;
     if (!videoUrl) {
-      throw new Error("No video URL in fal.ai response");
+      throw new Error("No video URL in Seedance 2.0 fal.ai response");
     }
 
     console.log(`[VisualLayer] Downloading clip for scene ${scene.sceneNumber}...`);
@@ -182,7 +175,7 @@ async function generateKlingClip(
     console.log(`[VisualLayer] Scene ${scene.sceneNumber} video: ${videoPath} (${fileSizeKB} KB)`);
     return videoPath;
   } catch (err: any) {
-    console.error(`[VisualLayer] Kling generation failed for scene ${scene.sceneNumber}: ${err.message}`);
+    console.error(`[VisualLayer] Seedance 2.0 generation failed for scene ${scene.sceneNumber}: ${err.message}`);
     console.warn("[VisualLayer] Falling back to static slide image");
     return slideImagePath;
   }
