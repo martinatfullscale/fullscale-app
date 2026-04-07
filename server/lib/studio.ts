@@ -921,8 +921,18 @@ export function registerStudioRoutes(app: Express) {
         return res.status(403).json({ error: "Access denied" });
       }
 
-      if (video.status !== "completed" || !video.outputUrl) {
+      if (!video.outputUrl) {
         return res.status(400).json({ error: "Video is not ready for download" });
+      }
+
+      // Fix stuck status — if outputUrl exists but status is still "processing", mark completed
+      if (video.status !== "completed" && video.outputUrl) {
+        try {
+          const { db } = await import("../db.js");
+          const { sql } = await import("drizzle-orm");
+          await db.execute(sql`UPDATE studio_videos SET status = 'completed', progress = 100 WHERE id = ${videoId}`);
+          console.log(`[Studio] Auto-fixed stuck status for video ${videoId}`);
+        } catch {}
       }
 
       const fs = await import("fs");

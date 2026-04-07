@@ -166,7 +166,10 @@ export default function StudioUpload() {
           });
         }
 
-        if (video.status === "completed") {
+        // Treat as completed if status says so, OR if outputUrl is set (race condition workaround)
+        if (video.status === "completed" || (video.outputUrl && video.completedAt)) {
+          setStatus("complete" as PipelineStatus);
+          setProgress(100);
           setVideoUrl(`/api/studio/videos/${id}/download`);
           stopPolling();
         } else if (video.status === "failed") {
