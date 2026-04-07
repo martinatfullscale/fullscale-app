@@ -77,6 +77,21 @@ export async function detectFacesInClip(
   duration: number,
   sampleIntervalSec: number = 0.5
 ): Promise<FaceDetectionFrame[]> {
+  try {
+    return await detectFacesInClipInner(videoPath, startTime, duration, sampleIntervalSec);
+  } catch (err: any) {
+    // Never let face detection crash the remix pipeline
+    console.warn(`[FaceTracker] Face detection failed (non-fatal): ${err.message}`);
+    return [];
+  }
+}
+
+async function detectFacesInClipInner(
+  videoPath: string,
+  startTime: number,
+  duration: number,
+  sampleIntervalSec: number
+): Promise<FaceDetectionFrame[]> {
   // Auto-increase interval for long clips to cap at MAX_SAMPLES
   const numSamples = Math.ceil(duration / sampleIntervalSec);
   if (numSamples > MAX_SAMPLES) {
