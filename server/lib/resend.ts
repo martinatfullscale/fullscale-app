@@ -211,7 +211,7 @@ export async function sendStudioVideoReadyEmail(
   try {
     const { client, fromEmail } = await getResendClient();
     const durationMin = Math.max(1, Math.round(durationSeconds / 60));
-    const videoUrl = `https://gofullscale.co/studio/upload`;
+    const videoUrl = `https://gofullscale.co/api/studio/videos/${videoId}/download`;
 
     const result = await client.emails.send({
       from: fromEmail || 'FullScale Studio <noreply@gofullscale.co>',
