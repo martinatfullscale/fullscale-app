@@ -136,7 +136,7 @@ async function generateSeedanceClip(
         init_image: base64Image,
         height: 720,
         width: 1280,
-        num_inference_steps: 30,
+        num_inference_steps: 25,
         guidance_scale: 7.5,
         output_type: "mp4",
       }, { timeout: 30000 });
