@@ -125,26 +125,16 @@ async function generateSeedanceClip(
     console.log(`[VisualLayer] Prompt: "${prompt.slice(0, 150)}..."`);
 
     try {
-      // Upload image to fal.ai storage to get a public URL (ModelsLab needs a URL, not base64)
-      const falKey = process.env.FAL_KEY;
-      let imageUrl: string;
+      const imageBuffer = fs.readFileSync(slideImagePath);
+      const base64Image = imageBuffer.toString("base64");
 
-      if (falKey) {
-        fal.config({ credentials: falKey });
-        const imageBuffer = fs.readFileSync(slideImagePath);
-        const imageFile = new File([imageBuffer], path.basename(slideImagePath), { type: "image/jpeg" });
-        imageUrl = await fal.storage.upload(imageFile);
-        console.log(`[VisualLayer] Uploaded slide image for scene ${scene.sceneNumber}`);
-      } else {
-        throw new Error("FAL_KEY required to upload images for ModelsLab");
-      }
-
-      // Submit job to ModelsLab
+      // Submit job to ModelsLab with base64 flag
       const submitRes = await axios.post("https://modelslab.com/api/v6/video/img2video", {
         key: modelsLabKey,
         model_id: "seedance-i2v",
         prompt,
-        init_image: imageUrl,
+        init_image: base64Image,
+        base64: true,
         height: 720,
         width: 1280,
         num_inference_steps: 25,
