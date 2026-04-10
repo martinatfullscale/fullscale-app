@@ -11,19 +11,22 @@ import { users } from "@shared/models/auth";
 import { eq } from "drizzle-orm";
 import { sendStudioVideoReadyEmail } from "./resend";
 // Lazy-loaded pipeline module (loaded on first use, not at startup)
-let _runPipeline: typeof import("../../studio-pipeline/src/pipeline/index.js").runPipeline | null = null;
-async function loadPipeline() {
-  if (!_runPipeline) {
+let _pipelineMod: typeof import("../../studio-pipeline/src/pipeline/index.js") | null = null;
+async function loadPipelineModule() {
+  if (!_pipelineMod) {
     try {
-      const mod = await import("../../studio-pipeline/src/pipeline/index.js");
-      _runPipeline = mod.runPipeline;
+      _pipelineMod = await import("../../studio-pipeline/src/pipeline/index.js");
       console.log("[Studio] Pipeline module loaded successfully");
     } catch (err: any) {
       console.error("[Studio] Failed to load pipeline module:", err.message);
       throw new Error(`Pipeline module failed to load: ${err.message}`);
     }
   }
-  return _runPipeline;
+  return _pipelineMod;
+}
+async function loadPipeline() {
+  const mod = await loadPipelineModule();
+  return mod.runPipeline;
 }
 
 // Multer setup for file uploads (memory storage — buffer available as req.file.buffer)
@@ -781,6 +784,165 @@ export function registerStudioRoutes(app: Express) {
     }
   });
 
+  // ──────────────────────────────────────────────────────────────────
+  // EXTRACT: Upload + extract story only (fast, cheap — no video generation)
+  // Returns the story script for user review before running the full pipeline.
+  // ──────────────────────────────────────────────────────────────────
+  app.post("/api/studio/extract", upload.single("file"), async (req: any, res: Response) => {
+    try {
+      const email = getSessionEmail(req);
+      if (!email) return res.status(401).json({ error: "Not authenticated" });
+
+      const user = await storage.getUserByEmail(email);
+      if (!user) return res.status(404).json({ error: "User not found" });
+
+      if (!req.file) return res.status(400).json({ error: "No file uploaded." });
+
+      const fileName = req.file.originalname || "document";
+      const fileBuffer: Buffer = req.file.buffer;
+      const documentType: "pdf" | "pptx" = fileName.endsWith(".pptx") ? "pptx" : "pdf";
+      const deckIntent = req.body?.deckIntent || "investor-pitch";
+
+      // Quota check
+      const sub = await ensureStudioSubscription(user.id, email);
+      const tier = (sub.tier as TierName) || "free";
+      const tierConfig = STUDIO_TIERS[tier];
+      const usage = await getOrCreateUsage(user.id, tier);
+      if (usage.videosGenerated >= usage.videosLimit) {
+        return res.status(402).json({
+          error: "Monthly video limit reached",
+          videosGenerated: usage.videosGenerated,
+          videosLimit: usage.videosLimit,
+          tier,
+          upgradeUrl: "/studio/pricing",
+        });
+      }
+
+      // Create video record in 'extracting' state
+      const video = await storage.createStudioVideo({
+        userId: user.id,
+        title: fileName.replace(/\.(pdf|pptx)$/i, ""),
+        sourceFileName: fileName,
+        tier,
+        visualQuality: tierConfig.quality,
+        visualMode: tierConfig.visualMode,
+        isWatermarked: tierConfig.watermark,
+        status: "extracting",
+        progress: 0,
+        deckIntent,
+      } as any);
+
+      console.log(`[Studio] Extract started for video ${video.id} (${email}, deckIntent: ${deckIntent})`);
+
+      // Run extract synchronously — Claude Vision call takes ~30-60s
+      try {
+        const { extractStoryOnly } = await loadPipelineModule();
+        const result = await extractStoryOnly(fileBuffer, documentType, { deckIntent });
+
+        // Store script + workDir for the generate step
+        const { db } = await import("../db.js");
+        const { sql } = await import("drizzle-orm");
+        await db.execute(sql`
+          UPDATE studio_videos
+          SET status = 'script_ready',
+              progress = 25,
+              script_data = ${JSON.stringify(result.storyScript)}::jsonb,
+              work_dir = ${result.workDir},
+              slide_image_paths = ${JSON.stringify(result.slideImages)}::jsonb,
+              scene_count = ${result.storyScript.scenes.length}
+          WHERE id = ${video.id}
+        `);
+
+        console.log(`[Studio] Extract complete for video ${video.id}: ${result.storyScript.scenes.length} scenes`);
+
+        return res.json({
+          video: { ...video, status: "script_ready", progress: 25 },
+          storyScript: result.storyScript,
+          slideImagePaths: result.slideImages,
+          workDir: result.workDir,
+        });
+      } catch (extractErr: any) {
+        console.error("[Studio] Extract failed:", extractErr.message);
+        await storage.updateStudioVideoStatus(video.id, "failed", {
+          errorMessage: extractErr.message?.slice(0, 500),
+          progress: 0,
+        });
+        return res.status(500).json({ error: `Extract failed: ${extractErr.message}` });
+      }
+    } catch (err: any) {
+      console.error("[Studio] /api/studio/extract error:", err);
+      res.status(500).json({ error: "Failed to start extraction" });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────────────────
+  // GENERATE FROM SCRIPT: Run stages 4-6 with user-edited script
+  // ──────────────────────────────────────────────────────────────────
+  app.post("/api/studio/videos/:videoId/generate-from-script", async (req: any, res: Response) => {
+    try {
+      const email = getSessionEmail(req);
+      if (!email) return res.status(401).json({ error: "Not authenticated" });
+
+      const videoId = parseInt(req.params.videoId, 10);
+      if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+
+      const video = await storage.getStudioVideo(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+
+      const user = await storage.getUserByEmail(email);
+      if (!user || video.userId !== user.id) {
+        return res.status(403).json({ error: "Access denied" });
+      }
+
+      if (video.status !== "script_ready") {
+        return res.status(400).json({
+          error: `Cannot generate from script — video status is "${video.status}". Must be "script_ready".`,
+        });
+      }
+
+      const editedScript = req.body?.storyScript;
+      if (!editedScript || !editedScript.scenes || !Array.isArray(editedScript.scenes)) {
+        return res.status(400).json({ error: "Invalid storyScript in request body" });
+      }
+
+      const workDir = (video as any).workDir;
+      const slideImagePaths = (video as any).slideImagePaths;
+
+      if (!workDir || !slideImagePaths) {
+        return res.status(400).json({ error: "Missing workDir or slide images from extract stage" });
+      }
+
+      // Increment usage NOW (not earlier — user could have cancelled after extract)
+      const month = getCurrentMonth();
+      await storage.incrementStudioUsage(user.id, month);
+
+      // Update status to processing
+      const { db } = await import("../db.js");
+      const { sql } = await import("drizzle-orm");
+      await db.execute(sql`
+        UPDATE studio_videos
+        SET status = 'processing',
+            progress = 25,
+            script_data = ${JSON.stringify(editedScript)}::jsonb
+        WHERE id = ${videoId}
+      `);
+
+      console.log(`[Studio] Generate-from-script started for video ${videoId} (${editedScript.scenes.length} scenes)`);
+
+      // Respond immediately, run pipeline in background
+      res.json({
+        video: { ...video, status: "processing" },
+        message: "Video generation started",
+      });
+
+      // Run the rest of the pipeline in background
+      runGenerateFromScriptInBackground(videoId, editedScript, slideImagePaths, workDir, email);
+    } catch (err: any) {
+      console.error("[Studio] /api/studio/videos/:id/generate-from-script error:", err);
+      res.status(500).json({ error: "Failed to start generation" });
+    }
+  });
+
   /**
    * Run the Studio pipeline in the background.
    * Updates the video record with progress and final output.
@@ -899,6 +1061,100 @@ export function registerStudioRoutes(app: Express) {
       const errorMsg = err.message || "Pipeline error";
       await storage.updateStudioVideoStatus(videoId, "failed", {
         errorMessage: errorMsg.slice(0, 500),
+        progress: 0,
+      });
+    }
+  }
+
+  /**
+   * Run stages 4-6 (visuals, voice, assembly) with a pre-extracted, user-edited script.
+   * Used by the two-stage extract → review → generate flow.
+   */
+  async function runGenerateFromScriptInBackground(
+    videoId: number,
+    storyScript: any,
+    slideImagePaths: string[],
+    workDir: string,
+    userEmail: string
+  ) {
+    try {
+      console.log(`[Studio] Video ${videoId}: loading pipeline module for generate-from-script...`);
+      const mod = await loadPipelineModule();
+      const runFromScript = mod.runPipelineFromScript;
+
+      // Map progress (25-100 range since extract was 0-25)
+      const stageWeights: Record<string, [number, number]> = {
+        generating: [25, 55],
+        "adding-voice": [55, 85],
+        assembling: [85, 99],
+        complete: [100, 100],
+      };
+      let lastProgress = 25;
+      let pipelineComplete = false;
+
+      const result = await runFromScript(
+        storyScript,
+        slideImagePaths,
+        workDir,
+        workDir.split("/").pop() || "unknown",
+        {
+          visualTier: (process.env.MODELSLAB_API_KEY || process.env.FAL_KEY) ? "v1" : "mvp",
+          onStageChange: async (stage: string, progress: number) => {
+            if (pipelineComplete || stage === "complete") return;
+            await checkStudioCancelled(videoId);
+            const [start, end] = stageWeights[stage] || [25, 100];
+            const globalProgress = Math.round(start + (progress / 100) * (end - start));
+            const safe = Math.max(globalProgress, lastProgress);
+            lastProgress = safe;
+            try {
+              await storage.updateStudioVideoStatus(videoId, "processing", { progress: safe });
+            } catch {}
+          },
+        }
+      );
+
+      pipelineComplete = true;
+      console.log(`[Studio] Video ${videoId} generate-from-script done. Output: ${result.outputPath}`);
+
+      const fs = await import("fs");
+      if (!fs.existsSync(result.outputPath) || fs.statSync(result.outputPath).size === 0) {
+        throw new Error(`Output file missing: ${result.outputPath}`);
+      }
+
+      const { db } = await import("../db.js");
+      const { sql } = await import("drizzle-orm");
+      await db.execute(sql`
+        UPDATE studio_videos
+        SET status = 'completed',
+            progress = 100,
+            output_url = ${result.outputPath},
+            duration_seconds = ${result.metadata.estimatedDurationSeconds},
+            scene_count = ${result.metadata.sceneCount},
+            completed_at = NOW()
+        WHERE id = ${videoId}
+      `);
+      console.log(`[Studio] Video ${videoId} COMPLETED via generate-from-script`);
+
+      try {
+        await sendStudioVideoReadyEmail(
+          userEmail,
+          result.metadata.title || "Your Video",
+          videoId,
+          result.metadata.sceneCount,
+          result.metadata.estimatedDurationSeconds
+        );
+      } catch (emailErr: any) {
+        console.warn(`[Studio] Email notification failed (non-fatal): ${emailErr.message}`);
+      }
+    } catch (err: any) {
+      if (err.message === "CANCELLED_BY_USER") {
+        console.log(`[Studio] Video ${videoId} generate-from-script cancelled`);
+        return;
+      }
+      console.error(`[Studio] Generate-from-script failed for video ${videoId}:`, err.message);
+      console.error(`[Studio] Stack:`, err.stack);
+      await storage.updateStudioVideoStatus(videoId, "failed", {
+        errorMessage: (err.message || "Pipeline error").slice(0, 500),
         progress: 0,
       });
     }

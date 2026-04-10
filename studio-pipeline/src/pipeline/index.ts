@@ -167,6 +167,10 @@ export async function runPipeline(
         ...(isVideo ? { videoFile: visualPath } : { imageFile: visualPath }),
         audioFile: audioPaths[i],
         durationSeconds: scene.estimatedDurationSeconds,
+        keyPhrase: scene.keyPhrase,
+        highlightRegion: scene.highlightRegion,
+        highlightStartSec: scene.highlightStartSec,
+        highlightEndSec: scene.highlightEndSec,
       };
     });
 
@@ -183,6 +187,188 @@ export async function runPipeline(
     logStage("complete", 100);
     console.log(`  → Video: ${outputPath}`);
     console.log(`  → Duration: ~${Math.round(totalDuration / 60)} minutes`);
+
+    return {
+      jobId,
+      outputPath,
+      metadata: {
+        title: storyScript.documentTitle,
+        sceneCount: storyScript.totalScenes,
+        estimatedDurationSeconds: totalDuration,
+      },
+    };
+  } catch (error) {
+    logStage("failed", 0);
+    throw error;
+  }
+}
+
+// ─── Two-stage pipeline: extract then generate ────────────────
+
+export interface ExtractOnlyResult {
+  jobId: string;
+  workDir: string;
+  slideImages: string[];
+  storyScript: StoryScript;
+  parsedDoc: ParsedDocument;
+  documentType: "pdf" | "pptx";
+}
+
+/**
+ * Stages 1-3: Parse + render slides + extract story.
+ * Returns the story script for user review BEFORE generating the video.
+ *
+ * The caller is responsible for calling runPipelineFromScript() later with
+ * the (possibly edited) script to produce the final video. The jobId + workDir
+ * are used to pass state between the two stages.
+ */
+export async function extractStoryOnly(
+  documentBuffer: Buffer,
+  documentType: "pdf" | "pptx",
+  options: PipelineOptions = {}
+): Promise<ExtractOnlyResult> {
+  const jobId = randomUUID();
+  // Persist the work directory inside studio-output so it survives between extract + generate calls
+  const workDir = path.join(process.cwd(), "studio-output", jobId);
+  fs.mkdirSync(workDir, { recursive: true });
+
+  const deckIntent: DeckIntent = options.deckIntent || "investor-pitch";
+  const notify = options.onStageChange || (() => {});
+
+  const logStage = (stage: string, progress: number) => {
+    console.log(`[Pipeline/${jobId.slice(0, 8)}] ${stage} (${progress}%)`);
+    notify(stage, progress);
+  };
+
+  // Stage 1: Parse document
+  logStage("parsing", 0);
+  let parsedDoc: ParsedDocument;
+  if (documentType === "pdf") {
+    parsedDoc = await parsePDF(documentBuffer);
+  } else {
+    parsedDoc = await parsePPTX(documentBuffer);
+  }
+  logStage("parsing", 100);
+
+  // Save the source file to workDir so runPipelineFromScript can find the images
+  const sourcePath = path.join(workDir, `source.${documentType}`);
+  fs.writeFileSync(sourcePath, documentBuffer);
+
+  // Stage 2: Render slides to images
+  logStage("extracting", 5);
+  let slideImages: string[];
+  if (documentType === "pdf") {
+    const imagesDir = path.join(workDir, "slides");
+    slideImages = await slidesToImages(sourcePath, imagesDir);
+  } else {
+    slideImages = await createTextSlideImages(
+      { documentTitle: parsedDoc.documentTitle, totalScenes: parsedDoc.pageCount, scenes: [] } as StoryScript,
+      path.join(workDir, "slides")
+    );
+  }
+  logStage("extracting", 30);
+
+  // Stage 3: Extract story via Claude Vision
+  const storyScript = await extractStory(parsedDoc, slideImages, deckIntent);
+  logStage("extracting", 100);
+
+  return { jobId, workDir, slideImages, storyScript, parsedDoc, documentType };
+}
+
+/**
+ * Stages 4-6: Generate visuals + voice + assemble.
+ * Takes a (possibly edited) story script and the workDir from extractStoryOnly().
+ */
+export async function runPipelineFromScript(
+  storyScript: StoryScript,
+  slideImages: string[],
+  workDir: string,
+  jobId: string,
+  options: PipelineOptions = {}
+): Promise<PipelineResult> {
+  const tier = options.visualTier || (process.env.VISUAL_TIER as "mvp" | "v1" | "v2") || "mvp";
+  const notify = options.onStageChange || (() => {});
+
+  const persistentDir = path.join(process.cwd(), "studio-output", jobId);
+  fs.mkdirSync(persistentDir, { recursive: true });
+
+  const logStage = (stage: string, progress: number) => {
+    console.log(`[Pipeline/${jobId.slice(0, 8)}] ${stage} (${progress}%)`);
+    notify(stage, progress);
+  };
+
+  try {
+    // Stage 4: Generate visuals
+    logStage("generating", 10);
+    const sceneVisuals: string[] = new Array(storyScript.scenes.length);
+    const VISUAL_CONCURRENCY = tier === "mvp" ? storyScript.scenes.length : 2;
+    let completedVisuals = 0;
+
+    for (let batch = 0; batch < storyScript.scenes.length; batch += VISUAL_CONCURRENCY) {
+      const batchScenes = storyScript.scenes.slice(batch, batch + VISUAL_CONCURRENCY);
+      const batchPromises = batchScenes.map((scene, idx) => {
+        const globalIdx = batch + idx;
+        const slideIndex = Math.min((scene.sourcePages[0] || 1) - 1, slideImages.length - 1);
+        return generateVisual(scene, slideImages[slideIndex], tier).then((visualPath) => {
+          sceneVisuals[globalIdx] = visualPath;
+          completedVisuals++;
+          const progress = 10 + Math.round((completedVisuals / storyScript.scenes.length) * 80);
+          logStage("generating", progress);
+        });
+      });
+      await Promise.all(batchPromises);
+    }
+    logStage("generating", 100);
+
+    // Stage 5: Voice
+    logStage("adding-voice", 10);
+    const audioDir = path.join(workDir, "audio");
+    const audioPaths: string[] = new Array(storyScript.scenes.length);
+    const CONCURRENCY = 3;
+    let completedVoice = 0;
+
+    for (let batch = 0; batch < storyScript.scenes.length; batch += CONCURRENCY) {
+      const batchScenes = storyScript.scenes.slice(batch, batch + CONCURRENCY);
+      const batchPromises = batchScenes.map((scene, idx) => {
+        const globalIdx = batch + idx;
+        return generateVoice(scene.narration, scene.sceneNumber, audioDir).then((audioPath) => {
+          audioPaths[globalIdx] = audioPath;
+          completedVoice++;
+          const progress = 10 + Math.round((completedVoice / storyScript.scenes.length) * 80);
+          logStage("adding-voice", progress);
+        });
+      });
+      await Promise.all(batchPromises);
+    }
+    logStage("adding-voice", 100);
+
+    // Stage 6: Assemble
+    logStage("assembling", 10);
+    const assemblyScenes: AssemblyScene[] = storyScript.scenes.map((scene, i) => {
+      const visualPath = sceneVisuals[i];
+      const isVideo = visualPath.endsWith(".mp4");
+      return {
+        ...(isVideo ? { videoFile: visualPath } : { imageFile: visualPath }),
+        audioFile: audioPaths[i],
+        durationSeconds: scene.estimatedDurationSeconds,
+        // Pass through highlight data for the assembler to render overlays
+        keyPhrase: scene.keyPhrase,
+        highlightRegion: scene.highlightRegion,
+        highlightStartSec: scene.highlightStartSec,
+        highlightEndSec: scene.highlightEndSec,
+      };
+    });
+
+    const outputPath = path.join(persistentDir, "output.mp4");
+    await assembleVideo(assemblyScenes, outputPath);
+    logStage("assembling", 100);
+
+    const totalDuration = storyScript.scenes.reduce(
+      (sum, s) => sum + s.estimatedDurationSeconds, 0
+    );
+
+    logStage("complete", 100);
+    console.log(`[Pipeline] → Video: ${outputPath}`);
 
     return {
       jobId,

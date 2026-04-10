@@ -1,7 +1,29 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { Upload, FileVideo, Loader2, CheckCircle, AlertCircle, Download, Play, Rocket, ShoppingCart, Users, Megaphone } from "lucide-react";
 
-type PipelineStatus = "idle" | "uploading" | "queued" | "processing" | "parsing" | "extracting" | "generating" | "adding-voice" | "assembling" | "complete" | "failed";
+type PipelineStatus = "idle" | "uploading" | "extracting" | "script_ready" | "queued" | "processing" | "parsing" | "generating" | "adding-voice" | "assembling" | "complete" | "failed";
+
+interface StoryScene {
+  sceneNumber: number;
+  sourcePages: number[];
+  sceneTitle: string;
+  narration: string;
+  visualFocus: string;
+  slideCategory: string;
+  treatment?: "seedance" | "kenburns" | "static_highlight";
+  narrationStyle?: "punch" | "explain";
+  estimatedDurationSeconds: number;
+  ycFrameworkRole?: string;
+  keyPhrase?: string;
+  highlightRegion?: { x: number; y: number; width: number; height: number };
+}
+
+interface StoryScript {
+  documentTitle: string;
+  totalScenes: number;
+  scenes: StoryScene[];
+  totalDurationSeconds?: number;
+}
 
 type DeckIntent = "investor-pitch" | "sales-deck" | "team-update" | "marketing";
 
@@ -76,6 +98,7 @@ export default function StudioUpload() {
   const [error, setError] = useState<string | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [metadata, setMetadata] = useState<any>(null);
+  const [storyScript, setStoryScript] = useState<StoryScript | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollRef = useRef<number | null>(null);
 
@@ -105,10 +128,11 @@ export default function StudioUpload() {
     return ext.endsWith(".pdf") || ext.endsWith(".pptx");
   };
 
-  const handleUpload = async () => {
+  // Stage 1: Extract story (fast, cheap) — for user review
+  const handleExtract = async () => {
     if (!file) return;
 
-    setStatus("uploading");
+    setStatus("extracting");
     setError(null);
     setProgress(0);
 
@@ -117,28 +141,70 @@ export default function StudioUpload() {
       formData.append("file", file);
       formData.append("deckIntent", deckIntent);
 
-      const response = await fetch("/api/studio/generate", {
+      const response = await fetch("/api/studio/extract", {
         method: "POST",
         body: formData,
       });
 
       if (!response.ok) {
         const data = await response.json();
-        throw new Error(data.error || "Upload failed");
+        throw new Error(data.error || "Extract failed");
       }
 
       const data = await response.json();
       const videoId = data.video?.id;
       if (!videoId) throw new Error("No video ID returned");
       setJobId(String(videoId));
-      setStatus("queued");
-
-      // Start polling
-      startPolling(String(videoId));
+      setStoryScript(data.storyScript);
+      setStatus("script_ready");
     } catch (err: any) {
       setStatus("failed");
-      setError(err.message || "Upload failed");
+      setError(err.message || "Extract failed");
     }
+  };
+
+  // Stage 2: Generate video from the (possibly edited) story script
+  const handleGenerateFromScript = async () => {
+    if (!storyScript || !jobId) return;
+
+    setStatus("queued");
+    setProgress(25);
+    setError(null);
+
+    try {
+      const response = await fetch(`/api/studio/videos/${jobId}/generate-from-script`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ storyScript }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || "Generate failed");
+      }
+
+      startPolling(jobId);
+    } catch (err: any) {
+      setStatus("failed");
+      setError(err.message || "Generate failed");
+    }
+  };
+
+  const updateSceneNarration = (sceneIdx: number, newNarration: string) => {
+    if (!storyScript) return;
+    const newScript = { ...storyScript };
+    newScript.scenes = [...storyScript.scenes];
+    newScript.scenes[sceneIdx] = { ...newScript.scenes[sceneIdx], narration: newNarration };
+    setStoryScript(newScript);
+  };
+
+  const skipScene = (sceneIdx: number) => {
+    if (!storyScript) return;
+    const newScript = { ...storyScript };
+    newScript.scenes = storyScript.scenes.filter((_, i) => i !== sceneIdx);
+    newScript.scenes.forEach((s, i) => { s.sceneNumber = i + 1; });
+    newScript.totalScenes = newScript.scenes.length;
+    setStoryScript(newScript);
   };
 
   const startPolling = (id: string) => {
@@ -201,6 +267,7 @@ export default function StudioUpload() {
     setError(null);
     setVideoUrl(null);
     setMetadata(null);
+    setStoryScript(null);
     stopPolling();
   };
 
@@ -295,11 +362,14 @@ export default function StudioUpload() {
                 </div>
 
                 <button
-                  onClick={handleUpload}
+                  onClick={handleExtract}
                   className="bg-purple-600 hover:bg-purple-500 text-white font-semibold px-8 py-3 rounded-lg transition-colors"
                 >
-                  Generate Video
+                  Extract Story →
                 </button>
+                <p className="text-gray-500 text-xs mt-2">
+                  Review the narration before we generate the video.
+                </p>
               </div>
             ) : (
               <div>
@@ -320,8 +390,100 @@ export default function StudioUpload() {
           </div>
         )}
 
+        {/* Extracting state — show a simple loading message */}
+        {status === "extracting" && (
+          <div className="bg-gray-900/50 border border-gray-800 rounded-xl p-8 text-center">
+            <Loader2 className="w-12 h-12 text-purple-400 mx-auto mb-4 animate-spin" />
+            <h3 className="text-lg font-medium mb-2">Reading your deck...</h3>
+            <p className="text-gray-400 text-sm max-w-md mx-auto">
+              Analyzing each slide and writing your narration. This usually takes 30-60 seconds.
+            </p>
+          </div>
+        )}
+
+        {/* Script review state */}
+        {status === "script_ready" && storyScript && (
+          <div className="bg-gray-900/50 border border-gray-800 rounded-xl p-6 md:p-8">
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h2 className="text-xl font-bold">Review your script</h2>
+                <p className="text-sm text-gray-400">
+                  {storyScript.scenes.length} scenes &middot;{" "}
+                  {storyScript.scenes.reduce((s, sc) => s + sc.estimatedDurationSeconds, 0)}s total
+                </p>
+              </div>
+              <button
+                onClick={() => { setStatus("idle"); setStoryScript(null); setJobId(null); }}
+                className="text-xs text-gray-400 hover:text-white border border-gray-700 rounded-md px-3 py-1"
+              >
+                Start over
+              </button>
+            </div>
+
+            <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-2">
+              {storyScript.scenes.map((scene, idx) => (
+                <div key={scene.sceneNumber} className="bg-gray-950/50 border border-gray-800 rounded-lg p-4">
+                  <div className="flex items-start justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-mono text-gray-500">#{scene.sceneNumber}</span>
+                      <span className="text-sm font-medium text-white">{scene.sceneTitle}</span>
+                      <span className="text-[10px] uppercase tracking-wider text-purple-300 bg-purple-900/30 border border-purple-800/50 rounded px-2 py-0.5">
+                        {scene.treatment === "seedance" ? "AI Motion"
+                          : scene.treatment === "kenburns" ? "Ken Burns"
+                          : scene.treatment === "static_highlight" ? "Highlight"
+                          : scene.slideCategory}
+                      </span>
+                      {scene.ycFrameworkRole && (
+                        <span className="text-[10px] uppercase tracking-wider text-gray-400 bg-gray-800 rounded px-2 py-0.5">
+                          {scene.ycFrameworkRole}
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => skipScene(idx)}
+                      className="text-[10px] text-gray-500 hover:text-red-400 transition-colors"
+                    >
+                      Skip
+                    </button>
+                  </div>
+                  <textarea
+                    value={scene.narration}
+                    onChange={(e) => updateSceneNarration(idx, e.target.value)}
+                    className="w-full bg-gray-900 border border-gray-700 rounded-md p-3 text-sm text-gray-200 focus:border-purple-500 focus:outline-none resize-none"
+                    rows={scene.narrationStyle === "explain" ? 3 : 2}
+                  />
+                  <div className="flex items-center gap-3 mt-2 text-[10px] text-gray-500">
+                    <span>{scene.estimatedDurationSeconds}s</span>
+                    <span>&middot;</span>
+                    <span>{scene.narration.trim().split(/\s+/).length} words</span>
+                    {scene.keyPhrase && (
+                      <>
+                        <span>&middot;</span>
+                        <span className="text-yellow-400/80">highlight: "{scene.keyPhrase.slice(0, 40)}{scene.keyPhrase.length > 40 ? "..." : ""}"</span>
+                      </>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex items-center justify-between mt-6 pt-4 border-t border-gray-800">
+              <p className="text-xs text-gray-500">
+                Edit any narration above. Click skip to remove a scene.
+              </p>
+              <button
+                onClick={handleGenerateFromScript}
+                className="bg-purple-600 hover:bg-purple-500 text-white font-semibold px-6 py-3 rounded-lg transition-colors"
+                data-testid="button-generate-video"
+              >
+                Generate Video →
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Progress state */}
-        {status !== "idle" && status !== "complete" && status !== "failed" && (
+        {status !== "idle" && status !== "extracting" && status !== "script_ready" && status !== "complete" && status !== "failed" && (
           <div className="bg-gray-900/50 border border-gray-800 rounded-xl p-8">
             <div className="flex items-center justify-between mb-6">
               <span className="text-lg font-medium">

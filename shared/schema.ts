@@ -818,13 +818,20 @@ export const studioVideos = pgTable("studio_videos", {
   visualQuality: varchar("visual_quality").default("720p"), // '720p' | '1080p'
   visualMode: varchar("visual_mode").default("static"), // 'static' | 'ai_generated'
   isWatermarked: boolean("is_watermarked").default(true),
-  status: varchar("status").notNull().default("queued"), // 'queued' | 'processing' | 'completed' | 'failed'
+  // Status:
+  //   'queued' | 'extracting' | 'script_ready' | 'processing' | 'completed' | 'failed' | 'cancelled'
+  status: varchar("status").notNull().default("queued"),
   progress: integer("progress").default(0), // 0-100
   outputUrl: text("output_url"), // Path to final MP4
   thumbnailUrl: text("thumbnail_url"),
   durationSeconds: real("duration_seconds"),
   sceneCount: integer("scene_count"),
   errorMessage: text("error_message"),
+  // Two-stage pipeline fields
+  scriptData: jsonb("script_data"), // StoryScript JSON from extract stage
+  workDir: text("work_dir"),          // Path to workDir where slides live (between extract + generate)
+  deckIntent: varchar("deck_intent"), // investor-pitch / sales-deck / team-update / marketing
+  slideImagePaths: jsonb("slide_image_paths"), // Array of paths to rendered slide JPEGs
   createdAt: timestamp("created_at").defaultNow(),
   completedAt: timestamp("completed_at"),
 });
