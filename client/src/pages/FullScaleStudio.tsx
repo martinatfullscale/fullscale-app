@@ -1,3 +1,4 @@
+import { useState, useRef, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
 import {
   FileText,
@@ -14,6 +15,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
+import heroVideoUrl from "@assets/generated_videos/creator_studio_cinematic_loop.mp4";
+import heroVideoMobileUrl from "@assets/generated_videos/creator_studio_cinematic_loop_mobile.mp4";
 
 const PIPELINE_STEPS = [
   {
@@ -74,6 +77,49 @@ const FEATURES = [
 ];
 
 export default function FullScaleStudio() {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [videoFailed, setVideoFailed] = useState(false);
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== "undefined" && window.matchMedia("(max-width: 768px)").matches
+  );
+
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 768px)");
+    setIsMobile(mq.matches);
+    const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
+
+  // Ref callback — sets muted BEFORE browser evaluates autoplay policy
+  const videoRefCallback = useCallback((node: HTMLVideoElement | null) => {
+    videoRef.current = node;
+    if (!node) return;
+    node.muted = true;
+    node.setAttribute("muted", "");
+    node.setAttribute("playsinline", "");
+    node.setAttribute("webkit-playsinline", "");
+    node.defaultMuted = true;
+    node.play().catch(() => {});
+  }, []);
+
+  // Retry playback once data arrives or on first touch (mobile autoplay fallback)
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const tryPlay = () => { video.muted = true; video.play().catch(() => {}); };
+    video.addEventListener("loadeddata", tryPlay);
+    video.addEventListener("canplay", tryPlay);
+    if (video.readyState >= 2) tryPlay();
+    const onTouch = () => tryPlay();
+    document.addEventListener("touchstart", onTouch, { once: true });
+    return () => {
+      video.removeEventListener("loadeddata", tryPlay);
+      video.removeEventListener("canplay", tryPlay);
+      document.removeEventListener("touchstart", onTouch);
+    };
+  }, [videoFailed, isMobile]);
+
   return (
     <div className="min-h-screen bg-background text-foreground">
       {/* Header */}
@@ -96,10 +142,26 @@ export default function FullScaleStudio() {
         </div>
       </header>
 
-      {/* Hero Section */}
+      {/* Hero Section — video background with gradient overlay */}
       <section className="relative min-h-[500px] md:min-h-[600px] overflow-hidden">
-        {/* Gradient background */}
-        <div className="absolute inset-0 bg-gradient-to-b from-purple-950/40 via-background to-background" />
+        {/* Background video (falls back to gradient if video fails) */}
+        {heroVideoUrl && !videoFailed ? (
+          <video
+            ref={videoRefCallback}
+            key={isMobile ? "mobile" : "desktop"}
+            src={isMobile ? heroVideoMobileUrl : heroVideoUrl}
+            preload="auto"
+            autoPlay
+            loop
+            muted
+            playsInline
+            className="absolute inset-0 w-full h-full object-cover"
+            onError={() => setVideoFailed(true)}
+            data-testid="video-studio-hero"
+          />
+        ) : null}
+        {/* Dark gradient overlay — always present for text readability */}
+        <div className="absolute inset-0 bg-gradient-to-b from-black/70 via-purple-950/40 to-background" />
         <div className="absolute inset-0 bg-gradient-to-br from-primary/8 via-transparent to-purple-500/10" />
 
         <div className="relative z-10 max-w-6xl mx-auto px-6 pt-24 pb-20">
