@@ -693,7 +693,14 @@ export function registerStudioRoutes(app: Express) {
         return res.status(404).json({ error: "Video not found" });
       }
 
-      return res.json({ video });
+      // If the caller explicitly asks for the script (review screen), include it.
+      // By default, strip heavy fields (scriptData, slideImagePaths) to avoid log spam + bandwidth.
+      const includeScript = req.query?.includeScript === "true";
+      if (includeScript) {
+        return res.json({ video });
+      }
+      const { scriptData, slideImagePaths, workDir, ...slim } = video as any;
+      return res.json({ video: slim });
     } catch (err: any) {
       console.error("[Studio] /api/studio/videos/:videoId error:", err);
       res.status(500).json({ error: "Failed to load video" });
