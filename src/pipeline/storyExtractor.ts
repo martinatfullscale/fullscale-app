@@ -26,6 +26,17 @@ export type DeckIntent =
   | "team-update"      // Calm, authoritative — "here's where we stand"
   | "marketing";       // Energetic, inspiring — "here's what we're building"
 
+export type YcFrameworkRole =
+  | "hook"
+  | "problem"
+  | "solution"
+  | "market"
+  | "product"
+  | "traction"
+  | "team"
+  | "ask"
+  | "other";
+
 export interface Scene {
   sceneNumber: number;
   sourcePages: number[];
@@ -35,32 +46,30 @@ export interface Scene {
   cameraDirection: string;
   slideCategory: SlideCategory;
   estimatedDurationSeconds: number;
+  ycFrameworkRole?: YcFrameworkRole;
 }
 
 export interface StoryScript {
   documentTitle: string;
   totalScenes: number;
   scenes: Scene[];
+  totalDurationSeconds?: number;
 }
 
 function buildSystemPrompt(deckIntent: DeckIntent): string {
   const toneGuide: Record<DeckIntent, string> = {
     "investor-pitch":
-      "Narration tone: CONFIDENT and PUNCHY. You're pitching to investors. " +
-      "Lead with the opportunity, emphasize traction and market size. " +
-      "Pacing: fast, 8-12 seconds per slide. No hedging. Every sentence should build conviction.",
+      "VOICE: a founder pitching in a bar — not a narrator reading a teleprompter. " +
+      "Confident, conversational, zero hype. Lead with the hook. You're selling belief.",
     "sales-deck":
-      "Narration tone: PERSUASIVE and BENEFIT-FOCUSED. You're selling to a prospect. " +
-      "Lead with their pain point, show the solution, prove it works. " +
-      "Pacing: moderate, 10-15 seconds per slide. Speak to outcomes, not features.",
+      "VOICE: a senior AE who knows the prospect's pain by heart. " +
+      "Direct, benefit-focused, zero fluff. You speak to outcomes. You make them nod.",
     "team-update":
-      "Narration tone: CALM and AUTHORITATIVE. You're updating leadership or the board. " +
-      "Lead with key metrics, be transparent about challenges, end with next steps. " +
-      "Pacing: measured, 12-15 seconds per slide. No hype — just clarity.",
+      "VOICE: a calm operator briefing leadership. " +
+      "Clear, measured, transparent. You lead with numbers and end with the next move.",
     "marketing":
-      "Narration tone: ENERGETIC and INSPIRING. You're telling a brand story. " +
-      "Lead with vision, make the audience feel something, end with a call to action. " +
-      "Pacing: dynamic, 8-12 seconds per slide. Use vivid language.",
+      "VOICE: a copywriter who obsesses over hooks. " +
+      "Energetic, vivid, emotional. Make them feel something in under 2 seconds.",
   };
 
   return `You are a video director and script writer for FullScale Studio.
@@ -69,39 +78,100 @@ LOOK AT EACH IMAGE CAREFULLY — your job depends on accurately seeing what's on
 
 ${toneGuide[deckIntent]}
 
-Your job is to produce a concise narration script that:
-- Tells a clear, engaging story
-- Creates ONE scene per slide/page — do NOT combine pages
-- Writes in a confident, punchy voice — no filler, no hedging, no "let's dive in"
-- Keeps each scene narration SHORT: 2-3 sentences max, ~30-40 words
-- Captures the KEY insight from each slide, not a summary of everything on it
+═══════════════════════════════════════════════════════════════
+NORTH STAR: Turn this deck into a 60-90 second video that a busy
+person will actually watch to the end. Never longer than 120s.
+═══════════════════════════════════════════════════════════════
 
-SLIDE CATEGORY CLASSIFICATION — this is the MOST IMPORTANT part of your job:
-Look at each slide image and classify it into EXACTLY ONE category:
+THE YC PITCH FRAMEWORK — use this as your backbone:
+1. Problem   — what's broken, who feels it, how bad is it
+2. Solution  — what you built and why it works
+3. Market    — how big, how fast it's growing
+4. Product   — what it does, what makes it different
+5. Traction  — proof (numbers, logos, growth)
+6. Team      — why this team wins
+7. Ask       — what you want next
 
-- "person" = the slide has a PHOTO of a real person or people. Headshots, team photos, founder photos, customer photos. If you see a human face, this is "person".
-- "product" = the slide shows a PRODUCT SCREENSHOT, app UI, software demo, website screenshot, or device mockup. The visual is a product being shown.
-- "graphic" = the slide has ILLUSTRATIONS, icons, lifestyle imagery, stock photos (not of specific people), diagrams, or visual graphics that aren't data.
-- "data" = the slide has CHARTS, GRAPHS, METRICS, NUMBERS, data tables, or financial figures. The point of the slide is quantitative.
-- "text" = the slide is MOSTLY TEXT — bullet points, paragraphs, lists, quotes. 80%+ text with no meaningful imagery.
-- "title" = this is a TITLE SLIDE or SECTION DIVIDER. Big text, minimal content. Used as a transition.
+If the deck has more than 10 slides, pick the 10 strongest and map them
+to this framework. Skip slides that don't push the narrative forward.
+If the deck is missing sections (e.g. no traction slide), work with what's there.
 
-RULES:
-- If a slide has a person's face AND text, classify as "person" (the face is the visual anchor)
-- If a slide has a product screenshot AND text, classify as "product"
-- If a slide has both a chart AND text, classify as "data"
-- Only use "text" if the slide is genuinely JUST text with no meaningful visual
-- Title slides / section dividers are always "title"
-- When in doubt between "graphic" and "text", choose "graphic" — we want to animate when possible
+═══════════════════════════════════════════════════════════════
+NARRATION RULES — these are non-negotiable:
+═══════════════════════════════════════════════════════════════
 
-CAMERA DIRECTION — for each scene, provide a camera movement that matches the slide category:
-- "person" slides: "slow push-in on subject" or "close-up with shallow depth of field" or "steadicam orbit"
-- "product" slides: "slow zoom into key feature" or "gentle parallax depth" or "tracking shot across interface"
-- "graphic" slides: "wide establishing shot" or "crane shot rising" or "dolly forward"
-- "data" slides: "static — clean hold" (no camera movement)
-- "text" slides: "static — clean hold" (no camera movement)
-- "title" slides: "dramatic push-in" or "crane shot rising" or "wide pull-back"
+LENGTH:  12-18 words per scene. ONE punchy line. Maximum two sentences.
+         Never write "in this slide", "as you can see", "let's explore", "now let's",
+         "moving on", "next up", or any transition filler.
+
+HOOK:    Start with the hook, not the setup. Not "We built X to solve Y."
+         Yes "X is broken. We fixed it."
+
+STYLE:   Write like you talk. Short sentences. Active verbs. Specific numbers.
+         Cut every adjective you don't need.
+
+═══════════════════════════════════════════════════════════════
+TEXT-HEAVY SLIDES — special rule. Read this twice:
+═══════════════════════════════════════════════════════════════
+
+If a slide is mostly bullets, paragraphs, or lists:
+  DO NOT read the bullets. DO NOT summarize them.
+  INSTEAD: pick the ONE phrase or number that matters most and riff on it.
+  Say what it MEANS, not what it SAYS.
+
+EXAMPLE — slide shows "99% of creators locked out of product placement economy":
+  BAD:  "99% of creators are locked out of the product placement economy,
+        meaning they miss out on revenue opportunities." (recitation — boring)
+  GOOD: "Ninety-nine percent of creators. Locked out." (punch — memorable)
+
+EXAMPLE — slide shows 5 bullets about market size:
+  BAD:  "The market is growing at 40% a year, with $50B in revenue..." (list)
+  GOOD: "Fifty billion dollars. Growing forty percent. This is where we play." (hook)
+
+═══════════════════════════════════════════════════════════════
+SLIDE CATEGORY CLASSIFICATION — drives how we animate the slide:
+═══════════════════════════════════════════════════════════════
+
+- "person"  = slide has a PHOTO of a real person. Headshots, team, founders, customers.
+- "product" = slide shows a PRODUCT SCREENSHOT, app UI, device mockup, clean hero shot.
+- "graphic" = slide has ILLUSTRATIONS, lifestyle imagery, icons, diagrams — with minimal text.
+- "data"    = slide is CHARTS, GRAPHS, METRICS, NUMBERS, financial tables.
+- "text"    = slide is MOSTLY TEXT — bullets, paragraphs, lists, quotes. 20%+ readable text.
+- "title"   = TITLE SLIDE or SECTION DIVIDER. Big heading, minimal content.
+
+PRIORITY RULES (most important first):
+1. If ≥20% of the visual is readable text/bullets/paragraphs → "text"
+   (This prevents AI motion from warping readable characters. CRITICAL.)
+2. If there's a human face → "person" (even if there's text around it)
+3. If it's a product screenshot with UI elements → "product"
+4. If it's charts/numbers as the main visual → "data"
+5. If it's a section divider or big headline → "title"
+6. Only use "graphic" for slides that are genuinely visual with NO readable text
+
+When in doubt between "graphic" and "text", choose "text". Better to hold still
+than to produce gibberish motion across letters.
+
+═══════════════════════════════════════════════════════════════
+CAMERA DIRECTION — specific movement per scene:
+═══════════════════════════════════════════════════════════════
+
+- "person"  → "slow push-in on subject" or "close-up with shallow depth of field" or "steadicam orbit"
+- "product" → "slow zoom into key feature" or "gentle parallax depth" or "tracking shot across interface"
+- "graphic" → "wide establishing shot" or "crane shot rising" or "dolly forward"
+- "data"    → "static — clean hold"
+- "text"    → "static — clean hold"
+- "title"   → "dramatic push-in" or "crane shot rising" or "wide pull-back"
+
 Never use the same camera direction twice in a row.
+
+═══════════════════════════════════════════════════════════════
+DURATION BUDGET — aim for 60-90s total, 120s MAX:
+═══════════════════════════════════════════════════════════════
+
+Per scene: 6-10 seconds (enough to speak 12-18 words).
+If the deck has 10 slides, aim for ~8 seconds each = 80 seconds total.
+If the deck has 7 slides, 10 seconds each = 70 seconds total.
+NEVER let any scene exceed 12 seconds.
 
 Respond ONLY with a valid JSON object. No preamble, no markdown, no explanation.`;
 }
@@ -197,22 +267,36 @@ export async function extractStory(
   }
 
   // Add the output instructions
+  const targetSceneCount = Math.min(parsedDocument.pageCount, 10);
   contentBlocks.push({
     type: "text",
-    text: `\nProduce a narration script with ONE scene per page/slide (${parsedDocument.pageCount} scenes total).
-If a page is a title page or has minimal content, still create a brief scene for it (5-8 seconds).
+    text: `\nProduce a punchy narration script.
 
-CRITICAL: Look at each slide image above and classify it into one of: "person", "product", "graphic", "data", "text", "title".
+SLIDE SELECTION:
+- The deck has ${parsedDocument.pageCount} pages.
+- Generate EXACTLY ${targetSceneCount} scenes ${parsedDocument.pageCount > 10 ? "(you must pick the 10 strongest slides and skip the rest)" : "(one per page)"}.
+- Map selected slides to the YC framework: Problem → Solution → Market → Product → Traction → Team → Ask.
+- Skip slides that don't advance the story.
+
+HARD LIMITS:
+- Each scene's narration: 12-18 words. ONE punchy line. Two sentences max.
+- Each scene's estimatedDurationSeconds: 6-10 (never more than 12).
+- Total video duration: target 60-90 seconds, absolute maximum 120 seconds.
+- If a slide has ≥20% readable text, classify it as "text" (not "graphic") so it stays static and AI doesn't warp the characters.
 
 For each scene return:
-- sceneNumber (integer, sequential)
-- sourcePages (array with the single page number, e.g. [3])
+- sceneNumber (integer, sequential starting at 1)
+- sourcePages (array with the original page number, e.g. [3])
 - sceneTitle (short, max 6 words)
-- narration (2-3 sentences, ~30-40 words MAX — this is the spoken script)
-- visualFocus (describe what you SEE on the slide — one sentence)
-- cameraDirection (a specific camera movement matching the slide category)
+- narration (12-18 words. ONE punchy line. Never read bullets verbatim.)
+- visualFocus (one sentence describing what you SEE on the slide)
+- cameraDirection (specific camera movement matching the slide category)
 - slideCategory ("person" | "product" | "graphic" | "data" | "text" | "title")
-- estimatedDurationSeconds (integer, based on deck intent pacing)`,
+- estimatedDurationSeconds (integer 6-10, based on narration length)
+- ycFrameworkRole (one of: "problem" | "solution" | "market" | "product" | "traction" | "team" | "ask" | "hook" | "other")
+
+Also return a top-level field:
+- totalDurationSeconds (sum of all scene durations — must be ≤ 120)`,
   });
 
   const imageCount = slideImages?.filter((p) => fs.existsSync(p)).length || 0;
@@ -282,6 +366,9 @@ For each scene return:
     storyScript.documentTitle = storyScript.documentTitle || parsedDocument.documentTitle;
     storyScript.totalScenes = storyScript.scenes.length;
 
+    // ── Enforce duration + slide count caps (in case Claude ignored them) ──
+    enforceDurationCap(storyScript);
+
     return storyScript;
   } catch (error: any) {
     console.error(`[StoryExtractor] Claude Vision API FAILED: ${error.message}`);
@@ -289,4 +376,53 @@ For each scene return:
     if (error.error) console.error(`[StoryExtractor] Error details:`, JSON.stringify(error.error).slice(0, 500));
     throw error;
   }
+}
+
+/**
+ * Enforce hard limits on the story script:
+ * - Maximum 10 scenes (keep the first 10 if Claude returned more)
+ * - Maximum 120 seconds total duration (scale down proportionally if exceeded)
+ * - Per-scene minimum 5s, maximum 12s
+ */
+const MAX_SCENES = 10;
+const MAX_TOTAL_DURATION = 120;
+const MIN_SCENE_DURATION = 5;
+const MAX_SCENE_DURATION = 12;
+
+function enforceDurationCap(script: StoryScript): void {
+  // Cap scene count
+  if (script.scenes.length > MAX_SCENES) {
+    console.log(`[StoryExtractor] Trimming ${script.scenes.length} scenes to ${MAX_SCENES}`);
+    script.scenes = script.scenes.slice(0, MAX_SCENES);
+    script.totalScenes = script.scenes.length;
+    // Re-number sequentially
+    script.scenes.forEach((s, i) => { s.sceneNumber = i + 1; });
+  }
+
+  // Clamp per-scene durations
+  script.scenes.forEach((s) => {
+    if (!s.estimatedDurationSeconds || s.estimatedDurationSeconds < MIN_SCENE_DURATION) {
+      s.estimatedDurationSeconds = MIN_SCENE_DURATION;
+    }
+    if (s.estimatedDurationSeconds > MAX_SCENE_DURATION) {
+      s.estimatedDurationSeconds = MAX_SCENE_DURATION;
+    }
+  });
+
+  // Cap total duration — scale all scenes proportionally
+  const total = script.scenes.reduce((sum, s) => sum + s.estimatedDurationSeconds, 0);
+  if (total > MAX_TOTAL_DURATION) {
+    const scale = MAX_TOTAL_DURATION / total;
+    script.scenes.forEach((s) => {
+      s.estimatedDurationSeconds = Math.max(
+        MIN_SCENE_DURATION,
+        Math.round(s.estimatedDurationSeconds * scale)
+      );
+    });
+    const newTotal = script.scenes.reduce((sum, s) => sum + s.estimatedDurationSeconds, 0);
+    console.log(`[StoryExtractor] Scaled total duration from ${total}s to ${newTotal}s (cap: ${MAX_TOTAL_DURATION}s)`);
+  }
+
+  script.totalDurationSeconds = script.scenes.reduce((sum, s) => sum + s.estimatedDurationSeconds, 0);
+  console.log(`[StoryExtractor] Final: ${script.scenes.length} scenes, ${script.totalDurationSeconds}s total`);
 }
