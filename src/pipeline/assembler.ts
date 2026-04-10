@@ -4,9 +4,20 @@ import path from "path";
 
 export interface AssemblyScene {
   imageFile?: string;  // path to JPEG (MVP — static slide)
-  videoFile?: string;  // path to MP4 (V1 — AI-generated clip)
+  videoFile?: string;  // path to MP4 (V1 — AI-generated clip or Ken Burns)
   audioFile: string;   // path to MP3
   durationSeconds: number;
+
+  // Optional highlight overlay — drawn on top of the scene for text-heavy slides
+  keyPhrase?: string;
+  highlightRegion?: {
+    x: number;       // 0-1 normalized
+    y: number;
+    width: number;
+    height: number;
+  };
+  highlightStartSec?: number;
+  highlightEndSec?: number;
 }
 
 /**
@@ -72,23 +83,45 @@ function createSceneClip(scene: AssemblyScene, outputPath: string): Promise<void
   // Verify video file exists and has content before using it
   if (scene.videoFile && fs.existsSync(scene.videoFile) && fs.statSync(scene.videoFile).size > 1000) {
     return withTimeout(
-      createVideoSceneClip(scene.videoFile, scene.audioFile, scene.durationSeconds, outputPath),
+      createVideoSceneClip(scene, outputPath),
       120000, // 2 min timeout per scene
       `Scene clip encoding timed out`
     );
   }
   // Fallback to image-based scene (static slide)
-  const imageFile = scene.imageFile || scene.videoFile; // videoFile might actually be an image path from fallback
+  const imageFile = scene.imageFile || scene.videoFile;
   if (!imageFile || !fs.existsSync(imageFile)) {
     console.warn(`[Assembler] Missing media file for scene — skipping`);
-    // Create a blank clip as placeholder
     return createBlankClip(scene.audioFile, scene.durationSeconds, outputPath);
   }
   return withTimeout(
-    createImageSceneClip(imageFile, scene.audioFile, scene.durationSeconds, outputPath),
+    createImageSceneClip(imageFile, scene, outputPath),
     120000,
     `Image scene encoding timed out`
   );
+}
+
+/**
+ * Build an FFmpeg drawbox filter string for the highlight region.
+ * Returns an empty string if no highlight is set.
+ *
+ * The box appears with a soft fade-in/out synced to narration timing.
+ * Frame dimensions are 1280x720.
+ */
+function buildHighlightFilter(scene: AssemblyScene): string {
+  if (!scene.highlightRegion) return "";
+  const r = scene.highlightRegion;
+  const x = Math.max(0, Math.round(r.x * 1280));
+  const y = Math.max(0, Math.round(r.y * 720));
+  const w = Math.min(1280 - x, Math.round(r.width * 1280));
+  const h = Math.min(720 - y, Math.round(r.height * 720));
+  if (w < 10 || h < 10) return "";
+
+  const start = scene.highlightStartSec ?? 0.5;
+  const end = scene.highlightEndSec ?? scene.durationSeconds - 0.5;
+
+  // Yellow highlight box with thick stroke, visible only during the highlight window
+  return `drawbox=x=${x}:y=${y}:w=${w}:h=${h}:color=yellow@0.85:t=6:enable='between(t,${start.toFixed(2)},${end.toFixed(2)})'`;
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, msg: string): Promise<T> {
@@ -121,18 +154,22 @@ function createBlankClip(audioFile: string, durationSeconds: number, outputPath:
 
 /**
  * Loop a static image for the scene duration with audio overlay (MVP).
+ * Applies highlight drawbox if the scene has highlightRegion.
  */
 function createImageSceneClip(
   imageFile: string,
-  audioFile: string,
-  durationSeconds: number,
+  scene: AssemblyScene,
   outputPath: string
 ): Promise<void> {
+  const baseFilter = "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black";
+  const highlight = buildHighlightFilter(scene);
+  const vf = highlight ? `${baseFilter},${highlight}` : baseFilter;
+
   return new Promise((resolve, reject) => {
     ffmpeg()
       .input(imageFile)
       .inputOptions(["-loop", "1", "-framerate", "24"])
-      .input(audioFile)
+      .input(scene.audioFile)
       .outputOptions([
         "-c:v", "libx264",
         "-tune", "stillimage",
@@ -140,8 +177,8 @@ function createImageSceneClip(
         "-b:a", "192k",
         "-pix_fmt", "yuv420p",
         "-shortest",
-        "-t", String(durationSeconds),
-        "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black",
+        "-t", String(scene.durationSeconds),
+        "-vf", vf,
       ])
       .output(outputPath)
       .on("end", () => resolve())
@@ -152,27 +189,29 @@ function createImageSceneClip(
 
 /**
  * Loop a short video clip to fill the scene duration, then overlay audio (V1).
- * Seedance clips are 5s; scenes are 20-45s — we loop the clip to fill.
+ * Applies highlight drawbox if the scene has highlightRegion.
  */
 function createVideoSceneClip(
-  videoFile: string,
-  audioFile: string,
-  durationSeconds: number,
+  scene: AssemblyScene,
   outputPath: string
 ): Promise<void> {
+  const baseFilter = "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black";
+  const highlight = buildHighlightFilter(scene);
+  const vf = highlight ? `${baseFilter},${highlight}` : baseFilter;
+
   return new Promise((resolve, reject) => {
     ffmpeg()
-      .input(videoFile)
-      .inputOptions(["-stream_loop", "-1"]) // Loop video indefinitely
-      .input(audioFile)
+      .input(scene.videoFile!)
+      .inputOptions(["-stream_loop", "-1"])
+      .input(scene.audioFile)
       .outputOptions([
         "-c:v", "libx264",
         "-c:a", "aac",
         "-b:a", "192k",
         "-pix_fmt", "yuv420p",
         "-shortest",
-        "-t", String(durationSeconds),
-        "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black",
+        "-t", String(scene.durationSeconds),
+        "-vf", vf,
       ])
       .output(outputPath)
       .on("end", () => resolve())

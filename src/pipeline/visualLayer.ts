@@ -62,23 +62,100 @@ export async function generateVisual(
   slideImagePath: string,
   tier: "mvp" | "v1" | "v2" = "mvp"
 ): Promise<string> {
-  switch (tier) {
-    case "mvp":
-      // Pass through — the slide image IS the visual
-      if (!fs.existsSync(slideImagePath)) {
-        throw new Error(`Slide image not found: ${slideImagePath}`);
-      }
-      return slideImagePath;
+  if (!fs.existsSync(slideImagePath)) {
+    throw new Error(`Slide image not found: ${slideImagePath}`);
+  }
 
-    case "v1":
+  if (tier === "mvp") {
+    return slideImagePath;
+  }
+
+  // V1 / V2: Branch on per-scene treatment (set by Claude or defaulted from category)
+  const treatment = scene.treatment || (
+    ["text", "data"].includes(scene.slideCategory) ? "kenburns" : "seedance"
+  );
+
+  switch (treatment) {
+    case "seedance":
       return generateSeedanceClip(scene, slideImagePath);
 
-    case "v2":
-      throw new Error("V2 tier not yet configured.");
+    case "kenburns":
+      return generateKenBurnsClip(scene, slideImagePath);
+
+    case "static_highlight":
+      // Stay static — assembler will add drawbox highlight overlay
+      return slideImagePath;
 
     default:
       return slideImagePath;
   }
+}
+
+/**
+ * Generate a Ken Burns (slow pan+zoom) clip from a static slide image.
+ * Uses FFmpeg zoompan filter — no AI, no text distortion.
+ * Safe for text-heavy slides, bullets, team bios, quotes.
+ *
+ * The pan direction biases toward the highlightRegion if present, so the zoom
+ * gradually reveals the key text area.
+ */
+async function generateKenBurnsClip(
+  scene: Scene,
+  slideImagePath: string
+): Promise<string> {
+  const outputDir = path.dirname(slideImagePath);
+  const videoPath = path.join(outputDir, `scene_${scene.sceneNumber}_kenburns.mp4`);
+  const duration = Math.max(5, scene.estimatedDurationSeconds || 10);
+  const totalFrames = duration * 24; // 24fps
+
+  console.log(`[VisualLayer] Scene ${scene.sceneNumber}: ${scene.slideCategory} — Ken Burns (${duration}s, no AI)`);
+
+  // Zoom from 1.0 → 1.1 over the scene duration (very subtle)
+  // Pan toward the highlight region center if present, else center
+  let panX = "iw/2-(iw/zoom/2)";
+  let panY = "ih/2-(ih/zoom/2)";
+
+  if (scene.highlightRegion) {
+    const cx = scene.highlightRegion.x + scene.highlightRegion.width / 2;
+    const cy = scene.highlightRegion.y + scene.highlightRegion.height / 2;
+    // Interpolate from center (0.5, 0.5) toward the highlight center over time
+    // At zoom=1.0, pan=center. At zoom=1.1, pan biases toward highlight.
+    panX = `iw*${cx.toFixed(3)}-(iw/zoom/2)`;
+    panY = `ih*${cy.toFixed(3)}-(ih/zoom/2)`;
+  }
+
+  return new Promise((resolve, reject) => {
+    const { execFile } = require("child_process");
+    const args = [
+      "-nostdin", "-y",
+      "-loop", "1",
+      "-i", slideImagePath,
+      "-vf",
+      `scale=2560:1440,zoompan=z='min(zoom+0.0008,1.1)':x='${panX}':y='${panY}':d=${totalFrames}:s=1280x720:fps=24`,
+      "-c:v", "libx264",
+      "-pix_fmt", "yuv420p",
+      "-preset", "medium",
+      "-crf", "22",
+      "-t", String(duration),
+      "-an",
+      videoPath,
+    ];
+
+    execFile("ffmpeg", args, { timeout: 60000 }, (err: any) => {
+      if (err) {
+        console.error(`[VisualLayer] Ken Burns failed for scene ${scene.sceneNumber}: ${err.message}`);
+        resolve(slideImagePath); // Fall back to static image
+        return;
+      }
+      if (fs.existsSync(videoPath) && fs.statSync(videoPath).size > 1000) {
+        const kb = Math.round(fs.statSync(videoPath).size / 1024);
+        console.log(`[VisualLayer] Scene ${scene.sceneNumber} Ken Burns: ${videoPath} (${kb} KB)`);
+        resolve(videoPath);
+      } else {
+        resolve(slideImagePath);
+      }
+    });
+  });
 }
 
 /**

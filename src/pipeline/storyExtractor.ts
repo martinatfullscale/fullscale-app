@@ -37,6 +37,32 @@ export type YcFrameworkRole =
   | "ask"
   | "other";
 
+/**
+ * How to render the scene visually.
+ * - "seedance": AI image-to-video (Seedance 2.0 → Kling fallback). Pure image slides only.
+ * - "kenburns": FFmpeg zoompan (safe pan/zoom, no distortion). Text-heavy slides.
+ * - "static_highlight": Hold still, just add drawbox highlight. Data/chart slides.
+ */
+export type SlideTreatment = "seedance" | "kenburns" | "static_highlight";
+
+/**
+ * Narration length target.
+ * - "punch": 12-18 words, one line, visual slides
+ * - "explain": 3 sentences / 40-60 words, text-heavy slides
+ */
+export type NarrationStyle = "punch" | "explain";
+
+/**
+ * Normalized (0-1) bounding box for highlighting a phrase on the slide.
+ * Used by the assembler to draw a highlight box at the right place/time.
+ */
+export interface HighlightRegion {
+  x: number;       // 0-1 from left
+  y: number;       // 0-1 from top
+  width: number;   // 0-1 width
+  height: number;  // 0-1 height
+}
+
 export interface Scene {
   sceneNumber: number;
   sourcePages: number[];
@@ -47,6 +73,16 @@ export interface Scene {
   slideCategory: SlideCategory;
   estimatedDurationSeconds: number;
   ycFrameworkRole?: YcFrameworkRole;
+
+  // Per-slide treatment — determines visual pipeline branch
+  treatment?: SlideTreatment;
+  narrationStyle?: NarrationStyle;
+
+  // Highlight box (text-heavy slides only)
+  keyPhrase?: string;                // The phrase to highlight verbatim on the slide
+  highlightRegion?: HighlightRegion; // Where the phrase sits (normalized coords)
+  highlightStartSec?: number;        // When the highlight fades in (relative to scene start)
+  highlightEndSec?: number;          // When it fades out
 }
 
 export interface StoryScript {
@@ -79,7 +115,7 @@ LOOK AT EACH IMAGE CAREFULLY — your job depends on accurately seeing what's on
 ${toneGuide[deckIntent]}
 
 ═══════════════════════════════════════════════════════════════
-NORTH STAR: Turn this deck into a 60-90 second video that a busy
+NORTH STAR: Turn this deck into a 60-120 second video that a busy
 person will actually watch to the end. Never longer than 120s.
 ═══════════════════════════════════════════════════════════════
 
@@ -94,84 +130,115 @@ THE YC PITCH FRAMEWORK — use this as your backbone:
 
 If the deck has more than 10 slides, pick the 10 strongest and map them
 to this framework. Skip slides that don't push the narrative forward.
-If the deck is missing sections (e.g. no traction slide), work with what's there.
 
 ═══════════════════════════════════════════════════════════════
-NARRATION RULES — these are non-negotiable:
+TWO NARRATION STYLES — pick the right one per slide:
 ═══════════════════════════════════════════════════════════════
 
-LENGTH:  12-18 words per scene. ONE punchy line. Maximum two sentences.
-         Never write "in this slide", "as you can see", "let's explore", "now let's",
-         "moving on", "next up", or any transition filler.
+STYLE "punch" — for VISUAL slides (person, product, graphic, title):
+  - 12-18 words, ONE punchy line. Maximum two sentences.
+  - Start with the hook, not the setup.
+  - Example (product): "Upload a deck. Get a video. That's the entire pitch."
 
-HOOK:    Start with the hook, not the setup. Not "We built X to solve Y."
-         Yes "X is broken. We fixed it."
+STYLE "explain" — for TEXT-HEAVY slides (text, data, mixed):
+  - 3 sentences, 40-60 words.
+  - Explain the INSIGHT, not the bullets. Say what it MEANS, not what it SAYS.
+  - Pick ONE key phrase from the slide to highlight visually (return it in keyPhrase field).
+  - Example (bullets about market size): "Fifty billion dollars. Growing forty percent a year.
+    This is where we play — and almost no one has figured out how to reach them."
 
-STYLE:   Write like you talk. Short sentences. Active verbs. Specific numbers.
-         Cut every adjective you don't need.
-
-═══════════════════════════════════════════════════════════════
-TEXT-HEAVY SLIDES — special rule. Read this twice:
-═══════════════════════════════════════════════════════════════
-
-If a slide is mostly bullets, paragraphs, or lists:
-  DO NOT read the bullets. DO NOT summarize them.
-  INSTEAD: pick the ONE phrase or number that matters most and riff on it.
-  Say what it MEANS, not what it SAYS.
-
-EXAMPLE — slide shows "99% of creators locked out of product placement economy":
-  BAD:  "99% of creators are locked out of the product placement economy,
-        meaning they miss out on revenue opportunities." (recitation — boring)
-  GOOD: "Ninety-nine percent of creators. Locked out." (punch — memorable)
-
-EXAMPLE — slide shows 5 bullets about market size:
-  BAD:  "The market is growing at 40% a year, with $50B in revenue..." (list)
-  GOOD: "Fifty billion dollars. Growing forty percent. This is where we play." (hook)
+NEVER write "in this slide", "as you can see", "let's explore", "now let's", "moving on",
+"next up", or any transition filler. You're writing for a video, not a tour guide.
 
 ═══════════════════════════════════════════════════════════════
-SLIDE CATEGORY CLASSIFICATION — drives how we animate the slide:
+SLIDE CLASSIFICATION & TREATMENT — drives the visual pipeline:
 ═══════════════════════════════════════════════════════════════
 
-- "person"  = slide has a PHOTO of a real person. Headshots, team, founders, customers.
-- "product" = slide shows a PRODUCT SCREENSHOT, app UI, device mockup, clean hero shot.
-- "graphic" = slide has ILLUSTRATIONS, lifestyle imagery, icons, diagrams — with minimal text.
-- "data"    = slide is CHARTS, GRAPHS, METRICS, NUMBERS, financial tables.
-- "text"    = slide is MOSTLY TEXT — bullets, paragraphs, lists, quotes. 20%+ readable text.
-- "title"   = TITLE SLIDE or SECTION DIVIDER. Big heading, minimal content.
+Look at each slide and pick ONE category AND one treatment:
 
-PRIORITY RULES (most important first):
-1. If ≥20% of the visual is readable text/bullets/paragraphs → "text"
-   (This prevents AI motion from warping readable characters. CRITICAL.)
-2. If there's a human face → "person" (even if there's text around it)
-3. If it's a product screenshot with UI elements → "product"
-4. If it's charts/numbers as the main visual → "data"
-5. If it's a section divider or big headline → "title"
-6. Only use "graphic" for slides that are genuinely visual with NO readable text
+"person"  → PHOTO of real people (headshots, team, founders) with MINIMAL text
+            TREATMENT: "seedance" (AI motion — blink, breathe, subtle push-in)
+            NARRATION: "punch"
 
-When in doubt between "graphic" and "text", choose "text". Better to hold still
-than to produce gibberish motion across letters.
+"product" → PRODUCT SCREENSHOT, app UI, device mockup — clean hero shot with minimal UI text
+            TREATMENT: "seedance" (AI zoom into feature)
+            NARRATION: "punch"
+
+"graphic" → ILLUSTRATIONS, lifestyle imagery, icons, diagrams — NO readable text
+            TREATMENT: "seedance" (ken burns cinematic pan)
+            NARRATION: "punch"
+
+"title"   → Big title / section divider — minimal content
+            TREATMENT: "seedance" (dramatic push-in)
+            NARRATION: "punch"
+
+"text"    → Slide is MOSTLY TEXT — bullets, paragraphs, lists, quotes, team bios,
+            mixed content with headshots AND text
+            TREATMENT: "kenburns" (FFmpeg slow zoom — no AI, no distortion)
+            NARRATION: "explain" (3 sentences)
+            REQUIRED: return keyPhrase + highlightRegion
+
+"data"    → CHARTS, GRAPHS, METRICS, NUMBERS, financial tables
+            TREATMENT: "static_highlight" (hold still, highlight key number)
+            NARRATION: "explain" (3 sentences)
+            REQUIRED: return keyPhrase + highlightRegion
+
+CRITICAL CLASSIFICATION RULES — prevents text distortion:
+
+1. If the slide has ANY readable body text (bullets, paragraphs, descriptions) → "text"
+   Even if it also has images, headshots, or graphics. Text distortion is the worst
+   possible outcome. When unsure, choose "text".
+
+2. ONLY classify as "person" if the slide is a clean headshot with NO body text.
+   Team slides with bios are "text", not "person".
+
+3. ONLY classify as "product" if the slide is a clean product shot with NO descriptions.
+   Product feature slides with bullet points are "text".
+
+4. "graphic" is reserved for slides that are pure visual (like a lifestyle photo fills
+   the whole slide with minimal text overlay).
 
 ═══════════════════════════════════════════════════════════════
-CAMERA DIRECTION — specific movement per scene:
+HIGHLIGHT REGIONS — only for "text" and "data" slides:
 ═══════════════════════════════════════════════════════════════
 
-- "person"  → "slow push-in on subject" or "close-up with shallow depth of field" or "steadicam orbit"
-- "product" → "slow zoom into key feature" or "gentle parallax depth" or "tracking shot across interface"
+When the slide is text-heavy, you MUST return:
+- keyPhrase: the exact text to highlight (verbatim as it appears on the slide)
+- highlightRegion: where that text sits on the slide (normalized 0-1 coordinates)
+
+Coordinates explanation:
+  The slide image you see is 1280x720 pixels (landscape 16:9).
+  x = 0.0 is the left edge, x = 1.0 is the right edge
+  y = 0.0 is the top edge, y = 1.0 is the bottom edge
+  width/height are the normalized size of the bounding box
+
+Look at the image and estimate where the key phrase sits:
+- If the phrase is a headline at the top center: { x: 0.2, y: 0.1, width: 0.6, height: 0.15 }
+- If the phrase is a bullet on the left: { x: 0.05, y: 0.4, width: 0.5, height: 0.08 }
+- If it's a big number in the middle: { x: 0.35, y: 0.4, width: 0.3, height: 0.2 }
+
+Be generous with padding — better for the highlight box to be slightly larger than smaller.
+
+═══════════════════════════════════════════════════════════════
+CAMERA DIRECTION — for scenes using seedance treatment:
+═══════════════════════════════════════════════════════════════
+
+- "person"  → "slow push-in on subject" or "close-up with shallow depth of field"
+- "product" → "slow zoom into key feature" or "gentle parallax depth"
 - "graphic" → "wide establishing shot" or "crane shot rising" or "dolly forward"
-- "data"    → "static — clean hold"
-- "text"    → "static — clean hold"
 - "title"   → "dramatic push-in" or "crane shot rising" or "wide pull-back"
-
-Never use the same camera direction twice in a row.
+- "text"    → "ken burns slow zoom" (not used by AI, just a label)
+- "data"    → "static hold" (not used by AI, just a label)
 
 ═══════════════════════════════════════════════════════════════
-DURATION BUDGET — aim for 60-90s total, 120s MAX:
+DURATION BUDGET:
 ═══════════════════════════════════════════════════════════════
 
-Per scene: 6-10 seconds (enough to speak 12-18 words).
-If the deck has 10 slides, aim for ~8 seconds each = 80 seconds total.
-If the deck has 7 slides, 10 seconds each = 70 seconds total.
-NEVER let any scene exceed 12 seconds.
+Per scene:
+- "punch" narration → 6-8 seconds
+- "explain" narration → 10-14 seconds
+
+Aim for 70-100 seconds total, NEVER exceed 120.
 
 Respond ONLY with a valid JSON object. No preamble, no markdown, no explanation.`;
 }
@@ -270,30 +337,49 @@ export async function extractStory(
   const targetSceneCount = Math.min(parsedDocument.pageCount, 10);
   contentBlocks.push({
     type: "text",
-    text: `\nProduce a punchy narration script.
+    text: `\nProduce a narration script with per-slide treatment.
 
 SLIDE SELECTION:
 - The deck has ${parsedDocument.pageCount} pages.
-- Generate EXACTLY ${targetSceneCount} scenes ${parsedDocument.pageCount > 10 ? "(you must pick the 10 strongest slides and skip the rest)" : "(one per page)"}.
+- Generate EXACTLY ${targetSceneCount} scenes ${parsedDocument.pageCount > 10 ? "(pick the 10 strongest slides and skip the rest)" : "(one per page)"}.
 - Map selected slides to the YC framework: Problem → Solution → Market → Product → Traction → Team → Ask.
 - Skip slides that don't advance the story.
 
 HARD LIMITS:
-- Each scene's narration: 12-18 words. ONE punchy line. Two sentences max.
-- Each scene's estimatedDurationSeconds: 6-10 (never more than 12).
-- Total video duration: target 60-90 seconds, absolute maximum 120 seconds.
-- If a slide has ≥20% readable text, classify it as "text" (not "graphic") so it stays static and AI doesn't warp the characters.
+- Visual slides (punch narration): 6-8 seconds, 12-18 words
+- Text-heavy slides (explain narration): 10-14 seconds, 40-60 words (3 sentences)
+- Total video duration: target 70-100 seconds, absolute maximum 120 seconds.
+- ANY slide with readable body text → classify as "text" (not graphic/person/product)
 
-For each scene return:
+For each scene return ALL of these fields:
 - sceneNumber (integer, sequential starting at 1)
 - sourcePages (array with the original page number, e.g. [3])
 - sceneTitle (short, max 6 words)
-- narration (12-18 words. ONE punchy line. Never read bullets verbatim.)
+- narration (follow narrationStyle rules above)
 - visualFocus (one sentence describing what you SEE on the slide)
-- cameraDirection (specific camera movement matching the slide category)
+- cameraDirection (specific camera movement)
 - slideCategory ("person" | "product" | "graphic" | "data" | "text" | "title")
-- estimatedDurationSeconds (integer 6-10, based on narration length)
-- ycFrameworkRole (one of: "problem" | "solution" | "market" | "product" | "traction" | "team" | "ask" | "hook" | "other")
+- treatment ("seedance" | "kenburns" | "static_highlight")
+    * "seedance" for pure image slides (person/product/graphic/title WITHOUT readable text)
+    * "kenburns" for text-heavy slides (safe FFmpeg zoom — no AI distortion)
+    * "static_highlight" for data/chart slides
+- narrationStyle ("punch" | "explain")
+    * "punch" goes with "seedance" treatment
+    * "explain" goes with "kenburns" or "static_highlight" treatment
+- estimatedDurationSeconds (integer, 6-14)
+- ycFrameworkRole ("problem" | "solution" | "market" | "product" | "traction" | "team" | "ask" | "hook" | "other")
+
+FOR "text" AND "data" slides ONLY, also return:
+- keyPhrase (the EXACT phrase from the slide to highlight on screen — must be verbatim)
+- highlightRegion (object with x, y, width, height — all normalized 0-1 relative to the 1280x720 slide)
+- highlightStartSec (when the highlight fades in, typically 0.5 or 1.0 seconds into the scene)
+- highlightEndSec (when it fades out, typically estimatedDurationSeconds - 0.5)
+
+Example highlightRegion for a bullet at top-left of slide:
+  { "x": 0.05, "y": 0.15, "width": 0.6, "height": 0.1 }
+
+Example highlightRegion for a big number in the center:
+  { "x": 0.35, "y": 0.35, "width": 0.3, "height": 0.2 }
 
 Also return a top-level field:
 - totalDurationSeconds (sum of all scene durations — must be ≤ 120)`,
@@ -398,6 +484,17 @@ function enforceDurationCap(script: StoryScript): void {
     // Re-number sequentially
     script.scenes.forEach((s, i) => { s.sceneNumber = i + 1; });
   }
+
+  // Fill in missing treatment / narrationStyle defaults from slideCategory
+  script.scenes.forEach((s) => {
+    if (!s.treatment) {
+      s.treatment = ["text", "data"].includes(s.slideCategory) ? "kenburns" : "seedance";
+      if (s.slideCategory === "data") s.treatment = "static_highlight";
+    }
+    if (!s.narrationStyle) {
+      s.narrationStyle = ["text", "data"].includes(s.slideCategory) ? "explain" : "punch";
+    }
+  });
 
   // Clamp per-scene durations
   script.scenes.forEach((s) => {
