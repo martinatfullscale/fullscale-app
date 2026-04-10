@@ -154,6 +154,28 @@ NEVER write "in this slide", "as you can see", "let's explore", "now let's", "mo
 SLIDE CLASSIFICATION & TREATMENT — drives the visual pipeline:
 ═══════════════════════════════════════════════════════════════
 
+🚨 MOST IMPORTANT RULE — APPLY BEFORE PICKING ANY CATEGORY:
+
+Scan the slide for ANY text a reader could stop and read — captions
+under images, bullet points, team bios, feature descriptions, sub-headings,
+column labels, paragraphs, quotes, section dividers with multi-word copy.
+
+If you find text that takes more than 1 second to read, classify the slide
+as "text" and use treatment "kenburns". This rule OVERRIDES person, product,
+and graphic. Seedance (AI motion) is ONLY for slides with ZERO readable body text.
+
+EXAMPLE 1: A slide with 3 product screenshots and a caption beneath each
+  ("The Shorts Factory", "From Archive to Algorithm", "Net-New Revenue")
+  → This IS "text" treatment. The captions make it text-heavy.
+  → Do NOT classify as "product" just because the images are prominent.
+
+EXAMPLE 2: A slide with 5 headshots and a paragraph bio under each name
+  → This IS "text" treatment, NOT "person".
+
+EXAMPLE 3: A slide with a big chart AND a paragraph explanation
+  → This IS "data" treatment (static_highlight) since there's readable text
+     that must not distort.
+
 Look at each slide and pick ONE category AND one treatment:
 
 "person"  → PHOTO of real people (headshots, team, founders) with MINIMAL text

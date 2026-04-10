@@ -4,6 +4,8 @@ import fs from "fs";
 import path from "path";
 import axios from "axios";
 import { fal } from "@fal-ai/client";
+// @ts-ignore — sharp resolves via parent server node_modules when dynamically imported
+import sharp from "sharp";
 import type { Scene, SlideCategory } from "./storyExtractor.js";
 
 const execFileAsync = promisify(execFile);
@@ -80,82 +82,215 @@ export async function generateVisual(
       return generateSeedanceClip(scene, slideImagePath);
 
     case "kenburns":
-      return generateKenBurnsClip(scene, slideImagePath);
+      // Text-heavy slides — subtle zoom 1.0 → 1.06 with 3D lifted card effect
+      return generateKenBurnsClip(scene, slideImagePath, { intensity: "standard", liftedCard: true });
 
     case "static_highlight":
-      // Stay static — assembler will add drawbox highlight overlay
-      return slideImagePath;
+      // Data slides (charts, metrics) — very subtle zoom 1.0 → 1.03 so the slide feels alive
+      return generateKenBurnsClip(scene, slideImagePath, { intensity: "subtle", liftedCard: false });
 
     default:
       return slideImagePath;
   }
 }
 
+interface KenBurnsOptions {
+  /** "standard" = 1.0→1.06 zoom (text slides). "subtle" = 1.0→1.03 zoom (data slides). */
+  intensity: "standard" | "subtle";
+  /** Apply a subtle 3D drop-shadow "card lift" effect to the slide before animating. */
+  liftedCard: boolean;
+}
+
 /**
- * Generate a Ken Burns (slow pan+zoom) clip from a static slide image.
- * Uses FFmpeg zoompan filter — no AI, no text distortion.
- * Safe for text-heavy slides, bullets, team bios, quotes.
+ * Render a red ellipse around the highlight region onto a copy of the slide image.
+ * Used as the "highlight variant" which gets overlaid with a time-gated alpha fade.
+ */
+async function burnHighlightIntoImage(
+  baseImagePath: string,
+  outputPath: string,
+  region: { x: number; y: number; width: number; height: number }
+): Promise<void> {
+  const cx = (region.x + region.width / 2) * 1280;
+  const cy = (region.y + region.height / 2) * 720;
+  const rx = (region.width / 2) * 1280 + 20;  // 20px horizontal padding
+  const ry = (region.height / 2) * 720 + 15;  // 15px vertical padding
+
+  const svg = `<svg width="1280" height="720" xmlns="http://www.w3.org/2000/svg">
+    <ellipse cx="${cx.toFixed(0)}" cy="${cy.toFixed(0)}"
+             rx="${rx.toFixed(0)}" ry="${ry.toFixed(0)}"
+             fill="none" stroke="#E63946" stroke-width="8"/>
+  </svg>`;
+
+  // Ensure base image is exactly 1280x720 first, then composite the SVG over it
+  await sharp(baseImagePath)
+    .resize(1280, 720, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 1 } })
+    .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
+    .jpeg({ quality: 92 })
+    .toFile(outputPath);
+}
+
+/**
+ * Apply a subtle 3D "lifted card" effect to the slide image.
+ * Inset the slide inside a dark canvas with a soft drop shadow — makes text
+ * slides feel like physical cards floating above a surface, not flat screenshots.
+ */
+async function applyLiftedCardEffect(
+  baseImagePath: string,
+  outputPath: string
+): Promise<void> {
+  // Resize the slide down to 94% of canvas (1203x676), center it, drop shadow underneath
+  const cardWidth = 1203;
+  const cardHeight = 676;
+  const marginX = (1280 - cardWidth) / 2;  // 38
+  const marginY = (720 - cardHeight) / 2;  // 22
+
+  // Base dark canvas
+  const canvas = sharp({
+    create: {
+      width: 1280,
+      height: 720,
+      channels: 4,
+      background: { r: 18, g: 18, b: 22, alpha: 1 }, // near-black with slight warmth
+    },
+  });
+
+  // Soft shadow: the slide resized + blurred + darkened, offset by +8px down
+  const shadowBuffer = await sharp(baseImagePath)
+    .resize(cardWidth, cardHeight, { fit: "contain", background: { r: 0, g: 0, b: 0 } })
+    .blur(18)
+    .modulate({ brightness: 0.3 })
+    .toBuffer();
+
+  // The actual card
+  const cardBuffer = await sharp(baseImagePath)
+    .resize(cardWidth, cardHeight, { fit: "contain", background: { r: 255, g: 255, b: 255 } })
+    .toBuffer();
+
+  await canvas
+    .composite([
+      { input: shadowBuffer, top: Math.round(marginY + 12), left: Math.round(marginX) },
+      { input: cardBuffer, top: Math.round(marginY), left: Math.round(marginX) },
+    ])
+    .jpeg({ quality: 92 })
+    .toFile(outputPath);
+}
+
+/**
+ * Generate a Ken Burns (slow pan+zoom) clip from a slide image.
+ * When the scene has a highlightRegion, also renders a second variant with a
+ * red ellipse circle burned in, and composites it on top with a time-gated
+ * alpha fade (fade in at highlightStartSec, fade out at highlightEndSec).
  *
- * The pan direction biases toward the highlightRegion if present, so the zoom
- * gradually reveals the key text area.
+ * Because both variants go through identical zoompan params, the circle is
+ * pixel-perfect aligned with the underlying text as it pans/zooms.
  */
 async function generateKenBurnsClip(
   scene: Scene,
-  slideImagePath: string
+  slideImagePath: string,
+  options: KenBurnsOptions = { intensity: "standard", liftedCard: true }
 ): Promise<string> {
   const outputDir = path.dirname(slideImagePath);
   const videoPath = path.join(outputDir, `scene_${scene.sceneNumber}_kenburns.mp4`);
   const duration = Math.max(5, scene.estimatedDurationSeconds || 10);
   const totalFrames = duration * 24; // 24fps
 
-  console.log(`[VisualLayer] Scene ${scene.sceneNumber}: ${scene.slideCategory} — Ken Burns (${duration}s, no AI)`);
+  console.log(`[VisualLayer] Scene ${scene.sceneNumber}: ${scene.slideCategory} — Ken Burns ${options.intensity} (${duration}s)`);
 
-  // Zoom from 1.0 → 1.1 over the scene duration (very subtle)
-  // Pan toward the highlight region center if present, else center
+  // Intensity controls zoom ceiling + speed
+  const zoomMax = options.intensity === "subtle" ? 1.03 : 1.06;
+  const zoomStep = options.intensity === "subtle" ? 0.0002 : 0.0004;
+
+  // Pan center: blend 70% slide-center + 30% highlight-center (softer bias than before)
   let panX = "iw/2-(iw/zoom/2)";
   let panY = "ih/2-(ih/zoom/2)";
-
   if (scene.highlightRegion) {
-    const cx = scene.highlightRegion.x + scene.highlightRegion.width / 2;
-    const cy = scene.highlightRegion.y + scene.highlightRegion.height / 2;
-    // Interpolate from center (0.5, 0.5) toward the highlight center over time
-    // At zoom=1.0, pan=center. At zoom=1.1, pan biases toward highlight.
-    panX = `iw*${cx.toFixed(3)}-(iw/zoom/2)`;
-    panY = `ih*${cy.toFixed(3)}-(ih/zoom/2)`;
+    const hx = scene.highlightRegion.x + scene.highlightRegion.width / 2;
+    const hy = scene.highlightRegion.y + scene.highlightRegion.height / 2;
+    const targetX = 0.5 * 0.7 + hx * 0.3;
+    const targetY = 0.5 * 0.7 + hy * 0.3;
+    panX = `iw*${targetX.toFixed(3)}-(iw/zoom/2)`;
+    panY = `ih*${targetY.toFixed(3)}-(ih/zoom/2)`;
   }
 
-  return new Promise((resolve, reject) => {
-    const { execFile } = require("child_process");
-    const args = [
-      "-nostdin", "-y",
-      "-loop", "1",
-      "-i", slideImagePath,
-      "-vf",
-      `scale=2560:1440,zoompan=z='min(zoom+0.0008,1.1)':x='${panX}':y='${panY}':d=${totalFrames}:s=1280x720:fps=24`,
-      "-c:v", "libx264",
-      "-pix_fmt", "yuv420p",
-      "-preset", "medium",
-      "-crf", "22",
-      "-t", String(duration),
-      "-an",
-      videoPath,
-    ];
+  try {
+    // Step 1: Prepare the "plain" image — possibly with 3D lifted card effect
+    let plainPath = slideImagePath;
+    if (options.liftedCard) {
+      plainPath = path.join(outputDir, `scene_${scene.sceneNumber}_lifted.jpg`);
+      await applyLiftedCardEffect(slideImagePath, plainPath);
+    }
 
-    execFile("ffmpeg", args, { timeout: 60000 }, (err: any) => {
-      if (err) {
-        console.error(`[VisualLayer] Ken Burns failed for scene ${scene.sceneNumber}: ${err.message}`);
-        resolve(slideImagePath); // Fall back to static image
-        return;
-      }
-      if (fs.existsSync(videoPath) && fs.statSync(videoPath).size > 1000) {
-        const kb = Math.round(fs.statSync(videoPath).size / 1024);
-        console.log(`[VisualLayer] Scene ${scene.sceneNumber} Ken Burns: ${videoPath} (${kb} KB)`);
-        resolve(videoPath);
-      } else {
-        resolve(slideImagePath);
-      }
+    // Step 2: Prepare the "circled" variant if we have a highlight region
+    let circledPath: string | null = null;
+    if (scene.highlightRegion) {
+      circledPath = path.join(outputDir, `scene_${scene.sceneNumber}_circled.jpg`);
+      await burnHighlightIntoImage(plainPath, circledPath, scene.highlightRegion);
+    }
+
+    // Step 3: Run FFmpeg
+    const zoompanExpr = `scale=2560:1440,zoompan=z='min(zoom+${zoomStep},${zoomMax})':x='${panX}':y='${panY}':d=${totalFrames}:s=1280x720:fps=24`;
+
+    let args: string[];
+    if (circledPath) {
+      // Dual-input filtergraph: plain + circled with time-gated alpha fade overlay
+      const fadeInStart = Math.max(0, scene.highlightStartSec ?? 0.5);
+      const fadeOutStart = Math.max(fadeInStart + 0.5, scene.highlightEndSec ?? duration - 0.5);
+      const fadeDur = 0.4;
+
+      const filtergraph = [
+        `[0:v]${zoompanExpr}[plain]`,
+        `[1:v]${zoompanExpr},format=yuva420p,fade=in:st=${fadeInStart.toFixed(2)}:d=${fadeDur}:alpha=1,fade=out:st=${fadeOutStart.toFixed(2)}:d=${fadeDur}:alpha=1[circled]`,
+        `[plain][circled]overlay=shortest=1[out]`,
+      ].join(";");
+
+      args = [
+        "-nostdin", "-y",
+        "-loop", "1", "-i", plainPath,
+        "-loop", "1", "-i", circledPath,
+        "-filter_complex", filtergraph,
+        "-map", "[out]",
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-preset", "medium",
+        "-crf", "22",
+        "-t", String(duration),
+        "-an",
+        videoPath,
+      ];
+    } else {
+      // Single-input simple Ken Burns
+      args = [
+        "-nostdin", "-y",
+        "-loop", "1",
+        "-i", plainPath,
+        "-vf", zoompanExpr,
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-preset", "medium",
+        "-crf", "22",
+        "-t", String(duration),
+        "-an",
+        videoPath,
+      ];
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      execFile("ffmpeg", args, { timeout: 90000 }, (err: any) => {
+        if (err) reject(err);
+        else resolve();
+      });
     });
-  });
+
+    if (fs.existsSync(videoPath) && fs.statSync(videoPath).size > 1000) {
+      const kb = Math.round(fs.statSync(videoPath).size / 1024);
+      console.log(`[VisualLayer] Scene ${scene.sceneNumber} Ken Burns${scene.highlightRegion ? " + highlight" : ""}: ${videoPath} (${kb} KB)`);
+      return videoPath;
+    }
+    throw new Error("Output file missing or too small");
+  } catch (err: any) {
+    console.error(`[VisualLayer] Ken Burns failed for scene ${scene.sceneNumber}: ${err.message}`);
+    return slideImagePath; // Fall back to static image
+  }
 }
 
 /**
