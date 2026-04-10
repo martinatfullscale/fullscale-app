@@ -101,28 +101,9 @@ function createSceneClip(scene: AssemblyScene, outputPath: string): Promise<void
   );
 }
 
-/**
- * Build an FFmpeg drawbox filter string for the highlight region.
- * Returns an empty string if no highlight is set.
- *
- * The box appears with a soft fade-in/out synced to narration timing.
- * Frame dimensions are 1280x720.
- */
-function buildHighlightFilter(scene: AssemblyScene): string {
-  if (!scene.highlightRegion) return "";
-  const r = scene.highlightRegion;
-  const x = Math.max(0, Math.round(r.x * 1280));
-  const y = Math.max(0, Math.round(r.y * 720));
-  const w = Math.min(1280 - x, Math.round(r.width * 1280));
-  const h = Math.min(720 - y, Math.round(r.height * 720));
-  if (w < 10 || h < 10) return "";
-
-  const start = scene.highlightStartSec ?? 0.5;
-  const end = scene.highlightEndSec ?? scene.durationSeconds - 0.5;
-
-  // Yellow highlight box with thick stroke, visible only during the highlight window
-  return `drawbox=x=${x}:y=${y}:w=${w}:h=${h}:color=yellow@0.85:t=6:enable='between(t,${start.toFixed(2)},${end.toFixed(2)})'`;
-}
+// Highlight rendering has moved out of the assembler. For Ken Burns clips,
+// the red circle highlight is baked into the video directly by visualLayer.ts
+// using a dual-input FFmpeg filtergraph. See `generateKenBurnsClip()`.
 
 function withTimeout<T>(promise: Promise<T>, ms: number, msg: string): Promise<T> {
   return Promise.race([
@@ -152,19 +133,16 @@ function createBlankClip(audioFile: string, durationSeconds: number, outputPath:
   });
 }
 
+const BASE_SCALE_FILTER = "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black";
+
 /**
- * Loop a static image for the scene duration with audio overlay (MVP).
- * Applies highlight drawbox if the scene has highlightRegion.
+ * Loop a static image for the scene duration with audio overlay (MVP fallback path).
  */
 function createImageSceneClip(
   imageFile: string,
   scene: AssemblyScene,
   outputPath: string
 ): Promise<void> {
-  const baseFilter = "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black";
-  const highlight = buildHighlightFilter(scene);
-  const vf = highlight ? `${baseFilter},${highlight}` : baseFilter;
-
   return new Promise((resolve, reject) => {
     ffmpeg()
       .input(imageFile)
@@ -178,7 +156,7 @@ function createImageSceneClip(
         "-pix_fmt", "yuv420p",
         "-shortest",
         "-t", String(scene.durationSeconds),
-        "-vf", vf,
+        "-vf", BASE_SCALE_FILTER,
       ])
       .output(outputPath)
       .on("end", () => resolve())
@@ -188,17 +166,13 @@ function createImageSceneClip(
 }
 
 /**
- * Loop a short video clip to fill the scene duration, then overlay audio (V1).
- * Applies highlight drawbox if the scene has highlightRegion.
+ * Loop a short video clip to fill the scene duration, then overlay audio (V1 path).
+ * Highlights are already baked into the video by visualLayer's Ken Burns path.
  */
 function createVideoSceneClip(
   scene: AssemblyScene,
   outputPath: string
 ): Promise<void> {
-  const baseFilter = "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black";
-  const highlight = buildHighlightFilter(scene);
-  const vf = highlight ? `${baseFilter},${highlight}` : baseFilter;
-
   return new Promise((resolve, reject) => {
     ffmpeg()
       .input(scene.videoFile!)
@@ -211,7 +185,7 @@ function createVideoSceneClip(
         "-pix_fmt", "yuv420p",
         "-shortest",
         "-t", String(scene.durationSeconds),
-        "-vf", vf,
+        "-vf", BASE_SCALE_FILTER,
       ])
       .output(outputPath)
       .on("end", () => resolve())
