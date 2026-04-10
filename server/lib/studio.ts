@@ -822,6 +822,9 @@ export function registerStudioRoutes(app: Express) {
           // where a late "processing" update overwrites the "completed" status
           if (pipelineComplete || stage === "complete") return;
 
+          // Check for user cancellation at each stage boundary
+          await checkStudioCancelled(videoId);
+
           const [rangeStart, rangeEnd] = stageWeights[stage] || [0, 100];
           const globalProgress = Math.round(rangeStart + (progress / 100) * (rangeEnd - rangeStart));
           // Never let progress go backward
@@ -885,6 +888,12 @@ export function registerStudioRoutes(app: Express) {
       }
 
     } catch (err: any) {
+      // Distinguish cancellation from real failure
+      if (err.message === "CANCELLED_BY_USER") {
+        console.log(`[Studio] Video ${videoId} pipeline stopped — user cancelled`);
+        // Status is already "cancelled" in DB from the cancel endpoint
+        return;
+      }
       console.error(`[Studio] Pipeline failed for video ${videoId}:`, err.message);
       console.error(`[Studio] Stack:`, err.stack);
       const errorMsg = err.message || "Pipeline error";
@@ -954,5 +963,72 @@ export function registerStudioRoutes(app: Express) {
     }
   });
 
+  // ──────────────────────────────────────────────────────────────────
+  // VIDEOS: Cancel a running studio pipeline job (soft cancel)
+  // ──────────────────────────────────────────────────────────────────
+  app.post("/api/studio/videos/:videoId/cancel", async (req: any, res: Response) => {
+    try {
+      const email = getSessionEmail(req);
+      if (!email) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const videoId = parseInt(req.params.videoId, 10);
+      if (isNaN(videoId)) {
+        return res.status(400).json({ error: "Invalid video ID" });
+      }
+
+      const video = await storage.getStudioVideo(videoId);
+      if (!video) {
+        return res.status(404).json({ error: "Video not found" });
+      }
+
+      // Verify ownership
+      const user = await storage.getUserByEmail(email);
+      if (!user || video.userId !== user.id) {
+        return res.status(403).json({ error: "Access denied" });
+      }
+
+      if (video.status === "completed") {
+        return res.status(400).json({ error: "Cannot cancel a completed video" });
+      }
+
+      // Soft cancel — set status to "cancelled". The running pipeline checks
+      // this flag between stages and throws when it sees "cancelled".
+      const { db } = await import("../db.js");
+      const { sql } = await import("drizzle-orm");
+      await db.execute(sql`
+        UPDATE studio_videos
+        SET status = 'cancelled',
+            error_message = 'Cancelled by user',
+            completed_at = NOW()
+        WHERE id = ${videoId}
+      `);
+
+      console.log(`[Studio] Video ${videoId} cancelled by ${email}`);
+      res.json({ success: true, videoId, status: "cancelled" });
+    } catch (err: any) {
+      console.error("[Studio] /api/studio/videos/:videoId/cancel error:", err);
+      res.status(500).json({ error: "Cancel failed" });
+    }
+  });
+
   console.log("[Studio] Studio API routes registered");
+}
+
+/**
+ * Check if a Studio video has been cancelled by the user.
+ * Called between pipeline stages to enable soft cancellation.
+ * Throws if cancelled.
+ */
+async function checkStudioCancelled(videoId: number): Promise<void> {
+  try {
+    const video = await storage.getStudioVideo(videoId);
+    if (video?.status === "cancelled") {
+      throw new Error("CANCELLED_BY_USER");
+    }
+  } catch (err: any) {
+    if (err.message === "CANCELLED_BY_USER") throw err;
+    // DB errors — don't block the pipeline
+  }
 }

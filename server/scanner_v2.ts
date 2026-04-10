@@ -950,8 +950,59 @@ async function analyzeFrameWithGemini(
     console.error(`[Gemini] Frame analysis error at ${timestamp}s: ${errMsg}`);
     console.error(`[Gemini] Error details — status: ${errStatus}, body: ${typeof errBody === 'string' ? errBody.substring(0, 300) : JSON.stringify(errBody).substring(0, 300)}`);
     console.error(`[Gemini] Base URL: ${process.env.AI_INTEGRATIONS_GEMINI_BASE_URL || '(not set)'}, API key set: ${!!process.env.AI_INTEGRATIONS_GEMINI_API_KEY}`);
+
+    // Re-throw rate limit errors so the retry wrapper can catch and backoff
+    const bodyStr = typeof errBody === 'string' ? errBody : JSON.stringify(errBody);
+    const is429 = errStatus === 429 || errStatus === '429' ||
+                  errMsg.includes('429') || errMsg.toLowerCase().includes('rate limit') ||
+                  errMsg.toLowerCase().includes('resource_exhausted') ||
+                  bodyStr.includes('RESOURCE_EXHAUSTED') || bodyStr.includes('429');
+    if (is429) {
+      const rateLimitErr: any = new Error(`Gemini rate limited at ${timestamp}s`);
+      rateLimitErr.status = 429;
+      rateLimitErr.isRateLimit = true;
+      throw rateLimitErr;
+    }
+
     return defaultResult;
   }
+}
+
+/**
+ * Call analyzeFrameWithGemini with exponential backoff on 429 rate limit errors.
+ * Returns the default empty result after all retries are exhausted.
+ */
+async function analyzeFrameWithGeminiRetry(
+  framePath: string,
+  timestamp: number,
+  isDense: boolean = false,
+  maxRetries: number = 5
+): Promise<any> {
+  const defaultResult = {
+    surfaces: [],
+    isVertical: false,
+    aiAnalyzed: true,
+  };
+  let lastErr: any = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await analyzeFrameWithGemini(framePath, timestamp, isDense);
+    } catch (err: any) {
+      lastErr = err;
+      if (!err.isRateLimit) {
+        // Non-rate-limit errors already return defaultResult inside analyzeFrameWithGemini
+        return defaultResult;
+      }
+      if (attempt < maxRetries) {
+        // Exponential backoff: 2s, 4s, 8s, 16s, 32s (capped)
+        const backoffMs = Math.min(2000 * Math.pow(2, attempt), 32000);
+        console.log(`[Gemini] Rate limited at ${timestamp}s — retry ${attempt + 1}/${maxRetries} in ${backoffMs}ms`);
+        await new Promise(r => setTimeout(r, backoffMs));
+      }
+    }
+  }
+  console.error(`[Gemini] Rate limit retries exhausted at ${timestamp}s — returning empty`);
+  return defaultResult;
 }
 
 // ============================================================================
@@ -1845,7 +1896,7 @@ export async function processVideoScan(
 
         let analysis: FrameAnalysisResult;
         if (useGemini) {
-          analysis = await analyzeFrameWithGemini(framePath, timestamp, isVertical);
+          analysis = await analyzeFrameWithGeminiRetry(framePath, timestamp, isVertical);
           // Only fall back to edge if Gemini API actually failed (not if it just found no surfaces)
           // If aiAnalyzed=true, Gemini worked fine — it just said "no surfaces here"
           if (!analysis.aiAnalyzed && !analysis.hasSurface) {
@@ -2287,7 +2338,7 @@ export async function denseScanRange(
       const timestamp = startTime + i * intervalSeconds;
 
       try {
-        const analysis = await analyzeFrameWithGemini(framePath, timestamp, false);
+        const analysis = await analyzeFrameWithGeminiRetry(framePath, timestamp, false);
 
         if (analysis.hasSurface && analysis.surfaces.length > 0) {
           // Match detected surfaces to our target surfaces

@@ -204,6 +204,18 @@ export default function StudioUpload() {
     stopPolling();
   };
 
+  const cancelUpload = async () => {
+    if (!jobId) return;
+    try {
+      await fetch(`/api/studio/videos/${jobId}/cancel`, { method: "POST" });
+    } catch (err) {
+      // Non-fatal — still stop polling
+    }
+    stopPolling();
+    setStatus("failed");
+    setError("Cancelled by user");
+  };
+
   const currentStageIndex = STAGE_ORDER.indexOf(status);
   // Server sends global progress (0-100) directly — use it when status is "processing"
   const overallProgress = status === "complete" ? 100
@@ -298,6 +310,11 @@ export default function StudioUpload() {
                 <p className="text-gray-400 text-sm">
                   or click to browse &middot; Max 50MB
                 </p>
+                <p className="text-purple-400/70 text-xs mt-4 max-w-md mx-auto">
+                  Tip: Decks with 10 slides or fewer produce the punchiest videos.
+                  Longer decks will be condensed to the 10 strongest slides.
+                  Videos are capped at 2 minutes for maximum impact.
+                </p>
               </div>
             )}
           </div>
@@ -312,7 +329,18 @@ export default function StudioUpload() {
                   ? STAGE_LABELS[STAGE_ORDER[progress < 5 ? 0 : progress < 25 ? 1 : progress < 55 ? 2 : progress < 85 ? 3 : 4]] || "Processing..."
                   : STAGE_LABELS[status] || status}
               </span>
-              <span className="text-gray-400 text-sm">{overallProgress}%</span>
+              <div className="flex items-center gap-3">
+                <span className="text-gray-400 text-sm">{overallProgress}%</span>
+                {jobId && (
+                  <button
+                    onClick={cancelUpload}
+                    className="text-xs text-gray-400 hover:text-red-400 border border-gray-700 hover:border-red-500/50 rounded-md px-3 py-1 transition-colors"
+                    data-testid="button-studio-cancel"
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* Progress bar */}

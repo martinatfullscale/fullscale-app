@@ -123,6 +123,23 @@ async function resolveVideoPath(
 /**
  * Run the full 9-step Auto-Remix pipeline.
  */
+/**
+ * Check if a remix job has been cancelled by the user.
+ * Called between pipeline stages to enable soft cancellation.
+ * Throws if cancelled.
+ */
+async function checkCancelled(jobId: number): Promise<void> {
+  try {
+    const job = await storage.getRemixJob(jobId);
+    if (job?.status === "cancelled") {
+      throw new Error("CANCELLED_BY_USER");
+    }
+  } catch (err: any) {
+    if (err.message === "CANCELLED_BY_USER") throw err;
+    // DB errors — don't block the pipeline
+  }
+}
+
 export async function runRemixPipeline(
   videoId: number,
   userId: number,
@@ -349,6 +366,8 @@ export async function runRemixPipeline(
         console.log(`[Remix]   #${i + 1}: ${clip.platform} ${clip.startTime.toFixed(1)}s-${clip.endTime.toFixed(1)}s (score: ${(clip.score * 100).toFixed(0)}%)`);
       }
     }
+
+    await checkCancelled(jobId);
 
     // ─── STEP 4: INSERT — Attach product placements ──────────────
     await storage.updateRemixJobStatus(jobId, "step_4_insert");
@@ -583,6 +602,8 @@ export async function runRemixPipeline(
       }
     }
 
+    await checkCancelled(jobId);
+
     // ─── STEP 5+6: FORMAT + CAPTION — Generate clips ─────────────
     await storage.updateRemixJobStatus(jobId, "step_5_format");
     console.log(`[Remix] Steps 5-6/9: Generating and captioning clips...`);
@@ -630,6 +651,9 @@ export async function runRemixPipeline(
           console.warn(`[Remix]   Clip #${i + 1}: Caption generation failed (non-fatal)`, captionErr);
         }
       }
+
+      // Check for cancellation before each expensive clip generation
+      await checkCancelled(jobId);
 
       // Step 5: Generate the clip (with VFX motion tracking if available)
       console.log(`[Remix]   Generating clip #${i + 1}/${candidates.length} (${clip.platform})...`);
@@ -767,6 +791,20 @@ export async function runRemixPipeline(
       clips: generatedClips,
     };
   } catch (err: any) {
+    // Distinguish cancellation from real failure
+    if (err.message === "CANCELLED_BY_USER") {
+      console.log(`[Remix] Job ${jobId} pipeline stopped — user cancelled`);
+      // Status is already "cancelled" in DB from the cancel endpoint
+      return {
+        jobId,
+        success: false,
+        clipsGenerated: 0,
+        clipsPublishReady: 0,
+        clipsNeedReview: 0,
+        clips: [],
+        error: "Cancelled by user",
+      };
+    }
     console.error(`[Remix] Pipeline failed: ${err.message}`);
     await storage.updateRemixJobStatus(jobId, "failed", err.message);
 

@@ -6598,6 +6598,32 @@ export async function registerRoutes(
     }
   });
 
+  // POST /api/remix/jobs/:jobId/cancel — Soft cancel a running remix job
+  app.post("/api/remix/jobs/:jobId/cancel", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const jobId = parseInt(req.params.jobId);
+      const job = await storage.getRemixJob(jobId);
+      if (!job) return res.status(404).json({ error: "Remix job not found" });
+
+      if (job.status === "completed") {
+        return res.status(400).json({ error: "Cannot cancel a completed job" });
+      }
+      if (job.status === "cancelled") {
+        return res.json({ success: true, jobId, status: "cancelled", alreadyCancelled: true });
+      }
+
+      // Soft cancel — set status to "cancelled". The running pipeline checks this
+      // flag between stages and throws when it sees "cancelled".
+      await storage.updateRemixJobStatus(jobId, "cancelled", "Cancelled by user");
+
+      console.log(`[Remix] Job ${jobId} cancelled by user`);
+      res.json({ success: true, jobId, status: "cancelled" });
+    } catch (err: any) {
+      console.error("[Remix] Cancel error:", err);
+      res.status(500).json({ error: err.message || "Cancel failed" });
+    }
+  });
+
   // GET /api/remix/video/:videoId/jobs — List all remix jobs for a video
   app.get("/api/remix/video/:videoId/jobs", isFlexibleAuthenticated, async (req: any, res) => {
     try {

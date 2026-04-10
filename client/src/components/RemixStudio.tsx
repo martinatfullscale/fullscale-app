@@ -698,13 +698,32 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
                 animate={{ opacity: 1, y: 0 }}
                 className="bg-blue-500/10 border border-blue-500/30 rounded-xl p-4"
               >
-                <div className="flex items-center gap-2 mb-2">
-                  <Loader2 className="w-4 h-4 text-blue-400 animate-spin" />
-                  <span className="text-sm font-medium text-blue-300">
-                    {activeJob
-                      ? STATUS_CONFIG[activeJob.status]?.label || activeJob.status
-                      : "Processing..."}
-                  </span>
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <div className="flex items-center gap-2">
+                    <Loader2 className="w-4 h-4 text-blue-400 animate-spin" />
+                    <span className="text-sm font-medium text-blue-300">
+                      {activeJob
+                        ? STATUS_CONFIG[activeJob.status]?.label || activeJob.status
+                        : "Processing..."}
+                    </span>
+                  </div>
+                  <button
+                    onClick={async () => {
+                      const id = activeJobId || activeJob?.id;
+                      if (!id) return;
+                      try {
+                        await fetch(`/api/remix/jobs/${id}/cancel`, {
+                          method: "POST",
+                          credentials: "include",
+                        });
+                      } catch {}
+                      setActiveJobId(null);
+                    }}
+                    className="text-xs text-blue-300/70 hover:text-red-400 border border-blue-500/30 hover:border-red-500/50 rounded px-2 py-0.5 transition-colors"
+                    data-testid="button-remix-cancel"
+                  >
+                    Cancel
+                  </button>
                 </div>
                 <div className="w-full bg-gray-700 rounded-full h-1.5">
                   <motion.div
