@@ -16,16 +16,6 @@ interface StoryScene {
   ycFrameworkRole?: string;
   keyPhrase?: string;
   highlightRegion?: { x: number; y: number; width: number; height: number };
-  regions?: {
-    id: string;
-    type: string;
-    bounds: { x: number; y: number; width: number; height: number };
-    description: string;
-    animationType: string;
-    activateAtWord?: string;
-    activateAtSec: number;
-    deactivateAtSec: number;
-  }[];
 }
 
 interface StoryScript {
@@ -217,17 +207,6 @@ export default function StudioUpload() {
     setStoryScript(newScript);
   };
 
-  const updateRegionAnimation = (sceneIdx: number, regionId: string, animationType: string) => {
-    if (!storyScript) return;
-    const newScript = { ...storyScript };
-    newScript.scenes = [...storyScript.scenes];
-    const scene = { ...newScript.scenes[sceneIdx] };
-    scene.regions = (scene.regions || []).map((r) =>
-      r.id === regionId ? { ...r, animationType } : r
-    );
-    newScript.scenes[sceneIdx] = scene;
-    setStoryScript(newScript);
-  };
 
   const startPolling = (id: string) => {
     if (pollRef.current) clearInterval(pollRef.current);
@@ -478,52 +457,13 @@ export default function StudioUpload() {
                     <span>{scene.estimatedDurationSeconds}s</span>
                     <span>&middot;</span>
                     <span>{scene.narration.trim().split(/\s+/).length} words</span>
-                    {scene.regions && scene.regions.length > 0 && (
+                    {scene.keyPhrase && (
                       <>
                         <span>&middot;</span>
-                        <span className="text-blue-400/80">{scene.regions.length} region{scene.regions.length > 1 ? "s" : ""}</span>
+                        <span className="text-purple-400/80">key: "{scene.keyPhrase.slice(0, 40)}{(scene.keyPhrase.length || 0) > 40 ? "..." : ""}"</span>
                       </>
                     )}
                   </div>
-
-                  {/* Region controls */}
-                  {scene.regions && scene.regions.length > 0 && (
-                    <div className="mt-3 pt-3 border-t border-gray-800/50">
-                      <p className="text-[10px] uppercase tracking-wider text-gray-600 mb-2">Animated Regions</p>
-                      <div className="space-y-1.5">
-                        {scene.regions.map((region) => {
-                          const typeColors: Record<string, string> = {
-                            image: "bg-blue-500", text_block: "bg-amber-500", heading: "bg-amber-400",
-                            logo: "bg-green-500", diagram: "bg-purple-500",
-                          };
-                          return (
-                            <div key={region.id} className="flex items-center gap-2 text-xs">
-                              <div className={`w-2 h-2 rounded-sm flex-shrink-0 ${typeColors[region.type] || "bg-gray-500"}`} />
-                              <span className="text-gray-400 truncate flex-1" title={region.description}>
-                                {region.description.slice(0, 50)}
-                              </span>
-                              {region.activateAtWord && (
-                                <span className="text-gray-600 text-[10px]">
-                                  @"{region.activateAtWord}"
-                                </span>
-                              )}
-                              <select
-                                value={region.animationType}
-                                onChange={(e) => updateRegionAnimation(idx, region.id, e.target.value)}
-                                className="ml-auto bg-gray-900 border border-gray-700 text-gray-300 text-[10px] rounded px-1.5 py-0.5"
-                              >
-                                <option value="kling_motion">AI Motion</option>
-                                <option value="raise">Raise</option>
-                                <option value="fade_in">Fade In</option>
-                                <option value="glow">Glow</option>
-                                <option value="none">None</option>
-                              </select>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
                 </div>
               ))}
             </div>
