@@ -15,8 +15,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
-import heroVideoUrl from "@assets/generated_videos/creator_studio_cinematic_loop.mp4";
-import heroVideoMobileUrl from "@assets/generated_videos/creator_studio_cinematic_loop_mobile.mp4";
+import heroVideoUrl from "@assets/generated_videos/studio_hero_loop.mp4";
+import heroVideoMobileUrl from "@assets/generated_videos/studio_hero_loop_mobile.mp4";
 
 const PIPELINE_STEPS = [
   {
