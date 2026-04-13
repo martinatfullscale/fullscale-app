@@ -411,6 +411,8 @@ export interface RegionVariant {
   bounds: SlideRegion["bounds"];
   /** Path to the Sharp-rendered PNG for raise/fade_in regions */
   variantPngPath?: string;
+  /** Path to the Kling-animated MP4 for kling_motion regions (per-region, not full-slide) */
+  klingClipPath?: string;
 }
 
 /**
@@ -502,13 +504,92 @@ export async function extractRegionVariants(
         console.warn(`[VisualLayer] Region ${region.id} extraction failed: ${err.message}`);
       }
     } else if (region.animationType === "kling_motion") {
-      // No Sharp work — will be cropped from the Kling clip at compose time
-      variants.push({
-        regionId: region.id,
-        type: region.type,
-        animationType: region.animationType,
-        bounds: region.bounds,
-      });
+      // Extract the image region, pad to 720p, send to Kling individually
+      // so Kling focuses entirely on this content (not the whole slide)
+      try {
+        const paddedPath = path.join(outputDir, `region_${region.id}_padded.jpg`);
+        const klingOutPath = path.join(outputDir, `region_${region.id}_kling.mp4`);
+
+        // Extract region and pad to 1280x720 (Kling's preferred resolution)
+        await sharp(slideImagePath)
+          .extract(pixelBounds)
+          .resize(SLIDE_W, SLIDE_H, {
+            fit: "contain",
+            background: { r: 0, g: 0, b: 0 },
+          })
+          .jpeg({ quality: 90 })
+          .toFile(paddedPath);
+
+        console.log(`[VisualLayer] Region ${region.id}: extracted + padded to 720p for Kling`);
+
+        // Send the padded region to Kling — it sees ONLY this image content
+        const categoryPrompt = CATEGORY_PROMPTS[region.type === "logo" ? "title" : "person"] || CATEGORY_PROMPTS["person"];
+        const klingScene = {
+          ...scene,
+          cameraDirection: "slow push-in on subject",
+          slideCategory: (region.type === "logo" ? "title" : "person") as SlideCategory,
+        };
+
+        // Use the Kling path from generateSeedanceClip but with the padded region image
+        const falKey = process.env.FAL_KEY;
+        if (falKey) {
+          fal.config({ credentials: falKey });
+          const imageBuffer = fs.readFileSync(paddedPath);
+          const imageFile = new File([imageBuffer], `region_${region.id}.jpg`, { type: "image/jpeg" });
+          const imageUrl = await fal.storage.upload(imageFile);
+
+          const prompt = `${klingScene.cameraDirection}. ${categoryPrompt}`;
+          const result = await fal.subscribe("fal-ai/kling-video/v3/standard/image-to-video", {
+            input: {
+              start_image_url: imageUrl,
+              prompt,
+              duration: "5",
+              generate_audio: false,
+              negative_prompt: "blur, distort, low quality, watermark, morphing text, face deformation, melting",
+              cfg_scale: 0.3, // Low = preserve original content
+            },
+            logs: true,
+            onQueueUpdate: (update) => {
+              if (update.status === "IN_PROGRESS") {
+                const msgs = (update as any).logs;
+                if (msgs) msgs.map((l: any) => l.message).forEach((m: string) => console.log(`[VisualLayer/kling] ${m}`));
+              }
+            },
+          });
+
+          const videoUrl = (result as any).data?.video?.url;
+          if (videoUrl) {
+            const dlRes = await axios.get(videoUrl, { responseType: "arraybuffer" });
+            fs.writeFileSync(klingOutPath, Buffer.from(dlRes.data));
+            console.log(`[VisualLayer] Region ${region.id} Kling clip: ${klingOutPath} (${Math.round(fs.statSync(klingOutPath).size / 1024)} KB)`);
+
+            variants.push({
+              regionId: region.id,
+              type: region.type,
+              animationType: region.animationType,
+              bounds: region.bounds,
+              klingClipPath: klingOutPath,
+            });
+            continue;
+          }
+        }
+        // Kling failed — fall back to raise treatment
+        console.warn(`[VisualLayer] Region ${region.id}: Kling failed, falling back to raise`);
+        variants.push({
+          regionId: region.id,
+          type: region.type,
+          animationType: "raise", // Degraded fallback
+          bounds: region.bounds,
+        });
+      } catch (err: any) {
+        console.warn(`[VisualLayer] Region ${region.id} Kling extraction failed: ${err.message}`);
+        variants.push({
+          regionId: region.id,
+          type: region.type,
+          animationType: "raise",
+          bounds: region.bounds,
+        });
+      }
     }
   }
 
@@ -531,25 +612,17 @@ export async function generateSceneVisualWithRegions(
     liftedCard: false,
   });
 
-  // 2. If any image/logo regions need Kling, generate one Kling clip from the full slide
-  const hasKlingRegions = reconciledRegions.some(
-    (r) => r.animationType === "kling_motion"
-  );
-
-  let klingClipPath: string | null = null;
-  if (hasKlingRegions) {
-    try {
-      klingClipPath = await generateSeedanceClip(scene, slideImagePath);
-      console.log(`[VisualLayer] Scene ${scene.sceneNumber}: Kling clip ready for region cropping`);
-    } catch (err: any) {
-      console.warn(`[VisualLayer] Scene ${scene.sceneNumber}: Kling failed — image regions will use base layer`);
-    }
-  }
-
-  // 3. Extract raise/fade variants for text/heading/diagram regions
+  // 2. Extract + animate regions individually
+  // Each kling_motion region gets its own Kling call (focused on that content)
+  // Each raise/fade region gets a Sharp-rendered PNG variant
   const regionVariants = await extractRegionVariants(scene, slideImagePath, outputDir);
 
-  return { baseClipPath, regionVariants, klingClipPath };
+  const klingCount = regionVariants.filter((v) => v.klingClipPath).length;
+  const raiseCount = regionVariants.filter((v) => v.variantPngPath).length;
+  console.log(`[VisualLayer] Scene ${scene.sceneNumber}: ${klingCount} Kling regions, ${raiseCount} raise regions`);
+
+  // klingClipPath is no longer used (each region has its own clip)
+  return { baseClipPath, regionVariants, klingClipPath: null };
 }
 
 /**
@@ -582,12 +655,11 @@ export async function composeSceneWithRegions(
   // Build the reconciled map for quick lookup
   const reconMap = new Map(reconciledRegions.map((r) => [r.id, r]));
 
-  // Separate kling regions from raise/fade regions
-  const klingRegions = regionVariants.filter((v) => v.animationType === "kling_motion");
-  const raiseRegions = regionVariants.filter((v) => v.animationType === "raise" || v.animationType === "fade_in");
-
-  // If Kling clip is missing, treat kling regions as base-only
-  const effectiveKlingRegions = klingClipPath ? klingRegions : [];
+  // Separate kling regions (with their own clips) from raise/fade regions
+  const klingRegions = regionVariants.filter((v) => v.klingClipPath && fs.existsSync(v.klingClipPath));
+  const raiseRegions = regionVariants.filter(
+    (v) => (v.animationType === "raise" || v.animationType === "fade_in") && v.variantPngPath
+  );
 
   // Build input args
   const inputArgs: string[] = ["-nostdin", "-y"];
@@ -595,16 +667,17 @@ export async function composeSceneWithRegions(
   // Input 0: base Ken Burns clip
   inputArgs.push("-i", baseClipPath);
 
-  // Input 1: Kling clip (if any kling regions)
-  let klingInputIdx: number | null = null;
-  if (effectiveKlingRegions.length > 0 && klingClipPath) {
-    inputArgs.push("-stream_loop", "-1", "-i", klingClipPath);
-    klingInputIdx = 1;
+  // Inputs 1+: Per-region Kling clips (each is its own input, looped)
+  const klingInputMap = new Map<string, number>(); // regionId → input index
+  let nextInputIdx = 1;
+  for (const kv of klingRegions) {
+    inputArgs.push("-stream_loop", "-1", "-i", kv.klingClipPath!);
+    klingInputMap.set(kv.regionId, nextInputIdx);
+    nextInputIdx++;
   }
 
-  // Input 2+: PNG variants for raise/fade regions
+  // Inputs N+: PNG variants for raise/fade regions
   const pngInputMap = new Map<string, number>(); // regionId → input index
-  let nextInputIdx = klingInputIdx !== null ? 2 : 1;
   for (const rv of raiseRegions) {
     if (rv.variantPngPath && fs.existsSync(rv.variantPngPath)) {
       inputArgs.push("-loop", "1", "-i", rv.variantPngPath);
@@ -620,29 +693,36 @@ export async function composeSceneWithRegions(
   // Base: scale to standard resolution
   filters.push(`[0:v]scale=${SLIDE_W}:${SLIDE_H},setsar=1[${currentLabel}]`);
 
-  // Kling crop overlays
-  for (const kv of effectiveKlingRegions) {
+  // Per-region Kling overlays — each region has its own animated clip
+  // The Kling clip is 720p (padded from the extracted region), so we need to:
+  // 1. Scale the Kling output to the original region size
+  // 2. Overlay it at the region's position on the base slide
+  for (const kv of klingRegions) {
     const recon = reconMap.get(kv.regionId);
-    if (!recon || klingInputIdx === null) continue;
+    const klingIdx = klingInputMap.get(kv.regionId);
+    if (!recon || klingIdx === undefined) continue;
 
-    const cropX = Math.round(kv.bounds.x * SLIDE_W);
-    const cropY = Math.round(kv.bounds.y * SLIDE_H);
-    const cropW = Math.round(kv.bounds.width * SLIDE_W);
-    const cropH = Math.round(kv.bounds.height * SLIDE_H);
+    const regionW = Math.round(kv.bounds.width * SLIDE_W);
+    const regionH = Math.round(kv.bounds.height * SLIDE_H);
+    const posX = Math.round(kv.bounds.x * SLIDE_W);
+    const posY = Math.round(kv.bounds.y * SLIDE_H);
     const start = recon.actualStartSec.toFixed(2);
     const end = recon.actualEndSec.toFixed(2);
     const fadeIn = recon.actualStartSec.toFixed(2);
-    const fadeOut = (recon.actualEndSec - 0.3).toFixed(2);
+    const fadeOut = Math.max(recon.actualStartSec + 0.5, recon.actualEndSec - 0.3).toFixed(2);
 
-    const cropLabel = `kling_${kv.regionId}`;
+    const klingLabel = `kling_${kv.regionId}`;
     const nextLabel = `comp_${kv.regionId}`;
 
+    // Scale the Kling clip (which is 1280x720 padded) back to the region's actual size
+    // by cropping the content area and scaling to fit
     filters.push(
-      `[${klingInputIdx}:v]scale=${SLIDE_W}:${SLIDE_H},crop=${cropW}:${cropH}:${cropX}:${cropY},` +
-      `format=yuva420p,fade=in:st=${fadeIn}:d=0.3:alpha=1,fade=out:st=${fadeOut}:d=0.3:alpha=1[${cropLabel}]`
+      `[${klingIdx}:v]scale=${regionW}:${regionH}:force_original_aspect_ratio=decrease,` +
+      `pad=${regionW}:${regionH}:(ow-iw)/2:(oh-ih)/2:color=black@0,` +
+      `format=yuva420p,fade=in:st=${fadeIn}:d=0.3:alpha=1,fade=out:st=${fadeOut}:d=0.3:alpha=1[${klingLabel}]`
     );
     filters.push(
-      `[${currentLabel}][${cropLabel}]overlay=x=${cropX}:y=${cropY}:enable='between(t,${start},${end})'[${nextLabel}]`
+      `[${currentLabel}][${klingLabel}]overlay=x=${posX}:y=${posY}:enable='between(t,${start},${end})'[${nextLabel}]`
     );
     currentLabel = nextLabel;
   }
