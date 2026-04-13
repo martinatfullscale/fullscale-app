@@ -606,22 +606,40 @@ export async function generateSceneVisualWithRegions(
   reconciledRegions: ReconciledRegion[],
   outputDir: string
 ): Promise<{ baseClipPath: string; regionVariants: RegionVariant[]; klingClipPath: string | null }> {
-  // 1. Base layer: very subtle Ken Burns on the full slide
-  const baseClipPath = await generateKenBurnsClip(scene, slideImagePath, {
-    intensity: "subtle",
-    liftedCard: false,
-  });
+  // Determine if the slide is a full-bleed image (title with background photo,
+  // person slide, graphic slide) — if so, Kling the WHOLE slide as the base layer
+  // instead of just doing a Ken Burns zoom on a flat JPEG.
+  const isFullImageSlide = ["title", "person", "graphic"].includes(scene.slideCategory)
+    && !reconciledRegions.some((r) => r.type === "text_block" || r.type === "heading");
 
-  // 2. Extract + animate regions individually
-  // Each kling_motion region gets its own Kling call (focused on that content)
-  // Each raise/fade region gets a Sharp-rendered PNG variant
+  let baseClipPath: string;
+  if (isFullImageSlide && process.env.FAL_KEY) {
+    // Full-slide Kling animation as the base — sends the whole 1280x720 slide
+    console.log(`[VisualLayer] Scene ${scene.sceneNumber}: full-image slide — Kling base layer`);
+    try {
+      baseClipPath = await generateSeedanceClip(scene, slideImagePath);
+    } catch (err: any) {
+      console.warn(`[VisualLayer] Scene ${scene.sceneNumber}: Kling base failed, using Ken Burns`);
+      baseClipPath = await generateKenBurnsClip(scene, slideImagePath, {
+        intensity: "subtle",
+        liftedCard: false,
+      });
+    }
+  } else {
+    // Standard Ken Burns base for text-heavy slides
+    baseClipPath = await generateKenBurnsClip(scene, slideImagePath, {
+      intensity: "subtle",
+      liftedCard: false,
+    });
+  }
+
+  // Extract + animate regions individually
   const regionVariants = await extractRegionVariants(scene, slideImagePath, outputDir);
 
   const klingCount = regionVariants.filter((v) => v.klingClipPath).length;
   const raiseCount = regionVariants.filter((v) => v.variantPngPath).length;
   console.log(`[VisualLayer] Scene ${scene.sceneNumber}: ${klingCount} Kling regions, ${raiseCount} raise regions`);
 
-  // klingClipPath is no longer used (each region has its own clip)
   return { baseClipPath, regionVariants, klingClipPath: null };
 }
 
@@ -714,11 +732,17 @@ export async function composeSceneWithRegions(
     const klingLabel = `kling_${kv.regionId}`;
     const nextLabel = `comp_${kv.regionId}`;
 
-    // Scale the Kling clip (which is 1280x720 padded) back to the region's actual size
-    // by cropping the content area and scaling to fit
+    // The Kling clip is 1280x720 with the region content centered (padded by Sharp).
+    // Crop the center area matching the region's aspect ratio, then scale to exact region size.
+    // This removes the black padding bars that Kling rendered around the content.
+    const cropW = Math.round(Math.min(SLIDE_W, regionW * (SLIDE_H / regionH)));
+    const cropH = Math.round(Math.min(SLIDE_H, regionH * (SLIDE_W / regionW)));
+    const cropX = Math.round((SLIDE_W - cropW) / 2);
+    const cropY = Math.round((SLIDE_H - cropH) / 2);
+
     filters.push(
-      `[${klingIdx}:v]scale=${regionW}:${regionH}:force_original_aspect_ratio=decrease,` +
-      `pad=${regionW}:${regionH}:(ow-iw)/2:(oh-ih)/2:color=black@0,` +
+      `[${klingIdx}:v]crop=${cropW}:${cropH}:${cropX}:${cropY},` +
+      `scale=${regionW}:${regionH},` +
       `format=yuva420p,fade=in:st=${fadeIn}:d=0.3:alpha=1,fade=out:st=${fadeOut}:d=0.3:alpha=1[${klingLabel}]`
     );
     filters.push(
