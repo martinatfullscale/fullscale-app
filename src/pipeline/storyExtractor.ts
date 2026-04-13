@@ -39,9 +39,9 @@ export type YcFrameworkRole =
 
 /**
  * How to render the scene visually.
- * - "seedance": AI image-to-video (Kling 3.0). Pure image slides only.
+ * - "seedance": AI image-to-video (Seedance 2.0 → Kling fallback). Pure image slides only.
  * - "kenburns": FFmpeg zoompan (safe pan/zoom, no distortion). Text-heavy slides.
- * - "static_highlight": Very subtle zoom. Data/chart slides.
+ * - "static_highlight": Hold still, just add drawbox highlight. Data/chart slides.
  */
 export type SlideTreatment = "seedance" | "kenburns" | "static_highlight";
 
@@ -53,7 +53,8 @@ export type SlideTreatment = "seedance" | "kenburns" | "static_highlight";
 export type NarrationStyle = "punch" | "explain";
 
 /**
- * Normalized (0-1) bounding box.
+ * Normalized (0-1) bounding box for highlighting a phrase on the slide.
+ * Used by the assembler to draw a highlight box at the right place/time.
  */
 export interface HighlightRegion {
   x: number;       // 0-1 from left
@@ -61,45 +62,6 @@ export interface HighlightRegion {
   width: number;   // 0-1 width
   height: number;  // 0-1 height
 }
-
-// ── Per-Region Types (Studio v4) ────────────────────────────────
-
-/**
- * How an individual region within a slide should be animated.
- */
-export type RegionAnimationType =
-  | "kling_motion"    // Full-slide Kling call, this region cropped from the result
-  | "raise"           // Text block lifts forward with depth (scale + shadow)
-  | "fade_in"         // Simple opacity fade from 0→1
-  | "glow"            // Subtle radial glow pulse
-  | "none";           // No animation — stays as part of the flat base layer
-
-/**
- * What kind of content this region contains.
- */
-export type RegionType =
-  | "image"           // Photo, product shot, headshot, illustration
-  | "text_block"      // Paragraph or bullet group
-  | "logo"            // Company / brand logo mark
-  | "heading"         // Slide title or section header
-  | "diagram";        // Chart, graph, process diagram, icon arrangement
-
-/**
- * A detected region within a slide that gets independent visual treatment.
- * Claude Vision identifies these by looking at the slide image.
- */
-export interface SlideRegion {
-  id: string;                         // e.g. "s2_r1" (scene 2, region 1)
-  type: RegionType;
-  bounds: HighlightRegion;            // Normalized 0-1 coordinates
-  description: string;                // "headshot of CEO on right side"
-  animationType: RegionAnimationType;
-  activateAtWord?: string;            // Narration word/phrase that triggers this region
-  activateAtSec: number;              // Estimated seconds from scene start
-  deactivateAtSec: number;            // Estimated seconds from scene start
-}
-
-// ── Scene + StoryScript ─────────────────────────────────────────
 
 export interface Scene {
   sceneNumber: number;
@@ -116,14 +78,11 @@ export interface Scene {
   treatment?: SlideTreatment;
   narrationStyle?: NarrationStyle;
 
-  // Legacy highlight fields (v3 compat — still used if regions[] is empty)
-  keyPhrase?: string;
-  highlightRegion?: HighlightRegion;
-  highlightStartSec?: number;
-  highlightEndSec?: number;
-
-  // Per-region animation plan (v4) — replaces the single highlight approach
-  regions?: SlideRegion[];
+  // Highlight box (text-heavy slides only)
+  keyPhrase?: string;                // The phrase to highlight verbatim on the slide
+  highlightRegion?: HighlightRegion; // Where the phrase sits (normalized coords)
+  highlightStartSec?: number;        // When the highlight fades in (relative to scene start)
+  highlightEndSec?: number;          // When it fades out
 }
 
 export interface StoryScript {
@@ -195,28 +154,6 @@ NEVER write "in this slide", "as you can see", "let's explore", "now let's", "mo
 SLIDE CLASSIFICATION & TREATMENT — drives the visual pipeline:
 ═══════════════════════════════════════════════════════════════
 
-🚨 MOST IMPORTANT RULE — APPLY BEFORE PICKING ANY CATEGORY:
-
-Scan the slide for ANY text a reader could stop and read — captions
-under images, bullet points, team bios, feature descriptions, sub-headings,
-column labels, paragraphs, quotes, section dividers with multi-word copy.
-
-If you find text that takes more than 1 second to read, classify the slide
-as "text" and use treatment "kenburns". This rule OVERRIDES person, product,
-and graphic. Seedance (AI motion) is ONLY for slides with ZERO readable body text.
-
-EXAMPLE 1: A slide with 3 product screenshots and a caption beneath each
-  ("The Shorts Factory", "From Archive to Algorithm", "Net-New Revenue")
-  → This IS "text" treatment. The captions make it text-heavy.
-  → Do NOT classify as "product" just because the images are prominent.
-
-EXAMPLE 2: A slide with 5 headshots and a paragraph bio under each name
-  → This IS "text" treatment, NOT "person".
-
-EXAMPLE 3: A slide with a big chart AND a paragraph explanation
-  → This IS "data" treatment (static_highlight) since there's readable text
-     that must not distort.
-
 Look at each slide and pick ONE category AND one treatment:
 
 "person"  → PHOTO of real people (headshots, team, founders) with MINIMAL text
@@ -262,101 +199,36 @@ CRITICAL CLASSIFICATION RULES — prevents text distortion:
    the whole slide with minimal text overlay).
 
 ═══════════════════════════════════════════════════════════════
-REGION DETECTION — the most important part of your output:
+HIGHLIGHT REGIONS — only for "text" and "data" slides:
 ═══════════════════════════════════════════════════════════════
 
-For EVERY scene, scan the slide image and identify 1-4 distinct visual
-regions that deserve independent animation. Return them in a "regions" array.
+When the slide is text-heavy, you MUST return:
+- keyPhrase: the exact text to highlight (verbatim as it appears on the slide)
+- highlightRegion: where that text sits on the slide (normalized 0-1 coordinates)
 
-A "region" is a bounded visual area: a photo, a logo, a text block, a heading,
-a diagram column, a chart. NOT every pixel — just the 1-4 most important areas.
+Coordinates explanation:
+  The slide image you see is 1280x720 pixels (landscape 16:9).
+  x = 0.0 is the left edge, x = 1.0 is the right edge
+  y = 0.0 is the top edge, y = 1.0 is the bottom edge
+  width/height are the normalized size of the bounding box
 
-REGION TYPES and their animation:
+Look at the image and estimate where the key phrase sits:
+- If the phrase is a headline at the top center: { x: 0.2, y: 0.1, width: 0.6, height: 0.15 }
+- If the phrase is a bullet on the left: { x: 0.05, y: 0.4, width: 0.5, height: 0.08 }
+- If it's a big number in the middle: { x: 0.35, y: 0.4, width: 0.3, height: 0.2 }
 
-"image" regions (photos, headshots, product shots, illustrations):
-  animationType: "kling_motion"
-  We send the full slide to Kling AI and crop this region from the animated result.
-  The image gets natural, human-like motion (breathing, subtle head movement, parallax).
-
-"text_block" regions (paragraphs, bullet groups, descriptions):
-  animationType: "raise"
-  The text block lifts forward with depth separation — like a card rising off the page.
-  Subtle scale-up + shadow underneath. Makes the text the focal point.
-
-"heading" regions (slide titles, section headers, big red text):
-  animationType: "raise"
-  Same depth lift as text_block, but for single-line headings.
-
-"logo" regions (company logos, brand marks):
-  animationType: "kling_motion" or "raise"
-  Logos with visual detail → kling_motion (subtle pulse). Simple text logos → raise.
-
-"diagram" regions (process flows, multi-column layouts, icon grids):
-  animationType: "raise"
-  Each major section could be a separate region that activates sequentially.
-
-For each region, return:
-- id: "s{sceneNumber}_r{index}" starting at 1
-- type: "image" | "text_block" | "logo" | "heading" | "diagram"
-- bounds: { x, y, width, height } — normalized 0-1 coordinates
-    x=0 is left edge, x=1 is right edge
-    y=0 is top edge, y=1 is bottom edge
-    Be generous with padding — slightly larger is better than clipping content.
-- description: one sentence describing what's in this region
-- animationType: "kling_motion" | "raise" | "fade_in" | "none"
-- activateAtWord: the EXACT word or short phrase from the narration that should
-    trigger this region. Pick the most relevant keyword.
-- activateAtSec: estimated seconds from scene start when the trigger word is spoken
-- deactivateAtSec: when the region de-emphasizes (activateAtSec + 3 to 5 seconds)
-
-EXAMPLE — slide with a company logo on the left and body text on the right:
-"regions": [
-  {
-    "id": "s2_r1",
-    "type": "logo",
-    "bounds": { "x": 0.02, "y": 0.1, "width": 0.35, "height": 0.75 },
-    "description": "FullScale FS logo in black circle",
-    "animationType": "kling_motion",
-    "activateAtWord": "FullScale",
-    "activateAtSec": 0.5,
-    "deactivateAtSec": 5.0
-  },
-  {
-    "id": "s2_r2",
-    "type": "text_block",
-    "bounds": { "x": 0.45, "y": 0.2, "width": 0.52, "height": 0.5 },
-    "description": "product description paragraph",
-    "animationType": "raise",
-    "activateAtWord": "marketplace",
-    "activateAtSec": 2.0,
-    "deactivateAtSec": 8.0
-  }
-]
-
-EXAMPLE — slide with 4 process columns:
-"regions": [
-  { "id": "s4_r1", "type": "diagram", "bounds": { "x": 0.0, "y": 0.3, "width": 0.25, "height": 0.5 },
-    "description": "step 1 column: Ingest & Scan", "animationType": "raise",
-    "activateAtWord": "scans", "activateAtSec": 1.0, "deactivateAtSec": 4.0 },
-  { "id": "s4_r2", "type": "diagram", "bounds": { "x": 0.25, "y": 0.3, "width": 0.25, "height": 0.5 },
-    "description": "step 2 column: Creator Enablement", "animationType": "raise",
-    "activateAtWord": "approve", "activateAtSec": 3.0, "deactivateAtSec": 6.0 },
-  { "id": "s4_r3", "type": "diagram", "bounds": { "x": 0.5, "y": 0.3, "width": 0.25, "height": 0.5 },
-    "description": "step 3 column: Marketplace Matching", "animationType": "raise",
-    "activateAtWord": "bid", "activateAtSec": 5.0, "deactivateAtSec": 8.0 },
-  { "id": "s4_r4", "type": "heading", "bounds": { "x": 0.05, "y": 0.82, "width": 0.5, "height": 0.15 },
-    "description": "punchline: THIS IS TARGETED SCENE INTEGRATION", "animationType": "raise",
-    "activateAtWord": "targeted", "activateAtSec": 8.0, "deactivateAtSec": 12.0 }
-]
+Be generous with padding — better for the highlight box to be slightly larger than smaller.
 
 ═══════════════════════════════════════════════════════════════
-CAMERA DIRECTION — for the base layer Ken Burns:
+CAMERA DIRECTION — for scenes using seedance treatment:
 ═══════════════════════════════════════════════════════════════
 
-Every scene gets a very subtle base Ken Burns zoom on the full slide (1.0→1.02).
-The cameraDirection field describes the general feel:
-- "slow drift right" or "slow drift left" or "gentle zoom center"
-- Keep it minimal — the per-region animations carry the visual interest.
+- "person"  → "slow push-in on subject" or "close-up with shallow depth of field"
+- "product" → "slow zoom into key feature" or "gentle parallax depth"
+- "graphic" → "wide establishing shot" or "crane shot rising" or "dolly forward"
+- "title"   → "dramatic push-in" or "crane shot rising" or "wide pull-back"
+- "text"    → "ken burns slow zoom" (not used by AI, just a label)
+- "data"    → "static hold" (not used by AI, just a label)
 
 ═══════════════════════════════════════════════════════════════
 DURATION BUDGET:
@@ -366,8 +238,7 @@ Per scene:
 - "punch" narration → 6-8 seconds
 - "explain" narration → 10-14 seconds
 
-11-12 scenes is fine. Only condense if genuinely above 15 slides.
-Aim for 70-120 seconds total.
+Aim for 70-100 seconds total, NEVER exceed 120.
 
 Respond ONLY with a valid JSON object. No preamble, no markdown, no explanation.`;
 }
@@ -463,20 +334,22 @@ export async function extractStory(
   }
 
   // Add the output instructions
-  const maxScenes = Math.min(parsedDocument.pageCount, 15);
+  const targetSceneCount = Math.min(parsedDocument.pageCount, 10);
   contentBlocks.push({
     type: "text",
-    text: `\nProduce a narration script with per-slide treatment and per-region animation.
+    text: `\nProduce a narration script with per-slide treatment.
 
 SLIDE SELECTION:
 - The deck has ${parsedDocument.pageCount} pages.
-- Generate up to ${maxScenes} scenes. ${parsedDocument.pageCount > 12 ? "Pick the strongest slides and skip filler." : "One per page is fine."}
+- Generate EXACTLY ${targetSceneCount} scenes ${parsedDocument.pageCount > 10 ? "(pick the 10 strongest slides and skip the rest)" : "(one per page)"}.
 - Map selected slides to the YC framework: Problem → Solution → Market → Product → Traction → Team → Ask.
+- Skip slides that don't advance the story.
 
-DURATION:
-- "punch" narration → 6-8 seconds, 12-18 words
-- "explain" narration → 10-14 seconds, 40-60 words (3 sentences)
-- Total: aim for 70-120 seconds. 11-12 scenes is fine.
+HARD LIMITS:
+- Visual slides (punch narration): 6-8 seconds, 12-18 words
+- Text-heavy slides (explain narration): 10-14 seconds, 40-60 words (3 sentences)
+- Total video duration: target 70-100 seconds, absolute maximum 120 seconds.
+- ANY slide with readable body text → classify as "text" (not graphic/person/product)
 
 For each scene return ALL of these fields:
 - sceneNumber (integer, sequential starting at 1)
@@ -484,20 +357,32 @@ For each scene return ALL of these fields:
 - sceneTitle (short, max 6 words)
 - narration (follow narrationStyle rules above)
 - visualFocus (one sentence describing what you SEE on the slide)
-- cameraDirection ("slow drift right" or "slow drift left" or "gentle zoom center")
+- cameraDirection (specific camera movement)
 - slideCategory ("person" | "product" | "graphic" | "data" | "text" | "title")
 - treatment ("seedance" | "kenburns" | "static_highlight")
+    * "seedance" for pure image slides (person/product/graphic/title WITHOUT readable text)
+    * "kenburns" for text-heavy slides (safe FFmpeg zoom — no AI distortion)
+    * "static_highlight" for data/chart slides
 - narrationStyle ("punch" | "explain")
+    * "punch" goes with "seedance" treatment
+    * "explain" goes with "kenburns" or "static_highlight" treatment
 - estimatedDurationSeconds (integer, 6-14)
 - ycFrameworkRole ("problem" | "solution" | "market" | "product" | "traction" | "team" | "ask" | "hook" | "other")
-- regions (array of 1-4 SlideRegion objects — see REGION DETECTION section above)
 
-Each region object must have:
-  id, type, bounds (object with x/y/width/height 0-1), description,
-  animationType, activateAtWord, activateAtSec, deactivateAtSec
+FOR "text" AND "data" slides ONLY, also return:
+- keyPhrase (the EXACT phrase from the slide to highlight on screen — must be verbatim)
+- highlightRegion (object with x, y, width, height — all normalized 0-1 relative to the 1280x720 slide)
+- highlightStartSec (when the highlight fades in, typically 0.5 or 1.0 seconds into the scene)
+- highlightEndSec (when it fades out, typically estimatedDurationSeconds - 0.5)
+
+Example highlightRegion for a bullet at top-left of slide:
+  { "x": 0.05, "y": 0.15, "width": 0.6, "height": 0.1 }
+
+Example highlightRegion for a big number in the center:
+  { "x": 0.35, "y": 0.35, "width": 0.3, "height": 0.2 }
 
 Also return a top-level field:
-- totalDurationSeconds (sum of all scene durations)`,
+- totalDurationSeconds (sum of all scene durations — must be ≤ 120)`,
   });
 
   const imageCount = slideImages?.filter((p) => fs.existsSync(p)).length || 0;
@@ -580,23 +465,23 @@ Also return a top-level field:
 }
 
 /**
- * Enforce limits on the story script:
- * - Soft cap at 15 scenes (11-12 is fine per founder)
+ * Enforce hard limits on the story script:
+ * - Maximum 10 scenes (keep the first 10 if Claude returned more)
  * - Maximum 120 seconds total duration (scale down proportionally if exceeded)
- * - Per-scene minimum 5s, maximum 14s
- * - Validate + clamp region bounds and timing
+ * - Per-scene minimum 5s, maximum 12s
  */
-const MAX_SCENES = 15;
+const MAX_SCENES = 10;
 const MAX_TOTAL_DURATION = 120;
 const MIN_SCENE_DURATION = 5;
-const MAX_SCENE_DURATION = 14;
+const MAX_SCENE_DURATION = 12;
 
 function enforceDurationCap(script: StoryScript): void {
-  // Soft cap scene count — only trim if genuinely excessive
+  // Cap scene count
   if (script.scenes.length > MAX_SCENES) {
     console.log(`[StoryExtractor] Trimming ${script.scenes.length} scenes to ${MAX_SCENES}`);
     script.scenes = script.scenes.slice(0, MAX_SCENES);
     script.totalScenes = script.scenes.length;
+    // Re-number sequentially
     script.scenes.forEach((s, i) => { s.sceneNumber = i + 1; });
   }
 
@@ -635,32 +520,6 @@ function enforceDurationCap(script: StoryScript): void {
     console.log(`[StoryExtractor] Scaled total duration from ${total}s to ${newTotal}s (cap: ${MAX_TOTAL_DURATION}s)`);
   }
 
-  // Validate + clamp region bounds and timing
-  script.scenes.forEach((s) => {
-    if (s.regions && Array.isArray(s.regions)) {
-      s.regions.forEach((r) => {
-        // Clamp bounds to 0-1
-        r.bounds.x = Math.max(0, Math.min(1, r.bounds.x || 0));
-        r.bounds.y = Math.max(0, Math.min(1, r.bounds.y || 0));
-        r.bounds.width = Math.max(0.02, Math.min(1 - r.bounds.x, r.bounds.width || 0.1));
-        r.bounds.height = Math.max(0.02, Math.min(1 - r.bounds.y, r.bounds.height || 0.1));
-        // Clamp timing to scene duration
-        r.activateAtSec = Math.max(0, Math.min(s.estimatedDurationSeconds, r.activateAtSec || 0));
-        r.deactivateAtSec = Math.max(
-          r.activateAtSec + 0.5,
-          Math.min(s.estimatedDurationSeconds, r.deactivateAtSec || s.estimatedDurationSeconds)
-        );
-        // Default animationType
-        if (!r.animationType) {
-          r.animationType = r.type === "image" || r.type === "logo" ? "kling_motion" : "raise";
-        }
-      });
-    } else {
-      s.regions = [];
-    }
-  });
-
   script.totalDurationSeconds = script.scenes.reduce((sum, s) => sum + s.estimatedDurationSeconds, 0);
-  const regionCount = script.scenes.reduce((sum, s) => sum + (s.regions?.length || 0), 0);
-  console.log(`[StoryExtractor] Final: ${script.scenes.length} scenes, ${script.totalDurationSeconds}s total, ${regionCount} regions`);
+  console.log(`[StoryExtractor] Final: ${script.scenes.length} scenes, ${script.totalDurationSeconds}s total`);
 }
