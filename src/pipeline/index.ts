@@ -4,8 +4,12 @@ import path from "path";
 import os from "os";
 import { parsePDF, parsePPTX, type ParsedDocument } from "./parser.js";
 import { extractStory, type StoryScript, type DeckIntent } from "./storyExtractor.js";
-import { slidesToImages, generateVisual } from "./visualLayer.js";
-import { generateVoice } from "./voiceSynth.js";
+import {
+  slidesToImages, generateVisual,
+  generateSceneVisualWithRegions, composeSceneWithRegions,
+} from "./visualLayer.js";
+import { generateVoice, type VoiceResult } from "./voiceSynth.js";
+import { reconcileAllScenes, type ReconciledScene } from "./timingEngine.js";
 import { assembleVideo, type AssemblyScene } from "./assembler.js";
 
 export interface PipelineOptions {
@@ -298,64 +302,76 @@ export async function runPipelineFromScript(
   };
 
   try {
-    // Stage 4: Generate visuals
-    logStage("generating", 10);
-    const sceneVisuals: string[] = new Array(storyScript.scenes.length);
-    const VISUAL_CONCURRENCY = tier === "mvp" ? storyScript.scenes.length : 2;
-    let completedVisuals = 0;
+    const hasRegions = storyScript.scenes.some((s) => s.regions && s.regions.length > 0);
+    const usePerRegion = tier !== "mvp" && hasRegions;
 
-    for (let batch = 0; batch < storyScript.scenes.length; batch += VISUAL_CONCURRENCY) {
-      const batchScenes = storyScript.scenes.slice(batch, batch + VISUAL_CONCURRENCY);
-      const batchPromises = batchScenes.map((scene, idx) => {
-        const globalIdx = batch + idx;
-        const slideIndex = Math.min((scene.sourcePages[0] || 1) - 1, slideImages.length - 1);
-        return generateVisual(scene, slideImages[slideIndex], tier).then((visualPath) => {
-          sceneVisuals[globalIdx] = visualPath;
-          completedVisuals++;
-          const progress = 10 + Math.round((completedVisuals / storyScript.scenes.length) * 80);
-          logStage("generating", progress);
-        });
-      });
-      await Promise.all(batchPromises);
-    }
-    logStage("generating", 100);
-
-    // Stage 5: Voice
+    // ─── Stage 4: VOICE FIRST (need word timings before visuals) ──────
     logStage("adding-voice", 10);
     const audioDir = path.join(workDir, "audio");
-    const audioPaths: string[] = new Array(storyScript.scenes.length);
-    const CONCURRENCY = 3;
+    const voiceResults: VoiceResult[] = new Array(storyScript.scenes.length);
+    const VOICE_CONCURRENCY = 3;
     let completedVoice = 0;
 
-    for (let batch = 0; batch < storyScript.scenes.length; batch += CONCURRENCY) {
-      const batchScenes = storyScript.scenes.slice(batch, batch + CONCURRENCY);
+    for (let batch = 0; batch < storyScript.scenes.length; batch += VOICE_CONCURRENCY) {
+      const batchScenes = storyScript.scenes.slice(batch, batch + VOICE_CONCURRENCY);
       const batchPromises = batchScenes.map((scene, idx) => {
         const globalIdx = batch + idx;
-        return generateVoice(scene.narration, scene.sceneNumber, audioDir).then((audioPath) => {
-          audioPaths[globalIdx] = audioPath;
+        return generateVoice(scene.narration, scene.sceneNumber, audioDir).then((result) => {
+          voiceResults[globalIdx] = result;
           completedVoice++;
-          const progress = 10 + Math.round((completedVoice / storyScript.scenes.length) * 80);
-          logStage("adding-voice", progress);
+          logStage("adding-voice", 10 + Math.round((completedVoice / storyScript.scenes.length) * 80));
         });
       });
       await Promise.all(batchPromises);
     }
     logStage("adding-voice", 100);
 
-    // Stage 6: Assemble
+    // ─── Stage 5: RECONCILE TIMING (map regions to word timestamps) ──
+    let reconciledScenes: ReconciledScene[] | null = null;
+    if (usePerRegion) {
+      reconciledScenes = reconcileAllScenes(storyScript.scenes, voiceResults);
+      const totalRegions = reconciledScenes.reduce((s, sc) => s + sc.regions.length, 0);
+      console.log(`[Pipeline] Reconciled ${totalRegions} regions across ${reconciledScenes.length} scenes`);
+    }
+
+    // ─── Stage 6: GENERATE VISUALS (per-region compositing) ──────────
+    logStage("generating", 10);
+    const sceneVisuals: string[] = new Array(storyScript.scenes.length);
+    let completedVisuals = 0;
+
+    for (let i = 0; i < storyScript.scenes.length; i++) {
+      const scene = storyScript.scenes[i];
+      const slideIndex = Math.min((scene.sourcePages[0] || 1) - 1, slideImages.length - 1);
+      const slideImagePath = slideImages[slideIndex];
+
+      if (usePerRegion && reconciledScenes && scene.regions && scene.regions.length > 0) {
+        // Per-region compositing path
+        const regions = reconciledScenes[i]?.regions || [];
+        const { baseClipPath, regionVariants, klingClipPath } =
+          await generateSceneVisualWithRegions(scene, slideImagePath, regions, workDir);
+        sceneVisuals[i] = await composeSceneWithRegions(
+          scene, baseClipPath, klingClipPath, regionVariants,
+          regions, scene.estimatedDurationSeconds, workDir
+        );
+      } else {
+        // Legacy single-treatment path
+        sceneVisuals[i] = await generateVisual(scene, slideImagePath, tier);
+      }
+
+      completedVisuals++;
+      logStage("generating", 10 + Math.round((completedVisuals / storyScript.scenes.length) * 80));
+    }
+    logStage("generating", 100);
+
+    // ─── Stage 7: ASSEMBLE (concatenate scenes) ─────────────────────
     logStage("assembling", 10);
     const assemblyScenes: AssemblyScene[] = storyScript.scenes.map((scene, i) => {
       const visualPath = sceneVisuals[i];
       const isVideo = visualPath.endsWith(".mp4");
       return {
         ...(isVideo ? { videoFile: visualPath } : { imageFile: visualPath }),
-        audioFile: audioPaths[i],
-        durationSeconds: scene.estimatedDurationSeconds,
-        // Pass through highlight data for the assembler to render overlays
-        keyPhrase: scene.keyPhrase,
-        highlightRegion: scene.highlightRegion,
-        highlightStartSec: scene.highlightStartSec,
-        highlightEndSec: scene.highlightEndSec,
+        audioFile: voiceResults[i].audioPath,
+        durationSeconds: voiceResults[i].actualDurationSec || scene.estimatedDurationSeconds,
       };
     });
 
@@ -363,8 +379,8 @@ export async function runPipelineFromScript(
     await assembleVideo(assemblyScenes, outputPath);
     logStage("assembling", 100);
 
-    const totalDuration = storyScript.scenes.reduce(
-      (sum, s) => sum + s.estimatedDurationSeconds, 0
+    const totalDuration = assemblyScenes.reduce(
+      (sum, s) => sum + s.durationSeconds, 0
     );
 
     logStage("complete", 100);
