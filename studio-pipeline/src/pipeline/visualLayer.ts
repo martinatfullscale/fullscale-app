@@ -6,7 +6,8 @@ import axios from "axios";
 import { fal } from "@fal-ai/client";
 // @ts-ignore — sharp resolves via parent server node_modules when dynamically imported
 import sharp from "sharp";
-import type { Scene, SlideCategory } from "./storyExtractor.js";
+import type { Scene, SlideCategory, SlideRegion } from "./storyExtractor.js";
+import type { ReconciledRegion } from "./timingEngine.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -393,6 +394,342 @@ async function generateSeedanceClip(
     console.error(`[VisualLayer] Kling 3.0 failed for scene ${scene.sceneNumber}: ${err.message}`);
     console.warn("[VisualLayer] Falling back to static slide image");
     return slideImagePath;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Per-Region Compositing (Studio v4)
+// ═══════════════════════════════════════════════════════════════
+
+const SLIDE_W = 1280;
+const SLIDE_H = 720;
+
+export interface RegionVariant {
+  regionId: string;
+  type: string;
+  animationType: string;
+  bounds: SlideRegion["bounds"];
+  /** Path to the Sharp-rendered PNG for raise/fade_in regions */
+  variantPngPath?: string;
+}
+
+/**
+ * Extract region variants from a slide image.
+ * - "raise" regions: Sharp crops + renders a raised variant (105% + shadow)
+ * - "kling_motion" regions: no Sharp work — cropped from Kling clip at compose time
+ * - "fade_in" regions: Sharp crop at full opacity as transparent PNG
+ */
+export async function extractRegionVariants(
+  scene: Scene,
+  slideImagePath: string,
+  outputDir: string
+): Promise<RegionVariant[]> {
+  const regions = scene.regions || [];
+  const variants: RegionVariant[] = [];
+
+  for (const region of regions) {
+    if (region.animationType === "none") continue;
+
+    const pixelBounds = {
+      left: Math.round(region.bounds.x * SLIDE_W),
+      top: Math.round(region.bounds.y * SLIDE_H),
+      width: Math.round(region.bounds.width * SLIDE_W),
+      height: Math.round(region.bounds.height * SLIDE_H),
+    };
+
+    // Clamp to image bounds
+    pixelBounds.left = Math.max(0, Math.min(SLIDE_W - 2, pixelBounds.left));
+    pixelBounds.top = Math.max(0, Math.min(SLIDE_H - 2, pixelBounds.top));
+    pixelBounds.width = Math.min(SLIDE_W - pixelBounds.left, Math.max(10, pixelBounds.width));
+    pixelBounds.height = Math.min(SLIDE_H - pixelBounds.top, Math.max(10, pixelBounds.height));
+
+    if (region.animationType === "raise" || region.animationType === "fade_in") {
+      const pngPath = path.join(outputDir, `region_${region.id}_raised.png`);
+
+      try {
+        if (region.animationType === "raise") {
+          // Render a "raised" variant: crop → scale 105% → add shadow → save as transparent PNG
+          const regionBuffer = await sharp(slideImagePath)
+            .extract(pixelBounds)
+            .toBuffer();
+
+          const scaledW = Math.round(pixelBounds.width * 1.05);
+          const scaledH = Math.round(pixelBounds.height * 1.05);
+
+          // Shadow: blurred, darkened version
+          const shadowBuffer = await sharp(regionBuffer)
+            .resize(scaledW, scaledH)
+            .blur(8)
+            .modulate({ brightness: 0.35 })
+            .ensureAlpha(0.6)
+            .toBuffer();
+
+          // Card: the region at full brightness
+          const cardBuffer = await sharp(regionBuffer)
+            .resize(scaledW, scaledH)
+            .ensureAlpha()
+            .toBuffer();
+
+          // Composite shadow + card onto a transparent canvas
+          const canvasW = scaledW + 8;
+          const canvasH = scaledH + 10;
+          await sharp({
+            create: { width: canvasW, height: canvasH, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+          })
+            .composite([
+              { input: shadowBuffer, top: 6, left: 4 },  // shadow offset +6 down, +4 right
+              { input: cardBuffer, top: 0, left: 0 },
+            ])
+            .png()
+            .toFile(pngPath);
+        } else {
+          // fade_in: just crop and save as transparent PNG
+          await sharp(slideImagePath)
+            .extract(pixelBounds)
+            .ensureAlpha()
+            .png()
+            .toFile(pngPath);
+        }
+
+        variants.push({
+          regionId: region.id,
+          type: region.type,
+          animationType: region.animationType,
+          bounds: region.bounds,
+          variantPngPath: pngPath,
+        });
+      } catch (err: any) {
+        console.warn(`[VisualLayer] Region ${region.id} extraction failed: ${err.message}`);
+      }
+    } else if (region.animationType === "kling_motion") {
+      // No Sharp work — will be cropped from the Kling clip at compose time
+      variants.push({
+        regionId: region.id,
+        type: region.type,
+        animationType: region.animationType,
+        bounds: region.bounds,
+      });
+    }
+  }
+
+  return variants;
+}
+
+/**
+ * Generate all visual assets for a scene with per-region compositing.
+ * Returns the base Ken Burns clip, region variants, and optional Kling clip.
+ */
+export async function generateSceneVisualWithRegions(
+  scene: Scene,
+  slideImagePath: string,
+  reconciledRegions: ReconciledRegion[],
+  outputDir: string
+): Promise<{ baseClipPath: string; regionVariants: RegionVariant[]; klingClipPath: string | null }> {
+  // 1. Base layer: very subtle Ken Burns on the full slide
+  const baseClipPath = await generateKenBurnsClip(scene, slideImagePath, {
+    intensity: "subtle",
+    liftedCard: false,
+  });
+
+  // 2. If any image/logo regions need Kling, generate one Kling clip from the full slide
+  const hasKlingRegions = reconciledRegions.some(
+    (r) => r.animationType === "kling_motion"
+  );
+
+  let klingClipPath: string | null = null;
+  if (hasKlingRegions) {
+    try {
+      klingClipPath = await generateSeedanceClip(scene, slideImagePath);
+      console.log(`[VisualLayer] Scene ${scene.sceneNumber}: Kling clip ready for region cropping`);
+    } catch (err: any) {
+      console.warn(`[VisualLayer] Scene ${scene.sceneNumber}: Kling failed — image regions will use base layer`);
+    }
+  }
+
+  // 3. Extract raise/fade variants for text/heading/diagram regions
+  const regionVariants = await extractRegionVariants(scene, slideImagePath, outputDir);
+
+  return { baseClipPath, regionVariants, klingClipPath };
+}
+
+/**
+ * Compose a final video for a scene by overlaying animated regions onto
+ * the base Ken Burns clip using FFmpeg's filter_complex.
+ *
+ * The filtergraph:
+ * - Input 0: base Ken Burns clip (subtle zoom on full slide)
+ * - Input 1 (if any kling regions): Kling-animated clip of the full slide
+ * - Input 2+: PNG variants for raise/fade regions (looped as still images)
+ *
+ * Each region is overlaid at its original position with time-gated enable
+ * synced to actualStartSec/actualEndSec from the timing engine.
+ */
+export async function composeSceneWithRegions(
+  scene: Scene,
+  baseClipPath: string,
+  klingClipPath: string | null,
+  regionVariants: RegionVariant[],
+  reconciledRegions: ReconciledRegion[],
+  sceneDurationSec: number,
+  outputDir: string
+): Promise<string> {
+  const outputPath = path.join(outputDir, `scene_${scene.sceneNumber}_composed.mp4`);
+  const totalFrames = sceneDurationSec * 24;
+
+  // If no regions, just return the base clip
+  if (reconciledRegions.length === 0) return baseClipPath;
+
+  // Build the reconciled map for quick lookup
+  const reconMap = new Map(reconciledRegions.map((r) => [r.id, r]));
+
+  // Separate kling regions from raise/fade regions
+  const klingRegions = regionVariants.filter((v) => v.animationType === "kling_motion");
+  const raiseRegions = regionVariants.filter((v) => v.animationType === "raise" || v.animationType === "fade_in");
+
+  // If Kling clip is missing, treat kling regions as base-only
+  const effectiveKlingRegions = klingClipPath ? klingRegions : [];
+
+  // Build input args
+  const inputArgs: string[] = ["-nostdin", "-y"];
+
+  // Input 0: base Ken Burns clip
+  inputArgs.push("-i", baseClipPath);
+
+  // Input 1: Kling clip (if any kling regions)
+  let klingInputIdx: number | null = null;
+  if (effectiveKlingRegions.length > 0 && klingClipPath) {
+    inputArgs.push("-stream_loop", "-1", "-i", klingClipPath);
+    klingInputIdx = 1;
+  }
+
+  // Input 2+: PNG variants for raise/fade regions
+  const pngInputMap = new Map<string, number>(); // regionId → input index
+  let nextInputIdx = klingInputIdx !== null ? 2 : 1;
+  for (const rv of raiseRegions) {
+    if (rv.variantPngPath && fs.existsSync(rv.variantPngPath)) {
+      inputArgs.push("-loop", "1", "-i", rv.variantPngPath);
+      pngInputMap.set(rv.regionId, nextInputIdx);
+      nextInputIdx++;
+    }
+  }
+
+  // Build filtergraph
+  const filters: string[] = [];
+  let currentLabel = "base";
+
+  // Base: scale to standard resolution
+  filters.push(`[0:v]scale=${SLIDE_W}:${SLIDE_H},setsar=1[${currentLabel}]`);
+
+  // Kling crop overlays
+  for (const kv of effectiveKlingRegions) {
+    const recon = reconMap.get(kv.regionId);
+    if (!recon || klingInputIdx === null) continue;
+
+    const cropX = Math.round(kv.bounds.x * SLIDE_W);
+    const cropY = Math.round(kv.bounds.y * SLIDE_H);
+    const cropW = Math.round(kv.bounds.width * SLIDE_W);
+    const cropH = Math.round(kv.bounds.height * SLIDE_H);
+    const start = recon.actualStartSec.toFixed(2);
+    const end = recon.actualEndSec.toFixed(2);
+    const fadeIn = recon.actualStartSec.toFixed(2);
+    const fadeOut = (recon.actualEndSec - 0.3).toFixed(2);
+
+    const cropLabel = `kling_${kv.regionId}`;
+    const nextLabel = `comp_${kv.regionId}`;
+
+    filters.push(
+      `[${klingInputIdx}:v]scale=${SLIDE_W}:${SLIDE_H},crop=${cropW}:${cropH}:${cropX}:${cropY},` +
+      `format=yuva420p,fade=in:st=${fadeIn}:d=0.3:alpha=1,fade=out:st=${fadeOut}:d=0.3:alpha=1[${cropLabel}]`
+    );
+    filters.push(
+      `[${currentLabel}][${cropLabel}]overlay=x=${cropX}:y=${cropY}:enable='between(t,${start},${end})'[${nextLabel}]`
+    );
+    currentLabel = nextLabel;
+  }
+
+  // Raise/fade PNG overlays
+  for (const rv of raiseRegions) {
+    const recon = reconMap.get(rv.regionId);
+    const inputIdx = pngInputMap.get(rv.regionId);
+    if (!recon || inputIdx === undefined) continue;
+
+    // The raised PNG is slightly larger than the original region (105% + shadow padding)
+    // Position it so its center aligns with the original region center
+    const origCenterX = (rv.bounds.x + rv.bounds.width / 2) * SLIDE_W;
+    const origCenterY = (rv.bounds.y + rv.bounds.height / 2) * SLIDE_H;
+
+    const start = recon.actualStartSec.toFixed(2);
+    const end = recon.actualEndSec.toFixed(2);
+    const fadeIn = recon.actualStartSec.toFixed(2);
+    const fadeOut = Math.max(recon.actualStartSec + 0.5, recon.actualEndSec - 0.3).toFixed(2);
+
+    const raisedLabel = `raise_${rv.regionId}`;
+    const nextLabel = `comp_${rv.regionId}`;
+
+    // Use zoompan for subtle "breathing" scale 1.0→1.03 during active window
+    filters.push(
+      `[${inputIdx}:v]loop=loop=-1:size=1:start=0,` +
+      `zoompan=z='if(between(t,${start},${end}),min(zoom+0.0003,1.03),1.0)':` +
+      `x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:fps=24,` +
+      `format=yuva420p,` +
+      `fade=in:st=${fadeIn}:d=0.3:alpha=1,fade=out:st=${fadeOut}:d=0.3:alpha=1` +
+      `[${raisedLabel}]`
+    );
+
+    // Overlay position: center the raised PNG over the original region center
+    // The PNG size isn't known statically, so use `main_w`/`main_h` and `overlay_w`/`overlay_h`
+    const overlayX = `${Math.round(origCenterX)}-overlay_w/2`;
+    const overlayY = `${Math.round(origCenterY)}-overlay_h/2`;
+
+    filters.push(
+      `[${currentLabel}][${raisedLabel}]overlay=x='${overlayX}':y='${overlayY}':enable='between(t,${start},${end})'[${nextLabel}]`
+    );
+    currentLabel = nextLabel;
+  }
+
+  // If no overlays were added, just return base
+  if (currentLabel === "base") return baseClipPath;
+
+  // Rename final output
+  if (currentLabel !== "out") {
+    filters.push(`[${currentLabel}]null[out]`);
+  }
+
+  const filtergraph = filters.join(";\n");
+
+  const outputArgs = [
+    "-filter_complex", filtergraph,
+    "-map", "[out]",
+    "-c:v", "libx264",
+    "-pix_fmt", "yuv420p",
+    "-preset", "medium",
+    "-crf", "21",
+    "-t", String(sceneDurationSec),
+    "-an",
+    outputPath,
+  ];
+
+  const args = [...inputArgs, ...outputArgs];
+
+  console.log(`[VisualLayer] Compositing scene ${scene.sceneNumber} — ${effectiveKlingRegions.length} kling + ${raiseRegions.length} raise regions`);
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      execFile("ffmpeg", args, { timeout: 120000 }, (err: any) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+
+    if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000) {
+      const kb = Math.round(fs.statSync(outputPath).size / 1024);
+      console.log(`[VisualLayer] Scene ${scene.sceneNumber} composed: ${outputPath} (${kb} KB)`);
+      return outputPath;
+    }
+    throw new Error("Composed output missing or too small");
+  } catch (err: any) {
+    console.error(`[VisualLayer] Scene ${scene.sceneNumber} compositing failed: ${err.message}`);
+    return baseClipPath; // Graceful fallback to base Ken Burns
   }
 }
 
