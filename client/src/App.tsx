@@ -179,7 +179,8 @@ function Router() {
         <Route path="/signup" component={AuthPage} />
         <Route path="/privacy" component={Privacy} />
         <Route path="/terms" component={Terms} />
-        <Route path="/content" component={FullScaleCreates} />
+        {/* /content redirects to /creates for backward compat */}
+        <Route path="/content">{() => { window.location.replace("/creates"); return null; }}</Route>
         <Route path="/studio" component={FullScaleStudio} />
         <Route path="/studio/pricing" component={StudioPricing} />
         <Route path="/studio/waitlist" component={StudioWaitlistPage} />
@@ -232,7 +233,7 @@ function Router() {
   return (
     <Switch>
       <Route path="/home" component={Landing} />
-      <Route path="/content" component={FullScaleCreates} />
+      <Route path="/content">{() => { window.location.replace("/creates"); return null; }}</Route>
       <Route path="/studio" component={FullScaleStudio} />
       <Route path="/studio/pricing" component={StudioPricing} />
       <Route path="/studio/waitlist" component={StudioWaitlistPage} />

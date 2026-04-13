@@ -342,7 +342,7 @@ export default function FullScaleStudio() {
                   View Pricing
                 </Button>
               </a>
-              <a href="/content">
+              <a href="/creates">
                 <Button size="lg" variant="ghost" className="gap-2 text-white/60 hover:text-white hover:bg-white/5">
                   Explore Creates
                   <ArrowRight className="w-4 h-4" />
