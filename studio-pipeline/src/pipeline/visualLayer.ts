@@ -791,7 +791,7 @@ export async function composeSceneWithRegions(
 
   const args = [...inputArgs, ...outputArgs];
 
-  console.log(`[VisualLayer] Compositing scene ${scene.sceneNumber} — ${effectiveKlingRegions.length} kling + ${raiseRegions.length} raise regions`);
+  console.log(`[VisualLayer] Compositing scene ${scene.sceneNumber} — ${klingRegions.length} kling + ${raiseRegions.length} raise regions`);
 
   try {
     await new Promise<void>((resolve, reject) => {
