@@ -202,7 +202,8 @@ function createVideoSceneClip(
   return new Promise((resolve, reject) => {
     ffmpeg()
       .input(scene.videoFile!)
-      .inputOptions(["-stream_loop", "-1"])
+      // No looping — play the clip once, then hold on the last frame
+      .inputOptions([])
       .input(scene.audioFile)
       .outputOptions([
         "-c:v", "libx264",
