@@ -112,10 +112,12 @@ async function generateSeedanceImageToVideoClip(
         input: {
           image_url: imageUrl,
           prompt,
-          duration: 5,
+          duration: 4,                 // Shorter = less text degradation
           resolution: "720p",
           aspect_ratio: "16:9",
           generate_audio: false,
+          camera_fixed: true,          // Lock camera — reduces drift that warps text
+          end_image_url: imageUrl,     // End on the same frame — forces content preservation
         },
         logs: true,
         onQueueUpdate: (update) => {
