@@ -103,25 +103,19 @@ function createSceneClip(scene: AssemblyScene, outputPath: string): Promise<void
 
 /**
  * Build an FFmpeg drawbox filter string for the highlight region.
- * Returns an empty string if no highlight is set.
  *
- * The box appears with a soft fade-in/out synced to narration timing.
- * Frame dimensions are 1280x720.
+ * PHASE 0: Permanently disabled. The yellow highlight box was producing
+ * visible artifacts in generated videos even after the Claude prompt was
+ * stripped of highlight instructions (any residual highlightRegion data
+ * on a scene would still render a box here).
+ *
+ * The function signature is preserved so callers don't need changes; it
+ * always returns an empty string, so ffmpeg filter chains skip the overlay.
+ * If highlight overlays are ever wanted again, reinstate by reverting this
+ * file — the original implementation is in git history.
  */
-function buildHighlightFilter(scene: AssemblyScene): string {
-  if (!scene.highlightRegion) return "";
-  const r = scene.highlightRegion;
-  const x = Math.max(0, Math.round(r.x * 1280));
-  const y = Math.max(0, Math.round(r.y * 720));
-  const w = Math.min(1280 - x, Math.round(r.width * 1280));
-  const h = Math.min(720 - y, Math.round(r.height * 720));
-  if (w < 10 || h < 10) return "";
-
-  const start = scene.highlightStartSec ?? 0.5;
-  const end = scene.highlightEndSec ?? scene.durationSeconds - 0.5;
-
-  // Yellow highlight box with thick stroke, visible only during the highlight window
-  return `drawbox=x=${x}:y=${y}:w=${w}:h=${h}:color=yellow@0.85:t=6:enable='between(t,${start.toFixed(2)},${end.toFixed(2)})'`;
+function buildHighlightFilter(_scene: AssemblyScene): string {
+  return "";
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, msg: string): Promise<T> {
