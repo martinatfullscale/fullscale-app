@@ -143,7 +143,6 @@ STYLE "punch" — for VISUAL slides (person, product, graphic, title):
 STYLE "explain" — for TEXT-HEAVY slides (text, data, mixed):
   - 3 sentences, 40-60 words.
   - Explain the INSIGHT, not the bullets. Say what it MEANS, not what it SAYS.
-  - Pick ONE key phrase from the slide to highlight visually (return it in keyPhrase field).
   - Example (bullets about market size): "Fifty billion dollars. Growing forty percent a year.
     This is where we play — and almost no one has figured out how to reach them."
 
@@ -176,12 +175,10 @@ Look at each slide and pick ONE category AND one treatment:
             mixed content with headshots AND text
             TREATMENT: "kenburns" (FFmpeg slow zoom — no AI, no distortion)
             NARRATION: "explain" (3 sentences)
-            REQUIRED: return keyPhrase + highlightRegion
 
 "data"    → CHARTS, GRAPHS, METRICS, NUMBERS, financial tables
-            TREATMENT: "static_highlight" (hold still, highlight key number)
+            TREATMENT: "static_highlight" (hold still)
             NARRATION: "explain" (3 sentences)
-            REQUIRED: return keyPhrase + highlightRegion
 
 CRITICAL CLASSIFICATION RULES — prevents text distortion:
 
@@ -199,36 +196,15 @@ CRITICAL CLASSIFICATION RULES — prevents text distortion:
    the whole slide with minimal text overlay).
 
 ═══════════════════════════════════════════════════════════════
-HIGHLIGHT REGIONS — only for "text" and "data" slides:
-═══════════════════════════════════════════════════════════════
-
-When the slide is text-heavy, you MUST return:
-- keyPhrase: the exact text to highlight (verbatim as it appears on the slide)
-- highlightRegion: where that text sits on the slide (normalized 0-1 coordinates)
-
-Coordinates explanation:
-  The slide image you see is 1280x720 pixels (landscape 16:9).
-  x = 0.0 is the left edge, x = 1.0 is the right edge
-  y = 0.0 is the top edge, y = 1.0 is the bottom edge
-  width/height are the normalized size of the bounding box
-
-Look at the image and estimate where the key phrase sits:
-- If the phrase is a headline at the top center: { x: 0.2, y: 0.1, width: 0.6, height: 0.15 }
-- If the phrase is a bullet on the left: { x: 0.05, y: 0.4, width: 0.5, height: 0.08 }
-- If it's a big number in the middle: { x: 0.35, y: 0.4, width: 0.3, height: 0.2 }
-
-Be generous with padding — better for the highlight box to be slightly larger than smaller.
-
-═══════════════════════════════════════════════════════════════
 CAMERA DIRECTION — for scenes using seedance treatment:
 ═══════════════════════════════════════════════════════════════
 
-- "person"  → "slow push-in on subject" or "close-up with shallow depth of field"
-- "product" → "slow zoom into key feature" or "gentle parallax depth"
+- "person"  → "slow push-in" or "close-up with shallow depth of field"
+- "product" → "slow gentle zoom" or "gentle parallax"
 - "graphic" → "wide establishing shot" or "crane shot rising" or "dolly forward"
-- "title"   → "dramatic push-in" or "crane shot rising" or "wide pull-back"
-- "text"    → "ken burns slow zoom" (not used by AI, just a label)
-- "data"    → "static hold" (not used by AI, just a label)
+- "title"   → "dramatic push-in" or "crane shot rising"
+- "text"    → "very slow drift" or "nearly still"
+- "data"    → "nearly still" or "very slow drift"
 
 ═══════════════════════════════════════════════════════════════
 DURATION BUDGET:
@@ -368,18 +344,6 @@ For each scene return ALL of these fields:
     * "explain" goes with "kenburns" or "static_highlight" treatment
 - estimatedDurationSeconds (integer, 6-14)
 - ycFrameworkRole ("problem" | "solution" | "market" | "product" | "traction" | "team" | "ask" | "hook" | "other")
-
-FOR "text" AND "data" slides ONLY, also return:
-- keyPhrase (the EXACT phrase from the slide to highlight on screen — must be verbatim)
-- highlightRegion (object with x, y, width, height — all normalized 0-1 relative to the 1280x720 slide)
-- highlightStartSec (when the highlight fades in, typically 0.5 or 1.0 seconds into the scene)
-- highlightEndSec (when it fades out, typically estimatedDurationSeconds - 0.5)
-
-Example highlightRegion for a bullet at top-left of slide:
-  { "x": 0.05, "y": 0.15, "width": 0.6, "height": 0.1 }
-
-Example highlightRegion for a big number in the center:
-  { "x": 0.35, "y": 0.35, "width": 0.3, "height": 0.2 }
 
 Also return a top-level field:
 - totalDurationSeconds (sum of all scene durations — must be ≤ 120)`,
