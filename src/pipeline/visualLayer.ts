@@ -59,22 +59,25 @@ export async function generateVisual(
     return slideImagePath;
   }
 
-  // ALL slides use Seedance 1.5 Pro text-to-video.
-  // The slide image is the script source, NOT the visual source.
-  // Seedance generates entirely new cinematic visuals from the scene description.
-  return generateTextToVideoClip(scene, slideImagePath);
+  // ALL slides use Seedance 1.5 Pro image-to-video.
+  // Sends the actual slide image and adds cinematic motion.
+  return generateSeedanceImageToVideoClip(scene, slideImagePath);
 }
 
 // ═══════════════════════════════════════════════════════════════
 // PATH 1: Kling IMAGE-TO-VIDEO — for slides that ARE photographs
 // ═══════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════
+// Seedance 1.5 Pro IMAGE-TO-VIDEO — the 3/24 approach
+// ═══════════════════════════════════════════════════════════════
+
 /**
- * Animate a photograph slide using Kling 3.0 image-to-video.
- * The actual slide image is sent to Kling, which adds subtle motion.
- * Best for: title slides with background photos, headshots, lifestyle imagery.
+ * Animate a slide using Seedance 1.5 Pro image-to-video.
+ * Sends the actual slide image and a motion prompt.
+ * Seedance adds cinematic motion to the real content.
  */
-async function generateImageMotionClip(
+async function generateSeedanceImageToVideoClip(
   scene: Scene,
   slideImagePath: string
 ): Promise<string> {
@@ -88,99 +91,26 @@ async function generateImageMotionClip(
 
   const outputDir = path.dirname(slideImagePath);
   const videoPath = path.join(outputDir, `scene_${scene.sceneNumber}_video.mp4`);
-  const category = scene.slideCategory || "title";
-  const prompt = `${scene.cameraDirection || "slow push-in"}. ${IMAGE_MOTION_PROMPTS[category] || IMAGE_MOTION_PROMPTS["title"]}`;
+  const category = scene.slideCategory || "text";
 
-  console.log(`[VisualLayer] Scene ${scene.sceneNumber}: ${category} — Kling image-to-video`);
-  console.log(`[VisualLayer] Prompt: "${prompt.slice(0, 120)}..."`);
+  // Build a motion prompt — tells Seedance HOW to animate, not WHAT to show
+  const prompt = buildImageToVideoPrompt(scene);
 
-  try {
-    const imageBuffer = fs.readFileSync(slideImagePath);
-    const imageFile = new File([imageBuffer], path.basename(slideImagePath), { type: "image/jpeg" });
-    const imageUrl = await fal.storage.upload(imageFile);
-
-    const cfgScale = category === "person" ? 0.3 : category === "title" ? 0.7 : 0.5;
-
-    const result = await fal.subscribe(
-      "fal-ai/kling-video/v3/standard/image-to-video",
-      {
-        input: {
-          start_image_url: imageUrl,
-          prompt,
-          duration: "5",
-          generate_audio: false,
-          negative_prompt:
-            "blur, distort, low quality, watermark, morphing text, changing letters, " +
-            "garbled words, face deformation, extra fingers, melting, glitch",
-          cfg_scale: cfgScale,
-        },
-        logs: true,
-        onQueueUpdate: (update) => {
-          if (update.status === "IN_PROGRESS") {
-            const msgs = (update as any).logs;
-            if (msgs) {
-              msgs.map((log: any) => log.message).forEach((msg: string) => {
-                console.log(`[VisualLayer/kling] ${msg}`);
-              });
-            }
-          }
-        },
-      }
-    );
-
-    const videoUrl = (result as any).data?.video?.url;
-    if (!videoUrl) throw new Error("No video URL in Kling response");
-
-    console.log(`[VisualLayer] Downloading Kling clip for scene ${scene.sceneNumber}...`);
-    const response = await axios.get(videoUrl, { responseType: "arraybuffer" });
-    fs.writeFileSync(videoPath, Buffer.from(response.data));
-
-    const fileSizeKB = Math.round(fs.statSync(videoPath).size / 1024);
-    console.log(`[VisualLayer] Scene ${scene.sceneNumber} Kling clip: ${videoPath} (${fileSizeKB} KB)`);
-    return videoPath;
-  } catch (err: any) {
-    console.error(`[VisualLayer] Kling failed for scene ${scene.sceneNumber}: ${err.message}`);
-    console.warn("[VisualLayer] Falling back to Ken Burns");
-    return generateKenBurnsClip(scene, slideImagePath);
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════
-// PATH 2: Seedance TEXT-TO-VIDEO — for text-heavy / diagram slides
-// ═══════════════════════════════════════════════════════════════
-
-/**
- * Generate a cinematic video clip from a TEXT PROMPT describing the scene.
- * Does NOT animate the slide image — creates entirely new visuals that
- * tell the story cinematically. Best for text-heavy slides where animating
- * the actual JPEG produces distorted garbage.
- *
- * Uses Seedance 1.5 Pro text-to-video on fal.ai.
- */
-async function generateTextToVideoClip(
-  scene: Scene,
-  slideImagePath: string
-): Promise<string> {
-  const falKey = process.env.FAL_KEY;
-  if (!falKey) {
-    console.warn("[VisualLayer] No FAL_KEY — falling back to Ken Burns");
-    return generateKenBurnsClip(scene, slideImagePath);
-  }
-
-  fal.config({ credentials: falKey });
-
-  const outputDir = path.dirname(slideImagePath);
-  const videoPath = path.join(outputDir, `scene_${scene.sceneNumber}_video.mp4`);
-  const prompt = buildTextToVideoPrompt(scene);
-
-  console.log(`[VisualLayer] Scene ${scene.sceneNumber}: ${scene.slideCategory} — Seedance text-to-video`);
+  console.log(`[VisualLayer] Scene ${scene.sceneNumber}: ${category} — Seedance 1.5 Pro image-to-video`);
   console.log(`[VisualLayer] Prompt: "${prompt.slice(0, 150)}..."`);
 
   try {
+    // Upload the slide image to fal.ai storage
+    const imageBuffer = fs.readFileSync(slideImagePath);
+    const imageFile = new File([imageBuffer], path.basename(slideImagePath), { type: "image/jpeg" });
+    const imageUrl = await fal.storage.upload(imageFile);
+    console.log(`[VisualLayer] Uploaded slide image for scene ${scene.sceneNumber}`);
+
     const result = await fal.subscribe(
-      "fal-ai/bytedance/seedance/v1.5/pro/text-to-video",
+      "fal-ai/bytedance/seedance/v1.5/pro/image-to-video",
       {
         input: {
+          image_url: imageUrl,
           prompt,
           duration: 5,
           resolution: "720p",
@@ -202,7 +132,7 @@ async function generateTextToVideoClip(
     );
 
     const videoUrl = (result as any).data?.video?.url || (result as any).video?.url;
-    if (!videoUrl) throw new Error("No video URL in Seedance response");
+    if (!videoUrl) throw new Error("No video URL in Seedance 1.5 response");
 
     console.log(`[VisualLayer] Downloading Seedance clip for scene ${scene.sceneNumber}...`);
     const response = await axios.get(videoUrl, { responseType: "arraybuffer" });
@@ -212,27 +142,36 @@ async function generateTextToVideoClip(
     console.log(`[VisualLayer] Scene ${scene.sceneNumber} Seedance clip: ${videoPath} (${fileSizeKB} KB)`);
     return videoPath;
   } catch (err: any) {
-    console.error(`[VisualLayer] Seedance text-to-video failed for scene ${scene.sceneNumber}: ${err.message}`);
+    console.error(`[VisualLayer] Seedance 1.5 failed for scene ${scene.sceneNumber}: ${err.message}`);
     console.warn("[VisualLayer] Falling back to Ken Burns");
     return generateKenBurnsClip(scene, slideImagePath);
   }
 }
 
 /**
- * Build a video prompt from scene data.
- * Matches the 3/24 approach: simple, grounded, professional.
- * The AI should generate REAL-WORLD visuals, not abstract art.
+ * Build a motion prompt for Seedance 1.5 Pro image-to-video.
+ * This tells the AI HOW to animate the slide — not what to generate from scratch.
+ * The slide image provides the visual content; the prompt provides motion direction.
  */
-function buildTextToVideoPrompt(scene: Scene): string {
-  return (
-    `Professional cinematic visual: ${scene.visualFocus}. ` +
-    `Scene context: "${scene.sceneTitle}". ` +
-    `Camera: ${scene.cameraDirection || "smooth slow push-in"}. ` +
-    `Style: photorealistic, real-world setting, natural lighting, ` +
-    `modern and clean. High production value. ` +
-    `No text, no words, no letters, no UI overlays, no abstract shapes, no geometric patterns. ` +
-    `Only real objects, real people, real environments.`
-  );
+function buildImageToVideoPrompt(scene: Scene): string {
+  const category = scene.slideCategory || "text";
+  const camera = scene.cameraDirection || "slow gentle zoom";
+
+  switch (category) {
+    case "person":
+      return `${camera}. Subtle lifelike animation. People blink naturally, slight head movement, gentle breathing. Preserve all faces exactly. Background stays still. Cinematic depth of field.`;
+    case "title":
+      return `${camera}. Dramatic cinematic entrance. Subtle particle effects or light rays. Text stays crisp. Premium keynote energy.`;
+    case "graphic":
+      return `${camera}. Cinematic ken burns pan across the visual. Subtle depth separation between layers. Smooth and polished. Colors shift gently.`;
+    case "product":
+      return `${camera}. Gentle parallax revealing depth in the screenshots. Subtle zoom into key areas. Screen content stays sharp and readable. Professional camera drift.`;
+    case "data":
+      return `${camera}. Very subtle motion. Clean professional hold with slight breathing movement. Numbers and charts stay perfectly readable.`;
+    case "text":
+    default:
+      return `${camera}. Subtle cinematic motion. Gentle parallax depth between visual elements. Text stays readable. Clean, professional, modern. Smooth and polished.`;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
