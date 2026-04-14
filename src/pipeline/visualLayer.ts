@@ -59,16 +59,10 @@ export async function generateVisual(
     return slideImagePath;
   }
 
-  const category = scene.slideCategory || "text";
-
-  // Decide which approach based on slide content:
-  // Photos → animate the actual image (Kling image-to-video)
-  // Text/diagrams → generate new cinematic visuals (text-to-video)
-  if (IMAGE_SLIDES.includes(category)) {
-    return generateImageMotionClip(scene, slideImagePath);
-  } else {
-    return generateTextToVideoClip(scene, slideImagePath);
-  }
+  // ALL slides use Seedance 1.5 Pro text-to-video.
+  // The slide image is the script source, NOT the visual source.
+  // Seedance generates entirely new cinematic visuals from the scene description.
+  return generateTextToVideoClip(scene, slideImagePath);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -225,41 +219,20 @@ async function generateTextToVideoClip(
 }
 
 /**
- * Build a focused video prompt from scene data.
- * This describes WHAT the video should show — the AI generates the visuals from scratch.
- * Grounded in the scene's actual content, not generic "cinematic" filler.
+ * Build a video prompt from scene data.
+ * Matches the 3/24 approach: simple, grounded, professional.
+ * The AI should generate REAL-WORLD visuals, not abstract art.
  */
 function buildTextToVideoPrompt(scene: Scene): string {
-  const category = scene.slideCategory || "text";
-
-  // Base: what Claude sees on the slide
-  let prompt = `${scene.visualFocus}. `;
-
-  // Add category-specific cinematic direction
-  switch (category) {
-    case "text":
-      prompt += `Cinematic b-roll visualizing this concept. Modern, clean, professional. ` +
-        `Smooth camera movement, soft lighting, shallow depth of field. ` +
-        `Think premium startup pitch video — not a slideshow.`;
-      break;
-    case "data":
-      prompt += `Data visualization coming to life. Numbers and charts materializing in a sleek, ` +
-        `modern environment. Holographic or glass-like aesthetics. Clean, minimal, professional.`;
-      break;
-    case "product":
-      prompt += `Product showcase in a premium environment. Clean desk or studio setup. ` +
-        `Soft lighting, modern design, the product is the hero. Smooth orbiting camera. ` +
-        `Think Apple product video aesthetic.`;
-      break;
-    default:
-      prompt += `High production value visual. Smooth camera movement, modern corporate style, ` +
-        `clean design, photorealistic, premium presentation video.`;
-  }
-
-  // Keep it grounded — no fantasy, no abstract art
-  prompt += ` Photorealistic. No text overlays. No UI elements. No stock photo watermarks.`;
-
-  return prompt;
+  return (
+    `Professional cinematic visual: ${scene.visualFocus}. ` +
+    `Scene context: "${scene.sceneTitle}". ` +
+    `Camera: ${scene.cameraDirection || "smooth slow push-in"}. ` +
+    `Style: photorealistic, real-world setting, natural lighting, ` +
+    `modern and clean. High production value. ` +
+    `No text, no words, no letters, no UI overlays, no abstract shapes, no geometric patterns. ` +
+    `Only real objects, real people, real environments.`
+  );
 }
 
 // ═══════════════════════════════════════════════════════════════
