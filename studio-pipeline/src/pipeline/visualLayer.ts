@@ -152,25 +152,33 @@ async function generateSeedanceImageToVideoClip(
  * Build a motion prompt for Seedance 1.5 Pro image-to-video.
  * This tells the AI HOW to animate the slide — not what to generate from scratch.
  * The slide image provides the visual content; the prompt provides motion direction.
+ *
+ * CRITICAL: Seedance tends to generate yellow/colored rectangles and distort text.
+ * The prompt must explicitly forbid this.
  */
 function buildImageToVideoPrompt(scene: Scene): string {
   const category = scene.slideCategory || "text";
-  const camera = scene.cameraDirection || "slow gentle zoom";
+  const camera = scene.cameraDirection || "very slow gentle drift";
+
+  // Base constraint that applies to ALL slides
+  const constraint = "Do not add any rectangles, boxes, highlights, overlays, borders, or colored shapes. " +
+    "Do not modify, move, or distort any text or letters. All text must remain exactly as shown. " +
+    "Only add very subtle camera motion to the existing image.";
 
   switch (category) {
     case "person":
-      return `${camera}. Subtle lifelike animation. People blink naturally, slight head movement, gentle breathing. Preserve all faces exactly. Background stays still. Cinematic depth of field.`;
+      return `${camera}. Very subtle lifelike animation — people blink naturally, slight breathing. Preserve all faces and text exactly. ${constraint}`;
     case "title":
-      return `${camera}. Dramatic cinematic entrance. Subtle particle effects or light rays. Text stays crisp. Premium keynote energy.`;
+      return `${camera}. Very subtle cinematic motion. Preserve all text exactly as shown. ${constraint}`;
     case "graphic":
-      return `${camera}. Cinematic ken burns pan across the visual. Subtle depth separation between layers. Smooth and polished. Colors shift gently.`;
+      return `${camera}. Very slow, elegant drift across the visual. Preserve all elements exactly. ${constraint}`;
     case "product":
-      return `${camera}. Gentle parallax revealing depth in the screenshots. Subtle zoom into key areas. Screen content stays sharp and readable. Professional camera drift.`;
+      return `${camera}. Very gentle parallax effect. All screenshots and text stay perfectly sharp. ${constraint}`;
     case "data":
-      return `${camera}. Very subtle motion. Clean professional hold with slight breathing movement. Numbers and charts stay perfectly readable.`;
+      return `${camera}. Nearly still — only the faintest motion. All numbers and text stay perfectly readable. ${constraint}`;
     case "text":
     default:
-      return `${camera}. Subtle cinematic motion. Gentle parallax depth between visual elements. Text stays readable. Clean, professional, modern. Smooth and polished.`;
+      return `${camera}. Very subtle slow drift. All text stays perfectly readable and in place. ${constraint}`;
   }
 }
 
@@ -202,7 +210,7 @@ async function generateKenBurnsClip(
       "-loop", "1",
       "-i", slideImagePath,
       "-vf",
-      `scale=2560:1440,zoompan=z='min(zoom+0.0005,1.06)':x='${panX}':y='${panY}':d=${totalFrames}:s=1280x720:fps=24`,
+      `scale=2560:1440,zoompan=z='min(zoom+0.0001,1.02)':x='${panX}':y='${panY}':d=${totalFrames}:s=1280x720:fps=24`,
       "-c:v", "libx264",
       "-pix_fmt", "yuv420p",
       "-preset", "medium",
