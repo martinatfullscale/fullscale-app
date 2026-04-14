@@ -147,8 +147,10 @@ export async function runPipeline(
       const batchPromises = batchScenes.map((scene, idx) => {
         const globalIdx = batch + idx;
         return generateVoice(scene.narration, scene.sceneNumber, audioDir)
-          .then((audioPath) => {
-            audioPaths[globalIdx] = audioPath;
+          .then((result) => {
+            // generateVoice returns VoiceResult (or a string in legacy callers).
+            // runPipelineFromScript already unwraps this; mirror it here.
+            audioPaths[globalIdx] = typeof result === "string" ? result : result.audioPath;
             completedVoice++;
             const progress = 10 + Math.round((completedVoice / storyScript.scenes.length) * 80);
             logStage("adding-voice", progress);

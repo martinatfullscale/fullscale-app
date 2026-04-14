@@ -11,4 +11,5 @@ public/exported-clips/
 public/uploads/
 public/exports/
 public/videos/*.mov
-public/videos/*.mp4studio-output/
+public/videos/*.mp4
+studio-output/
