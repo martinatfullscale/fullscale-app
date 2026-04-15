@@ -33,6 +33,7 @@ import RemixEngine from "@/components/RemixEngine";
 import SharedView from "@/pages/SharedView";
 import ComingSoon from "@/pages/ComingSoon";
 import FullScaleCreates from "@/pages/FullScaleCreates";
+import Brands from "@/pages/Brands";
 import StudioUpload from "@/pages/StudioUpload";
 import FullScaleStudio from "@/pages/FullScaleStudio";
 import StudioPricing from "@/pages/StudioPricing";
@@ -187,6 +188,7 @@ function Router() {
         <Route path="/studio/upload">{() => <StudioAccessGuard><StudioUpload /></StudioAccessGuard>}</Route>
         <Route path="/studio/library">{() => <StudioAccessGuard><StudioLibrary /></StudioAccessGuard>}</Route>
         <Route path="/creates" component={FullScaleCreates} />
+        <Route path="/brands" component={Brands} />
         <Route path="/about" component={ComingSoon} />
         <Route path="/waitlist" component={WaitlistPage} />
         <Route path="/c/:slug" component={CreatorProfile} />
@@ -238,6 +240,7 @@ function Router() {
       <Route path="/studio/pricing" component={StudioPricing} />
       <Route path="/studio/waitlist" component={StudioWaitlistPage} />
       <Route path="/creates" component={FullScaleCreates} />
+      <Route path="/brands" component={Brands} />
       <Route path="/about" component={ComingSoon} />
       <Route path="/c/:slug" component={CreatorProfile} />
       <Route path="/s/:slug" component={SharedView} />
