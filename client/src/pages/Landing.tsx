@@ -1520,7 +1520,7 @@ export default function Landing() {
               className="px-8 py-4 rounded-xl bg-transparent hover:bg-white/5 border-2 border-primary text-primary font-semibold text-lg transition-all duration-300 inline-block"
               data-testid="button-apply-access"
             >
-              Sign Up for Access
+              Sign Up Now
             </a>
           </motion.div>
         </div>
@@ -1585,7 +1585,7 @@ export default function Landing() {
                     className="inline-block w-full px-6 py-3 rounded-xl bg-primary hover:bg-primary/90 text-white font-semibold text-lg transition-colors"
                     data-testid="button-modal-apply-after-denied"
                   >
-                    Sign Up for Access
+                    Sign Up Now
                   </a>
                 </>
               ) : (
@@ -1603,7 +1603,7 @@ export default function Landing() {
                     className="inline-block w-full px-6 py-3 rounded-xl bg-primary hover:bg-primary/90 text-white font-semibold text-lg transition-colors"
                     data-testid="button-modal-apply"
                   >
-                    Sign Up for Access
+                    Sign Up Now
                   </a>
 
                   {!showSignInOptions ? (
