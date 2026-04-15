@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence, useInView } from "framer-motion";
-import { Zap, Shield, Video, X, Ban, DollarSign, TrendingUp, Users, Sparkles, Cpu, Eye, Timer, Layers, Mail, User, Plus, Globe, ArrowRight, Film, Wand2 } from "lucide-react";
+import { Zap, Shield, Video, X, Ban, DollarSign, TrendingUp, Users, Sparkles, Cpu, Eye, Timer, Layers, Mail, User, Plus, Globe, ArrowRight, Film, Wand2, Briefcase } from "lucide-react";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 import logoBlackAmbition from "@assets/logo-black-ambition_1767712118620.png";
 import logoMayDavis from "@assets/logo-may-davis_1767712118621.png";
@@ -1217,11 +1217,12 @@ export default function Landing() {
               FullScale Studio
             </a>
             <a
-              href="/auth?mode=signup"
-              className="px-5 py-2 rounded-lg font-medium text-sm border border-primary text-primary bg-black/20 backdrop-blur-sm hover:bg-primary/10 transition-colors min-h-[44px] flex items-center"
-              data-testid="button-nav-apply"
+              href="/brands"
+              className="px-5 py-2 rounded-lg font-medium text-sm border border-emerald-400/40 text-emerald-300 bg-emerald-400/5 backdrop-blur-sm hover:bg-emerald-400/15 transition-colors min-h-[44px] flex items-center gap-2"
+              data-testid="link-nav-brands"
             >
-              Sign Up for Access
+              <Briefcase className="w-4 h-4" />
+              For Brands
             </a>
             <button 
               onClick={handleLoginClick}
@@ -1251,12 +1252,12 @@ export default function Landing() {
               <Wand2 className="w-5 h-5" />
             </a>
             <a
-              href="/auth?mode=signup"
-              className="p-2 rounded-lg border border-primary text-primary bg-black/20 backdrop-blur-sm hover:bg-primary/10 transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center"
-              data-testid="button-mobile-apply"
-              aria-label="Sign Up for Access"
+              href="/brands"
+              className="p-2 rounded-lg border border-emerald-400/40 text-emerald-300 bg-emerald-400/5 backdrop-blur-sm hover:bg-emerald-400/15 transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center"
+              data-testid="link-mobile-brands"
+              aria-label="For Brands"
             >
-              <Plus className="w-5 h-5" />
+              <Briefcase className="w-5 h-5" />
             </a>
             <button
               onClick={handleLoginClick}
@@ -1302,7 +1303,7 @@ export default function Landing() {
                   className="px-6 py-3 md:px-10 md:py-5 rounded-xl bg-primary hover:bg-primary/90 text-white font-semibold text-sm md:text-lg shadow-2xl shadow-primary/30 hover:shadow-primary/50 hover:-translate-y-1 transition-all duration-300"
                   data-testid="button-hero-start"
                 >
-                  Start Monetizing Now
+                  Sign Up Now
                 </a>
                 <button 
                   onClick={() => setShowDemoModal(true)}
@@ -1310,7 +1311,7 @@ export default function Landing() {
                   data-testid="button-view-demo"
                 >
                   <Eye className="w-4 h-4 md:w-5 md:h-5" />
-                  Interactive Demo
+                  Demo Preview
                 </button>
               </div>
 
