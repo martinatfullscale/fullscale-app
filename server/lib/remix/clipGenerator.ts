@@ -240,7 +240,33 @@ async function buildSmartCropFilter(
     if (faceTracking?.enabled) {
       console.log(`[ClipGenerator] Running face detection for smart reframe (${clip.duration.toFixed(1)}s clip)...`);
       const interval = faceTracking.sampleIntervalSec || 0.5;
-      const frames = await detectFacesInClip(videoPath, clip.startTime, clip.duration, interval);
+
+      // Hard timeout on face detection. The sharp/ONNX model lazy-loads on first
+      // call and has been observed to hang indefinitely on CPU-starved containers,
+      // wedging the entire remix pipeline. 60 seconds is a generous upper bound
+      // for a legitimate run (even a 60s clip sampled every 0.5s = 120 frames at
+      // ~250ms each = 30s). Anything longer is definitely stuck, so we fall back
+      // to center crop and keep the pipeline moving.
+      const FACE_DETECTION_TIMEOUT_MS = 60_000;
+      let detectionTimedOut = false;
+
+      const frames = await Promise.race([
+        detectFacesInClip(videoPath, clip.startTime, clip.duration, interval),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => {
+            detectionTimedOut = true;
+            reject(new Error(`Face detection timed out after ${FACE_DETECTION_TIMEOUT_MS}ms`));
+          }, FACE_DETECTION_TIMEOUT_MS)
+        ),
+      ]).catch((err: any) => {
+        if (detectionTimedOut) {
+          console.warn(`[ClipGenerator] ⚠️  ${err.message} — falling back to center crop. This likely means the face detection model is blocked (cold-start model load on CPU-starved container).`);
+        } else {
+          console.warn(`[ClipGenerator] Face detection errored: ${err.message} — falling back to center crop`);
+        }
+        return [] as Awaited<ReturnType<typeof detectFacesInClip>>;
+      });
+
       const totalFaces = frames.reduce((sum, f) => sum + f.faces.length, 0);
 
       if (totalFaces > 0) {

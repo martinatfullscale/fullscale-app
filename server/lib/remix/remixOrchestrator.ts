@@ -94,30 +94,40 @@ function rankedClipToCandidate(ranked: RankedClip, platform: string): ClipCandid
 
 /**
  * Resolve a video's file path to a local path accessible by FFmpeg.
- * - Object Storage paths (/storage/...) → download to temp file
+ * - Object Storage paths (/storage/...) → download to a per-scope temp subdirectory
  * - Local paths → use directly
- * Returns { localPath, isTempFile } so callers can clean up temp files.
+ *
+ * The `scope` parameter MUST be unique per concurrent operation (e.g. `job-${jobId}`,
+ * `stitch-${planId}`, `rerender-${clipId}-${Date.now()}`). Multiple concurrent callers
+ * with the same source video must get different local paths, otherwise FFmpeg processes
+ * will stomp on each other (half-written files → "moov atom not found", deleted files
+ * mid-read → "Video file not found" or EIO).
+ *
+ * Returns { localPath, isTempFile, tempScopeDir } so callers can clean up the whole
+ * scope directory at the end of the operation, even if multiple temp files were written.
  */
 async function resolveVideoPath(
-  filePath: string
-): Promise<{ localPath: string; isTempFile: boolean }> {
+  filePath: string,
+  scope: string
+): Promise<{ localPath: string; isTempFile: boolean; tempScopeDir: string | null }> {
   if (filePath.startsWith("/storage/")) {
-    console.log(`[Remix] Resolving Object Storage path: ${filePath}`);
+    console.log(`[Remix] Resolving Object Storage path: ${filePath} (scope: ${scope})`);
     const objectKey = objectKeyFromServeUrl(filePath);
-    const localPath = await downloadToTempFile(objectKey, "/tmp/remix-videos");
+    const tempScopeDir = path.join("/tmp/remix-videos", scope);
+    const localPath = await downloadToTempFile(objectKey, tempScopeDir);
     console.log(`[Remix] Downloaded to temp file: ${localPath}`);
-    return { localPath, isTempFile: true };
+    return { localPath, isTempFile: true, tempScopeDir };
   }
 
   // Try as a path relative to public dir
   if (filePath.startsWith("/") && !fs.existsSync(filePath)) {
     const publicPath = path.join(process.cwd(), "public", filePath);
     if (fs.existsSync(publicPath)) {
-      return { localPath: publicPath, isTempFile: false };
+      return { localPath: publicPath, isTempFile: false, tempScopeDir: null };
     }
   }
 
-  return { localPath: filePath, isTempFile: false };
+  return { localPath: filePath, isTempFile: false, tempScopeDir: null };
 }
 
 /**
@@ -141,27 +151,24 @@ async function checkCancelled(jobId: number): Promise<void> {
 }
 
 export async function runRemixPipeline(
+  jobId: number,
   videoId: number,
   userId: number,
   config: Partial<RemixConfig> = {}
 ): Promise<RemixResult> {
   const mergedConfig: RemixConfig = { ...DEFAULT_CONFIG, ...config };
 
-  // Create the remix job record
-  const job = await storage.createRemixJob({
-    videoId,
-    userId,
-    status: "processing",
-    config: mergedConfig,
-    platformTargets: mergedConfig.platformTargets,
-  });
-
-  const jobId = job.id;
+  // Transition the pre-existing job record from "queued" → "processing".
+  // IMPORTANT: the caller (route handler) creates the job row so that the client
+  // gets a job ID immediately from the POST response. This function MUST NOT create
+  // its own job row — doing so would produce a ghost "queued" job that the UI polls
+  // forever while all the real status updates go to a different record.
+  await storage.updateRemixJobStatus(jobId, "processing");
 
   console.log(`[Remix] ========== STARTING REMIX JOB ${jobId} ==========`);
   console.log(`[Remix] Video: ${videoId}, Platforms: ${mergedConfig.platformTargets.join(", ")}, Max clips: ${mergedConfig.maxClips}`);
 
-  let tempVideoPath: string | null = null;
+  let tempScopeDir: string | null = null;
 
   try {
     // Get video info
@@ -170,10 +177,11 @@ export async function runRemixPipeline(
       throw new Error("Video not found or no file path");
     }
 
-    // Resolve video path (handles Object Storage download if needed)
-    const resolved = await resolveVideoPath(video.filePath);
+    // Resolve video path (handles Object Storage download if needed).
+    // Scope the temp path with this job's ID so concurrent remix jobs never collide.
+    const resolved = await resolveVideoPath(video.filePath, `job-${jobId}`);
     const videoPath = resolved.localPath;
-    if (resolved.isTempFile) tempVideoPath = videoPath;
+    if (resolved.tempScopeDir) tempScopeDir = resolved.tempScopeDir;
 
     if (!fs.existsSync(videoPath)) {
       throw new Error(`Video file not found: ${videoPath}`);
@@ -818,11 +826,14 @@ export async function runRemixPipeline(
       error: err.message,
     };
   } finally {
-    // Clean up temp video file if downloaded from Object Storage
-    if (tempVideoPath) {
+    // Clean up the entire per-job temp scope directory. Using rm -rf (fs.rmSync with
+    // recursive:true, force:true) means it's idempotent and tolerates missing files,
+    // and it cleans up any intermediate temp files the pipeline may have written into
+    // the scope directory, not just the downloaded source video.
+    if (tempScopeDir) {
       try {
-        fs.unlinkSync(tempVideoPath);
-        console.log(`[Remix] Cleaned up temp video: ${tempVideoPath}`);
+        fs.rmSync(tempScopeDir, { recursive: true, force: true });
+        console.log(`[Remix] Cleaned up temp scope: ${tempScopeDir}`);
       } catch {
         // Non-fatal
       }
@@ -893,13 +904,15 @@ export async function reRenderClip(
     };
   }
 
-  let tempVideoPath: string | null = null;
+  let tempScopeDir: string | null = null;
   let videoPath: string;
 
   try {
-    const resolved = await resolveVideoPath(filePath);
+    // Unique per-re-render scope — include timestamp so rapid-fire re-renders of the
+    // same clip don't collide either.
+    const resolved = await resolveVideoPath(filePath, `rerender-${clipId}-${Date.now()}`);
     videoPath = resolved.localPath;
-    if (resolved.isTempFile) tempVideoPath = resolved.localPath;
+    if (resolved.tempScopeDir) tempScopeDir = resolved.tempScopeDir;
   } catch (err: any) {
     return {
       jobId: 0,
@@ -1214,9 +1227,9 @@ export async function reRenderClip(
       error: err.message,
     };
   } finally {
-    if (tempVideoPath) {
+    if (tempScopeDir) {
       try {
-        fs.unlinkSync(tempVideoPath);
+        fs.rmSync(tempScopeDir, { recursive: true, force: true });
       } catch { /* non-fatal */ }
     }
   }
