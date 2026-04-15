@@ -6557,7 +6557,11 @@ export async function registerRoutes(
         editorialMode: isEditorial,
       };
 
-      // Return the job ID immediately, process async
+      // Return the job ID immediately, process async.
+      // IMPORTANT: This is the ONE AND ONLY place a remix job row is created for a
+      // user-initiated auto-remix. The orchestrator MUST NOT create its own — it takes
+      // this jobId as input and updates its status. If you add a second createRemixJob()
+      // call on this path, the UI will poll a ghost job forever. (See Bug #0 writeup.)
       const job = await storage.createRemixJob({
         videoId,
         userId,
@@ -6566,8 +6570,9 @@ export async function registerRoutes(
         platformTargets: pipelineConfig.platformTargets,
       });
 
-      // Run pipeline asynchronously
-      runRemixPipeline(videoId, userId, pipelineConfig).catch(async (err) => {
+      // Run pipeline asynchronously, threading this job's ID through so all status
+      // updates and clip inserts land on the row the UI is polling.
+      runRemixPipeline(job.id, videoId, userId, pipelineConfig).catch(async (err) => {
         console.error(`[Remix] Background job ${job.id} failed:`, err);
         try {
           await storage.updateRemixJobStatus(job.id, "failed", err.message || "Pipeline crashed");
@@ -6903,6 +6908,8 @@ export async function registerRoutes(
 
       // Run stitching in background
       (async () => {
+        // Hoisted so the finally block can clean it up no matter where we fail.
+        let tempScopeDir: string | null = null;
         try {
           const { PLATFORM_CONFIGS } = await import("./lib/remix/clipDetector");
           const { stitchSegments } = await import("./lib/remix/clipStitcher");
@@ -6910,16 +6917,19 @@ export async function registerRoutes(
           const filePath = video.filePath;
           if (!filePath) throw new Error("Video has no file path");
 
-          // Note: resolveVideoPath is not exported — inline the logic
+          // Note: resolveVideoPath is not exported — inline the logic.
+          // IMPORTANT: scope the temp path per stitch plan so concurrent stitch jobs
+          // (and concurrent remix jobs using the same source video) don't trample each
+          // other. Without scoping, two jobs downloading to the same filename causes
+          // "moov atom not found" and "Video file not found" errors mid-pipeline.
           const { objectKeyFromServeUrl, downloadToTempFile, uploadFileToStorage } = await import("./lib/objectStorage");
 
           let videoPath: string;
-          let isTempFile = false;
 
           if (filePath.startsWith("/storage/")) {
             const objectKey = objectKeyFromServeUrl(filePath);
-            videoPath = await downloadToTempFile(objectKey, "/tmp/remix-videos");
-            isTempFile = true;
+            tempScopeDir = path.join("/tmp/remix-videos", `stitch-${plan.id}`);
+            videoPath = await downloadToTempFile(objectKey, tempScopeDir);
           } else {
             videoPath = filePath;
             if (filePath.startsWith("/") && !fs.existsSync(filePath)) {
@@ -6955,11 +6965,6 @@ export async function registerRoutes(
             outputDir,
             planId: plan.id,
           });
-
-          // Clean up temp video
-          if (isTempFile) {
-            try { fs.unlinkSync(videoPath); } catch { /* non-fatal */ }
-          }
 
           if (!result.success) {
             await storage.updateStitchPlanStatus(plan.id, "failed", {
@@ -7038,6 +7043,13 @@ export async function registerRoutes(
           await storage.updateStitchPlanStatus(plan.id, "failed", {
             errorMessage: err.message,
           });
+        } finally {
+          // Clean up the per-stitch temp scope directory (holds the source video
+          // and any intermediates). rmSync with recursive+force is idempotent and
+          // tolerates missing dirs, so it's safe regardless of where we failed.
+          if (tempScopeDir) {
+            try { fs.rmSync(tempScopeDir, { recursive: true, force: true }); } catch { /* non-fatal */ }
+          }
         }
       })();
     } catch (err: any) {

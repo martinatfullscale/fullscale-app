@@ -1169,7 +1169,12 @@ export class DatabaseStorage implements IStorage {
   async updateRemixJobStatus(jobId: number, status: string, errorMessage?: string): Promise<RemixJob | undefined> {
     const updates: any = { status };
     if (errorMessage) updates.errorMessage = errorMessage;
-    if (status === 'complete' || status === 'failed') updates.completedAt = new Date();
+    // Set completedAt on any terminal state. Historical note: this used to check
+    // for 'complete' (a value never written anywhere) instead of 'completed', so
+    // successful jobs left completedAt=NULL forever. Also covers 'cancelled' now.
+    if (status === 'completed' || status === 'failed' || status === 'cancelled') {
+      updates.completedAt = new Date();
+    }
     const [result] = await db.update(remixJobs)
       .set(updates)
       .where(eq(remixJobs.id, jobId))
