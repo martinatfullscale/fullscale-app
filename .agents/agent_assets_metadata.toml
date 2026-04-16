@@ -1,0 +1,38 @@
+uploads = []
+outputs = []
+
+[[generated]]
+id = "rxe119PD_dA59ou9OTMq8"
+uri = "file://attached_assets/generated_images/brands_kitchen_reality.png"
+type = "image"
+title = "generated_image"
+
+[[generated]]
+id = "T-ZHqD1GzheSEo2U40wql"
+uri = "file://attached_assets/generated_images/brands_kitchen_augmented.png"
+type = "image"
+title = "generated_image"
+
+[[generated]]
+id = "x0QYYVnDibSUCaESDrUZb"
+uri = "file://attached_assets/generated_images/brands_dj_reality.png"
+type = "image"
+title = "generated_image"
+
+[[generated]]
+id = "B9Yos_oaEVY9nj316QCAX"
+uri = "file://attached_assets/generated_images/brands_dj_augmented.png"
+type = "image"
+title = "generated_image"
+
+[[generated]]
+id = "HJIISZ6Vs2VjjEeKDZ9GJ"
+uri = "file://attached_assets/generated_images/brands_gamer_reality.png"
+type = "image"
+title = "generated_image"
+
+[[generated]]
+id = "I-wOL3N0jpGJ0v2SNHyxU"
+uri = "file://attached_assets/generated_images/brands_gamer_augmented.png"
+type = "image"
+title = "generated_image"

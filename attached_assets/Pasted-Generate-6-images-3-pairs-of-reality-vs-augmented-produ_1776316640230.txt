@@ -1,0 +1,84 @@
+Generate 6 images — 3 pairs of "reality vs augmented" product placement scenes
+for the /brands page comparison sliders. Follow the exact same style and
+quality as the existing Landing page slider pair:
+
+  attached_assets/unnamed_1769147394407.JPEG              (kitchen, no product)
+  attached_assets/Gemini_Generated_Image_rykd4crykd4crykd_1769147394406.PNG
+                                                          (same kitchen + Boxed Water carton)
+
+In that pair, the two images are PIXEL-IDENTICAL except for a single AI-placed
+product sitting on the counter with a realistic cast shadow. The scene, lighting,
+angle, and every other element are unchanged. That's the bar.
+
+## Scenes to generate (3 pairs = 6 files)
+
+### Pair 1 — Kitchen
+Cinematic photograph of a modern minimalist kitchen, 16:9 landscape. Wooden or
+quartz counter, morning window light, blurred background (plants, cookware,
+fruit bowl). Counter has a clearly empty placement spot in the lower-third
+foreground. DIFFERENT style from the existing Boxed Water kitchen (different
+angle, different color palette) so they don't look like the same scene
+duplicated.
+
+Product for augmented version: any kitchen-appropriate branded beverage
+(Olipop, Liquid Death, Spindrift — pick whatever looks best). The product
+must:
+  - Sit on the counter in correct perspective
+  - Cast a realistic shadow matching the window light direction
+  - Preserve the counter's texture/reflections around the base
+
+### Pair 2 — DJ Booth
+Cinematic close-up of a DJ controller, 16:9 landscape. Visible jog wheels,
+mixer with faders, colorful RGB performance pads (purple / blue / cyan /
+magenta accent lighting). Empty counter or shelf surface visible adjacent
+to the controller (for the product to land on). Moody club-style lighting,
+shallow depth of field on the background.
+
+Product for augmented version: something that fits the DJ / nightlife
+context — a branded energy drink can, a cocktail, a bluetooth speaker, or
+a branded bottle. Cast shadow must match the purple/blue ambient lighting
+direction.
+
+### Pair 3 — Gaming Setup
+Cinematic gaming desk photograph, 16:9 landscape. Dual monitors visible
+(displaying game UI or a desktop), mechanical RGB keyboard, gaming mouse
+on a large deskmat, RGB LED underglow behind. Gaming chair partially
+visible in the background (blurred). Empty desk surface to the side of
+the keyboard for the product.
+
+Product for augmented version: gaming-appropriate — energy drink can,
+monster-size beverage, branded snack, or a merch collectible. Cast shadow
+must match the RGB accent lighting.
+
+## Output paths (6 files)
+
+attached_assets/generated_images/brands_kitchen_reality.png
+attached_assets/generated_images/brands_kitchen_augmented.png
+attached_assets/generated_images/brands_dj_reality.png
+attached_assets/generated_images/brands_dj_augmented.png
+attached_assets/generated_images/brands_gamer_reality.png
+attached_assets/generated_images/brands_gamer_augmented.png
+
+All 6 files at 1280x720 or similar 16:9 aspect ratio. PNG format.
+
+## Critical requirements
+
+1. Within each pair, reality and augmented must be THE SAME SCENE — identical
+   camera angle, lighting, composition, every element. The only difference is
+   the product appearing (and its shadow) in the augmented version. If you
+   shift the camera or change the lighting between the two images, the
+   comparison slider will look broken when users drag it.
+
+2. The product must feel physically placed — correct scale relative to the
+   scene, shadow direction matching the existing light sources, proper occlusion
+   where the product meets the surface.
+
+3. Before pushing, pull latest from origin/main to avoid the divergence issue
+   we hit last time:
+     git fetch origin main
+     git reset --hard origin/main
+
+4. After generating the 6 images, commit ONLY those 6 files with a message
+   like "Generate brands slider scene pairs (kitchen, DJ, gamer)" and push
+   to main. Do NOT modify any code files — the /brands page code is already
+   on main and references these exact paths.
