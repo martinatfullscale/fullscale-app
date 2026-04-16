@@ -30,6 +30,16 @@ import demoDjReality from "@assets/generated_images/brands_dj_reality.png";
 import demoDjAugmented from "@assets/generated_images/brands_dj_augmented.png";
 import demoGamerReality from "@assets/generated_images/brands_gamer_reality.png";
 import demoGamerAugmented from "@assets/generated_images/brands_gamer_augmented.png";
+import demoTechReality from "@assets/generated_images/brands_tech_reality.png";
+import demoTechAugmented from "@assets/generated_images/brands_tech_augmented.png";
+import demoLifestyleReality from "@assets/generated_images/brands_lifestyle_reality.png";
+import demoLifestyleAugmented from "@assets/generated_images/brands_lifestyle_augmented.png";
+import demoFitnessReality from "@assets/generated_images/brands_fitness_reality.png";
+import demoFitnessAugmented from "@assets/generated_images/brands_fitness_augmented.png";
+import demoTravelReality from "@assets/generated_images/brands_travel_reality.png";
+import demoTravelAugmented from "@assets/generated_images/brands_travel_augmented.png";
+import demoBeautyReality from "@assets/generated_images/brands_beauty_reality.png";
+import demoBeautyAugmented from "@assets/generated_images/brands_beauty_augmented.png";
 
 // ============================================================================
 // SURFACE ENGINE - REAL COMPUTER VISION LOGIC FOR VERTICAL VIDEO TRACKING
@@ -1105,7 +1115,15 @@ function GlassMetricCard({ icon: Icon, label, value, sublabel, color = "primary"
 // top of the modal to that creator's mapped scene.
 // ═══════════════════════════════════════════════════════════════════════
 
-type DemoSceneKey = "kitchen" | "dj" | "gamer";
+type DemoSceneKey =
+  | "kitchen"
+  | "dj"
+  | "gamer"
+  | "tech"
+  | "lifestyle"
+  | "fitness"
+  | "travel"
+  | "beauty";
 
 const DEMO_SCENES: Record<
   DemoSceneKey,
@@ -1117,49 +1135,81 @@ const DEMO_SCENES: Record<
   }
 > = {
   kitchen: {
-    label: "Kitchen / Lifestyle",
+    label: "Food / Kitchen",
     caption:
       "Warm oak counter, morning window light. Our AI drops an Olipop can onto the surface with shadow direction matched to the window and the wood grain preserved under the can.",
     reality: demoKitchenReality,
     augmented: demoKitchenAugmented,
   },
   dj: {
-    label: "DJ Booth / Music",
+    label: "Music / DJ Booth",
     caption:
       "RGB-lit DJ controller mid-session. Our AI places an energy drink can beside the mixer with shadow tracked to the booth's purple ambient lighting.",
     reality: demoDjReality,
     augmented: demoDjAugmented,
   },
   gamer: {
-    label: "Gaming / Tech",
+    label: "Gaming / Streaming",
     caption:
-      "Gaming desk with dual monitors and RGB underglow. Our AI lands a Monster Energy can to the left of the keyboard — can reflections pick up the RGB accent lighting naturally.",
+      "Gaming desk with dual monitors and RGB underglow. Our AI lands a Monster Energy can front-and-center, logo catching the RGB accent light with a clean shadow on the desk.",
     reality: demoGamerReality,
     augmented: demoGamerAugmented,
   },
+  tech: {
+    label: "Tech / Review",
+    caption:
+      "Creator tech desk — boom-arm mic, monitor, clean surface. Our AI lands an AirPods Pro case on the desk with lighting matched to the soft key light above.",
+    reality: demoTechReality,
+    augmented: demoTechAugmented,
+  },
+  lifestyle: {
+    label: "Lifestyle / Home",
+    caption:
+      "Cozy home desk — brass lamp, open notebook, stack of books. Our AI places an amber scented candle front-and-center, warm flicker matching the lamp's tone.",
+    reality: demoLifestyleReality,
+    augmented: demoLifestyleAugmented,
+  },
+  fitness: {
+    label: "Fitness / Wellness",
+    caption:
+      "Bright home gym corner — dumbbells racked, yoga mat, natural light. Our AI lands a protein shaker bottle in the foreground with contact shadow on the floor.",
+    reality: demoFitnessReality,
+    augmented: demoFitnessAugmented,
+  },
+  travel: {
+    label: "Travel / Vlog",
+    caption:
+      "Hotel room desk — laptop, vintage camera, passport, skyline view through the window. Our AI places a YETI travel mug in the foreground with the room's warm light picked up on the mug's steel.",
+    reality: demoTravelReality,
+    augmented: demoTravelAugmented,
+  },
+  beauty: {
+    label: "Beauty / Vanity",
+    caption:
+      "Marble vanity with an LED-ring mirror. Our AI lands a frosted-glass serum dropper on the counter, reflections picked up in the marble and shadow matched to the mirror's ring light.",
+    reality: demoBeautyReality,
+    augmented: demoBeautyAugmented,
+  },
 };
 
-// Eight illustrative creator examples, each clickable to switch the Scene
-// Preview slider. Names / niches / earnings are all illustrative — the
-// disclaimer at the bottom of the modal makes that explicit. Currently
-// only three scene pairs exist (kitchen / dj / gamer), so multiple
-// creators share a scene. When Replit Agent generates 5 more scene pairs
-// (tech / lifestyle / fitness / travel / beauty), each creator will map
-// to its own unique scene and this array + DEMO_SCENES will expand.
+// Eight illustrative creator examples, each mapped to their own unique
+// scene pair. Clicking a card switches the Scene Preview slider to show
+// that creator's scene. Names / niches / earnings are all illustrative —
+// the disclaimer at the bottom of the modal makes that explicit.
 const DEMO_CREATORS: Array<{
   name: string;
   niche: string;
   revenue: string;
   scene: DemoSceneKey;
 }> = [
-  { name: "Alex Chen",    niche: "Tech",      revenue: "$4.2K", scene: "gamer"   },
-  { name: "Maya Torres",  niche: "Lifestyle", revenue: "$3.8K", scene: "kitchen" },
-  { name: "Jordan Lee",   niche: "Fitness",   revenue: "$5.1K", scene: "kitchen" },
-  { name: "Sam Rivera",   niche: "Travel",    revenue: "$2.9K", scene: "kitchen" },
-  { name: "Taylor Kim",   niche: "Food",      revenue: "$3.4K", scene: "kitchen" },
-  { name: "Drew Morgan",  niche: "Gaming",    revenue: "$6.2K", scene: "gamer"   },
-  { name: "Chris Patel",  niche: "Music",     revenue: "$2.7K", scene: "dj"      },
-  { name: "Jamie Brooks", niche: "Beauty",    revenue: "$4.5K", scene: "kitchen" },
+  { name: "Alex Chen",    niche: "Tech",      revenue: "$4.2K", scene: "tech"      },
+  { name: "Maya Torres",  niche: "Lifestyle", revenue: "$3.8K", scene: "lifestyle" },
+  { name: "Jordan Lee",   niche: "Fitness",   revenue: "$5.1K", scene: "fitness"   },
+  { name: "Sam Rivera",   niche: "Travel",    revenue: "$2.9K", scene: "travel"    },
+  { name: "Taylor Kim",   niche: "Food",      revenue: "$3.4K", scene: "kitchen"   },
+  { name: "Drew Morgan",  niche: "Gaming",    revenue: "$6.2K", scene: "gamer"     },
+  { name: "Chris Patel",  niche: "Music",     revenue: "$2.7K", scene: "dj"        },
+  { name: "Jamie Brooks", niche: "Beauty",    revenue: "$4.5K", scene: "beauty"    },
 ];
 
 export default function Landing() {
@@ -1891,7 +1941,7 @@ export default function Landing() {
                         </div>
                       </div>
                       <p className="text-xs text-muted-foreground text-center">
-                        Eight example creators. More scene types are being generated — every niche will have its own unique placement scene shortly.
+                        Eight example creators across eight placement scenes.
                       </p>
                     </div>
 
