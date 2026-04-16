@@ -7,12 +7,12 @@
  * - BrandMarketplace — read-only view with "Buy Placement" action
  */
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Sparkles, Clock, TrendingUp, Tag, ChevronDown, ChevronUp,
   Loader2, Mic, Brain, Zap, Eye, Heart, Shield, MessageSquare,
-  RefreshCw, Play, DollarSign, Filter,
+  RefreshCw, Play, DollarSign, Filter, X, Wand2, AlertCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -31,6 +31,7 @@ interface RubricScores {
 }
 
 interface RankedClip {
+  id?: number;
   clipStart: number;
   clipEnd: number;
   duration: number;
@@ -48,6 +49,12 @@ interface RankedClip {
   reasoning: string;
   rawClipStart: number;
   rawClipEnd: number;
+  // Auto-render fields (Editorial Auto-Pipeline)
+  exportPath?: string | null;
+  thumbnailPath?: string | null;
+  aspectRatio?: string | null;
+  renderStatus?: "pending" | "rendering" | "rendered" | "failed" | null;
+  renderError?: string | null;
 }
 
 interface TranscriptStatus {
@@ -55,6 +62,25 @@ interface TranscriptStatus {
   wordCount?: number;
   segmentCount?: number;
   speakerCount?: number;
+}
+
+type EditorialStatus =
+  | "none"
+  | "pending"
+  | "transcribing"
+  | "analyzing"
+  | "rendering"
+  | "ready"
+  | "failed";
+
+interface EditorialStatusResponse {
+  status: EditorialStatus;
+  error: string | null;
+  totalClips: number;
+  renderedClips: number;
+  failedClips: number;
+  pendingClips: number;
+  completedAt: string | null;
 }
 
 export interface EditorialClipsProps {
@@ -129,6 +155,100 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
   const [expandedClip, setExpandedClip] = useState<number | null>(null);
   const [sortBy, setSortBy] = useState<"score" | "time" | "duration">("score");
   const [tierFilter, setTierFilter] = useState<"all" | "premium" | "standard" | "organic">("all");
+  const [playingClip, setPlayingClip] = useState<RankedClip | null>(null);
+  const [autoStatus, setAutoStatus] = useState<EditorialStatusResponse | null>(null);
+  const [isRegenerating, setIsRegenerating] = useState(false);
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── Helpers ────────────────────────────────────────────────────
+  const refetchClips = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/scenes/${videoId}/editorial-clips`, { credentials: "include" });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.clips)) {
+          setClips(data.clips);
+          setAnalysisComplete(data.clips.length > 0);
+        }
+      }
+    } catch {
+      /* non-fatal */
+    }
+  }, [videoId]);
+
+  const fetchAutoStatus = useCallback(async (): Promise<EditorialStatusResponse | null> => {
+    try {
+      const res = await fetch(`/api/videos/${videoId}/editorial-status`, { credentials: "include" });
+      if (!res.ok) return null;
+      return (await res.json()) as EditorialStatusResponse;
+    } catch {
+      return null;
+    }
+  }, [videoId]);
+
+  // ── Poll editorial auto-pipeline while in-flight ─────────────────
+  useEffect(() => {
+    let cancelled = false;
+
+    async function tick() {
+      const status = await fetchAutoStatus();
+      if (cancelled) return;
+      if (!status) {
+        pollTimerRef.current = setTimeout(tick, 10_000);
+        return;
+      }
+      setAutoStatus(status);
+
+      const inFlight = ["pending", "transcribing", "analyzing", "rendering"].includes(status.status);
+      if (inFlight) {
+        // Refetch clips every poll so newly-rendered ones appear progressively
+        await refetchClips();
+        pollTimerRef.current = setTimeout(tick, 5_000);
+      } else if (status.status === "ready" || status.status === "failed") {
+        await refetchClips();
+      }
+    }
+
+    tick();
+
+    return () => {
+      cancelled = true;
+      if (pollTimerRef.current) {
+        clearTimeout(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
+    };
+  }, [videoId, fetchAutoStatus, refetchClips]);
+
+  const handleRegenerate = useCallback(async () => {
+    setIsRegenerating(true);
+    try {
+      const res = await fetch(`/api/videos/${videoId}/editorial-auto`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ force: true }),
+      });
+      if (!res.ok) throw new Error("Failed to start pipeline");
+      toast({
+        title: "Story-clips regenerating",
+        description: "We'll find 10+ new moments and render each as a playable clip.",
+      });
+      // Update local status optimistically so the banner shows immediately
+      setAutoStatus({
+        status: "pending",
+        error: null,
+        totalClips: 0,
+        renderedClips: 0,
+        failedClips: 0,
+        pendingClips: 0,
+        completedAt: null,
+      });
+    } catch (err: any) {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    }
+    setIsRegenerating(false);
+  }, [videoId, toast]);
 
   // ── Load saved clips + transcript status on mount ─────────────────
   useEffect(() => {
@@ -280,8 +400,98 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
   // Brand mode: read-only — brands can only view clips the creator has already generated
   const isBrandMode = mode === "brand";
 
+  // Auto-pipeline banner state
+  const inFlight = autoStatus && ["pending", "transcribing", "analyzing", "rendering"].includes(autoStatus.status);
+  const autoFailed = autoStatus?.status === "failed";
+  const showAutoBanner = inFlight || autoFailed || (autoStatus?.status === "ready" && clips.length > 0);
+
+  const stageLabel: Record<string, string> = {
+    pending: "Queued…",
+    transcribing: "Transcribing audio…",
+    analyzing: "Analyzing for story moments…",
+    rendering: "Rendering playable clips…",
+    ready: "Story-clips ready",
+    failed: "Pipeline failed",
+  };
+  const stageProgress: Record<string, number> = {
+    pending: 5,
+    transcribing: 25,
+    analyzing: 55,
+    rendering: 80,
+    ready: 100,
+    failed: 100,
+  };
+
   return (
     <div className="space-y-4">
+      {/* Auto-Pipeline Banner (Feature A) — shows for all modes when there's auto-pipeline state */}
+      {showAutoBanner && autoStatus && (
+        <div
+          className={`rounded-xl p-4 border ${
+            autoFailed
+              ? "bg-red-500/10 border-red-500/30"
+              : inFlight
+              ? "bg-emerald-500/10 border-emerald-500/30"
+              : "bg-emerald-500/5 border-emerald-500/20"
+          }`}
+        >
+          <div className="flex items-center gap-3">
+            <div
+              className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                autoFailed ? "bg-red-500/20" : "bg-emerald-500/20"
+              }`}
+            >
+              {inFlight ? (
+                <Loader2 className="w-4 h-4 text-emerald-400 animate-spin" />
+              ) : autoFailed ? (
+                <AlertCircle className="w-4 h-4 text-red-400" />
+              ) : (
+                <Wand2 className="w-4 h-4 text-emerald-400" />
+              )}
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-semibold text-white">
+                  Auto Story-Clips
+                </span>
+                <span className={`text-xs ${autoFailed ? "text-red-400" : "text-emerald-400"}`}>
+                  {stageLabel[autoStatus.status] ?? autoStatus.status}
+                </span>
+              </div>
+              {inFlight && (
+                <div className="mt-1.5 h-1 bg-gray-700 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-emerald-500 rounded-full transition-all duration-500"
+                    style={{ width: `${stageProgress[autoStatus.status] ?? 5}%` }}
+                  />
+                </div>
+              )}
+              {autoStatus.renderedClips > 0 && (
+                <p className="text-xs text-gray-400 mt-1">
+                  {autoStatus.renderedClips} rendered · {autoStatus.totalClips} total
+                  {autoStatus.failedClips > 0 && ` · ${autoStatus.failedClips} failed`}
+                </p>
+              )}
+              {autoFailed && autoStatus.error && (
+                <p className="text-xs text-red-300 mt-1 line-clamp-2">{autoStatus.error}</p>
+              )}
+            </div>
+            {!isBrandMode && !inFlight && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={handleRegenerate}
+                disabled={isRegenerating}
+                className="text-gray-300 hover:text-white text-xs"
+              >
+                <RefreshCw className={`w-3 h-3 mr-1 ${isRegenerating ? "animate-spin" : ""}`} />
+                Regenerate
+              </Button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Transcript Status Bar — only shown for creators/remix, never for brands */}
       {!isBrandMode && (
         <div className="bg-gray-800/60 rounded-xl p-4 border border-gray-700/50">
@@ -444,6 +654,7 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
                   onToggleExpand={() => setExpandedClip(expandedClip === idx ? null : idx)}
                   onGenerate={onGenerateClip ? () => onGenerateClip(clip) : undefined}
                   onBuy={onBuyPlacement ? () => onBuyPlacement(clip) : undefined}
+                  onPlay={clip.exportPath ? () => setPlayingClip(clip) : undefined}
                 />
               ))}
             </AnimatePresence>
@@ -459,6 +670,75 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
           <p className="text-xs text-gray-500 mt-1">Try with a longer video or different content.</p>
         </div>
       )}
+
+      {/* Play Modal — shown when user clicks a rendered clip */}
+      <AnimatePresence>
+        {playingClip && playingClip.exportPath && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+            onClick={() => setPlayingClip(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="relative max-w-md w-full bg-gray-900 rounded-2xl overflow-hidden shadow-2xl border border-gray-700"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <button
+                onClick={() => setPlayingClip(null)}
+                className="absolute top-3 right-3 z-10 w-9 h-9 rounded-full bg-black/60 hover:bg-black/80 flex items-center justify-center text-white transition-colors"
+                aria-label="Close"
+              >
+                <X className="w-5 h-5" />
+              </button>
+
+              <video
+                key={playingClip.exportPath}
+                src={playingClip.exportPath}
+                poster={playingClip.thumbnailPath || undefined}
+                controls
+                autoPlay
+                playsInline
+                className="w-full bg-black"
+                style={{
+                  aspectRatio: playingClip.aspectRatio === "16:9" ? "16/9" : "9/16",
+                  maxHeight: "85vh",
+                }}
+              />
+
+              <div className="p-4 space-y-2">
+                <h3 className="text-base font-semibold text-white">{playingClip.suggestedTitle}</h3>
+                <div className="flex items-center gap-2 text-xs text-gray-400">
+                  <Clock className="w-3 h-3" />
+                  <span>{formatTime(playingClip.clipStart)} – {formatTime(playingClip.clipEnd)}</span>
+                  <span>·</span>
+                  <span>{playingClip.duration.toFixed(0)}s</span>
+                  <span>·</span>
+                  <span className={getViralColor(playingClip.finalScore)}>
+                    {Math.round(playingClip.finalScore * 100)}% viral
+                  </span>
+                </div>
+                {playingClip.topicTags.length > 0 && (
+                  <div className="flex items-center gap-1 flex-wrap">
+                    {playingClip.topicTags.slice(0, 4).map((tag) => (
+                      <span
+                        key={tag}
+                        className="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full"
+                      >
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -473,6 +753,7 @@ function EditorialClipCard({
   onToggleExpand,
   onGenerate,
   onBuy,
+  onPlay,
 }: {
   clip: RankedClip;
   rank: number;
@@ -481,24 +762,51 @@ function EditorialClipCard({
   onToggleExpand: () => void;
   onGenerate?: () => void;
   onBuy?: () => void;
+  onPlay?: () => void;
 }) {
   const viralPct = Math.round(clip.finalScore * 100);
   const tierBadge = getTierBadge(clip.monetizationTier);
+  const isRendered = clip.renderStatus === "rendered" && !!clip.exportPath;
+  const isRendering = clip.renderStatus === "rendering" || clip.renderStatus === "pending";
+  const renderFailed = clip.renderStatus === "failed";
 
   return (
     <motion.div
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -10 }}
-      className={`bg-gray-800/60 rounded-xl border border-gray-700/50 overflow-hidden`}
+      className={`bg-gray-800/60 rounded-xl border ${
+        isRendered ? "border-emerald-500/30" : "border-gray-700/50"
+      } overflow-hidden`}
     >
       {/* Main Row */}
       <div className="p-4">
         <div className="flex items-start gap-3">
-          {/* Rank Badge */}
-          <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 border ${getViralBg(clip.finalScore)}`}>
-            <span className={`text-sm font-bold ${getViralColor(clip.finalScore)}`}>{rank}</span>
-          </div>
+          {/* Thumbnail or Rank Badge */}
+          {clip.thumbnailPath && isRendered ? (
+            <button
+              onClick={onPlay}
+              className="relative w-16 h-20 rounded-lg overflow-hidden flex-shrink-0 group"
+              aria-label="Play clip"
+            >
+              <img
+                src={clip.thumbnailPath}
+                alt={clip.suggestedTitle}
+                className="w-full h-full object-cover"
+                loading="lazy"
+              />
+              <div className="absolute inset-0 bg-black/30 group-hover:bg-black/50 flex items-center justify-center transition-colors">
+                <Play className="w-5 h-5 text-white fill-white" />
+              </div>
+              <div className="absolute bottom-0 left-0 right-0 bg-black/70 text-white text-[10px] px-1 py-0.5 text-center font-semibold">
+                #{rank}
+              </div>
+            </button>
+          ) : (
+            <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 border ${getViralBg(clip.finalScore)}`}>
+              <span className={`text-sm font-bold ${getViralColor(clip.finalScore)}`}>{rank}</span>
+            </div>
+          )}
 
           {/* Title + Meta */}
           <div className="flex-1 min-w-0">
@@ -547,12 +855,36 @@ function EditorialClipCard({
               <div className="text-xs text-gray-500">viral</div>
             </div>
 
+            {/* Render status indicator */}
+            {isRendering && (
+              <div className="flex items-center gap-1 text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-2 py-1 rounded-lg">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                <span>Rendering</span>
+              </div>
+            )}
+            {renderFailed && (
+              <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 px-2 py-1 rounded-lg">
+                Render failed
+              </div>
+            )}
+
             {/* Action Buttons */}
+            {isRendered && onPlay && (
+              <Button
+                size="sm"
+                onClick={onPlay}
+                className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs"
+              >
+                <Play className="w-3 h-3 mr-1 fill-white" />
+                Play
+              </Button>
+            )}
             {mode === "remix" && onGenerate && (
               <Button
                 size="sm"
                 onClick={onGenerate}
-                className="bg-purple-600 hover:bg-purple-500 text-white text-xs"
+                variant={isRendered ? "ghost" : "default"}
+                className={isRendered ? "text-gray-400 hover:text-white text-xs" : "bg-purple-600 hover:bg-purple-500 text-white text-xs"}
               >
                 <Play className="w-3 h-3 mr-1" />
                 Generate

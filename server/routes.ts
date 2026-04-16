@@ -27,6 +27,7 @@ import crypto from "crypto";
 import sharp from "sharp";
 import { uploadFileToStorage, fileExistsInStorage, objectKeyFromServeUrl, getStorageStream } from "./lib/objectStorage";
 import { runTranscriptPipeline } from "./lib/remix/transcriptPipeline";
+import { runEditorialAutoPipeline } from "./lib/remix/editorialAutoPipeline";
 import { analyzeEditorial } from "./lib/ai/claude-dense/editorialAnalyzer";
 import { rankClips, deduplicateClips } from "./lib/remix/clipRanker";
 
@@ -2107,8 +2108,31 @@ export async function registerRoutes(
       console.log(`[UPLOAD] Video inserted with ID: ${video.id}`);
       console.log(`[UPLOAD] Starting auto-scan...`);
 
+      // Mark editorial pipeline as pending immediately so UI can poll
+      storage.updateVideoEditorialStatus(video.id, "pending").catch((e: any) =>
+        console.warn(`[UPLOAD] Failed to set editorial pending: ${e?.message}`)
+      );
+
       processVideoScan(video.id, true).then(result => {
         console.log(`[UPLOAD] Auto-scan complete for ${video.id}: ${result.surfacesDetected} surfaces`);
+
+        // Feature A: Auto-generate editorial story-clips after scan completes.
+        // Runs transcript + narrative analysis + FFmpeg render in background.
+        // userId here is the email string (req.authEmail); we pass a numeric 0
+        // placeholder because the editorialClips schema requires integer userId
+        // but the auto-pipeline isn't tied to a specific user role.
+        const pipelineUserId = 0;
+        runEditorialAutoPipeline(video.id, pipelineUserId)
+          .then(r => {
+            if (r.success) {
+              console.log(`[UPLOAD] Editorial auto-pipeline: ${r.clipsRendered}/${r.clipsGenerated} rendered in ${(r.durationMs / 1000).toFixed(1)}s`);
+            } else {
+              console.warn(`[UPLOAD] Editorial auto-pipeline failed for ${video.id}: ${r.error}`);
+            }
+          })
+          .catch(err => {
+            console.error(`[UPLOAD] Editorial auto-pipeline error for ${video.id}:`, err?.message || err);
+          });
       }).catch(err => {
         console.error(`[UPLOAD] Auto-scan failed for ${video.id}:`, err.message);
       });
@@ -6454,6 +6478,81 @@ export async function registerRoutes(
       }
       console.error("[API] /api/scenes/:videoId/editorial-clips error:", err.message);
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ─── Feature A: Editorial Auto-Pipeline Endpoints ─────────────
+
+  // GET /api/videos/:videoId/editorial-status — Poll pipeline progress + clip counts
+  app.get("/api/videos/:videoId/editorial-status", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+
+      let clips: any[] = [];
+      try {
+        clips = await storage.getEditorialClipsByVideo(videoId);
+      } catch (e: any) {
+        // Gracefully handle missing table
+        if (!e.message?.includes("does not exist")) throw e;
+      }
+
+      const renderedCount = clips.filter((c) => c.renderStatus === "rendered").length;
+      const failedCount = clips.filter((c) => c.renderStatus === "failed").length;
+      const pendingCount = clips.filter((c) => c.renderStatus === "pending" || c.renderStatus === "rendering").length;
+
+      res.json({
+        videoId,
+        status: video.editorialStatus ?? "none",
+        error: video.editorialError ?? null,
+        totalClips: clips.length,
+        renderedClips: renderedCount,
+        failedClips: failedCount,
+        pendingClips: pendingCount,
+        completedAt: video.editorialCompletedAt,
+      });
+    } catch (err: any) {
+      console.error("[API] /api/videos/:videoId/editorial-status error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to get editorial status" });
+    }
+  });
+
+  // POST /api/videos/:videoId/editorial-auto — Manually trigger or force re-run
+  app.post("/api/videos/:videoId/editorial-auto", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+      const { force = false } = req.body || {};
+
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+      if (!video.filePath) return res.status(400).json({ error: "Video has no filePath" });
+
+      // Fire-and-forget — respond immediately
+      res.json({
+        message: "Editorial auto-pipeline started",
+        videoId,
+        status: "pending",
+      });
+
+      const pipelineUserId = 0;
+      runEditorialAutoPipeline(videoId, pipelineUserId, { force: Boolean(force) })
+        .then(r => {
+          if (r.success) {
+            console.log(`[API] Editorial auto-pipeline manual run: ${r.clipsRendered}/${r.clipsGenerated} rendered for video ${videoId}`);
+          } else {
+            console.warn(`[API] Editorial auto-pipeline manual run failed for ${videoId}: ${r.error}`);
+          }
+        })
+        .catch(err => {
+          console.error(`[API] Editorial auto-pipeline manual run error for ${videoId}:`, err?.message || err);
+        });
+    } catch (err: any) {
+      console.error("[API] /api/videos/:videoId/editorial-auto error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to start pipeline" });
     }
   });
 

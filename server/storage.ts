@@ -208,6 +208,22 @@ export interface IStorage {
   saveEditorialClips(videoId: number, userId: number, clips: any[]): Promise<EditorialClip[]>;
   getEditorialClipsByVideo(videoId: number): Promise<EditorialClip[]>;
   deleteEditorialClipsByVideo(videoId: number): Promise<void>;
+  updateEditorialClipRender(
+    clipId: number,
+    updates: {
+      exportPath?: string | null;
+      thumbnailPath?: string | null;
+      aspectRatio?: string | null;
+      renderStatus?: "pending" | "rendering" | "rendered" | "failed";
+      renderError?: string | null;
+    }
+  ): Promise<EditorialClip | undefined>;
+  // Editorial pipeline status (videoIndex)
+  updateVideoEditorialStatus(
+    videoId: number,
+    status: "pending" | "transcribing" | "analyzing" | "rendering" | "ready" | "failed",
+    updates?: { error?: string | null; clipCount?: number; completedAt?: Date | null }
+  ): Promise<void>;
   // Generated asset methods
   createGeneratedAsset(data: InsertGeneratedAsset): Promise<GeneratedAsset>;
   getAssetsByVideo(videoId: number): Promise<GeneratedAsset[]>;
@@ -1315,6 +1331,48 @@ export class DatabaseStorage implements IStorage {
 
   async deleteEditorialClipsByVideo(videoId: number): Promise<void> {
     await db.delete(editorialClips).where(eq(editorialClips.videoId, videoId));
+  }
+
+  async updateEditorialClipRender(
+    clipId: number,
+    updates: {
+      exportPath?: string | null;
+      thumbnailPath?: string | null;
+      aspectRatio?: string | null;
+      renderStatus?: "pending" | "rendering" | "rendered" | "failed";
+      renderError?: string | null;
+    }
+  ): Promise<EditorialClip | undefined> {
+    const patch: Record<string, any> = {};
+    if (updates.exportPath !== undefined) patch.exportPath = updates.exportPath;
+    if (updates.thumbnailPath !== undefined) patch.thumbnailPath = updates.thumbnailPath;
+    if (updates.aspectRatio !== undefined) patch.aspectRatio = updates.aspectRatio;
+    if (updates.renderStatus !== undefined) patch.renderStatus = updates.renderStatus;
+    if (updates.renderError !== undefined) patch.renderError = updates.renderError;
+    if (updates.renderStatus === "rendered") patch.renderedAt = new Date();
+
+    const [result] = await db.update(editorialClips)
+      .set(patch)
+      .where(eq(editorialClips.id, clipId))
+      .returning();
+    return result;
+  }
+
+  async updateVideoEditorialStatus(
+    videoId: number,
+    status: "pending" | "transcribing" | "analyzing" | "rendering" | "ready" | "failed",
+    updates: { error?: string | null; clipCount?: number; completedAt?: Date | null } = {}
+  ): Promise<void> {
+    const patch: Record<string, any> = {
+      editorialStatus: status,
+      updatedAt: new Date(),
+    };
+    if (updates.error !== undefined) patch.editorialError = updates.error;
+    if (updates.clipCount !== undefined) patch.editorialClipCount = updates.clipCount;
+    if (status === "ready") patch.editorialCompletedAt = updates.completedAt ?? new Date();
+    else if (updates.completedAt !== undefined) patch.editorialCompletedAt = updates.completedAt;
+
+    await db.update(videoIndex).set(patch).where(eq(videoIndex.id, videoId));
   }
 
   // ── Generated Asset Methods ──
