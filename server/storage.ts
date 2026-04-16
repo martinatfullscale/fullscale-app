@@ -88,6 +88,9 @@ import {
   studioWaitlist,
   type StudioWaitlistEntry,
   type InsertStudioWaitlistEntry,
+  brandBriefs,
+  type BrandBrief,
+  type InsertBrandBrief,
 } from "@shared/schema";
 import { users, type User, type UpsertUser } from "@shared/models/auth";
 import { encrypt, decrypt } from "./encryption";
@@ -1912,6 +1915,61 @@ export class DatabaseStorage implements IStorage {
       )
       .limit(1);
     return !!entry;
+  }
+
+  // ── Brand Brief Methods ──────────────────────────────────────────────
+  // One brief per user (userId UNIQUE on the table). upsert uses
+  // onConflictDoUpdate so the client can autosave every field change
+  // without worrying about whether a row already exists.
+
+  async getBrandBriefByUserId(userId: string): Promise<BrandBrief | undefined> {
+    const [brief] = await db
+      .select()
+      .from(brandBriefs)
+      .where(eq(brandBriefs.userId, userId))
+      .limit(1);
+    return brief;
+  }
+
+  async upsertBrandBrief(
+    userId: string,
+    data: Partial<InsertBrandBrief>,
+  ): Promise<BrandBrief> {
+    // Scrub userId/status out of data — caller should never control these
+    // via the update payload; they're derived from the authenticated
+    // session and the submit endpoint respectively.
+    const { userId: _u, status: _s, ...safeData } = data as any;
+
+    const [result] = await db
+      .insert(brandBriefs)
+      .values({
+        userId,
+        status: "draft",
+        ...safeData,
+      })
+      .onConflictDoUpdate({
+        target: brandBriefs.userId,
+        set: {
+          ...safeData,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+    return result;
+  }
+
+  async submitBrandBrief(userId: string): Promise<BrandBrief | undefined> {
+    const now = new Date();
+    const [result] = await db
+      .update(brandBriefs)
+      .set({
+        status: "submitted",
+        submittedAt: now,
+        updatedAt: now,
+      })
+      .where(eq(brandBriefs.userId, userId))
+      .returning();
+    return result;
   }
 }
 

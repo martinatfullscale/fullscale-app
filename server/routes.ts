@@ -7756,6 +7756,121 @@ export async function registerRoutes(
     }
   });
 
+  // ═══════════════════════════════════════════════════════════════════
+  // Brand Brief — multi-step onboarding wizard for brand users
+  // ═══════════════════════════════════════════════════════════════════
+
+  // GET /api/brand-brief/me — returns the current user's brief (or null if
+  // none exists yet). The wizard calls this on mount to resume a draft.
+  app.get("/api/brand-brief/me", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.authUserId;
+      if (!userId || typeof userId !== "string") {
+        return res.status(401).json({ error: "Unauthorized" });
+      }
+      const brief = await storage.getBrandBriefByUserId(userId);
+      res.json({ brief: brief || null });
+    } catch (err: any) {
+      console.error("[BrandBrief] GET /me failed:", err);
+      res.status(500).json({ error: err.message || "Failed to load brief" });
+    }
+  });
+
+  // PUT /api/brand-brief/me — upsert the current user's brief. Called by
+  // the wizard on every field change (debounced). Status stays 'draft'
+  // throughout — only POST /submit flips it to 'submitted'.
+  app.put("/api/brand-brief/me", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.authUserId;
+      if (!userId || typeof userId !== "string") {
+        return res.status(401).json({ error: "Unauthorized" });
+      }
+      const data = req.body || {};
+      // Whitelist of fields the client is allowed to set via this endpoint.
+      // Anything else (id, status, timestamps) is ignored.
+      const allowedFields = [
+        "brandName", "website", "industry", "brandVoice", "logoUrl",
+        "placementTypes", "productDescription", "referenceImageUrls", "flexibility",
+        "targetGeographies", "audienceAgeMin", "audienceAgeMax", "audienceInterests", "languages",
+        "primaryObjective", "successMeasurement", "budgetRange", "timeline",
+        "contentCategories", "specificCreators", "thingsToAvoid", "handsOnLevel",
+      ] as const;
+      const safePayload: Record<string, any> = {};
+      for (const key of allowedFields) {
+        if (key in data) safePayload[key] = data[key];
+      }
+      const brief = await storage.upsertBrandBrief(userId, safePayload);
+      res.json({ brief });
+    } catch (err: any) {
+      console.error("[BrandBrief] PUT /me failed:", err);
+      res.status(500).json({ error: err.message || "Failed to save brief" });
+    }
+  });
+
+  // POST /api/brand-brief/me/submit — mark the brief as submitted and
+  // email the FullScale team (hello@gofullscale.co) the full summary.
+  // Idempotent: submitting an already-submitted brief is a no-op (still
+  // returns the brief, doesn't re-send the email).
+  app.post("/api/brand-brief/me/submit", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.authUserId;
+      if (!userId || typeof userId !== "string") {
+        return res.status(401).json({ error: "Unauthorized" });
+      }
+
+      // Ensure a brief exists first
+      const existing = await storage.getBrandBriefByUserId(userId);
+      if (!existing) {
+        return res.status(400).json({
+          error: "No brief found — save your answers before submitting.",
+        });
+      }
+      if (existing.status === "submitted") {
+        return res.json({ brief: existing, alreadySubmitted: true });
+      }
+
+      const submitted = await storage.submitBrandBrief(userId);
+      if (!submitted) {
+        return res.status(500).json({ error: "Failed to submit brief" });
+      }
+
+      // Fire-and-forget the team email. If it fails, the brief is still
+      // marked submitted so the user gets a success UX — we just log and
+      // the team can retrieve the brief from the DB if needed.
+      try {
+        const user = await storage.getUserByEmail?.(
+          // Some storage impls have getUserById; use email-based lookup via a
+          // cheap select. Fall back gracefully if no user helper is available.
+          "",
+        );
+        // Prefer a direct user lookup by id
+        const dbUser = await import("./db").then(({ db }) =>
+          import("@shared/models/auth").then(async ({ users: usersTable }) => {
+            const { eq } = await import("drizzle-orm");
+            const [u] = await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1);
+            return u;
+          }),
+        );
+        const { sendBrandBriefNotification } = await import("./lib/resend");
+        await sendBrandBriefNotification({
+          brief: submitted,
+          user: {
+            email: dbUser?.email ?? null,
+            firstName: dbUser?.firstName ?? null,
+            lastName: dbUser?.lastName ?? null,
+          },
+        });
+      } catch (emailErr: any) {
+        console.error("[BrandBrief] Email notification failed (non-fatal):", emailErr);
+      }
+
+      res.json({ brief: submitted, alreadySubmitted: false });
+    } catch (err: any) {
+      console.error("[BrandBrief] POST /submit failed:", err);
+      res.status(500).json({ error: err.message || "Failed to submit brief" });
+    }
+  });
+
   // Seed Data
   await seedDatabase();
 

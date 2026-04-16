@@ -888,3 +888,63 @@ export const insertStudioWaitlistSchema = createInsertSchema(studioWaitlist).omi
 
 export type StudioWaitlistEntry = typeof studioWaitlist.$inferSelect;
 export type InsertStudioWaitlistEntry = z.infer<typeof insertStudioWaitlistSchema>;
+
+// ═══════════════════════════════════════════════════════════════════════
+// Brand Brief — multi-step onboarding wizard submitted by brand users.
+// One brief per user (userId is UNIQUE). Status flips from 'draft' to
+// 'submitted' when the user hits Submit on the final step of the wizard.
+// Array fields use jsonb so we can store multi-select chip values
+// without a join table. Fields nullable to support draft state where
+// the user is part-way through the wizard.
+// ═══════════════════════════════════════════════════════════════════════
+export const brandBriefs = pgTable("brand_briefs", {
+  id: serial("id").primaryKey(),
+  userId: varchar("user_id").notNull().unique(),
+  status: varchar("status").notNull().default("draft"), // 'draft' | 'submitted'
+
+  // Step 1 — Your Brand at a Glance
+  brandName: varchar("brand_name"),
+  website: varchar("website"),
+  industry: varchar("industry"),
+  brandVoice: jsonb("brand_voice").$type<string[]>().default([]),
+  logoUrl: varchar("logo_url"),
+
+  // Step 2 — What You Want to Place
+  placementTypes: jsonb("placement_types").$type<string[]>().default([]),
+  productDescription: text("product_description"),
+  referenceImageUrls: jsonb("reference_image_urls").$type<string[]>().default([]),
+  flexibility: varchar("flexibility"), // 'exact' | 'substitutes' | 'flexible'
+
+  // Step 3 — Who You Want to Reach
+  targetGeographies: jsonb("target_geographies").$type<string[]>().default([]),
+  audienceAgeMin: integer("audience_age_min").default(18),
+  audienceAgeMax: integer("audience_age_max").default(45),
+  audienceInterests: jsonb("audience_interests").$type<string[]>().default([]),
+  languages: jsonb("languages").$type<string[]>().default([]),
+
+  // Step 4 — What Success Looks Like
+  primaryObjective: varchar("primary_objective"), // 'awareness' | 'launch' | 'pmf_test' | 'conversions' | 'partnerships' | 'other'
+  successMeasurement: text("success_measurement"),
+  budgetRange: varchar("budget_range"), // 'under_5k' | '5k_25k' | '25k_100k' | '100k_500k' | '500k_plus' | 'discuss'
+  timeline: varchar("timeline"), // 'one_time' | '3mo' | '6mo' | 'ongoing' | 'exploring'
+
+  // Step 5 — Working Together
+  contentCategories: jsonb("content_categories").$type<string[]>().default([]),
+  specificCreators: text("specific_creators"),
+  thingsToAvoid: text("things_to_avoid"),
+  handsOnLevel: varchar("hands_on_level"), // 'hands_off' | 'selective' | 'hands_on'
+
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+  submittedAt: timestamp("submitted_at"),
+});
+
+export const insertBrandBriefSchema = createInsertSchema(brandBriefs).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  submittedAt: true,
+});
+
+export type BrandBrief = typeof brandBriefs.$inferSelect;
+export type InsertBrandBrief = z.infer<typeof insertBrandBriefSchema>;

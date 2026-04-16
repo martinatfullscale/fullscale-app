@@ -311,6 +311,202 @@ export async function sendStudioVideoReadyEmail(
   }
 }
 
+// Send brand brief notification to the FullScale team when a brand
+// submits their onboarding wizard. The full brief is formatted as a
+// structured HTML summary that reads like a creative brief.
+export async function sendBrandBriefNotification(args: {
+  brief: {
+    brandName?: string | null;
+    website?: string | null;
+    industry?: string | null;
+    brandVoice?: string[] | null;
+    logoUrl?: string | null;
+    placementTypes?: string[] | null;
+    productDescription?: string | null;
+    referenceImageUrls?: string[] | null;
+    flexibility?: string | null;
+    targetGeographies?: string[] | null;
+    audienceAgeMin?: number | null;
+    audienceAgeMax?: number | null;
+    audienceInterests?: string[] | null;
+    languages?: string[] | null;
+    primaryObjective?: string | null;
+    successMeasurement?: string | null;
+    budgetRange?: string | null;
+    timeline?: string | null;
+    contentCategories?: string[] | null;
+    specificCreators?: string | null;
+    thingsToAvoid?: string | null;
+    handsOnLevel?: string | null;
+  };
+  user: {
+    email?: string | null;
+    firstName?: string | null;
+    lastName?: string | null;
+  };
+}) {
+  const { brief, user } = args;
+
+  const teamEmail = "hello@gofullscale.co";
+  const subjectBrand = brief.brandName || "Unnamed Brand";
+  const subjectIndustry = brief.industry || "—";
+
+  const fmtList = (v: string[] | null | undefined) =>
+    v && v.length > 0 ? v.join(", ") : "—";
+  const fmtText = (v: string | null | undefined) =>
+    v && v.trim().length > 0 ? v : "—";
+  const fmtAge = () =>
+    brief.audienceAgeMin != null && brief.audienceAgeMax != null
+      ? `${brief.audienceAgeMin}–${brief.audienceAgeMax}`
+      : "—";
+
+  // Human-friendly labels for enum-style answers
+  const flexibilityLabel: Record<string, string> = {
+    exact: "Exact products only",
+    substitutes: "Open to close substitutes",
+    flexible: "Flexible — brand visibility is the goal",
+  };
+  const objectiveLabel: Record<string, string> = {
+    awareness: "Brand awareness",
+    launch: "Product launch",
+    pmf_test: "Test product–market fit",
+    conversions: "Drive conversions / sales",
+    partnerships: "Build creator partnerships",
+    other: "Other",
+  };
+  const budgetLabel: Record<string, string> = {
+    under_5k: "Under $5K",
+    "5k_25k": "$5K–$25K",
+    "25k_100k": "$25K–$100K",
+    "100k_500k": "$100K–$500K",
+    "500k_plus": "$500K+",
+    discuss: "Prefer to discuss",
+  };
+  const timelineLabel: Record<string, string> = {
+    one_time: "One-time campaign",
+    "3mo": "3 months",
+    "6mo": "6 months",
+    ongoing: "Ongoing partnership",
+    exploring: "Just exploring",
+  };
+  const handsOnLabel: Record<string, string> = {
+    hands_off: "Hands-off (auto-match)",
+    selective: "Selective (I'll review matches)",
+    hands_on: "Hands-on (I'll pick everything)",
+  };
+
+  const row = (label: string, value: string) => `
+    <tr>
+      <td style="padding: 10px 14px; background-color: #0f172a; color: #64748b; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; width: 180px; vertical-align: top; border-bottom: 1px solid #1e293b;">${label}</td>
+      <td style="padding: 10px 14px; background-color: #0a1628; color: #e2e8f0; font-size: 14px; vertical-align: top; border-bottom: 1px solid #1e293b;">${value}</td>
+    </tr>
+  `;
+
+  const section = (title: string, rows: string) => `
+    <tr>
+      <td style="padding: 22px 40px 10px; color: #D90429; font-size: 13px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase;">${title}</td>
+    </tr>
+    <tr>
+      <td style="padding: 0 40px 10px;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-radius: 8px; overflow: hidden; border: 1px solid #1e293b;">
+          ${rows}
+        </table>
+      </td>
+    </tr>
+  `;
+
+  try {
+    const { client, fromEmail } = await getResendClient();
+
+    const html = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body style="margin: 0; padding: 0; background-color: #030712; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #030712;">
+    <tr>
+      <td align="center" style="padding: 40px 20px;">
+        <table role="presentation" width="720" cellspacing="0" cellpadding="0" style="background-color: #0a1628; border-radius: 12px; border: 1px solid #1e293b;">
+          <tr>
+            <td style="padding: 30px 40px; border-bottom: 1px solid #1e293b;">
+              <h1 style="margin: 0; font-size: 28px; font-weight: 700; letter-spacing: -0.5px;">
+                <span style="color: #ffffff;">Full</span><span style="color: #D90429;">Scale</span>
+                <span style="color: #64748b; font-size: 14px; font-weight: 400; letter-spacing: 2px; text-transform: uppercase; margin-left: 12px;">· New Brand Brief</span>
+              </h1>
+              <p style="margin: 10px 0 0; color: #94a3b8; font-size: 16px;">
+                <strong style="color: #ffffff;">${subjectBrand}</strong> · ${subjectIndustry}
+                ${user.firstName || user.lastName ? `<span style="color: #64748b;"> · submitted by ${[user.firstName, user.lastName].filter(Boolean).join(" ")} (${user.email || ""})</span>` : ""}
+              </p>
+            </td>
+          </tr>
+
+          ${section("Brand at a Glance", `
+            ${row("Brand name", fmtText(brief.brandName))}
+            ${row("Website", brief.website ? `<a href="${brief.website}" style="color:#D90429;text-decoration:none;">${brief.website}</a>` : "—")}
+            ${row("Industry", fmtText(brief.industry))}
+            ${row("Voice", fmtList(brief.brandVoice))}
+            ${row("Logo", brief.logoUrl ? `<a href="${brief.logoUrl}" style="color:#D90429;text-decoration:none;">${brief.logoUrl}</a>` : "—")}
+          `)}
+
+          ${section("What You Want to Place", `
+            ${row("Placement types", fmtList(brief.placementTypes))}
+            ${row("Product description", fmtText(brief.productDescription))}
+            ${row("Reference images", brief.referenceImageUrls && brief.referenceImageUrls.length > 0 ? brief.referenceImageUrls.map((u) => `<a href="${u}" style="color:#D90429;text-decoration:none;">${u}</a>`).join("<br>") : "—")}
+            ${row("Flexibility", flexibilityLabel[brief.flexibility || ""] || fmtText(brief.flexibility))}
+          `)}
+
+          ${section("Who You Want to Reach", `
+            ${row("Geographies", fmtList(brief.targetGeographies))}
+            ${row("Age range", fmtAge())}
+            ${row("Audience interests", fmtList(brief.audienceInterests))}
+            ${row("Languages", fmtList(brief.languages))}
+          `)}
+
+          ${section("What Success Looks Like", `
+            ${row("Primary objective", objectiveLabel[brief.primaryObjective || ""] || fmtText(brief.primaryObjective))}
+            ${row("Success measurement", fmtText(brief.successMeasurement))}
+            ${row("Budget range", budgetLabel[brief.budgetRange || ""] || fmtText(brief.budgetRange))}
+            ${row("Timeline", timelineLabel[brief.timeline || ""] || fmtText(brief.timeline))}
+          `)}
+
+          ${section("Working Together", `
+            ${row("Content categories", fmtList(brief.contentCategories))}
+            ${row("Specific creators", fmtText(brief.specificCreators))}
+            ${row("Things to avoid", fmtText(brief.thingsToAvoid))}
+            ${row("Engagement style", handsOnLabel[brief.handsOnLevel || ""] || fmtText(brief.handsOnLevel))}
+          `)}
+
+          <tr>
+            <td style="padding: 25px 40px; background-color: #030712; border-radius: 0 0 12px 12px; text-align: center; border-top: 1px solid #1e293b;">
+              <p style="margin: 0; color: #64748b; font-size: 13px;">
+                FullScale For Brands — brand onboarding brief<br/>
+                <a href="https://gofullscale.co" style="color: #D90429; text-decoration: none;">gofullscale.co</a>
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+    `;
+
+    const result = await client.emails.send({
+      from: fromEmail || "FullScale <noreply@gofullscale.co>",
+      to: teamEmail,
+      subject: `[New brand brief] ${subjectBrand} — ${subjectIndustry}`,
+      html,
+    });
+
+    console.log("[Resend] Brand brief notification sent:", result);
+    return { success: true, result };
+  } catch (error) {
+    console.error("[Resend] Failed to send brand brief notification:", error);
+    return { success: false, error: String(error) };
+  }
+}
+
 // Send notification to admin about new signup
 export async function sendAdminNotification(userData: {
   email: string;
