@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence, useInView } from "framer-motion";
-import { Zap, Shield, Video, X, Ban, DollarSign, TrendingUp, Users, Sparkles, Cpu, Eye, Timer, Layers, Mail, User, Plus, Globe, ArrowRight, Film, Wand2, Briefcase } from "lucide-react";
+import { Zap, Shield, Video, X, Ban, DollarSign, TrendingUp, Users, Sparkles, Cpu, Eye, Timer, Layers, Mail, User, Plus, Globe, ArrowRight, Film, Wand2, Briefcase, MousePointerClick } from "lucide-react";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 import logoBlackAmbition from "@assets/logo-black-ambition_1767712118620.png";
 import logoMayDavis from "@assets/logo-may-davis_1767712118621.png";
@@ -19,6 +19,17 @@ import travelFrame from "@assets/generated_images/travel_vlog_frame.png";
 import gamingFrame from "@assets/generated_images/gaming_stream_frame.png";
 import { Footer } from "@/components/Footer";
 import { Slider } from "@/components/ui/slider";
+import { SceneComparisonSlider } from "@/components/SceneComparisonSlider";
+
+// Demo Preview modal scene pairs — reuse the same clean Reality-vs-Augmented
+// pairs the /brands page uses. When the user clicks a Founding Creator in
+// the modal, the scene here switches to match that creator's category.
+import demoKitchenReality from "@assets/generated_images/brands_kitchen_reality.png";
+import demoKitchenAugmented from "@assets/generated_images/brands_kitchen_augmented.png";
+import demoDjReality from "@assets/generated_images/brands_dj_reality.png";
+import demoDjAugmented from "@assets/generated_images/brands_dj_augmented.png";
+import demoGamerReality from "@assets/generated_images/brands_gamer_reality.png";
+import demoGamerAugmented from "@assets/generated_images/brands_gamer_augmented.png";
 
 // ============================================================================
 // SURFACE ENGINE - REAL COMPUTER VISION LOGIC FOR VERTICAL VIDEO TRACKING
@@ -1086,6 +1097,64 @@ function GlassMetricCard({ icon: Icon, label, value, sublabel, color = "primary"
   );
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// DEMO PREVIEW MODAL DATA
+// Scene pairs + creator→scene mapping powering the interactive modal that
+// opens when you click "Demo Preview" in the hero. Each creator card is
+// clickable; clicking it switches the Reality-vs-Augmented slider at the
+// top of the modal to that creator's mapped scene.
+// ═══════════════════════════════════════════════════════════════════════
+
+type DemoSceneKey = "kitchen" | "dj" | "gamer";
+
+const DEMO_SCENES: Record<
+  DemoSceneKey,
+  {
+    label: string;
+    caption: string;
+    reality: string;
+    augmented: string;
+  }
+> = {
+  kitchen: {
+    label: "Kitchen / Lifestyle",
+    caption:
+      "Warm oak counter, morning window light. Our AI drops an Olipop can onto the surface with shadow direction matched to the window and the wood grain preserved under the can.",
+    reality: demoKitchenReality,
+    augmented: demoKitchenAugmented,
+  },
+  dj: {
+    label: "DJ Booth / Music",
+    caption:
+      "RGB-lit DJ controller mid-session. Our AI places an energy drink can beside the mixer with shadow tracked to the booth's purple ambient lighting.",
+    reality: demoDjReality,
+    augmented: demoDjAugmented,
+  },
+  gamer: {
+    label: "Gaming / Tech",
+    caption:
+      "Gaming desk with dual monitors and RGB underglow. Our AI lands a Monster Energy can to the left of the keyboard — can reflections pick up the RGB accent lighting naturally.",
+    reality: demoGamerReality,
+    augmented: demoGamerAugmented,
+  },
+};
+
+const DEMO_CREATORS: Array<{
+  name: string;
+  niche: string;
+  revenue: string;
+  scene: DemoSceneKey;
+}> = [
+  { name: "Alex Chen",    niche: "Tech",      revenue: "$4.2K", scene: "gamer" },
+  { name: "Maya Torres",  niche: "Lifestyle", revenue: "$3.8K", scene: "kitchen" },
+  { name: "Jordan Lee",   niche: "Fitness",   revenue: "$5.1K", scene: "kitchen" },
+  { name: "Sam Rivera",   niche: "Travel",    revenue: "$2.9K", scene: "kitchen" },
+  { name: "Taylor Kim",   niche: "Food",      revenue: "$3.4K", scene: "kitchen" },
+  { name: "Drew Morgan",  niche: "Gaming",    revenue: "$6.2K", scene: "gamer" },
+  { name: "Chris Patel",  niche: "Music",     revenue: "$2.7K", scene: "dj" },
+  { name: "Jamie Brooks", niche: "Beauty",    revenue: "$4.5K", scene: "kitchen" },
+];
+
 export default function Landing() {
   const [showBetaModal, setShowBetaModal] = useState(false);
   const [showDemoModal, setShowDemoModal] = useState(false);
@@ -1096,6 +1165,33 @@ export default function Landing() {
   const [isMobile, setIsMobile] = useState(() =>
     typeof window !== "undefined" && window.matchMedia("(max-width: 768px)").matches
   );
+
+  // Demo Preview modal interactivity
+  const [selectedDemoCreatorIdx, setSelectedDemoCreatorIdx] = useState(0);
+  const selectedDemoCreator = DEMO_CREATORS[selectedDemoCreatorIdx];
+  const selectedDemoScene = DEMO_SCENES[selectedDemoCreator.scene];
+
+  // Animated Platform Metrics inside the modal — numbers tick up slowly
+  // when the modal is open to make it feel live without any backend.
+  // Starting values match the static numbers that were hardcoded before;
+  // each value ticks up on a slow interval.
+  const [demoMetricVideosAnalyzed, setDemoMetricVideosAnalyzed] = useState(12_418);
+  const [demoMetricActiveBids, setDemoMetricActiveBids] = useState(847);
+  const [demoMetricSceneValue, setDemoMetricSceneValue] = useState(2.4); // in millions
+  useEffect(() => {
+    if (!showDemoModal) return;
+    const interval = setInterval(() => {
+      setDemoMetricVideosAnalyzed((v) => v + Math.floor(Math.random() * 3) + 1);
+      if (Math.random() < 0.4) setDemoMetricActiveBids((b) => b + (Math.random() < 0.5 ? 1 : -1));
+      if (Math.random() < 0.25) setDemoMetricSceneValue((v) => +(v + 0.01).toFixed(2));
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [showDemoModal]);
+
+  // Reset selected creator to first entry each time the modal opens
+  useEffect(() => {
+    if (showDemoModal) setSelectedDemoCreatorIdx(0);
+  }, [showDemoModal]);
 
   useEffect(() => {
     const mq = window.matchMedia("(max-width: 768px)");
@@ -1710,33 +1806,81 @@ export default function Landing() {
                 </div>
 
                 <div className="relative p-8">
+                  {/* NEW: Interactive scene preview tied to the selected creator */}
+                  <div className="mb-10">
+                    <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
+                      <div className="flex items-center gap-2">
+                        <Eye className="w-5 h-5 text-emerald-400" />
+                        <h3 className="text-lg font-bold text-white uppercase tracking-wider">Scene Preview</h3>
+                        <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 text-xs font-bold">
+                          {selectedDemoScene.label}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <MousePointerClick className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>
+                          Viewing <span className="text-white font-semibold">{selectedDemoCreator.name}</span> — click a creator below to switch
+                        </span>
+                      </div>
+                    </div>
+                    <div className="max-w-4xl mx-auto">
+                      <SceneComparisonSlider
+                        key={selectedDemoCreator.scene}
+                        realityImg={selectedDemoScene.reality}
+                        augmentedImg={selectedDemoScene.augmented}
+                        realityAlt={`${selectedDemoScene.label} before AI placement`}
+                        augmentedAlt={`${selectedDemoScene.label} after AI placement`}
+                        testIdPrefix="demo-scene"
+                      />
+                      <p className="mt-4 text-center text-muted-foreground text-sm max-w-2xl mx-auto">
+                        {selectedDemoScene.caption}
+                      </p>
+                    </div>
+                  </div>
+
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-10">
                     <div className="space-y-4">
                       <div className="flex items-center gap-2 mb-4">
                         <Users className="w-5 h-5 text-primary" />
                         <h3 className="text-lg font-bold text-white uppercase tracking-wider">Founding Creators</h3>
+                        <span className="text-xs text-muted-foreground ml-auto">Click any creator to preview their scene</span>
                       </div>
                       <div className="bg-white/5 rounded-2xl border border-white/5 p-4 max-h-64 overflow-y-auto">
                         <div className="grid grid-cols-4 gap-2">
-                          {[
-                            { name: "Alex Chen", niche: "Tech", revenue: "$4.2K" },
-                            { name: "Maya Torres", niche: "Lifestyle", revenue: "$3.8K" },
-                            { name: "Jordan Lee", niche: "Fitness", revenue: "$5.1K" },
-                            { name: "Sam Rivera", niche: "Travel", revenue: "$2.9K" },
-                            { name: "Taylor Kim", niche: "Food", revenue: "$3.4K" },
-                            { name: "Drew Morgan", niche: "Gaming", revenue: "$6.2K" },
-                            { name: "Chris Patel", niche: "Music", revenue: "$2.7K" },
-                            { name: "Jamie Brooks", niche: "Beauty", revenue: "$4.5K" },
-                          ].map((creator, i) => (
-                            <div key={i} className="bg-white/5 rounded-xl p-2 text-center hover:bg-white/10 transition-colors">
-                              <div className="w-10 h-10 mx-auto rounded-full bg-gradient-to-br from-primary/40 to-emerald-500/40 flex items-center justify-center text-white text-xs font-bold mb-1">
-                                {creator.name.split(' ').map(n => n[0]).join('')}
-                              </div>
-                              <p className="text-xs font-medium text-white truncate">{creator.name.split(' ')[0]}</p>
-                              <p className="text-xs text-muted-foreground">{creator.niche}</p>
-                              <p className="text-xs text-emerald-400 font-bold">{creator.revenue}</p>
-                            </div>
-                          ))}
+                          {DEMO_CREATORS.map((creator, i) => {
+                            const isSelected = i === selectedDemoCreatorIdx;
+                            return (
+                              <button
+                                key={creator.name}
+                                type="button"
+                                onClick={() => setSelectedDemoCreatorIdx(i)}
+                                className={`group relative rounded-xl p-2 text-center transition-all duration-200 ${
+                                  isSelected
+                                    ? "bg-emerald-500/20 ring-2 ring-emerald-400 scale-[1.03]"
+                                    : "bg-white/5 hover:bg-white/10 hover:scale-[1.02] ring-0"
+                                }`}
+                                data-testid={`creator-card-${i}`}
+                                aria-pressed={isSelected}
+                                aria-label={`Preview ${creator.name}'s scene`}
+                              >
+                                <div
+                                  className={`w-10 h-10 mx-auto rounded-full flex items-center justify-center text-white text-xs font-bold mb-1 transition-all ${
+                                    isSelected
+                                      ? "bg-gradient-to-br from-emerald-400 to-primary shadow-lg shadow-emerald-500/30"
+                                      : "bg-gradient-to-br from-primary/40 to-emerald-500/40 group-hover:from-primary/60 group-hover:to-emerald-500/60"
+                                  }`}
+                                >
+                                  {creator.name.split(" ").map((n) => n[0]).join("")}
+                                </div>
+                                <p className="text-xs font-medium text-white truncate">{creator.name.split(" ")[0]}</p>
+                                <p className="text-xs text-muted-foreground">{creator.niche}</p>
+                                <p className="text-xs text-emerald-400 font-bold">{creator.revenue}</p>
+                                {isSelected && (
+                                  <span className="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-emerald-400 border-2 border-black" />
+                                )}
+                              </button>
+                            );
+                          })}
                         </div>
                       </div>
                       <p className="text-xs text-muted-foreground text-center">
@@ -1748,16 +1892,27 @@ export default function Landing() {
                       <div className="flex items-center gap-2 mb-4">
                         <TrendingUp className="w-5 h-5 text-emerald-400" />
                         <h3 className="text-lg font-bold text-white uppercase tracking-wider">Platform Metrics</h3>
+                        <span className="flex items-center gap-1 text-[10px] text-emerald-400/80 uppercase tracking-wider ml-auto">
+                          <span className="relative flex h-1.5 w-1.5">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-400"></span>
+                          </span>
+                          Live
+                        </span>
                       </div>
                       <div className="grid grid-cols-2 gap-4">
                         <div className="bg-gradient-to-br from-primary/20 to-primary/5 rounded-2xl p-5 border border-primary/20">
                           <p className="text-xs text-primary uppercase tracking-wider mb-2 font-semibold">Total Scene Value</p>
-                          <p className="text-3xl font-bold text-white">$2.4M</p>
+                          <p className="text-3xl font-bold text-white tabular-nums" data-testid="metric-scene-value">
+                            ${demoMetricSceneValue.toFixed(2)}M
+                          </p>
                           <p className="text-xs text-muted-foreground mt-1">Identified opportunities</p>
                         </div>
                         <div className="bg-gradient-to-br from-emerald-500/20 to-emerald-500/5 rounded-2xl p-5 border border-emerald-500/20">
                           <p className="text-xs text-emerald-400 uppercase tracking-wider mb-2 font-semibold">Active Brand Bids</p>
-                          <p className="text-3xl font-bold text-white">847</p>
+                          <p className="text-3xl font-bold text-white tabular-nums" data-testid="metric-active-bids">
+                            {demoMetricActiveBids.toLocaleString()}
+                          </p>
                           <p className="text-xs text-muted-foreground mt-1">Across all creators</p>
                         </div>
                         <div className="bg-white/5 rounded-2xl p-5 border border-white/5">
@@ -1767,7 +1922,9 @@ export default function Landing() {
                         </div>
                         <div className="bg-white/5 rounded-2xl p-5 border border-white/5">
                           <p className="text-xs text-muted-foreground uppercase tracking-wider mb-2 font-semibold">Videos Analyzed</p>
-                          <p className="text-3xl font-bold text-white">12.4K</p>
+                          <p className="text-3xl font-bold text-white tabular-nums" data-testid="metric-videos-analyzed">
+                            {demoMetricVideosAnalyzed.toLocaleString()}
+                          </p>
                           <p className="text-xs text-muted-foreground mt-1">And growing daily</p>
                         </div>
                       </div>
