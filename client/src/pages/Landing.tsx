@@ -1139,19 +1139,27 @@ const DEMO_SCENES: Record<
   },
 };
 
-// Three illustrative creator examples — one per available scene. Each card
-// is clickable and switches the Scene Preview slider to that creator's
-// scene. Names / niches / earnings are illustrative, not real platform
-// data — the disclaimer at the bottom of the modal makes that explicit.
+// Eight illustrative creator examples, each clickable to switch the Scene
+// Preview slider. Names / niches / earnings are all illustrative — the
+// disclaimer at the bottom of the modal makes that explicit. Currently
+// only three scene pairs exist (kitchen / dj / gamer), so multiple
+// creators share a scene. When Replit Agent generates 5 more scene pairs
+// (tech / lifestyle / fitness / travel / beauty), each creator will map
+// to its own unique scene and this array + DEMO_SCENES will expand.
 const DEMO_CREATORS: Array<{
   name: string;
   niche: string;
   revenue: string;
   scene: DemoSceneKey;
 }> = [
-  { name: "Taylor Kim",  niche: "Food",    revenue: "$3.4K", scene: "kitchen" },
-  { name: "Chris Patel", niche: "Music",   revenue: "$2.7K", scene: "dj" },
-  { name: "Drew Morgan", niche: "Gaming",  revenue: "$6.2K", scene: "gamer" },
+  { name: "Alex Chen",    niche: "Tech",      revenue: "$4.2K", scene: "gamer"   },
+  { name: "Maya Torres",  niche: "Lifestyle", revenue: "$3.8K", scene: "kitchen" },
+  { name: "Jordan Lee",   niche: "Fitness",   revenue: "$5.1K", scene: "kitchen" },
+  { name: "Sam Rivera",   niche: "Travel",    revenue: "$2.9K", scene: "kitchen" },
+  { name: "Taylor Kim",   niche: "Food",      revenue: "$3.4K", scene: "kitchen" },
+  { name: "Drew Morgan",  niche: "Gaming",    revenue: "$6.2K", scene: "gamer"   },
+  { name: "Chris Patel",  niche: "Music",     revenue: "$2.7K", scene: "dj"      },
+  { name: "Jamie Brooks", niche: "Beauty",    revenue: "$4.5K", scene: "kitchen" },
 ];
 
 export default function Landing() {
@@ -1845,7 +1853,7 @@ export default function Landing() {
                         <span className="text-xs text-muted-foreground ml-auto">Click any to preview their scene</span>
                       </div>
                       <div className="bg-white/5 rounded-2xl border border-white/5 p-4">
-                        <div className="grid grid-cols-3 gap-3">
+                        <div className="grid grid-cols-4 gap-2">
                           {DEMO_CREATORS.map((creator, i) => {
                             const isSelected = i === selectedDemoCreatorIdx;
                             return (
@@ -1853,7 +1861,7 @@ export default function Landing() {
                                 key={creator.name}
                                 type="button"
                                 onClick={() => setSelectedDemoCreatorIdx(i)}
-                                className={`group relative rounded-xl p-3 text-center transition-all duration-200 ${
+                                className={`group relative rounded-xl p-2 text-center transition-all duration-200 ${
                                   isSelected
                                     ? "bg-emerald-500/20 ring-2 ring-emerald-400 scale-[1.03]"
                                     : "bg-white/5 hover:bg-white/10 hover:scale-[1.02] ring-0"
@@ -1863,7 +1871,7 @@ export default function Landing() {
                                 aria-label={`Preview ${creator.name}'s scene`}
                               >
                                 <div
-                                  className={`w-12 h-12 mx-auto rounded-full flex items-center justify-center text-white text-sm font-bold mb-2 transition-all ${
+                                  className={`w-10 h-10 mx-auto rounded-full flex items-center justify-center text-white text-xs font-bold mb-1 transition-all ${
                                     isSelected
                                       ? "bg-gradient-to-br from-emerald-400 to-primary shadow-lg shadow-emerald-500/30"
                                       : "bg-gradient-to-br from-primary/40 to-emerald-500/40 group-hover:from-primary/60 group-hover:to-emerald-500/60"
@@ -1871,9 +1879,9 @@ export default function Landing() {
                                 >
                                   {creator.name.split(" ").map((n) => n[0]).join("")}
                                 </div>
-                                <p className="text-sm font-medium text-white truncate">{creator.name.split(" ")[0]}</p>
+                                <p className="text-xs font-medium text-white truncate">{creator.name.split(" ")[0]}</p>
                                 <p className="text-xs text-muted-foreground">{creator.niche}</p>
-                                <p className="text-xs text-emerald-400 font-bold mt-1">{creator.revenue}<span className="text-muted-foreground font-normal">/mo*</span></p>
+                                <p className="text-xs text-emerald-400 font-bold">{creator.revenue}<span className="text-muted-foreground font-normal">/mo*</span></p>
                                 {isSelected && (
                                   <span className="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-emerald-400 border-2 border-black" />
                                 )}
@@ -1883,7 +1891,7 @@ export default function Landing() {
                         </div>
                       </div>
                       <p className="text-xs text-muted-foreground text-center">
-                        Three example scenes — more scene types coming as creator library grows.
+                        Eight example creators. More scene types are being generated — every niche will have its own unique placement scene shortly.
                       </p>
                     </div>
 
