@@ -20,15 +20,32 @@ import {
   CheckCircle2,
   XCircle,
   Gauge,
+  Upload,
+  ScanSearch,
+  BarChart3,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Footer } from "@/components/Footer";
+import { SceneComparisonSlider } from "@/components/SceneComparisonSlider";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 
 import heroVideoUrl from "@assets/brands_hero_loop.mp4";
 import heroVideoMobileUrl from "@assets/brands_hero_loop_mobile.mp4";
+
+// Scene pairs for the "See it in action" showcase.
+// These are the best-matched reality/augmented pairs from the existing
+// image inventory. When real podcast / DJ / gaming scene photos +
+// brand products are generated (user uploads product PNGs and Replit
+// composites them), swap them into these imports one-for-one — the
+// component shape and section layout don't need to change.
+import sceneCreatorDeskReality from "@assets/generated_images/clean_desk_before_product_placement.png";
+import sceneCreatorDeskAugmented from "@assets/generated_images/desk_with_ai-placed_product.png";
+import scenePodcastReality from "@assets/generated_images/creator_at_desk_with_empty_spot.png";
+import scenePodcastAugmented from "@assets/generated_images/creator_at_desk_with_liquid_death.png";
+import sceneLifestyleReality from "@assets/generated_images/modern_kitchen_with_empty_counter.png";
+import sceneLifestyleAugmented from "@assets/generated_images/kitchen_with_liquid_death_can.png";
 
 /**
  * FullScale For Brands landing page.
@@ -87,6 +104,73 @@ const CAPABILITIES = [
     title: "Ambient Branding",
     description:
       "Wall art, posters, neon signs, book spines — the subtle placements that build brand presence without breaking the creator's moment.",
+  },
+];
+
+const SHOWCASE_SCENES = [
+  {
+    label: "Creator Studio",
+    sceneNumber: "Scene 1 of 3",
+    description:
+      "An empty creator desk — laptop closed, morning light, waiting for a product to live on it. Drag the slider to see our AI drop a bluetooth speaker onto the surface with accurate shadows, contact reflections, and lighting that matches the window's directional source.",
+    reality: sceneCreatorDeskReality,
+    augmented: sceneCreatorDeskAugmented,
+    realityAlt: "Empty minimalist creator desk — closed laptop, coffee mug, plant",
+    augmentedAlt: "Same desk with a bluetooth speaker placed by FullScale AI",
+    testId: "showcase-creator-desk",
+  },
+  {
+    label: "Podcast Setup",
+    sceneNumber: "Scene 2 of 3",
+    description:
+      "A content creator at their desk, mid-session, with an empty placement spot in the foreground. Drag to reveal a real brand product (Liquid Death, in this example) tracked in perfectly — sitting at the right scale, depth of field matched to the creator in the background.",
+    reality: scenePodcastReality,
+    augmented: scenePodcastAugmented,
+    realityAlt: "Creator at desk with an empty spot in front of them",
+    augmentedAlt: "Same creator scene with a Liquid Death can placed on the desk",
+    testId: "showcase-podcast",
+  },
+  {
+    label: "Lifestyle Creator",
+    sceneNumber: "Scene 3 of 3",
+    description:
+      "A modern kitchen counter with marble veining and soft morning light. Drag to see a branded product slotted onto the counter, shadow direction matched and reflections on the marble preserved — no flat paste-ons, no re-shoots required.",
+    reality: sceneLifestyleReality,
+    augmented: sceneLifestyleAugmented,
+    realityAlt: "Empty modern marble kitchen counter with morning light",
+    augmentedAlt: "Same kitchen counter with a branded can placed on it by FullScale AI",
+    testId: "showcase-lifestyle",
+  },
+];
+
+const PLACEMENT_STEPS = [
+  {
+    icon: Upload,
+    step: "Step 1",
+    title: "You upload your product",
+    description:
+      "Drop in a clean PNG of your product — drinks, electronics, beauty, apparel, anything with a recognizable silhouette. Add brand guidelines, placement preferences, and which markets you want to reach.",
+  },
+  {
+    icon: ScanSearch,
+    step: "Step 2",
+    title: "Our AI scans creator content",
+    description:
+      "FullScale's surface engine analyzes the existing videos in your matched creators' libraries. Every flat surface, every empty frame, every moment your product could live in — identified, scored, and ranked.",
+  },
+  {
+    icon: CheckCircle2,
+    step: "Step 3",
+    title: "You approve the placements",
+    description:
+      "Review AI-generated composites before anything goes live. Approve the ones that fit your brand, reject the ones that don't. No surprises, no off-brand moments, no creator-product mismatches.",
+  },
+  {
+    icon: BarChart3,
+    step: "Step 4",
+    title: "Measure, iterate, scale",
+    description:
+      "Performance data comes in — engagement per second, view-through rate, purchase-link clicks. Double down on the creators and formats that work. Kill the rest. Scale only what's proven.",
   },
 ];
 
@@ -359,7 +443,93 @@ export default function Brands() {
         </div>
       </section>
 
-      {/* Section 3 — Capabilities */}
+      {/* Section 3 — "See it in action" — 3-scene Reality-vs-Augmented slider showcase */}
+      <section className="relative overflow-hidden py-20">
+        {/* Ambient backdrop blurs */}
+        <div className="absolute top-0 left-0 w-[500px] h-[500px] bg-emerald-500/10 rounded-full blur-[200px] pointer-events-none" />
+        <div className="absolute bottom-0 right-0 w-[500px] h-[500px] bg-emerald-400/10 rounded-full blur-[200px] pointer-events-none" />
+
+        <div className="relative max-w-5xl mx-auto px-6">
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true }}
+            transition={{ duration: 0.5 }}
+            className="text-center mb-12 max-w-3xl mx-auto"
+          >
+            <Badge
+              variant="outline"
+              className="mb-5 text-xs font-medium border-emerald-400/40 text-emerald-300 bg-emerald-400/5"
+            >
+              <Sparkles className="w-3 h-3 mr-1" />
+              See It In Action
+            </Badge>
+            <h2 className="text-3xl md:text-4xl font-bold text-foreground mb-4 tracking-tight">
+              Real products. Real creator moments.
+            </h2>
+            <p className="text-lg text-muted-foreground leading-relaxed">
+              Drag the slider on each scene to see what FullScale's AI does to a creator's existing content — no reshoots, no prop-swapping, no production day required.
+            </p>
+          </motion.div>
+
+          <div className="space-y-16">
+            {SHOWCASE_SCENES.map((scene, idx) => (
+              <motion.div
+                key={scene.testId}
+                initial={{ opacity: 0, y: 30 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                viewport={{ once: true, margin: "-100px" }}
+                transition={{ delay: idx * 0.15, duration: 0.6 }}
+                className="space-y-5"
+              >
+                <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-2">
+                  <div>
+                    <div className="text-xs uppercase tracking-widest text-emerald-300/80 font-semibold mb-1">
+                      {scene.sceneNumber}
+                    </div>
+                    <h3 className="text-xl md:text-2xl font-bold text-foreground tracking-tight">
+                      {scene.label}
+                    </h3>
+                  </div>
+                  <Badge
+                    variant="outline"
+                    className="text-xs font-medium border-white/15 text-white/70 bg-white/5 self-start sm:self-auto"
+                  >
+                    <Layers className="w-3 h-3 mr-1" />
+                    Drag to Compare
+                  </Badge>
+                </div>
+
+                <SceneComparisonSlider
+                  realityImg={scene.reality}
+                  augmentedImg={scene.augmented}
+                  realityAlt={scene.realityAlt}
+                  augmentedAlt={scene.augmentedAlt}
+                  testIdPrefix={scene.testId}
+                />
+
+                <p className="text-sm md:text-base text-muted-foreground leading-relaxed max-w-3xl">
+                  {scene.description}
+                </p>
+              </motion.div>
+            ))}
+          </div>
+
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true }}
+            transition={{ duration: 0.5 }}
+            className="text-center mt-16 max-w-2xl mx-auto"
+          >
+            <p className="text-sm text-muted-foreground/70">
+              Want to see your product in your creator's content? Upload a PNG when you sign up — we'll generate previews for you before you commit anything.
+            </p>
+          </motion.div>
+        </div>
+      </section>
+
+      {/* Section 4 — Capabilities */}
       <section className="border-y bg-card/30">
         <div className="max-w-6xl mx-auto px-6 py-20">
           <motion.div
@@ -404,7 +574,74 @@ export default function Brands() {
         </div>
       </section>
 
-      {/* Section 4 — Test-and-learn */}
+      {/* Section 5 — "How a placement happens" — 4-step process narrative */}
+      <section className="max-w-6xl mx-auto px-6 py-20">
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          whileInView={{ opacity: 1, y: 0 }}
+          viewport={{ once: true }}
+          transition={{ duration: 0.5 }}
+          className="text-center mb-14 max-w-3xl mx-auto"
+        >
+          <Badge
+            variant="outline"
+            className="mb-5 text-xs font-medium border-emerald-400/40 text-emerald-300 bg-emerald-400/5"
+          >
+            <Target className="w-3 h-3 mr-1" />
+            The Placement Flow
+          </Badge>
+          <h2 className="text-3xl md:text-4xl font-bold text-foreground mb-4 tracking-tight">
+            From product upload to live placement in four steps.
+          </h2>
+          <p className="text-lg text-muted-foreground leading-relaxed">
+            No production crew. No reshoots. No waiting months for a creator to decide.
+          </p>
+        </motion.div>
+
+        {/* Step grid with connecting line on desktop */}
+        <div className="relative">
+          {/* Desktop-only connecting line */}
+          <div className="hidden md:block absolute top-14 left-[12.5%] right-[12.5%] h-px bg-gradient-to-r from-transparent via-emerald-400/30 to-transparent pointer-events-none" />
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 relative">
+            {PLACEMENT_STEPS.map((step, idx) => {
+              const Icon = step.icon;
+              return (
+                <motion.div
+                  key={step.step}
+                  initial={{ opacity: 0, y: 20 }}
+                  whileInView={{ opacity: 1, y: 0 }}
+                  viewport={{ once: true }}
+                  transition={{ delay: idx * 0.1, duration: 0.5 }}
+                >
+                  <Card className="h-full border-emerald-400/10 hover:border-emerald-400/30 transition-all duration-300 bg-card/40 backdrop-blur-sm">
+                    <CardContent className="p-6">
+                      {/* Big numbered circle */}
+                      <div className="relative inline-flex items-center justify-center w-14 h-14 rounded-full bg-background border-2 border-emerald-400/40 mb-5">
+                        <Icon className="w-6 h-6 text-emerald-300" />
+                        <div className="absolute -top-1 -right-1 w-6 h-6 rounded-full bg-emerald-500 border-2 border-background flex items-center justify-center text-[11px] font-bold text-white">
+                          {idx + 1}
+                        </div>
+                      </div>
+                      <div className="text-xs uppercase tracking-widest text-emerald-300/80 font-semibold mb-2">
+                        {step.step}
+                      </div>
+                      <h3 className="font-semibold text-foreground mb-3 text-lg leading-tight">
+                        {step.title}
+                      </h3>
+                      <p className="text-sm text-muted-foreground leading-relaxed">
+                        {step.description}
+                      </p>
+                    </CardContent>
+                  </Card>
+                </motion.div>
+              );
+            })}
+          </div>
+        </div>
+      </section>
+
+      {/* Section 6 — Test-and-learn */}
       <section className="max-w-6xl mx-auto px-6 py-20">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
