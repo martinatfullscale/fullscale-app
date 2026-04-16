@@ -1,0 +1,147 @@
+Generate NEW scene pair images for the /brands slider showcase AND the
+homepage Demo Preview modal. Six pairs total: one regenerated (gaming),
+five brand new (tech / lifestyle / fitness / travel / beauty). Twelve
+image files in total.
+
+## Output paths (exact — the code references these)
+
+Regenerate (overwrite existing):
+  attached_assets/generated_images/brands_gamer_reality.png
+  attached_assets/generated_images/brands_gamer_augmented.png
+
+Generate new:
+  attached_assets/generated_images/brands_tech_reality.png
+  attached_assets/generated_images/brands_tech_augmented.png
+  attached_assets/generated_images/brands_lifestyle_reality.png
+  attached_assets/generated_images/brands_lifestyle_augmented.png
+  attached_assets/generated_images/brands_fitness_reality.png
+  attached_assets/generated_images/brands_fitness_augmented.png
+  attached_assets/generated_images/brands_travel_reality.png
+  attached_assets/generated_images/brands_travel_augmented.png
+  attached_assets/generated_images/brands_beauty_reality.png
+  attached_assets/generated_images/brands_beauty_augmented.png
+
+All files: 1280x720 or similar 16:9, PNG format, each under ~1.5 MB.
+
+## Critical quality bar (applies to all pairs)
+
+Match the quality of the existing Landing page slider pair:
+  attached_assets/unnamed_1769147394407.JPEG        (kitchen, no product)
+  attached_assets/Gemini_Generated_Image_rykd4crykd4crykd_1769147394406.PNG
+                                                     (same kitchen + Boxed
+                                                      Water carton, prominent,
+                                                      clean shadow)
+
+Within each pair:
+- Reality and Augmented must be PIXEL-IDENTICAL SCENES — same angle,
+  lighting, composition, every element — EXCEPT the product appearing
+  in the augmented version.
+- The product MUST be in the foreground placement spot, clearly visible,
+  well-lit. No dark corners, no background-of-the-scene placement.
+- Product logo / brand colors must be legible at normal viewing size.
+- Product casts a realistic shadow matching the scene's dominant light.
+
+## Scene-by-scene specs
+
+### 1. Gaming (regenerate — current has Monster too dark in background)
+
+Cinematic gaming desk, 16:9. Dual monitors with game UI or desktop visible,
+mechanical RGB keyboard, gaming mouse, RGB LED underglow behind monitors or
+under desk. Gaming chair blurred in background.
+
+KEY FIX: the closest foreground area of the desk is well-lit and visible.
+Not in shadow. Not out-of-focus.
+
+Augmented product: Monster Energy can in the prominent foreground placement
+spot — left of the keyboard or center-foreground. Large enough in frame
+that the Monster logo and green colors are unmistakable. Well-lit by the
+room's RGB accent lighting. Shadow follows the RGB accent light direction.
+
+### 2. Tech
+
+Cinematic content-creator tech desk, 16:9. Modern setup: sleek monitor
+displaying a product review frame, high-end mic on a boom arm, minimal
+clean desk surface with one or two subtle gadgets (wireless charger,
+earbuds case). Soft natural light or warm key light. Foreground desk
+surface empty with clear placement area.
+
+Augmented product: any modern tech product — AirPods case, a smart
+speaker, a power bank, a wireless charger with a phone on it. Place in
+the foreground with matching ambient lighting and shadow.
+
+### 3. Lifestyle
+
+Cinematic morning-routine or home-office scene, 16:9. Cozy desk or
+shelf with curated items (candle, ceramic mug, open book, potted plant).
+Warm window light, soft shadows, neutral color palette. DIFFERENT from
+the kitchen scene to avoid duplicate feel.
+
+Augmented product: a lifestyle product — scented candle, ceramic mug,
+skincare dispenser, a simple curated branded item. Placed front and
+center with matching warm shadow.
+
+### 4. Fitness
+
+Cinematic fitness / wellness content space, 16:9. Could be: a clean home
+gym corner with dumbbells blurred in background + a foreground bench or
+mat surface, OR a kitchen counter with meal prep containers in the
+background + empty foreground for placement. Bright, clean, energetic
+lighting.
+
+Augmented product: a fitness-appropriate product — protein shaker
+bottle, supplement canister, branded water bottle, electrolyte packet
+box. Placed in the clear foreground area.
+
+### 5. Travel
+
+Cinematic travel / vlogger setup, 16:9. Could be: a hotel room desk
+with a window view to a skyline, OR an airport lounge table with a
+laptop, OR a cafe table with a passport and camera nearby. Warm
+filmic color grade. Foreground surface empty for placement.
+
+Augmented product: a travel-appropriate product — a branded travel
+mug, a portable speaker, a Polaroid-style camera, a passport sleeve
+with visible branding. Placed in the foreground.
+
+### 6. Beauty
+
+Cinematic beauty / vanity scene, 16:9. A clean vanity or bathroom
+counter with soft natural light and beauty context in the blurred
+background (mirror with edge-lighting, brushes in a cup, hanging
+towel). Foreground vanity surface empty for placement. Soft, flattering
+lighting.
+
+Augmented product: a beauty product — serum bottle, lipstick, skincare
+jar, compact mirror, or cosmetics package. Placed in the clear
+foreground with correct scale for a product macro shot.
+
+## Deploy steps (same pattern — avoid divergence)
+
+1. Pull latest from origin/main first:
+     git fetch origin main
+     git reset --hard origin/main
+
+2. Save all 12 image files at the exact paths above.
+
+3. Commit ONLY those 12 files:
+     git add attached_assets/generated_images/brands_gamer_reality.png \
+             attached_assets/generated_images/brands_gamer_augmented.png \
+             attached_assets/generated_images/brands_tech_reality.png \
+             attached_assets/generated_images/brands_tech_augmented.png \
+             attached_assets/generated_images/brands_lifestyle_reality.png \
+             attached_assets/generated_images/brands_lifestyle_augmented.png \
+             attached_assets/generated_images/brands_fitness_reality.png \
+             attached_assets/generated_images/brands_fitness_augmented.png \
+             attached_assets/generated_images/brands_travel_reality.png \
+             attached_assets/generated_images/brands_travel_augmented.png \
+             attached_assets/generated_images/brands_beauty_reality.png \
+             attached_assets/generated_images/brands_beauty_augmented.png
+     git commit -m "Add 5 new scene pairs + regenerate gaming with Monster prominent"
+
+4. Pull-rebase then push:
+     git pull --rebase origin main
+     git push origin main
+
+Do NOT touch any code files. Do NOT touch the kitchen or DJ scene pair
+images (brands_kitchen_*.png, brands_dj_*.png) — those are correct and
+already on main. Only these 12 image files change.

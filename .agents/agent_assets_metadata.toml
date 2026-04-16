@@ -36,3 +36,63 @@ id = "I-wOL3N0jpGJ0v2SNHyxU"
 uri = "file://attached_assets/generated_images/brands_gamer_augmented.png"
 type = "image"
 title = "generated_image"
+
+[[generated]]
+id = "cXGFDHJEcFfQYSHTVOo7R"
+uri = "file://attached_assets/generated_images/brands_tech_reality.png"
+type = "image"
+title = "generated_image"
+
+[[generated]]
+id = "Duqvi6FJ2CBtts-cqPOee"
+uri = "file://attached_assets/generated_images/brands_tech_augmented.png"
+type = "image"
+title = "generated_image"
+
+[[generated]]
+id = "cUqYffUBU22DT-Ryq-JjZ"
+uri = "file://attached_assets/generated_images/brands_lifestyle_reality.png"
+type = "image"
+title = "generated_image"
+
+[[generated]]
+id = "IWi_tP6ajLCgUty1u9Dul"
+uri = "file://attached_assets/generated_images/brands_lifestyle_augmented.png"
+type = "image"
+title = "generated_image"
+
+[[generated]]
+id = "ts-NMN4BF7ZPSjoZCQJ56"
+uri = "file://attached_assets/generated_images/brands_fitness_reality.png"
+type = "image"
+title = "generated_image"
+
+[[generated]]
+id = "0WeOnPXqHnLId-ppNsCME"
+uri = "file://attached_assets/generated_images/brands_fitness_augmented.png"
+type = "image"
+title = "generated_image"
+
+[[generated]]
+id = "GdkVrp_1i-LF1XWC_W7ge"
+uri = "file://attached_assets/generated_images/brands_travel_reality.png"
+type = "image"
+title = "generated_image"
+
+[[generated]]
+id = "GFL8gTfuI6yX-D6qzW0Fm"
+uri = "file://attached_assets/generated_images/brands_travel_augmented.png"
+type = "image"
+title = "generated_image"
+
+[[generated]]
+id = "lPFTr_35oqGCH9Jle47t1"
+uri = "file://attached_assets/generated_images/brands_beauty_reality.png"
+type = "image"
+title = "generated_image"
+
+[[generated]]
+id = "iw0IdjLjA4DeBMoT7EkSx"
+uri = "file://attached_assets/generated_images/brands_beauty_augmented.png"
+type = "image"
+title = "generated_image"
