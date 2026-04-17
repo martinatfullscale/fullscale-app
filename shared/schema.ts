@@ -118,6 +118,12 @@ export const videoIndex = pgTable("video_index", {
   sourceUrl: text("source_url"), // Canonical URL to the original content (Facebook permalink, Instagram permalink, etc.)
   subcategory: varchar("subcategory"), // e.g., "Sports", "Tech", "Comedy" — finer classification than category
   tags: jsonb("tags"), // Flexible tag array for future filtering (e.g., ["sports", "basketball", "interview"])
+  // Editorial auto-clip pipeline state (Feature A):
+  // null | 'pending' | 'transcribing' | 'analyzing' | 'rendering' | 'ready' | 'failed'
+  editorialStatus: varchar("editorial_status", { length: 20 }),
+  editorialError: text("editorial_error"),
+  editorialClipCount: integer("editorial_clip_count").default(0),
+  editorialCompletedAt: timestamp("editorial_completed_at"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
@@ -570,6 +576,13 @@ export const editorialClips = pgTable('editorial_clips', {
   reasoning: text('reasoning'),
   rawClipStart: real('raw_clip_start'),
   rawClipEnd: real('raw_clip_end'),
+  // Auto-render fields (Editorial Auto-Clips pipeline)
+  exportPath: varchar('export_path', { length: 500 }),       // Object Storage URL for rendered MP4
+  thumbnailPath: varchar('thumbnail_path', { length: 500 }), // Object Storage URL for thumbnail JPG
+  aspectRatio: varchar('aspect_ratio', { length: 10 }),      // e.g., '9:16', '16:9', '1:1'
+  renderStatus: varchar('render_status', { length: 20 }).default('pending'), // pending, rendering, rendered, failed
+  renderError: text('render_error'),
+  renderedAt: timestamp('rendered_at'),
   createdAt: timestamp('created_at').defaultNow(),
 });
 
