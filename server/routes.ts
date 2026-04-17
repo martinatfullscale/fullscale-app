@@ -2303,6 +2303,11 @@ export async function registerRoutes(
         console.warn(`[UPLOAD/complete] Failed to set editorial pending: ${e?.message}`)
       );
 
+      // Auto-extract real thumbnail from the video
+      extractThumbnailForVideo(video.id)
+        .then(thumbUrl => { if (thumbUrl) console.log(`[UPLOAD/complete] Thumbnail extracted for ${video.id}: ${thumbUrl}`); })
+        .catch(() => {});
+
       // Fire scan + editorial pipeline (same as traditional upload)
       processVideoScan(video.id, true).then(result => {
         console.log(`[UPLOAD/complete] Auto-scan complete for ${video.id}: ${result.surfacesDetected} surfaces`);
@@ -2395,6 +2400,11 @@ export async function registerRoutes(
       storage.updateVideoEditorialStatus(video.id, "pending").catch((e: any) =>
         console.warn(`[UPLOAD] Failed to set editorial pending: ${e?.message}`)
       );
+
+      // Auto-extract real thumbnail from the video (replaces default placeholder)
+      extractThumbnailForVideo(video.id)
+        .then(thumbUrl => { if (thumbUrl) console.log(`[UPLOAD] Thumbnail extracted for ${video.id}: ${thumbUrl}`); })
+        .catch(() => {});
 
       processVideoScan(video.id, true).then(result => {
         console.log(`[UPLOAD] Auto-scan complete for ${video.id}: ${result.surfacesDetected} surfaces`);

@@ -302,7 +302,7 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
               </div>
               <div className="text-center">
                 <p className="text-white font-medium mb-1">Drag video file here or Click to Browse</p>
-                <p className="text-sm text-muted-foreground">MP4, MOV, WebM, AVI up to 500MB</p>
+                <p className="text-sm text-muted-foreground">MP4, MOV, WebM, AVI up to 4GB</p>
               </div>
             </button>
           </div>
