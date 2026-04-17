@@ -680,7 +680,6 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(videoIndex)
       .where(sql`${videoIndex.youtubeId} = ANY(${youtubeIds})`);
   }
-  }
 
   async getPendingVideos(userId: string, limit: number = 10): Promise<VideoIndex[]> {
     return await db
