@@ -503,6 +503,22 @@ export default function BrandMarketplace() {
             </div>
           </div>
           
+          {/* Product Upload CTA */}
+          <Card className="mb-4 border-emerald-500/20 bg-emerald-500/5">
+            <CardContent className="py-3 px-4 flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-white">Ready to place your product in creator videos?</p>
+                <p className="text-xs text-muted-foreground">Upload product images to preview AI-powered placements</p>
+              </div>
+              <Button asChild size="sm" className="bg-emerald-600 hover:bg-emerald-500">
+                <Link href="/brand-products">
+                  <ShoppingCart className="w-3 h-3 mr-1" />
+                  Product Catalog
+                </Link>
+              </Button>
+            </CardContent>
+          </Card>
+
           <div className="flex items-center gap-2 mb-4">
             <button
               onClick={() => setActiveTab("categories")}
