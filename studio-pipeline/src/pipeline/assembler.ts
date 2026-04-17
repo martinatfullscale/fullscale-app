@@ -1,17 +1,38 @@
 import ffmpeg from "fluent-ffmpeg";
+import { execFile } from "child_process";
+import { promisify } from "util";
 import fs from "fs";
 import path from "path";
 
+const execFileAsync = promisify(execFile);
+
+/**
+ * Scene layout — determines how avatar and slide share the frame.
+ *
+ * "avatar-full"  → Avatar fills 1280×720, slide is not shown.
+ *                   Used for title, closing / "ask" scenes.
+ * "avatar-pip"   → Slide fills 1280×720, avatar in bottom-right PIP (240×240).
+ *                   Used for text-heavy / data scenes so content is readable.
+ * "slide-only"   → Slide fills 1280×720, no avatar.
+ *                   Used for photo / product / graphic scenes, or fallback when
+ *                   avatar generation fails.
+ */
+export type SceneLayout = "avatar-full" | "avatar-pip" | "slide-only";
+
 export interface AssemblyScene {
-  imageFile?: string;  // path to JPEG (MVP — static slide)
-  videoFile?: string;  // path to MP4 (V1 — AI-generated clip or Ken Burns)
-  audioFile: string;   // path to MP3
+  imageFile?: string;    // path to JPEG (MVP — static slide)
+  videoFile?: string;    // path to MP4 (V1 — Ken Burns clip or AI-generated)
+  audioFile: string;     // path to MP3
   durationSeconds: number;
 
-  // Optional highlight overlay — drawn on top of the scene for text-heavy slides
+  // Phase 1: avatar integration
+  avatarFile?: string;   // path to talking-head MP4 (from avatarLayer)
+  layout?: SceneLayout;  // defaults to "slide-only" if omitted
+
+  // Legacy highlight fields (Phase 0 no-op'd — kept for type compat)
   keyPhrase?: string;
   highlightRegion?: {
-    x: number;       // 0-1 normalized
+    x: number;
     y: number;
     width: number;
     height: number;
@@ -77,18 +98,43 @@ export async function assembleVideo(
 }
 
 /**
- * Create a single scene clip from either a static image or a video clip + audio.
+ * Create a single scene clip, branching on layout:
+ *
+ * "avatar-full"  → Avatar MP4 scaled to 1280×720, audio from avatar track
+ * "avatar-pip"   → Slide as base + avatar in bottom-right PIP (240px wide)
+ * "slide-only"   → Existing slide-only path (Ken Burns or still image + audio)
  */
 function createSceneClip(scene: AssemblyScene, outputPath: string): Promise<void> {
-  // Verify video file exists and has content before using it
+  const layout = scene.layout || "slide-only";
+  const hasAvatar = scene.avatarFile && fs.existsSync(scene.avatarFile) && fs.statSync(scene.avatarFile).size > 1000;
+
+  // Avatar-full: avatar video fills the frame
+  if (layout === "avatar-full" && hasAvatar) {
+    return withTimeout(
+      createAvatarFullClip(scene, outputPath),
+      180000,
+      `Avatar-full clip encoding timed out`
+    );
+  }
+
+  // Avatar-PIP: slide as main, avatar overlay in corner
+  if (layout === "avatar-pip" && hasAvatar) {
+    return withTimeout(
+      createAvatarPipClip(scene, outputPath),
+      180000,
+      `Avatar-PIP clip encoding timed out`
+    );
+  }
+
+  // Slide-only (default): existing Ken Burns / still image path
   if (scene.videoFile && fs.existsSync(scene.videoFile) && fs.statSync(scene.videoFile).size > 1000) {
     return withTimeout(
       createVideoSceneClip(scene, outputPath),
-      120000, // 2 min timeout per scene
+      120000,
       `Scene clip encoding timed out`
     );
   }
-  // Fallback to image-based scene (static slide)
+
   const imageFile = scene.imageFile || scene.videoFile;
   if (!imageFile || !fs.existsSync(imageFile)) {
     console.warn(`[Assembler] Missing media file for scene — skipping`);
@@ -124,6 +170,117 @@ function withTimeout<T>(promise: Promise<T>, ms: number, msg: string): Promise<T
     new Promise<T>((_, reject) => setTimeout(() => reject(new Error(msg)), ms)),
   ]);
 }
+
+// ═══════════════════════════════════════════════════════════════
+// AVATAR-FULL: talking head fills the entire 1280×720 frame
+// ═══════════════════════════════════════════════════════════════
+
+function createAvatarFullClip(scene: AssemblyScene, outputPath: string): Promise<void> {
+  const baseFilter = "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black";
+
+  return new Promise((resolve, reject) => {
+    ffmpeg()
+      .input(scene.avatarFile!)
+      .inputOptions([])
+      .input(scene.audioFile)
+      .outputOptions([
+        "-c:v", "libx264",
+        "-c:a", "aac",
+        "-b:a", "192k",
+        "-pix_fmt", "yuv420p",
+        "-shortest",
+        "-t", String(scene.durationSeconds),
+        "-vf", baseFilter,
+      ])
+      .output(outputPath)
+      .on("end", () => resolve())
+      .on("error", (err) => reject(new Error(`FFmpeg avatar-full failed: ${err.message}`)))
+      .run();
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════
+// AVATAR-PIP: slide fills 1280×720, avatar in bottom-right corner
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Composite slide (Ken Burns or still) as the main frame with the avatar
+ * video overlaid as a picture-in-picture in the bottom-right corner.
+ *
+ * PIP size: 240×240 with 16px margin from the right and bottom edges.
+ * The avatar is scaled to fit inside that box, maintaining aspect ratio.
+ *
+ * Uses raw ffmpeg via execFile because fluent-ffmpeg's -filter_complex
+ * API can be unreliable with multi-input overlays.
+ */
+function createAvatarPipClip(scene: AssemblyScene, outputPath: string): Promise<void> {
+  // Determine slide input — prefer video (Ken Burns MP4), fall back to image
+  const slideInput = (scene.videoFile && fs.existsSync(scene.videoFile) && fs.statSync(scene.videoFile).size > 1000)
+    ? scene.videoFile
+    : scene.imageFile;
+
+  if (!slideInput || !fs.existsSync(slideInput)) {
+    // No slide available — fall back to avatar-full
+    return createAvatarFullClip(scene, outputPath);
+  }
+
+  const isSlideImage = !slideInput.endsWith(".mp4");
+  const pipW = 240;
+  const margin = 16;
+
+  // Build the filter_complex:
+  // [0] = slide (video or image), [1] = avatar, [2] = audio
+  // Scale slide to 1280×720, scale avatar to pipW wide, overlay in bottom-right
+  const filterComplex = [
+    `[0]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black[bg]`,
+    `[1]scale=${pipW}:-1[pip]`,
+    `[bg][pip]overlay=W-w-${margin}:H-h-${margin}:shortest=1[out]`,
+  ].join(";");
+
+  const args: string[] = [
+    "-nostdin", "-y",
+    // Input 0: slide
+    ...(isSlideImage ? ["-loop", "1", "-framerate", "24"] : []),
+    "-i", slideInput,
+    // Input 1: avatar
+    "-i", scene.avatarFile!,
+    // Input 2: audio
+    "-i", scene.audioFile,
+    // Filter
+    "-filter_complex", filterComplex,
+    "-map", "[out]",
+    "-map", "2:a",
+    // Encoding
+    "-c:v", "libx264",
+    "-c:a", "aac",
+    "-b:a", "192k",
+    "-pix_fmt", "yuv420p",
+    "-t", String(scene.durationSeconds),
+    "-shortest",
+    outputPath,
+  ];
+
+  return new Promise((resolve, reject) => {
+    execFile("/opt/homebrew/bin/ffmpeg", args, { timeout: 180000 }, (err) => {
+      if (err) {
+        console.error(`[Assembler] Avatar-PIP ffmpeg failed:`, err.message);
+        // Fall back to avatar-full on composite failure
+        console.warn("[Assembler] Falling back to avatar-full layout");
+        createAvatarFullClip(scene, outputPath).then(resolve).catch(reject);
+        return;
+      }
+      if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000) {
+        resolve();
+      } else {
+        reject(new Error("Avatar-PIP produced empty output"));
+      }
+    });
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════
+// BLANK CLIP (fallback)
+// ═══════════════════════════════════════════════════════════════
 
 function createBlankClip(audioFile: string, durationSeconds: number, outputPath: string): Promise<void> {
   return new Promise((resolve, reject) => {
