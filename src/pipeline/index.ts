@@ -386,7 +386,21 @@ export async function runPipelineFromScript(
       const batchPromises = batchScenes.map((scene, idx) => {
         const globalIdx = batch + idx;
         return generateVoice(scene.narration, scene.sceneNumber, audioDir).then((result) => {
-          audioPaths[globalIdx] = typeof result === "string" ? result : result.audioPath;
+          const voiceResult = typeof result === "string" ? { audioPath: result, actualDurationSec: 0, wordTimings: [] } : result;
+          audioPaths[globalIdx] = voiceResult.audioPath;
+
+          // Use the ACTUAL audio duration from ElevenLabs, not Claude's estimate.
+          // Claude estimates 6-14s per scene but ElevenLabs generates to fit the text.
+          // If we keep Claude's shorter estimate, the assembler truncates the audio
+          // mid-sentence with -t. Using the real duration ensures the voice finishes.
+          if (voiceResult.actualDurationSec > 0) {
+            const oldDur = storyScript.scenes[globalIdx].estimatedDurationSeconds;
+            storyScript.scenes[globalIdx].estimatedDurationSeconds = Math.ceil(voiceResult.actualDurationSec) + 1; // +1s buffer
+            if (storyScript.scenes[globalIdx].estimatedDurationSeconds !== oldDur) {
+              console.log(`[Pipeline] Scene ${globalIdx + 1} duration: ${oldDur}s → ${storyScript.scenes[globalIdx].estimatedDurationSeconds}s (matched to actual audio)`);
+            }
+          }
+
           completedVoice++;
           const progress = 10 + Math.round((completedVoice / storyScript.scenes.length) * 80);
           logStage("adding-voice", progress);

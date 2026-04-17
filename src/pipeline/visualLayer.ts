@@ -46,13 +46,16 @@ const IMAGE_MOTION_PROMPTS: Record<string, string> = {
  *   Pure ffmpeg, zero generative model, zero drift, zero hallucinated content.
  *   Images are rendered exactly as they appear in the source deck.
  *
- * Phase 1 (future):  Reintroduce Seedance for photo-dominant slides via
- *   scene.treatment routing. The Seedance function below is preserved
- *   as dead code for that reinstatement.
+ * Milestone 3.5: Hybrid routing by scene.treatment.
+ *   - "seedance" → Seedance 1.5 Pro image-to-video (photo/product/graphic slides)
+ *   - "kenburns" → FFmpeg Ken Burns (text-heavy slides — zero drift)
+ *   - "static_highlight" → Ken Burns with minimal zoom (data/chart slides)
  *
- * The `tier` parameter is kept for API compatibility but is currently
- * advisory — tier "mvp" still short-circuits to a raw still (useful for
- * fast test runs), but anything else renders Ken Burns.
+ * The classifier in storyExtractor.ts assigns treatment per slide based on
+ * slideCategory. Text-heavy slides stay deterministic; photo-dominant slides
+ * get cinematic AI motion. Best of both worlds.
+ *
+ * Tier "mvp" still short-circuits to raw stills for fast test runs.
  */
 export async function generateVisual(
   scene: Scene,
@@ -64,14 +67,21 @@ export async function generateVisual(
   }
 
   if (tier === "mvp") {
-    // Raw still — used for smoke tests and CI runs where we don't need motion.
     return slideImagePath;
   }
 
-  // Phase 0: EVERY slide renders as Ken Burns over the literal source PNG.
-  // No Seedance. No Kling. No generative regeneration. No text drift.
-  // This is the shippable floor. Phase 1 will selectively upgrade photo
-  // slides to Seedance via scene.treatment routing.
+  // Route by treatment — set by Claude's slide classification in storyExtractor
+  const treatment = scene.treatment || "kenburns";
+
+  if (treatment === "seedance") {
+    // Photo-dominant slides (person, product, graphic, title without text):
+    // Seedance adds cinematic motion — breathing, parallax, push-in.
+    // If Seedance fails (no FAL_KEY, API error), falls back to Ken Burns.
+    return generateSeedanceImageToVideoClip(scene, slideImagePath);
+  }
+
+  // Text-heavy slides (text, data) and static_highlight:
+  // Ken Burns over the raw PNG — zero drift, zero hallucination.
   return generateKenBurnsClip(scene, slideImagePath);
 }
 
