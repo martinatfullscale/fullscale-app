@@ -1239,7 +1239,7 @@ export async function registerRoutes(
     res.json({ success: true, message: "All videos cleared from library" });
   });
 
-  // Delete a single video by ID (and its surfaces, placements, file on disk)
+  // Move a video to trash (soft delete — recoverable)
   app.delete("/api/videos/:videoId", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const videoId = parseInt(req.params.videoId);
@@ -1248,29 +1248,90 @@ export async function registerRoutes(
       const video = await storage.getVideoById(videoId);
       if (!video) return res.status(404).json({ error: "Video not found" });
 
-      // Verify ownership (admins can delete any video)
       const userId = req.authEmail || req.authUserId;
       if (video.userId !== userId && !req.isAdmin) {
-        console.log(`[Delete Video] Ownership mismatch: video.userId="${video.userId}" vs userId="${userId}", isAdmin=${req.isAdmin}`);
         return res.status(403).json({ error: "Not authorized to delete this video" });
       }
 
-      // Delete file from disk if it's a local upload
-      if (video.filePath) {
-        const absolutePath = path.resolve(video.filePath);
-        if (fs.existsSync(absolutePath)) {
-          fs.unlinkSync(absolutePath);
-          console.log(`[Delete Video] Removed file: ${absolutePath}`);
-        }
+      const trashed = await storage.trashVideo(videoId);
+      console.log(`[Trash Video] Moved video ${videoId} to trash: ${trashed?.title}`);
+      res.json({ success: true, trashed: { id: videoId, title: trashed?.title } });
+    } catch (err: any) {
+      console.error("[Trash Video] Error:", err.message);
+      res.status(500).json({ error: "Failed to trash video" });
+    }
+  });
+
+  // Get trashed videos
+  app.get("/api/videos/trash", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.authUserId;
+      const authEmail = req.authEmail;
+      const videos = await storage.getTrashedVideos(userId, authEmail);
+      res.json({ videos, count: videos.length });
+    } catch (err: any) {
+      console.error("[Trash List] Error:", err.message);
+      res.status(500).json({ error: "Failed to get trashed videos" });
+    }
+  });
+
+  // Restore a video from trash
+  app.post("/api/videos/:videoId/restore", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+
+      const userId = req.authEmail || req.authUserId;
+      if (video.userId !== userId && !req.isAdmin) {
+        return res.status(403).json({ error: "Not authorized" });
       }
 
-      // Delete DB records (surfaces, placements, then video)
-      const deleted = await storage.deleteVideoById(videoId);
-      console.log(`[Delete Video] Deleted video ID ${videoId}: ${deleted?.title}`);
+      const restored = await storage.restoreVideo(videoId);
+      console.log(`[Restore Video] Restored video ${videoId}: ${restored?.title}`);
+      res.json({ success: true, restored: { id: videoId, title: restored?.title } });
+    } catch (err: any) {
+      console.error("[Restore Video] Error:", err.message);
+      res.status(500).json({ error: "Failed to restore video" });
+    }
+  });
+
+  // Permanently delete a video (from trash only)
+  app.delete("/api/videos/:videoId/permanent", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+      if (!video.deletedAt) return res.status(400).json({ error: "Video must be in trash first" });
+
+      const userId = req.authEmail || req.authUserId;
+      if (video.userId !== userId && !req.isAdmin) {
+        return res.status(403).json({ error: "Not authorized" });
+      }
+
+      // Delete file from storage
+      if (video.filePath) {
+        try {
+          if (video.filePath.startsWith("/storage/")) {
+            const { deleteFromStorage, objectKeyFromServeUrl } = await import("./lib/objectStorage");
+            await deleteFromStorage(objectKeyFromServeUrl(video.filePath));
+          } else {
+            const absolutePath = path.resolve(video.filePath);
+            if (fs.existsSync(absolutePath)) fs.unlinkSync(absolutePath);
+          }
+        } catch { /* non-fatal */ }
+      }
+
+      const deleted = await storage.permanentlyDeleteVideo(videoId);
+      console.log(`[Permanent Delete] Permanently deleted video ${videoId}: ${deleted?.title}`);
       res.json({ success: true, deleted: { id: videoId, title: deleted?.title } });
     } catch (err: any) {
-      console.error("[Delete Video] Error:", err.message);
-      res.status(500).json({ error: "Failed to delete video" });
+      console.error("[Permanent Delete] Error:", err.message);
+      res.status(500).json({ error: "Failed to permanently delete video" });
     }
   });
 

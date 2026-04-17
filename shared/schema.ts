@@ -118,6 +118,8 @@ export const videoIndex = pgTable("video_index", {
   sourceUrl: text("source_url"), // Canonical URL to the original content (Facebook permalink, Instagram permalink, etc.)
   subcategory: varchar("subcategory"), // e.g., "Sports", "Tech", "Comedy" — finer classification than category
   tags: jsonb("tags"), // Flexible tag array for future filtering (e.g., ["sports", "basketball", "interview"])
+  // Soft delete (trash bin)
+  deletedAt: timestamp("deleted_at"), // null = active, set = trashed
   // Editorial auto-clip pipeline state (Feature A):
   // null | 'pending' | 'transcribing' | 'analyzing' | 'rendering' | 'ready' | 'failed'
   editorialStatus: varchar("editorial_status", { length: 20 }),
