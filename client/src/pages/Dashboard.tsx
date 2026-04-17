@@ -11,6 +11,8 @@ import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { UploadModal } from "@/components/UploadModal";
+import { YouTubeVideoPicker } from "@/components/YouTubeVideoPicker";
+import { AnalyticsOverview } from "@/components/AnalyticsOverview";
 import { SceneAnalysisModal, VideoWithScenes } from "@/components/SceneAnalysisModal";
 import { useLocation } from "wouter";
 import { Switch } from "@/components/ui/switch";
@@ -177,6 +179,7 @@ export default function Dashboard() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
+  const [youtubePickerOpen, setYoutubePickerOpen] = useState(false);
   const [sceneModalOpen, setSceneModalOpen] = useState(false);
   const [selectedVideo, setSelectedVideo] = useState<VideoWithScenes | null>(null);
   const [, setLocation] = useLocation();
@@ -722,23 +725,8 @@ export default function Dashboard() {
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.2 }}
-                className="bg-white/5 rounded-xl p-8 border border-white/5 text-center"
               >
-                <BarChart3 className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
-                <h3 className="text-lg font-semibold text-white mb-2">Revenue Analytics Coming Soon</h3>
-                <p className="text-muted-foreground text-sm mb-4">
-                  Connect your YouTube channel to start tracking monetization opportunities and brand campaigns.
-                </p>
-                {!isConnected && (
-                  <Button
-                    onClick={handleConnect}
-                    variant="destructive"
-                    data-testid="button-connect-youtube-chart"
-                  >
-                    <Youtube className="w-4 h-4 mr-2" />
-                    Connect YouTube
-                  </Button>
-                )}
+                <AnalyticsOverview />
               </motion.div>
             )}
           </div>
@@ -785,15 +773,25 @@ export default function Dashboard() {
                   </Button>
                 )}
                 {(isRealMode && isConnected) && (
-                  <Button
-                    disabled
-                    data-testid="button-youtube-synced-real"
-                    variant="outline"
-                    className="w-full justify-start text-emerald-400 border-emerald-500/30"
-                  >
-                    <CheckCircle className="w-4 h-4 mr-2" />
-                    Channel Synced: {channelData?.title || youtubeStatus?.channelTitle || "YouTube"}
-                  </Button>
+                  <>
+                    <Button
+                      disabled
+                      data-testid="button-youtube-synced-real"
+                      variant="outline"
+                      className="w-full justify-start text-emerald-400 border-emerald-500/30"
+                    >
+                      <CheckCircle className="w-4 h-4 mr-2" />
+                      Channel Synced: {channelData?.title || youtubeStatus?.channelTitle || "YouTube"}
+                    </Button>
+                    <Button
+                      onClick={() => setYoutubePickerOpen(true)}
+                      variant="outline"
+                      className="w-full justify-start text-white border-red-500/30 hover:bg-red-500/10"
+                    >
+                      <Youtube className="w-4 h-4 mr-2 text-red-500" />
+                      Browse & Import Videos
+                    </Button>
+                  </>
                 )}
                 <Button 
                   onClick={() => setUploadModalOpen(true)}
@@ -1165,6 +1163,16 @@ export default function Dashboard() {
         video={selectedVideo}
         open={sceneModalOpen}
         onClose={() => setSceneModalOpen(false)}
+      />
+
+      <YouTubeVideoPicker
+        open={youtubePickerOpen}
+        onClose={() => setYoutubePickerOpen(false)}
+        onImportComplete={(count) => {
+          queryClient.invalidateQueries({ queryKey: ["/api/youtube/videos"] });
+          toast({ title: `${count} videos imported`, description: "Head to your Library to scan them." });
+          setYoutubePickerOpen(false);
+        }}
       />
     </div>
   );

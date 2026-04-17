@@ -1537,6 +1537,169 @@ export async function registerRoutes(
     }
   });
 
+  // ─── YouTube Video Picker: Browse + Import Selected ────────────
+
+  // GET /api/youtube/browse — List user's YouTube videos WITHOUT importing
+  app.get("/api/youtube/browse", isFlexibleAuthenticated, async (req: any, res) => {
+    const userId = req.authUserId;
+    const authEmail = req.authEmail;
+    const pageToken = req.query.pageToken as string | undefined;
+    const maxResults = Math.min(parseInt(req.query.maxResults as string) || 25, 50);
+
+    try {
+      let connection = await storage.getYoutubeConnection(userId);
+      if (!connection && authEmail && authEmail !== userId) {
+        connection = await storage.getYoutubeConnection(authEmail);
+      }
+      if (!connection) return res.status(400).json({ error: "YouTube not connected" });
+
+      // Refresh token if expired
+      let accessToken = connection.accessToken;
+      if (connection.expiresAt && new Date(connection.expiresAt) < new Date()) {
+        if (connection.refreshToken) {
+          const refreshed = await refreshAccessToken(connection.refreshToken);
+          if (refreshed) {
+            accessToken = refreshed.access_token;
+            await storage.upsertYoutubeConnection({
+              userId: connection.userId,
+              accessToken: refreshed.access_token,
+              refreshToken: connection.refreshToken,
+              expiresAt: new Date(Date.now() + refreshed.expires_in * 1000),
+              channelId: connection.channelId,
+              channelTitle: connection.channelTitle,
+            });
+          }
+        }
+      }
+
+      // Get uploads playlist
+      const channelData = await getYoutubeChannelInfo(accessToken);
+      const channel = channelData.items?.[0];
+      const uploadsPlaylistId = channel?.contentDetails?.relatedPlaylists?.uploads;
+      if (!uploadsPlaylistId) {
+        return res.json({ videos: [], nextPageToken: null, totalResults: 0 });
+      }
+
+      // Fetch playlist items (paginated)
+      let url = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${uploadsPlaylistId}&maxResults=${maxResults}`;
+      if (pageToken) url += `&pageToken=${pageToken}`;
+
+      const playlistRes = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+      const playlistData = await playlistRes.json();
+      const items = playlistData.items || [];
+
+      // Fetch video stats (viewCount, duration) in batch
+      const videoIds = items.map((item: any) => item.contentDetails?.videoId || item.id).filter(Boolean);
+      let statsMap: Record<string, { viewCount: number; duration: string }> = {};
+      if (videoIds.length > 0) {
+        const statsUrl = `https://www.googleapis.com/youtube/v3/videos?part=statistics,contentDetails&id=${videoIds.join(",")}`;
+        const statsRes = await fetch(statsUrl, { headers: { Authorization: `Bearer ${accessToken}` } });
+        const statsData = await statsRes.json();
+        for (const v of (statsData.items || [])) {
+          statsMap[v.id] = {
+            viewCount: parseInt(v.statistics?.viewCount || "0"),
+            duration: v.contentDetails?.duration || "",
+          };
+        }
+      }
+
+      // Check which are already imported
+      const existingVideos = await storage.getVideosByYoutubeIds(videoIds);
+      const importedIds = new Set(existingVideos.map((v: any) => v.youtubeId));
+
+      const videos = items.map((item: any) => {
+        const ytId = item.contentDetails?.videoId || item.id;
+        const stats = statsMap[ytId] || {};
+        return {
+          youtubeId: ytId,
+          title: item.snippet?.title || "Untitled",
+          description: (item.snippet?.description || "").substring(0, 200),
+          thumbnailUrl: item.snippet?.thumbnails?.medium?.url || item.snippet?.thumbnails?.default?.url || null,
+          publishedAt: item.snippet?.publishedAt || null,
+          viewCount: stats.viewCount || 0,
+          duration: stats.duration || "",
+          alreadyImported: importedIds.has(ytId),
+        };
+      });
+
+      res.json({
+        videos,
+        nextPageToken: playlistData.nextPageToken || null,
+        totalResults: playlistData.pageInfo?.totalResults || videos.length,
+        channelTitle: channel?.snippet?.title || null,
+      });
+    } catch (err: any) {
+      console.error("[YouTube Browse] Error:", err);
+      res.status(500).json({ error: "Failed to browse YouTube videos" });
+    }
+  });
+
+  // POST /api/youtube/import-selected — Import only selected YouTube videos
+  app.post("/api/youtube/import-selected", isFlexibleAuthenticated, async (req: any, res) => {
+    const userId = req.authUserId;
+    const authEmail = req.authEmail;
+    const { videoIds } = req.body || {};
+
+    if (!Array.isArray(videoIds) || videoIds.length === 0) {
+      return res.status(400).json({ error: "videoIds array required" });
+    }
+    if (videoIds.length > 200) {
+      return res.status(400).json({ error: "Maximum 200 videos per import" });
+    }
+
+    try {
+      let connection = await storage.getYoutubeConnection(userId);
+      if (!connection && authEmail && authEmail !== userId) {
+        connection = await storage.getYoutubeConnection(authEmail);
+      }
+      if (!connection) return res.status(400).json({ error: "YouTube not connected" });
+
+      let accessToken = connection.accessToken;
+      if (connection.expiresAt && new Date(connection.expiresAt) < new Date()) {
+        if (connection.refreshToken) {
+          const refreshed = await refreshAccessToken(connection.refreshToken);
+          if (refreshed) accessToken = refreshed.access_token;
+        }
+      }
+
+      // Fetch video details in batches of 50
+      let importedCount = 0;
+      let skippedCount = 0;
+
+      for (let i = 0; i < videoIds.length; i += 50) {
+        const batch = videoIds.slice(i, i + 50);
+        const url = `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id=${batch.join(",")}`;
+        const vidRes = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+        const vidData = await vidRes.json();
+
+        for (const item of (vidData.items || [])) {
+          try {
+            await storage.upsertVideoIndex({
+              userId,
+              youtubeId: item.id,
+              title: item.snippet.title,
+              description: item.snippet.description || "",
+              thumbnailUrl: getYouTubeThumbnailWithFallback(item.id),
+              platform: "youtube",
+              viewCount: parseInt(item.statistics?.viewCount || "0"),
+              status: "Pending Scan",
+              priorityScore: 50,
+            });
+            importedCount++;
+          } catch {
+            skippedCount++;
+          }
+        }
+      }
+
+      console.log(`[YouTube Import] Imported ${importedCount}, skipped ${skippedCount} for user ${userId}`);
+      res.json({ success: true, imported: importedCount, skipped: skippedCount });
+    } catch (err: any) {
+      console.error("[YouTube Import] Error:", err);
+      res.status(500).json({ error: "Failed to import selected videos" });
+    }
+  });
+
   // Get indexed videos for the user's library
   app.get("/api/video-index", isGoogleAuthenticated, async (req: any, res) => {
     const userId = req.googleUser.email;
@@ -7999,6 +8162,88 @@ export async function registerRoutes(
   });
 
   // Analytics
+
+  // GET /api/analytics/overview — Creator analytics dashboard overview
+  app.get("/api/analytics/overview", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.authUserId;
+      const authEmail = req.authEmail;
+
+      // Get all videos for this user
+      const videos = await storage.getVideoIndex(userId, authEmail);
+
+      // Get YouTube connection for channel-level stats
+      let ytConnection = await storage.getYoutubeConnection(userId);
+      if (!ytConnection && authEmail && authEmail !== userId) {
+        ytConnection = await storage.getYoutubeConnection(authEmail);
+      }
+
+      // Get social platform auth for follower counts
+      let platformStats: Record<string, any> = {};
+      if (ytConnection) {
+        platformStats.youtube = {
+          subscribers: ytConnection.subscriberCount || 0,
+          totalViews: ytConnection.totalViewCount || 0,
+          channelTitle: ytConnection.channelTitle || null,
+          connected: true,
+        };
+      }
+
+      // Facebook/Instagram follower data from allowed_users
+      if (authEmail) {
+        const user = await storage.getAllowedUser(authEmail);
+        if (user) {
+          // Social data is on the user record if populated
+          platformStats.facebook = { connected: false };
+          platformStats.instagram = { connected: false };
+        }
+      }
+
+      // Per-video metrics (top 20 by view count)
+      const videoMetrics = videos
+        .sort((a, b) => (b.viewCount || 0) - (a.viewCount || 0))
+        .slice(0, 20)
+        .map(v => ({
+          videoId: v.id,
+          title: v.title,
+          thumbnailUrl: v.thumbnailUrl,
+          platform: v.platform,
+          viewCount: v.viewCount || 0,
+          status: v.status,
+          editorialClipCount: v.editorialClipCount || 0,
+          editorialStatus: v.editorialStatus,
+          publishedAt: v.publishedAt,
+        }));
+
+      // Aggregate stats across all videos
+      const totalViews = videos.reduce((sum, v) => sum + (v.viewCount || 0), 0);
+      const totalVideos = videos.length;
+      const youtubeVideos = videos.filter(v => v.platform === "youtube").length;
+      const uploadedVideos = videos.filter(v => v.platform === "fullscale").length;
+
+      // Editorial clip summary
+      const videosWithEditorial = videos.filter(v => v.editorialClipCount && v.editorialClipCount > 0).length;
+      const totalEditorialClips = videos.reduce((sum, v) => sum + (v.editorialClipCount || 0), 0);
+
+      res.json({
+        platformStats,
+        videoMetrics,
+        summary: {
+          totalVideos,
+          totalViews,
+          youtubeVideos,
+          uploadedVideos,
+          videosWithEditorial,
+          totalEditorialClips,
+          youtubeSubscribers: ytConnection?.subscriberCount || 0,
+          youtubeTotalViews: ytConnection?.totalViewCount || 0,
+        },
+      });
+    } catch (err: any) {
+      console.error("[API] /api/analytics/overview error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to load analytics" });
+    }
+  });
 
   // GET /api/distribution/analytics/video/:videoId — Get aggregate analytics for a video
   app.get("/api/distribution/analytics/video/:videoId", isAuthenticated, async (req: any, res) => {

@@ -127,6 +127,7 @@ export interface IStorage {
   deleteVideoIndex(userId: string, userEmail?: string): Promise<void>;
   deleteVideoById(videoId: number): Promise<VideoIndex | undefined>;
   getVideoById(id: number): Promise<VideoIndex | undefined>;
+  getVideosByYoutubeIds(youtubeIds: string[]): Promise<VideoIndex[]>;
   getPendingVideos(userId: string, limit?: number): Promise<VideoIndex[]>;
   updateVideoStatus(videoId: number, status: string): Promise<void>;
   updateVideoThumbnail(videoId: number, thumbnailUrl: string): Promise<void>;
@@ -672,6 +673,13 @@ export class DatabaseStorage implements IStorage {
       .from(videoIndex)
       .where(eq(videoIndex.id, id));
     return video;
+  }
+
+  async getVideosByYoutubeIds(youtubeIds: string[]): Promise<VideoIndex[]> {
+    if (youtubeIds.length === 0) return [];
+    return db.select().from(videoIndex)
+      .where(sql`${videoIndex.youtubeId} = ANY(${youtubeIds})`);
+  }
   }
 
   async getPendingVideos(userId: string, limit: number = 10): Promise<VideoIndex[]> {
