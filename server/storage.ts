@@ -126,6 +126,10 @@ export interface IStorage {
   bulkUpsertVideoIndex(videos: InsertVideoIndex[]): Promise<void>;
   deleteVideoIndex(userId: string, userEmail?: string): Promise<void>;
   deleteVideoById(videoId: number): Promise<VideoIndex | undefined>;
+  trashVideo(videoId: number): Promise<VideoIndex | undefined>;
+  restoreVideo(videoId: number): Promise<VideoIndex | undefined>;
+  getTrashedVideos(userId: string, authEmail?: string): Promise<VideoIndex[]>;
+  permanentlyDeleteVideo(videoId: number): Promise<VideoIndex | undefined>;
   getVideoById(id: number): Promise<VideoIndex | undefined>;
   getVideosByYoutubeIds(youtubeIds: string[]): Promise<VideoIndex[]>;
   getPendingVideos(userId: string, limit?: number): Promise<VideoIndex[]>;
@@ -546,9 +550,12 @@ export class DatabaseStorage implements IStorage {
       .select()
       .from(videoIndex)
       .where(
-        matchArray.length === 1
-          ? eq(videoIndex.userId, matchArray[0])
-          : sql`${videoIndex.userId} IN (${sql.join(matchArray.map(v => sql`${v}`), sql`, `)})`
+        and(
+          matchArray.length === 1
+            ? eq(videoIndex.userId, matchArray[0])
+            : sql`${videoIndex.userId} IN (${sql.join(matchArray.map(v => sql`${v}`), sql`, `)})`,
+          sql`${videoIndex.deletedAt} IS NULL`
+        )
       )
       .orderBy(desc(videoIndex.priorityScore));
     console.log(`[Storage.getVideoIndex] Found ${videos.length} videos`);
@@ -665,6 +672,44 @@ export class DatabaseStorage implements IStorage {
     await db.delete(savedPlacements).where(eq(savedPlacements.videoId, videoId));
     const [deleted] = await db.delete(videoIndex).where(eq(videoIndex.id, videoId)).returning();
     return deleted;
+  }
+
+  async trashVideo(videoId: number): Promise<VideoIndex | undefined> {
+    const [result] = await db.update(videoIndex)
+      .set({ deletedAt: new Date(), updatedAt: new Date() })
+      .where(eq(videoIndex.id, videoId))
+      .returning();
+    return result;
+  }
+
+  async restoreVideo(videoId: number): Promise<VideoIndex | undefined> {
+    const [result] = await db.update(videoIndex)
+      .set({ deletedAt: null, updatedAt: new Date() })
+      .where(eq(videoIndex.id, videoId))
+      .returning();
+    return result;
+  }
+
+  async getTrashedVideos(userId: string, authEmail?: string): Promise<VideoIndex[]> {
+    if (authEmail && authEmail !== userId) {
+      return db.select().from(videoIndex).where(
+        and(
+          or(eq(videoIndex.userId, userId), eq(videoIndex.userId, authEmail)),
+          sql`${videoIndex.deletedAt} IS NOT NULL`
+        )
+      ).orderBy(desc(videoIndex.deletedAt));
+    }
+    return db.select().from(videoIndex).where(
+      and(
+        eq(videoIndex.userId, userId),
+        sql`${videoIndex.deletedAt} IS NOT NULL`
+      )
+    ).orderBy(desc(videoIndex.deletedAt));
+  }
+
+  async permanentlyDeleteVideo(videoId: number): Promise<VideoIndex | undefined> {
+    // Same as deleteVideoById — hard delete with cascading cleanup
+    return this.deleteVideoById(videoId);
   }
 
   async getVideoById(id: number): Promise<VideoIndex | undefined> {

@@ -1087,7 +1087,7 @@ export default function Library() {
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["videos"] });
       queryClient.invalidateQueries({ queryKey: ["/api/brand/discovery"] });
-      toast({ title: "Video deleted", description: data.deleted?.title || "Video removed from library" });
+      toast({ title: "Moved to trash", description: `${data.trashed?.title || "Video"} moved to trash. You can restore it anytime.` });
       setDeletingVideoId(null);
     },
     onError: (err: Error) => {
@@ -1712,9 +1712,9 @@ export default function Library() {
       <Dialog open={deletingVideoId !== null} onOpenChange={(open) => { if (!open) setDeletingVideoId(null); }}>
         <DialogContent className="sm:max-w-sm">
           <div className="space-y-4">
-            <h3 className="text-lg font-semibold">Delete Video</h3>
+            <h3 className="text-lg font-semibold">Move to Trash</h3>
             <p className="text-sm text-muted-foreground">
-              This will permanently delete this video, its detected surfaces, and any saved placements. The uploaded file will also be removed.
+              This video will be moved to your trash bin. You can restore it anytime or permanently delete it later.
             </p>
             <div className="flex justify-end gap-2">
               <Button variant="outline" size="sm" onClick={() => setDeletingVideoId(null)}>
@@ -1731,7 +1731,7 @@ export default function Library() {
                 {deleteVideoMutation.isPending ? (
                   <><Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> Deleting...</>
                 ) : (
-                  <><Trash2 className="w-3.5 h-3.5 mr-1.5" /> Delete</>
+                  <><Trash2 className="w-3.5 h-3.5 mr-1.5" /> Move to Trash</>
                 )}
               </Button>
             </div>
