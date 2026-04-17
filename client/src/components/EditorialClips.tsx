@@ -12,7 +12,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Sparkles, Clock, TrendingUp, Tag, ChevronDown, ChevronUp,
   Loader2, Mic, Brain, Zap, Eye, Heart, Shield, MessageSquare,
-  RefreshCw, Play, DollarSign, Filter, X, Wand2, AlertCircle,
+  RefreshCw, Play, DollarSign, Filter, X, Wand2, AlertCircle, Search,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -158,6 +158,9 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
   const [playingClip, setPlayingClip] = useState<RankedClip | null>(null);
   const [autoStatus, setAutoStatus] = useState<EditorialStatusResponse | null>(null);
   const [isRegenerating, setIsRegenerating] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchResults, setSearchResults] = useState<RankedClip[] | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Helpers ────────────────────────────────────────────────────
@@ -249,6 +252,47 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
     }
     setIsRegenerating(false);
   }, [videoId, toast]);
+
+  const handleSearch = useCallback(async () => {
+    if (!searchQuery.trim()) {
+      setSearchResults(null);
+      return;
+    }
+    setIsSearching(true);
+    try {
+      const res = await fetch(`/api/videos/${videoId}/editorial-search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ query: searchQuery.trim(), maxClips: 10 }),
+      });
+      if (!res.ok) throw new Error("Search failed");
+      const data = await res.json();
+      setSearchResults(
+        (data.clips || []).map((c: any) => ({
+          ...c,
+          duration: c.clipEnd - c.clipStart,
+          editorialScore: c.compositeScore ?? 0,
+          surfaceScore: 0,
+          brandMatchScore: 0,
+          finalScore: c.compositeScore ?? 0,
+          monetizationTier: "organic" as const,
+          surfaces: [],
+          brandMatches: [],
+          editPoints: { start: c.clipStart, end: c.clipEnd, adjustments: [] },
+          rawClipStart: c.clipStart,
+          rawClipEnd: c.clipEnd,
+        }))
+      );
+      toast({
+        title: `Found ${data.clips?.length || 0} clips`,
+        description: `Matching "${searchQuery.trim()}"`,
+      });
+    } catch (err: any) {
+      toast({ title: "Search failed", description: err.message, variant: "destructive" });
+    }
+    setIsSearching(false);
+  }, [videoId, searchQuery, toast]);
 
   // ── Load saved clips + transcript status on mount ─────────────────
   useEffect(() => {
@@ -516,6 +560,68 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
               </Button>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Search Bar — find clips by topic/keyword */}
+      {!isBrandMode && (transcriptStatus.status === "completed" || analysisComplete) && (
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+            <input
+              type="text"
+              placeholder="Search for a story or topic (e.g. 'family trauma', 'funny moments')..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+              className="w-full bg-gray-800/60 border border-gray-700/50 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/30"
+            />
+          </div>
+          <Button
+            size="sm"
+            onClick={handleSearch}
+            disabled={isSearching || !searchQuery.trim()}
+            className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-4"
+          >
+            {isSearching ? <Loader2 className="w-3 h-3 animate-spin" /> : <Search className="w-3 h-3 mr-1" />}
+            Search
+          </Button>
+          {searchResults !== null && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => { setSearchResults(null); setSearchQuery(""); }}
+              className="text-gray-400 hover:text-white text-xs"
+            >
+              Clear
+            </Button>
+          )}
+        </div>
+      )}
+
+      {/* Search Results — shown when search returns clips */}
+      {searchResults !== null && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <Search className="w-4 h-4 text-emerald-400" />
+            <span className="text-sm font-medium text-white">
+              {searchResults.length} result{searchResults.length !== 1 ? "s" : ""} for "{searchQuery}"
+            </span>
+          </div>
+          {searchResults.length === 0 && (
+            <p className="text-xs text-gray-400 pl-6">No clips found matching this query. Try different keywords.</p>
+          )}
+          {searchResults.map((clip, idx) => (
+            <EditorialClipCard
+              key={`search-${clip.clipStart}-${clip.clipEnd}`}
+              clip={clip}
+              rank={idx + 1}
+              mode={mode}
+              isExpanded={false}
+              onToggleExpand={() => {}}
+              onPlay={clip.exportPath ? () => setPlayingClip(clip) : undefined}
+            />
+          ))}
         </div>
       )}
 
