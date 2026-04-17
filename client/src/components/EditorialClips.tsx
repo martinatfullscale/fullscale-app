@@ -403,7 +403,8 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
   // Auto-pipeline banner state
   const inFlight = autoStatus && ["pending", "transcribing", "analyzing", "rendering"].includes(autoStatus.status);
   const autoFailed = autoStatus?.status === "failed";
-  const showAutoBanner = inFlight || autoFailed || (autoStatus?.status === "ready" && clips.length > 0);
+  const hasUnrenderedClips = autoStatus && autoStatus.pendingClips > 0 && autoStatus.status === "none";
+  const showAutoBanner = inFlight || autoFailed || hasUnrenderedClips || (autoStatus?.status === "ready" && clips.length > 0);
 
   const stageLabel: Record<string, string> = {
     pending: "Queued…",
@@ -430,6 +431,8 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
           className={`rounded-xl p-4 border ${
             autoFailed
               ? "bg-red-500/10 border-red-500/30"
+              : hasUnrenderedClips
+              ? "bg-yellow-500/10 border-yellow-500/30"
               : inFlight
               ? "bg-emerald-500/10 border-emerald-500/30"
               : "bg-emerald-500/5 border-emerald-500/20"
@@ -454,8 +457,10 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
                 <span className="text-sm font-semibold text-white">
                   Auto Story-Clips
                 </span>
-                <span className={`text-xs ${autoFailed ? "text-red-400" : "text-emerald-400"}`}>
-                  {stageLabel[autoStatus.status] ?? autoStatus.status}
+                <span className={`text-xs ${autoFailed ? "text-red-400" : hasUnrenderedClips ? "text-yellow-400" : "text-emerald-400"}`}>
+                  {hasUnrenderedClips
+                    ? `${autoStatus.pendingClips} clip${autoStatus.pendingClips !== 1 ? "s" : ""} awaiting render`
+                    : (stageLabel[autoStatus.status] ?? autoStatus.status)}
                 </span>
               </div>
               {inFlight && (
@@ -479,13 +484,16 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
             {!isBrandMode && !inFlight && (
               <Button
                 size="sm"
-                variant="ghost"
+                variant={hasUnrenderedClips ? "default" : "ghost"}
                 onClick={handleRegenerate}
                 disabled={isRegenerating}
-                className="text-gray-300 hover:text-white text-xs"
+                className={hasUnrenderedClips
+                  ? "bg-emerald-600 hover:bg-emerald-500 text-white text-xs"
+                  : "text-gray-300 hover:text-white text-xs"
+                }
               >
                 <RefreshCw className={`w-3 h-3 mr-1 ${isRegenerating ? "animate-spin" : ""}`} />
-                Regenerate
+                {hasUnrenderedClips ? "Render Clips" : "Regenerate"}
               </Button>
             )}
           </div>
