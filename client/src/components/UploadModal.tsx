@@ -129,7 +129,9 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
     if (!selectedFile) return;
 
     setState("uploading");
-    const useDirectUpload = selectedFile.size > 200 * 1024 * 1024; // >200MB → direct to storage
+    // Presigned URL upload requires GCS service account (not available on Replit sidecar auth).
+    // All uploads go through the traditional FormData path for now.
+    const useDirectUpload = false;
 
     if (useDirectUpload) {
       // ── Direct-to-storage presigned URL upload (bypasses server) ──
