@@ -6520,6 +6520,31 @@ export async function registerRoutes(
     }
   });
 
+  // POST /api/videos/:videoId/editorial-cancel — Cancel a running editorial pipeline
+  app.post("/api/videos/:videoId/editorial-cancel", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+
+      const inFlight = ["pending", "transcribing", "analyzing", "rendering"].includes(video.editorialStatus ?? "");
+      if (!inFlight) {
+        return res.json({ message: "No pipeline running", videoId, status: video.editorialStatus });
+      }
+
+      // Set status to failed with "Cancelled by user" — pipeline loop checks this
+      await storage.updateVideoEditorialStatus(videoId, "failed", { error: "Cancelled by user" });
+
+      console.log(`[API] Editorial pipeline cancelled by user for video ${videoId}`);
+      res.json({ message: "Pipeline cancelled", videoId, status: "failed" });
+    } catch (err: any) {
+      console.error("[API] /api/videos/:videoId/editorial-cancel error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to cancel pipeline" });
+    }
+  });
+
   // POST /api/videos/:videoId/editorial-auto — Manually trigger or force re-run
   app.post("/api/videos/:videoId/editorial-auto", isFlexibleAuthenticated, async (req: any, res) => {
     try {

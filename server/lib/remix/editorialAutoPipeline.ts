@@ -22,13 +22,13 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { spawn } from "child_process";
 import { storage } from "../../storage";
 import { runTranscriptPipeline } from "./transcriptPipeline";
 import { analyzeEditorial } from "../ai/claude-dense/editorialAnalyzer";
 import { rankClips, deduplicateClips } from "./clipRanker";
-import { stitchSegments } from "./clipStitcher";
-import type { StitchSegment } from "./clipStitcher";
 import { PLATFORM_CONFIGS } from "./clipDetector";
+import { detectFacesInClip, computeCropTrajectory, buildCropFilterExpr, getVideoSize } from "./faceTracker";
 import { downloadToTempFile, uploadFileToStorage, objectKeyFromServeUrl } from "../objectStorage";
 
 // ── Configuration ──────────────────────────────────────────────────
@@ -235,53 +235,111 @@ export async function runEditorialAutoPipeline(
     const renderOutputDir = path.join("/tmp/editorial-renders", `video-${videoId}-${Date.now()}`);
     fs.mkdirSync(renderOutputDir, { recursive: true });
 
+    // Get source video dimensions for smart reframe
+    let srcSize = { width: 1920, height: 1080 };
+    try {
+      srcSize = await getVideoSize(videoLocalPath);
+      console.log(`[EditorialAuto] Source video: ${srcSize.width}x${srcSize.height}`);
+    } catch {
+      console.warn(`[EditorialAuto] Could not determine video size, assuming 1920x1080`);
+    }
+
+    // Determine if smart reframe is needed (landscape source → portrait output)
+    const needsReframe = srcSize.width > srcSize.height && platformConfig.aspectRatio === "9:16";
+
     let renderedCount = 0;
     const renderErrors: string[] = [];
 
     for (const clip of savedClips) {
+      // ── Cancellation check: bail if user cancelled ──
+      const freshVideo = await storage.getVideoById(videoId);
+      if (freshVideo?.editorialStatus === "failed" && freshVideo?.editorialError === "Cancelled by user") {
+        console.log(`[EditorialAuto] Cancelled by user — stopping render loop`);
+        break;
+      }
+
       try {
         await storage.updateEditorialClipRender(clip.id, { renderStatus: "rendering" });
 
-        const segments: StitchSegment[] = [
-          {
-            start: clip.clipStart,
-            end: clip.clipEnd,
-            transitionIn: "cut",
-          },
-        ];
+        const outputFilename = `editorial_${clip.id}_v${videoId}_${Date.now()}.mp4`;
+        const outputPath = path.join(renderOutputDir, outputFilename);
+        const thumbPath = outputPath.replace(".mp4", "_thumb.jpg");
 
-        const stitchResult = await stitchSegments({
-          videoPath: videoLocalPath,
-          videoId,
-          segments,
-          platformConfig,
-          captionsEnabled: false, // auto-clips are raw; user can re-render with captions later
-          outputDir: renderOutputDir,
-          planId: clip.id, // re-use editorialClip ID as planId for filename uniqueness
-        });
+        if (needsReframe) {
+          // ── Smart Reframe: face-tracking punch-in zoom ──────────
+          // Detect faces → compute smooth crop trajectory → crop+scale (no black bars)
+          console.log(`[EditorialAuto]   Face tracking clip ${clip.id} (${clip.duration.toFixed(1)}s)...`);
 
-        if (!stitchResult.success || !stitchResult.outputPath) {
-          throw new Error(stitchResult.error || "Stitch returned no output");
+          const faceFrames = await Promise.race([
+            detectFacesInClip(videoLocalPath, clip.clipStart, clip.duration, 1.0),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error("Face detection timeout")), 45000)
+            ),
+          ]).catch(() => {
+            console.warn(`[EditorialAuto]   Face detection timed out — using center crop`);
+            return [] as Awaited<ReturnType<typeof detectFacesInClip>>;
+          });
+
+          const trajectory = computeCropTrajectory(
+            faceFrames,
+            srcSize.width,
+            srcSize.height,
+            platformConfig.targetWidth,
+            platformConfig.targetHeight
+          );
+
+          const cropFilter = buildCropFilterExpr(trajectory);
+          const scaleFilter = `scale=${platformConfig.targetWidth}:${platformConfig.targetHeight}`;
+          const vf = `${cropFilter},${scaleFilter}`;
+
+          console.log(`[EditorialAuto]   Rendering ${clip.duration.toFixed(1)}s with smart reframe (crop ${trajectory.cropW}x${trajectory.cropH}, ${faceFrames.length} face samples)`);
+
+          await runFFmpegRender({
+            videoPath: videoLocalPath,
+            startTime: clip.clipStart,
+            duration: clip.duration,
+            vf,
+            fps: platformConfig.targetFps,
+            outputPath,
+          });
+        } else {
+          // ── Same aspect ratio or portrait source — simple scale ──
+          const vf = `scale=${platformConfig.targetWidth}:${platformConfig.targetHeight}:force_original_aspect_ratio=decrease,pad=${platformConfig.targetWidth}:${platformConfig.targetHeight}:(ow-iw)/2:(oh-ih)/2:black`;
+
+          await runFFmpegRender({
+            videoPath: videoLocalPath,
+            startTime: clip.clipStart,
+            duration: clip.duration,
+            vf,
+            fps: platformConfig.targetFps,
+            outputPath,
+          });
         }
 
+        if (!fs.existsSync(outputPath)) {
+          throw new Error("FFmpeg produced no output file");
+        }
+
+        // Generate thumbnail at 25% into the clip
+        try {
+          await runFFmpegThumbnail(outputPath, thumbPath, clip.duration * 0.25);
+        } catch { /* non-fatal */ }
+
         // Upload rendered MP4 to Object Storage
-        const mp4Filename = path.basename(stitchResult.outputPath);
-        const mp4ObjectKey = `public/editorial-clips/video-${videoId}/${mp4Filename}`;
-        const mp4Url = await uploadFileToStorage(stitchResult.outputPath, mp4ObjectKey);
+        const mp4ObjectKey = `public/editorial-clips/video-${videoId}/${outputFilename}`;
+        const mp4Url = await uploadFileToStorage(outputPath, mp4ObjectKey);
 
         // Upload thumbnail if available
         let thumbUrl: string | null = null;
-        if (stitchResult.thumbnailPath && fs.existsSync(stitchResult.thumbnailPath)) {
-          const thumbFilename = path.basename(stitchResult.thumbnailPath);
+        if (fs.existsSync(thumbPath)) {
+          const thumbFilename = path.basename(thumbPath);
           const thumbObjectKey = `public/editorial-clips/video-${videoId}/${thumbFilename}`;
-          thumbUrl = await uploadFileToStorage(stitchResult.thumbnailPath, thumbObjectKey);
+          thumbUrl = await uploadFileToStorage(thumbPath, thumbObjectKey);
         }
 
         // Clean up local files
-        try { fs.unlinkSync(stitchResult.outputPath); } catch {}
-        if (stitchResult.thumbnailPath) {
-          try { fs.unlinkSync(stitchResult.thumbnailPath); } catch {}
-        }
+        try { fs.unlinkSync(outputPath); } catch {}
+        try { fs.unlinkSync(thumbPath); } catch {}
 
         await storage.updateEditorialClipRender(clip.id, {
           exportPath: mp4Url,
@@ -293,7 +351,7 @@ export async function runEditorialAutoPipeline(
 
         renderedCount += 1;
         console.log(
-          `[EditorialAuto]   ✓ Rendered clip ${clip.id} (${clip.duration.toFixed(1)}s) → ${mp4Url}`
+          `[EditorialAuto]   ✓ Rendered clip ${clip.id} (${clip.duration.toFixed(1)}s${needsReframe ? ", smart reframe" : ""}) → ${mp4Url}`
         );
       } catch (err: any) {
         const msg = err?.message || String(err);
@@ -449,4 +507,95 @@ async function resolveSourceVideo(
   }
   // Direct local path (dev / legacy)
   return { localPath: filePath, tempScopeDir: null };
+}
+
+// ── FFmpeg Render Helpers ──────────────────────────────────────────
+
+interface RenderOptions {
+  videoPath: string;
+  startTime: number;
+  duration: number;
+  vf: string;
+  fps: number;
+  outputPath: string;
+}
+
+const RENDER_CONFIG = {
+  CRF: 20,
+  PRESET: "medium",
+  AUDIO_BITRATE: "128k",
+  TIMEOUT_MS: 300000, // 5 minutes per clip
+};
+
+/**
+ * Render a single clip segment with the given video filters.
+ * Used for both smart-reframe (crop+scale) and simple scale+pad paths.
+ */
+async function runFFmpegRender(opts: RenderOptions): Promise<void> {
+  const { videoPath, startTime, duration, vf, fps, outputPath } = opts;
+
+  const args = [
+    "-nostdin", "-y",
+    "-ss", startTime.toString(),
+    "-i", videoPath,
+    "-t", duration.toString(),
+    "-vf", vf,
+    "-r", fps.toString(),
+    "-c:v", "libx264", "-pix_fmt", "yuv420p",
+    "-preset", RENDER_CONFIG.PRESET,
+    "-crf", RENDER_CONFIG.CRF.toString(),
+    "-c:a", "aac", "-b:a", RENDER_CONFIG.AUDIO_BITRATE,
+    "-shortest",
+    "-movflags", "+faststart",
+    outputPath,
+  ];
+
+  return new Promise((resolve, reject) => {
+    const proc = spawn("ffmpeg", args);
+    let stderr = "";
+    proc.stderr.on("data", (d) => { stderr += d.toString(); });
+
+    const timeout = setTimeout(() => {
+      proc.kill("SIGKILL");
+      reject(new Error(`FFmpeg render timed out after ${RENDER_CONFIG.TIMEOUT_MS}ms`));
+    }, RENDER_CONFIG.TIMEOUT_MS);
+
+    proc.on("close", (code) => {
+      clearTimeout(timeout);
+      if (code !== 0) {
+        reject(new Error(`FFmpeg exited with code ${code}: ${stderr.slice(-300)}`));
+      } else {
+        resolve();
+      }
+    });
+    proc.on("error", (err) => { clearTimeout(timeout); reject(err); });
+  });
+}
+
+/**
+ * Generate a thumbnail JPEG from a rendered clip at the given seek time.
+ */
+async function runFFmpegThumbnail(clipPath: string, outputPath: string, seekTime: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn("ffmpeg", [
+      "-nostdin", "-y",
+      "-ss", seekTime.toString(),
+      "-i", clipPath,
+      "-vframes", "1",
+      "-vf", "scale=360:-2",
+      outputPath,
+    ]);
+
+    const timeout = setTimeout(() => {
+      proc.kill("SIGKILL");
+      resolve(); // thumbnail is non-fatal
+    }, 15000);
+
+    proc.on("close", (code) => {
+      clearTimeout(timeout);
+      if (code !== 0) reject(new Error("Thumbnail generation failed"));
+      else resolve();
+    });
+    proc.on("error", () => { clearTimeout(timeout); resolve(); });
+  });
 }
