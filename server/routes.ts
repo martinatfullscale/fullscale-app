@@ -49,7 +49,7 @@ const uploadStorage = multer.diskStorage({
 
 const uploadMiddleware = multer({
   storage: uploadStorage,
-  limits: { fileSize: 500 * 1024 * 1024 }, // 500MB max
+  limits: { fileSize: 4 * 1024 * 1024 * 1024 }, // 4GB max
   fileFilter: (req, file, cb) => {
     const allowedTypes = [".mp4", ".mov", ".webm", ".avi"];
     const ext = path.extname(file.originalname).toLowerCase();
@@ -2056,7 +2056,127 @@ export async function registerRoutes(
     }
   });
 
-  // Direct video upload endpoint - bypass YouTube download
+  // ─── Direct-to-Storage Upload (presigned URL — no server bottleneck) ────
+
+  // Step 1: Get a presigned URL for the client to upload directly to Object Storage
+  app.post("/api/upload/presign", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const { filename, contentType, fileSize } = req.body || {};
+
+      if (!filename || !contentType) {
+        return res.status(400).json({ error: "filename and contentType required" });
+      }
+
+      // Validate file type
+      const ext = path.extname(filename).toLowerCase();
+      const allowedTypes = [".mp4", ".mov", ".webm", ".avi"];
+      if (!allowedTypes.includes(ext)) {
+        return res.status(400).json({ error: `Unsupported file type: ${ext}. Allowed: ${allowedTypes.join(", ")}` });
+      }
+
+      // Generate unique object key
+      const uniqueName = `video-${Date.now()}-${Math.random().toString(36).substring(2, 9)}${ext}`;
+      const objectKey = `public/videos/${uniqueName}`;
+
+      const { getSignedUploadUrl } = await import("./lib/objectStorage");
+      const result = await getSignedUploadUrl(objectKey, contentType, 60); // 60 min expiry
+
+      console.log(`[UPLOAD/presign] Generated signed URL for ${filename} (${(fileSize / 1024 / 1024).toFixed(1)}MB) → ${objectKey}`);
+
+      res.json({
+        signedUrl: result.signedUrl,
+        objectKey: result.objectKey,
+        serveUrl: result.serveUrl,
+        expiresInMinutes: 60,
+      });
+    } catch (err: any) {
+      console.error("[UPLOAD/presign] Error:", err);
+      res.status(500).json({ error: err.message || "Failed to generate upload URL" });
+    }
+  });
+
+  // Step 2: Client notifies server that upload to Object Storage is complete
+  app.post("/api/upload/complete", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.authEmail || req.googleUser?.email;
+      const { objectKey, serveUrl, title, category, subcategory, originalFilename } = req.body || {};
+
+      if (!objectKey || !serveUrl) {
+        return res.status(400).json({ error: "objectKey and serveUrl required" });
+      }
+
+      // Verify the file exists in Object Storage
+      const { fileExistsInStorage } = await import("./lib/objectStorage");
+      const exists = await fileExistsInStorage(objectKey);
+      if (!exists) {
+        return res.status(400).json({ error: "File not found in Object Storage. Upload may have failed." });
+      }
+
+      const uploadVideoId = `upload-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+      const videoTitle = title || originalFilename?.replace(/\.[^/.]+$/, "") || "Untitled Video";
+
+      const video = await storage.insertVideo({
+        userId,
+        youtubeId: uploadVideoId,
+        title: videoTitle,
+        description: `Uploaded video: ${originalFilename || "direct upload"}`,
+        thumbnailUrl: "/storage/uploads/default-thumbnail.png",
+        viewCount: 0,
+        publishedAt: new Date(),
+        status: "Pending Scan",
+        priorityScore: 80,
+        platform: "fullscale",
+        category: category || "Other",
+        subcategory: subcategory || null,
+        isEvergreen: true,
+        duration: "0:00",
+        filePath: serveUrl,
+      });
+
+      console.log(`[UPLOAD/complete] Video registered: ID ${video.id}, title "${videoTitle}", path: ${serveUrl}`);
+
+      // Mark editorial pipeline as pending
+      storage.updateVideoEditorialStatus(video.id, "pending").catch((e: any) =>
+        console.warn(`[UPLOAD/complete] Failed to set editorial pending: ${e?.message}`)
+      );
+
+      // Fire scan + editorial pipeline (same as traditional upload)
+      processVideoScan(video.id, true).then(result => {
+        console.log(`[UPLOAD/complete] Auto-scan complete for ${video.id}: ${result.surfacesDetected} surfaces`);
+
+        const pipelineUserId = 0;
+        runEditorialAutoPipeline(video.id, pipelineUserId)
+          .then(r => {
+            if (r.success) {
+              console.log(`[UPLOAD/complete] Editorial auto-pipeline: ${r.clipsRendered}/${r.clipsGenerated} rendered`);
+            } else {
+              console.warn(`[UPLOAD/complete] Editorial auto-pipeline failed: ${r.error}`);
+            }
+          })
+          .catch(err => console.error(`[UPLOAD/complete] Editorial error:`, err?.message));
+      }).catch(err => {
+        console.error(`[UPLOAD/complete] Auto-scan failed for ${video.id}:`, err.message);
+      });
+
+      res.json({
+        success: true,
+        video: {
+          id: video.id,
+          title: video.title,
+          youtubeId: uploadVideoId,
+          videoUrl: serveUrl,
+          status: video.status,
+          platform: "fullscale",
+        },
+        message: "Video registered. Scan + editorial pipeline started.",
+      });
+    } catch (err: any) {
+      console.error("[UPLOAD/complete] Error:", err);
+      res.status(500).json({ error: err.message || "Failed to register video" });
+    }
+  });
+
+  // Direct video upload endpoint (traditional — file passes through server)
   app.post("/api/upload", isFlexibleAuthenticated, uploadMiddleware.single("video"), async (req: any, res) => {
 
     console.log(`[UPLOAD] User: ${req.authEmail || req.googleUser?.email}`);

@@ -113,3 +113,31 @@ export function getStorageStream(objectKey: string) {
   const file = bucket.file(objectKey);
   return { file, stream: file.createReadStream() };
 }
+
+/**
+ * Generate a signed URL for direct client-side upload to Object Storage.
+ * The client PUTs the file directly — the server never touches it.
+ *
+ * Returns { signedUrl, objectKey, serveUrl }.
+ */
+export async function getSignedUploadUrl(
+  objectKey: string,
+  contentType: string,
+  expiresInMinutes: number = 30
+): Promise<{ signedUrl: string; objectKey: string; serveUrl: string }> {
+  const bucket = getBucket();
+  const file = bucket.file(objectKey);
+
+  const [signedUrl] = await file.getSignedUrl({
+    version: "v4",
+    action: "write",
+    expires: Date.now() + expiresInMinutes * 60 * 1000,
+    contentType,
+  });
+
+  return {
+    signedUrl,
+    objectKey,
+    serveUrl: storageServeUrl(objectKey),
+  };
+}

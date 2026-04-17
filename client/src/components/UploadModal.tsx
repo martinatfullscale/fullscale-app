@@ -104,8 +104,8 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
       return;
     }
 
-    if (file.size > 500 * 1024 * 1024) {
-      setErrorMessage("File size must be under 500MB");
+    if (file.size > 4 * 1024 * 1024 * 1024) {
+      setErrorMessage("File size must be under 4GB");
       setState("error");
       return;
     }
@@ -129,64 +129,140 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
     if (!selectedFile) return;
 
     setState("uploading");
-    setProcessingLogs(["> Initializing secure upload stream..."]);
+    const useDirectUpload = selectedFile.size > 200 * 1024 * 1024; // >200MB → direct to storage
 
-    const formData = new FormData();
-    formData.append("video", selectedFile);
-    formData.append("title", title || selectedFile.name);
-    formData.append("category", category);
-    if (subcategory) formData.append("subcategory", subcategory);
-
-    try {
-      const xhr = new XMLHttpRequest();
-      
-      xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable) {
-          const percent = Math.round((e.loaded / e.total) * 100);
-          setUploadProgress(percent);
-          if (percent === 100) {
-            setProcessingLogs(prev => [...prev, "> Upload complete. Processing..."]);
-            setState("processing");
-          }
+    if (useDirectUpload) {
+      // ── Direct-to-storage presigned URL upload (bypasses server) ──
+      setProcessingLogs(["> Large file detected — uploading directly to storage..."]);
+      try {
+        // Step 1: Get presigned URL
+        setProcessingLogs(prev => [...prev, "> Requesting secure upload link..."]);
+        const presignRes = await fetch("/api/upload/presign", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            filename: selectedFile.name,
+            contentType: selectedFile.type || "video/mp4",
+            fileSize: selectedFile.size,
+          }),
+        });
+        if (!presignRes.ok) {
+          const err = await presignRes.json().catch(() => ({}));
+          throw new Error(err.error || "Failed to get upload URL");
         }
-      };
+        const { signedUrl, objectKey, serveUrl } = await presignRes.json();
 
-      xhr.onload = () => {
-        if (xhr.status === 200) {
-          const response = JSON.parse(xhr.responseText);
-          setProcessingLogs(prev => [
-            ...prev,
-            `> Video saved: ${response.video.title}`,
-            `> Video ID: ${response.video.id}`,
-            "> Ready for AI scanning!",
-            "> SUCCESS: Video added to library."
-          ]);
-          setState("complete");
-          
-          queryClient.invalidateQueries({ queryKey: ["videos"] });
-          
-          setTimeout(() => {
-            onUploadComplete?.();
-            onClose();
-          }, 1500);
-        } else {
-          const error = JSON.parse(xhr.responseText);
-          setErrorMessage(error.error || "Upload failed");
-          setState("error");
+        // Step 2: Upload directly to Object Storage with progress
+        setProcessingLogs(prev => [...prev, "> Uploading to cloud storage..."]);
+        await new Promise<void>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+              const percent = Math.round((e.loaded / e.total) * 100);
+              setUploadProgress(percent);
+            }
+          };
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) resolve();
+            else reject(new Error(`Storage upload failed: ${xhr.status}`));
+          };
+          xhr.onerror = () => reject(new Error("Network error during storage upload"));
+          xhr.open("PUT", signedUrl);
+          xhr.setRequestHeader("Content-Type", selectedFile.type || "video/mp4");
+          xhr.send(selectedFile);
+        });
+
+        // Step 3: Notify server that upload is complete
+        setProcessingLogs(prev => [...prev, "> Upload complete. Registering video..."]);
+        setState("processing");
+        const completeRes = await fetch("/api/upload/complete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            objectKey,
+            serveUrl,
+            title: title || selectedFile.name.replace(/\.[^/.]+$/, ""),
+            category,
+            subcategory: subcategory || undefined,
+            originalFilename: selectedFile.name,
+          }),
+        });
+        if (!completeRes.ok) {
+          const err = await completeRes.json().catch(() => ({}));
+          throw new Error(err.error || "Failed to register video");
         }
-      };
-
-      xhr.onerror = () => {
-        setErrorMessage("Network error during upload");
+        const response = await completeRes.json();
+        setProcessingLogs(prev => [
+          ...prev,
+          `> Video saved: ${response.video.title}`,
+          `> Video ID: ${response.video.id}`,
+          "> Scan + editorial clip pipeline started!",
+          "> SUCCESS: Video added to library.",
+        ]);
+        setState("complete");
+        queryClient.invalidateQueries({ queryKey: ["videos"] });
+        setTimeout(() => { onUploadComplete?.(); onClose(); }, 1500);
+      } catch (error: any) {
+        setErrorMessage(error.message || "Direct upload failed");
         setState("error");
-      };
+      }
+    } else {
+      // ── Traditional FormData upload (small files, passes through server) ──
+      setProcessingLogs(["> Initializing secure upload stream..."]);
+      const formData = new FormData();
+      formData.append("video", selectedFile);
+      formData.append("title", title || selectedFile.name);
+      formData.append("category", category);
+      if (subcategory) formData.append("subcategory", subcategory);
 
-      xhr.open("POST", "/api/upload");
-      xhr.withCredentials = true;
-      xhr.send(formData);
-    } catch (error: any) {
-      setErrorMessage(error.message || "Upload failed");
-      setState("error");
+      try {
+        const xhr = new XMLHttpRequest();
+
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            const percent = Math.round((e.loaded / e.total) * 100);
+            setUploadProgress(percent);
+            if (percent === 100) {
+              setProcessingLogs(prev => [...prev, "> Upload complete. Processing..."]);
+              setState("processing");
+            }
+          }
+        };
+
+        xhr.onload = () => {
+          if (xhr.status === 200) {
+            const response = JSON.parse(xhr.responseText);
+            setProcessingLogs(prev => [
+              ...prev,
+              `> Video saved: ${response.video.title}`,
+              `> Video ID: ${response.video.id}`,
+              "> Ready for AI scanning!",
+              "> SUCCESS: Video added to library."
+            ]);
+            setState("complete");
+            queryClient.invalidateQueries({ queryKey: ["videos"] });
+            setTimeout(() => { onUploadComplete?.(); onClose(); }, 1500);
+          } else {
+            const error = JSON.parse(xhr.responseText);
+            setErrorMessage(error.error || "Upload failed");
+            setState("error");
+          }
+        };
+
+        xhr.onerror = () => {
+          setErrorMessage("Network error during upload");
+          setState("error");
+        };
+
+        xhr.open("POST", "/api/upload");
+        xhr.withCredentials = true;
+        xhr.send(formData);
+      } catch (error: any) {
+        setErrorMessage(error.message || "Upload failed");
+        setState("error");
+      }
     }
   };
 
