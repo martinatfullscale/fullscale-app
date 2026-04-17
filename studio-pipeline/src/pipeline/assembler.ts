@@ -58,8 +58,9 @@ export async function assembleVideo(
   const outputDir = path.dirname(outputPath);
   fs.mkdirSync(outputDir, { recursive: true });
 
-  // Step 1: Create individual scene clips
+  // Step 1: Create individual scene clips with fade transitions
   const sceneClips: string[] = [];
+  const FADE_DURATION = 0.4; // seconds — brief dip-to-black between scenes
 
   for (let i = 0; i < scenes.length; i++) {
     const scene = scenes[i];
@@ -69,6 +70,14 @@ export async function assembleVideo(
     console.log(`[Assembler] Encoding scene ${i + 1}/${scenes.length} (${scene.durationSeconds}s)...`);
 
     await createSceneClip(scene, clipPath);
+
+    // Add fade-in / fade-out to each clip for smooth transitions.
+    // First clip gets fade-in only, last gets fade-out only, middle gets both.
+    const fadeIn = i > 0;
+    const fadeOut = i < scenes.length - 1;
+    if (fadeIn || fadeOut) {
+      await addFadeTransitions(clipPath, scene.durationSeconds, FADE_DURATION, fadeIn, fadeOut);
+    }
   }
 
   // Step 2: Concatenate all scene clips
@@ -370,6 +379,64 @@ function createVideoSceneClip(
       .on("error", (err) => reject(new Error(`FFmpeg video scene encode failed: ${err.message}`)))
       .run();
   });
+}
+
+// ═══════════════════════════════════════════════════════════════
+// FADE TRANSITIONS — smooth dip-to-black between scenes
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Add fade-in and/or fade-out to an existing clip.
+ * Re-encodes the clip (fast for short scenes — adds ~2-3s per clip).
+ */
+async function addFadeTransitions(
+  clipPath: string,
+  durationSeconds: number,
+  fadeDuration: number,
+  fadeIn: boolean,
+  fadeOut: boolean
+): Promise<void> {
+  const tempPath = clipPath.replace(".mp4", "_prefade.mp4");
+  fs.renameSync(clipPath, tempPath);
+
+  const vFilters: string[] = [];
+  const aFilters: string[] = [];
+
+  if (fadeIn) {
+    vFilters.push(`fade=t=in:st=0:d=${fadeDuration}`);
+    aFilters.push(`afade=t=in:st=0:d=${fadeDuration}`);
+  }
+  if (fadeOut) {
+    const outStart = Math.max(0, durationSeconds - fadeDuration);
+    vFilters.push(`fade=t=out:st=${outStart}:d=${fadeDuration}`);
+    aFilters.push(`afade=t=out:st=${outStart}:d=${fadeDuration}`);
+  }
+
+  const args: string[] = [
+    "-nostdin", "-y",
+    "-i", tempPath,
+    "-vf", vFilters.join(","),
+    "-af", aFilters.join(","),
+    "-c:v", "libx264",
+    "-c:a", "aac",
+    "-pix_fmt", "yuv420p",
+    "-preset", "fast",
+    clipPath,
+  ];
+
+  try {
+    await execFileAsync("/opt/homebrew/bin/ffmpeg", args, { timeout: 30000 });
+  } catch (err: any) {
+    // If fade fails, restore the original clip (hard cut is better than no clip)
+    console.warn(`[Assembler] Fade failed, keeping hard cut: ${err.message}`);
+    if (fs.existsSync(tempPath)) {
+      fs.renameSync(tempPath, clipPath);
+    }
+    return;
+  }
+
+  // Clean up temp
+  try { fs.unlinkSync(tempPath); } catch {}
 }
 
 /**
