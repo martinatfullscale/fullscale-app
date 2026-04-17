@@ -6520,6 +6520,70 @@ export async function registerRoutes(
     }
   });
 
+  // POST /api/videos/:videoId/editorial-search — Search for clips matching a topic/keyword
+  app.post("/api/videos/:videoId/editorial-search", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+      const { query, maxClips = 10 } = req.body || {};
+
+      if (!query || typeof query !== "string" || query.trim().length === 0) {
+        return res.status(400).json({ error: "Query is required" });
+      }
+
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+
+      // Require transcript
+      const transcript = await storage.getVideoTranscript(videoId);
+      if (!transcript || transcript.status !== "completed" || !transcript.segments) {
+        return res.status(400).json({
+          error: "Transcript required. Run editorial auto-pipeline first.",
+        });
+      }
+
+      const surfaces = await storage.getDetectedSurfaces(videoId);
+      const brandProducts = await storage.getAllBrandProducts();
+
+      console.log(`[API] Editorial search for video ${videoId}: query="${query}", maxClips=${maxClips}`);
+
+      // Run editorial analysis with search query
+      const editorialMoments = await analyzeEditorial({
+        videoId,
+        transcript: transcript.segments as any,
+        surfaces: surfaces.map((s) => ({
+          id: s.id,
+          timestamp: parseFloat(String(s.timestamp)),
+          surfaceType: s.surfaceType,
+          confidence: parseFloat(String(s.confidence)),
+          boundingBox: {
+            x: parseFloat(String(s.boundingBoxX)),
+            y: parseFloat(String(s.boundingBoxY)),
+            width: parseFloat(String(s.boundingBoxWidth)),
+            height: parseFloat(String(s.boundingBoxHeight)),
+          },
+        })),
+        brandCatalog: brandProducts.map((b) => ({
+          id: b.id,
+          name: b.name,
+          category: b.category,
+          dominantColor: b.dominantColor,
+        })),
+        maxClips,
+        query: query.trim(),
+      });
+
+      res.json({
+        query: query.trim(),
+        clips: editorialMoments,
+        count: editorialMoments.length,
+      });
+    } catch (err: any) {
+      console.error("[API] /api/videos/:videoId/editorial-search error:", err.message);
+      res.status(500).json({ error: err.message || "Search failed" });
+    }
+  });
+
   // POST /api/videos/:videoId/editorial-cancel — Cancel a running editorial pipeline
   app.post("/api/videos/:videoId/editorial-cancel", isFlexibleAuthenticated, async (req: any, res) => {
     try {

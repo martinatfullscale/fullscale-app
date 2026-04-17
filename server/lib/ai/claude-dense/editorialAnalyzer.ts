@@ -36,6 +36,8 @@ export interface EditorialAnalysisInput {
     dominantColor: string | null;
   }>;
   maxClips?: number;
+  /** Optional search query — when provided, Claude prioritizes clips matching this topic/keyword */
+  query?: string;
 }
 
 interface ClaudeEditorialResponse {
@@ -90,7 +92,8 @@ function buildEditorialAnalysisPrompt(
   transcript: TranscriptSegment[],
   surfaces: EditorialAnalysisInput["surfaces"],
   brandCatalog: EditorialAnalysisInput["brandCatalog"],
-  maxClips: number = 10
+  maxClips: number = 10,
+  query?: string
 ): string {
   // Prepare compact transcript representation
   const compactTranscript = transcript.map((seg) => ({
@@ -133,7 +136,9 @@ Here are the available brand products seeking placement:
 ${JSON.stringify(compactBrands)}
 
 TASK:
-1. Identify the top ${maxClips} moments that would make compelling standalone clips. Each must be 15-60 seconds long.
+1. Identify the top ${maxClips} moments that would make compelling standalone clips. Each must be 15-60 seconds long.${query ? `
+
+SEARCH FOCUS: The user is specifically looking for clips about "${query}". PRIORITIZE moments that relate to this topic. If fewer than ${maxClips} moments match the search query, include the best remaining moments to fill the list, but rank search-matching clips higher.` : ""}
 
 2. Score each moment against these criteria (0.0-1.0 each):
    - hookStrength: Do the first 3 seconds grab attention? Look for questions, bold statements, laughter, surprising revelations. Penalize mid-sentence starts, dead air, filler words.
@@ -256,7 +261,7 @@ function parseEditorialResponse(text: string): EditorialAnalysisOutput[] {
 export async function analyzeEditorial(
   input: EditorialAnalysisInput
 ): Promise<EditorialAnalysisOutput[]> {
-  const { videoId, transcript, surfaces, brandCatalog, maxClips = 10 } = input;
+  const { videoId, transcript, surfaces, brandCatalog, maxClips = 10, query } = input;
 
   if (!transcript || transcript.length === 0) {
     console.warn(`[EditorialAnalyzer] No transcript for video ${videoId}`);
@@ -265,13 +270,14 @@ export async function analyzeEditorial(
 
   console.log(
     `[EditorialAnalyzer] Analyzing video ${videoId}: ` +
-      `${transcript.length} segments, ${surfaces.length} surfaces, ${brandCatalog.length} brands`
+      `${transcript.length} segments, ${surfaces.length} surfaces, ${brandCatalog.length} brands` +
+      (query ? `, query: "${query}"` : "")
   );
 
   try {
     const client = getClient();
 
-    const prompt = buildEditorialAnalysisPrompt(transcript, surfaces, brandCatalog, maxClips);
+    const prompt = buildEditorialAnalysisPrompt(transcript, surfaces, brandCatalog, maxClips, query);
 
     const timeoutPromise = new Promise<null>((_, reject) => {
       setTimeout(() => reject(new Error("Editorial analysis timeout")), EDITORIAL_CONFIG.timeout);
