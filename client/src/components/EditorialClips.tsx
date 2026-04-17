@@ -481,6 +481,25 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
                 <p className="text-xs text-red-300 mt-1 line-clamp-2">{autoStatus.error}</p>
               )}
             </div>
+            {!isBrandMode && inFlight && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={async () => {
+                  try {
+                    await fetch(`/api/videos/${videoId}/editorial-cancel`, {
+                      method: "POST",
+                      credentials: "include",
+                    });
+                    toast({ title: "Cancelling pipeline..." });
+                  } catch {}
+                }}
+                className="text-red-400 hover:text-red-300 text-xs"
+              >
+                <X className="w-3 h-3 mr-1" />
+                Cancel
+              </Button>
+            )}
             {!isBrandMode && !inFlight && (
               <Button
                 size="sm"
