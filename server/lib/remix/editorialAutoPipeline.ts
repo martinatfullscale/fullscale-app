@@ -273,7 +273,7 @@ export async function runEditorialAutoPipeline(
           const faceFrames = await Promise.race([
             detectFacesInClip(videoLocalPath, clip.clipStart, clip.duration, 1.0),
             new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error("Face detection timeout")), 45000)
+              setTimeout(() => reject(new Error("Face detection timeout")), 90000)
             ),
           ]).catch(() => {
             console.warn(`[EditorialAuto]   Face detection timed out — using center crop`);
@@ -524,7 +524,7 @@ const RENDER_CONFIG = {
   CRF: 20,
   PRESET: "medium",
   AUDIO_BITRATE: "128k",
-  TIMEOUT_MS: 300000, // 5 minutes per clip
+  TIMEOUT_MS: 900000, // 15 minutes per clip (long videos on CPU-only VMs need time)
 };
 
 /**
