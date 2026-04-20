@@ -285,14 +285,18 @@ export async function runEditorialAutoPipeline(
             srcSize.width,
             srcSize.height,
             platformConfig.targetWidth,
-            platformConfig.targetHeight
+            platformConfig.targetHeight,
+            {
+              speakerSegments: transcript.segments as any,
+              clipStartTime: clip.clipStart,
+            }
           );
 
           const cropFilter = buildCropFilterExpr(trajectory);
           const scaleFilter = `scale=${platformConfig.targetWidth}:${platformConfig.targetHeight}`;
           const vf = `${cropFilter},${scaleFilter}`;
 
-          console.log(`[EditorialAuto]   Rendering ${clip.duration.toFixed(1)}s with smart reframe (crop ${trajectory.cropW}x${trajectory.cropH}, ${faceFrames.length} face samples)`);
+          console.log(`[EditorialAuto]   Rendering ${clip.duration.toFixed(1)}s with smart reframe + speaker tracking (crop ${trajectory.cropW}x${trajectory.cropH}, ${faceFrames.length} face samples)`);
 
           await runFFmpegRender({
             videoPath: videoLocalPath,
@@ -551,12 +555,20 @@ export async function renderSingleEditorialClip(videoId: number, clipId: number)
         ),
       ]).catch(() => []);
 
+      // Fetch transcript for speaker-aware crop tracking
+      const transcriptRecord = await storage.getVideoTranscript(videoId);
+      const speakerSegments = transcriptRecord?.segments as any[] | undefined;
+
       const trajectory = computeCropTrajectory(
         faceFrames,
         srcSize.width,
         srcSize.height,
         platformConfig.targetWidth,
-        platformConfig.targetHeight
+        platformConfig.targetHeight,
+        {
+          speakerSegments,
+          clipStartTime: clip.clipStart,
+        }
       );
 
       const vf = `${buildCropFilterExpr(trajectory)},scale=${platformConfig.targetWidth}:${platformConfig.targetHeight}`;
