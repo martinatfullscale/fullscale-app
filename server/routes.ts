@@ -21,7 +21,7 @@ import fs from "fs";
 import ytdl from "@distube/ytdl-core";
 import { decrypt, encrypt } from "./encryption";
 import { db } from "./db";
-import { users, allowedUsers as allowedUsersTable, videoIndex as videoIndexTable } from "@shared/schema";
+import { users, allowedUsers as allowedUsersTable, videoIndex as videoIndexTable, editorialClips } from "@shared/schema";
 import { eq, sql } from "drizzle-orm";
 import crypto from "crypto";
 import sharp from "sharp";
@@ -6935,6 +6935,77 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("[API] /api/videos/:videoId/editorial-search error:", err.message);
       res.status(500).json({ error: err.message || "Search failed" });
+    }
+  });
+
+  // POST /api/videos/:videoId/editorial-clip/render — Render a single ad-hoc clip
+  // (from search results or manual selection) and append to the editorialClips list
+  app.post("/api/videos/:videoId/editorial-clip/render", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+      const { clipStart, clipEnd, suggestedTitle, topicTags, reasoning, scores, compositeScore } = req.body || {};
+
+      if (typeof clipStart !== "number" || typeof clipEnd !== "number" || clipEnd <= clipStart) {
+        return res.status(400).json({ error: "Valid clipStart and clipEnd required" });
+      }
+
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+      if (!video.filePath) return res.status(400).json({ error: "Video has no filePath" });
+
+      // Insert a new editorial clip record with pending render status
+      const duration = clipEnd - clipStart;
+      const [newClip] = await db.insert(editorialClips).values({
+        videoId,
+        userId: 0,
+        clipStart,
+        clipEnd,
+        duration,
+        editorialScore: compositeScore || 0.7,
+        surfaceScore: 0,
+        brandMatchScore: 0,
+        finalScore: compositeScore || 0.7,
+        monetizationTier: "organic",
+        scores: scores || null,
+        surfaces: [],
+        brandMatches: [],
+        editPoints: { start: clipStart, end: clipEnd, adjustments: ["Added from search"] },
+        suggestedTitle: suggestedTitle || "Custom Clip",
+        topicTags: topicTags || [],
+        reasoning: reasoning || "Added from search results",
+        rawClipStart: clipStart,
+        rawClipEnd: clipEnd,
+        renderStatus: "pending",
+      }).returning();
+
+      console.log(`[API] Editorial-clip/render: saved clip ${newClip.id}, queuing render...`);
+
+      // Respond immediately — render happens in background
+      res.json({
+        success: true,
+        clip: newClip,
+        message: "Clip saved. Render queued.",
+      });
+
+      // Fire-and-forget render (reuses the pipeline's render logic via force re-run on this clip only)
+      // Simplest approach: trigger runEditorialAutoPipeline with force=false so it just renders pending clips
+      // But that would re-analyze — instead we do a minimal inline render here
+      (async () => {
+        try {
+          const { renderSingleEditorialClip } = await import("./lib/remix/editorialAutoPipeline");
+          await renderSingleEditorialClip(videoId, newClip.id);
+        } catch (err: any) {
+          console.error(`[API] Single-clip render failed for clip ${newClip.id}:`, err?.message);
+          await storage.updateEditorialClipRender(newClip.id, {
+            renderStatus: "failed",
+            renderError: err?.message || "Render failed",
+          });
+        }
+      })();
+    } catch (err: any) {
+      console.error("[API] /api/videos/:videoId/editorial-clip/render error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to render clip" });
     }
   });
 

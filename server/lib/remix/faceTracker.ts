@@ -214,9 +214,9 @@ async function detectFacesInFrame(
 
 // ── Crop Trajectory Computation ────────────────────────────────
 
-const EMA_ALPHA = 0.15; // Heavy smoothing for camera-like motion
-const SPEAKER_HOLD_SEC = 0.3; // Hold before panning to new speaker
-const SPEAKER_PAN_SEC = 0.5; // Time to pan to new speaker
+const EMA_ALPHA = 0.35; // Moderate smoothing — responsive to speaker changes without jitter
+const SPEAKER_HOLD_SEC = 0.15; // Shorter hold before panning to new speaker
+const SPEAKER_PAN_SEC = 0.3; // Faster pan to new speaker
 
 /**
  * Compute a smooth crop trajectory from face detection results.

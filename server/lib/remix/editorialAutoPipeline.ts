@@ -509,6 +509,111 @@ async function resolveSourceVideo(
   return { localPath: filePath, tempScopeDir: null };
 }
 
+// ── Single Clip Render (for search results / manual adds) ─────────
+
+/**
+ * Render a single editorialClips row that's already in the DB.
+ * Reuses the same face-tracking smart-reframe path as the auto-pipeline.
+ */
+export async function renderSingleEditorialClip(videoId: number, clipId: number): Promise<void> {
+  const video = await storage.getVideoById(videoId);
+  if (!video || !video.filePath) throw new Error("Video not found or has no filePath");
+
+  const existing = await storage.getEditorialClipsByVideo(videoId);
+  const clip = existing.find((c) => c.id === clipId);
+  if (!clip) throw new Error(`Clip ${clipId} not found`);
+
+  await storage.updateEditorialClipRender(clip.id, { renderStatus: "rendering" });
+
+  let videoLocalPath: string | null = null;
+  let tempScopeDir: string | null = null;
+  const renderOutputDir = path.join("/tmp/editorial-renders", `single-${clipId}-${Date.now()}`);
+  fs.mkdirSync(renderOutputDir, { recursive: true });
+
+  try {
+    const resolved = await resolveSourceVideo(video.filePath, videoId);
+    videoLocalPath = resolved.localPath;
+    tempScopeDir = resolved.tempScopeDir;
+
+    const srcSize = await getVideoSize(videoLocalPath).catch(() => ({ width: 1920, height: 1080 }));
+    const platformConfig = PLATFORM_CONFIGS[AUTO_PIPELINE_CONFIG.platformKey];
+    const needsReframe = srcSize.width > srcSize.height && platformConfig.aspectRatio === "9:16";
+
+    const outputFilename = `editorial_${clip.id}_v${videoId}_${Date.now()}.mp4`;
+    const outputPath = path.join(renderOutputDir, outputFilename);
+    const thumbPath = outputPath.replace(".mp4", "_thumb.jpg");
+
+    if (needsReframe) {
+      const faceFrames = await Promise.race([
+        detectFacesInClip(videoLocalPath, clip.clipStart, clip.duration, 1.0),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("Face detection timeout")), 90000)
+        ),
+      ]).catch(() => []);
+
+      const trajectory = computeCropTrajectory(
+        faceFrames,
+        srcSize.width,
+        srcSize.height,
+        platformConfig.targetWidth,
+        platformConfig.targetHeight
+      );
+
+      const vf = `${buildCropFilterExpr(trajectory)},scale=${platformConfig.targetWidth}:${platformConfig.targetHeight}`;
+      await runFFmpegRender({
+        videoPath: videoLocalPath,
+        startTime: clip.clipStart,
+        duration: clip.duration,
+        vf,
+        fps: platformConfig.targetFps,
+        outputPath,
+      });
+    } else {
+      const vf = `scale=${platformConfig.targetWidth}:${platformConfig.targetHeight}:force_original_aspect_ratio=decrease,pad=${platformConfig.targetWidth}:${platformConfig.targetHeight}:(ow-iw)/2:(oh-ih)/2:black`;
+      await runFFmpegRender({
+        videoPath: videoLocalPath,
+        startTime: clip.clipStart,
+        duration: clip.duration,
+        vf,
+        fps: platformConfig.targetFps,
+        outputPath,
+      });
+    }
+
+    if (!fs.existsSync(outputPath)) throw new Error("FFmpeg produced no output");
+
+    try { await runFFmpegThumbnail(outputPath, thumbPath, clip.duration * 0.25); } catch {}
+
+    const mp4ObjectKey = `public/editorial-clips/video-${videoId}/${outputFilename}`;
+    const mp4Url = await uploadFileToStorage(outputPath, mp4ObjectKey);
+
+    let thumbUrl: string | null = null;
+    if (fs.existsSync(thumbPath)) {
+      const thumbFilename = path.basename(thumbPath);
+      const thumbObjectKey = `public/editorial-clips/video-${videoId}/${thumbFilename}`;
+      thumbUrl = await uploadFileToStorage(thumbPath, thumbObjectKey);
+    }
+
+    try { fs.unlinkSync(outputPath); } catch {}
+    try { fs.unlinkSync(thumbPath); } catch {}
+
+    await storage.updateEditorialClipRender(clip.id, {
+      exportPath: mp4Url,
+      thumbnailPath: thumbUrl,
+      aspectRatio: platformConfig.aspectRatio,
+      renderStatus: "rendered",
+      renderError: null,
+    });
+
+    console.log(`[RenderSingle] ✓ Rendered clip ${clip.id} → ${mp4Url}`);
+  } finally {
+    try { fs.rmSync(renderOutputDir, { recursive: true, force: true }); } catch {}
+    if (tempScopeDir) {
+      try { fs.rmSync(tempScopeDir, { recursive: true, force: true }); } catch {}
+    }
+  }
+}
+
 // ── FFmpeg Render Helpers ──────────────────────────────────────────
 
 interface RenderOptions {

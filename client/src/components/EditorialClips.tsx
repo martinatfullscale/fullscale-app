@@ -607,19 +607,27 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
             <span className="text-sm font-medium text-white">
               {searchResults.length} result{searchResults.length !== 1 ? "s" : ""} for "{searchQuery}"
             </span>
+            <span className="text-xs text-gray-500">· Click "Add" to render and save to your library</span>
           </div>
           {searchResults.length === 0 && (
             <p className="text-xs text-gray-400 pl-6">No clips found matching this query. Try different keywords.</p>
           )}
           {searchResults.map((clip, idx) => (
-            <EditorialClipCard
-              key={`search-${clip.clipStart}-${clip.clipEnd}`}
+            <SearchResultCard
+              key={`search-${clip.clipStart}-${clip.clipEnd}-${idx}`}
               clip={clip}
               rank={idx + 1}
-              mode={mode}
-              isExpanded={false}
-              onToggleExpand={() => {}}
-              onPlay={clip.exportPath ? () => setPlayingClip(clip) : undefined}
+              videoId={videoId}
+              onAdded={async (newClipId) => {
+                toast({
+                  title: "Clip saved",
+                  description: "Rendering in the background \u2014 will appear in your library shortly.",
+                });
+                // Refresh main clips list so user sees the new pending/rendering clip
+                await refetchClips();
+                // Optimistically remove from search results
+                setSearchResults((prev) => prev?.filter((c) => c !== clip) ?? null);
+              }}
             />
           ))}
         </div>
@@ -1096,5 +1104,94 @@ function EditorialClipCard({
         )}
       </AnimatePresence>
     </motion.div>
+  );
+}
+
+// ── Search Result Card Component ─────────────────────────────────────
+
+function SearchResultCard({
+  clip,
+  rank,
+  videoId,
+  onAdded,
+}: {
+  clip: RankedClip;
+  rank: number;
+  videoId: number;
+  onAdded: (newClipId: number) => void;
+}) {
+  const { toast } = useToast();
+  const [isAdding, setIsAdding] = useState(false);
+  const viralPct = Math.round(clip.finalScore * 100);
+
+  const handleAdd = async () => {
+    setIsAdding(true);
+    try {
+      const res = await fetch(`/api/videos/${videoId}/editorial-clip/render`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          clipStart: clip.clipStart,
+          clipEnd: clip.clipEnd,
+          suggestedTitle: clip.suggestedTitle,
+          topicTags: clip.topicTags,
+          reasoning: clip.reasoning,
+          scores: clip.scores,
+          compositeScore: clip.finalScore,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Failed to add clip");
+      }
+      const data = await res.json();
+      onAdded(data.clip?.id);
+    } catch (err: any) {
+      toast({ title: "Add failed", description: err.message, variant: "destructive" });
+    }
+    setIsAdding(false);
+  };
+
+  return (
+    <div className="flex items-center gap-3 p-3 rounded-xl border border-gray-700/50 bg-gray-800/40 hover:bg-gray-800/60 transition-colors">
+      <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 border ${getViralBg(clip.finalScore)}`}>
+        <span className={`text-sm font-bold ${getViralColor(clip.finalScore)}`}>{rank}</span>
+      </div>
+
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-semibold text-white truncate">{clip.suggestedTitle}</p>
+        <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+          <span className="text-xs text-gray-400">
+            <Clock className="w-3 h-3 inline mr-0.5" />
+            {formatTime(clip.clipStart)} - {formatTime(clip.clipEnd)}
+          </span>
+          <span className="text-xs text-gray-500">({clip.duration.toFixed(0)}s)</span>
+          <span className={`text-xs ${getViralColor(clip.finalScore)}`}>{viralPct}% viral</span>
+        </div>
+        {clip.topicTags.length > 0 && (
+          <div className="flex items-center gap-1 mt-1.5 flex-wrap">
+            {clip.topicTags.slice(0, 3).map((tag) => (
+              <span key={tag} className="text-xs bg-gray-700/50 text-gray-400 px-2 py-0.5 rounded-full">
+                {tag}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <Button
+        size="sm"
+        onClick={handleAdd}
+        disabled={isAdding}
+        className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs flex-shrink-0"
+      >
+        {isAdding ? (
+          <><Loader2 className="w-3 h-3 mr-1 animate-spin" /> Adding</>
+        ) : (
+          <><Wand2 className="w-3 h-3 mr-1" /> Add & Render</>
+        )}
+      </Button>
+    </div>
   );
 }
