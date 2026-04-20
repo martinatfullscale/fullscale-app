@@ -55,24 +55,63 @@ app.use('/attached_assets', express.static(path.join(projectRoot, "attached_asse
 app.get('/storage/*', async (req, res) => {
   try {
     const objectKey = objectKeyFromServeUrl(req.path);
-    const { file, stream } = getStorageStream(objectKey);
+    const { file } = getStorageStream(objectKey);
     const [metadata] = await file.getMetadata();
-    
+    const fileSize = parseInt(String(metadata.size || 0));
+    const contentType = metadata.contentType || 'application/octet-stream';
+
+    // Parse Range header for video seeking support (critical for scrubbing)
+    const rangeHeader = req.headers.range;
+
+    if (rangeHeader && fileSize > 0) {
+      // Range: bytes=START-END
+      const match = /^bytes=(\d+)-(\d*)$/.exec(rangeHeader);
+      if (match) {
+        const start = parseInt(match[1], 10);
+        const end = match[2] ? parseInt(match[2], 10) : fileSize - 1;
+        const clampedEnd = Math.min(end, fileSize - 1);
+
+        if (start > clampedEnd) {
+          res.status(416).set('Content-Range', `bytes */${fileSize}`).end();
+          return;
+        }
+
+        const chunkSize = clampedEnd - start + 1;
+        res.status(206).set({
+          'Content-Type': contentType,
+          'Content-Length': chunkSize.toString(),
+          'Content-Range': `bytes ${start}-${clampedEnd}/${fileSize}`,
+          'Accept-Ranges': 'bytes',
+          'Cache-Control': 'public, max-age=604800',
+          'Access-Control-Allow-Origin': '*',
+          'Cross-Origin-Resource-Policy': 'cross-origin',
+        });
+
+        const stream = file.createReadStream({ start, end: clampedEnd });
+        stream.on('error', (err: any) => {
+          console.error('[Storage] Range stream error:', err.message);
+          if (!res.headersSent) res.status(404).json({ error: 'File not found' });
+        });
+        stream.pipe(res);
+        return;
+      }
+    }
+
+    // No Range header — stream entire file (but still advertise Range support)
     res.set({
-      'Content-Type': metadata.contentType || 'application/octet-stream',
-      'Content-Length': metadata.size?.toString(),
+      'Content-Type': contentType,
+      'Content-Length': fileSize.toString(),
+      'Accept-Ranges': 'bytes',
       'Cache-Control': 'public, max-age=604800',
       'Access-Control-Allow-Origin': '*',
       'Cross-Origin-Resource-Policy': 'cross-origin',
     });
-    
+
+    const stream = file.createReadStream();
     stream.on('error', (err: any) => {
       console.error('[Storage] Stream error:', err.message);
-      if (!res.headersSent) {
-        res.status(404).json({ error: 'File not found' });
-      }
+      if (!res.headersSent) res.status(404).json({ error: 'File not found' });
     });
-    
     stream.pipe(res);
   } catch (err: any) {
     if (!res.headersSent) {
