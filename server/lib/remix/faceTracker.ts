@@ -218,8 +218,25 @@ const EMA_ALPHA = 0.35; // Moderate smoothing — responsive to speaker changes 
 const SPEAKER_HOLD_SEC = 0.15; // Shorter hold before panning to new speaker
 const SPEAKER_PAN_SEC = 0.3; // Faster pan to new speaker
 
+// Transcript segment type (matches speechToText output)
+export interface SpeakerSegment {
+  start: number;   // absolute time in source video (seconds)
+  end: number;
+  speaker?: string;
+}
+
+export interface CropTrajectoryOptions {
+  /** Transcript segments (absolute timestamps in source video) for speaker-aware tracking */
+  speakerSegments?: SpeakerSegment[];
+  /** Absolute time of clip start in source video (for mapping frame times to speaker times) */
+  clipStartTime?: number;
+}
+
 /**
  * Compute a smooth crop trajectory from face detection results.
+ * When speakerSegments are provided, uses transcript diarization to track
+ * the ACTIVE SPEAKER (not just the largest face).
+ *
  * Returns pixel-space crop keyframes for the source video.
  */
 export function computeCropTrajectory(
@@ -227,19 +244,18 @@ export function computeCropTrajectory(
   srcW: number,
   srcH: number,
   targetW: number,
-  targetH: number
+  targetH: number,
+  options: CropTrajectoryOptions = {}
 ): CropTrajectory {
+  const { speakerSegments, clipStartTime = 0 } = options;
+
   // Compute crop dimensions in source pixels
-  // For portrait: crop a vertical strip from the landscape source
-  const targetAR = targetW / targetH; // e.g., 0.5625 for 9:16
+  const targetAR = targetW / targetH;
   const cropW = Math.round(srcH * targetAR);
   const cropH = srcH;
-
-  // Clamp cropW to source width
   const effectiveCropW = Math.min(cropW, srcW);
 
   if (frames.length === 0) {
-    // No detections at all — center crop
     return {
       frames: [{ time: 0, cropX: Math.round((srcW - effectiveCropW) / 2), cropY: 0 }],
       cropW: effectiveCropW,
@@ -247,36 +263,51 @@ export function computeCropTrajectory(
     };
   }
 
+  // ── Build speaker → face position map ──
+  // For each frame where a speaker is actively talking AND faces are detected,
+  // learn which spatial position (left/center/right) corresponds to that speaker.
+  const speakerPositions = buildSpeakerPositionMap(frames, speakerSegments, clipStartTime, srcW);
+
   // Compute raw crop center for each frame
   const rawCenters: { time: number; cx: number }[] = [];
-  let lastKnownCx = srcW / 2; // default: center
+  let lastKnownCx = srcW / 2;
 
   for (const frame of frames) {
     let cx: number;
+    const absTime = clipStartTime + frame.time;
+    const activeSpeaker = speakerSegments ? findActiveSpeaker(speakerSegments, absTime) : undefined;
 
     if (frame.faces.length === 0) {
-      // No faces — carry forward
-      cx = lastKnownCx;
+      // No faces — if we know the active speaker's position, use it; else carry forward
+      cx = (activeSpeaker && speakerPositions.get(activeSpeaker)) || lastKnownCx;
     } else if (frame.faces.length === 1) {
       // Single face — center on it
       const face = frame.faces[0];
       cx = (face.x + face.width / 2) * srcW;
     } else {
-      // Multiple faces — try to fit all, else follow largest
-      const allCenters = frame.faces.map((f) => (f.x + f.width / 2) * srcW);
-      const minCx = Math.min(...allCenters);
-      const maxCx = Math.max(...allCenters);
+      // Multiple faces — prefer the active speaker's face if we know their position
+      const allFaces = frame.faces.map((f) => ({
+        cx: (f.x + f.width / 2) * srcW,
+        area: f.width * f.height,
+      }));
+      const minCx = Math.min(...allFaces.map((f) => f.cx));
+      const maxCx = Math.max(...allFaces.map((f) => f.cx));
       const span = maxCx - minCx;
 
       if (span < effectiveCropW * 0.8) {
-        // All faces fit — center on group
+        // All faces fit in the crop window — center on group
         cx = (minCx + maxCx) / 2;
-      } else {
-        // Too spread — follow largest (assumed active speaker)
-        const largest = frame.faces.reduce((a, b) =>
-          a.width * a.height > b.width * b.height ? a : b
+      } else if (activeSpeaker && speakerPositions.has(activeSpeaker)) {
+        // We know where this speaker sits — find the face closest to that position
+        const speakerCx = speakerPositions.get(activeSpeaker)!;
+        const closest = allFaces.reduce((a, b) =>
+          Math.abs(a.cx - speakerCx) < Math.abs(b.cx - speakerCx) ? a : b
         );
-        cx = (largest.x + largest.width / 2) * srcW;
+        cx = closest.cx;
+      } else {
+        // Fallback: follow largest face
+        const largest = allFaces.reduce((a, b) => (a.area > b.area ? a : b));
+        cx = largest.cx;
       }
     }
 
@@ -296,6 +327,64 @@ export function computeCropTrajectory(
   });
 
   return { frames: keyframes, cropW: effectiveCropW, cropH };
+}
+
+/**
+ * Find the speaker active at a given absolute timestamp.
+ */
+function findActiveSpeaker(segments: SpeakerSegment[], absTime: number): string | undefined {
+  for (const seg of segments) {
+    if (absTime >= seg.start && absTime <= seg.end && seg.speaker) {
+      return seg.speaker;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Build a speaker → spatial position map by correlating detected faces with active speaker.
+ *
+ * Strategy: For each frame where we know who's speaking, look at where the faces are.
+ * If multiple faces, we can't assign this frame. If single face, assign to current speaker.
+ * After processing, each speaker has a median x-position (in source pixels).
+ */
+function buildSpeakerPositionMap(
+  frames: FaceDetectionFrame[],
+  speakerSegments: SpeakerSegment[] | undefined,
+  clipStartTime: number,
+  srcW: number
+): Map<string, number> {
+  const positionsBySpeaker = new Map<string, number[]>();
+
+  if (!speakerSegments) return new Map();
+
+  for (const frame of frames) {
+    if (frame.faces.length === 0) continue;
+    const absTime = clipStartTime + frame.time;
+    const speaker = findActiveSpeaker(speakerSegments, absTime);
+    if (!speaker) continue;
+
+    // Only assign from frames with a SINGLE face — unambiguous
+    if (frame.faces.length === 1) {
+      const face = frame.faces[0];
+      const cx = (face.x + face.width / 2) * srcW;
+      const arr = positionsBySpeaker.get(speaker) ?? [];
+      arr.push(cx);
+      positionsBySpeaker.set(speaker, arr);
+    }
+  }
+
+  // Compute median per speaker
+  const result = new Map<string, number>();
+  for (const [speaker, positions] of Array.from(positionsBySpeaker.entries())) {
+    if (positions.length === 0) continue;
+    const sorted = positions.slice().sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)];
+    result.set(speaker, median);
+    console.log(`[FaceTracker] Speaker ${speaker} → x=${median.toFixed(0)}px (from ${positions.length} samples)`);
+  }
+
+  return result;
 }
 
 /**
