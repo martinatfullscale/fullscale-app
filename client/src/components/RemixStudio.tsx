@@ -306,7 +306,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
 
   const startRemix = async () => {
     setIsStarting(true);
-    try {
+    const attemptStart = async () => {
       const res = await fetch(`/api/remix/${videoId}/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -317,13 +317,51 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
           captionsEnabled,
         }),
       });
-
       if (!res.ok) {
         const data = await res.json();
-        throw new Error(data.error || "Failed to start remix");
+        const err: any = new Error(data.error || "Failed to start remix");
+        err.status = res.status;
+        throw err;
+      }
+      return res.json();
+    };
+
+    try {
+      let data;
+      try {
+        data = await attemptStart();
+      } catch (err: any) {
+        // If the remix needs scene analysis, auto-run it and retry.
+        const needsAnalysis =
+          err?.status === 400 &&
+          typeof err?.message === "string" &&
+          /scene anal/i.test(err.message);
+
+        if (!needsAnalysis) throw err;
+
+        toast({
+          title: "Preparing video...",
+          description: "Running AI scene analysis first. This takes 1-3 minutes.",
+        });
+
+        const analyzeRes = await fetch(`/api/scenes/${videoId}/analyze`, {
+          method: "POST",
+          credentials: "include",
+        });
+        if (!analyzeRes.ok) {
+          const aErr = await analyzeRes.json().catch(() => ({}));
+          throw new Error(aErr.error || "Scene analysis failed. Try running a scan first from the Library.");
+        }
+        const analyzeData = await analyzeRes.json();
+        toast({
+          title: "Scene analysis complete",
+          description: `${analyzeData.analyzed || 0} frames analyzed. Starting remix...`,
+        });
+
+        // Retry the remix
+        data = await attemptStart();
       }
 
-      const data = await res.json();
       setActiveJobId(data.jobId);
       toast({ title: "Remix Started", description: `Job #${data.jobId} queued for processing` });
       await loadData();
