@@ -264,13 +264,17 @@ export function computeCropTrajectory(
   }
 
   // ── Build speaker → face position map ──
-  // For each frame where a speaker is actively talking AND faces are detected,
-  // learn which spatial position (left/center/right) corresponds to that speaker.
   const speakerPositions = buildSpeakerPositionMap(frames, speakerSegments, clipStartTime, srcW);
 
+  // Threshold: if a face/speaker jumps more than this fraction of the frame width,
+  // treat it as a scene cut and snap (don't smooth through the cut).
+  const SNAP_JUMP_FRACTION = 0.20;
+  const snapThreshold = srcW * SNAP_JUMP_FRACTION;
+
   // Compute raw crop center for each frame
-  const rawCenters: { time: number; cx: number }[] = [];
+  const rawCenters: { time: number; cx: number; snap: boolean }[] = [];
   let lastKnownCx = srcW / 2;
+  let firstAssignment = true;
 
   for (const frame of frames) {
     let cx: number;
@@ -278,45 +282,52 @@ export function computeCropTrajectory(
     const activeSpeaker = speakerSegments ? findActiveSpeaker(speakerSegments, absTime) : undefined;
 
     if (frame.faces.length === 0) {
-      // No faces — if we know the active speaker's position, use it; else carry forward
-      cx = (activeSpeaker && speakerPositions.get(activeSpeaker)) || lastKnownCx;
+      // No faces detected in this frame — prefer speaker's known position if available
+      const speakerPos = activeSpeaker ? speakerPositions.get(activeSpeaker) : undefined;
+      cx = speakerPos ?? lastKnownCx;
     } else if (frame.faces.length === 1) {
-      // Single face — center on it
+      // Single face — always center on it (even if it's not the "speaker" — it's all we've got)
       const face = frame.faces[0];
       cx = (face.x + face.width / 2) * srcW;
     } else {
-      // Multiple faces — prefer the active speaker's face if we know their position
+      // Multiple faces — ALWAYS pick one decisively. Never center between them
+      // (that produces the "cut both people in half" artifact).
       const allFaces = frame.faces.map((f) => ({
         cx: (f.x + f.width / 2) * srcW,
         area: f.width * f.height,
+        confidence: f.confidence,
       }));
-      const minCx = Math.min(...allFaces.map((f) => f.cx));
-      const maxCx = Math.max(...allFaces.map((f) => f.cx));
-      const span = maxCx - minCx;
 
-      if (span < effectiveCropW * 0.8) {
-        // All faces fit in the crop window — center on group
-        cx = (minCx + maxCx) / 2;
-      } else if (activeSpeaker && speakerPositions.has(activeSpeaker)) {
-        // We know where this speaker sits — find the face closest to that position
+      if (activeSpeaker && speakerPositions.has(activeSpeaker)) {
+        // We know this speaker's usual position — pick the face closest to it
         const speakerCx = speakerPositions.get(activeSpeaker)!;
         const closest = allFaces.reduce((a, b) =>
           Math.abs(a.cx - speakerCx) < Math.abs(b.cx - speakerCx) ? a : b
         );
         cx = closest.cx;
       } else {
-        // Fallback: follow largest face
-        const largest = allFaces.reduce((a, b) => (a.area > b.area ? a : b));
-        cx = largest.cx;
+        // No speaker info — pick the face closest to where we last were
+        // (maintains continuity; prevents jumping between hosts arbitrarily)
+        const closestToLast = allFaces.reduce((a, b) =>
+          Math.abs(a.cx - lastKnownCx) < Math.abs(b.cx - lastKnownCx) ? a : b
+        );
+        cx = closestToLast.cx;
       }
     }
 
+    // Detect scene cut: if cx jumps more than threshold, flag as snap point
+    const snap = !firstAssignment && Math.abs(cx - lastKnownCx) > snapThreshold;
+    if (snap) {
+      console.log(`[FaceTracker] Scene cut detected at t=${frame.time.toFixed(1)}s (jump ${Math.abs(cx - lastKnownCx).toFixed(0)}px)`);
+    }
+
     lastKnownCx = cx;
-    rawCenters.push({ time: frame.time, cx });
+    firstAssignment = false;
+    rawCenters.push({ time: frame.time, cx, snap });
   }
 
-  // Apply bidirectional EMA smoothing
-  const smoothed = smoothBidirectional(rawCenters.map((r) => r.cx));
+  // Apply snap-aware smoothing: smooth within segments, but hard-cut at scene boundaries
+  const smoothed = smoothWithSnaps(rawCenters);
 
   // Convert centers to crop X coordinates, clamped to source bounds
   const keyframes: CropKeyframe[] = rawCenters.map((r, i) => {
@@ -327,6 +338,37 @@ export function computeCropTrajectory(
   });
 
   return { frames: keyframes, cropW: effectiveCropW, cropH };
+}
+
+/**
+ * Smooth crop centers while respecting scene cut boundaries.
+ * Values marked with snap=true start a new smoothing segment (hard cut — no blending).
+ */
+function smoothWithSnaps(points: { time: number; cx: number; snap: boolean }[]): number[] {
+  if (points.length === 0) return [];
+  if (points.length === 1) return [points[0].cx];
+
+  // Split into segments at snap points
+  const segments: { start: number; end: number }[] = [];
+  let segStart = 0;
+  for (let i = 1; i < points.length; i++) {
+    if (points[i].snap) {
+      segments.push({ start: segStart, end: i - 1 });
+      segStart = i;
+    }
+  }
+  segments.push({ start: segStart, end: points.length - 1 });
+
+  // Smooth each segment independently
+  const result = new Array(points.length);
+  for (const seg of segments) {
+    const segValues = points.slice(seg.start, seg.end + 1).map((p) => p.cx);
+    const smoothed = smoothBidirectional(segValues);
+    for (let i = 0; i < smoothed.length; i++) {
+      result[seg.start + i] = smoothed[i];
+    }
+  }
+  return result;
 }
 
 /**
