@@ -271,9 +271,10 @@ export async function runEditorialAutoPipeline(
           console.log(`[EditorialAuto]   Face tracking clip ${clip.id} (${clip.duration.toFixed(1)}s)...`);
 
           const faceFrames = await Promise.race([
-            detectFacesInClip(videoLocalPath, clip.clipStart, clip.duration, 1.0),
+            // Sample every 0.5s to catch scene cuts quickly (was 1.0s)
+            detectFacesInClip(videoLocalPath, clip.clipStart, clip.duration, 0.5),
             new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error("Face detection timeout")), 90000)
+              setTimeout(() => reject(new Error("Face detection timeout")), 120000)
             ),
           ]).catch(() => {
             console.warn(`[EditorialAuto]   Face detection timed out — using center crop`);
@@ -549,9 +550,9 @@ export async function renderSingleEditorialClip(videoId: number, clipId: number)
 
     if (needsReframe) {
       const faceFrames = await Promise.race([
-        detectFacesInClip(videoLocalPath, clip.clipStart, clip.duration, 1.0),
+        detectFacesInClip(videoLocalPath, clip.clipStart, clip.duration, 0.5),
         new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("Face detection timeout")), 90000)
+          setTimeout(() => reject(new Error("Face detection timeout")), 120000)
         ),
       ]).catch(() => []);
 
