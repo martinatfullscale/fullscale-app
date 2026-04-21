@@ -1,4 +1,5 @@
 import { useLocation } from "wouter";
+import { useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { LogOut, Loader2, X, Home } from "lucide-react";
@@ -35,6 +36,25 @@ export default function WaitlistPage() {
     logoutMutation.mutate();
   };
 
+  // Escape hatch: navigate to the public creator marketing page.
+  // Uses hard navigation (window.location.href) to bypass the SPA auth guard
+  // that would otherwise bounce unapproved users back to /waitlist.
+  const handleContinueLater = () => {
+    // If approved, go to dashboard. Otherwise to the public /creates page.
+    if (authStatus?.isApproved) {
+      window.location.href = "/dashboard";
+    } else {
+      window.location.href = "/creates";
+    }
+  };
+
+  // Defensive redirect: if an approved user somehow lands here, bounce to dashboard.
+  useEffect(() => {
+    if (authStatus?.isApproved) {
+      window.location.href = "/dashboard";
+    }
+  }, [authStatus?.isApproved]);
+
   const getAirtableUrl = () => {
     const baseUrl = "https://airtable.com/embed/appF4oLhgbf143xe7/pagil3dstNSBZvLUr/form";
     
@@ -62,22 +82,22 @@ export default function WaitlistPage() {
   return (
     <div className="min-h-screen bg-background flex flex-col">
       <header className="flex items-center justify-between p-4 border-b border-border/50">
-        <img 
-          src={logoUrl} 
-          alt="FullScale" 
+        <img
+          src={logoUrl}
+          alt="FullScale"
           className="h-8 cursor-pointer"
-          onClick={() => setLocation("/")}
+          onClick={handleContinueLater}
           data-testid="img-logo"
         />
         <div className="flex items-center gap-2">
           <Button
             variant="outline"
             size="sm"
-            onClick={() => setLocation("/")}
+            onClick={handleContinueLater}
             data-testid="button-continue-later"
           >
             <Home className="w-4 h-4 mr-2" />
-            Continue Later
+            {authStatus?.isApproved ? "Go to Dashboard" : "Continue Later"}
           </Button>
           <Button
             variant="ghost"
