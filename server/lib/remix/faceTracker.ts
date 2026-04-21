@@ -64,21 +64,26 @@ async function loadModel(): Promise<cocoSsd.ObjectDetection> {
 // ── Face Detection ─────────────────────────────────────────────
 
 const MAX_SAMPLES = 60;
-const DETECTION_WIDTH = 640;
+const DETECTION_WIDTH = 480; // Reduced from 640 — faster inference, still accurate for person bbox
 const MIN_PERSON_CONFIDENCE = 0.35;
 const FACE_REGION_RATIO = 0.35; // Upper 35% of person bbox is face
+const DETECTION_BATCH_SIZE = 6; // Parallel frame processing (was 4)
 
 /**
  * Detect faces/people in sampled frames from a video clip.
+ * @param deadlineMs — Soft deadline in milliseconds. When exceeded, returns partial
+ * results collected so far instead of throwing. Better than center-crop fallback on
+ * long clips where some samples DID succeed.
  */
 export async function detectFacesInClip(
   videoPath: string,
   startTime: number,
   duration: number,
-  sampleIntervalSec: number = 0.5
+  sampleIntervalSec: number = 0.5,
+  deadlineMs?: number
 ): Promise<FaceDetectionFrame[]> {
   try {
-    return await detectFacesInClipInner(videoPath, startTime, duration, sampleIntervalSec);
+    return await detectFacesInClipInner(videoPath, startTime, duration, sampleIntervalSec, deadlineMs);
   } catch (err: any) {
     // Never let face detection crash the remix pipeline
     console.warn(`[FaceTracker] Face detection failed (non-fatal): ${err.message}`);
@@ -90,8 +95,10 @@ async function detectFacesInClipInner(
   videoPath: string,
   startTime: number,
   duration: number,
-  sampleIntervalSec: number
+  sampleIntervalSec: number,
+  deadlineMs?: number
 ): Promise<FaceDetectionFrame[]> {
+  const started = Date.now();
   // Auto-increase interval for long clips to cap at MAX_SAMPLES
   const numSamples = Math.ceil(duration / sampleIntervalSec);
   if (numSamples > MAX_SAMPLES) {
@@ -109,12 +116,19 @@ async function detectFacesInClipInner(
   const loadedModel = await loadModel();
 
   try {
-    // Extract frames in parallel (concurrency cap of 4)
+    // Extract frames in parallel
     const results: FaceDetectionFrame[] = [];
-    const batchSize = 4;
 
-    for (let i = 0; i < sampleTimes.length; i += batchSize) {
-      const batch = sampleTimes.slice(i, i + batchSize);
+    for (let i = 0; i < sampleTimes.length; i += DETECTION_BATCH_SIZE) {
+      // Soft deadline check — return partial results rather than throwing
+      if (deadlineMs && Date.now() - started > deadlineMs) {
+        console.warn(
+          `[FaceTracker] Soft deadline hit (${deadlineMs}ms) with ${results.length}/${sampleTimes.length} samples — using partial`
+        );
+        break;
+      }
+
+      const batch = sampleTimes.slice(i, i + DETECTION_BATCH_SIZE);
       const batchResults = await Promise.all(
         batch.map(async (clipTime) => {
           const absTime = startTime + clipTime;
