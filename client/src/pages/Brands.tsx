@@ -74,6 +74,7 @@ const BRAND_PARTNERS = [
   { slug: "naturade", name: "Naturade" },
   { slug: "shinju", name: "Shinju Japanese Whisky" },
   { slug: "vegan-smart", name: "VeganSmart" },
+  { slug: "seto-holdings", name: "SETO Holdings" },
 ] as const;
 
 const FRICTION_TRADITIONAL = [
