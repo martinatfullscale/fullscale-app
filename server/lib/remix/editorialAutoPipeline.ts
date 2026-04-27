@@ -64,7 +64,16 @@ export interface EditorialAutoPipelineOptions {
   force?: boolean;
   /** Override target clip count */
   targetClipCount?: number;
+  /**
+   * Resume mode: skip transcript+analysis, only render clips with
+   * renderStatus !== "rendered". Preserves existing rendered clips.
+   * Used to recover from stuck state after server restart.
+   */
+  resume?: boolean;
 }
+
+/** Status is considered stuck if no DB update in this many ms while in-flight */
+const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
 
 // ── Main Pipeline ──────────────────────────────────────────────────
 
@@ -80,7 +89,7 @@ export async function runEditorialAutoPipeline(
   options: EditorialAutoPipelineOptions = {}
 ): Promise<EditorialAutoPipelineResult> {
   const start = Date.now();
-  const { force = false, targetClipCount = AUTO_PIPELINE_CONFIG.targetClipCount } = options;
+  const { force = false, resume = false, targetClipCount = AUTO_PIPELINE_CONFIG.targetClipCount } = options;
 
   const emptyResult: EditorialAutoPipelineResult = {
     success: false,
@@ -91,7 +100,7 @@ export async function runEditorialAutoPipeline(
     durationMs: 0,
   };
 
-  console.log(`[EditorialAuto] ▶ Starting for video ${videoId} (user ${userId}, force=${force})`);
+  console.log(`[EditorialAuto] ▶ Starting for video ${videoId} (user ${userId}, force=${force}, resume=${resume})`);
 
   // ── 0. Pre-flight checks ─────────────────────────────────────────
   const video = await storage.getVideoById(videoId);
@@ -102,8 +111,8 @@ export async function runEditorialAutoPipeline(
     return { ...emptyResult, error: "Video has no filePath", durationMs: Date.now() - start };
   }
 
-  // Idempotency: if already ready and we have rendered clips, skip
-  if (!force && video.editorialStatus === "ready") {
+  // Idempotency: if already ready and we have rendered clips, skip (unless force/resume)
+  if (!force && !resume && video.editorialStatus === "ready") {
     const existing = await storage.getEditorialClipsByVideo(videoId);
     const rendered = existing.filter((c) => c.renderStatus === "rendered").length;
     if (rendered >= AUTO_PIPELINE_CONFIG.minClipCount) {
@@ -119,20 +128,52 @@ export async function runEditorialAutoPipeline(
     }
   }
 
-  // Don't double-run if already in-flight (unless forced)
-  if (
-    !force &&
-    (video.editorialStatus === "transcribing" ||
-      video.editorialStatus === "analyzing" ||
-      video.editorialStatus === "rendering")
-  ) {
-    console.log(`[EditorialAuto] Already in-flight (status=${video.editorialStatus}), skipping`);
-    return {
-      ...emptyResult,
-      success: true,
-      status: "skipped",
-      durationMs: Date.now() - start,
-    };
+  // In-flight check with stale-state recovery: don't double-run UNLESS the in-flight
+  // state is stale (DB hasn't been updated in STALE_THRESHOLD_MS) — that means the
+  // previous run died (server restart, crash) and left orphaned status. Take it over.
+  const isInFlight =
+    video.editorialStatus === "transcribing" ||
+    video.editorialStatus === "analyzing" ||
+    video.editorialStatus === "rendering";
+
+  if (isInFlight && !force && !resume) {
+    const lastUpdate = video.updatedAt ? new Date(video.updatedAt).getTime() : 0;
+    const ageMs = Date.now() - lastUpdate;
+    if (ageMs < STALE_THRESHOLD_MS) {
+      console.log(`[EditorialAuto] Already in-flight (status=${video.editorialStatus}, ${Math.round(ageMs / 1000)}s old), skipping`);
+      return {
+        ...emptyResult,
+        success: true,
+        status: "skipped",
+        durationMs: Date.now() - start,
+      };
+    }
+    console.warn(
+      `[EditorialAuto] Stale in-flight state detected (status=${video.editorialStatus}, ${Math.round(ageMs / 60000)} min old) — taking over`
+    );
+  }
+
+  // ── Resume mode: skip transcript+analysis, render unrendered clips only ──
+  if (resume) {
+    const existing = await storage.getEditorialClipsByVideo(videoId);
+    const unrendered = existing.filter((c) => c.renderStatus !== "rendered");
+    if (existing.length === 0) {
+      console.warn(`[EditorialAuto] Resume requested but no existing clips found — falling through to full run`);
+    } else if (unrendered.length === 0) {
+      console.log(`[EditorialAuto] Resume requested but all ${existing.length} clips already rendered — marking ready`);
+      await storage.updateVideoEditorialStatus(videoId, "ready", { clipCount: existing.length });
+      return {
+        ...emptyResult,
+        success: true,
+        status: "ready",
+        clipsGenerated: existing.length,
+        clipsRendered: existing.length,
+        durationMs: Date.now() - start,
+      };
+    } else {
+      console.log(`[EditorialAuto] Resume mode: rendering ${unrendered.length} of ${existing.length} pending clips`);
+      return await renderClipsOnly(videoId, video.filePath, unrendered, start);
+    }
   }
 
   let videoLocalPath: string | null = null;
@@ -416,6 +457,191 @@ export async function runEditorialAutoPipeline(
       try {
         fs.rmSync(tempScopeDir, { recursive: true, force: true });
       } catch { /* non-fatal */ }
+    }
+  }
+}
+
+// ── Resume / Recovery Helper ───────────────────────────────────────
+
+/**
+ * Render a specific subset of already-saved editorial clips. Used by resume
+ * mode to recover stuck pipelines without re-running transcript or analysis.
+ * Preserves any clips that are already in renderStatus="rendered".
+ *
+ * Caller must have verified the clips exist in DB and at least one is unrendered.
+ */
+async function renderClipsOnly(
+  videoId: number,
+  filePath: string,
+  clipsToRender: Array<Awaited<ReturnType<typeof storage.getEditorialClipsByVideo>>[number]>,
+  start: number
+): Promise<EditorialAutoPipelineResult> {
+  const emptyResult: EditorialAutoPipelineResult = {
+    success: false,
+    videoId,
+    status: "failed",
+    clipsGenerated: 0,
+    clipsRendered: 0,
+    durationMs: 0,
+  };
+
+  let videoLocalPath: string | null = null;
+  let tempScopeDir: string | null = null;
+
+  try {
+    // Status → rendering. Touches updatedAt so stale-detection won't trigger.
+    await storage.updateVideoEditorialStatus(videoId, "rendering", { error: null });
+
+    // Need transcript for speaker-aware face tracking
+    const transcriptRecord = await storage.getVideoTranscript(videoId);
+    const speakerSegments = (transcriptRecord?.segments as any[]) || [];
+
+    // Resolve source video to local path
+    const resolved = await resolveSourceVideo(filePath, videoId);
+    videoLocalPath = resolved.localPath;
+    tempScopeDir = resolved.tempScopeDir;
+
+    if (!fs.existsSync(videoLocalPath)) {
+      throw new Error(`Source video not found locally: ${videoLocalPath}`);
+    }
+
+    const platformConfig = PLATFORM_CONFIGS[AUTO_PIPELINE_CONFIG.platformKey];
+    const renderOutputDir = path.join("/tmp/editorial-renders", `video-${videoId}-resume-${Date.now()}`);
+    fs.mkdirSync(renderOutputDir, { recursive: true });
+
+    let srcSize = { width: 1920, height: 1080 };
+    try {
+      srcSize = await getVideoSize(videoLocalPath);
+    } catch { /* keep default */ }
+
+    const needsReframe = srcSize.width > srcSize.height && platformConfig.aspectRatio === "9:16";
+    const allClips = await storage.getEditorialClipsByVideo(videoId);
+    const alreadyRendered = allClips.filter((c) => c.renderStatus === "rendered").length;
+
+    let renderedCount = alreadyRendered;
+    const renderErrors: string[] = [];
+
+    for (const clip of clipsToRender) {
+      // Cancellation check
+      const freshVideo = await storage.getVideoById(videoId);
+      if (freshVideo?.editorialStatus === "failed" && freshVideo?.editorialError === "Cancelled by user") {
+        console.log(`[EditorialAuto:Resume] Cancelled by user — stopping`);
+        break;
+      }
+
+      try {
+        await storage.updateEditorialClipRender(clip.id, { renderStatus: "rendering" });
+
+        const outputFilename = `editorial_${clip.id}_v${videoId}_${Date.now()}.mp4`;
+        const outputPath = path.join(renderOutputDir, outputFilename);
+        const thumbPath = outputPath.replace(".mp4", "_thumb.jpg");
+
+        if (needsReframe) {
+          console.log(`[EditorialAuto:Resume]   Face tracking clip ${clip.id} (${clip.duration.toFixed(1)}s)...`);
+          const faceFrames = await Promise.race([
+            detectFacesInClip(videoLocalPath, clip.clipStart, clip.duration, 0.5, 90000),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error("Face detection timeout")), 150000)
+            ),
+          ]).catch(() => {
+            console.warn(`[EditorialAuto:Resume]   Face detection timed out — using center crop`);
+            return [] as Awaited<ReturnType<typeof detectFacesInClip>>;
+          });
+
+          const trajectory = computeCropTrajectory(
+            faceFrames,
+            srcSize.width,
+            srcSize.height,
+            platformConfig.targetWidth,
+            platformConfig.targetHeight,
+            { speakerSegments, clipStartTime: clip.clipStart }
+          );
+
+          const vf = `${buildCropFilterExpr(trajectory)},scale=${platformConfig.targetWidth}:${platformConfig.targetHeight}`;
+          await runFFmpegRender({
+            videoPath: videoLocalPath,
+            startTime: clip.clipStart,
+            duration: clip.duration,
+            vf,
+            fps: platformConfig.targetFps,
+            outputPath,
+          });
+        } else {
+          const vf = `scale=${platformConfig.targetWidth}:${platformConfig.targetHeight}:force_original_aspect_ratio=decrease,pad=${platformConfig.targetWidth}:${platformConfig.targetHeight}:(ow-iw)/2:(oh-ih)/2:black`;
+          await runFFmpegRender({
+            videoPath: videoLocalPath,
+            startTime: clip.clipStart,
+            duration: clip.duration,
+            vf,
+            fps: platformConfig.targetFps,
+            outputPath,
+          });
+        }
+
+        if (!fs.existsSync(outputPath)) throw new Error("FFmpeg produced no output file");
+
+        try {
+          await runFFmpegThumbnail(outputPath, thumbPath, clip.duration * 0.25);
+        } catch { /* non-fatal */ }
+
+        const mp4ObjectKey = `public/editorial-clips/video-${videoId}/${outputFilename}`;
+        const mp4Url = await uploadFileToStorage(outputPath, mp4ObjectKey);
+
+        let thumbUrl: string | null = null;
+        if (fs.existsSync(thumbPath)) {
+          const thumbObjectKey = `public/editorial-clips/video-${videoId}/${path.basename(thumbPath)}`;
+          thumbUrl = await uploadFileToStorage(thumbPath, thumbObjectKey);
+        }
+
+        try { fs.unlinkSync(outputPath); } catch {}
+        try { fs.unlinkSync(thumbPath); } catch {}
+
+        await storage.updateEditorialClipRender(clip.id, {
+          exportPath: mp4Url,
+          thumbnailPath: thumbUrl,
+          aspectRatio: platformConfig.aspectRatio,
+          renderStatus: "rendered",
+          renderError: null,
+        });
+
+        renderedCount += 1;
+        console.log(`[EditorialAuto:Resume]   ✓ Rendered clip ${clip.id} → ${mp4Url}`);
+      } catch (err: any) {
+        const msg = err?.message || String(err);
+        renderErrors.push(`clip ${clip.id}: ${msg}`);
+        await storage.updateEditorialClipRender(clip.id, { renderStatus: "failed", renderError: msg });
+        console.error(`[EditorialAuto:Resume]   ✗ Render failed for clip ${clip.id}:`, msg);
+      }
+    }
+
+    try { fs.rmSync(renderOutputDir, { recursive: true, force: true }); } catch {}
+
+    await storage.updateVideoEditorialStatus(videoId, "ready", {
+      clipCount: renderedCount,
+      error: renderErrors.length > 0 ? `${renderErrors.length} render failures (resume)` : null,
+    });
+
+    const durationMs = Date.now() - start;
+    console.log(
+      `[EditorialAuto:Resume] ✅ Complete for video ${videoId}: ${renderedCount}/${allClips.length} rendered in ${(durationMs / 1000).toFixed(1)}s`
+    );
+
+    return {
+      success: true,
+      videoId,
+      status: "ready",
+      clipsGenerated: allClips.length,
+      clipsRendered: renderedCount,
+      durationMs,
+    };
+  } catch (err: any) {
+    const msg = err?.message || String(err);
+    console.error(`[EditorialAuto:Resume] ❌ Failed for video ${videoId}:`, msg);
+    await storage.updateVideoEditorialStatus(videoId, "failed", { error: msg });
+    return { ...emptyResult, error: msg, durationMs: Date.now() - start };
+  } finally {
+    if (videoLocalPath && tempScopeDir) {
+      try { fs.rmSync(tempScopeDir, { recursive: true, force: true }); } catch {}
     }
   }
 }

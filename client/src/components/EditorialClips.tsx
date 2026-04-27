@@ -81,6 +81,7 @@ interface EditorialStatusResponse {
   failedClips: number;
   pendingClips: number;
   completedAt: string | null;
+  updatedAt: string | null;
 }
 
 export interface EditorialClipsProps {
@@ -246,6 +247,7 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
         failedClips: 0,
         pendingClips: 0,
         completedAt: null,
+        updatedAt: new Date().toISOString(),
       });
     } catch (err: any) {
       toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -448,7 +450,17 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
   const inFlight = autoStatus && ["pending", "transcribing", "analyzing", "rendering"].includes(autoStatus.status);
   const autoFailed = autoStatus?.status === "failed";
   const hasUnrenderedClips = autoStatus && autoStatus.pendingClips > 0 && autoStatus.status === "none";
-  const showAutoBanner = inFlight || autoFailed || hasUnrenderedClips || (autoStatus?.status === "ready" && clips.length > 0);
+  // Stuck detection: in-flight but DB hasn't been touched in 5+ min — server probably restarted mid-render
+  const stuckMs = autoStatus?.updatedAt ? Date.now() - new Date(autoStatus.updatedAt).getTime() : 0;
+  const isStuck = Boolean(inFlight && stuckMs > 5 * 60 * 1000 && (autoStatus?.pendingClips ?? 0) > 0);
+  // Also offer resume if status is "ready" or "failed" but some clips never finished rendering
+  const hasOrphanedClips = Boolean(
+    autoStatus &&
+      (autoStatus.status === "ready" || autoStatus.status === "failed") &&
+      autoStatus.pendingClips > 0
+  );
+  const canResume = isStuck || hasOrphanedClips;
+  const showAutoBanner = inFlight || autoFailed || hasUnrenderedClips || canResume || (autoStatus?.status === "ready" && clips.length > 0);
 
   const stageLabel: Record<string, string> = {
     pending: "Queued…",
@@ -525,7 +537,7 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
                 <p className="text-xs text-red-300 mt-1 line-clamp-2">{autoStatus.error}</p>
               )}
             </div>
-            {!isBrandMode && inFlight && (
+            {!isBrandMode && inFlight && !isStuck && (
               <Button
                 size="sm"
                 variant="ghost"
@@ -542,6 +554,43 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
               >
                 <X className="w-3 h-3 mr-1" />
                 Cancel
+              </Button>
+            )}
+            {!isBrandMode && canResume && (
+              <Button
+                size="sm"
+                onClick={async () => {
+                  try {
+                    const res = await fetch(`/api/videos/${videoId}/editorial-resume`, {
+                      method: "POST",
+                      credentials: "include",
+                    });
+                    if (res.ok) {
+                      const data = await res.json();
+                      toast({
+                        title: "Resuming render",
+                        description: `Picking up ${data.toRender ?? "remaining"} unrendered clips. Already-rendered clips kept.`,
+                      });
+                      // Kick a fresh poll
+                      const next = await fetchAutoStatus();
+                      if (next) setAutoStatus(next);
+                    } else {
+                      const err = await res.json().catch(() => ({}));
+                      toast({
+                        title: "Resume failed",
+                        description: err.error || "Could not resume render",
+                        variant: "destructive",
+                      });
+                    }
+                  } catch (e: any) {
+                    toast({ title: "Resume failed", description: e.message, variant: "destructive" });
+                  }
+                }}
+                className="bg-amber-600 hover:bg-amber-500 text-white text-xs"
+                data-testid="button-editorial-resume"
+              >
+                <RefreshCw className="w-3 h-3 mr-1" />
+                Resume {isStuck ? "(stuck)" : "Render"}
               </Button>
             )}
             {!isBrandMode && !inFlight && (

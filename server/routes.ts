@@ -6867,6 +6867,8 @@ export async function registerRoutes(
         failedClips: failedCount,
         pendingClips: pendingCount,
         completedAt: video.editorialCompletedAt,
+        // Last DB update — UI uses this to detect stuck pipelines (no progress in 5+ min while in-flight)
+        updatedAt: video.updatedAt,
       });
     } catch (err: any) {
       console.error("[API] /api/videos/:videoId/editorial-status error:", err.message);
@@ -7067,6 +7069,63 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("[API] /api/videos/:videoId/editorial-auto error:", err.message);
       res.status(500).json({ error: err.message || "Failed to start pipeline" });
+    }
+  });
+
+  // POST /api/videos/:videoId/editorial-resume — Resume a stuck pipeline.
+  // Skips transcript+analysis, only renders clips with renderStatus !== "rendered".
+  // Use case: server restart left clips stuck in "rendering" state. This recovers
+  // without losing already-rendered clips.
+  app.post("/api/videos/:videoId/editorial-resume", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+      if (!video.filePath) return res.status(400).json({ error: "Video has no filePath" });
+
+      const existingClips = await storage.getEditorialClipsByVideo(videoId);
+      if (existingClips.length === 0) {
+        return res.status(400).json({
+          error: "No existing clips to resume — use /editorial-auto for a full run",
+        });
+      }
+
+      const unrendered = existingClips.filter((c) => c.renderStatus !== "rendered");
+      if (unrendered.length === 0) {
+        return res.json({
+          message: "All clips already rendered",
+          videoId,
+          rendered: existingClips.length,
+        });
+      }
+
+      // Fire-and-forget — respond immediately so UI gets a fast ack
+      res.json({
+        message: "Resume started",
+        videoId,
+        toRender: unrendered.length,
+        alreadyRendered: existingClips.length - unrendered.length,
+      });
+
+      // Match the pattern from editorial-auto: pipeline takes a numeric placeholder.
+      // userId on the videoIndex row is a string, so we fall back to 0 like the auto endpoint.
+      const pipelineUserId = 0;
+      runEditorialAutoPipeline(videoId, pipelineUserId, { resume: true })
+        .then(r => {
+          if (r.success) {
+            console.log(`[API] Editorial resume: ${r.clipsRendered}/${r.clipsGenerated} rendered for video ${videoId}`);
+          } else {
+            console.warn(`[API] Editorial resume failed for ${videoId}: ${r.error}`);
+          }
+        })
+        .catch(err => {
+          console.error(`[API] Editorial resume error for ${videoId}:`, err?.message || err);
+        });
+    } catch (err: any) {
+      console.error("[API] /api/videos/:videoId/editorial-resume error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to resume pipeline" });
     }
   });
 
