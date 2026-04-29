@@ -4987,6 +4987,246 @@ export async function registerRoutes(
   });
 
   // ============================================================================
+  // BRAND PLACEMENT ASSIGNMENTS — brand-initiated placement requests, creator approves
+  // ============================================================================
+
+  // POST /api/brand/placements — Brand creates one or more placement requests on a creator's video.
+  // Body: { videoId, brandProductId, surfaceIds: number[], message?: string }
+  // For each surfaceId: creates one assignment with status pending_creator_review.
+  // Returns 409 if any surface already has an active placement (one-brand-per-surface).
+  app.post("/api/brand/placements", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const brandUserId = req.authUserId;
+      const { videoId, brandProductId, surfaceIds, message } = req.body || {};
+
+      if (!videoId || !brandProductId || !Array.isArray(surfaceIds) || surfaceIds.length === 0) {
+        return res.status(400).json({
+          error: "Missing required fields: videoId, brandProductId, surfaceIds (non-empty array)",
+        });
+      }
+
+      // Verify video exists and capture creator's userId
+      const video = await storage.getVideoById(parseInt(videoId));
+      if (!video) return res.status(404).json({ error: "Video not found" });
+      const creatorUserId = video.userId;
+
+      // Verify brand owns the product
+      const product = await storage.getBrandProduct(parseInt(brandProductId));
+      if (!product) return res.status(404).json({ error: "Brand product not found" });
+      if (product.userId !== brandUserId) {
+        return res.status(403).json({ error: "Not authorized to use this product" });
+      }
+
+      // Pre-flight: which surfaces are already taken
+      const conflicts: { surfaceId: number; existingAssignmentId: number }[] = [];
+      for (const sid of surfaceIds) {
+        const existing = await storage.getActivePlacementForSurface(parseInt(sid));
+        if (existing) {
+          conflicts.push({ surfaceId: parseInt(sid), existingAssignmentId: existing.id });
+        }
+      }
+      if (conflicts.length > 0) {
+        return res.status(409).json({
+          error: "One or more surfaces already have an active placement",
+          conflicts,
+        });
+      }
+
+      // Create assignments
+      const created: any[] = [];
+      for (const sid of surfaceIds) {
+        const row = await storage.createBrandPlacement({
+          brandUserId,
+          creatorUserId,
+          videoId: parseInt(videoId),
+          brandProductId: parseInt(brandProductId),
+          surfaceId: parseInt(sid),
+          status: "pending_creator_review",
+          brandMessage: message || null,
+        });
+        created.push(row);
+      }
+
+      console.log(
+        `[BrandPlacement] Brand ${brandUserId} requested ${created.length} placement(s) on video ${videoId} for product ${brandProductId}`,
+      );
+      res.json({ assignments: created, count: created.length });
+    } catch (err: any) {
+      console.error("[API] /api/brand/placements POST error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to create placement requests" });
+    }
+  });
+
+  // GET /api/brand/placements?status=... — Brand lists their own assignments.
+  app.get("/api/brand/placements", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const brandUserId = req.authUserId;
+      const status = typeof req.query.status === "string" ? req.query.status : undefined;
+      const placements = await storage.getBrandPlacements(brandUserId, status);
+      res.json({ placements, count: placements.length });
+    } catch (err: any) {
+      console.error("[API] /api/brand/placements GET error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to list placements" });
+    }
+  });
+
+  // POST /api/brand/placements/:id/withdraw — Brand cancels a pending request.
+  app.post("/api/brand/placements/:id/withdraw", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const brandUserId = req.authUserId;
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ error: "Invalid placement ID" });
+
+      const placement = await storage.getBrandPlacementById(id);
+      if (!placement) return res.status(404).json({ error: "Placement not found" });
+      if (placement.brandUserId !== brandUserId) {
+        return res.status(403).json({ error: "Not authorized to withdraw this placement" });
+      }
+      if (!["pending_creator_review", "creator_approved"].includes(placement.status)) {
+        return res.status(400).json({ error: `Cannot withdraw a ${placement.status} placement` });
+      }
+      const updated = await storage.updateBrandPlacementStatus(id, "brand_withdrawn");
+      res.json({ placement: updated });
+    } catch (err: any) {
+      console.error("[API] /api/brand/placements/:id/withdraw error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to withdraw placement" });
+    }
+  });
+
+  // GET /api/creator/placements/inbox — Creator's pending placement requests.
+  app.get("/api/creator/placements/inbox", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const creatorUserId = req.authUserId;
+      const status = typeof req.query.status === "string" ? req.query.status : "pending_creator_review";
+      const placements = await storage.getCreatorPlacements(creatorUserId, status);
+
+      // Hydrate with product + video + surface details so the inbox UI doesn't need 4 round-trips
+      const hydrated = await Promise.all(
+        placements.map(async (p) => {
+          const [product, video, surfaces] = await Promise.all([
+            storage.getBrandProduct(p.brandProductId),
+            storage.getVideoById(p.videoId),
+            storage.getDetectedSurfaces(p.videoId),
+          ]);
+          const surface = surfaces.find((s) => s.id === p.surfaceId);
+          return {
+            ...p,
+            product: product
+              ? { id: product.id, name: product.name, imageUrl: product.imageUrl, thumbnailUrl: product.thumbnailUrl, category: product.category }
+              : null,
+            video: video ? { id: video.id, title: video.title, thumbnailUrl: video.thumbnailUrl } : null,
+            surface: surface
+              ? {
+                  id: surface.id,
+                  surfaceType: surface.surfaceType,
+                  timestamp: surface.timestamp,
+                  boundingBox: {
+                    x: surface.boundingBoxX,
+                    y: surface.boundingBoxY,
+                    width: surface.boundingBoxWidth,
+                    height: surface.boundingBoxHeight,
+                  },
+                }
+              : null,
+          };
+        }),
+      );
+
+      res.json({ placements: hydrated, count: hydrated.length });
+    } catch (err: any) {
+      console.error("[API] /api/creator/placements/inbox error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to fetch inbox" });
+    }
+  });
+
+  // GET /api/creator/placements/inbox/count — Just the badge number.
+  app.get("/api/creator/placements/inbox/count", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const creatorUserId = req.authUserId;
+      const count = await storage.countPendingPlacementsForCreator(creatorUserId);
+      res.json({ count });
+    } catch (err: any) {
+      console.error("[API] /api/creator/placements/inbox/count error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to count" });
+    }
+  });
+
+  // POST /api/creator/placements/:id/approve — Creator approves the placement.
+  app.post("/api/creator/placements/:id/approve", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const creatorUserId = req.authUserId;
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ error: "Invalid placement ID" });
+
+      const placement = await storage.getBrandPlacementById(id);
+      if (!placement) return res.status(404).json({ error: "Placement not found" });
+      if (placement.creatorUserId !== creatorUserId) {
+        return res.status(403).json({ error: "Not authorized to approve this placement" });
+      }
+      if (placement.status !== "pending_creator_review") {
+        return res.status(400).json({ error: `Cannot approve a ${placement.status} placement` });
+      }
+      const updated = await storage.updateBrandPlacementStatus(id, "creator_approved");
+      console.log(`[BrandPlacement] Creator ${creatorUserId} APPROVED placement ${id}`);
+      res.json({ placement: updated });
+    } catch (err: any) {
+      console.error("[API] /api/creator/placements/:id/approve error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to approve placement" });
+    }
+  });
+
+  // POST /api/creator/placements/:id/reject — Creator rejects the placement (with optional reason).
+  app.post("/api/creator/placements/:id/reject", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const creatorUserId = req.authUserId;
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ error: "Invalid placement ID" });
+
+      const placement = await storage.getBrandPlacementById(id);
+      if (!placement) return res.status(404).json({ error: "Placement not found" });
+      if (placement.creatorUserId !== creatorUserId) {
+        return res.status(403).json({ error: "Not authorized to reject this placement" });
+      }
+      if (placement.status !== "pending_creator_review") {
+        return res.status(400).json({ error: `Cannot reject a ${placement.status} placement` });
+      }
+      const reason = typeof req.body?.reason === "string" ? req.body.reason : undefined;
+      const updated = await storage.updateBrandPlacementStatus(id, "creator_rejected", { rejectionReason: reason });
+      console.log(`[BrandPlacement] Creator ${creatorUserId} REJECTED placement ${id} (reason: ${reason || "none"})`);
+      res.json({ placement: updated });
+    } catch (err: any) {
+      console.error("[API] /api/creator/placements/:id/reject error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to reject placement" });
+    }
+  });
+
+  // GET /api/videos/:videoId/placements/approved — Used by render pipeline; lists all
+  // approved brand placements for a video. Returns hydrated product + surface info.
+  app.get("/api/videos/:videoId/placements/approved", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+
+      const placements = await storage.getApprovedPlacementsForVideo(videoId);
+      const hydrated = await Promise.all(
+        placements.map(async (p) => {
+          const product = await storage.getBrandProduct(p.brandProductId);
+          return {
+            ...p,
+            product: product
+              ? { id: product.id, name: product.name, imageUrl: product.imageUrl, category: product.category }
+              : null,
+          };
+        }),
+      );
+      res.json({ placements: hydrated, count: hydrated.length });
+    } catch (err: any) {
+      console.error("[API] /api/videos/:videoId/placements/approved error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to fetch approved placements" });
+    }
+  });
+
+  // ============================================================================
   // SAVED PLACEMENTS — persistent product-on-surface configurations
   // ============================================================================
 

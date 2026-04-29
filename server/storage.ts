@@ -7,6 +7,7 @@ import {
   videoIndex,
   detectedSurfaces,
   brandProducts,
+  brandPlacementAssignments,
   savedPlacements,
   videoExports,
   sharedLinks,
@@ -28,6 +29,8 @@ import {
   type InsertDetectedSurface,
   type BrandProduct,
   type InsertBrandProduct,
+  type BrandPlacementAssignment,
+  type InsertBrandPlacementAssignment,
   type SavedPlacement,
   type InsertSavedPlacement,
   type VideoExport,
@@ -1004,6 +1007,157 @@ export class DatabaseStorage implements IStorage {
       .select()
       .from(brandProducts)
       .orderBy(desc(brandProducts.createdAt));
+  }
+
+  // ── Brand Placement Assignment Methods ────────────────────────────────────
+
+  /**
+   * Statuses considered "active" — they hold a surface lock and prevent other
+   * brands from requesting the same surface.
+   */
+  private readonly ACTIVE_PLACEMENT_STATUSES = ["pending_creator_review", "creator_approved"] as const;
+
+  /**
+   * Returns the active assignment for a surface, if any.
+   * Used to enforce one-brand-per-surface.
+   */
+  async getActivePlacementForSurface(surfaceId: number): Promise<BrandPlacementAssignment | undefined> {
+    const rows = await db
+      .select()
+      .from(brandPlacementAssignments)
+      .where(
+        and(
+          eq(brandPlacementAssignments.surfaceId, surfaceId),
+          or(
+            eq(brandPlacementAssignments.status, "pending_creator_review"),
+            eq(brandPlacementAssignments.status, "creator_approved"),
+          ),
+        ),
+      )
+      .limit(1);
+    return rows[0];
+  }
+
+  /**
+   * Create a placement assignment. Throws if the surface is already taken
+   * by another active assignment (one-brand-per-surface invariant).
+   */
+  async createBrandPlacement(
+    data: InsertBrandPlacementAssignment,
+  ): Promise<BrandPlacementAssignment> {
+    const existing = await this.getActivePlacementForSurface(data.surfaceId);
+    if (existing) {
+      const err = new Error(
+        `Surface ${data.surfaceId} already has an active placement (assignment ${existing.id}, status=${existing.status})`,
+      );
+      (err as any).code = "SURFACE_TAKEN";
+      (err as any).existingAssignmentId = existing.id;
+      throw err;
+    }
+    const [row] = await db.insert(brandPlacementAssignments).values(data).returning();
+    return row;
+  }
+
+  /**
+   * List a brand's own assignments (optionally filtered by status).
+   */
+  async getBrandPlacements(
+    brandUserId: string,
+    status?: string,
+  ): Promise<BrandPlacementAssignment[]> {
+    const conditions = [eq(brandPlacementAssignments.brandUserId, brandUserId)];
+    if (status) conditions.push(eq(brandPlacementAssignments.status, status));
+    return await db
+      .select()
+      .from(brandPlacementAssignments)
+      .where(and(...conditions))
+      .orderBy(desc(brandPlacementAssignments.createdAt));
+  }
+
+  /**
+   * Creator's inbox — assignments pending their review (or filter by any status).
+   */
+  async getCreatorPlacements(
+    creatorUserId: string,
+    status: string = "pending_creator_review",
+  ): Promise<BrandPlacementAssignment[]> {
+    return await db
+      .select()
+      .from(brandPlacementAssignments)
+      .where(
+        and(
+          eq(brandPlacementAssignments.creatorUserId, creatorUserId),
+          eq(brandPlacementAssignments.status, status),
+        ),
+      )
+      .orderBy(desc(brandPlacementAssignments.createdAt));
+  }
+
+  /**
+   * All approved placements for a video — used by the render pipeline to know
+   * which brand products to composite onto which surfaces.
+   */
+  async getApprovedPlacementsForVideo(videoId: number): Promise<BrandPlacementAssignment[]> {
+    return await db
+      .select()
+      .from(brandPlacementAssignments)
+      .where(
+        and(
+          eq(brandPlacementAssignments.videoId, videoId),
+          eq(brandPlacementAssignments.status, "creator_approved"),
+        ),
+      );
+  }
+
+  async getBrandPlacementById(id: number): Promise<BrandPlacementAssignment | undefined> {
+    const rows = await db
+      .select()
+      .from(brandPlacementAssignments)
+      .where(eq(brandPlacementAssignments.id, id))
+      .limit(1);
+    return rows[0];
+  }
+
+  /**
+   * Update placement status. Sets reviewedAt when transitioning to a terminal state.
+   */
+  async updateBrandPlacementStatus(
+    id: number,
+    status: "creator_approved" | "creator_rejected" | "brand_withdrawn" | "expired",
+    opts: { rejectionReason?: string } = {},
+  ): Promise<BrandPlacementAssignment | undefined> {
+    const patch: Record<string, any> = {
+      status,
+      updatedAt: new Date(),
+    };
+    if (status === "creator_approved" || status === "creator_rejected") {
+      patch.reviewedAt = new Date();
+    }
+    if (opts.rejectionReason !== undefined) {
+      patch.rejectionReason = opts.rejectionReason;
+    }
+    const [row] = await db
+      .update(brandPlacementAssignments)
+      .set(patch)
+      .where(eq(brandPlacementAssignments.id, id))
+      .returning();
+    return row;
+  }
+
+  /**
+   * Count of pending placements for a creator — used for inbox badge.
+   */
+  async countPendingPlacementsForCreator(creatorUserId: string): Promise<number> {
+    const result = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(brandPlacementAssignments)
+      .where(
+        and(
+          eq(brandPlacementAssignments.creatorUserId, creatorUserId),
+          eq(brandPlacementAssignments.status, "pending_creator_review"),
+        ),
+      );
+    return result[0]?.count ?? 0;
   }
 
   // Saved placement methods

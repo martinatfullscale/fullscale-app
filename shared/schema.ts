@@ -222,6 +222,40 @@ export const insertBrandProductSchema = createInsertSchema(brandProducts).omit({
 export type BrandProduct = typeof brandProducts.$inferSelect;
 export type InsertBrandProduct = z.infer<typeof insertBrandProductSchema>;
 
+// Brand Placement Assignments — brand-initiated placement requests waiting for creator approval.
+// Flow: brand picks a product + surface(s) on a creator's video → row created with status
+// 'pending_creator_review' → creator sees in their inbox → approves or rejects → on approval,
+// auto-remix renders include the brand product on that surface.
+//
+// Constraint: only ONE active (pending or approved) assignment per surface_id. Enforced at
+// app layer in storage.createBrandPlacement(). A second brand requesting the same surface
+// gets a 409 Conflict until the first is rejected/withdrawn.
+export const brandPlacementAssignments = pgTable("brand_placement_assignments", {
+  id: serial("id").primaryKey(),
+  brandUserId: varchar("brand_user_id").notNull(),       // Brand who requested placement
+  creatorUserId: varchar("creator_user_id").notNull(),   // Creator who owns the video
+  videoId: integer("video_id").notNull(),                // FK to video_index.id
+  brandProductId: integer("brand_product_id").notNull(), // FK to brand_products.id
+  surfaceId: integer("surface_id").notNull(),            // FK to detected_surfaces.id
+  // Status lifecycle:
+  //   pending_creator_review (default) → creator_approved | creator_rejected | brand_withdrawn | expired
+  status: varchar("status", { length: 30 }).notNull().default("pending_creator_review"),
+  brandMessage: text("brand_message"),                   // Optional message from brand → creator
+  rejectionReason: text("rejection_reason"),             // Optional reason from creator
+  reviewedAt: timestamp("reviewed_at"),                  // When creator approved/rejected
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const insertBrandPlacementAssignmentSchema = createInsertSchema(brandPlacementAssignments).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type BrandPlacementAssignment = typeof brandPlacementAssignments.$inferSelect;
+export type InsertBrandPlacementAssignment = z.infer<typeof insertBrandPlacementAssignmentSchema>;
+
 // Saved Placements Table - persistent product placements on video surfaces
 // Supports scene continuity: a placement on one surface auto-propagates to similar surfaces
 export const savedPlacements = pgTable("saved_placements", {

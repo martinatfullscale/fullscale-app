@@ -29,6 +29,7 @@ import Terms from "@/pages/Terms";
 import CreatorProfile from "@/pages/CreatorProfile";
 import BrandProducts from "@/pages/BrandProducts";
 import SavedPlacements from "@/pages/SavedPlacements";
+import PlacementInbox from "@/pages/PlacementInbox";
 import RemixEngine from "@/components/RemixEngine";
 import SharedView from "@/pages/SharedView";
 import ComingSoon from "@/pages/ComingSoon";
@@ -263,6 +264,7 @@ function Router() {
               <Route path="/campaigns" component={Campaigns} />
               <Route path="/brand-products" component={BrandProducts} />
               <Route path="/saved-placements" component={SavedPlacements} />
+              <Route path="/inbox" component={PlacementInbox} />
               <Route path="/settings" component={Settings} />
               <Route path="/earnings" component={Dashboard} />
               <Route path="/studio/upload">{() => <StudioAccessGuard><StudioUpload /></StudioAccessGuard>}</Route>

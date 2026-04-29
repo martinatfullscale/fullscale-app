@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, FolderOpen, Zap, DollarSign, LogOut, Settings, ArrowLeftRight, Globe, Wand2 } from "lucide-react";
+import { LayoutDashboard, FolderOpen, Zap, DollarSign, LogOut, Settings, ArrowLeftRight, Globe, Wand2, Inbox } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
@@ -41,9 +41,18 @@ export function Sidebar() {
     switchRoleMutation.mutate("brand");
   };
 
+  // Pending placement requests count — shows as a badge on the Inbox link.
+  // Polls every 60s so creators see new requests without manually refreshing.
+  const { data: inboxCountData } = useQuery<{ count: number }>({
+    queryKey: ["/api/creator/placements/inbox/count"],
+    refetchInterval: 60_000,
+  });
+  const inboxCount = inboxCountData?.count ?? 0;
+
   const links = [
     { href: "/", label: "Dashboard", icon: LayoutDashboard },
     { href: "/library", label: "My Library", icon: FolderOpen },
+    { href: "/inbox", label: "Inbox", icon: Inbox, badge: inboxCount },
     { href: "/opportunities", label: "Opportunities", icon: Zap },
     { href: "/earnings", label: "Earnings", icon: DollarSign },
     { href: "/settings", label: "Settings", icon: Settings },
@@ -59,15 +68,24 @@ export function Sidebar() {
         {links.map((link) => {
           const Icon = link.icon;
           const isActive = location === link.href;
+          const badge = (link as any).badge as number | undefined;
           return (
             <Link
               key={link.href}
               href={link.href}
-              className={cn("sidebar-link", isActive && "active")}
+              className={cn("sidebar-link relative", isActive && "active")}
               data-testid={`link-${link.label.toLowerCase().replace(/\s/g, "-")}`}
             >
               <Icon className={cn("w-5 h-5", isActive ? "stroke-[2.5px]" : "stroke-2")} />
-              {link.label}
+              <span className="flex-1">{link.label}</span>
+              {badge !== undefined && badge > 0 && (
+                <span
+                  className="ml-auto inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full text-[11px] font-semibold bg-emerald-500 text-white"
+                  data-testid={`badge-${link.label.toLowerCase()}`}
+                >
+                  {badge > 99 ? "99+" : badge}
+                </span>
+              )}
             </Link>
           );
         })}
