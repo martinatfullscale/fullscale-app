@@ -527,15 +527,24 @@ Return a JSON object with the following structure:
 
 For each surface in the surfaces array:
 - surfaceType: One of: Desk, Table, Wall, Shelf, Floor, Monitor, Laptop
+- subtype: Optional specific descriptor (e.g., "back wall", "accent wall", "bookshelf", "kitchen shelf", "floating shelf")
 - confidence: 0.0-1.0 (include surfaces ${confidenceThreshold}+ confidence)
 - boundingBox: {x, y, width, height} normalized 0-1
+
+ACTIVELY LOOK FOR these placement opportunities — do NOT skip them:
+- WALLS: every visible wall surface counts (back wall behind subject, accent walls, side walls). These are where posters, prints, decals, neon signs, framed art, and murals get placed. Even if a wall is largely empty, return it as a placement opportunity. Tag subtype: "back wall", "side wall", "accent wall".
+- SHELVES: bookshelves, floating shelves, kitchen shelves, mantels, ledges, display shelves. These are where products, books, decor sit. Tag subtype: "bookshelf", "floating shelf", "kitchen shelf", "mantel".
+- DESKS / TABLES: tabletop products like beverages, electronics.
+- MONITORS / LAPTOPS: on-screen overlays.
+
+Walls and shelves are HIGH-VALUE placements — many videos have great wall/shelf real estate that goes unused. If you see a wall or shelf, return it.
 
 Look for visual cues to determine cultural context: power outlet types, architecture style, clothing, signage, or decor.
 
 CRITICAL: Return ONLY a valid JSON object. No markdown, no explanation.
 
 Example response:
-{"surfaces": [{"surfaceType": "Desk", "confidence": 0.92, "boundingBox": {"x": 0.1, "y": 0.5, "width": 0.8, "height": 0.45}}], "sentiment": "Educational", "cultural_context": "Western Home Office", "brand_safety_score": 95}
+{"surfaces": [{"surfaceType": "Desk", "confidence": 0.92, "boundingBox": {"x": 0.1, "y": 0.5, "width": 0.8, "height": 0.45}}, {"surfaceType": "Wall", "subtype": "back wall", "confidence": 0.88, "boundingBox": {"x": 0, "y": 0, "width": 1, "height": 0.5}}, {"surfaceType": "Shelf", "subtype": "bookshelf", "confidence": 0.81, "boundingBox": {"x": 0.6, "y": 0.1, "width": 0.35, "height": 0.4}}], "sentiment": "Educational", "cultural_context": "Western Home Office", "brand_safety_score": 95}
 
 If no surfaces visible, return: {"surfaces": [], "sentiment": "Neutral", "cultural_context": "General", "brand_safety_score": 70}`;
     

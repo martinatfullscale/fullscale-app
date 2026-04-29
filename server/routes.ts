@@ -6572,12 +6572,21 @@ export async function registerRoutes(
             reasoning: analysis.reasoning || "",
           },
           brandMatches: {
-            matches: brandMatches.map((m: any) => ({
-              brandProductId: m.brandProductId,
-              compatibilityScore: m.compatibilityScore || 0,
-              reasoning: m.reasoning || "",
-              suggestedPlacementStyle: m.suggestedPlacementStyle || "natural tabletop",
-            })),
+            matches: brandMatches.map((m: any) => {
+              // Surface-aware fallback so we never default a wall to "natural tabletop"
+              const sType = (surface.surfaceType || "table").toLowerCase();
+              let fallback = "natural tabletop";
+              if (sType.includes("wall")) fallback = "wall poster";
+              else if (sType.includes("shelf")) fallback = "shelf prop";
+              else if (sType.includes("monitor") || sType.includes("laptop") || sType.includes("tv")) fallback = "screen overlay";
+              else if (sType.includes("floor")) fallback = "floor display";
+              return {
+                brandProductId: m.brandProductId,
+                compatibilityScore: m.compatibilityScore || 0,
+                reasoning: m.reasoning || "",
+                suggestedPlacementStyle: m.suggestedPlacementStyle || fallback,
+              };
+            }),
           },
           surfaceDetails: {
             surfaceType: surface.surfaceType || "table",
