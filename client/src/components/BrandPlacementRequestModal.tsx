@@ -92,6 +92,7 @@ export function BrandPlacementRequestModal({
   const [selectedSurfaceIds, setSelectedSurfaceIds] = useState<Set<number>>(new Set());
   const [message, setMessage] = useState("");
   const [conflictSurfaceIds, setConflictSurfaceIds] = useState<Set<number>>(new Set());
+  const [durationTerm, setDurationTerm] = useState<"single" | "1-month" | "3-month" | "6-month" | "12-month">("single");
 
   // Brand's products
   const { data: productsData, isLoading: productsLoading } = useQuery<{ products?: BrandProduct[] } | BrandProduct[]>({
@@ -132,24 +133,48 @@ export function BrandPlacementRequestModal({
     return set;
   }, [approvedData]);
 
-  // Live price quote — refetches when the count of selected surfaces changes
+  // Live price quote — refetches when surfaces or duration change
   const { data: quoteData } = useQuery<{
-    perPlacement: { placementFeeCents: number; creatorPayoutCents: number };
+    creator: { followerCount: number | null; avgRecentViews: number; tier: string };
+    video: { ageDays: number; viewCount: number };
+    clip: { id: number; monetizationTier: string | null; finalScore: number | null } | null;
+    durationTerm: string;
+    durationDays: number;
+    perSurfaceQuotes: Array<{
+      surfaceId: number | null;
+      surfaceType: string | null;
+      breakdown: {
+        placementFeeCents: number;
+        creatorPayoutCents: number;
+        expectedImpressions: number;
+        creatorTier: string;
+        creatorTierMultiplier: number;
+        contentTier: string;
+        contentTierMultiplier: number;
+        recencyMultiplier: number;
+        surfaceMultiplier: number;
+        durationMultiplier: number;
+        rawCalculatedCents: number;
+      };
+    }>;
     totalFeeCents: number;
     totalFeeUsd: string;
     creatorTotalPayoutUsd: string;
-    tier: string | null;
     isTestPlacement: boolean;
+    rubric: { baseCpmUsd: number };
   }>({
     queryKey: [
       "/api/brand/placements/quote",
-      { editorialClipId, videoId, surfaceCount: selectedSurfaceIds.size },
+      { editorialClipId, videoId, surfaceIds: Array.from(selectedSurfaceIds).sort(), durationTerm },
     ],
     queryFn: async () => {
       const params = new URLSearchParams();
       if (editorialClipId) params.set("editorialClipId", String(editorialClipId));
       else if (videoId) params.set("videoId", String(videoId));
-      params.set("surfaceCount", String(Math.max(1, selectedSurfaceIds.size)));
+      params.set("durationTerm", durationTerm);
+      if (selectedSurfaceIds.size > 0) {
+        params.set("surfaceIds", Array.from(selectedSurfaceIds).join(","));
+      }
       const res = await fetch(`/api/brand/placements/quote?${params.toString()}`, {
         credentials: "include",
       });
@@ -166,6 +191,7 @@ export function BrandPlacementRequestModal({
         brandProductId: parseInt(selectedProductId),
         surfaceIds,
         message: message.trim() || undefined,
+        durationTerm,
       };
       // Prefer clip-targeted mode when available
       if (editorialClipId) body.editorialClipId = editorialClipId;
@@ -398,47 +424,135 @@ export function BrandPlacementRequestModal({
             )}
           </div>
 
-          {/* Price quote */}
+          {/* Duration term selector */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Engagement duration</label>
+            <div className="grid grid-cols-5 gap-1.5">
+              {[
+                { key: "single" as const, label: "Single", desc: "One-time" },
+                { key: "1-month" as const, label: "1 mo", desc: "Locked" },
+                { key: "3-month" as const, label: "3 mo", desc: "−17%/mo" },
+                { key: "6-month" as const, label: "6 mo", desc: "−25%/mo" },
+                { key: "12-month" as const, label: "12 mo", desc: "−33%/mo" },
+              ].map((d) => (
+                <button
+                  key={d.key}
+                  type="button"
+                  onClick={() => setDurationTerm(d.key)}
+                  className={`p-2 rounded-md border text-center transition-colors ${
+                    durationTerm === d.key
+                      ? "border-emerald-500/60 bg-emerald-500/15 text-emerald-200"
+                      : "border-border/50 hover:border-border/80"
+                  }`}
+                  data-testid={`button-duration-${d.key}`}
+                >
+                  <div className="text-sm font-medium">{d.label}</div>
+                  <div className="text-[10px] text-muted-foreground">{d.desc}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Price quote — full rubric breakdown */}
           {quoteData && selectedSurfaceIds.size > 0 && (
             <div
-              className={`rounded-md border p-3 ${
+              className={`rounded-md border p-4 space-y-3 ${
                 quoteData.isTestPlacement
                   ? "border-blue-500/40 bg-blue-500/10"
                   : "border-emerald-500/30 bg-emerald-500/5"
               }`}
               data-testid="panel-price-quote"
             >
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-xs uppercase tracking-widest text-muted-foreground/70 flex items-center gap-1">
-                  <DollarSign className="w-3 h-3" />
-                  Total cost
-                </span>
-                <span className="text-xl font-bold" data-testid="text-total-fee">
-                  ${quoteData.totalFeeUsd}
-                </span>
+              {/* Big total */}
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-xs uppercase tracking-widest text-muted-foreground/70 flex items-center gap-1 mb-0.5">
+                    <DollarSign className="w-3 h-3" />
+                    {durationTerm === "single" ? "Total cost" : `Total for ${quoteData.durationDays}-day commitment`}
+                  </div>
+                  <div className="text-2xl font-bold" data-testid="text-total-fee">
+                    ${quoteData.totalFeeUsd}
+                  </div>
+                </div>
+                <div className="text-right text-xs">
+                  <div className="text-muted-foreground/70">Creator earns</div>
+                  <div className="text-base font-semibold text-emerald-300">
+                    ${quoteData.creatorTotalPayoutUsd}
+                  </div>
+                </div>
               </div>
-              <div className="text-xs text-muted-foreground space-y-0.5">
-                <p>
-                  {selectedSurfaceIds.size} placement{selectedSurfaceIds.size !== 1 ? "s" : ""}
-                  {quoteData.tier && (
-                    <>
-                      {" · "}
-                      <span className="capitalize">{quoteData.tier} tier</span>
-                    </>
+
+              {/* Rubric breakdown */}
+              {quoteData.perSurfaceQuotes && quoteData.perSurfaceQuotes[0] && (
+                <div className="text-[11px] text-muted-foreground/80 space-y-1 pt-2 border-t border-border/50">
+                  <div className="flex justify-between">
+                    <span>Expected reach</span>
+                    <span className="font-mono">
+                      {quoteData.perSurfaceQuotes[0].breakdown.expectedImpressions.toLocaleString()} views
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Base CPM</span>
+                    <span className="font-mono">${quoteData.rubric?.baseCpmUsd ?? 7}.00</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>
+                      Creator tier (
+                      {quoteData.creator.followerCount?.toLocaleString() ?? "?"} followers,{" "}
+                      <span className="capitalize">{quoteData.creator.tier}</span>)
+                    </span>
+                    <span className="font-mono">
+                      ×{quoteData.perSurfaceQuotes[0].breakdown.creatorTierMultiplier.toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>
+                      Content tier (<span className="capitalize">{quoteData.perSurfaceQuotes[0].breakdown.contentTier}</span>)
+                    </span>
+                    <span className="font-mono">
+                      ×{quoteData.perSurfaceQuotes[0].breakdown.contentTierMultiplier.toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Video age ({quoteData.video.ageDays} days)</span>
+                    <span className="font-mono">
+                      ×{quoteData.perSurfaceQuotes[0].breakdown.recencyMultiplier.toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Surface (avg across {selectedSurfaceIds.size})</span>
+                    <span className="font-mono">
+                      ×
+                      {(
+                        quoteData.perSurfaceQuotes.reduce(
+                          (s, q) => s + q.breakdown.surfaceMultiplier,
+                          0,
+                        ) / quoteData.perSurfaceQuotes.length
+                      ).toFixed(2)}
+                    </span>
+                  </div>
+                  {durationTerm !== "single" && (
+                    <div className="flex justify-between">
+                      <span>Duration ({durationTerm})</span>
+                      <span className="font-mono">
+                        ×{quoteData.perSurfaceQuotes[0].breakdown.durationMultiplier.toFixed(2)}
+                      </span>
+                    </div>
                   )}
-                  {" · "}
-                  Creator earns ${quoteData.creatorTotalPayoutUsd}
+                </div>
+              )}
+
+              {quoteData.isTestPlacement && (
+                <p className="text-xs text-blue-300 font-medium flex items-center gap-1 pt-2 border-t border-border/50">
+                  <CheckCircle2 className="w-3 h-3" />
+                  Test placement — no charge applied
                 </p>
-                {quoteData.isTestPlacement && (
-                  <p className="text-blue-300 font-medium flex items-center gap-1">
-                    <CheckCircle2 className="w-3 h-3" />
-                    Test placement — no charge applied
-                  </p>
-                )}
-                {!quoteData.isTestPlacement && (
-                  <p>Charged when creator approves. Refunded if rejected.</p>
-                )}
-              </div>
+              )}
+              {!quoteData.isTestPlacement && (
+                <p className="text-xs text-muted-foreground pt-2 border-t border-border/50">
+                  Charged when creator approves. Refunded if rejected.
+                </p>
+              )}
             </div>
           )}
 

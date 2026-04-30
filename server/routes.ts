@@ -10,7 +10,19 @@ import { processVideoScan, scanPendingVideos, addToLocalAssetMap, getYouTubeThum
 // import { queueVideoScan, getScanJobStatus, getQueueStatus, initializeScanWorker } from "./lib/scanWorker";
 // import { detectSurfacesFromVideo } from "./lib/surfaceDetector";
 import { extractThumbnailForVideo, extractAndUpdateThumbnails } from "./lib/thumbnailExtractor";
-import { calculatePlacementPricing, formatCents, PLACEMENT_FEE_BY_TIER } from "./lib/placementPricing";
+import {
+  calculatePlacementPricing,
+  formatCents,
+  formatImpressions,
+  avgRecentViews,
+  computeExpiresAt,
+  videoAgeDays as calcVideoAgeDays,
+  type DurationTerm,
+  CREATOR_TIER_MULTIPLIER,
+  CONTENT_TIER_MULTIPLIER,
+  DURATION_MULTIPLIER,
+  BASE_CPM_USD,
+} from "./lib/placementPricing";
 import { processVideoExport } from "./lib/videoExporter";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 import { hashPassword, verifyPassword } from "./lib/password";
@@ -4991,42 +5003,142 @@ export async function registerRoutes(
   // BRAND PLACEMENT ASSIGNMENTS — brand-initiated placement requests, creator approves
   // ============================================================================
 
-  // GET /api/brand/placements/quote?editorialClipId=...&surfaceCount=N&isTestPlacement=...
-  // Returns the placement fee for a given clip + count without creating anything.
-  // Used by BrandPlacementRequestModal to show the price upfront.
+  // GET /api/brand/placements/quote — Returns the placement fee for a given clip,
+  // surface(s), and duration term without creating anything. Uses the full CPM rubric:
+  // creator follower count + recent avg views + video age + clip tier + surface
+  // prominence + duration commitment.
+  //
+  // Query: editorialClipId, surfaceIds[], durationTerm (single|1-month|3-month|6-month|12-month),
+  //        isTestPlacement (admin only), customFeeCents (admin only)
   app.get("/api/brand/placements/quote", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const editorialClipId = req.query.editorialClipId ? parseInt(req.query.editorialClipId as string) : undefined;
       const videoId = req.query.videoId ? parseInt(req.query.videoId as string) : undefined;
-      const surfaceCount = Math.max(1, parseInt((req.query.surfaceCount as string) ?? "1"));
+      const durationTerm = (req.query.durationTerm as DurationTerm) || "single";
       const requestedTestMode = req.query.isTestPlacement === "true";
       const isAdmin = req.authEmail === "martin@gofullscale.co";
       const isTestPlacement = requestedTestMode && isAdmin;
+      const customFeeCents =
+        isAdmin && req.query.customFeeCents
+          ? parseInt(req.query.customFeeCents as string)
+          : null;
 
-      let tier: any = null;
-      if (editorialClipId) {
-        const clip = await storage.getEditorialClipById(editorialClipId);
-        if (!clip) return res.status(404).json({ error: "Clip not found" });
-        tier = clip.monetizationTier;
+      // Parse surfaceIds (may be ?surfaceIds=1,2,3 or repeated query params)
+      let surfaceIdsRaw: string[] = [];
+      if (Array.isArray(req.query.surfaceIds)) {
+        surfaceIdsRaw = req.query.surfaceIds as string[];
+      } else if (typeof req.query.surfaceIds === "string") {
+        surfaceIdsRaw = req.query.surfaceIds.split(",");
       }
-      // (videoId-only path falls back to default pricing — no clip tier)
+      const surfaceIds = surfaceIdsRaw
+        .map((s) => parseInt(s))
+        .filter((n) => !isNaN(n));
 
-      const pricing = calculatePlacementPricing(tier, isTestPlacement);
-      const totalFee = pricing.placementFeeCents * surfaceCount;
+      // Resolve clip + video
+      let clip: any = null;
+      let video: any = null;
+      if (editorialClipId) {
+        clip = await storage.getEditorialClipById(editorialClipId);
+        if (!clip) return res.status(404).json({ error: "Clip not found" });
+        video = await storage.getVideoById(clip.videoId);
+      } else if (videoId) {
+        video = await storage.getVideoById(videoId);
+      }
+      if (!video) {
+        return res.status(400).json({ error: "Provide editorialClipId or videoId" });
+      }
+
+      // Creator stats: follower count from YouTube connection + recent avg views
+      const creatorConn = await storage.getYoutubeConnection(video.userId).catch(() => null);
+      const creatorFollowers = creatorConn?.subscriberCount ?? null;
+      const creatorVideos = await storage
+        .getVideoIndex(video.userId)
+        .catch(() => [] as any[]);
+      const creatorAvgViews = avgRecentViews(
+        creatorVideos.map((v: any) => ({ viewCount: v.viewCount, createdAt: v.createdAt })),
+        10,
+      );
+
+      // Video age (prefer publishedAt, fall back to createdAt)
+      const ageDays = calcVideoAgeDays(video.publishedAt, video.createdAt);
+
+      // Resolve surfaces (or use a placeholder if none specified — useful for "default quote")
+      let surfaces: any[] = [];
+      if (surfaceIds.length > 0) {
+        const allSurfaces = clip
+          ? await storage.getSurfacesInEditorialClip(clip.id)
+          : await storage.getDetectedSurfaces(video.id);
+        surfaces = allSurfaces.filter((s: any) => surfaceIds.includes(s.id));
+      }
+
+      // Quote each surface independently — bbox/type can vary, so price varies
+      const perSurfaceQuotes = (surfaces.length > 0 ? surfaces : [null]).map((s: any) => {
+        const breakdown = calculatePlacementPricing({
+          creatorFollowerCount: creatorFollowers,
+          creatorAvgViews,
+          clipParentVideoViews: video.viewCount,
+          contentTier: clip?.monetizationTier as any,
+          videoAgeDays: ageDays,
+          surface: s
+            ? {
+                surfaceType: s.surfaceType,
+                boundingBoxWidth: parseFloat(s.boundingBoxWidth),
+                boundingBoxHeight: parseFloat(s.boundingBoxHeight),
+              }
+            : null,
+          durationTerm,
+          isTestPlacement,
+          customFeeCents,
+        });
+        return {
+          surfaceId: s?.id ?? null,
+          surfaceType: s?.surfaceType ?? null,
+          breakdown,
+        };
+      });
+
+      const totalFeeCents = perSurfaceQuotes.reduce((s, q) => s + q.breakdown.placementFeeCents, 0);
+      const totalCreatorCents = perSurfaceQuotes.reduce((s, q) => s + q.breakdown.creatorPayoutCents, 0);
+      const totalPlatformCents = perSurfaceQuotes.reduce((s, q) => s + q.breakdown.platformTakeCents, 0);
 
       res.json({
-        perPlacement: pricing,
-        surfaceCount,
-        totalFeeCents: totalFee,
-        totalFeeUsd: formatCents(totalFee),
-        creatorTotalPayoutCents: pricing.creatorPayoutCents * surfaceCount,
-        creatorTotalPayoutUsd: formatCents(pricing.creatorPayoutCents * surfaceCount),
-        platformTotalCents: pricing.platformTakeCents * surfaceCount,
-        platformTotalUsd: formatCents(pricing.platformTakeCents * surfaceCount),
-        tier,
+        // Inputs
+        editorialClipId: clip?.id ?? null,
+        videoId: video.id,
+        creator: {
+          followerCount: creatorFollowers,
+          avgRecentViews: creatorAvgViews,
+          tier: perSurfaceQuotes[0]?.breakdown.creatorTier,
+        },
+        video: {
+          ageDays,
+          viewCount: video.viewCount,
+        },
+        clip: clip
+          ? { id: clip.id, monetizationTier: clip.monetizationTier, finalScore: clip.finalScore }
+          : null,
+        durationTerm,
+        durationDays: perSurfaceQuotes[0]?.breakdown.durationDays ?? 0,
+        // Per-surface quotes
+        perSurfaceQuotes,
+        surfaceCount: perSurfaceQuotes.length,
+        // Totals
+        totalFeeCents,
+        totalFeeUsd: formatCents(totalFeeCents),
+        creatorTotalPayoutCents: totalCreatorCents,
+        creatorTotalPayoutUsd: formatCents(totalCreatorCents),
+        platformTotalCents: totalPlatformCents,
+        platformTotalUsd: formatCents(totalPlatformCents),
+        // Flags
         isTestPlacement,
-        // Reference table for UI display
-        tiers: PLACEMENT_FEE_BY_TIER,
+        isCustomOverride: perSurfaceQuotes[0]?.breakdown.isCustomOverride ?? false,
+        // Rubric reference for UI display
+        rubric: {
+          baseCpmUsd: BASE_CPM_USD,
+          creatorTiers: CREATOR_TIER_MULTIPLIER,
+          contentTiers: CONTENT_TIER_MULTIPLIER,
+          durationTerms: DURATION_MULTIPLIER,
+        },
       });
     } catch (err: any) {
       console.error("[API] /api/brand/placements/quote error:", err.message);
@@ -5055,16 +5167,16 @@ export async function registerRoutes(
         });
       }
 
-      // Resolve videoId from clipId if clip-targeted mode + capture clip tier for pricing
+      // Resolve videoId from clipId if clip-targeted mode + capture clip for pricing
       let resolvedVideoId: number;
       let clipIdForRow: number | null = null;
-      let clipTier: string | null = null;
+      let clipForPricing: any = null;
       if (editorialClipId) {
         const clip = await storage.getEditorialClipById(parseInt(editorialClipId));
         if (!clip) return res.status(404).json({ error: "Editorial clip not found" });
         resolvedVideoId = clip.videoId;
         clipIdForRow = clip.id;
-        clipTier = clip.monetizationTier;
+        clipForPricing = clip;
       } else {
         resolvedVideoId = parseInt(videoId);
       }
@@ -5081,11 +5193,18 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Not authorized to use this product" });
       }
 
-      // Admin-only test placement flag — zeros out the fee.
-      // For now any user with admin email can pass isTestPlacement; expand auth as needed.
-      const requestedTestMode = req.body?.isTestPlacement === true;
+      // Admin-only override flags — zero out the fee or set bespoke price
       const isAdmin = req.authEmail === "martin@gofullscale.co"; // Expand when needed
-      const isTestPlacement = requestedTestMode && isAdmin;
+      const isTestPlacement = req.body?.isTestPlacement === true && isAdmin;
+      const customFeeCents = isAdmin && typeof req.body?.customFeeCents === "number" ? req.body.customFeeCents : null;
+      const negotiatedNote = typeof req.body?.negotiatedNote === "string" ? req.body.negotiatedNote : null;
+
+      // Duration commitment (default to single one-shot placement)
+      const durationTerm: DurationTerm = req.body?.durationTerm || "single";
+      const validTerms: DurationTerm[] = ["single", "1-month", "3-month", "6-month", "12-month"];
+      if (!validTerms.includes(durationTerm)) {
+        return res.status(400).json({ error: `Invalid durationTerm. Must be one of: ${validTerms.join(", ")}` });
+      }
 
       // Pre-flight: which surfaces are already taken
       const conflicts: { surfaceId: number; existingAssignmentId: number }[] = [];
@@ -5102,13 +5221,49 @@ export async function registerRoutes(
         });
       }
 
-      // Calculate pricing once — same fee applies to every surface in this request
-      // (each surface = one placement, each charged independently)
-      const pricing = calculatePlacementPricing(clipTier as any, isTestPlacement);
+      // Gather pricing inputs (creator stats + video age) — fetched once, reused per surface
+      const creatorConn = await storage.getYoutubeConnection(video.userId).catch(() => null);
+      const creatorFollowers = creatorConn?.subscriberCount ?? null;
+      const creatorVideos = await storage.getVideoIndex(video.userId).catch(() => [] as any[]);
+      const creatorAvgViews = avgRecentViews(
+        creatorVideos.map((v: any) => ({ viewCount: v.viewCount, createdAt: v.createdAt })),
+        10,
+      );
+      const ageDays = calcVideoAgeDays(video.publishedAt, video.createdAt);
 
-      // Create assignments
+      // Need surface details for per-surface pricing
+      const allSurfaces = clipForPricing
+        ? await storage.getSurfacesInEditorialClip(clipForPricing.id)
+        : await storage.getDetectedSurfaces(video.id);
+
+      const expiresAt = computeExpiresAt(durationTerm);
+
+      // Create one assignment per surface — each gets its own price based on its bbox/type
       const created: any[] = [];
+      let totalFeeCents = 0;
+      let totalCreatorCents = 0;
+      let totalPlatformCents = 0;
+
       for (const sid of surfaceIds) {
+        const surface = allSurfaces.find((s: any) => s.id === parseInt(sid));
+        const breakdown = calculatePlacementPricing({
+          creatorFollowerCount: creatorFollowers,
+          creatorAvgViews,
+          clipParentVideoViews: video.viewCount,
+          contentTier: (clipForPricing?.monetizationTier as any) ?? null,
+          videoAgeDays: ageDays,
+          surface: surface
+            ? {
+                surfaceType: surface.surfaceType,
+                boundingBoxWidth: parseFloat(surface.boundingBoxWidth),
+                boundingBoxHeight: parseFloat(surface.boundingBoxHeight),
+              }
+            : null,
+          durationTerm,
+          isTestPlacement,
+          customFeeCents,
+        });
+
         const row = await storage.createBrandPlacement({
           brandUserId,
           creatorUserId,
@@ -5118,27 +5273,44 @@ export async function registerRoutes(
           surfaceId: parseInt(sid),
           status: "pending_creator_review",
           brandMessage: message || null,
-          placementFeeCents: pricing.placementFeeCents,
-          platformTakeCents: pricing.platformTakeCents,
-          creatorPayoutCents: pricing.creatorPayoutCents,
-          isTestPlacement: pricing.isTestPlacement,
+          placementFeeCents: breakdown.placementFeeCents,
+          platformTakeCents: breakdown.platformTakeCents,
+          creatorPayoutCents: breakdown.creatorPayoutCents,
+          isTestPlacement: breakdown.isTestPlacement,
+          customFeeCents,
+          negotiatedNote,
+          pricingBreakdown: breakdown,
+          durationTerm,
+          durationDays: breakdown.durationDays,
+          expiresAt,
           chargeStatus: "pending",
         });
         created.push(row);
+        totalFeeCents += breakdown.placementFeeCents;
+        totalCreatorCents += breakdown.creatorPayoutCents;
+        totalPlatformCents += breakdown.platformTakeCents;
       }
 
-      const totalFee = pricing.placementFeeCents * created.length;
       console.log(
-        `[BrandPlacement] Brand ${brandUserId} requested ${created.length} placement(s) ${clipIdForRow ? `on clip ${clipIdForRow}` : `on video ${resolvedVideoId}`} for product ${brandProductId} — total fee $${formatCents(totalFee)}${isTestPlacement ? " (TEST)" : ""}`,
+        `[BrandPlacement] Brand ${brandUserId} requested ${created.length} placement(s) ` +
+          `${clipIdForRow ? `on clip ${clipIdForRow}` : `on video ${resolvedVideoId}`} ` +
+          `for product ${brandProductId} — total $${formatCents(totalFeeCents)} ` +
+          `(${durationTerm}${isTestPlacement ? ", TEST" : ""}${customFeeCents ? ", CUSTOM" : ""}) ` +
+          `creator earns $${formatCents(totalCreatorCents)}`,
       );
       res.json({
         assignments: created,
         count: created.length,
         pricing: {
-          perPlacement: pricing,
-          totalFeeCents: totalFee,
-          totalFeeUsd: formatCents(totalFee),
+          totalFeeCents,
+          totalFeeUsd: formatCents(totalFeeCents),
+          creatorTotalPayoutCents: totalCreatorCents,
+          creatorTotalPayoutUsd: formatCents(totalCreatorCents),
+          platformTotalCents: totalPlatformCents,
+          platformTotalUsd: formatCents(totalPlatformCents),
+          durationTerm,
           isTestPlacement,
+          isCustomOverride: customFeeCents !== null,
         },
       });
     } catch (err: any) {

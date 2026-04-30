@@ -248,12 +248,21 @@ export const brandPlacementAssignments = pgTable("brand_placement_assignments", 
   rejectionReason: text("rejection_reason"),             // Optional reason from creator
   reviewedAt: timestamp("reviewed_at"),                  // When creator approved/rejected
   // ── Pricing fields (cents, integer to avoid float math on money) ────────
-  // Calculated at placement-request time based on clip.monetizationTier.
+  // Calculated at placement-request time using the CPM rubric in
+  // server/lib/placementPricing.ts.
   // Charged on creator approval; refunded if creator later revokes.
   placementFeeCents: integer("placement_fee_cents").default(0),    // Total fee brand pays
   platformTakeCents: integer("platform_take_cents").default(0),    // Platform's 30% cut
   creatorPayoutCents: integer("creator_payout_cents").default(0),  // Creator's 70%
   isTestPlacement: boolean("is_test_placement").default(false),    // Admin override: zero charge
+  customFeeCents: integer("custom_fee_cents"),                     // Admin override: bespoke fee
+  negotiatedNote: text("negotiated_note"),                         // Audit note for custom deals
+  // Pricing breakdown (jsonb for audit — full inputs and multipliers used)
+  pricingBreakdown: jsonb("pricing_breakdown"),
+  // Duration commitment
+  durationTerm: varchar("duration_term", { length: 20 }).default("single"), // single|1-month|3-month|6-month|12-month
+  durationDays: integer("duration_days").default(0),
+  expiresAt: timestamp("expires_at"),                              // null = no expiry (single placement)
   // Lifecycle: pending → charged | failed (Stripe integration is a follow-up)
   chargeStatus: varchar("charge_status", { length: 20 }).default("pending"),
   chargedAt: timestamp("charged_at"),
