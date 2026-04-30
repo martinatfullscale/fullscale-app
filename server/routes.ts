@@ -40,7 +40,7 @@ import crypto from "crypto";
 import sharp from "sharp";
 import { uploadFileToStorage, fileExistsInStorage, objectKeyFromServeUrl, getStorageStream } from "./lib/objectStorage";
 import { runTranscriptPipeline } from "./lib/remix/transcriptPipeline";
-import { runEditorialAutoPipeline } from "./lib/remix/editorialAutoPipeline";
+import { runEditorialAutoPipeline, renderSingleEditorialClip } from "./lib/remix/editorialAutoPipeline";
 import { analyzeEditorial } from "./lib/ai/claude-dense/editorialAnalyzer";
 import { rankClips, deduplicateClips } from "./lib/remix/clipRanker";
 
@@ -5414,6 +5414,9 @@ export async function registerRoutes(
   });
 
   // POST /api/creator/placements/:id/approve — Creator approves the placement.
+  // On approval, fire-and-forget a re-render of the targeted clip so the brand
+  // product appears in the rendered output. The render reads approved placements
+  // and composites the product onto the surface's bbox.
   app.post("/api/creator/placements/:id/approve", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const creatorUserId = req.authUserId;
@@ -5430,7 +5433,25 @@ export async function registerRoutes(
       }
       const updated = await storage.updateBrandPlacementStatus(id, "creator_approved");
       console.log(`[BrandPlacement] Creator ${creatorUserId} APPROVED placement ${id}`);
-      res.json({ placement: updated });
+
+      // Fire-and-forget re-render of the targeted clip so the brand product
+      // appears in the output. If targeted at a video without a specific clip,
+      // skip — that's the legacy path and doesn't have a clean render trigger.
+      if (placement.editorialClipId) {
+        const clipId = placement.editorialClipId;
+        const videoId = placement.videoId;
+        renderSingleEditorialClip(videoId, clipId)
+          .then(() => {
+            console.log(`[BrandPlacement] ✓ Re-rendered clip ${clipId} with approved placement ${id}`);
+          })
+          .catch((err: any) => {
+            console.error(`[BrandPlacement] ✗ Re-render failed for clip ${clipId}:`, err?.message || err);
+          });
+      } else {
+        console.log(`[BrandPlacement] Placement ${id} has no clip target — skipping auto-rerender`);
+      }
+
+      res.json({ placement: updated, rerenderScheduled: !!placement.editorialClipId });
     } catch (err: any) {
       console.error("[API] /api/creator/placements/:id/approve error:", err.message);
       res.status(500).json({ error: err.message || "Failed to approve placement" });

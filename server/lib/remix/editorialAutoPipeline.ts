@@ -775,6 +775,15 @@ export async function renderSingleEditorialClip(videoId: number, clipId: number)
     const outputPath = path.join(renderOutputDir, outputFilename);
     const thumbPath = outputPath.replace(".mp4", "_thumb.jpg");
 
+    // ── Brand placement overlays ───────────────────────────────────────
+    // Fetch any approved placements scoped to this clip (or to the video if
+    // legacy assignments). Build BrandOverlay objects with locally-downloaded
+    // product images.
+    const brandOverlays = await loadBrandOverlaysForClip(clip.id, videoId, renderOutputDir);
+    if (brandOverlays.length > 0) {
+      console.log(`[RenderSingle] Compositing ${brandOverlays.length} brand placement(s) onto clip ${clip.id}`);
+    }
+
     if (needsReframe) {
       const faceFrames = await Promise.race([
         // Soft 90s deadline returns partial samples; hard 150s timeout is a safety net
@@ -808,6 +817,9 @@ export async function renderSingleEditorialClip(videoId: number, clipId: number)
         vf,
         fps: platformConfig.targetFps,
         outputPath,
+        srcWidth: srcSize.width,
+        srcHeight: srcSize.height,
+        brandOverlays,
       });
     } else {
       const vf = `scale=${platformConfig.targetWidth}:${platformConfig.targetHeight}:force_original_aspect_ratio=decrease,pad=${platformConfig.targetWidth}:${platformConfig.targetHeight}:(ow-iw)/2:(oh-ih)/2:black`;
@@ -818,6 +830,9 @@ export async function renderSingleEditorialClip(videoId: number, clipId: number)
         vf,
         fps: platformConfig.targetFps,
         outputPath,
+        srcWidth: srcSize.width,
+        srcHeight: srcSize.height,
+        brandOverlays,
       });
     }
 
@@ -855,15 +870,159 @@ export async function renderSingleEditorialClip(videoId: number, clipId: number)
   }
 }
 
+// ── Brand Placement Overlay Helpers ────────────────────────────────
+
+/**
+ * Fetch approved brand placements for a clip and convert each into a BrandOverlay
+ * (with the product image downloaded locally so FFmpeg can read it).
+ *
+ * Considers placements that are:
+ *   - Targeted at this specific clipId (preferred — new flow), OR
+ *   - Targeted at the parent video AND the surface's timestamp falls within
+ *     the clip's [clipStart, clipEnd] range (legacy fallback)
+ *
+ * Skips and logs any placement whose image can't be fetched — render proceeds
+ * without it rather than failing the whole render.
+ */
+async function loadBrandOverlaysForClip(
+  clipId: number,
+  videoId: number,
+  tmpDir: string,
+): Promise<BrandOverlay[]> {
+  try {
+    const clip = await storage.getEditorialClipById(clipId);
+    if (!clip) return [];
+
+    // All approved placements on this video
+    const allApproved = await storage.getApprovedPlacementsForVideo(videoId);
+    if (allApproved.length === 0) return [];
+
+    // Surfaces visible in this clip's time range
+    const clipSurfaces = await storage.getSurfacesInEditorialClip(clipId);
+    const clipSurfaceIds = new Set(clipSurfaces.map((s) => s.id));
+
+    // Filter placements: clip-targeted OR video-targeted with surface inside clip
+    const relevant = allApproved.filter((p) => {
+      if (p.editorialClipId === clipId) return true;
+      if (!p.editorialClipId && clipSurfaceIds.has(p.surfaceId)) return true;
+      return false;
+    });
+
+    if (relevant.length === 0) return [];
+
+    const overlays: BrandOverlay[] = [];
+    for (const placement of relevant) {
+      try {
+        const product = await storage.getBrandProduct(placement.brandProductId);
+        if (!product || !product.imageUrl) {
+          console.warn(`[BrandOverlay] Placement ${placement.id} has no product image — skipping`);
+          continue;
+        }
+        const surface = clipSurfaces.find((s) => s.id === placement.surfaceId);
+        if (!surface) {
+          console.warn(`[BrandOverlay] Placement ${placement.id} surface ${placement.surfaceId} not in clip — skipping`);
+          continue;
+        }
+
+        const localImagePath = await downloadBrandProductImage(product.imageUrl, tmpDir, product.id);
+        if (!localImagePath) {
+          console.warn(`[BrandOverlay] Could not download product image for placement ${placement.id}`);
+          continue;
+        }
+
+        overlays.push({
+          imagePath: localImagePath,
+          bboxX: parseFloat(surface.boundingBoxX),
+          bboxY: parseFloat(surface.boundingBoxY),
+          bboxWidth: parseFloat(surface.boundingBoxWidth),
+          bboxHeight: parseFloat(surface.boundingBoxHeight),
+        });
+      } catch (err: any) {
+        console.warn(`[BrandOverlay] Skipping placement ${placement.id}: ${err.message}`);
+      }
+    }
+    return overlays;
+  } catch (err: any) {
+    console.error(`[BrandOverlay] Failed to load overlays for clip ${clipId}:`, err.message);
+    return [];
+  }
+}
+
+/**
+ * Resolve a brand product imageUrl to a local file path. Handles:
+ *   - Object Storage URLs (/storage/...) → download to tmp
+ *   - Local upload paths (/uploads/...) → resolve to ./public path
+ *   - Full HTTP URLs → fetch to tmp
+ */
+async function downloadBrandProductImage(
+  imageUrl: string,
+  tmpDir: string,
+  productId: number,
+): Promise<string | null> {
+  // Object Storage path
+  if (imageUrl.startsWith("/storage/")) {
+    try {
+      const objectKey = objectKeyFromServeUrl(imageUrl);
+      return await downloadToTempFile(objectKey, tmpDir);
+    } catch (err: any) {
+      console.warn(`[BrandOverlay] Object Storage download failed: ${err.message}`);
+      return null;
+    }
+  }
+  // Local upload path
+  if (imageUrl.startsWith("/uploads/") || imageUrl.startsWith("uploads/")) {
+    const cleanPath = imageUrl.startsWith("/") ? imageUrl.slice(1) : imageUrl;
+    const localCandidate = path.join("public", cleanPath);
+    if (fs.existsSync(localCandidate)) return localCandidate;
+    const altCandidate = path.join(".", cleanPath);
+    if (fs.existsSync(altCandidate)) return altCandidate;
+    console.warn(`[BrandOverlay] Local file not found: ${imageUrl}`);
+    return null;
+  }
+  // Full URL — fetch
+  if (imageUrl.startsWith("http://") || imageUrl.startsWith("https://")) {
+    try {
+      const res = await fetch(imageUrl);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const buf = Buffer.from(await res.arrayBuffer());
+      const ext = imageUrl.split(".").pop()?.split("?")[0] || "png";
+      const localPath = path.join(tmpDir, `brand_product_${productId}.${ext}`);
+      fs.writeFileSync(localPath, buf);
+      return localPath;
+    } catch (err: any) {
+      console.warn(`[BrandOverlay] HTTP fetch failed for ${imageUrl}: ${err.message}`);
+      return null;
+    }
+  }
+  console.warn(`[BrandOverlay] Unrecognized image URL format: ${imageUrl}`);
+  return null;
+}
+
 // ── FFmpeg Render Helpers ──────────────────────────────────────────
+
+interface BrandOverlay {
+  imagePath: string;       // Local path to brand product PNG
+  bboxX: number;           // 0-1 normalized to source video
+  bboxY: number;
+  bboxWidth: number;
+  bboxHeight: number;
+  /** Padding inside the bbox as a fraction (default 0.10 = 10% inset) */
+  padding?: number;
+}
 
 interface RenderOptions {
   videoPath: string;
   startTime: number;
   duration: number;
+  /** Video filter chain (crop+scale, etc.) — applied AFTER overlays when overlays present */
   vf: string;
   fps: number;
   outputPath: string;
+  /** Source video dimensions — required when brandOverlays is set (pixel math) */
+  srcWidth?: number;
+  srcHeight?: number;
+  /** Brand product overlays composited onto the source video before vf is applied */
+  brandOverlays?: BrandOverlay[];
 }
 
 const RENDER_CONFIG = {
@@ -876,16 +1035,69 @@ const RENDER_CONFIG = {
 /**
  * Render a single clip segment with the given video filters.
  * Used for both smart-reframe (crop+scale) and simple scale+pad paths.
+ *
+ * If brandOverlays is provided, builds a filter_complex graph that:
+ *   1. Scales each overlay PNG to fit its surface bbox (with padding)
+ *   2. Composites each overlay onto the source video at its bbox position
+ *   3. Then applies the standard vf filter (crop+scale or scale+pad)
+ *
+ * Without overlays, uses the simple -vf path (lower overhead).
  */
 async function runFFmpegRender(opts: RenderOptions): Promise<void> {
-  const { videoPath, startTime, duration, vf, fps, outputPath } = opts;
+  const { videoPath, startTime, duration, vf, fps, outputPath, brandOverlays, srcWidth, srcHeight } = opts;
+
+  const hasOverlays = brandOverlays && brandOverlays.length > 0;
+
+  const inputArgs: string[] = ["-nostdin", "-y", "-ss", startTime.toString(), "-i", videoPath];
+  let videoFilterArgs: string[];
+
+  if (hasOverlays && srcWidth && srcHeight) {
+    // Add each overlay PNG as an additional input
+    for (const ov of brandOverlays!) {
+      inputArgs.push("-i", ov.imagePath);
+    }
+
+    // Build filter_complex graph
+    const padding = 0.10;
+    const filterParts: string[] = [];
+    let lastLabel = "[0:v]";
+
+    brandOverlays!.forEach((ov, idx) => {
+      const inputIdx = idx + 1; // 0 is main video
+      const pad = ov.padding ?? padding;
+
+      // Pixel dimensions for the overlay area, with padding inset
+      const bboxPxW = Math.max(20, Math.round(ov.bboxWidth * srcWidth * (1 - 2 * pad)));
+      const bboxPxH = Math.max(20, Math.round(ov.bboxHeight * srcHeight * (1 - 2 * pad)));
+      const bboxPxX = Math.round((ov.bboxX + pad * ov.bboxWidth) * srcWidth);
+      const bboxPxY = Math.round((ov.bboxY + pad * ov.bboxHeight) * srcHeight);
+
+      const scaledLabel = `[ov${idx}]`;
+      const composedLabel = idx === brandOverlays!.length - 1 ? "[vcomp]" : `[v${idx}]`;
+
+      // Scale overlay to fit bbox, preserving aspect ratio (force_original_aspect_ratio=decrease)
+      filterParts.push(
+        `[${inputIdx}:v]scale=${bboxPxW}:${bboxPxH}:force_original_aspect_ratio=decrease${scaledLabel}`,
+      );
+      // Overlay onto current main video chain
+      filterParts.push(
+        `${lastLabel}${scaledLabel}overlay=x=${bboxPxX}:y=${bboxPxY}:eof_action=pass${composedLabel}`,
+      );
+      lastLabel = composedLabel;
+    });
+
+    // Apply the existing vf chain (crop+scale or scale+pad) AFTER overlays
+    filterParts.push(`${lastLabel}${vf}[vout]`);
+
+    videoFilterArgs = ["-filter_complex", filterParts.join(";"), "-map", "[vout]", "-map", "0:a?"];
+  } else {
+    videoFilterArgs = ["-vf", vf];
+  }
 
   const args = [
-    "-nostdin", "-y",
-    "-ss", startTime.toString(),
-    "-i", videoPath,
+    ...inputArgs,
     "-t", duration.toString(),
-    "-vf", vf,
+    ...videoFilterArgs,
     "-r", fps.toString(),
     "-c:v", "libx264", "-pix_fmt", "yuv420p",
     "-preset", RENDER_CONFIG.PRESET,
