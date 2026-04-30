@@ -23,6 +23,7 @@ import {
   DURATION_MULTIPLIER,
   BASE_CPM_USD,
 } from "./lib/placementPricing";
+import { scoreClipsForBrief } from "./lib/briefMatcher";
 import { processVideoExport } from "./lib/videoExporter";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 import { hashPassword, verifyPassword } from "./lib/password";
@@ -5487,12 +5488,57 @@ export async function registerRoutes(
   // This is the entry point for the new "review clips, request placements" flow.
   // Each clip is a 9:16 narrative unit ready for placement; brands browse, click
   // into one, see the surfaces inside it, and request a placement on those surfaces.
+  //
+  // Query params:
+  //   ?personalized=true → score clips against the calling brand's brief, sort by
+  //                        relevance, attach matchReasons. Clips matching brief.thingsToAvoid
+  //                        get a blocked flag the UI can hide by default.
+  //   ?limit=N&offset=N — pagination
   app.get("/api/brand/clips", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const limit = req.query.limit ? Math.min(parseInt(req.query.limit as string), 200) : 50;
       const offset = req.query.offset ? parseInt(req.query.offset as string) : 0;
+      const personalized = req.query.personalized === "true";
+
       const clips = await storage.getBrowsableEditorialClips({ limit, offset });
-      res.json({ clips, count: clips.length, limit, offset });
+
+      // No personalization requested → return as-is (default sort by finalScore)
+      if (!personalized) {
+        return res.json({ clips, count: clips.length, limit, offset, personalized: false });
+      }
+
+      // Personalization: score against the calling brand's brief
+      const brandUserId = req.authUserId;
+      const brief = await storage.getBrandBriefByUserId(brandUserId).catch(() => null);
+      if (!brief) {
+        // No brief → return clips unscored with a hint
+        return res.json({
+          clips,
+          count: clips.length,
+          limit,
+          offset,
+          personalized: false,
+          briefMissing: true,
+          message: "Complete your brand brief at /brands/onboarding to enable personalized recommendations",
+        });
+      }
+
+      const scored = scoreClipsForBrief(clips, brief);
+      // Spread the scored data back into clip-shape so the existing UI keeps working
+      const decoratedClips = scored.map((s) => ({
+        ...s.clip,
+        relevanceScore: s.relevanceScore,
+        blocked: s.blocked,
+        matchReasons: s.matchReasons,
+      }));
+      res.json({
+        clips: decoratedClips,
+        count: decoratedClips.length,
+        limit,
+        offset,
+        personalized: true,
+        briefId: brief.id,
+      });
     } catch (err: any) {
       console.error("[API] /api/brand/clips error:", err.message);
       res.status(500).json({ error: err.message || "Failed to list clips" });

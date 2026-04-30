@@ -17,7 +17,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Loader2, Search, Sparkles, Clock, Send, Film, Image as ImageIcon } from "lucide-react";
+import { Loader2, Search, Sparkles, Clock, Send, Film, Image as ImageIcon, Target, Star, AlertTriangle, FileText } from "lucide-react";
 import { BrandPlacementRequestModal } from "@/components/BrandPlacementRequestModal";
 
 interface BrowsableEditorialClip {
@@ -37,19 +37,44 @@ interface BrowsableEditorialClip {
   videoTitle: string | null;
   videoThumbnailUrl: string | null;
   creatorUserId: string;
+  // Personalization fields (only present when ?personalized=true)
+  relevanceScore?: number;
+  blocked?: boolean;
+  matchReasons?: string[];
 }
 
 export default function BrandClipsBrowser() {
   const [searchQuery, setSearchQuery] = useState("");
   const [tierFilter, setTierFilter] = useState<string | null>(null);
   const [requestingClip, setRequestingClip] = useState<BrowsableEditorialClip | null>(null);
+  const [personalized, setPersonalized] = useState(true);
+  const [showBlocked, setShowBlocked] = useState(false);
 
-  const { data, isLoading } = useQuery<{ clips: BrowsableEditorialClip[]; count: number }>({
-    queryKey: ["/api/brand/clips"],
+  const { data, isLoading } = useQuery<{
+    clips: BrowsableEditorialClip[];
+    count: number;
+    personalized: boolean;
+    briefMissing?: boolean;
+    message?: string;
+  }>({
+    queryKey: ["/api/brand/clips", { personalized }],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (personalized) params.set("personalized", "true");
+      const res = await fetch(`/api/brand/clips?${params.toString()}`, {
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error("Failed to fetch clips");
+      return res.json();
+    },
   });
 
   const filteredClips = useMemo(() => {
     let clips = data?.clips ?? [];
+    // Hide blocked clips by default (matched brief.thingsToAvoid)
+    if (!showBlocked) {
+      clips = clips.filter((c) => !c.blocked);
+    }
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       clips = clips.filter(
@@ -63,7 +88,11 @@ export default function BrandClipsBrowser() {
       clips = clips.filter((c) => c.monetizationTier === tierFilter);
     }
     return clips;
-  }, [data, searchQuery, tierFilter]);
+  }, [data, searchQuery, tierFilter, showBlocked]);
+
+  const blockedCount = (data?.clips ?? []).filter((c) => c.blocked).length;
+  const isPersonalized = data?.personalized === true;
+  const briefMissing = data?.briefMissing === true;
 
   if (isLoading) {
     return (
@@ -95,6 +124,26 @@ export default function BrandClipsBrowser() {
         </div>
       </div>
 
+      {/* Brief-missing banner */}
+      {briefMissing && (
+        <Card className="mb-4 border-amber-500/30 bg-amber-500/5">
+          <CardContent className="py-3 px-4 flex items-center gap-3">
+            <FileText className="w-5 h-5 text-amber-400 flex-shrink-0" />
+            <div className="flex-1 text-sm">
+              <p className="font-medium">Complete your brand brief for personalized recommendations</p>
+              <p className="text-xs text-muted-foreground">
+                Tell us about your audience, content categories, and what to avoid — we'll surface clips that fit.
+              </p>
+            </div>
+            <a href="/brands/onboarding">
+              <Button size="sm" variant="outline" className="border-amber-500/40 text-amber-300">
+                Complete brief
+              </Button>
+            </a>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Filters */}
       <div className="flex flex-col md:flex-row gap-3 mb-6">
         <div className="relative flex-1">
@@ -107,7 +156,17 @@ export default function BrandClipsBrowser() {
             data-testid="input-clip-search"
           />
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
+          <Button
+            variant={personalized ? "default" : "outline"}
+            size="sm"
+            onClick={() => setPersonalized(!personalized)}
+            className={personalized ? "bg-purple-600 hover:bg-purple-500" : ""}
+            data-testid="button-toggle-personalized"
+          >
+            <Target className="w-3.5 h-3.5 mr-1.5" />
+            For you
+          </Button>
           {[
             { key: null, label: "All" },
             { key: "premium", label: "Premium" },
@@ -124,6 +183,18 @@ export default function BrandClipsBrowser() {
               {tier.label}
             </Button>
           ))}
+          {blockedCount > 0 && (
+            <Button
+              variant={showBlocked ? "default" : "outline"}
+              size="sm"
+              onClick={() => setShowBlocked(!showBlocked)}
+              className={showBlocked ? "" : "text-muted-foreground"}
+              data-testid="button-toggle-blocked"
+            >
+              <AlertTriangle className="w-3.5 h-3.5 mr-1.5" />
+              Show {blockedCount} blocked
+            </Button>
+          )}
         </div>
       </div>
 
@@ -266,6 +337,43 @@ function ClipCard({
             {clip.suggestedTitle || `Clip ${clip.id}`}
           </p>
         </div>
+
+        {/* Relevance badge + match reasons (only when personalized mode is on) */}
+        {clip.relevanceScore !== undefined && (
+          <div className="space-y-1">
+            <div className="flex items-center gap-1.5">
+              <Badge
+                className={`text-[10px] font-semibold ${
+                  clip.blocked
+                    ? "bg-red-500/15 text-red-300 border-red-500/40"
+                    : clip.relevanceScore >= 60
+                    ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/40"
+                    : clip.relevanceScore >= 30
+                    ? "bg-blue-500/15 text-blue-300 border-blue-500/40"
+                    : "bg-muted/30 text-muted-foreground"
+                }`}
+                variant="outline"
+              >
+                {clip.blocked ? (
+                  <>
+                    <AlertTriangle className="w-2.5 h-2.5 mr-1" />
+                    Blocked
+                  </>
+                ) : (
+                  <>
+                    <Star className="w-2.5 h-2.5 mr-1 fill-current" />
+                    {clip.relevanceScore}% match
+                  </>
+                )}
+              </Badge>
+            </div>
+            {clip.matchReasons && clip.matchReasons.length > 0 && (
+              <p className="text-[10px] text-muted-foreground/80 line-clamp-2">
+                {clip.matchReasons[0]}
+              </p>
+            )}
+          </div>
+        )}
 
         {clip.topicTags && clip.topicTags.length > 0 && (
           <div className="flex flex-wrap gap-1">
