@@ -235,6 +235,10 @@ export const brandPlacementAssignments = pgTable("brand_placement_assignments", 
   brandUserId: varchar("brand_user_id").notNull(),       // Brand who requested placement
   creatorUserId: varchar("creator_user_id").notNull(),   // Creator who owns the video
   videoId: integer("video_id").notNull(),                // FK to video_index.id
+  // The editorial clip this placement targets (nullable for backward-compat with
+  // legacy assignments tied to source video, but new requests should always set it).
+  // Brands browse rendered editorial clips and request placements on surfaces within them.
+  editorialClipId: integer("editorial_clip_id"),         // FK to editorial_clips.id
   brandProductId: integer("brand_product_id").notNull(), // FK to brand_products.id
   surfaceId: integer("surface_id").notNull(),            // FK to detected_surfaces.id
   // Status lifecycle:

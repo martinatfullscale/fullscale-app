@@ -4990,23 +4990,41 @@ export async function registerRoutes(
   // BRAND PLACEMENT ASSIGNMENTS — brand-initiated placement requests, creator approves
   // ============================================================================
 
-  // POST /api/brand/placements — Brand creates one or more placement requests on a creator's video.
-  // Body: { videoId, brandProductId, surfaceIds: number[], message?: string }
+  // POST /api/brand/placements — Brand creates one or more placement requests on a creator's clip.
+  // Body: { editorialClipId | videoId, brandProductId, surfaceIds: number[], message?: string }
+  // Either editorialClipId (preferred — new flow, clip-scoped) or videoId (legacy/fallback).
   // For each surfaceId: creates one assignment with status pending_creator_review.
   // Returns 409 if any surface already has an active placement (one-brand-per-surface).
   app.post("/api/brand/placements", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const brandUserId = req.authUserId;
-      const { videoId, brandProductId, surfaceIds, message } = req.body || {};
+      const { editorialClipId, videoId, brandProductId, surfaceIds, message } = req.body || {};
 
-      if (!videoId || !brandProductId || !Array.isArray(surfaceIds) || surfaceIds.length === 0) {
+      if (!brandProductId || !Array.isArray(surfaceIds) || surfaceIds.length === 0) {
         return res.status(400).json({
-          error: "Missing required fields: videoId, brandProductId, surfaceIds (non-empty array)",
+          error: "Missing required fields: brandProductId, surfaceIds (non-empty array)",
+        });
+      }
+      if (!editorialClipId && !videoId) {
+        return res.status(400).json({
+          error: "Must provide either editorialClipId or videoId",
         });
       }
 
+      // Resolve videoId from clipId if clip-targeted mode
+      let resolvedVideoId: number;
+      let clipIdForRow: number | null = null;
+      if (editorialClipId) {
+        const clip = await storage.getEditorialClipById(parseInt(editorialClipId));
+        if (!clip) return res.status(404).json({ error: "Editorial clip not found" });
+        resolvedVideoId = clip.videoId;
+        clipIdForRow = clip.id;
+      } else {
+        resolvedVideoId = parseInt(videoId);
+      }
+
       // Verify video exists and capture creator's userId
-      const video = await storage.getVideoById(parseInt(videoId));
+      const video = await storage.getVideoById(resolvedVideoId);
       if (!video) return res.status(404).json({ error: "Video not found" });
       const creatorUserId = video.userId;
 
@@ -5038,7 +5056,8 @@ export async function registerRoutes(
         const row = await storage.createBrandPlacement({
           brandUserId,
           creatorUserId,
-          videoId: parseInt(videoId),
+          videoId: resolvedVideoId,
+          editorialClipId: clipIdForRow,
           brandProductId: parseInt(brandProductId),
           surfaceId: parseInt(sid),
           status: "pending_creator_review",
@@ -5048,7 +5067,7 @@ export async function registerRoutes(
       }
 
       console.log(
-        `[BrandPlacement] Brand ${brandUserId} requested ${created.length} placement(s) on video ${videoId} for product ${brandProductId}`,
+        `[BrandPlacement] Brand ${brandUserId} requested ${created.length} placement(s) ${clipIdForRow ? `on clip ${clipIdForRow}` : `on video ${resolvedVideoId}`} for product ${brandProductId}`,
       );
       res.json({ assignments: created, count: created.length });
     } catch (err: any) {
@@ -5197,6 +5216,64 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("[API] /api/creator/placements/:id/reject error:", err.message);
       res.status(500).json({ error: err.message || "Failed to reject placement" });
+    }
+  });
+
+  // GET /api/brand/clips — Brand-facing browseable feed of rendered editorial clips.
+  // This is the entry point for the new "review clips, request placements" flow.
+  // Each clip is a 9:16 narrative unit ready for placement; brands browse, click
+  // into one, see the surfaces inside it, and request a placement on those surfaces.
+  app.get("/api/brand/clips", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const limit = req.query.limit ? Math.min(parseInt(req.query.limit as string), 200) : 50;
+      const offset = req.query.offset ? parseInt(req.query.offset as string) : 0;
+      const clips = await storage.getBrowsableEditorialClips({ limit, offset });
+      res.json({ clips, count: clips.length, limit, offset });
+    } catch (err: any) {
+      console.error("[API] /api/brand/clips error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to list clips" });
+    }
+  });
+
+  // GET /api/editorial-clips/:clipId — Get a specific editorial clip with surfaces
+  // that are visible during its time range. Used by the brand placement request modal.
+  app.get("/api/editorial-clips/:clipId", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const clipId = parseInt(req.params.clipId);
+      if (isNaN(clipId)) return res.status(400).json({ error: "Invalid clip ID" });
+
+      const clip = await storage.getEditorialClipById(clipId);
+      if (!clip) return res.status(404).json({ error: "Clip not found" });
+
+      const [surfaces, video] = await Promise.all([
+        storage.getSurfacesInEditorialClip(clipId),
+        storage.getVideoById(clip.videoId),
+      ]);
+
+      res.json({
+        clip,
+        surfaces,
+        video: video
+          ? { id: video.id, title: video.title, thumbnailUrl: video.thumbnailUrl, userId: video.userId }
+          : null,
+      });
+    } catch (err: any) {
+      console.error("[API] /api/editorial-clips/:clipId error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to fetch clip" });
+    }
+  });
+
+  // GET /api/editorial-clips/:clipId/surfaces — Just the surfaces inside this clip's
+  // time range. Used by BrandPlacementRequestModal when in clip-targeted mode.
+  app.get("/api/editorial-clips/:clipId/surfaces", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const clipId = parseInt(req.params.clipId);
+      if (isNaN(clipId)) return res.status(400).json({ error: "Invalid clip ID" });
+      const surfaces = await storage.getSurfacesInEditorialClip(clipId);
+      res.json({ surfaces, count: surfaces.length });
+    } catch (err: any) {
+      console.error("[API] /api/editorial-clips/:clipId/surfaces error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to fetch surfaces" });
     }
   });
 

@@ -1535,6 +1535,79 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(editorialClips.finalScore));
   }
 
+  /**
+   * Get a single editorial clip by ID — used by brand browsing flow when a
+   * brand opens a clip's detail/placement-request modal.
+   */
+  async getEditorialClipById(clipId: number): Promise<EditorialClip | undefined> {
+    const rows = await db.select().from(editorialClips)
+      .where(eq(editorialClips.id, clipId))
+      .limit(1);
+    return rows[0];
+  }
+
+  /**
+   * Browse all rendered editorial clips across the platform — used for the
+   * brand marketplace view. Returns clips that have been successfully rendered
+   * and are ready for brand placement requests. Joined minimally with video
+   * metadata for the card view.
+   */
+  async getBrowsableEditorialClips(opts: { limit?: number; offset?: number } = {}): Promise<
+    Array<EditorialClip & { videoTitle: string | null; videoThumbnailUrl: string | null; creatorUserId: string }>
+  > {
+    const limit = Math.min(opts.limit ?? 50, 200);
+    const offset = opts.offset ?? 0;
+
+    const rows = await db
+      .select({
+        clip: editorialClips,
+        videoTitle: videoIndex.title,
+        videoThumbnailUrl: videoIndex.thumbnailUrl,
+        creatorUserId: videoIndex.userId,
+      })
+      .from(editorialClips)
+      .innerJoin(videoIndex, eq(editorialClips.videoId, videoIndex.id))
+      .where(
+        and(
+          eq(editorialClips.renderStatus, "rendered"),
+          // Don't show clips from soft-deleted videos
+          sql`${videoIndex.deletedAt} IS NULL`,
+        ),
+      )
+      .orderBy(desc(editorialClips.finalScore))
+      .limit(limit)
+      .offset(offset);
+
+    return rows.map((r) => ({
+      ...r.clip,
+      videoTitle: r.videoTitle,
+      videoThumbnailUrl: r.videoThumbnailUrl,
+      creatorUserId: r.creatorUserId,
+    }));
+  }
+
+  /**
+   * Get surfaces that fall within an editorial clip's time range.
+   * Used by the brand placement request modal so brands only see surfaces
+   * that are actually visible in the clip they're targeting.
+   */
+  async getSurfacesInEditorialClip(clipId: number): Promise<DetectedSurface[]> {
+    const clip = await this.getEditorialClipById(clipId);
+    if (!clip) return [];
+    const rows = await db
+      .select()
+      .from(detectedSurfaces)
+      .where(
+        and(
+          eq(detectedSurfaces.videoId, clip.videoId),
+          sql`${detectedSurfaces.timestamp}::numeric >= ${clip.clipStart}::numeric`,
+          sql`${detectedSurfaces.timestamp}::numeric <= ${clip.clipEnd}::numeric`,
+        ),
+      )
+      .orderBy(detectedSurfaces.timestamp);
+    return rows;
+  }
+
   async deleteEditorialClipsByVideo(videoId: number): Promise<void> {
     await db.delete(editorialClips).where(eq(editorialClips.videoId, videoId));
   }

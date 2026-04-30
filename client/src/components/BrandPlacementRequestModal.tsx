@@ -63,17 +63,25 @@ interface ActivePlacement {
 }
 
 export interface BrandPlacementRequestModalProps {
-  videoId: number;
+  /** Either editorialClipId (preferred — clip-scoped surfaces) OR videoId (legacy/fallback) */
+  editorialClipId?: number;
+  videoId?: number;
   videoTitle: string;
   videoThumbnailUrl?: string | null;
+  /** Optional clip metadata shown in the header when in clip-targeted mode */
+  clipDuration?: number;
+  clipSuggestedTitle?: string | null;
   open: boolean;
   onClose: () => void;
 }
 
 export function BrandPlacementRequestModal({
+  editorialClipId,
   videoId,
   videoTitle,
   videoThumbnailUrl,
+  clipDuration,
+  clipSuggestedTitle,
   open,
   onClose,
 }: BrandPlacementRequestModalProps) {
@@ -96,10 +104,13 @@ export function BrandPlacementRequestModal({
     return productsData.products ?? [];
   }, [productsData]);
 
-  // Surfaces in this video
+  // Surfaces — clip-scoped if editorialClipId provided, else all surfaces in the video
+  const surfacesEndpoint = editorialClipId
+    ? `/api/editorial-clips/${editorialClipId}/surfaces`
+    : `/api/videos/${videoId}/surfaces`;
   const { data: surfacesData, isLoading: surfacesLoading } = useQuery<{ surfaces?: DetectedSurface[] } | DetectedSurface[]>({
-    queryKey: [`/api/videos/${videoId}/surfaces`],
-    enabled: open,
+    queryKey: [surfacesEndpoint],
+    enabled: open && (editorialClipId !== undefined || videoId !== undefined),
   });
   const surfaces: DetectedSurface[] = useMemo(() => {
     if (!surfacesData) return [];
@@ -107,10 +118,13 @@ export function BrandPlacementRequestModal({
     return surfacesData.surfaces ?? [];
   }, [surfacesData]);
 
-  // Already-claimed surfaces on this video (so we can disable them)
+  // Already-claimed surfaces on this video (so we can disable them).
+  // Always video-scoped because surface IDs are global; even in clip-targeted mode
+  // we want to know if a surface is taken on the parent video.
+  const videoIdForApproval = videoId; // clip endpoint also returns video info, but we just need it for the query
   const { data: approvedData } = useQuery<{ placements: { surfaceId: number; status: string; brandUserId: string }[] }>({
-    queryKey: [`/api/videos/${videoId}/placements/approved`],
-    enabled: open,
+    queryKey: [`/api/videos/${videoIdForApproval}/placements/approved`],
+    enabled: open && videoIdForApproval !== undefined,
   });
   const claimedSurfaceIds = useMemo(() => {
     const set = new Set<number>();
@@ -121,12 +135,15 @@ export function BrandPlacementRequestModal({
   const submitMutation = useMutation({
     mutationFn: async () => {
       const surfaceIds = Array.from(selectedSurfaceIds);
-      const res = await apiRequest("POST", "/api/brand/placements", {
-        videoId,
+      const body: any = {
         brandProductId: parseInt(selectedProductId),
         surfaceIds,
         message: message.trim() || undefined,
-      });
+      };
+      // Prefer clip-targeted mode when available
+      if (editorialClipId) body.editorialClipId = editorialClipId;
+      else body.videoId = videoId;
+      const res = await apiRequest("POST", "/api/brand/placements", body);
       return res.json();
     },
     onSuccess: (data: any) => {
@@ -198,7 +215,7 @@ export function BrandPlacementRequestModal({
         </DialogHeader>
 
         <div className="space-y-5 py-2">
-          {/* Video header */}
+          {/* Video / clip header */}
           <div className="flex items-center gap-3 pb-3 border-b border-border/50">
             {videoThumbnailUrl ? (
               <img
@@ -212,10 +229,24 @@ export function BrandPlacementRequestModal({
               </div>
             )}
             <div className="flex-1 min-w-0">
-              <p className="text-xs uppercase tracking-widest text-muted-foreground/70">Video</p>
-              <p className="font-medium truncate" data-testid="text-video-title">
-                {videoTitle}
+              <p className="text-xs uppercase tracking-widest text-muted-foreground/70">
+                {editorialClipId ? "Editorial clip" : "Video"}
               </p>
+              <p className="font-medium truncate" data-testid="text-video-title">
+                {clipSuggestedTitle || videoTitle}
+              </p>
+              {editorialClipId && (
+                <div className="flex items-center gap-2 mt-0.5">
+                  {clipDuration !== undefined && (
+                    <Badge variant="outline" className="text-xs">
+                      {clipDuration.toFixed(1)}s
+                    </Badge>
+                  )}
+                  <span className="text-xs text-muted-foreground truncate">
+                    from "{videoTitle}"
+                  </span>
+                </div>
+              )}
             </div>
           </div>
 
