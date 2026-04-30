@@ -24,6 +24,12 @@ import {
   BASE_CPM_USD,
 } from "./lib/placementPricing";
 import { scoreClipsForBrief } from "./lib/briefMatcher";
+import {
+  fetchInstagramAnalytics,
+  fetchFacebookPageAnalytics,
+  fetchYouTubeVideoStats,
+  safeDecrypt,
+} from "./lib/socialAnalytics";
 import { processVideoExport } from "./lib/videoExporter";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 import { hashPassword, verifyPassword } from "./lib/password";
@@ -35,7 +41,7 @@ import fs from "fs";
 import ytdl from "@distube/ytdl-core";
 import { decrypt, encrypt } from "./encryption";
 import { db } from "./db";
-import { users, allowedUsers as allowedUsersTable, videoIndex as videoIndexTable, editorialClips } from "@shared/schema";
+import { users, users as usersTable, allowedUsers as allowedUsersTable, videoIndex as videoIndexTable, editorialClips } from "@shared/schema";
 import { eq, sql } from "drizzle-orm";
 import crypto from "crypto";
 import sharp from "sharp";
@@ -9024,16 +9030,37 @@ export async function registerRoutes(
           channelTitle: ytConnection.channelTitle || null,
           connected: true,
         };
+      } else {
+        platformStats.youtube = { connected: false };
       }
 
-      // Facebook/Instagram follower data from allowed_users
-      if (authEmail) {
-        const user = await storage.getAllowedUser(authEmail);
-        if (user) {
-          // Social data is on the user record if populated
-          platformStats.facebook = { connected: false };
-          platformStats.instagram = { connected: false };
-        }
+      // Pull FB/IG follower counts from the users table (populated on FB OAuth).
+      // Token decryption + live API fetch happens via the /refresh endpoint to
+      // keep this endpoint fast (no external calls on dashboard load).
+      const userRow = userId
+        ? await db.query.users.findFirst({ where: eq(usersTable.id, userId) }).catch(() => null)
+        : null;
+
+      if (userRow?.facebookId) {
+        platformStats.facebook = {
+          connected: true,
+          pageId: userRow.facebookPageId ?? null,
+          pageName: userRow.facebookPageName ?? null,
+          fans: userRow.facebookFollowers ?? 0,
+        };
+      } else {
+        platformStats.facebook = { connected: false };
+      }
+
+      if (userRow?.instagramBusinessId) {
+        platformStats.instagram = {
+          connected: true,
+          igBusinessId: userRow.instagramBusinessId,
+          handle: userRow.instagramHandle ?? null,
+          followers: userRow.instagramFollowers ?? 0,
+        };
+      } else {
+        platformStats.instagram = { connected: false };
       }
 
       // Per-video metrics (top 20 by view count)
@@ -9079,6 +9106,127 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("[API] /api/analytics/overview error:", err.message);
       res.status(500).json({ error: err.message || "Failed to load analytics" });
+    }
+  });
+
+  // POST /api/analytics/refresh — Pull live metrics from connected platforms.
+  // Hits Instagram Graph API + Facebook Graph API + YouTube Data API to refresh
+  // follower counts and per-video engagement. Updates the users + youtubeConnections
+  // + videoIndex rows so the next /api/analytics/overview call sees fresh numbers.
+  //
+  // Required scopes (already in OAuth flow):
+  //   - YouTube: youtube.readonly
+  //   - Facebook: pages_read_engagement
+  //   - Instagram: instagram_basic + instagram_manage_insights (Meta App Review)
+  app.post("/api/analytics/refresh", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.authUserId;
+      const userRow = await db.query.users.findFirst({ where: eq(usersTable.id, userId) });
+      if (!userRow) return res.status(404).json({ error: "User not found" });
+
+      const refreshed: { instagram?: any; facebook?: any; youtube?: any } = {};
+      const errors: string[] = [];
+
+      // ── Instagram refresh ──
+      if (userRow.instagramBusinessId && userRow.facebookAccessToken) {
+        const token = safeDecrypt(userRow.facebookAccessToken);
+        if (token) {
+          const igStats = await fetchInstagramAnalytics(userRow.instagramBusinessId, token, 10);
+          if (igStats) {
+            await db
+              .update(usersTable)
+              .set({
+                instagramFollowers: igStats.followers,
+                instagramHandle: igStats.username ?? userRow.instagramHandle,
+              })
+              .where(eq(usersTable.id, userId));
+            refreshed.instagram = {
+              followers: igStats.followers,
+              following: igStats.following,
+              mediaCount: igStats.mediaCount,
+              recentMedia: igStats.recentMedia.slice(0, 10).map((m) => ({
+                mediaId: m.mediaId,
+                mediaType: m.mediaType,
+                permalink: m.permalink,
+                thumbnailUrl: m.thumbnailUrl,
+                impressions: m.impressions,
+                reach: m.reach,
+                plays: m.plays,
+                likes: m.likeCount,
+                comments: m.commentsCount,
+                saved: m.saved,
+                shares: m.shares,
+                totalInteractions: m.totalInteractions,
+              })),
+            };
+          } else {
+            errors.push("Instagram fetch failed (check instagram_manage_insights scope)");
+          }
+        } else {
+          errors.push("Instagram token decryption failed");
+        }
+      }
+
+      // ── Facebook refresh ──
+      if (userRow.facebookPageId && userRow.facebookAccessToken) {
+        const token = safeDecrypt(userRow.facebookAccessToken);
+        if (token) {
+          const fbStats = await fetchFacebookPageAnalytics(userRow.facebookPageId, token);
+          if (fbStats) {
+            await db
+              .update(usersTable)
+              .set({ facebookFollowers: fbStats.fanCount })
+              .where(eq(usersTable.id, userId));
+            refreshed.facebook = fbStats;
+          } else {
+            errors.push("Facebook page fetch failed");
+          }
+        } else {
+          errors.push("Facebook token decryption failed");
+        }
+      }
+
+      // ── YouTube refresh ──
+      // Refresh recent video stats (likes, comments) for top 50 videos
+      const ytConnection = await storage.getYoutubeConnection(userId).catch(() => null);
+      if (ytConnection?.accessToken) {
+        const token = safeDecrypt(ytConnection.accessToken) || ytConnection.accessToken;
+        const userVideos = await storage.getVideoIndex(userId).catch(() => [] as any[]);
+        const ytIds = userVideos
+          .filter((v: any) => v.platform === "youtube" && v.youtubeId)
+          .map((v: any) => v.youtubeId)
+          .slice(0, 50);
+        if (ytIds.length > 0) {
+          const ytStats = await fetchYouTubeVideoStats(ytIds, token);
+          // Update viewCount on indexed videos
+          for (const stat of ytStats) {
+            try {
+              await db
+                .update(videoIndexTable)
+                .set({ viewCount: stat.viewCount, updatedAt: new Date() })
+                .where(eq(videoIndexTable.youtubeId, stat.videoId));
+            } catch { /* non-fatal */ }
+          }
+          refreshed.youtube = {
+            videoCount: ytStats.length,
+            totalRecentViews: ytStats.reduce((s, v) => s + v.viewCount, 0),
+            totalRecentLikes: ytStats.reduce((s, v) => s + v.likeCount, 0),
+            totalRecentComments: ytStats.reduce((s, v) => s + v.commentCount, 0),
+            videos: ytStats.slice(0, 20),
+          };
+        }
+      }
+
+      res.json({
+        refreshed,
+        errors,
+        message: errors.length > 0
+          ? `Refreshed with ${errors.length} warnings — check logs for details.`
+          : "Analytics refreshed.",
+      });
+    } catch (err: any) {
+      console.error("[API] /api/analytics/refresh error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to refresh analytics" });
     }
   });
 
