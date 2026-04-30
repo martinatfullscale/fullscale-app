@@ -10,6 +10,7 @@ import { processVideoScan, scanPendingVideos, addToLocalAssetMap, getYouTubeThum
 // import { queueVideoScan, getScanJobStatus, getQueueStatus, initializeScanWorker } from "./lib/scanWorker";
 // import { detectSurfacesFromVideo } from "./lib/surfaceDetector";
 import { extractThumbnailForVideo, extractAndUpdateThumbnails } from "./lib/thumbnailExtractor";
+import { calculatePlacementPricing, formatCents, PLACEMENT_FEE_BY_TIER } from "./lib/placementPricing";
 import { processVideoExport } from "./lib/videoExporter";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 import { hashPassword, verifyPassword } from "./lib/password";
@@ -4990,6 +4991,49 @@ export async function registerRoutes(
   // BRAND PLACEMENT ASSIGNMENTS — brand-initiated placement requests, creator approves
   // ============================================================================
 
+  // GET /api/brand/placements/quote?editorialClipId=...&surfaceCount=N&isTestPlacement=...
+  // Returns the placement fee for a given clip + count without creating anything.
+  // Used by BrandPlacementRequestModal to show the price upfront.
+  app.get("/api/brand/placements/quote", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const editorialClipId = req.query.editorialClipId ? parseInt(req.query.editorialClipId as string) : undefined;
+      const videoId = req.query.videoId ? parseInt(req.query.videoId as string) : undefined;
+      const surfaceCount = Math.max(1, parseInt((req.query.surfaceCount as string) ?? "1"));
+      const requestedTestMode = req.query.isTestPlacement === "true";
+      const isAdmin = req.authEmail === "martin@gofullscale.co";
+      const isTestPlacement = requestedTestMode && isAdmin;
+
+      let tier: any = null;
+      if (editorialClipId) {
+        const clip = await storage.getEditorialClipById(editorialClipId);
+        if (!clip) return res.status(404).json({ error: "Clip not found" });
+        tier = clip.monetizationTier;
+      }
+      // (videoId-only path falls back to default pricing — no clip tier)
+
+      const pricing = calculatePlacementPricing(tier, isTestPlacement);
+      const totalFee = pricing.placementFeeCents * surfaceCount;
+
+      res.json({
+        perPlacement: pricing,
+        surfaceCount,
+        totalFeeCents: totalFee,
+        totalFeeUsd: formatCents(totalFee),
+        creatorTotalPayoutCents: pricing.creatorPayoutCents * surfaceCount,
+        creatorTotalPayoutUsd: formatCents(pricing.creatorPayoutCents * surfaceCount),
+        platformTotalCents: pricing.platformTakeCents * surfaceCount,
+        platformTotalUsd: formatCents(pricing.platformTakeCents * surfaceCount),
+        tier,
+        isTestPlacement,
+        // Reference table for UI display
+        tiers: PLACEMENT_FEE_BY_TIER,
+      });
+    } catch (err: any) {
+      console.error("[API] /api/brand/placements/quote error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to compute quote" });
+    }
+  });
+
   // POST /api/brand/placements — Brand creates one or more placement requests on a creator's clip.
   // Body: { editorialClipId | videoId, brandProductId, surfaceIds: number[], message?: string }
   // Either editorialClipId (preferred — new flow, clip-scoped) or videoId (legacy/fallback).
@@ -5011,14 +5055,16 @@ export async function registerRoutes(
         });
       }
 
-      // Resolve videoId from clipId if clip-targeted mode
+      // Resolve videoId from clipId if clip-targeted mode + capture clip tier for pricing
       let resolvedVideoId: number;
       let clipIdForRow: number | null = null;
+      let clipTier: string | null = null;
       if (editorialClipId) {
         const clip = await storage.getEditorialClipById(parseInt(editorialClipId));
         if (!clip) return res.status(404).json({ error: "Editorial clip not found" });
         resolvedVideoId = clip.videoId;
         clipIdForRow = clip.id;
+        clipTier = clip.monetizationTier;
       } else {
         resolvedVideoId = parseInt(videoId);
       }
@@ -5035,6 +5081,12 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Not authorized to use this product" });
       }
 
+      // Admin-only test placement flag — zeros out the fee.
+      // For now any user with admin email can pass isTestPlacement; expand auth as needed.
+      const requestedTestMode = req.body?.isTestPlacement === true;
+      const isAdmin = req.authEmail === "martin@gofullscale.co"; // Expand when needed
+      const isTestPlacement = requestedTestMode && isAdmin;
+
       // Pre-flight: which surfaces are already taken
       const conflicts: { surfaceId: number; existingAssignmentId: number }[] = [];
       for (const sid of surfaceIds) {
@@ -5050,6 +5102,10 @@ export async function registerRoutes(
         });
       }
 
+      // Calculate pricing once — same fee applies to every surface in this request
+      // (each surface = one placement, each charged independently)
+      const pricing = calculatePlacementPricing(clipTier as any, isTestPlacement);
+
       // Create assignments
       const created: any[] = [];
       for (const sid of surfaceIds) {
@@ -5062,14 +5118,29 @@ export async function registerRoutes(
           surfaceId: parseInt(sid),
           status: "pending_creator_review",
           brandMessage: message || null,
+          placementFeeCents: pricing.placementFeeCents,
+          platformTakeCents: pricing.platformTakeCents,
+          creatorPayoutCents: pricing.creatorPayoutCents,
+          isTestPlacement: pricing.isTestPlacement,
+          chargeStatus: "pending",
         });
         created.push(row);
       }
 
+      const totalFee = pricing.placementFeeCents * created.length;
       console.log(
-        `[BrandPlacement] Brand ${brandUserId} requested ${created.length} placement(s) ${clipIdForRow ? `on clip ${clipIdForRow}` : `on video ${resolvedVideoId}`} for product ${brandProductId}`,
+        `[BrandPlacement] Brand ${brandUserId} requested ${created.length} placement(s) ${clipIdForRow ? `on clip ${clipIdForRow}` : `on video ${resolvedVideoId}`} for product ${brandProductId} — total fee $${formatCents(totalFee)}${isTestPlacement ? " (TEST)" : ""}`,
       );
-      res.json({ assignments: created, count: created.length });
+      res.json({
+        assignments: created,
+        count: created.length,
+        pricing: {
+          perPlacement: pricing,
+          totalFeeCents: totalFee,
+          totalFeeUsd: formatCents(totalFee),
+          isTestPlacement,
+        },
+      });
     } catch (err: any) {
       console.error("[API] /api/brand/placements POST error:", err.message);
       res.status(500).json({ error: err.message || "Failed to create placement requests" });

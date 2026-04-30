@@ -247,6 +247,17 @@ export const brandPlacementAssignments = pgTable("brand_placement_assignments", 
   brandMessage: text("brand_message"),                   // Optional message from brand → creator
   rejectionReason: text("rejection_reason"),             // Optional reason from creator
   reviewedAt: timestamp("reviewed_at"),                  // When creator approved/rejected
+  // ── Pricing fields (cents, integer to avoid float math on money) ────────
+  // Calculated at placement-request time based on clip.monetizationTier.
+  // Charged on creator approval; refunded if creator later revokes.
+  placementFeeCents: integer("placement_fee_cents").default(0),    // Total fee brand pays
+  platformTakeCents: integer("platform_take_cents").default(0),    // Platform's 30% cut
+  creatorPayoutCents: integer("creator_payout_cents").default(0),  // Creator's 70%
+  isTestPlacement: boolean("is_test_placement").default(false),    // Admin override: zero charge
+  // Lifecycle: pending → charged | failed (Stripe integration is a follow-up)
+  chargeStatus: varchar("charge_status", { length: 20 }).default("pending"),
+  chargedAt: timestamp("charged_at"),
+  stripeChargeId: varchar("stripe_charge_id"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });

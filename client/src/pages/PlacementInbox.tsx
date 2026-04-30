@@ -23,7 +23,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Loader2, CheckCircle2, XCircle, Inbox, ExternalLink, Image as ImageIcon } from "lucide-react";
+import { Loader2, CheckCircle2, XCircle, Inbox, ExternalLink, Image as ImageIcon, DollarSign } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient as qc } from "@/lib/queryClient";
 
@@ -36,6 +36,9 @@ interface PlacementInboxItem {
   status: string;
   brandMessage: string | null;
   createdAt: string | null;
+  placementFeeCents?: number | null;
+  creatorPayoutCents?: number | null;
+  isTestPlacement?: boolean | null;
   product: {
     id: number;
     name: string;
@@ -216,6 +219,34 @@ export default function PlacementInbox() {
                         <p className="text-sm leading-relaxed">{p.brandMessage}</p>
                       </div>
                     )}
+
+                    {/* Payout chip — incentive to approve */}
+                    {(p.creatorPayoutCents ?? 0) > 0 || p.isTestPlacement ? (
+                      <div
+                        className={`rounded-md border p-2.5 flex items-center gap-2 ${
+                          p.isTestPlacement
+                            ? "border-blue-500/30 bg-blue-500/5"
+                            : "border-emerald-500/30 bg-emerald-500/5"
+                        }`}
+                        data-testid={`chip-payout-${p.id}`}
+                      >
+                        <div className="w-8 h-8 rounded-md bg-emerald-500/15 flex items-center justify-center">
+                          <DollarSign className="w-4 h-4 text-emerald-400" />
+                        </div>
+                        <div className="text-sm">
+                          {p.isTestPlacement ? (
+                            <p className="font-medium text-blue-300">Test placement — no payout</p>
+                          ) : (
+                            <p>
+                              <span className="font-bold text-emerald-300">
+                                ${((p.creatorPayoutCents ?? 0) / 100).toFixed(2)}
+                              </span>{" "}
+                              <span className="text-muted-foreground">to you when you approve</span>
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
 
                   {/* Actions */}

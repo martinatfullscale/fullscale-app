@@ -33,7 +33,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Loader2, Send, AlertTriangle, Image as ImageIcon, CheckCircle2 } from "lucide-react";
+import { Loader2, Send, AlertTriangle, Image as ImageIcon, CheckCircle2, DollarSign } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 
@@ -131,6 +131,33 @@ export function BrandPlacementRequestModal({
     (approvedData?.placements ?? []).forEach((p) => set.add(p.surfaceId));
     return set;
   }, [approvedData]);
+
+  // Live price quote — refetches when the count of selected surfaces changes
+  const { data: quoteData } = useQuery<{
+    perPlacement: { placementFeeCents: number; creatorPayoutCents: number };
+    totalFeeCents: number;
+    totalFeeUsd: string;
+    creatorTotalPayoutUsd: string;
+    tier: string | null;
+    isTestPlacement: boolean;
+  }>({
+    queryKey: [
+      "/api/brand/placements/quote",
+      { editorialClipId, videoId, surfaceCount: selectedSurfaceIds.size },
+    ],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (editorialClipId) params.set("editorialClipId", String(editorialClipId));
+      else if (videoId) params.set("videoId", String(videoId));
+      params.set("surfaceCount", String(Math.max(1, selectedSurfaceIds.size)));
+      const res = await fetch(`/api/brand/placements/quote?${params.toString()}`, {
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error("Failed to fetch quote");
+      return res.json();
+    },
+    enabled: open && (editorialClipId !== undefined || videoId !== undefined),
+  });
 
   const submitMutation = useMutation({
     mutationFn: async () => {
@@ -370,6 +397,50 @@ export function BrandPlacementRequestModal({
               </div>
             )}
           </div>
+
+          {/* Price quote */}
+          {quoteData && selectedSurfaceIds.size > 0 && (
+            <div
+              className={`rounded-md border p-3 ${
+                quoteData.isTestPlacement
+                  ? "border-blue-500/40 bg-blue-500/10"
+                  : "border-emerald-500/30 bg-emerald-500/5"
+              }`}
+              data-testid="panel-price-quote"
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs uppercase tracking-widest text-muted-foreground/70 flex items-center gap-1">
+                  <DollarSign className="w-3 h-3" />
+                  Total cost
+                </span>
+                <span className="text-xl font-bold" data-testid="text-total-fee">
+                  ${quoteData.totalFeeUsd}
+                </span>
+              </div>
+              <div className="text-xs text-muted-foreground space-y-0.5">
+                <p>
+                  {selectedSurfaceIds.size} placement{selectedSurfaceIds.size !== 1 ? "s" : ""}
+                  {quoteData.tier && (
+                    <>
+                      {" · "}
+                      <span className="capitalize">{quoteData.tier} tier</span>
+                    </>
+                  )}
+                  {" · "}
+                  Creator earns ${quoteData.creatorTotalPayoutUsd}
+                </p>
+                {quoteData.isTestPlacement && (
+                  <p className="text-blue-300 font-medium flex items-center gap-1">
+                    <CheckCircle2 className="w-3 h-3" />
+                    Test placement — no charge applied
+                  </p>
+                )}
+                {!quoteData.isTestPlacement && (
+                  <p>Charged when creator approves. Refunded if rejected.</p>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Message */}
           <div className="space-y-2">
