@@ -5,7 +5,9 @@ import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 import logoBlackAmbition from "@assets/logo-black-ambition_1767712118620.png";
 import logoMayDavis from "@assets/logo-may-davis_1767712118621.png";
 import logoElementa from "@assets/logo-elementa_1767712118620.png";
-import logoMightyCapital from "@assets/logo-mighty-capital.png";
+// Mighty Capital logo lives in client/public/partner-logos/mighty-capital.png so
+// the build doesn't fail if the file isn't saved yet. <img onError> falls back
+// to styled brand-name text if the PNG is missing.
 import { SmithFamilyCircleLogo } from "@/components/SmithFamilyCircleLogo";
 import heroVideo from "@assets/generated_videos/creator_studio_cinematic_loop.mp4";
 import heroVideoMobile from "@assets/generated_videos/creator_studio_cinematic_loop_mobile.mp4";
@@ -1555,7 +1557,20 @@ export default function Landing() {
                   <SmithFamilyCircleLogo className="h-6 md:h-10 w-auto opacity-70 hover:opacity-100 transition-opacity" />
                 </div>
                 <div className="p-3 md:p-4 rounded-xl backdrop-blur-md bg-white/5 border border-white/10 hover:bg-white/10 hover:scale-105 hover:shadow-lg hover:shadow-white/5 transition-all duration-300">
-                  <img src={logoMightyCapital} alt="Mighty Capital" loading="lazy" className="h-8 md:h-12 w-auto opacity-70 hover:opacity-100 transition-opacity" />
+                  <img
+                    src="/partner-logos/mighty-capital.png"
+                    alt="Mighty Capital"
+                    loading="lazy"
+                    className="h-8 md:h-12 w-auto opacity-70 hover:opacity-100 transition-opacity"
+                    onError={(e) => {
+                      // Graceful fallback if PNG isn't saved yet
+                      const img = e.currentTarget;
+                      const fallback = document.createElement("span");
+                      fallback.className = "text-xs md:text-sm font-bold tracking-tight text-white/70 px-2";
+                      fallback.textContent = "MIGHTY CAPITAL";
+                      img.replaceWith(fallback);
+                    }}
+                  />
                 </div>
               </div>
             ))}
