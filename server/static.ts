@@ -46,18 +46,24 @@ export function serveStatic(app: Express) {
   
   console.log(`[Static] Serving static files from: ${distPath}`);
 
-  // Serve static files with aggressive caching headers
-  // Vite adds content hashes to filenames, so we can cache forever
+  // Hashed Vite assets in /assets/* are content-addressed by filename — cache forever.
+  // Everything else (index.html, robots.txt, etc.) must revalidate so deploys are picked up.
   app.use(express.static(distPath, {
-    maxAge: '7d',
     etag: true,
     lastModified: true,
-    immutable: true,
+    setHeaders: (res, filePath) => {
+      if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      } else {
+        res.setHeader('Cache-Control', 'no-cache');
+      }
+    },
   }));
 
   // SPA fallback - serve index.html for all non-API routes
   app.use("*", (_req, res, next) => {
     try {
+      res.setHeader('Cache-Control', 'no-cache');
       res.sendFile(indexPath, (err) => {
         if (err) {
           console.error("[Static] Error sending index.html:", err);

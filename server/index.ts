@@ -31,12 +31,13 @@ app.set("trust proxy", 1);
 // ============================================
 const projectRoot = process.cwd();
 
-// Serve public directory assets (videos, images) with CORS headers for canvas compositing
+// Serve public directory assets (videos, images) with CORS headers for canvas compositing.
+// These filenames are not content-hashed, so we cache short and require revalidation —
+// otherwise updates to og:image, favicon, marketing videos, etc. are invisible for days.
 app.use(express.static(path.join(projectRoot, "public"), {
-  maxAge: '7d',
+  maxAge: '1h',
   etag: true,
   lastModified: true,
-  immutable: true,
   index: false,
   setHeaders: (res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -46,10 +47,9 @@ app.use(express.static(path.join(projectRoot, "public"), {
 
 // Serve attached assets (logo, generated images/videos)
 app.use('/attached_assets', express.static(path.join(projectRoot, "attached_assets"), {
-  maxAge: '7d',
+  maxAge: '1h',
   etag: true,
   lastModified: true,
-  immutable: true,
 }));
 
 app.get('/storage/*', async (req, res) => {
