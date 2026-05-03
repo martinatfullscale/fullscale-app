@@ -176,8 +176,22 @@ async function getGoogleUserInfo(accessToken: string): Promise<{ email: string; 
 }
 
 // YouTube OAuth Configuration
+//
+// youtube.readonly       — channel info, video list, statistics (subs, views)
+// yt-analytics.readonly  — audience demographics (age, gender, country),
+//                          watch time, traffic sources. Required for the
+//                          public creator profile / media kit to show
+//                          audience makeup brands need for compliance
+//                          (e.g. age verification for liquor/age-gated
+//                          campaigns).
+//
+// Adding a new scope means existing tokens are insufficient — users will
+// need to disconnect + reconnect YouTube once after this deploys to grant
+// the new permission. The reconnect uses prompt=consent which forces the
+// new consent screen to appear.
 const YOUTUBE_SCOPES = [
   "https://www.googleapis.com/auth/youtube.readonly",
+  "https://www.googleapis.com/auth/yt-analytics.readonly",
 ];
 
 function getYoutubeAuthUrl(redirectUri: string): string {
