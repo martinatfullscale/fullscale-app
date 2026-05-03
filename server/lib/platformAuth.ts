@@ -628,29 +628,34 @@ export async function setupPlatformAuth(app: Express) {
       }
       // Request scopes for creator data access + analytics.
       //
-      // Uses the NEW Instagram Platform API permission names (renamed by Meta
-      // in 2024 with the Instagram Login migration):
-      //   instagram_basic            → instagram_business_basic
-      //   instagram_manage_insights  → instagram_business_manage_insights
+      // We use Facebook Login (facebook.com/dialog/oauth) to access IG Business
+      // Accounts via linked Pages. That flow uses the LEGACY scope names
+      // (instagram_basic, instagram_manage_insights), NOT the new
+      // instagram_business_* names.
       //
-      // FullScale Portal Biz already has the new names approved as
-      // "Ready for testing" (Meta's status for live + usable permissions).
+      // The instagram_business_* names are only valid for the Instagram Login
+      // flow (instagram.com/oauth/authorize), which is a different OAuth
+      // endpoint we do not use. Requesting them via Facebook Login causes
+      // "Invalid Scopes" rejection from Meta.
+      //
+      // Reverted from commit 78623a3 which incorrectly applied the IG-Login
+      // scope names to the FB-Login flow.
       //
       // Scopes:
       // - email, public_profile: basic identity
       // - pages_show_list: List of managed Pages
       // - pages_read_engagement: Page insights + IG Business Account discovery
-      // - instagram_business_basic: IG profile + media metadata
-      // - instagram_business_manage_insights: IG media insights (impressions,
+      // - instagram_basic [App Review]: IG profile + media metadata
+      // - instagram_manage_insights [App Review]: IG media insights (impressions,
       //   reach, plays for Reels, engagement). REQUIRED for analytics dashboard.
       passport.authenticate("facebook", {
         scope: [
           "email",
           "public_profile",
-          "pages_show_list",                       // List of managed Pages
-          "pages_read_engagement",                 // Page insights + IG Business Account discovery
-          "instagram_business_basic",              // IG profile + media metadata
-          "instagram_business_manage_insights",    // IG analytics (impressions, reach, plays)
+          "pages_show_list",            // List of managed Pages
+          "pages_read_engagement",      // Page insights + IG Business Account discovery
+          "instagram_basic",            // IG profile + media metadata [App Review]
+          "instagram_manage_insights",  // IG analytics (impressions, reach, plays) [App Review]
         ],
       })(req, res, next);
     });
