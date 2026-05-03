@@ -4525,8 +4525,15 @@ export async function registerRoutes(
       }
 
       // Get ALL videos for creator (including those without surfaces)
-      // so the full portfolio is shown on the public profile
-      const allCreatorVideos = await storage.getVideoIndex(email);
+      // so the full portfolio is shown on the public profile.
+      //
+      // Pass both the user's PK id AND their email — historically videos have
+      // landed under either userId, depending on which import path created them
+      // (file uploads tend to use email, IG/FB imports use the UUID id).
+      // getVideoIndex's match-by-id internal lookup only resolves if the
+      // first arg is the id, so passing email-only would silently miss any
+      // rows keyed off the UUID.
+      const allCreatorVideos = await storage.getVideoIndex(userProfile?.id || email, email);
       // Enrich each with surfaces
       const videos: any[] = [];
       for (const v of allCreatorVideos) {
