@@ -49,6 +49,7 @@ import { uploadFileToStorage, fileExistsInStorage, objectKeyFromServeUrl, getSto
 import { runTranscriptPipeline } from "./lib/remix/transcriptPipeline";
 import { runEditorialAutoPipeline, renderSingleEditorialClip } from "./lib/remix/editorialAutoPipeline";
 import { analyzeEditorial } from "./lib/ai/claude-dense/editorialAnalyzer";
+import { categorizeVideos } from "./lib/ai/categorize";
 import { rankClips, deduplicateClips } from "./lib/remix/clipRanker";
 
 // Configure multer for video uploads (temp dir, then uploaded to Object Storage)
@@ -2031,6 +2032,51 @@ export async function registerRoutes(
       res.json({ success: true, ...result });
     } catch (error: any) {
       res.status(500).json({ success: false, error: error.message || "Indexing failed" });
+    }
+  });
+
+  // Backfill AI categorization for the current user's videos that have category: null.
+  // Idempotent — safe to call repeatedly. Useful for cleaning up videos imported
+  // before the AI categorizer was wired in (e.g. older IG/FB imports).
+  app.post("/api/video-index/backfill-categorize", isFlexibleAuthenticated, async (req: any, res) => {
+    const authUserId = req.authUserId;
+    const authEmail = req.authEmail;
+
+    try {
+      const allVideos = await storage.getVideoIndex(authUserId, authEmail);
+      const targets = allVideos.filter(v => v.category == null);
+
+      if (targets.length === 0) {
+        return res.json({ success: true, scanned: allVideos.length, updated: 0, message: "No null-category videos found." });
+      }
+
+      console.log(`[Backfill Categorize] User ${authEmail}: ${targets.length} of ${allVideos.length} videos need categorization`);
+
+      const categorizations = await categorizeVideos(
+        targets.map(v => ({ title: v.title || "", description: v.description || "" }))
+      );
+
+      let updated = 0;
+      for (let i = 0; i < targets.length; i++) {
+        const video = targets[i];
+        const cat = categorizations[i];
+        try {
+          await storage.updateVideoIndex(video.id, {
+            category: cat.category,
+            subcategory: cat.subcategory,
+            isEvergreen: cat.isEvergreen,
+          });
+          updated++;
+        } catch (err: any) {
+          console.error(`[Backfill Categorize] Failed to update video ${video.id}:`, err?.message || err);
+        }
+      }
+
+      console.log(`[Backfill Categorize] User ${authEmail}: updated ${updated}/${targets.length}`);
+      res.json({ success: true, scanned: allVideos.length, candidates: targets.length, updated });
+    } catch (error: any) {
+      console.error("[Backfill Categorize] Error:", error);
+      res.status(500).json({ success: false, error: error.message || "Backfill failed" });
     }
   });
 
