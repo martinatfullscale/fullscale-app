@@ -59,6 +59,16 @@ interface IndexedVideo {
   isEvergreen: boolean | null;
   duration: string | null;
   adOpportunities?: number;
+  editorialStatus?: string | null;
+}
+
+// Returns true if a video has work in flight that the UI should poll to track.
+// Used to throttle dashboard polling when everything is settled.
+function isVideoInProgress(v: IndexedVideo): boolean {
+  if (v.status === "Pending Scan" || v.status === "Scanning") return true;
+  const ed = v.editorialStatus;
+  if (ed === "queued" || ed === "transcribing" || ed === "analyzing" || ed === "rendering" || ed === "processing") return true;
+  return false;
 }
 
 interface VideoIndexResponse {
@@ -376,7 +386,14 @@ export default function Dashboard() {
       return res.json();
     },
     enabled: isPitchMode || (isRealMode && !!youtubeStatus?.connected),
-    refetchInterval: isPitchMode ? undefined : 5000,
+    // Adaptive polling: 5s when any video has work in flight (scan/render),
+    // 60s when everything is settled. Cuts idle traffic ~12× while preserving
+    // responsiveness during active scans and editorial pipelines.
+    refetchInterval: isPitchMode ? undefined : (query) => {
+      const data = query.state.data as VideoIndexResponse | undefined;
+      if (!data?.videos) return 5000;
+      return data.videos.some(isVideoInProgress) ? 5000 : 60000;
+    },
     staleTime: 0,
   });
 
