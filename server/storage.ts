@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { eq, desc, and, or, sql } from "drizzle-orm";
+import { eq, desc, and, or, sql, inArray } from "drizzle-orm";
 import {
   monetizationItems,
   youtubeConnections,
@@ -726,7 +726,7 @@ export class DatabaseStorage implements IStorage {
   async getVideosByYoutubeIds(youtubeIds: string[]): Promise<VideoIndex[]> {
     if (youtubeIds.length === 0) return [];
     return db.select().from(videoIndex)
-      .where(sql`${videoIndex.youtubeId} = ANY(${youtubeIds})`);
+      .where(inArray(videoIndex.youtubeId, youtubeIds));
   }
 
   async getPendingVideos(userId: string, limit: number = 10): Promise<VideoIndex[]> {
@@ -2146,7 +2146,7 @@ export class DatabaseStorage implements IStorage {
         .from(studioVoices)
         .where(and(
           eq(studioVoices.isActive, true),
-          sql`${studioVoices.tier} = ANY(${allowedTiers})`
+          inArray(studioVoices.tier, allowedTiers)
         ));
     }
     return await db
