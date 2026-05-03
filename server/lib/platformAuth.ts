@@ -3,7 +3,7 @@ import type { Express } from "express";
 import { db } from "../db";
 import { users, videoIndex } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
-import { encrypt } from "../encryption";
+import { encrypt, decrypt } from "../encryption";
 import { categorizeVideos } from "./ai/categorize";
 
 interface TwitchProfile {
@@ -1035,6 +1035,130 @@ export async function setupPlatformAuth(app: Express) {
         hasToken: !!dbUser.facebookAccessToken,
       } : null,
     });
+  });
+
+  // Debug endpoint: probe FB Insights API to verify which permissions are
+  // actually wired into the OAuth flow vs just approved-but-disconnected.
+  //
+  // Background: Meta's "Ready for testing" status on a permission means it's
+  // approved, but the App's use case must explicitly request it for the scope
+  // to land in the user's access token. We learned this with instagram_basic
+  // last week — the permission was approved, but the connect flow worked only
+  // after the use case was wired up. This endpoint runs a battery of Insights
+  // calls and returns the raw responses, so we can see exactly which calls
+  // succeed vs which fail with "permission not granted" / "missing scope".
+  //
+  // Tests in order:
+  //   1. Token info — what scopes does the token actually have?
+  //   2. Page-level Insights (read_insights / pages_read_engagement)
+  //   3. Page audience demographics (read_insights — the BIG one for media kit)
+  //   4. Instagram Business audience demographics (instagram_manage_insights)
+  //
+  // All errors are caught and returned per-call rather than throwing, so we
+  // can see partial successes.
+  app.get("/api/debug/fb-insights-test", async (req: any, res) => {
+    const googleEmail = req.session?.googleUser?.email || req.session?.pendingGoogleUser?.email;
+    const adminEmail = req.query.admin_email as string | undefined;
+    const lookupEmail = googleEmail || adminEmail;
+
+    if (!lookupEmail) {
+      return res.status(401).json({ error: "Not authenticated. Pass ?admin_email=... to test in dev." });
+    }
+
+    const user = await db.query.users.findFirst({ where: eq(users.email, lookupEmail) });
+    if (!user) return res.status(404).json({ error: `No user with email ${lookupEmail}` });
+    if (!user.facebookAccessToken) return res.status(400).json({ error: "User has no Facebook access token" });
+
+    let userToken: string;
+    try {
+      userToken = decrypt(user.facebookAccessToken);
+    } catch (err: any) {
+      return res.status(500).json({ error: "Failed to decrypt user FB token", detail: err?.message });
+    }
+
+    const results: Record<string, any> = {
+      user: { id: user.id, email: user.email, facebookPageId: user.facebookPageId, instagramBusinessId: user.instagramBusinessId },
+      tests: {},
+    };
+
+    const tryFetch = async (name: string, url: string) => {
+      try {
+        const r = await fetch(url);
+        const data = await r.json();
+        results.tests[name] = { ok: r.ok, status: r.status, data };
+      } catch (err: any) {
+        results.tests[name] = { ok: false, error: err?.message || String(err) };
+      }
+    };
+
+    // --- Test 1: token introspection ---
+    await tryFetch(
+      "1_token_debug",
+      `https://graph.facebook.com/debug_token?input_token=${userToken}&access_token=${userToken}`
+    );
+
+    // --- Test 2: fetch Pages (we need a page access token for Insights) ---
+    let pageAccessToken: string | null = null;
+    let pageId: string | null = user.facebookPageId || null;
+    await tryFetch(
+      "2_pages_list",
+      `https://graph.facebook.com/v18.0/me/accounts?fields=id,name,access_token,instagram_business_account&access_token=${userToken}`
+    );
+    const pagesData = results.tests["2_pages_list"]?.data?.data;
+    if (pagesData && Array.isArray(pagesData) && pagesData.length > 0) {
+      pageAccessToken = pagesData[0].access_token;
+      if (!pageId) pageId = pagesData[0].id;
+    }
+
+    // --- Test 3: Page-level basic Insights (page_fans, page_views) ---
+    if (pageId && pageAccessToken) {
+      await tryFetch(
+        "3_page_basic_insights",
+        `https://graph.facebook.com/v18.0/${pageId}/insights?metric=page_fans,page_views_total,page_impressions&period=day&access_token=${pageAccessToken}`
+      );
+
+      // --- Test 4: Page audience demographics — the media-kit data ---
+      // page_fans_gender_age = follower demographics breakdown
+      // page_fans_country = top countries
+      // page_fans_city = top cities
+      // These are LIFETIME metrics, not period-bucketed.
+      await tryFetch(
+        "4_page_audience_demographics",
+        `https://graph.facebook.com/v18.0/${pageId}/insights?metric=page_fans_gender_age,page_fans_country,page_fans_city&period=lifetime&access_token=${pageAccessToken}`
+      );
+    } else {
+      results.tests["3_page_basic_insights"] = { ok: false, skipped: "No page or page token available" };
+      results.tests["4_page_audience_demographics"] = { ok: false, skipped: "No page or page token available" };
+    }
+
+    // --- Test 5: Instagram Business audience demographics ---
+    // Meta deprecated audience_gender_age in late 2024. The current path is
+    // /insights?metric=follower_demographics&breakdown=age,gender,country,city&metric_type=total_value
+    if (user.instagramBusinessId && pageAccessToken) {
+      await tryFetch(
+        "5_ig_audience_legacy",
+        `https://graph.facebook.com/v18.0/${user.instagramBusinessId}/insights?metric=audience_gender_age,audience_country,audience_city,audience_locale&period=lifetime&access_token=${pageAccessToken}`
+      );
+      await tryFetch(
+        "5_ig_audience_v2",
+        `https://graph.facebook.com/v18.0/${user.instagramBusinessId}/insights?metric=follower_demographics&breakdown=age,gender,country,city&metric_type=total_value&period=lifetime&access_token=${pageAccessToken}`
+      );
+    } else {
+      results.tests["5_ig_audience_legacy"] = { ok: false, skipped: "No IG business id or page token" };
+      results.tests["5_ig_audience_v2"] = { ok: false, skipped: "No IG business id or page token" };
+    }
+
+    // Summarize for quick scanning
+    const summary = Object.entries(results.tests).map(([name, r]: [string, any]) => ({
+      test: name,
+      ok: !!r.ok,
+      status: r.status ?? null,
+      errorCode: r.data?.error?.code ?? null,
+      errorMessage: r.data?.error?.message ?? r.error ?? null,
+      skipped: r.skipped ?? null,
+    }));
+
+    res.json({ ...results, summary });
   });
 
   // Disconnect Facebook - clears Facebook and Instagram data
