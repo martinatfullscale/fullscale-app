@@ -4,6 +4,7 @@ import { db } from "../db";
 import { users, videoIndex } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
 import { encrypt } from "../encryption";
+import { categorizeVideos } from "./ai/categorize";
 
 interface TwitchProfile {
   id: string;
@@ -150,41 +151,51 @@ async function fetchInstagramMedia(igUserId: string, accessToken: string): Promi
 // Import personal profile videos into video_index
 async function importPersonalVideos(userId: string, accessToken: string): Promise<number> {
   const videos = await fetchPersonalProfileVideos(accessToken);
-  let imported = 0;
-  
+
+  const candidates: typeof videos = [];
   for (const video of videos) {
+    const existing = await db.query.videoIndex.findFirst({
+      where: and(
+        eq(videoIndex.userId, userId),
+        eq(videoIndex.youtubeId, `facebook:${video.id}`),
+        eq(videoIndex.platform, "facebook")
+      )
+    });
+    if (!existing) candidates.push(video);
+  }
+
+  const categorizations = await categorizeVideos(
+    candidates.map(v => ({ title: v.title || "Untitled Video", description: v.description || "" }))
+  );
+
+  let imported = 0;
+  for (let i = 0; i < candidates.length; i++) {
+    const video = candidates[i];
+    const cat = categorizations[i];
     try {
-      // Check if already exists
-      const existing = await db.query.videoIndex.findFirst({
-        where: and(
-          eq(videoIndex.userId, userId),
-          eq(videoIndex.youtubeId, `facebook:${video.id}`),
-          eq(videoIndex.platform, "facebook")
-        )
+      await db.insert(videoIndex).values({
+        userId,
+        youtubeId: `facebook:${video.id}`,
+        title: video.title || "Untitled Video",
+        description: video.description || "",
+        viewCount: video.views || 0,
+        thumbnailUrl: video.thumbnails?.data?.[0]?.uri || null,
+        status: "Pending Scan",
+        priorityScore: 50,
+        publishedAt: video.created_time ? new Date(video.created_time) : new Date(),
+        platform: "facebook",
+        duration: video.length ? `${Math.floor(video.length / 60)}:${String(video.length % 60).padStart(2, '0')}` : null,
+        sourceUrl: video.permalink_url || null,
+        category: cat.category,
+        subcategory: cat.subcategory,
+        isEvergreen: cat.isEvergreen,
       });
-      
-      if (!existing) {
-        await db.insert(videoIndex).values({
-          userId,
-          youtubeId: `facebook:${video.id}`,
-          title: video.title || "Untitled Video",
-          description: video.description || "",
-          viewCount: video.views || 0,
-          thumbnailUrl: video.thumbnails?.data?.[0]?.uri || null,
-          status: "Pending Scan",
-          priorityScore: 50,
-          publishedAt: video.created_time ? new Date(video.created_time) : new Date(),
-          platform: "facebook",
-          duration: video.length ? `${Math.floor(video.length / 60)}:${String(video.length % 60).padStart(2, '0')}` : null,
-          sourceUrl: video.permalink_url || null,
-        });
-        imported++;
-      }
+      imported++;
     } catch (error) {
       console.error(`[Graph API] Error importing personal video ${video.id}:`, error);
     }
   }
-  
+
   console.log(`[Graph API] Imported ${imported} new personal profile videos`);
   return imported;
 }
@@ -192,50 +203,60 @@ async function importPersonalVideos(userId: string, accessToken: string): Promis
 // Import Facebook videos into video_index
 async function importFacebookVideos(userId: string, pageId: string, accessToken: string): Promise<number> {
   const videos = await fetchFacebookPageVideos(pageId, accessToken);
-  let imported = 0;
-  
+
+  const candidates: Array<{ video: any; title: string }> = [];
   for (const video of videos) {
+    const existing = await db.query.videoIndex.findFirst({
+      where: and(
+        eq(videoIndex.userId, userId),
+        eq(videoIndex.youtubeId, `facebook:${video.id}`),
+        eq(videoIndex.platform, "facebook")
+      )
+    });
+    if (existing) continue;
+
+    // Try multiple fields for title: title, name, or first line of description
+    let videoTitle = video.title || video.name;
+    if (!videoTitle && video.description) {
+      const firstLine = video.description.split('\n')[0].trim();
+      videoTitle = firstLine.substring(0, 100) || "Facebook Video";
+    }
+    videoTitle = videoTitle || "Facebook Video";
+    candidates.push({ video, title: videoTitle });
+  }
+
+  const categorizations = await categorizeVideos(
+    candidates.map(c => ({ title: c.title, description: c.video.description || "" }))
+  );
+
+  let imported = 0;
+  for (let i = 0; i < candidates.length; i++) {
+    const { video, title } = candidates[i];
+    const cat = categorizations[i];
     try {
-      // Check if already exists
-      const existing = await db.query.videoIndex.findFirst({
-        where: and(
-          eq(videoIndex.userId, userId),
-          eq(videoIndex.youtubeId, `facebook:${video.id}`),
-          eq(videoIndex.platform, "facebook")
-        )
+      await db.insert(videoIndex).values({
+        userId,
+        youtubeId: `facebook:${video.id}`,
+        title,
+        description: video.description || "",
+        viewCount: video.views || 0,
+        thumbnailUrl: video.thumbnails?.data?.[0]?.uri || null,
+        status: "Pending Scan",
+        priorityScore: 50,
+        publishedAt: video.created_time ? new Date(video.created_time) : new Date(),
+        platform: "facebook",
+        duration: video.length ? `${Math.floor(video.length / 60)}:${String(video.length % 60).padStart(2, '0')}` : null,
+        sourceUrl: video.permalink_url || null,
+        category: cat.category,
+        subcategory: cat.subcategory,
+        isEvergreen: cat.isEvergreen,
       });
-      
-      if (!existing) {
-        // Try multiple fields for title: title, name, or first line of description
-        let videoTitle = video.title || video.name;
-        if (!videoTitle && video.description) {
-          // Use first line of description as title (up to 100 chars)
-          const firstLine = video.description.split('\n')[0].trim();
-          videoTitle = firstLine.substring(0, 100) || "Facebook Video";
-        }
-        videoTitle = videoTitle || "Facebook Video";
-        
-        await db.insert(videoIndex).values({
-          userId,
-          youtubeId: `facebook:${video.id}`,
-          title: videoTitle,
-          description: video.description || "",
-          viewCount: video.views || 0,
-          thumbnailUrl: video.thumbnails?.data?.[0]?.uri || null,
-          status: "Pending Scan",
-          priorityScore: 50,
-          publishedAt: video.created_time ? new Date(video.created_time) : new Date(),
-          platform: "facebook",
-          duration: video.length ? `${Math.floor(video.length / 60)}:${String(video.length % 60).padStart(2, '0')}` : null,
-          sourceUrl: video.permalink_url || null,
-        });
-        imported++;
-      }
+      imported++;
     } catch (error) {
       console.error(`[Graph API] Error importing Facebook video ${video.id}:`, error);
     }
   }
-  
+
   console.log(`[Graph API] Imported ${imported} new Facebook videos`);
   return imported;
 }
@@ -243,45 +264,56 @@ async function importFacebookVideos(userId: string, pageId: string, accessToken:
 // Import Instagram media into video_index
 async function importInstagramMedia(userId: string, igUserId: string, accessToken: string): Promise<number> {
   const media = await fetchInstagramMedia(igUserId, accessToken);
-  let imported = 0;
-  
+
+  const candidates: any[] = [];
   for (const item of media) {
+    // Only import videos and reels (not images)
+    if (item.media_type !== "VIDEO" && item.media_type !== "REELS") continue;
+
+    const existing = await db.query.videoIndex.findFirst({
+      where: and(
+        eq(videoIndex.userId, userId),
+        eq(videoIndex.youtubeId, `instagram:${item.id}`),
+        eq(videoIndex.platform, "instagram")
+      )
+    });
+    if (!existing) candidates.push(item);
+  }
+
+  const categorizations = await categorizeVideos(
+    candidates.map(item => ({
+      title: item.caption?.substring(0, 100) || "Instagram Video",
+      description: item.caption || "",
+    }))
+  );
+
+  let imported = 0;
+  for (let i = 0; i < candidates.length; i++) {
+    const item = candidates[i];
+    const cat = categorizations[i];
     try {
-      // Only import videos and reels (not images)
-      if (item.media_type !== "VIDEO" && item.media_type !== "REELS") {
-        continue;
-      }
-      
-      // Check if already exists
-      const existing = await db.query.videoIndex.findFirst({
-        where: and(
-          eq(videoIndex.userId, userId),
-          eq(videoIndex.youtubeId, `instagram:${item.id}`),
-          eq(videoIndex.platform, "instagram")
-        )
+      await db.insert(videoIndex).values({
+        userId,
+        youtubeId: `instagram:${item.id}`,
+        title: item.caption?.substring(0, 100) || "Instagram Video",
+        description: item.caption || "",
+        viewCount: 0,
+        thumbnailUrl: item.thumbnail_url || item.media_url || null,
+        status: "Pending Scan",
+        priorityScore: 50,
+        publishedAt: item.timestamp ? new Date(item.timestamp) : new Date(),
+        platform: "instagram",
+        sourceUrl: item.permalink || null,
+        category: cat.category,
+        subcategory: cat.subcategory,
+        isEvergreen: cat.isEvergreen,
       });
-      
-      if (!existing) {
-        await db.insert(videoIndex).values({
-          userId,
-          youtubeId: `instagram:${item.id}`,
-          title: item.caption?.substring(0, 100) || "Instagram Video",
-          description: item.caption || "",
-          viewCount: 0,
-          thumbnailUrl: item.thumbnail_url || item.media_url || null,
-          status: "Pending Scan",
-          priorityScore: 50,
-          publishedAt: item.timestamp ? new Date(item.timestamp) : new Date(),
-          platform: "instagram",
-          sourceUrl: item.permalink || null,
-        });
-        imported++;
-      }
+      imported++;
     } catch (error) {
       console.error(`[Graph API] Error importing Instagram media ${item.id}:`, error);
     }
   }
-  
+
   console.log(`[Graph API] Imported ${imported} new Instagram videos/reels`);
   return imported;
 }
