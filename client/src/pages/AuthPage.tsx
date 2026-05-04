@@ -71,7 +71,7 @@ export default function AuthPage() {
       const data = await response.json();
       if (response.ok) {
         toast({ title: "Dev Login", description: `Logged in as ${data.email}` });
-        setTimeout(() => setLocation(getDestinationPath()), 300);
+        setTimeout(() => { window.location.href = getDestinationPath(); }, 300);
       } else {
         toast({ title: "Dev Login Failed", description: data.error, variant: "destructive" });
       }
@@ -104,14 +104,18 @@ export default function AuthPage() {
         return;
       }
 
-      // Check if user is approved or pending
+      // Hard-navigate after login so the auth state hook (useAuth) refetches
+      // /api/auth/user against the new session. setLocation is SPA-only and
+      // would leave the cached "not logged in" state intact, causing
+      // /dashboard to fall through to the unauth Landing page until the user
+      // manually reloads.
       if (data.status === "pending") {
         toast({
           title: "Welcome!",
           description: "Your application is being reviewed...",
         });
         setTimeout(() => {
-          setLocation("/waitlist");
+          window.location.href = "/waitlist";
         }, 500);
       } else {
         toast({
@@ -119,7 +123,7 @@ export default function AuthPage() {
           description: `Redirecting to ${DESTINATIONS[destination].label}...`,
         });
         setTimeout(() => {
-          setLocation(getDestinationPath());
+          window.location.href = getDestinationPath();
         }, 500);
       }
     } catch (error) {
@@ -189,14 +193,15 @@ export default function AuthPage() {
         return;
       }
 
-      // Check if user is approved or pending waitlist
+      // Hard-navigate after registration for the same reason as login:
+      // useAuth's cached state needs to refetch against the new session.
       if (data.status === "pending") {
         toast({
           title: "Application Submitted!",
           description: "You've been added to the waitlist.",
         });
         setTimeout(() => {
-          setLocation("/waitlist");
+          window.location.href = "/waitlist";
         }, 500);
       } else {
         toast({
@@ -204,7 +209,7 @@ export default function AuthPage() {
           description: `Welcome to FullScale. Redirecting to ${DESTINATIONS[destination].label}...`,
         });
         setTimeout(() => {
-          setLocation(getDestinationPath());
+          window.location.href = getDestinationPath();
         }, 500);
       }
     } catch (error) {
