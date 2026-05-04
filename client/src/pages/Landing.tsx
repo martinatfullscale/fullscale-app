@@ -1219,8 +1219,6 @@ export default function Landing() {
   const [showBetaModal, setShowBetaModal] = useState(false);
   const [showDemoModal, setShowDemoModal] = useState(false);
   const [accessError, setAccessError] = useState<string | null>(null);
-  const [showSignInOptions, setShowSignInOptions] = useState(false);
-  const [signInDest, setSignInDest] = useState<"dashboard" | "studio">("dashboard");
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isMobile, setIsMobile] = useState(() =>
     typeof window !== "undefined" && window.matchMedia("(max-width: 768px)").matches
@@ -1308,10 +1306,6 @@ export default function Landing() {
     setShowBetaModal(true);
   };
 
-  const handleActualLogin = () => {
-    const redirect = signInDest === "studio" ? "/studio/waitlist" : "/dashboard";
-    window.location.href = `/api/auth/google?redirect=${encodeURIComponent(redirect)}`;
-  };
 
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col relative">
@@ -1731,7 +1725,7 @@ export default function Landing() {
               onClick={(e) => e.stopPropagation()}
             >
               <button
-                onClick={() => { setShowBetaModal(false); setAccessError(null); setShowSignInOptions(false); }}
+                onClick={() => { setShowBetaModal(false); setAccessError(null); }}
                 className="absolute top-4 right-4 text-muted-foreground hover:text-white transition-colors"
                 data-testid="button-modal-close"
               >
@@ -1778,52 +1772,17 @@ export default function Landing() {
                     Sign Up Now
                   </a>
 
-                  {!showSignInOptions ? (
-                    <button
-                      onClick={() => setShowSignInOptions(true)}
-                      className="mt-6 text-sm text-muted-foreground/60 hover:text-white transition-colors underline underline-offset-4"
-                      data-testid="button-modal-partner-signin"
-                    >
-                      Already a Partner? Sign In
-                    </button>
-                  ) : (
-                    <div className="mt-6 space-y-3">
-                      <p className="text-xs text-muted-foreground uppercase tracking-wider">Sign in to</p>
-                      <div className="grid grid-cols-2 gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setSignInDest("dashboard")}
-                          className={`flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-sm font-medium transition-all ${
-                            signInDest === "dashboard"
-                              ? "border-primary bg-primary/10 text-white"
-                              : "border-white/10 text-muted-foreground hover:border-white/20 hover:text-white"
-                          }`}
-                          data-testid="button-signin-dest-portal"
-                        >
-                          Creator Portal
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setSignInDest("studio")}
-                          className={`flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-sm font-medium transition-all ${
-                            signInDest === "studio"
-                              ? "border-primary bg-primary/10 text-white"
-                              : "border-white/10 text-muted-foreground hover:border-white/20 hover:text-white"
-                          }`}
-                          data-testid="button-signin-dest-studio"
-                        >
-                          Studio
-                        </button>
-                      </div>
-                      <button
-                        onClick={handleActualLogin}
-                        className="w-full px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white font-medium text-sm transition-colors border border-white/20"
-                        data-testid="button-modal-signin-go"
-                      >
-                        Sign In with Google
-                      </button>
-                    </div>
-                  )}
+                  {/* "Already a Partner? Sign In" → routes to /auth?mode=login,
+                      which gives both email/password AND Google as options.
+                      Previously this expanded inline into a Google-only flow,
+                      forcing partners without Google accounts into a dead end. */}
+                  <a
+                    href="/auth?mode=login"
+                    className="mt-6 inline-block text-sm text-muted-foreground/60 hover:text-white transition-colors underline underline-offset-4"
+                    data-testid="button-modal-partner-signin"
+                  >
+                    Already a Partner? Sign In
+                  </a>
                 </>
               )}
             </motion.div>
