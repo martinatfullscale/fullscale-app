@@ -2745,6 +2745,89 @@ export async function registerRoutes(
     }
   });
 
+  // Backfill viewCount for the current user's YouTube videos that have
+  // viewCount=0. Useful for cleaning up videos imported before the sync
+  // endpoint was fixed to fetch statistics. Idempotent.
+  app.post("/api/video-index/backfill-viewcounts", isFlexibleAuthenticated, async (req: any, res) => {
+    const authUserId = req.authUserId;
+    const authEmail = req.authEmail;
+
+    try {
+      let connection = await storage.getYoutubeConnection(authUserId);
+      if (!connection && authEmail && authEmail !== authUserId) {
+        connection = await storage.getYoutubeConnection(authEmail);
+      }
+      if (!connection) {
+        return res.status(400).json({ error: "YouTube not connected" });
+      }
+
+      let accessToken = connection.accessToken;
+      if (connection.expiresAt && new Date(connection.expiresAt) < new Date()) {
+        if (connection.refreshToken) {
+          const refreshed = await refreshAccessToken(connection.refreshToken);
+          if (refreshed) {
+            accessToken = refreshed.access_token;
+            await storage.upsertYoutubeConnection({
+              userId: connection.userId,
+              accessToken: refreshed.access_token,
+              refreshToken: connection.refreshToken,
+              expiresAt: new Date(Date.now() + refreshed.expires_in * 1000),
+              channelId: connection.channelId,
+              channelTitle: connection.channelTitle,
+            });
+          }
+        }
+      }
+
+      const allVideos = await storage.getVideoIndex(authUserId, authEmail);
+      const targets = allVideos.filter(
+        v => v.platform === "youtube" && (!v.viewCount || v.viewCount === 0) && v.youtubeId
+      );
+
+      if (targets.length === 0) {
+        return res.json({ success: true, scanned: allVideos.length, updated: 0, message: "No 0-view YouTube videos found." });
+      }
+
+      console.log(`[Backfill ViewCounts] User ${authEmail}: ${targets.length} of ${allVideos.length} videos need view-count backfill`);
+
+      const ytIdToVideoId = new Map(targets.map(v => [v.youtubeId!, v.id]));
+      const ytIds = Array.from(ytIdToVideoId.keys());
+
+      const statsMap: Record<string, number> = {};
+      for (let i = 0; i < ytIds.length; i += 50) {
+        const batch = ytIds.slice(i, i + 50);
+        try {
+          const statsUrl = `https://www.googleapis.com/youtube/v3/videos?part=statistics&id=${batch.join(",")}`;
+          const statsRes = await fetch(statsUrl, { headers: { Authorization: `Bearer ${accessToken}` } });
+          const statsData = await statsRes.json();
+          for (const v of (statsData.items || [])) {
+            statsMap[v.id] = parseInt(v.statistics?.viewCount || "0");
+          }
+        } catch (err) {
+          console.error(`[Backfill ViewCounts] Stats batch failed:`, err);
+        }
+      }
+
+      let updated = 0;
+      for (const [ytId, videoDbId] of ytIdToVideoId.entries()) {
+        const viewCount = statsMap[ytId];
+        if (typeof viewCount !== "number") continue;
+        try {
+          await storage.updateVideoIndex(videoDbId, { viewCount });
+          updated++;
+        } catch (err: any) {
+          console.error(`[Backfill ViewCounts] Failed to update video ${videoDbId}:`, err?.message || err);
+        }
+      }
+
+      console.log(`[Backfill ViewCounts] User ${authEmail}: updated ${updated}/${targets.length}`);
+      res.json({ success: true, scanned: allVideos.length, candidates: targets.length, updated });
+    } catch (error: any) {
+      console.error("[Backfill ViewCounts] Error:", error);
+      res.status(500).json({ success: false, error: error.message || "Backfill failed" });
+    }
+  });
+
   // Trigger Cloud Scan for a specific video
   app.post("/api/video-scan/:id", isFlexibleAuthenticated, async (req: any, res) => {
     console.log(`[BACKEND] ===== SCAN REQUEST RECEIVED =====`);
