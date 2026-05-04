@@ -2213,10 +2213,36 @@ export async function registerRoutes(
       // Get up to 50 videos from YouTube
       const videosData = await getYoutubeVideos(accessToken, uploadsPlaylistId, 50);
       const ytVideos = videosData.items || [];
-      
+
+      // Playlist endpoint returns snippet+contentDetails but NOT statistics.
+      // Fetch view counts in a separate batch call so synced videos don't
+      // land with viewCount=0 (the original bug — every auto-imported video
+      // showed "0 views" in the library because this step was missing).
+      const ytIds: string[] = ytVideos
+        .map((item: any) => item.contentDetails?.videoId || item.id)
+        .filter(Boolean);
+      const statsMap: Record<string, { viewCount: number; duration: string }> = {};
+      for (let i = 0; i < ytIds.length; i += 50) {
+        const batch = ytIds.slice(i, i + 50);
+        try {
+          const statsUrl = `https://www.googleapis.com/youtube/v3/videos?part=statistics,contentDetails&id=${batch.join(",")}`;
+          const statsRes = await fetch(statsUrl, { headers: { Authorization: `Bearer ${accessToken}` } });
+          const statsData = await statsRes.json();
+          for (const v of (statsData.items || [])) {
+            statsMap[v.id] = {
+              viewCount: parseInt(v.statistics?.viewCount || "0"),
+              duration: v.contentDetails?.duration || "",
+            };
+          }
+        } catch (err) {
+          console.error(`[YouTube Sync] Failed to fetch stats batch:`, err);
+        }
+      }
+
       let importedCount = 0;
       for (const item of ytVideos) {
         const videoId = item.contentDetails?.videoId || item.id;
+        const stats = statsMap[videoId];
         try {
           await storage.upsertVideoIndex({
             userId: userId,
@@ -2225,7 +2251,7 @@ export async function registerRoutes(
             description: item.snippet.description || '',
             thumbnailUrl: getYouTubeThumbnailWithFallback(videoId),
             platform: 'youtube',
-            viewCount: 0,
+            viewCount: stats?.viewCount ?? 0,
             status: 'Pending Scan',
             priorityScore: 50,
           });
