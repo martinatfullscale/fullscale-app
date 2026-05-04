@@ -1189,6 +1189,136 @@ export async function registerRoutes(
   });
 
   // Get current user's YouTube connection status
+  // Debug endpoint: probe YouTube Analytics API to verify the
+  // yt-analytics.readonly scope is wired into the connected user's token
+  // and that the actual analytics queries return data.
+  //
+  // Requires the user to have disconnected and reconnected YouTube AFTER
+  // commit 0a9e455 (which added yt-analytics.readonly to YOUTUBE_SCOPES).
+  // Existing tokens issued before that commit will fail the analytics
+  // calls with a scope-related 403.
+  //
+  // Tests:
+  //   1. Token introspection — does the access token have the new scope?
+  //   2. Channel basic info (uses youtube.readonly) — control test, should always work
+  //   3. Channel-level analytics: views, subscribersGained, etc.
+  //   4. Audience demographics: ageGroup x gender breakdown
+  //   5. Top countries: country breakdown by views
+  app.get("/api/debug/yt-analytics-test", isFlexibleAuthenticated, async (req: any, res) => {
+    const userId = req.authUserId;
+    const authEmail = req.authEmail;
+
+    let connection = await storage.getYoutubeConnection(userId);
+    if (!connection && authEmail && authEmail !== userId) {
+      connection = await storage.getYoutubeConnection(authEmail);
+    }
+    if (!connection) {
+      return res.status(404).json({ error: "No YouTube connection found. Connect YouTube first." });
+    }
+
+    let accessToken = connection.accessToken;
+
+    // Refresh if expired
+    if (connection.expiresAt && new Date(connection.expiresAt) < new Date()) {
+      if (connection.refreshToken) {
+        const refreshed = await refreshAccessToken(connection.refreshToken);
+        if (refreshed) {
+          accessToken = refreshed.access_token;
+          await storage.upsertYoutubeConnection({
+            userId: connection.userId,
+            accessToken: refreshed.access_token,
+            refreshToken: connection.refreshToken,
+            expiresAt: new Date(Date.now() + refreshed.expires_in * 1000),
+            channelId: connection.channelId,
+            channelTitle: connection.channelTitle,
+          });
+        }
+      }
+    }
+
+    const results: Record<string, any> = {
+      connection: {
+        channelId: connection.channelId,
+        channelTitle: connection.channelTitle,
+        expiresAt: connection.expiresAt,
+        hasRefreshToken: !!connection.refreshToken,
+      },
+      tests: {},
+    };
+
+    const tryFetch = async (name: string, url: string) => {
+      try {
+        const r = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+        const data = await r.json();
+        results.tests[name] = { ok: r.ok, status: r.status, data };
+      } catch (err: any) {
+        results.tests[name] = { ok: false, error: err?.message || String(err) };
+      }
+    };
+
+    // --- Test 1: token introspection — what scopes does this token have? ---
+    try {
+      const r = await fetch(`https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${accessToken}`);
+      const data = await r.json();
+      results.tests["1_token_info"] = { ok: r.ok, status: r.status, data };
+    } catch (err: any) {
+      results.tests["1_token_info"] = { ok: false, error: err?.message || String(err) };
+    }
+
+    // --- Test 2: control — fetch channel basic info (uses youtube.readonly) ---
+    await tryFetch(
+      "2_channel_basic",
+      "https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&mine=true"
+    );
+
+    // --- Tests 3-5: YouTube Analytics API ---
+    // The Analytics API uses a different host and a date range is required.
+    // We use a 90-day window ending today.
+    const endDate = new Date().toISOString().slice(0, 10);
+    const startDate = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+    // Channel-level metrics (no dimensions): views, subscribersGained, etc.
+    await tryFetch(
+      "3_channel_metrics",
+      `https://youtubeanalytics.googleapis.com/v2/reports?ids=channel%3D%3DMINE&startDate=${startDate}&endDate=${endDate}&metrics=views,subscribersGained,estimatedMinutesWatched,averageViewDuration`
+    );
+
+    // Audience demographics: age + gender breakdown
+    await tryFetch(
+      "4_audience_demographics",
+      `https://youtubeanalytics.googleapis.com/v2/reports?ids=channel%3D%3DMINE&startDate=${startDate}&endDate=${endDate}&dimensions=ageGroup,gender&metrics=viewerPercentage`
+    );
+
+    // Top countries by views
+    await tryFetch(
+      "5_top_countries",
+      `https://youtubeanalytics.googleapis.com/v2/reports?ids=channel%3D%3DMINE&startDate=${startDate}&endDate=${endDate}&dimensions=country&metrics=views&sort=-views&maxResults=10`
+    );
+
+    // Surface scopes from token_info
+    const tokenInfo = results.tests["1_token_info"]?.data;
+    const grantedScopesRaw: string = tokenInfo?.scope || "";
+    const grantedScopes = grantedScopesRaw.split(" ").filter(Boolean);
+    const hasAnalyticsScope = grantedScopes.includes("https://www.googleapis.com/auth/yt-analytics.readonly");
+
+    const summary = Object.entries(results.tests).map(([name, r]: [string, any]) => ({
+      test: name,
+      ok: !!r.ok,
+      status: r.status ?? null,
+      errorCode: r.data?.error?.code ?? null,
+      errorReason: r.data?.error?.errors?.[0]?.reason ?? null,
+      errorMessage: r.data?.error?.message ?? r.error ?? null,
+      skipped: r.skipped ?? null,
+    }));
+
+    res.json({
+      ...results,
+      grantedScopes,
+      hasAnalyticsScope,
+      summary,
+    });
+  });
+
   app.get("/api/auth/youtube/status", isFlexibleAuthenticated, async (req: any, res) => {
     const userId = req.authUserId;
     const authEmail = req.authEmail;

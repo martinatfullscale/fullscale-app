@@ -1167,44 +1167,64 @@ export async function setupPlatformAuth(app: Express) {
     results.tokens.grantedPageIds = grantedPageIdList;
     results.tokens.grantedIgIds = grantedIgIdList;
 
-    // --- Test 3 & 4: Page Insights ---
+    // --- Test 3: Page basic info via direct field fetch (NOT Insights) ---
+    // Meta deprecated all Page audience demographic Insights (page_fans_gender_age,
+    // page_fans_country, page_fans_city) in late 2024 — they are gone, no
+    // replacement at the API layer. Page demographics now exist only in Meta
+    // Business Suite UI. For follower count we use the Page node's
+    // followers_count field directly (no Insights call needed; we already
+    // fetched it in 2b).
     const insightsToken = pageAccessToken || userToken;
     const insightsTokenType: "page" | "user" = pageAccessToken ? "page" : "user";
 
     if (pageId) {
+      // Page-level non-deprecated metrics: page_views, page_post_engagements,
+      // page_video_views, page_fan_adds. These still work in v18+.
       await tryFetch(
-        "3_page_basic_insights",
-        `https://graph.facebook.com/v18.0/${pageId}/insights?metric=page_fans,page_views_total,page_impressions&period=day&access_token=${insightsToken}`,
+        "3_page_basic_metrics",
+        `https://graph.facebook.com/v18.0/${pageId}/insights?metric=page_post_engagements,page_video_views,page_fan_adds&period=day&access_token=${insightsToken}`,
         { tokenType: insightsTokenType }
       );
 
-      await tryFetch(
-        "4_page_audience_demographics",
-        `https://graph.facebook.com/v18.0/${pageId}/insights?metric=page_fans_gender_age,page_fans_country,page_fans_city&period=lifetime&access_token=${insightsToken}`,
-        { tokenType: insightsTokenType }
-      );
+      // Page demographics — DEPRECATED. We mark this clearly so we never
+      // expect it to work. Kept as a probe to prove deprecation status.
+      results.tests["4_page_demographics_deprecated"] = {
+        ok: false,
+        skipped: "Meta deprecated page audience demographics in late 2024; no API replacement. Page demographics now only available in Business Suite UI.",
+      };
     } else {
-      results.tests["3_page_basic_insights"] = { ok: false, skipped: "No page id resolved from me/accounts, user record, or granular_scopes" };
-      results.tests["4_page_audience_demographics"] = { ok: false, skipped: "No page id resolved" };
+      results.tests["3_page_basic_metrics"] = { ok: false, skipped: "No page id resolved" };
+      results.tests["4_page_demographics_deprecated"] = { ok: false, skipped: "No page id resolved" };
     }
 
-    // --- Test 5: Instagram Business audience demographics ---
-    // Use IG ID from user record OR granular_scopes (same fallback as Pages).
+    // --- Tests 5a-5d: IG follower_demographics, ONE breakdown per call ---
+    // Meta requires single-breakdown calls; combining breakdowns returns 500.
+    // We surface separate calls for age, gender, country, city — each is the
+    // exact shape we'll use in the production analytics fetcher.
     const igId = user.instagramBusinessId || grantedIgIdList[0] || null;
     if (igId) {
+      const igInsightsBase = `https://graph.facebook.com/v18.0/${igId}/insights`;
+
+      // Basic engagement metrics (no breakdown needed)
       await tryFetch(
-        "5_ig_audience_legacy",
-        `https://graph.facebook.com/v18.0/${igId}/insights?metric=audience_gender_age,audience_country,audience_city,audience_locale&period=lifetime&access_token=${insightsToken}`,
+        "5_ig_basic",
+        `${igInsightsBase}?metric=follower_count,reach,total_interactions&period=day&access_token=${insightsToken}`,
         { tokenType: insightsTokenType }
       );
-      await tryFetch(
-        "5_ig_audience_v2",
-        `https://graph.facebook.com/v18.0/${igId}/insights?metric=follower_demographics&breakdown=age,gender,country,city&metric_type=total_value&period=lifetime&access_token=${insightsToken}`,
-        { tokenType: insightsTokenType }
-      );
+
+      // Demographics — single breakdown each
+      for (const breakdown of ["age", "gender", "country", "city"]) {
+        await tryFetch(
+          `6_ig_demographics_${breakdown}`,
+          `${igInsightsBase}?metric=follower_demographics&breakdown=${breakdown}&metric_type=total_value&period=lifetime&access_token=${insightsToken}`,
+          { tokenType: insightsTokenType }
+        );
+      }
     } else {
-      results.tests["5_ig_audience_legacy"] = { ok: false, skipped: "No IG id from user record or granular_scopes" };
-      results.tests["5_ig_audience_v2"] = { ok: false, skipped: "No IG id" };
+      results.tests["5_ig_basic"] = { ok: false, skipped: "No IG id" };
+      for (const breakdown of ["age", "gender", "country", "city"]) {
+        results.tests[`6_ig_demographics_${breakdown}`] = { ok: false, skipped: "No IG id" };
+      }
     }
 
     // Summarize for quick scanning

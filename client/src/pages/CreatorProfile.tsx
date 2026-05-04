@@ -145,6 +145,7 @@ export default function CreatorProfile() {
   const [previewVideo, setPreviewVideo] = useState<VideoData | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  const [platformFilter, setPlatformFilter] = useState<string>("all");
   const [formData, setFormData] = useState({
     brandName: "",
     brandEmail: "",
@@ -234,6 +235,17 @@ export default function CreatorProfile() {
   }
 
   const { creator, stats, socialStats, videos } = data;
+
+  // Platform filter state. Tabs: all / youtube / instagram / facebook / fullscale (uploads).
+  // Counts are derived from videos so we always show the live tally per source.
+  const platformCounts = videos.reduce<Record<string, number>>((acc, v) => {
+    const key = (v.platform || "fullscale").toLowerCase();
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+  const filteredVideos = platformFilter === "all"
+    ? videos
+    : videos.filter(v => (v.platform || "fullscale").toLowerCase() === platformFilter);
 
   return (
     <div className="min-h-screen bg-background">
@@ -532,8 +544,36 @@ export default function CreatorProfile() {
             </CardContent>
           </Card>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {videos.map((video) => (
+          <>
+            {/* Platform filter tabs — mirrors the library tabs so brand viewers
+                can quickly scope to one source (YouTube / IG / Uploads). */}
+            <div className="flex flex-wrap gap-2 mb-6">
+              {[
+                { key: "all", label: "All", count: videos.length },
+                { key: "youtube", label: "YouTube", count: platformCounts.youtube || 0 },
+                { key: "instagram", label: "Instagram", count: platformCounts.instagram || 0 },
+                { key: "facebook", label: "Facebook", count: platformCounts.facebook || 0 },
+                { key: "fullscale", label: "Uploads", count: platformCounts.fullscale || 0 },
+              ]
+                .filter(tab => tab.key === "all" || tab.count > 0)
+                .map(tab => (
+                  <button
+                    key={tab.key}
+                    onClick={() => setPlatformFilter(tab.key)}
+                    className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                      platformFilter === tab.key
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-muted text-muted-foreground hover:bg-muted/80 hover:text-foreground"
+                    }`}
+                    data-testid={`filter-${tab.key}`}
+                  >
+                    {tab.label} ({tab.count})
+                  </button>
+                ))}
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {filteredVideos.map((video) => (
               <Card
                 key={video.id}
                 className="overflow-hidden group border border-border/50 hover:border-primary/30 transition-all duration-300 hover:shadow-lg"
@@ -662,7 +702,8 @@ export default function CreatorProfile() {
                 </CardContent>
               </Card>
             ))}
-          </div>
+            </div>
+          </>
         )}
       </main>
 
