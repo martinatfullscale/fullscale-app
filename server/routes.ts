@@ -2825,10 +2825,19 @@ export async function registerRoutes(
     }
   });
 
-  // Admin scan endpoint - for testing uploaded videos without auth
-  // Only works for videos owned by admin emails (uses ADMIN_EMAILS defined below)
-  const adminEmails = ['martin@gofullscale.co', 'martin@whtwrks.com', 'martincekechukwu@gmail.com', 'thekimkwilson@gmail.com', 'tamara@whtwrks.com'];
-  app.post("/api/admin-scan/:id", async (req, res) => {
+  // Synchronous scan endpoint — kept under the legacy /api/admin-scan path
+  // since the SceneAnalysisModal client wires to it directly. Used by the
+  // "Scan with FullScale Edge" button which needs a synchronous response so
+  // the modal can immediately surface fresh surfaces. The async equivalent
+  // is /api/video-scan/:id (returns immediately, scans in background).
+  //
+  // Previously this endpoint required video.userId to be a literal admin
+  // email, which broke for IG/FB/YT-imported videos whose userId is the
+  // user's UUID. Switched to dual-id ownership (same pattern as
+  // /api/video-scan and the public profile fix): match either authUserId
+  // or authEmail. Any authenticated user can synchronously scan their
+  // own video regardless of which import path created it.
+  app.post("/api/admin-scan/:id", isFlexibleAuthenticated, async (req: any, res) => {
     const videoId = parseInt(req.params.id);
     if (isNaN(videoId)) {
       return res.status(400).json({ error: "Invalid video ID" });
@@ -2839,20 +2848,19 @@ export async function registerRoutes(
       return res.status(404).json({ error: "Video not found" });
     }
 
-    // Only allow scanning videos owned by admin
-    if (!adminEmails.includes(video.userId)) {
-      return res.status(403).json({ error: "Admin scan only for admin-owned videos" });
+    const isOwner = video.userId === req.authUserId || video.userId === req.authEmail;
+    if (!isOwner) {
+      return res.status(403).json({ error: "Not authorized to scan this video" });
     }
 
-    console.log(`[ADMIN SCAN] Starting scan for video ${videoId}: "${video.title}"`);
-    
-    // Run scan synchronously so we can return results
+    console.log(`[Sync Scan] Starting scan for video ${videoId}: "${video.title}" (user ${req.authEmail})`);
+
     try {
       const result = await processVideoScan(videoId, true);
-      console.log(`[ADMIN SCAN] Scan complete for ${videoId}:`, result);
+      console.log(`[Sync Scan] Scan complete for ${videoId}:`, result);
       res.json({ success: true, result });
     } catch (err: any) {
-      console.error(`[ADMIN SCAN] Scan failed for ${videoId}:`, err);
+      console.error(`[Sync Scan] Scan failed for ${videoId}:`, err);
       res.status(500).json({ error: err.message || "Scan failed" });
     }
   });
