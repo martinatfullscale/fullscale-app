@@ -1096,55 +1096,140 @@ export async function registerRoutes(
     const authEmail = req.authEmail;
 
     try {
-      // Resolve the user record — we need both user.id (UUID) and any
-      // facebook/instagram fields plus access token.
       const user = await storage.getUserByEmail(authEmail) || await storage.getUserById(authUserId);
       if (!user) return res.status(404).json({ error: "User not found" });
 
       const created: string[] = [];
+      const skipped: Record<string, string> = {};
 
-      // FB Page → social_accounts as facebook/business
-      if (user.facebookPageId) {
-        const decryptedFbToken = user.facebookAccessToken
-          ? (() => { try { return decrypt(user.facebookAccessToken!); } catch { return null; } })()
-          : null;
+      // ─── FB token-derived discovery ─────────────────────────────────
+      // The user record's facebookPageId/instagramBusinessId fields can
+      // get cleared by disconnect/reconnect cycles before /api/sync runs
+      // again. To make the backfill self-sufficient, we query the FB
+      // token directly when the user record is empty: token_debug gives
+      // us granular_scopes which list the OAuth-granted Page IDs and IG
+      // Business IDs. This matches what the FB Insights probe already does.
+      let derivedPageIds: string[] = [];
+      let derivedIgIds: string[] = [];
+      let decryptedFbToken: string | null = null;
+      let pageMetadataById: Record<string, { name?: string; followers_count?: number; instagram_business_account?: { id: string } }> = {};
 
+      if (user.facebookAccessToken) {
+        try {
+          decryptedFbToken = decrypt(user.facebookAccessToken);
+        } catch {
+          skipped.facebook = "Failed to decrypt Facebook access token";
+        }
+      }
+
+      if (decryptedFbToken) {
+        // Always trust the token's granular_scopes over stale user fields.
+        try {
+          const dbgRes = await fetch(`https://graph.facebook.com/debug_token?input_token=${decryptedFbToken}&access_token=${decryptedFbToken}`);
+          const dbgData = await dbgRes.json();
+          const granular = dbgData?.data?.granular_scopes || [];
+          for (const g of granular) {
+            const targets: string[] = g?.target_ids || [];
+            if (g.scope === "pages_show_list" || g.scope === "pages_read_engagement") {
+              derivedPageIds.push(...targets);
+            }
+            if (g.scope === "instagram_basic" || g.scope === "instagram_manage_insights") {
+              derivedIgIds.push(...targets);
+            }
+          }
+          derivedPageIds = Array.from(new Set(derivedPageIds));
+          derivedIgIds = Array.from(new Set(derivedIgIds));
+        } catch (err: any) {
+          skipped.fbTokenDebug = err?.message || "token debug failed";
+        }
+
+        // Fetch each Page's metadata (name, follower count, linked IG)
+        for (const pageId of derivedPageIds) {
+          try {
+            const pageRes = await fetch(`https://graph.facebook.com/v18.0/${pageId}?fields=id,name,followers_count,fan_count,instagram_business_account&access_token=${decryptedFbToken}`);
+            const pageData = await pageRes.json();
+            if (pageData?.id) {
+              pageMetadataById[pageId] = {
+                name: pageData.name,
+                followers_count: pageData.followers_count ?? pageData.fan_count,
+                instagram_business_account: pageData.instagram_business_account,
+              };
+              // The IG account linked to this Page may not be in granular_scopes
+              // if the user only granted instagram_basic to a specific account —
+              // but IG Business linked to a Page is implicitly covered.
+              if (pageData.instagram_business_account?.id) {
+                derivedIgIds.push(pageData.instagram_business_account.id);
+              }
+            }
+          } catch (err: any) {
+            skipped[`fbPage_${pageId}`] = err?.message || "Page fetch failed";
+          }
+        }
+        derivedIgIds = Array.from(new Set(derivedIgIds));
+      }
+
+      // ─── FB Page → social_accounts ──────────────────────────────────
+      // Prefer derived data from the live token; fall back to user record.
+      const fbPageIdsToWrite = derivedPageIds.length > 0
+        ? derivedPageIds
+        : (user.facebookPageId ? [user.facebookPageId] : []);
+
+      for (const pageId of fbPageIdsToWrite) {
+        const meta = pageMetadataById[pageId];
         const fbAccount = await storage.upsertSocialAccount({
           userId: user.id,
           platform: "facebook",
           accountType: "business",
-          platformAccountId: user.facebookPageId,
-          handle: user.facebookPageName || null,
-          displayName: user.facebookPageName || null,
-          followers: user.facebookFollowers || 0,
+          platformAccountId: pageId,
+          handle: meta?.name || user.facebookPageName || null,
+          displayName: meta?.name || user.facebookPageName || null,
+          followers: meta?.followers_count ?? user.facebookFollowers ?? 0,
           accessToken: decryptedFbToken,
           scopes: ["email", "public_profile", "pages_show_list", "pages_read_engagement", "instagram_basic", "instagram_manage_insights"],
         });
         created.push(`facebook/business/${fbAccount.platformAccountId}`);
       }
 
-      // IG Business (linked through the FB Login token) → social_accounts as instagram/business
-      if (user.instagramBusinessId) {
-        const decryptedFbToken = user.facebookAccessToken
-          ? (() => { try { return decrypt(user.facebookAccessToken!); } catch { return null; } })()
-          : null;
+      // ─── IG Business → social_accounts ──────────────────────────────
+      const igIdsToWrite = derivedIgIds.length > 0
+        ? derivedIgIds
+        : (user.instagramBusinessId ? [user.instagramBusinessId] : []);
 
+      for (const igId of igIdsToWrite) {
+        // Try to fetch IG account metadata (handle, follower count) live.
+        let igHandle: string | null = user.instagramHandle || null;
+        let igFollowers: number | null = user.instagramFollowers ?? null;
+        if (decryptedFbToken) {
+          try {
+            const igRes = await fetch(`https://graph.facebook.com/v18.0/${igId}?fields=username,followers_count&access_token=${decryptedFbToken}`);
+            const igData = await igRes.json();
+            if (igData?.username) igHandle = `@${igData.username}`;
+            if (typeof igData?.followers_count === "number") igFollowers = igData.followers_count;
+          } catch {
+            // fall back to user record values
+          }
+        }
         const igAccount = await storage.upsertSocialAccount({
           userId: user.id,
           platform: "instagram",
           accountType: "business",
-          platformAccountId: user.instagramBusinessId,
-          handle: user.instagramHandle || null,
-          displayName: user.instagramHandle || null,
-          followers: user.instagramFollowers || 0,
+          platformAccountId: igId,
+          handle: igHandle,
+          displayName: igHandle,
+          followers: igFollowers ?? 0,
           accessToken: decryptedFbToken,
           scopes: ["instagram_basic", "instagram_manage_insights"],
         });
         created.push(`instagram/business/${igAccount.platformAccountId}`);
       }
 
-      // YouTube → from youtube_connections table
-      const ytConnection = await storage.getYoutubeConnection(user.id);
+      // ─── YouTube → from youtube_connections table ───────────────────
+      // Try lookup by both user.id (UUID) and user.email — the dual-id
+      // problem we've seen across other tables.
+      let ytConnection = await storage.getYoutubeConnection(user.id);
+      if (!ytConnection && user.email && user.email !== user.id) {
+        ytConnection = await storage.getYoutubeConnection(user.email);
+      }
       if (ytConnection?.channelId) {
         const ytAccount = await storage.upsertSocialAccount({
           userId: user.id,
@@ -1161,10 +1246,12 @@ export async function registerRoutes(
           scopes: ["youtube.readonly", "yt-analytics.readonly"],
         });
         created.push(`youtube/business/${ytAccount.platformAccountId}`);
+      } else {
+        skipped.youtube = "No YouTube connection found by user.id or user.email";
       }
 
       console.log(`[Social Accounts Backfill] User ${user.email}: created/updated ${created.length} accounts: ${created.join(", ")}`);
-      res.json({ success: true, count: created.length, accounts: created });
+      res.json({ success: true, count: created.length, accounts: created, skipped, derivedPageIds, derivedIgIds });
     } catch (err: any) {
       console.error("[Social Accounts Backfill] Error:", err);
       res.status(500).json({ success: false, error: err.message || "Backfill failed" });
