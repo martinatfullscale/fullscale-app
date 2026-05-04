@@ -2368,33 +2368,48 @@ export async function registerRoutes(
         }
       }
 
-      // Fetch video details in batches of 50
-      let importedCount = 0;
-      let skippedCount = 0;
-
+      // Fetch all video details first, batch-categorize via AI, then insert.
+      // Mirrors the IG/FB import path so YouTube imports also land with
+      // category/subcategory/isEvergreen populated rather than null.
+      const allItems: any[] = [];
       for (let i = 0; i < videoIds.length; i += 50) {
         const batch = videoIds.slice(i, i + 50);
         const url = `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id=${batch.join(",")}`;
         const vidRes = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
         const vidData = await vidRes.json();
+        for (const item of (vidData.items || [])) allItems.push(item);
+      }
 
-        for (const item of (vidData.items || [])) {
-          try {
-            await storage.upsertVideoIndex({
-              userId,
-              youtubeId: item.id,
-              title: item.snippet.title,
-              description: item.snippet.description || "",
-              thumbnailUrl: getYouTubeThumbnailWithFallback(item.id),
-              platform: "youtube",
-              viewCount: parseInt(item.statistics?.viewCount || "0"),
-              status: "Pending Scan",
-              priorityScore: 50,
-            });
-            importedCount++;
-          } catch {
-            skippedCount++;
-          }
+      const categorizations = await categorizeVideos(
+        allItems.map(item => ({
+          title: item.snippet?.title || "",
+          description: item.snippet?.description || "",
+        }))
+      );
+
+      let importedCount = 0;
+      let skippedCount = 0;
+      for (let i = 0; i < allItems.length; i++) {
+        const item = allItems[i];
+        const cat = categorizations[i];
+        try {
+          await storage.upsertVideoIndex({
+            userId,
+            youtubeId: item.id,
+            title: item.snippet.title,
+            description: item.snippet.description || "",
+            thumbnailUrl: getYouTubeThumbnailWithFallback(item.id),
+            platform: "youtube",
+            viewCount: parseInt(item.statistics?.viewCount || "0"),
+            status: "Pending Scan",
+            priorityScore: 50,
+            category: cat.category,
+            subcategory: cat.subcategory,
+            isEvergreen: cat.isEvergreen,
+          });
+          importedCount++;
+        } catch {
+          skippedCount++;
         }
       }
 

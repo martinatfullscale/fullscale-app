@@ -307,6 +307,7 @@ export default function CreatorProfile() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [platformFilter, setPlatformFilter] = useState<string>("all");
+  const [categoryFilter, setCategoryFilter] = useState<string>("all");
   const [formData, setFormData] = useState({
     brandName: "",
     brandEmail: "",
@@ -404,9 +405,21 @@ export default function CreatorProfile() {
     acc[key] = (acc[key] || 0) + 1;
     return acc;
   }, {});
-  const filteredVideos = platformFilter === "all"
-    ? videos
-    : videos.filter(v => (v.platform || "fullscale").toLowerCase() === platformFilter);
+
+  // Category counts derived from the actual videos. Only categories that
+  // appear at least once on this creator's portfolio surface as filter options.
+  const categoryCounts = videos.reduce<Record<string, number>>((acc, v) => {
+    if (v.category) acc[v.category] = (acc[v.category] || 0) + 1;
+    return acc;
+  }, {});
+  const availableCategories = Object.keys(categoryCounts).sort();
+
+  // Apply both filters; "all" passes through.
+  const filteredVideos = videos.filter(v => {
+    const platformMatch = platformFilter === "all" || (v.platform || "fullscale").toLowerCase() === platformFilter;
+    const categoryMatch = categoryFilter === "all" || v.category === categoryFilter;
+    return platformMatch && categoryMatch;
+  });
 
   return (
     <div className="min-h-screen bg-background">
@@ -709,31 +722,53 @@ export default function CreatorProfile() {
           </Card>
         ) : (
           <>
-            {/* Platform filter tabs — mirrors the library tabs so brand viewers
-                can quickly scope to one source (YouTube / IG / Uploads). */}
-            <div className="flex flex-wrap gap-2 mb-6">
-              {[
-                { key: "all", label: "All", count: videos.length },
-                { key: "youtube", label: "YouTube", count: platformCounts.youtube || 0 },
-                { key: "instagram", label: "Instagram", count: platformCounts.instagram || 0 },
-                { key: "facebook", label: "Facebook", count: platformCounts.facebook || 0 },
-                { key: "fullscale", label: "Uploads", count: platformCounts.fullscale || 0 },
-              ]
-                .filter(tab => tab.key === "all" || tab.count > 0)
-                .map(tab => (
-                  <button
-                    key={tab.key}
-                    onClick={() => setPlatformFilter(tab.key)}
-                    className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                      platformFilter === tab.key
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-muted text-muted-foreground hover:bg-muted/80 hover:text-foreground"
-                    }`}
-                    data-testid={`filter-${tab.key}`}
-                  >
-                    {tab.label} ({tab.count})
-                  </button>
-                ))}
+            {/* Filters — platform tabs + category dropdown so brand viewers
+                can scope by source (YouTube / IG / Uploads) and content type
+                (Podcast / Tech / Lifestyle / etc.) independently. */}
+            <div className="flex flex-wrap items-center gap-3 mb-6">
+              <div className="flex flex-wrap gap-2">
+                {[
+                  { key: "all", label: "All", count: videos.length },
+                  { key: "youtube", label: "YouTube", count: platformCounts.youtube || 0 },
+                  { key: "instagram", label: "Instagram", count: platformCounts.instagram || 0 },
+                  { key: "facebook", label: "Facebook", count: platformCounts.facebook || 0 },
+                  { key: "fullscale", label: "Uploads", count: platformCounts.fullscale || 0 },
+                ]
+                  .filter(tab => tab.key === "all" || tab.count > 0)
+                  .map(tab => (
+                    <button
+                      key={tab.key}
+                      onClick={() => setPlatformFilter(tab.key)}
+                      className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                        platformFilter === tab.key
+                          ? "bg-primary text-primary-foreground"
+                          : "bg-muted text-muted-foreground hover:bg-muted/80 hover:text-foreground"
+                      }`}
+                      data-testid={`filter-${tab.key}`}
+                    >
+                      {tab.label} ({tab.count})
+                    </button>
+                  ))}
+              </div>
+
+              {/* Category filter — uses a select since there can be many
+                  categories and they shouldn't dominate the layout. Only
+                  surfaces when at least one video has a category set. */}
+              {availableCategories.length > 0 && (
+                <select
+                  value={categoryFilter}
+                  onChange={(e) => setCategoryFilter(e.target.value)}
+                  className="ml-auto px-3 py-2 rounded-lg text-sm bg-muted text-foreground border border-border hover:border-primary/50 transition-colors"
+                  data-testid="filter-category"
+                >
+                  <option value="all">All categories ({videos.length})</option>
+                  {availableCategories.map(cat => (
+                    <option key={cat} value={cat}>
+                      {cat} ({categoryCounts[cat]})
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -794,6 +829,15 @@ export default function CreatorProfile() {
                   <Badge className="absolute top-3 right-3 text-xs capitalize" variant="secondary">
                     {video.platform}
                   </Badge>
+
+                  {/* Category badge — surfaces the AI-derived category
+                      (or creator override) so brands can scan a portfolio
+                      and immediately see what kind of content each video is. */}
+                  {video.category && (
+                    <Badge className="absolute top-3 left-3 text-xs bg-primary/90 text-primary-foreground border-0">
+                      {video.category}
+                    </Badge>
+                  )}
 
                   {/* Surface count overlay */}
                   {video.surfaceCount > 0 && (
