@@ -212,15 +212,23 @@ function Router() {
     );
   }
 
-  // User is authenticated but not approved - show waitlist (skip for admin bypass)
+  // User is authenticated but not approved - allow public marketing pages
+  // and waitlist; everything else bounces to waitlist via the catch-all.
+  // Without these explicit routes the "Continue Later" button on the
+  // waitlist page looks broken: it hard-navigates to /creates but the
+  // catch-all here catches /creates and re-renders WaitlistPage.
   if (authStatus && !authStatus.isApproved && !isAdminBypass) {
-    // Redirect to waitlist if not already there (effect handles this)
     return (
       <Switch>
-        <Route path="/waitlist" component={WaitlistPage} />
+        <Route path="/" component={Landing} />
+        <Route path="/creates" component={FullScaleCreates} />
+        <Route path="/brands" component={Brands} />
+        <Route path="/about" component={ComingSoon} />
+        <Route path="/c/:slug" component={CreatorProfile} />
         <Route path="/s/:slug" component={SharedView} />
         <Route path="/privacy" component={Privacy} />
         <Route path="/terms" component={Terms} />
+        <Route path="/waitlist" component={WaitlistPage} />
         <Route component={WaitlistPage} />
       </Switch>
     );
