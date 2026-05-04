@@ -341,21 +341,30 @@ export async function registerRoutes(
       const TEST_PASSWORD = "P@ssw0rd20206!";
       const hashedPassword = await hashPassword(TEST_PASSWORD);
 
-      // Ensure user record exists with the right state
+      // Ensure user record exists with the right state.
+      //
+      // Using a direct UPDATE instead of upsertUserByEmail because the
+      // latter's onConflict only writes firstName/lastName/profileImageUrl
+      // — it deliberately preserves password and isApproved on existing
+      // rows so OAuth re-logins don't reset password state. For provisioning
+      // we want exactly the opposite: force the documented state regardless
+      // of what's there.
       const existing = await storage.getUserByEmail(TEST_EMAIL);
       let user;
       let action: "created" | "updated";
       if (existing) {
-        // Update password + approval status. Drizzle's upsertUserByEmail
-        // handles the rest.
-        user = await storage.upsertUserByEmail({
-          email: TEST_EMAIL,
-          password: hashedPassword,
-          firstName: "Test",
-          lastName: "Creator",
-          isApproved: true,
-          authProvider: "email",
-        });
+        const [updated] = await db.update(users)
+          .set({
+            password: hashedPassword,
+            firstName: "Test",
+            lastName: "Creator",
+            isApproved: true,
+            authProvider: "email",
+            updatedAt: new Date(),
+          })
+          .where(eq(users.id, existing.id))
+          .returning();
+        user = updated;
         action = "updated";
       } else {
         user = await storage.createUser({
