@@ -36,15 +36,14 @@ export default function WaitlistPage() {
     logoutMutation.mutate();
   };
 
-  // Escape hatch: navigate to the public creator marketing page.
-  // Uses hard navigation (window.location.href) to bypass the SPA auth guard
-  // that would otherwise bounce unapproved users back to /waitlist.
+  // Escape hatch: navigate to the dashboard if approved, otherwise the
+  // public landing page so unapproved users can browse marketing content
+  // while their application is reviewed.
   const handleContinueLater = () => {
-    // If approved, go to dashboard. Otherwise to the public /creates page.
     if (authStatus?.isApproved) {
       window.location.href = "/dashboard";
     } else {
-      window.location.href = "/creates";
+      window.location.href = "/";
     }
   };
 
