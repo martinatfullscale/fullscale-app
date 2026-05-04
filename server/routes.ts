@@ -104,7 +104,11 @@ const FOUNDING_MEMBERS = [
   'martin@whtwrks.com',
   'martincekechukwu@gmail.com',
   'simmone@capitalizevc.com',
-  'simmoneaseymour@gmail.com'
+  'simmoneaseymour@gmail.com',
+  // Test account provisioned for Google OAuth verification reviewers.
+  // Lives on the allowlist so verification reviewers can register/sign in
+  // and complete the OAuth flow end-to-end without waitlist friction.
+  'test-creator@gofullscale.co'
 ];
 
 // Google Login OAuth Configuration (for authentication with allowlist)
