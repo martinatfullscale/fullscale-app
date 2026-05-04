@@ -2809,9 +2809,10 @@ export async function registerRoutes(
       }
 
       let updated = 0;
-      for (const [ytId, videoDbId] of ytIdToVideoId.entries()) {
+      for (const ytId of ytIds) {
+        const videoDbId = ytIdToVideoId.get(ytId);
         const viewCount = statsMap[ytId];
-        if (typeof viewCount !== "number") continue;
+        if (videoDbId == null || typeof viewCount !== "number") continue;
         try {
           await storage.updateVideoIndex(videoDbId, { viewCount });
           updated++;

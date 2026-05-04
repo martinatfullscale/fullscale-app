@@ -25,6 +25,7 @@ import { storage } from "./storage";
 import type { InsertDetectedSurface } from "@shared/schema";
 import { GoogleGenAI } from "@google/genai";
 import { uploadFileToStorage, downloadToTempFile, storageServeUrl } from "./lib/objectStorage";
+import { downloadVideo as downloadYouTubeVideo } from "./lib/scanner";
 
 // ============================================================================
 // GEMINI AI CLIENT
@@ -1815,11 +1816,35 @@ export async function processVideoScan(
       }
     }
 
+    // YOUTUBE FALLBACK: imported videos (via /api/youtube/sync or
+    // import-selected) have no filePath — only a youtubeId. Pull the source
+    // to tempDir so the rest of the scan pipeline has bytes to work with.
+    // tempDir is cleaned up in the finally block, so the source video is
+    // discarded automatically once frames are extracted (light-cloud model:
+    // we never persist creator source files).
+    const looksLikeRealYouTubeId = (id: string) =>
+      !!id && !id.startsWith("upload-") && !id.startsWith("ig-")
+        && !id.startsWith("fb-") && !id.startsWith("demo-")
+        && !id.startsWith("hero-");
+
+    if (!videoPath && (video as any).platform === "youtube" && looksLikeRealYouTubeId(video.youtubeId)) {
+      console.log(`[Scanner V2] No filePath; attempting YouTube download for ${video.youtubeId}`);
+      fs.mkdirSync(tempDir, { recursive: true });
+      const downloadPath = path.join(tempDir, `${video.youtubeId}.mp4`);
+      const ok = await downloadYouTubeVideo(video.youtubeId, downloadPath);
+      if (ok && fs.existsSync(downloadPath)) {
+        videoPath = downloadPath;
+        console.log(`[Scanner V2] YouTube download succeeded: ${videoPath}`);
+      } else {
+        console.error(`[Scanner V2] YouTube download failed for ${video.youtubeId}`);
+      }
+    }
+
     // DEBUG LOGGING
     console.log('[Scanner V2] DEBUG - youtubeId:', video.youtubeId);
     console.log('[Scanner V2] DEBUG - LOCAL_ASSET_MAP keys:', Object.keys(LOCAL_ASSET_MAP));
     console.log('[Scanner V2] DEBUG - Resolved videoPath:', videoPath);
-    
+
     if (!videoPath || !fs.existsSync(videoPath)) {
       console.error(`[Scanner V2] Video file not found: ${videoPath}`);
       await storage.updateVideoStatus(videoId, "Pending Upload");

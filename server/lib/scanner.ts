@@ -358,7 +358,7 @@ async function downloadVideoWithYtDlp(youtubeId: string, outputPath: string): Pr
   });
 }
 
-async function downloadVideo(youtubeId: string, outputPath: string): Promise<boolean> {
+export async function downloadVideo(youtubeId: string, outputPath: string): Promise<boolean> {
   console.log(`[Scanner] Downloading video ${youtubeId} with mobile bypass...`);
   
   const ytdlSuccess = await downloadVideoWithYtdl(youtubeId, outputPath);
