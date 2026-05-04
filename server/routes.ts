@@ -1346,6 +1346,62 @@ export async function registerRoutes(
     }
   });
 
+  // Resolves the freshest YouTube access token for a given user, refreshing
+  // via the stored refresh_token if expired. Reads from youtube_connections
+  // (canonical, updated by OAuth callback) and syncs the result back to
+  // social_accounts so subsequent reads don't go stale. Returns null if
+  // no connection exists or refresh fails — caller should treat as "user
+  // must reconnect YouTube."
+  const getFreshYoutubeToken = async (userId: string, channelId: string): Promise<string | null> => {
+    let connection = await storage.getYoutubeConnection(userId);
+    if (!connection) {
+      // Try lookup by email — same dual-id problem we've seen elsewhere
+      const user = await storage.getUserById(userId);
+      if (user?.email && user.email !== userId) {
+        connection = await storage.getYoutubeConnection(user.email);
+      }
+    }
+    if (!connection) return null;
+
+    let accessToken = connection.accessToken; // Already decrypted by storage helper
+    let expiresAt = connection.expiresAt;
+
+    // Refresh if expired (Google access tokens are 1hr; refresh tokens are long-lived)
+    if (connection.expiresAt && new Date(connection.expiresAt) < new Date()) {
+      if (!connection.refreshToken) return null;
+      const refreshed = await refreshAccessToken(connection.refreshToken);
+      if (!refreshed) return null;
+      accessToken = refreshed.access_token;
+      expiresAt = new Date(Date.now() + refreshed.expires_in * 1000);
+      // Persist refreshed token to youtube_connections (encrypted by helper)
+      await storage.upsertYoutubeConnection({
+        userId: connection.userId,
+        accessToken: refreshed.access_token,
+        refreshToken: connection.refreshToken,
+        expiresAt,
+        channelId: connection.channelId,
+        channelTitle: connection.channelTitle,
+      });
+    }
+
+    // Keep social_accounts in sync so future direct reads pick up the fresh token
+    try {
+      await storage.upsertSocialAccount({
+        userId,
+        platform: "youtube",
+        accountType: "business",
+        platformAccountId: channelId,
+        accessToken,
+        refreshToken: connection.refreshToken || null,
+        tokenExpiresAt: expiresAt || null,
+      });
+    } catch (err: any) {
+      console.warn(`[YouTube] social_accounts sync failed (non-fatal): ${err?.message}`);
+    }
+
+    return accessToken;
+  };
+
   // Refresh audience analytics for one connected social account. Pulls
   // demographics + engagement from the platform's analytics API, parses
   // into the standard shape, writes back to social_accounts.audience_data.
@@ -1380,9 +1436,19 @@ export async function registerRoutes(
         case "instagram":
           audienceData = await fetchInstagramAudience(account.platformAccountId, account.accessToken);
           break;
-        case "youtube":
-          audienceData = await fetchYoutubeAudience(account.platformAccountId, account.accessToken);
+        case "youtube": {
+          // YouTube tokens live in two places: youtube_connections (canonical,
+          // updated by OAuth callback + refresh-stats) and social_accounts
+          // (cached at backfill time). The latter goes stale when the user
+          // reconnects YouTube. Read the canonical token, refresh if expired,
+          // sync back to social_accounts so future calls don't drift again.
+          const ytToken = await getFreshYoutubeToken(account.userId, account.platformAccountId);
+          if (!ytToken) {
+            return res.status(400).json({ error: "YouTube not connected or token cannot be refreshed; reconnect required" });
+          }
+          audienceData = await fetchYoutubeAudience(account.platformAccountId, ytToken);
           break;
+        }
         case "facebook":
           audienceData = await fetchFacebookPageAudience(account.platformAccountId, account.accessToken);
           break;
@@ -1421,7 +1487,15 @@ export async function registerRoutes(
           if (account.platform === "instagram") {
             audienceData = await fetchInstagramAudience(account.platformAccountId, account.accessToken);
           } else if (account.platform === "youtube") {
-            audienceData = await fetchYoutubeAudience(account.platformAccountId, account.accessToken);
+            // See refresh-analytics endpoint for explanation of dual-source
+            // token management. youtube_connections is canonical; social_accounts
+            // gets resynced after refresh.
+            const ytToken = await getFreshYoutubeToken(account.userId, account.platformAccountId);
+            if (!ytToken) {
+              results.push({ id: account.id, platform: account.platform, ok: false, errors: { token: "YouTube not connected or token cannot be refreshed" } });
+              continue;
+            }
+            audienceData = await fetchYoutubeAudience(account.platformAccountId, ytToken);
           } else if (account.platform === "facebook") {
             audienceData = await fetchFacebookPageAudience(account.platformAccountId, account.accessToken);
           } else {
