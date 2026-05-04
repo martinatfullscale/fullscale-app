@@ -50,6 +50,11 @@ import { runTranscriptPipeline } from "./lib/remix/transcriptPipeline";
 import { runEditorialAutoPipeline, renderSingleEditorialClip } from "./lib/remix/editorialAutoPipeline";
 import { analyzeEditorial } from "./lib/ai/claude-dense/editorialAnalyzer";
 import { categorizeVideos } from "./lib/ai/categorize";
+import {
+  fetchInstagramAudience,
+  fetchYoutubeAudience,
+  fetchFacebookPageAudience,
+} from "./lib/audienceFetcher";
 import { rankClips, deduplicateClips } from "./lib/remix/clipRanker";
 
 // Configure multer for video uploads (temp dir, then uploaded to Object Storage)
@@ -1338,6 +1343,105 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("[Social Accounts Backfill] Error:", err);
       res.status(500).json({ success: false, error: err.message || "Backfill failed" });
+    }
+  });
+
+  // Refresh audience analytics for one connected social account. Pulls
+  // demographics + engagement from the platform's analytics API, parses
+  // into the standard shape, writes back to social_accounts.audience_data.
+  //
+  // The fetchers handle per-platform quirks:
+  //   - Instagram: 4 single-breakdown follower_demographics calls + basic engagement
+  //   - YouTube: channel metrics + ageGroup×gender + top countries via the Analytics API
+  //   - Facebook Page: just follower_count (Meta deprecated demographics in 2024)
+  //
+  // Errors per-call are surfaced in audience_data.errors rather than throwing,
+  // so a partial-success refresh still writes what it got.
+  app.post("/api/social-accounts/:id/refresh-analytics", isFlexibleAuthenticated, async (req: any, res) => {
+    const accountId = req.params.id;
+    const authUserId = req.authUserId;
+    const authEmail = req.authEmail;
+
+    try {
+      const account = await storage.getSocialAccount(accountId);
+      if (!account) return res.status(404).json({ error: "Social account not found" });
+
+      // Ownership check — match either auth id or email
+      if (account.userId !== authUserId && account.userId !== authEmail) {
+        return res.status(403).json({ error: "Not authorized to refresh this account" });
+      }
+
+      if (!account.accessToken) {
+        return res.status(400).json({ error: "No access token on this account; reconnect required" });
+      }
+
+      let audienceData;
+      switch (account.platform) {
+        case "instagram":
+          audienceData = await fetchInstagramAudience(account.platformAccountId, account.accessToken);
+          break;
+        case "youtube":
+          audienceData = await fetchYoutubeAudience(account.platformAccountId, account.accessToken);
+          break;
+        case "facebook":
+          audienceData = await fetchFacebookPageAudience(account.platformAccountId, account.accessToken);
+          break;
+        default:
+          return res.status(400).json({ error: `Unsupported platform: ${account.platform}` });
+      }
+
+      await storage.updateSocialAccountAudience(accountId, audienceData);
+
+      console.log(`[Audience Refresh] ${account.platform}/${account.accountType}/${account.platformAccountId} for user ${authEmail}: ${Object.keys(audienceData.errors || {}).length} errors`);
+      res.json({ success: true, audienceData });
+    } catch (err: any) {
+      console.error("[Audience Refresh] Error:", err);
+      res.status(500).json({ success: false, error: err.message || "Refresh failed" });
+    }
+  });
+
+  // Refresh analytics for ALL of the current user's connected accounts.
+  // Iterates per account, returns a summary. Used by the creator's manual
+  // "Update analytics" button on the profile page (forthcoming UI).
+  app.post("/api/social-accounts/refresh-all", isFlexibleAuthenticated, async (req: any, res) => {
+    const authUserId = req.authUserId;
+    const authEmail = req.authEmail;
+
+    try {
+      const accounts = await storage.getSocialAccountsByUser(authUserId, authEmail);
+      const results: Array<{ id: string; platform: string; ok: boolean; errors?: any }> = [];
+
+      for (const account of accounts) {
+        if (!account.accessToken) {
+          results.push({ id: account.id, platform: account.platform, ok: false, errors: { token: "missing" } });
+          continue;
+        }
+        try {
+          let audienceData;
+          if (account.platform === "instagram") {
+            audienceData = await fetchInstagramAudience(account.platformAccountId, account.accessToken);
+          } else if (account.platform === "youtube") {
+            audienceData = await fetchYoutubeAudience(account.platformAccountId, account.accessToken);
+          } else if (account.platform === "facebook") {
+            audienceData = await fetchFacebookPageAudience(account.platformAccountId, account.accessToken);
+          } else {
+            results.push({ id: account.id, platform: account.platform, ok: false, errors: { platform: "unsupported" } });
+            continue;
+          }
+          await storage.updateSocialAccountAudience(account.id, audienceData);
+          results.push({ id: account.id, platform: account.platform, ok: true, errors: audienceData.errors });
+        } catch (err: any) {
+          console.error(`[Audience Refresh All] ${account.platform} failed:`, err);
+          results.push({ id: account.id, platform: account.platform, ok: false, errors: { exception: err.message } });
+        }
+      }
+
+      const successCount = results.filter(r => r.ok).length;
+      console.log(`[Audience Refresh All] User ${authEmail}: ${successCount}/${results.length} accounts refreshed`);
+      res.json({ success: true, count: results.length, refreshed: successCount, results });
+    } catch (err: any) {
+      console.error("[Audience Refresh All] Error:", err);
+      res.status(500).json({ success: false, error: err.message || "Refresh failed" });
     }
   });
 
