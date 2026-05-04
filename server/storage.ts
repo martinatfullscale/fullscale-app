@@ -94,6 +94,9 @@ import {
   brandBriefs,
   type BrandBrief,
   type InsertBrandBrief,
+  socialAccounts,
+  type SocialAccount,
+  type InsertSocialAccount,
 } from "@shared/schema";
 import { users, type User, type UpsertUser } from "@shared/models/auth";
 import { encrypt, decrypt } from "./encryption";
@@ -435,6 +438,96 @@ export class DatabaseStorage implements IStorage {
     if (userEmail && userEmail !== userId) {
       await db.delete(youtubeConnections).where(eq(youtubeConnections.userId, userEmail));
     }
+  }
+
+  // ─── Social Accounts (multi-account creator identity) ────────────────────
+  // Reads decrypt access_token/refresh_token on the way out; writes encrypt
+  // them on the way in. Matches the pattern used for youtube_connections.
+
+  private decryptSocialAccount(account: SocialAccount): SocialAccount {
+    try {
+      return {
+        ...account,
+        accessToken: account.accessToken ? decrypt(account.accessToken) : null,
+        refreshToken: account.refreshToken ? decrypt(account.refreshToken) : null,
+      };
+    } catch {
+      // If decryption fails (e.g. legacy plaintext or key change), return raw
+      return account;
+    }
+  }
+
+  async getSocialAccountsByUser(userId: string, userEmail?: string): Promise<SocialAccount[]> {
+    // Match either userId — same dual-id problem as videoIndex (some records
+    // keyed by UUID, others by email). Pass both when available.
+    const candidates = new Set([userId]);
+    if (userEmail && userEmail !== userId) candidates.add(userEmail);
+    const matchArray = Array.from(candidates);
+
+    const rows = await db
+      .select()
+      .from(socialAccounts)
+      .where(matchArray.length === 1
+        ? eq(socialAccounts.userId, matchArray[0])
+        : inArray(socialAccounts.userId, matchArray));
+
+    return rows.map(r => this.decryptSocialAccount(r));
+  }
+
+  async getSocialAccount(id: string): Promise<SocialAccount | undefined> {
+    const [row] = await db.select().from(socialAccounts).where(eq(socialAccounts.id, id));
+    return row ? this.decryptSocialAccount(row) : undefined;
+  }
+
+  async upsertSocialAccount(account: InsertSocialAccount): Promise<SocialAccount> {
+    const encryptedValues = {
+      ...account,
+      accessToken: account.accessToken ? encrypt(account.accessToken) : null,
+      refreshToken: account.refreshToken ? encrypt(account.refreshToken) : null,
+    };
+
+    // Conflict target is the unique index (user_id, platform, account_type, platform_account_id).
+    // On conflict, refresh tokens, audience data, and metadata; preserve created_at.
+    const [result] = await db
+      .insert(socialAccounts)
+      .values(encryptedValues)
+      .onConflictDoUpdate({
+        target: [
+          socialAccounts.userId,
+          socialAccounts.platform,
+          socialAccounts.accountType,
+          socialAccounts.platformAccountId,
+        ],
+        set: {
+          handle: account.handle,
+          displayName: account.displayName,
+          avatarUrl: account.avatarUrl,
+          bio: account.bio,
+          followers: account.followers,
+          totalViews: account.totalViews,
+          accessToken: encryptedValues.accessToken,
+          refreshToken: encryptedValues.refreshToken,
+          tokenExpiresAt: account.tokenExpiresAt,
+          scopes: account.scopes,
+          audienceData: account.audienceData,
+          audienceSyncedAt: account.audienceSyncedAt,
+          metadata: account.metadata,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+
+    return this.decryptSocialAccount(result);
+  }
+
+  async updateSocialAccountAudience(id: string, audienceData: any): Promise<void> {
+    await db.update(socialAccounts)
+      .set({ audienceData, audienceSyncedAt: new Date(), updatedAt: new Date() })
+      .where(eq(socialAccounts.id, id));
+  }
+
+  async deleteSocialAccount(id: string): Promise<void> {
+    await db.delete(socialAccounts).where(eq(socialAccounts.id, id));
   }
 
   async isEmailAllowed(email: string): Promise<boolean> {

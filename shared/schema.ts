@@ -1,4 +1,4 @@
-import { pgTable, text, serial, timestamp, boolean, varchar, integer, numeric, uniqueIndex, jsonb, real, uuid } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, timestamp, boolean, varchar, integer, numeric, uniqueIndex, index, jsonb, real, uuid, bigint } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -32,6 +32,75 @@ export const insertYoutubeConnectionSchema = createInsertSchema(youtubeConnectio
 
 export type YoutubeConnection = typeof youtubeConnections.$inferSelect;
 export type InsertYoutubeConnection = z.infer<typeof insertYoutubeConnectionSchema>;
+
+// Social Accounts Table — multi-account creator identity.
+//
+// Replaces the single-account-per-platform model on the users table
+// (users.facebookPageId, users.instagramHandle, etc.) with a normalized
+// table that supports multiple accounts per user, distinguished by type.
+//
+// One user can have e.g.:
+//   (instagram, business, @quiettruthpodcast)
+//   (instagram, personal, @martin)
+//   (facebook, business, "Quiet Truth Podcast" Page)
+//   (youtube, business, the podcast channel)
+//   (youtube, personal, Martin's personal channel)
+//
+// audience_data is a JSONB blob holding the latest demographics +
+// engagement metrics pulled from each platform. Shape:
+//   {
+//     age_distribution: { "13-17": 0.05, "18-24": 0.32, ... },
+//     gender_distribution: { "male": 0.55, "female": 0.43, "other": 0.02 },
+//     top_countries: [{ code: "US", percent: 0.78 }, ...],
+//     top_cities: [{ name: "New York", percent: 0.12 }, ...],
+//     engagement: { reach: ..., total_interactions: ..., follower_count: ... },
+//     raw: { ... }
+//   }
+//
+// See docs/adr/001-multi-account-creator-profile.md for full design.
+export const socialAccounts = pgTable("social_accounts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: varchar("user_id").notNull(),
+
+  platform: varchar("platform").notNull(),                    // 'instagram' | 'facebook' | 'youtube' | 'twitch'
+  accountType: varchar("account_type").notNull(),             // 'business' | 'personal'
+  platformAccountId: varchar("platform_account_id").notNull(), // FB page id / IG biz id / YT channel id
+
+  handle: varchar("handle"),                                   // @username, page name, channel name
+  displayName: varchar("display_name"),
+  avatarUrl: text("avatar_url"),
+  bio: text("bio"),                                            // platform-provided bio (input for AI synthesis)
+
+  followers: integer("followers"),
+  totalViews: bigint("total_views", { mode: "number" }),       // YT channel total views; null elsewhere
+
+  accessToken: text("access_token"),                           // encrypted
+  refreshToken: text("refresh_token"),                         // encrypted, nullable (FB doesn't refresh)
+  tokenExpiresAt: timestamp("token_expires_at"),
+  scopes: text("scopes").array(),                              // granted OAuth scopes
+
+  audienceData: jsonb("audience_data"),                        // latest demographics; see comment above
+  audienceSyncedAt: timestamp("audience_synced_at"),
+
+  metadata: jsonb("metadata"),                                 // platform-specific extras
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+}, (table) => ({
+  userIdIdx: index("idx_social_accounts_user_id").on(table.userId),
+  platformIdx: index("idx_social_accounts_platform").on(table.platform, table.accountType),
+  uniqueAccount: uniqueIndex("idx_social_accounts_unique").on(
+    table.userId, table.platform, table.accountType, table.platformAccountId
+  ),
+}));
+
+export const insertSocialAccountSchema = createInsertSchema(socialAccounts).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type SocialAccount = typeof socialAccounts.$inferSelect;
+export type InsertSocialAccount = z.infer<typeof insertSocialAccountSchema>;
 
 // Allowed Users Table - Email allowlist for founding cohort
 export const allowedUsers = pgTable("allowed_users", {

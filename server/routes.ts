@@ -1072,7 +1072,136 @@ export async function registerRoutes(
     req.googleUser = googleUser;
     next();
   };
-  
+
+  // ─── Social Accounts (multi-account creator identity) ──────────────────
+  // The new social_accounts table replaces the single-account fields on
+  // users (users.facebookPageId, users.instagramHandle, etc.) and gives us
+  // first-class support for creators with both business and personal
+  // presences across IG, FB, YouTube, and beyond. See
+  // docs/adr/001-multi-account-creator-profile.md for the full design.
+
+  // Backfill the new social_accounts table from existing single-account
+  // fields on users + the youtube_connections table.
+  //
+  // Each backfilled row is tagged account_type='business' because that's
+  // what these connections historically were (FB Login flow targets Pages,
+  // YT was connected via the brand channel for most users). Personal
+  // accounts will be added later via the new IG Login flow.
+  //
+  // Idempotent — safe to call repeatedly. Uses upsertSocialAccount which
+  // ON CONFLICT updates existing rows on (user_id, platform, account_type,
+  // platform_account_id).
+  app.post("/api/social-accounts/backfill-from-legacy", isFlexibleAuthenticated, async (req: any, res) => {
+    const authUserId = req.authUserId;
+    const authEmail = req.authEmail;
+
+    try {
+      // Resolve the user record — we need both user.id (UUID) and any
+      // facebook/instagram fields plus access token.
+      const user = await storage.getUserByEmail(authEmail) || await storage.getUserById(authUserId);
+      if (!user) return res.status(404).json({ error: "User not found" });
+
+      const created: string[] = [];
+
+      // FB Page → social_accounts as facebook/business
+      if (user.facebookPageId) {
+        const decryptedFbToken = user.facebookAccessToken
+          ? (() => { try { return decrypt(user.facebookAccessToken!); } catch { return null; } })()
+          : null;
+
+        const fbAccount = await storage.upsertSocialAccount({
+          userId: user.id,
+          platform: "facebook",
+          accountType: "business",
+          platformAccountId: user.facebookPageId,
+          handle: user.facebookPageName || null,
+          displayName: user.facebookPageName || null,
+          followers: user.facebookFollowers || 0,
+          accessToken: decryptedFbToken,
+          scopes: ["email", "public_profile", "pages_show_list", "pages_read_engagement", "instagram_basic", "instagram_manage_insights"],
+        });
+        created.push(`facebook/business/${fbAccount.platformAccountId}`);
+      }
+
+      // IG Business (linked through the FB Login token) → social_accounts as instagram/business
+      if (user.instagramBusinessId) {
+        const decryptedFbToken = user.facebookAccessToken
+          ? (() => { try { return decrypt(user.facebookAccessToken!); } catch { return null; } })()
+          : null;
+
+        const igAccount = await storage.upsertSocialAccount({
+          userId: user.id,
+          platform: "instagram",
+          accountType: "business",
+          platformAccountId: user.instagramBusinessId,
+          handle: user.instagramHandle || null,
+          displayName: user.instagramHandle || null,
+          followers: user.instagramFollowers || 0,
+          accessToken: decryptedFbToken,
+          scopes: ["instagram_basic", "instagram_manage_insights"],
+        });
+        created.push(`instagram/business/${igAccount.platformAccountId}`);
+      }
+
+      // YouTube → from youtube_connections table
+      const ytConnection = await storage.getYoutubeConnection(user.id);
+      if (ytConnection?.channelId) {
+        const ytAccount = await storage.upsertSocialAccount({
+          userId: user.id,
+          platform: "youtube",
+          accountType: "business",
+          platformAccountId: ytConnection.channelId,
+          handle: ytConnection.channelTitle || null,
+          displayName: ytConnection.channelTitle || null,
+          followers: ytConnection.subscriberCount || 0,
+          totalViews: ytConnection.totalViewCount || 0,
+          accessToken: ytConnection.accessToken,
+          refreshToken: ytConnection.refreshToken || null,
+          tokenExpiresAt: ytConnection.expiresAt || null,
+          scopes: ["youtube.readonly", "yt-analytics.readonly"],
+        });
+        created.push(`youtube/business/${ytAccount.platformAccountId}`);
+      }
+
+      console.log(`[Social Accounts Backfill] User ${user.email}: created/updated ${created.length} accounts: ${created.join(", ")}`);
+      res.json({ success: true, count: created.length, accounts: created });
+    } catch (err: any) {
+      console.error("[Social Accounts Backfill] Error:", err);
+      res.status(500).json({ success: false, error: err.message || "Backfill failed" });
+    }
+  });
+
+  // List the current user's connected social accounts (decrypted tokens
+  // are NOT returned — only metadata + audience data).
+  app.get("/api/social-accounts", isFlexibleAuthenticated, async (req: any, res) => {
+    const authUserId = req.authUserId;
+    const authEmail = req.authEmail;
+
+    try {
+      const accounts = await storage.getSocialAccountsByUser(authUserId, authEmail);
+      const safe = accounts.map(a => ({
+        id: a.id,
+        platform: a.platform,
+        accountType: a.accountType,
+        platformAccountId: a.platformAccountId,
+        handle: a.handle,
+        displayName: a.displayName,
+        avatarUrl: a.avatarUrl,
+        bio: a.bio,
+        followers: a.followers,
+        totalViews: a.totalViews,
+        audienceData: a.audienceData,
+        audienceSyncedAt: a.audienceSyncedAt,
+        createdAt: a.createdAt,
+        updatedAt: a.updatedAt,
+      }));
+      res.json({ accounts: safe });
+    } catch (err: any) {
+      console.error("[Social Accounts] List error:", err);
+      res.status(500).json({ error: err.message || "Failed to list accounts" });
+    }
+  });
+
   // Initiate YouTube OAuth flow
   app.get("/api/auth/youtube", isGoogleAuthenticated, (req: any, res) => {
     try {
