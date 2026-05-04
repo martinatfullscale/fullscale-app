@@ -1098,7 +1098,29 @@ export async function setupPlatformAuth(app: Express) {
       `https://graph.facebook.com/debug_token?input_token=${userToken}&access_token=${userToken}`
     );
 
-    // --- Test 2: fetch Pages (we need a page access token for Insights) ---
+    // --- Surface scopes from token_debug early — we use granular target_ids
+    // as fallback Page/IG IDs when me/accounts returns empty (a known Meta
+    // quirk for Pages owned through Business Manager). ---
+    const tokenDebugData = results.tests["1_token_debug"]?.data?.data;
+    const grantedScopes: string[] = tokenDebugData?.scopes || [];
+    const granularScopes = tokenDebugData?.granular_scopes || [];
+
+    // Extract granted Page IDs and IG IDs from granular_scopes
+    const grantedPageIds = new Set<string>();
+    const grantedIgIds = new Set<string>();
+    for (const g of granularScopes) {
+      const targets: string[] = g?.target_ids || [];
+      if (g.scope === "pages_show_list" || g.scope === "pages_read_engagement" || g.scope === "pages_read_user_content") {
+        for (const id of targets) grantedPageIds.add(id);
+      }
+      if (g.scope === "instagram_basic" || g.scope === "instagram_manage_insights") {
+        for (const id of targets) grantedIgIds.add(id);
+      }
+    }
+    const grantedPageIdList = Array.from(grantedPageIds);
+    const grantedIgIdList = Array.from(grantedIgIds);
+
+    // --- Test 2: fetch Pages via me/accounts (preferred path; may return empty for BM-owned Pages) ---
     let pageAccessToken: string | null = null;
     let pageId: string | null = user.facebookPageId || null;
     await tryFetch(
@@ -1116,15 +1138,36 @@ export async function setupPlatformAuth(app: Express) {
       pageAccessToken = pagesData[0].access_token || null;
       if (!pageId) pageId = pagesData[0].id;
     }
-    results.tokens.page = pageAccessToken ? "resolved_from_me_accounts" : "no_page_token_in_me_accounts_response";
+
+    // Fallback: if me/accounts came back empty but granular_scopes lists a
+    // Page, use that Page ID. The Page is OAuth-granted; me/accounts just
+    // doesn't surface it (BM ownership most likely).
+    if (!pageId && grantedPageIdList.length > 0) {
+      pageId = grantedPageIdList[0];
+    }
+
+    // --- Test 2b: try fetching the Page directly with the user token. This
+    // works around the empty me/accounts response and tells us whether the
+    // user token can read Page metadata + extract a Page access token at all. ---
+    if (pageId && !pageAccessToken) {
+      await tryFetch(
+        "2b_page_direct_fetch",
+        `https://graph.facebook.com/v18.0/${pageId}?fields=id,name,access_token,fan_count,followers_count,instagram_business_account&access_token=${userToken}`
+      );
+      const directData = results.tests["2b_page_direct_fetch"]?.data;
+      if (directData?.access_token) {
+        pageAccessToken = directData.access_token;
+      }
+    } else {
+      results.tests["2b_page_direct_fetch"] = { ok: false, skipped: pageAccessToken ? "Already have page token" : "No page id resolved" };
+    }
+
+    results.tokens.page = pageAccessToken ? "resolved" : "user_token_fallback";
     results.tokens.pageId = pageId ?? null;
+    results.tokens.grantedPageIds = grantedPageIdList;
+    results.tokens.grantedIgIds = grantedIgIdList;
 
     // --- Test 3 & 4: Page Insights ---
-    // Strategy: Insights endpoints prefer a Page access token, but the user
-    // access token works for Pages the user owns IF the token has the right
-    // scopes. So we try with the page token if we have one, fall back to user
-    // token. This way we still get a real API response (success OR a clear
-    // error from Meta) instead of skipping.
     const insightsToken = pageAccessToken || userToken;
     const insightsTokenType: "page" | "user" = pageAccessToken ? "page" : "user";
 
@@ -1135,39 +1178,34 @@ export async function setupPlatformAuth(app: Express) {
         { tokenType: insightsTokenType }
       );
 
-      // Page audience demographics — the media-kit data
       await tryFetch(
         "4_page_audience_demographics",
         `https://graph.facebook.com/v18.0/${pageId}/insights?metric=page_fans_gender_age,page_fans_country,page_fans_city&period=lifetime&access_token=${insightsToken}`,
         { tokenType: insightsTokenType }
       );
     } else {
-      results.tests["3_page_basic_insights"] = { ok: false, skipped: "No facebookPageId on user record" };
-      results.tests["4_page_audience_demographics"] = { ok: false, skipped: "No facebookPageId on user record" };
+      results.tests["3_page_basic_insights"] = { ok: false, skipped: "No page id resolved from me/accounts, user record, or granular_scopes" };
+      results.tests["4_page_audience_demographics"] = { ok: false, skipped: "No page id resolved" };
     }
 
     // --- Test 5: Instagram Business audience demographics ---
-    // Same fallback strategy as the Page calls.
-    if (user.instagramBusinessId) {
+    // Use IG ID from user record OR granular_scopes (same fallback as Pages).
+    const igId = user.instagramBusinessId || grantedIgIdList[0] || null;
+    if (igId) {
       await tryFetch(
         "5_ig_audience_legacy",
-        `https://graph.facebook.com/v18.0/${user.instagramBusinessId}/insights?metric=audience_gender_age,audience_country,audience_city,audience_locale&period=lifetime&access_token=${insightsToken}`,
+        `https://graph.facebook.com/v18.0/${igId}/insights?metric=audience_gender_age,audience_country,audience_city,audience_locale&period=lifetime&access_token=${insightsToken}`,
         { tokenType: insightsTokenType }
       );
       await tryFetch(
         "5_ig_audience_v2",
-        `https://graph.facebook.com/v18.0/${user.instagramBusinessId}/insights?metric=follower_demographics&breakdown=age,gender,country,city&metric_type=total_value&period=lifetime&access_token=${insightsToken}`,
+        `https://graph.facebook.com/v18.0/${igId}/insights?metric=follower_demographics&breakdown=age,gender,country,city&metric_type=total_value&period=lifetime&access_token=${insightsToken}`,
         { tokenType: insightsTokenType }
       );
     } else {
-      results.tests["5_ig_audience_legacy"] = { ok: false, skipped: "No instagramBusinessId on user record" };
-      results.tests["5_ig_audience_v2"] = { ok: false, skipped: "No instagramBusinessId on user record" };
+      results.tests["5_ig_audience_legacy"] = { ok: false, skipped: "No IG id from user record or granular_scopes" };
+      results.tests["5_ig_audience_v2"] = { ok: false, skipped: "No IG id" };
     }
-
-    // --- Surface the most important diagnostic: what scopes does the token actually have? ---
-    const tokenDebugData = results.tests["1_token_debug"]?.data?.data;
-    const grantedScopes: string[] = tokenDebugData?.scopes || [];
-    const granularScopes = tokenDebugData?.granular_scopes || [];
 
     // Summarize for quick scanning
     const summary = Object.entries(results.tests).map(([name, r]: [string, any]) => ({
