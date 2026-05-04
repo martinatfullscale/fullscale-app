@@ -1986,8 +1986,11 @@ export async function registerRoutes(
       const video = await storage.getVideoById(videoId);
       if (!video) return res.status(404).json({ error: "Video not found" });
 
-      const userId = req.authEmail || req.authUserId;
-      if (video.userId !== userId) {
+      // Dual-id ownership check: videos can be keyed by either email (file
+      // uploads) or UUID (IG/FB imports). Match either to allow edits across
+      // both paths.
+      const isOwner = video.userId === req.authUserId || video.userId === req.authEmail;
+      if (!isOwner) {
         return res.status(403).json({ error: "Not authorized to update this video" });
       }
 
