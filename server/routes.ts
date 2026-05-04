@@ -324,6 +324,76 @@ export async function registerRoutes(
   const isVipEmail = (email: string) => 
     FOUNDING_MEMBERS.some(vip => vip.toLowerCase() === email.toLowerCase().trim());
 
+  // One-shot admin endpoint: provisions the test-creator account that Google
+  // OAuth verification reviewers use to test the YouTube OAuth flow. Idempotent:
+  // creates the user if missing, sets the password, marks approved, adds to
+  // allowed_users. Run once after deploy to guarantee the account is in the
+  // exact state Google reviewers need.
+  app.post("/api/admin/provision-test-creator", async (req: any, res) => {
+    try {
+      const adminEmails = ['martin@gofullscale.co', 'martin@whtwrks.com', 'martincekechukwu@gmail.com', 'thekimkwilson@gmail.com', 'tamara@whtwrks.com'];
+      const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email || req.query.admin_email;
+      if (!callerEmail || !adminEmails.map((e: string) => e.toLowerCase()).includes(callerEmail.toLowerCase())) {
+        return res.status(403).json({ error: "Admin access required" });
+      }
+
+      const TEST_EMAIL = "test-creator@gofullscale.co";
+      const TEST_PASSWORD = "P@ssw0rd20206!";
+      const hashedPassword = await hashPassword(TEST_PASSWORD);
+
+      // Ensure user record exists with the right state
+      const existing = await storage.getUserByEmail(TEST_EMAIL);
+      let user;
+      let action: "created" | "updated";
+      if (existing) {
+        // Update password + approval status. Drizzle's upsertUserByEmail
+        // handles the rest.
+        user = await storage.upsertUserByEmail({
+          email: TEST_EMAIL,
+          password: hashedPassword,
+          firstName: "Test",
+          lastName: "Creator",
+          isApproved: true,
+          authProvider: "email",
+        });
+        action = "updated";
+      } else {
+        user = await storage.createUser({
+          email: TEST_EMAIL,
+          password: hashedPassword,
+          firstName: "Test",
+          lastName: "Creator",
+          isApproved: true,
+          authProvider: "email",
+        });
+        action = "created";
+      }
+
+      // Ensure on the email allowlist as a creator
+      const isAllowed = await storage.isEmailAllowed(TEST_EMAIL);
+      if (!isAllowed) {
+        await storage.addAllowedUser({ email: TEST_EMAIL, userType: "creator" });
+      }
+
+      console.log(`[Provision] test-creator account ${action} (approved=${user.isApproved})`);
+      res.json({
+        success: true,
+        action,
+        user: {
+          id: user.id,
+          email: user.email,
+          isApproved: user.isApproved,
+          firstName: user.firstName,
+          lastName: user.lastName,
+        },
+        allowlisted: true,
+      });
+    } catch (err: any) {
+      console.error("[Provision] Error:", err);
+      res.status(500).json({ success: false, error: err.message || "Provision failed" });
+    }
+  });
+
   app.post("/api/admin/migrate-surfaces", async (req: any, res) => {
     try {
       const adminEmails = ['martin@gofullscale.co', 'martin@whtwrks.com', 'martincekechukwu@gmail.com', 'thekimkwilson@gmail.com', 'tamara@whtwrks.com'];
