@@ -5246,6 +5246,25 @@ export async function registerRoutes(
         };
       }));
 
+      // Fetch the creator's connected social accounts with audience data
+      // for the media-kit-style stacked cards on the public profile.
+      // Tokens are stripped — the public response is brand-facing.
+      const allSocialAccounts = userProfile
+        ? await storage.getSocialAccountsByUser(userProfile.id, email)
+        : [];
+      const socialAccounts = allSocialAccounts.map(a => ({
+        id: a.id,
+        platform: a.platform,
+        accountType: a.accountType,
+        handle: a.handle,
+        displayName: a.displayName,
+        avatarUrl: a.avatarUrl,
+        followers: a.followers,
+        totalViews: a.totalViews,
+        audienceData: a.audienceData,
+        audienceSyncedAt: a.audienceSyncedAt,
+      }));
+
       res.json({
         creator: {
           name: creator.name || email.split("@")[0],
@@ -5267,6 +5286,7 @@ export async function registerRoutes(
           categories: Array.from(allCategories),
         },
         socialStats: Object.keys(socialStats).length > 0 ? socialStats : null,
+        socialAccounts,
         videos: enrichedVideos,
       });
     } catch (err: any) {
