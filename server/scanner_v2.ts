@@ -26,6 +26,8 @@ import type { InsertDetectedSurface } from "@shared/schema";
 import { GoogleGenAI } from "@google/genai";
 import { uploadFileToStorage, downloadToTempFile, storageServeUrl } from "./lib/objectStorage";
 import { downloadVideo as downloadYouTubeVideo } from "./lib/scanner";
+import { downloadFacebookVideo, downloadInstagramVideo } from "./lib/socialDownloader";
+import { safeDecrypt } from "./lib/socialAnalytics";
 
 // ============================================================================
 // GEMINI AI CLIENT
@@ -1837,6 +1839,40 @@ export async function processVideoScan(
         console.log(`[Scanner V2] YouTube download succeeded: ${videoPath}`);
       } else {
         console.error(`[Scanner V2] YouTube download failed for ${video.youtubeId}`);
+      }
+    }
+
+    // FACEBOOK / INSTAGRAM FALLBACK: imported videos (via /api/social/sync)
+    // have no filePath — the importer only stored Graph API metadata. Resolve
+    // the CDN-hosted source URL on-demand using the user's stored Page access
+    // token (also valid for the linked IG Business account), download to
+    // tempDir, and let the existing finally{} cleanup discard the bytes.
+    // Same light-cloud model as the YouTube path above.
+    const isFbOrIg =
+      !videoPath &&
+      ((video as any).platform === "facebook" || (video as any).platform === "instagram") &&
+      (video.youtubeId.startsWith("facebook:") || video.youtubeId.startsWith("instagram:"));
+
+    if (isFbOrIg) {
+      const platform = (video as any).platform as "facebook" | "instagram";
+      const user = await storage.getUserById((video as any).userId);
+      const token = safeDecrypt(user?.facebookAccessToken);
+      if (!token) {
+        console.error(`[Scanner V2] No Facebook access token for user ${(video as any).userId} — cannot download ${platform} source`);
+      } else {
+        console.log(`[Scanner V2] No filePath; attempting ${platform} download for ${video.youtubeId}`);
+        fs.mkdirSync(tempDir, { recursive: true });
+        const safeId = video.youtubeId.replace(/[^a-zA-Z0-9]/g, "_");
+        const downloadPath = path.join(tempDir, `${safeId}.mp4`);
+        const ok = platform === "facebook"
+          ? await downloadFacebookVideo(video.youtubeId, token, downloadPath)
+          : await downloadInstagramVideo(video.youtubeId, token, downloadPath);
+        if (ok && fs.existsSync(downloadPath)) {
+          videoPath = downloadPath;
+          console.log(`[Scanner V2] ${platform} download succeeded: ${videoPath}`);
+        } else {
+          console.error(`[Scanner V2] ${platform} download failed for ${video.youtubeId}`);
+        }
       }
     }
 
