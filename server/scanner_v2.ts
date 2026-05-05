@@ -1764,28 +1764,48 @@ async function groupSurfacesTemporally(videoId: number): Promise<void> {
     return { ...track, score, duration };
   }).sort((a, b) => b.score - a.score);
 
-  // Keep only the best track
-  const bestTrack = scoredTracks[0];
-  const bestDuration = bestTrack.duration;
-  console.log(`[Temporal] Best track: ${bestTrack.surfaceType} (${bestTrack.startTime}s - ${bestTrack.endTime}s, ${bestDuration}s, score=${bestTrack.score.toFixed(2)})`);
-
-  // Store temporal range in the best track's surfaces
-  const contextNote = `Visible: ${bestTrack.startTime}s - ${bestTrack.endTime + CONFIG.FRAME_INTERVAL_SECONDS}s (${bestDuration}s)`;
-  for (const s of bestTrack.surfaces) {
-    try {
-      await storage.updateDetectedSurface(s.id, { sceneContext: contextNote });
-    } catch (err) { /* non-fatal */ }
+  // Keep the best track PER surface type (not one global best). Previously
+  // this kept only the single best across all types, which deleted walls
+  // when a desk track scored higher (and vice versa). With the new "max 3
+  // surfaces per frame, walls + tables + windows" model, each distinct
+  // type should retain its best track. Result: one Wall track, one Coffee
+  // Table track, one Window track — not one of those, all gone.
+  const bestPerType = new Map<string, typeof scoredTracks[0]>();
+  for (const t of scoredTracks) {
+    const key = t.surfaceType.toLowerCase();
+    const existing = bestPerType.get(key);
+    if (!existing || t.score > existing.score) {
+      bestPerType.set(key, t);
+    }
+  }
+  const keepIds = new Set<number>();
+  const winningTracks = Array.from(bestPerType.values());
+  for (const t of winningTracks) {
+    console.log(`[Temporal] Keeping ${t.surfaceType}: ${t.startTime}s - ${t.endTime}s (${t.duration}s, score=${t.score.toFixed(2)})`);
+    const contextNote = `Visible: ${t.startTime}s - ${t.endTime + CONFIG.FRAME_INTERVAL_SECONDS}s (${t.duration}s)`;
+    for (const s of t.surfaces) {
+      keepIds.add(s.id);
+      try {
+        await storage.updateDetectedSurface(s.id, { sceneContext: contextNote });
+      } catch (err) { /* non-fatal */ }
+    }
   }
 
-  // Filter out surfaces from non-best tracks
-  for (let i = 1; i < scoredTracks.length; i++) {
-    const track = scoredTracks[i];
-    console.log(`[Temporal] Filtering out track: ${track.surfaceType} (${track.startTime}s - ${track.endTime}s, score=${track.score.toFixed(2)})`);
+  // Filter out surfaces NOT in any winning per-type track. These are
+  // weaker secondary tracks of the same type as a winning one (e.g. a
+  // brief 2-frame wall detection in a different camera angle when the
+  // primary wall track has 11 frames).
+  for (const track of scoredTracks) {
+    if (track.surfaces.every(s => keepIds.has(s.id))) continue; // entirely a winner
     for (const s of track.surfaces) {
+      if (keepIds.has(s.id)) continue;
+      const winner = bestPerType.get(track.surfaceType.toLowerCase());
+      const winnerLabel = winner ? `${winner.surfaceType} (${winner.duration}s)` : "best track";
+      console.log(`[Temporal] Filtering surface ${s.id} (${track.surfaceType}, ${track.duration}s) — winning ${track.surfaceType} track is ${winnerLabel}`);
       try {
         await storage.updateDetectedSurface(s.id, {
           surfaceType: "Filtered",
-          sceneContext: `Removed: lower-priority track (${track.surfaceType}, ${track.duration}s) — best track is ${bestTrack.surfaceType} (${bestDuration}s)`,
+          sceneContext: `Removed: weaker ${track.surfaceType} track (${track.duration}s) — best is ${winnerLabel}`,
         });
       } catch (err) {
         console.warn(`[Temporal] Failed to filter surface ${s.id}:`, err);
@@ -1793,7 +1813,7 @@ async function groupSurfacesTemporally(videoId: number): Promise<void> {
     }
   }
 
-  console.log(`[Temporal] Kept ${bestTrack.surfaces.length} surfaces, filtered ${validSurfaces.length - bestTrack.surfaces.length} from weaker tracks`);
+  console.log(`[Temporal] Kept ${keepIds.size} surfaces across ${bestPerType.size} type-tracks, filtered ${validSurfaces.length - keepIds.size}`);
 }
 
 // ============================================================================
