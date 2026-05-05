@@ -701,6 +701,9 @@ export default function Library() {
             viewCount: viewCount,
             scenes: finalScenes,
             filePath: video.filePath,
+            youtubeId: (video as any).youtubeId,
+            platform: (video as any).platform,
+            sourceUrl: (video as any).sourceUrl,
           });
           setSceneModalOpen(true);
           return;
@@ -729,6 +732,9 @@ export default function Library() {
       viewCount: viewCount,
       scenes: emptyScene,
       filePath: video.filePath,
+      youtubeId: (video as any).youtubeId,
+      platform: (video as any).platform,
+      sourceUrl: (video as any).sourceUrl,
     });
     setSceneModalOpen(true);
   };

@@ -24,6 +24,11 @@ export interface VideoWithScenes {
   viewCount: number;
   scenes: Scene[];
   filePath?: string | null;
+  // Source video identifiers — used by the embedded "Watch original" player
+  // for YT/IG/FB videos where we don't store the source bytes ourselves.
+  youtubeId?: string | null;
+  platform?: string | null;
+  sourceUrl?: string | null;
 }
 
 interface DetectedObject {
@@ -64,6 +69,38 @@ const PLACEMENT_SURFACES = [
   "oven", "toaster", "sink", "backpack", "handbag", "suitcase", "umbrella"
 ];
 
+// Build an iframe embed URL for the source platform. Returns null if the
+// video isn't from a supported social platform or the required identifiers
+// aren't present on the record.
+function getPlatformEmbedUrl(video: VideoWithScenes | null): string | null {
+  if (!video) return null;
+  const platform = video.platform?.toLowerCase();
+  const ytId = video.youtubeId;
+  const sourceUrl = video.sourceUrl;
+
+  if (platform === "youtube" && ytId && !ytId.includes(":") && !ytId.startsWith("upload-")) {
+    return `https://www.youtube.com/embed/${ytId}`;
+  }
+  if (platform === "instagram" && sourceUrl) {
+    // IG permalinks look like https://www.instagram.com/reel/<shortcode>/ — append "embed/" for the official embed.
+    const trimmed = sourceUrl.endsWith("/") ? sourceUrl : `${sourceUrl}/`;
+    return `${trimmed}embed/`;
+  }
+  if (platform === "facebook" && sourceUrl) {
+    return `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(sourceUrl)}&show_text=false`;
+  }
+  return null;
+}
+
+function getPlatformLabel(platform: string | null | undefined): string {
+  switch (platform?.toLowerCase()) {
+    case "youtube": return "YouTube";
+    case "instagram": return "Instagram";
+    case "facebook": return "Facebook";
+    default: return "Original";
+  }
+}
+
 export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVideo, onPlayFromTimestamp }: SceneAnalysisModalProps) {
   const [currentSceneIndex, setCurrentSceneIndex] = useState(0);
   const [model, setModel] = useState<cocoSsd.ObjectDetection | null>(null);
@@ -86,6 +123,11 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
   // Frame loading state — tracks whether the main frame image has loaded
   const [frameLoaded, setFrameLoaded] = useState(false);
   const [frameError, setFrameError] = useState(false);
+  // Toggles between scene-frame view and an embedded platform player so
+  // creators can watch the actual YT/IG/FB video alongside the scan results
+  // without leaving the modal. Source bytes aren't stored on our side
+  // (light-cloud model) — we just embed the platform's own player.
+  const [showEmbedPlayer, setShowEmbedPlayer] = useState(false);
 
   // Local scenes state — starts from video.scenes, rebuilt after server rescan
   const [localScenes, setLocalScenes] = useState<Scene[]>(video?.scenes || []);
@@ -555,9 +597,46 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
 
             <div className="flex flex-col lg:flex-row overflow-hidden">
               <div className="flex-1 min-w-0 relative overflow-hidden">
+                {/* "Watch original" toggle — only visible when the video is from
+                    a social platform we can embed. Switches the main display
+                    between scan-frame view (with bounding boxes) and an iframe
+                    of the platform's own player. */}
+                {(() => {
+                  const embedUrl = getPlatformEmbedUrl(video);
+                  if (!embedUrl) return null;
+                  return (
+                    <Button
+                      size="sm"
+                      variant={showEmbedPlayer ? "default" : "secondary"}
+                      onClick={() => setShowEmbedPlayer(s => !s)}
+                      className="absolute top-4 left-4 z-20 gap-1.5"
+                      data-testid="button-toggle-embed-player"
+                    >
+                      <Play className="w-4 h-4" />
+                      {showEmbedPlayer
+                        ? "Show scan view"
+                        : `Watch on ${getPlatformLabel(video?.platform)}`}
+                    </Button>
+                  );
+                })()}
+
                 <div className="relative overflow-hidden bg-black flex items-center justify-center" style={{ minHeight: '300px', maxHeight: '70vh' }}>
+                  {/* Embedded platform player (YT/IG/FB) — replaces the frame
+                      stack when toggled on. Source bytes aren't on our servers;
+                      we just iframe the platform's official embed. */}
+                  {showEmbedPlayer && getPlatformEmbedUrl(video) && (
+                    <iframe
+                      src={getPlatformEmbedUrl(video)!}
+                      className="w-full"
+                      style={{ aspectRatio: "16 / 9", maxHeight: "70vh", border: 0 }}
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                      allowFullScreen
+                      data-testid="iframe-platform-embed"
+                    />
+                  )}
+
                   {/* Layer 1: For local videos, always show <video> as the reliable base layer */}
-                  {video?.filePath && (
+                  {!showEmbedPlayer && video?.filePath && (
                     <video
                       key={`video-base-${video.id}-${currentSceneIndex}`}
                       src={video.filePath.replace(/^\/home\/runner\/workspace\/public\//, '/').replace(/^\.\/public\//, '/').replace(/^public\//, '/').replace(/\/\//g, '/')}
@@ -574,42 +653,44 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                   )}
 
                   {/* Layer 2: Frame image (preferred when available — enables bounding box overlays) */}
-                  <img
-                    ref={imageRef}
-                    key={`frame-${video?.id}-${currentSceneIndex}`}
-                    src={currentScene?.imageUrl || ''}
-                    alt={`Scene at ${currentScene?.timestamp || '0:00'}`}
-                    className={`max-w-full max-h-[70vh] object-contain ${frameLoaded ? '' : (video?.filePath ? 'absolute opacity-0' : '')}`}
-                    data-testid="img-scene-main"
-                    onLoad={() => {
-                      setFrameLoaded(true);
-                      setFrameError(false);
-                      // Draw database surfaces after image loads
-                      if (hasDbSurfaces && currentDbSurfaces.length > 0) {
-                        setTimeout(drawDbSurfaces, 100);
-                      }
-                    }}
-                    onError={(e) => {
-                      const img = e.currentTarget;
-                      const currentSrc = img.src;
-                      // Retry 1: Try on-demand frame generation endpoint
-                      if (video?.id && currentScene?.timestamp && !currentSrc.includes('/api/video/')) {
-                        const [m, s] = (currentScene.timestamp || '0:00').split(':').map(Number);
-                        const ts = (m || 0) * 60 + (s || 0);
-                        img.src = `/api/video/${video.id}/frame/${ts}`;
-                        return;
-                      }
-                      // All retries failed — keep video fallback visible
-                      setFrameError(true);
-                      if (!video?.filePath) {
-                        // No video file available either — show static fallback
-                        img.style.display = 'none';
-                      }
-                    }}
-                  />
+                  {!showEmbedPlayer && (
+                    <img
+                      ref={imageRef}
+                      key={`frame-${video?.id}-${currentSceneIndex}`}
+                      src={currentScene?.imageUrl || ''}
+                      alt={`Scene at ${currentScene?.timestamp || '0:00'}`}
+                      className={`max-w-full max-h-[70vh] object-contain ${frameLoaded ? '' : (video?.filePath ? 'absolute opacity-0' : '')}`}
+                      data-testid="img-scene-main"
+                      onLoad={() => {
+                        setFrameLoaded(true);
+                        setFrameError(false);
+                        // Draw database surfaces after image loads
+                        if (hasDbSurfaces && currentDbSurfaces.length > 0) {
+                          setTimeout(drawDbSurfaces, 100);
+                        }
+                      }}
+                      onError={(e) => {
+                        const img = e.currentTarget;
+                        const currentSrc = img.src;
+                        // Retry 1: Try on-demand frame generation endpoint
+                        if (video?.id && currentScene?.timestamp && !currentSrc.includes('/api/video/')) {
+                          const [m, s] = (currentScene.timestamp || '0:00').split(':').map(Number);
+                          const ts = (m || 0) * 60 + (s || 0);
+                          img.src = `/api/video/${video.id}/frame/${ts}`;
+                          return;
+                        }
+                        // All retries failed — keep video fallback visible
+                        setFrameError(true);
+                        if (!video?.filePath) {
+                          // No video file available either — show static fallback
+                          img.style.display = 'none';
+                        }
+                      }}
+                    />
+                  )}
 
                   {/* Layer 3: Static fallback only if no video file AND frame failed */}
-                  {frameError && !video?.filePath && (
+                  {!showEmbedPlayer && frameError && !video?.filePath && (
                     <div className="w-full flex items-center justify-center bg-zinc-900 text-zinc-500" style={{ minHeight: '300px' }}>
                       <div className="text-center">
                         <Video className="w-12 h-12 mx-auto mb-2 opacity-50" />
@@ -618,12 +699,14 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                       </div>
                     </div>
                   )}
-                  
-                  <canvas
-                    ref={canvasRef}
-                    className="absolute inset-0 w-full h-full pointer-events-none"
-                    data-testid="canvas-detections"
-                  />
+
+                  {!showEmbedPlayer && (
+                    <canvas
+                      ref={canvasRef}
+                      className="absolute inset-0 w-full h-full pointer-events-none"
+                      data-testid="canvas-detections"
+                    />
+                  )}
                   
                   <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent pointer-events-none" />
                   
