@@ -1886,7 +1886,16 @@ export async function processVideoScan(
       console.log(`[Scanner V2] No filePath; attempting YouTube download for ${video.youtubeId}`);
       fs.mkdirSync(tempDir, { recursive: true });
       const downloadPath = path.join(tempDir, `${video.youtubeId}.mp4`);
-      const ok = await downloadYouTubeVideo(video.youtubeId, downloadPath);
+      // Trim to roughly 2× the frame coverage window. We extract frames at
+      // FRAME_INTERVAL_SECONDS up to MAX_FRAMES_PER_VIDEO so we only need
+      // (MAX_FRAMES * INTERVAL) seconds of content. Padding with extra
+      // headroom so ffmpeg has muxer-friendly leeway around keyframes.
+      // For long-form podcasts this turns a 200MB+ download into ~5MB.
+      const trimSec = CONFIG.MAX_FRAMES_PER_VIDEO * CONFIG.FRAME_INTERVAL_SECONDS + 10;
+      const ok = await downloadYouTubeVideo(video.youtubeId, downloadPath, {
+        trimToSeconds: trimSec,
+        timeoutMs: 3 * 60 * 1000, // 3min hard cap — short clip should download fast
+      });
       if (ok && fs.existsSync(downloadPath)) {
         videoPath = downloadPath;
         console.log(`[Scanner V2] YouTube download succeeded: ${videoPath}`);

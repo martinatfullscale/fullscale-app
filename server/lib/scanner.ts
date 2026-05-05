@@ -324,12 +324,26 @@ async function downloadVideoWithYtdl(youtubeId: string, outputPath: string): Pro
   }
 }
 
-async function downloadVideoWithYtDlp(youtubeId: string, outputPath: string): Promise<boolean> {
+interface DownloadOpts {
+  /** If set, only download the first N seconds of the video (yt-dlp --download-sections). */
+  trimToSeconds?: number;
+  /** Hard kill timeout in ms. Default 3 minutes. */
+  timeoutMs?: number;
+}
+
+async function downloadVideoWithYtDlp(
+  youtubeId: string,
+  outputPath: string,
+  opts: DownloadOpts = {},
+): Promise<boolean> {
   return new Promise((resolve) => {
-    console.log(`[Scanner] yt-dlp: downloading ${youtubeId}...`);
-    // Player-client strategy: try multiple in order. As of 2025-2026 the
-    // ios client is broken (Precondition check failed). tv_embedded + mweb
-    // + web_safari are the current bot-resistant clients per yt-dlp issues.
+    const trim = opts.trimToSeconds;
+    const timeoutMs = opts.timeoutMs ?? 3 * 60 * 1000;
+    console.log(`[Scanner] yt-dlp: downloading ${youtubeId}${trim ? ` (first ${trim}s only)` : ""}, timeout ${timeoutMs/1000}s...`);
+
+    // Player-client strategy: try multiple in order. As of 2025-2026 the ios
+    // client is broken (Precondition check failed). tv_embedded + mweb +
+    // web_safari are the current bot-resistant clients per yt-dlp issues.
     // Format: prefer mp4 ≤720p video+audio merged; fall back to any usable
     // single-file format if separate streams aren't available.
     const args = [
@@ -342,20 +356,48 @@ async function downloadVideoWithYtDlp(youtubeId: string, outputPath: string): Pr
       "--retry-sleep", "exp=2:30",
       "--extractor-args", "youtube:player_client=tv_embedded,mweb,web_safari,android_vr",
       "--user-agent", MOBILE_SAFARI_USER_AGENT,
-      `https://www.youtube.com/watch?v=${youtubeId}`,
+      "--newline",            // emit progress on its own lines, helps log streaming
+      "--progress",           // show download progress
+      "--no-part",            // write straight to outputPath, no .part renames
     ];
-    const process = spawn("yt-dlp", args);
+    if (trim && trim > 0) {
+      // Cap to "first N seconds." For scan we only need ~48s of video frames,
+      // so downloading a full 60-min podcast is pure waste. This single flag
+      // can take a 200MB download to ~5MB.
+      args.push("--download-sections", `*0-${trim}`);
+      args.push("--force-keyframes-at-cuts");
+    }
+    args.push(`https://www.youtube.com/watch?v=${youtubeId}`);
+
+    const proc = spawn("yt-dlp", args);
 
     let stderr = "";
-    process.stderr.on("data", (data) => {
-      stderr += data.toString();
+    let lastProgressAt = Date.now();
+    proc.stderr.on("data", (data) => { stderr += data.toString(); });
+    // yt-dlp writes [download] progress to stdout; surface it so a hung
+    // download is obvious in logs instead of silent for 14 minutes.
+    proc.stdout.on("data", (data) => {
+      const text = data.toString();
+      // Only log progress lines + key status messages to avoid log flood
+      for (const line of text.split("\n")) {
+        if (/\[download\].*%|Destination:|has already been downloaded|Merging formats/i.test(line)) {
+          console.log(`[Scanner/yt-dlp] ${line.trim()}`);
+          lastProgressAt = Date.now();
+        }
+      }
     });
 
-    process.on("close", (code) => {
+    const killTimer = setTimeout(() => {
+      console.error(`[Scanner] yt-dlp HARD TIMEOUT after ${timeoutMs/1000}s for ${youtubeId} — killing process`);
+      try { proc.kill("SIGKILL"); } catch {}
+    }, timeoutMs);
+
+    proc.on("close", (code) => {
+      clearTimeout(killTimer);
       if (code !== 0) {
-        // Trim noisy yt-dlp warnings — keep only the last 500 chars for the log.
         const tail = stderr.length > 500 ? stderr.slice(-500) : stderr;
-        console.error(`[Scanner] yt-dlp failed (exit ${code}): ${tail}`);
+        const sinceProgress = Math.round((Date.now() - lastProgressAt) / 1000);
+        console.error(`[Scanner] yt-dlp failed (exit ${code}, ${sinceProgress}s since last progress): ${tail}`);
         resolve(false);
       } else {
         console.log(`[Scanner] yt-dlp download complete: ${outputPath}`);
@@ -363,24 +405,30 @@ async function downloadVideoWithYtDlp(youtubeId: string, outputPath: string): Pr
       }
     });
 
-    process.on("error", (err) => {
+    proc.on("error", (err) => {
+      clearTimeout(killTimer);
       console.error(`[Scanner] yt-dlp spawn error: ${err.message}`);
       resolve(false);
     });
   });
 }
 
-export async function downloadVideo(youtubeId: string, outputPath: string): Promise<boolean> {
-  console.log(`[Scanner] Downloading video ${youtubeId}...`);
+export async function downloadVideo(
+  youtubeId: string,
+  outputPath: string,
+  opts: DownloadOpts = {},
+): Promise<boolean> {
+  console.log(`[Scanner] Downloading video ${youtubeId}${opts.trimToSeconds ? ` (trim ${opts.trimToSeconds}s)` : ""}...`);
 
-  // Try yt-dlp first — it's actively maintained and tracks YouTube's
-  // frequent backend changes much faster than @distube/ytdl-core (which
-  // breaks every few weeks when YT changes their watch.html parser).
-  // Falls back to ytdl-core if yt-dlp isn't installed or fails.
-  const ytdlpSuccess = await downloadVideoWithYtDlp(youtubeId, outputPath);
+  // Try yt-dlp first — it's actively maintained and tracks YouTube's frequent
+  // backend changes much faster than @distube/ytdl-core (which breaks every
+  // few weeks when YT changes their watch.html parser). Falls back to
+  // ytdl-core if yt-dlp isn't installed or fails.
+  const ytdlpSuccess = await downloadVideoWithYtDlp(youtubeId, outputPath, opts);
   if (ytdlpSuccess) return true;
 
   console.log(`[Scanner] yt-dlp unavailable or failed, trying @distube/ytdl-core fallback...`);
+  // ytdl-core doesn't support partial download — full file regardless of opts
   return downloadVideoWithYtdl(youtubeId, outputPath);
 }
 
