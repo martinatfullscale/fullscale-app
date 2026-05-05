@@ -530,6 +530,14 @@ export class DatabaseStorage implements IStorage {
     await db.delete(socialAccounts).where(eq(socialAccounts.id, id));
   }
 
+  // Used by the daily audience-refresh cron. Returns every connected social
+  // account across all users so the cron can iterate without needing to
+  // enumerate users separately.
+  async getAllSocialAccounts(): Promise<SocialAccount[]> {
+    const rows = await db.select().from(socialAccounts);
+    return rows.map(r => this.decryptSocialAccount(r));
+  }
+
   async isEmailAllowed(email: string): Promise<boolean> {
     const normalizedEmail = email.toLowerCase().trim();
     const [user] = await db

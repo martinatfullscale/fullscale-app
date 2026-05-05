@@ -1519,6 +1519,78 @@ export async function registerRoutes(
     }
   });
 
+  // Daily cron entrypoint: refresh audience data for every connected social
+  // account across all users. Designed to be hit by Replit Scheduled
+  // Deployments (or any external cron) once per day. Authenticated by a
+  // shared secret in the CRON_SECRET env var since there's no user session;
+  // no secret = no auth = 401 (intentional, blocks public access).
+  //
+  // Mirrors the per-user /api/social-accounts/refresh-all loop but iterates
+  // across all accounts. YouTube uses the dual-token dance (youtube_connections
+  // is canonical, refresh via getFreshYoutubeToken). Continues on per-account
+  // failure so a single bad token doesn't kill the whole batch.
+  app.post("/api/admin/cron/refresh-audiences", async (req: any, res) => {
+    const expected = process.env.CRON_SECRET;
+    if (!expected) {
+      return res.status(503).json({ error: "CRON_SECRET not configured" });
+    }
+    const provided = req.headers["x-cron-secret"] || req.query.secret;
+    if (provided !== expected) {
+      return res.status(401).json({ error: "Invalid cron secret" });
+    }
+
+    const startedAt = Date.now();
+    try {
+      const accounts = await storage.getAllSocialAccounts();
+      console.log(`[Cron Refresh] Starting refresh for ${accounts.length} accounts`);
+
+      let succeeded = 0;
+      let failed = 0;
+      const failures: Array<{ id: string; platform: string; userId: string; reason: string }> = [];
+
+      for (const account of accounts) {
+        if (!account.accessToken) {
+          failed++;
+          failures.push({ id: account.id, platform: account.platform, userId: account.userId, reason: "missing token" });
+          continue;
+        }
+        try {
+          let audienceData;
+          if (account.platform === "instagram") {
+            audienceData = await fetchInstagramAudience(account.platformAccountId, account.accessToken);
+          } else if (account.platform === "youtube") {
+            const ytToken = await getFreshYoutubeToken(account.userId, account.platformAccountId);
+            if (!ytToken) {
+              failed++;
+              failures.push({ id: account.id, platform: account.platform, userId: account.userId, reason: "youtube token refresh failed" });
+              continue;
+            }
+            audienceData = await fetchYoutubeAudience(account.platformAccountId, ytToken);
+          } else if (account.platform === "facebook") {
+            audienceData = await fetchFacebookPageAudience(account.platformAccountId, account.accessToken);
+          } else {
+            failed++;
+            failures.push({ id: account.id, platform: account.platform, userId: account.userId, reason: `unsupported platform` });
+            continue;
+          }
+          await storage.updateSocialAccountAudience(account.id, audienceData);
+          succeeded++;
+        } catch (err: any) {
+          failed++;
+          failures.push({ id: account.id, platform: account.platform, userId: account.userId, reason: err?.message || "exception" });
+          console.error(`[Cron Refresh] Failed ${account.platform} for ${account.userId}:`, err?.message || err);
+        }
+      }
+
+      const elapsedMs = Date.now() - startedAt;
+      console.log(`[Cron Refresh] Done in ${elapsedMs}ms — ${succeeded} ok, ${failed} failed of ${accounts.length}`);
+      res.json({ success: true, total: accounts.length, succeeded, failed, elapsedMs, failures });
+    } catch (err: any) {
+      console.error("[Cron Refresh] Fatal error:", err);
+      res.status(500).json({ success: false, error: err.message || "Cron refresh failed" });
+    }
+  });
+
   // List the current user's connected social accounts (decrypted tokens
   // are NOT returned — only metadata + audience data).
   app.get("/api/social-accounts", isFlexibleAuthenticated, async (req: any, res) => {
