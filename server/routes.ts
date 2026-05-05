@@ -37,6 +37,8 @@ import { addSignupToAirtable } from "./lib/airtable";
 import { setupPlatformAuth, importFacebookVideos, importInstagramMedia, importPersonalVideos, fetchInstagramVideoViews } from "./lib/platformAuth";
 import { pLimit } from "./lib/concurrency";
 import { getSourcePath } from "./lib/sourceCache";
+import { readFileFromStorage } from "./lib/objectStorage";
+import { harmonizeProductIntoScene } from "./lib/ai/harmonization";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
@@ -2519,6 +2521,85 @@ export async function registerRoutes(
       console.error("[YouTube Import] Error:", err);
       res.status(500).json({ error: "Failed to import selected videos" });
     }
+  });
+
+  // SPIKE: Harmonize a product image into a scene at a detected surface's
+  // bounding box, using fal.ai ACE++. Returns the harmonized composite URL.
+  // Test rig only — not yet wired into the placement UI. Hit with:
+  //   POST /api/placement/harmonize
+  //   { surfaceId: 137777, productImageUrl: "https://...png", prompt?: "..." }
+  app.post("/api/placement/harmonize", isFlexibleAuthenticated, async (req: any, res) => {
+    const { surfaceId, productImageUrl, prompt } = req.body || {};
+    if (typeof surfaceId !== "number" || !productImageUrl) {
+      return res.status(400).json({ error: "Body must include { surfaceId: number, productImageUrl: string }" });
+    }
+
+    const [surface] = await db
+      .select()
+      .from(detectedSurfaces)
+      .where(eq(detectedSurfaces.id, surfaceId))
+      .limit(1);
+    if (!surface) return res.status(404).json({ error: "Surface not found" });
+
+    const video = await storage.getVideoById(surface.videoId);
+    if (!video) return res.status(404).json({ error: "Parent video not found" });
+
+    const isOwner = video.userId === req.authUserId || video.userId === req.authEmail;
+    if (!isOwner) return res.status(403).json({ error: "Not authorized" });
+
+    // Resolve the scene frame at the surface's timestamp. Frames live in GCS
+    // at public/uploads/frames/<videoId>/frame_<ts>s.jpg.
+    const ts = Math.floor(parseFloat(String(surface.timestamp)));
+    const frameKey = `public/uploads/frames/${surface.videoId}/frame_${ts}s.jpg`;
+    let sceneBuffer: Buffer;
+    try {
+      sceneBuffer = await readFileFromStorage(frameKey);
+    } catch (err: any) {
+      return res.status(404).json({
+        error: "Scene frame not found in storage",
+        detail: err?.message,
+        frameKey,
+      });
+    }
+
+    // Get frame dimensions for mask building.
+    const meta = await sharp(sceneBuffer).metadata();
+    const frameW = meta.width || 1280;
+    const frameH = meta.height || 720;
+
+    const result = await harmonizeProductIntoScene({
+      sceneImage: sceneBuffer,
+      productImage: productImageUrl,
+      bbox: {
+        x: parseFloat(String(surface.boundingBoxX)),
+        y: parseFloat(String(surface.boundingBoxY)),
+        width: parseFloat(String(surface.boundingBoxWidth)),
+        height: parseFloat(String(surface.boundingBoxHeight)),
+      },
+      frameDimensions: { width: frameW, height: frameH },
+      prompt,
+    });
+
+    if (!result.success) {
+      return res.status(502).json({ success: false, error: result.error, elapsedMs: result.elapsedMs });
+    }
+    res.json({
+      success: true,
+      imageUrl: result.imageUrl,
+      elapsedMs: result.elapsedMs,
+      surface: {
+        id: surface.id,
+        videoId: surface.videoId,
+        timestamp: surface.timestamp,
+        surfaceType: surface.surfaceType,
+        bbox: {
+          x: surface.boundingBoxX,
+          y: surface.boundingBoxY,
+          width: surface.boundingBoxWidth,
+          height: surface.boundingBoxHeight,
+        },
+      },
+    });
   });
 
   // Stream a video's source bytes for in-app playback. Downloads on demand
