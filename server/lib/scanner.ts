@@ -359,15 +359,17 @@ async function downloadVideoWithYtDlp(youtubeId: string, outputPath: string): Pr
 }
 
 export async function downloadVideo(youtubeId: string, outputPath: string): Promise<boolean> {
-  console.log(`[Scanner] Downloading video ${youtubeId} with mobile bypass...`);
-  
-  const ytdlSuccess = await downloadVideoWithYtdl(youtubeId, outputPath);
-  if (ytdlSuccess) {
-    return true;
-  }
-  
-  console.log(`[Scanner] ytdl-core failed, trying yt-dlp fallback...`);
-  return downloadVideoWithYtDlp(youtubeId, outputPath);
+  console.log(`[Scanner] Downloading video ${youtubeId}...`);
+
+  // Try yt-dlp first — it's actively maintained and tracks YouTube's
+  // frequent backend changes much faster than @distube/ytdl-core (which
+  // breaks every few weeks when YT changes their watch.html parser).
+  // Falls back to ytdl-core if yt-dlp isn't installed or fails.
+  const ytdlpSuccess = await downloadVideoWithYtDlp(youtubeId, outputPath);
+  if (ytdlpSuccess) return true;
+
+  console.log(`[Scanner] yt-dlp unavailable or failed, trying @distube/ytdl-core fallback...`);
+  return downloadVideoWithYtdl(youtubeId, outputPath);
 }
 
 async function extractFrames(videoPath: string, outputDir: string, intervalSeconds: number = 10): Promise<string[]> {
