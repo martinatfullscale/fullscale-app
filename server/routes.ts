@@ -35,7 +35,7 @@ import { registerObjectStorageRoutes } from "./replit_integrations/object_storag
 import { hashPassword, verifyPassword } from "./lib/password";
 import { addSignupToAirtable } from "./lib/airtable";
 import { setupPlatformAuth, importFacebookVideos, importInstagramMedia, importPersonalVideos, fetchInstagramVideoViews } from "./lib/platformAuth";
-import pLimit from "p-limit";
+import { pLimit } from "./lib/concurrency";
 import multer from "multer";
 import path from "path";
 import fs from "fs";

@@ -5,7 +5,7 @@ import { users, videoIndex } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
 import { encrypt, decrypt } from "../encryption";
 import { categorizeVideos } from "./ai/categorize";
-import pLimit from "p-limit";
+import { pLimit } from "./concurrency";
 
 interface TwitchProfile {
   id: string;
