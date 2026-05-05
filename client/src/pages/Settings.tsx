@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { TopBar } from "@/components/TopBar";
 import { User, CreditCard, Bell, CheckCircle, ExternalLink, Save, Link2, Loader2, ChevronDown, RefreshCw, Trash2, Star, Mic, Globe } from "lucide-react";
 import { SiInstagram, SiFacebook, SiX, SiTiktok, SiYoutube, SiTwitch } from "react-icons/si";
@@ -74,6 +75,7 @@ const initialSocialConnections: SocialConnection[] = [
 
 export default function Settings() {
   const { toast } = useToast();
+  const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<TabType>("profile");
   const [socialConnections, setSocialConnections] = useState<SocialConnection[]>(initialSocialConnections);
   const [isLoadingStatus, setIsLoadingStatus] = useState(true);
@@ -388,7 +390,24 @@ export default function Settings() {
           setSelectedFacebookSource("");
           setSelectedInstagramSource("");
         }
-        
+
+        // Invalidate every cached query that reads connection-derived state.
+        // Without this, Dashboard, MonetizationTable, library views, etc. keep
+        // showing the platform as connected (and stale videos that this very
+        // disconnect just deleted server-side via deleteVideoIndex) until the
+        // user hard-refreshes. Cast to any because invalidateQueries' typed
+        // overload requires a single key per call but accepts an array shape.
+        const keysToInvalidate = [
+          ["/api/platform-auth/status"],
+          ["/api/auth/youtube/status"],
+          ["/api/youtube/channel"],
+          ["/api/youtube/videos"],
+          ["/api/video-index"],
+          ["/api/video-index/with-opportunities"],
+          ["/api/social-accounts"],
+        ];
+        keysToInvalidate.forEach(key => queryClient.invalidateQueries({ queryKey: key }));
+
         toast({
           title: `${connection.name} Disconnected`,
           description: `Your ${connection.name} account has been disconnected.`,
