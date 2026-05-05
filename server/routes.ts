@@ -2918,13 +2918,13 @@ export async function registerRoutes(
           const results = await Promise.all(
             igTargets.map(v => limit(async () => {
               const igMediaId = v.youtubeId!.slice("instagram:".length);
-              // We don't have media_type stored, so try the REELS metric first,
-              // then fall back to video_views. fetchInstagramVideoViews returns
-              // 0 on error and logs the reason.
-              const plays = await fetchInstagramVideoViews(igMediaId, "REELS", fbToken);
-              if (plays > 0) return { id: v.id, viewCount: plays };
-              const views = await fetchInstagramVideoViews(igMediaId, "VIDEO", fbToken);
-              return { id: v.id, viewCount: views };
+              // fetchInstagramVideoViews tries the canonical `views` metric
+              // first (works for both REELS and VIDEO on v22+ media), then
+              // falls back to the legacy metric. Pass REELS as the hint for
+              // the legacy fallback — covers the more common case for short
+              // social video and is harmless if the media is actually VIDEO.
+              const viewCount = await fetchInstagramVideoViews(igMediaId, "REELS", fbToken);
+              return { id: v.id, viewCount };
             }))
           );
           for (const r of results) {

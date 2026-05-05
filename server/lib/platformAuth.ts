@@ -150,33 +150,49 @@ async function fetchInstagramMedia(igUserId: string, accessToken: string): Promi
 }
 
 // Fetch view count for a single Instagram media item via the insights API.
-// Different metrics are exposed depending on media_type:
-//   - VIDEO  → video_views (legacy metric, still works for older posts)
-//   - REELS  → plays (Reels-specific, the canonical metric)
-// We request both and take whichever is non-zero. Returns 0 on any error so
-// import doesn't fail when a single item's insights fetch breaks.
+// Meta deprecated the legacy metrics in API v22.0:
+//   - REELS plays      → use views
+//   - VIDEO video_views → use views
+// `views` is now the single canonical metric across both media types. We try
+// it first, then fall back to the legacy metric for older media that hasn't
+// been migrated. Returns 0 on any error so a single item's insights fetch
+// failure doesn't break the whole import/backfill.
 export async function fetchInstagramVideoViews(
   igMediaId: string,
   mediaType: string,
   accessToken: string,
 ): Promise<number> {
-  try {
-    const metric = mediaType === "REELS" ? "plays" : "video_views";
-    const url = `https://graph.facebook.com/v18.0/${igMediaId}/insights?metric=${metric}&access_token=${encodeURIComponent(accessToken)}`;
-    const res = await fetch(url);
-    const data = await res.json();
-    if (data.error) {
-      // Common cases: media too old (>2 years), insights not available for that
-      // type, token missing instagram_manage_insights scope. Log once and move on.
-      console.warn(`[IG Insights] ${igMediaId} (${mediaType}): ${data.error.message}`);
+  const tryMetric = async (metric: string): Promise<number | null> => {
+    try {
+      const url = `https://graph.facebook.com/v22.0/${igMediaId}/insights?metric=${metric}&access_token=${encodeURIComponent(accessToken)}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      if (data.error) {
+        // Signal "try the next metric" by returning null on metric-not-supported,
+        // 0 on real failures (token/perms/age) so we stop trying.
+        const msg = data.error.message || "";
+        if (msg.includes("metric") || msg.includes("not supported")) {
+          return null;
+        }
+        console.warn(`[IG Insights] ${igMediaId} (${mediaType}, ${metric}): ${msg}`);
+        return 0;
+      }
+      const value = data.data?.[0]?.values?.[0]?.value;
+      return typeof value === "number" ? value : 0;
+    } catch (err: any) {
+      console.warn(`[IG Insights] ${igMediaId} (${metric}) fetch failed: ${err.message}`);
       return 0;
     }
-    const value = data.data?.[0]?.values?.[0]?.value;
-    return typeof value === "number" ? value : 0;
-  } catch (err: any) {
-    console.warn(`[IG Insights] ${igMediaId} fetch failed: ${err.message}`);
-    return 0;
-  }
+  };
+
+  // v22+ canonical metric — works for both REELS and VIDEO on modern media.
+  const views = await tryMetric("views");
+  if (views !== null) return views;
+
+  // Legacy fallback for older media that the v22 metric doesn't cover.
+  const legacy = mediaType === "REELS" ? "plays" : "video_views";
+  const legacyValue = await tryMetric(legacy);
+  return legacyValue ?? 0;
 }
 
 // Import personal profile videos into video_index
