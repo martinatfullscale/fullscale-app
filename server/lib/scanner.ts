@@ -344,10 +344,19 @@ async function downloadVideoWithYtDlp(
     // Player-client strategy: try multiple in order. As of 2025-2026 the ios
     // client is broken (Precondition check failed). tv_embedded + mweb +
     // web_safari are the current bot-resistant clients per yt-dlp issues.
-    // Format: prefer mp4 ≤720p video+audio merged; fall back to any usable
-    // single-file format if separate streams aren't available.
+    //
+    // Format selector: explicitly prefer DIRECT https mp4 (single file)
+    // over HLS playlist streams. HLS + --download-sections breaks yt-dlp's
+    // ffmpeg post-processing with "Invalid data found in input" (ffmpeg
+    // exit 183) — see prior production failure on a Boris Kodjoe scan.
+    // protocol*=https filters to direct downloads; protocol*=m3u8 would
+    // be the HLS path we want to avoid.
     const args = [
-      "-f", "bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[height<=720][ext=mp4]/best[height<=720]/best",
+      "-f",
+        "bv*[height<=720][ext=mp4][protocol*=https]+ba[ext=m4a][protocol*=https]/" +
+        "b[height<=720][ext=mp4][protocol*=https]/" +
+        "b[ext=mp4][protocol*=https]/" +
+        "b[height<=720][ext=mp4]/best",
       "-o", outputPath,
       "--no-playlist",
       "--no-warnings",
@@ -362,10 +371,11 @@ async function downloadVideoWithYtDlp(
     ];
     if (trim && trim > 0) {
       // Cap to "first N seconds." For scan we only need ~48s of video frames,
-      // so downloading a full 60-min podcast is pure waste. This single flag
-      // can take a 200MB download to ~5MB.
+      // so downloading a full 60-min podcast is pure waste. With a direct
+      // https mp4 format (above), yt-dlp can byte-range to the head of the
+      // file without invoking ffmpeg keyframe-cut logic — no --force-keyframes-at-cuts
+      // (which triggers the fragile HLS+ffmpeg path that broke last time).
       args.push("--download-sections", `*0-${trim}`);
-      args.push("--force-keyframes-at-cuts");
     }
     args.push(`https://www.youtube.com/watch?v=${youtubeId}`);
 
@@ -420,15 +430,27 @@ export async function downloadVideo(
 ): Promise<boolean> {
   console.log(`[Scanner] Downloading video ${youtubeId}${opts.trimToSeconds ? ` (trim ${opts.trimToSeconds}s)` : ""}...`);
 
-  // Try yt-dlp first — it's actively maintained and tracks YouTube's frequent
-  // backend changes much faster than @distube/ytdl-core (which breaks every
-  // few weeks when YT changes their watch.html parser). Falls back to
-  // ytdl-core if yt-dlp isn't installed or fails.
+  // Try yt-dlp first — actively maintained, tracks YouTube backend changes.
   const ytdlpSuccess = await downloadVideoWithYtDlp(youtubeId, outputPath, opts);
   if (ytdlpSuccess) return true;
 
+  // If trimming failed, retry once without trim. Some YouTube videos only
+  // expose HLS playlists where --download-sections doesn't work cleanly
+  // ("Invalid data found in input" / ffmpeg exit 183). Falling back to a
+  // full download lets the scanner's own ffmpeg extract just the head it
+  // needs from a complete file, even if the file is bigger than ideal.
+  if (opts.trimToSeconds) {
+    console.log(`[Scanner] yt-dlp failed with trim; retrying full download (HLS fallback)...`);
+    const fullSuccess = await downloadVideoWithYtDlp(youtubeId, outputPath, {
+      ...opts,
+      trimToSeconds: undefined,
+      // Bump timeout since full download takes longer
+      timeoutMs: opts.timeoutMs ? opts.timeoutMs * 2 : 6 * 60 * 1000,
+    });
+    if (fullSuccess) return true;
+  }
+
   console.log(`[Scanner] yt-dlp unavailable or failed, trying @distube/ytdl-core fallback...`);
-  // ytdl-core doesn't support partial download — full file regardless of opts
   return downloadVideoWithYtdl(youtubeId, outputPath);
 }
 
