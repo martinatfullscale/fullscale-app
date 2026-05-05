@@ -558,6 +558,7 @@ export default function Library() {
   const [selectedVideo, setSelectedVideo] = useState<DisplayVideo | null>(null);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [platformFilter, setPlatformFilter] = useState<PlatformFilter>("all");
+  const [searchQuery, setSearchQuery] = useState<string>("");
   const [sceneModalOpen, setSceneModalOpen] = useState(false);
   const [sceneVideo, setSceneVideo] = useState<VideoWithScenes | null>(null);
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
@@ -1146,10 +1147,24 @@ export default function Library() {
     console.warn(`[Library] This means mode="${mode}" but demo endpoint was called`);
   }
   
-  // Filter videos by platform
+  // Filter videos by platform AND search query.
+  // Search matches against title, category, subcategory, and brand name —
+  // case-insensitive substring. Multi-word queries match if every word
+  // appears somewhere across the searchable fields (any order).
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+  const queryTerms = normalizedQuery.split(/\s+/).filter(Boolean);
+
   const filteredDisplayVideos = displayVideos.filter((video) => {
-    if (platformFilter === "all") return true;
-    return video.platform === platformFilter;
+    if (platformFilter !== "all" && video.platform !== platformFilter) return false;
+    if (queryTerms.length === 0) return true;
+    const haystack = [
+      video.title,
+      video.context,
+      video.category,
+      video.subcategory,
+      video.brandName,
+    ].filter(Boolean).join(" ").toLowerCase();
+    return queryTerms.every(term => haystack.includes(term));
   });
   
   // Platform counts for tabs
@@ -1233,6 +1248,22 @@ export default function Library() {
             </Button>
           </div>
         </motion.div>
+
+        {/* Keyword search — matches title, category, subcategory, brand name */}
+        <div className="mb-4">
+          <Input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search videos by title, category, or keyword…"
+            className="max-w-xl bg-white/5 border-white/10"
+            data-testid="input-library-search"
+          />
+          {searchQuery.trim() && (
+            <p className="text-xs text-muted-foreground mt-1.5">
+              {filteredDisplayVideos.length} of {displayVideos.length} videos match "{searchQuery.trim()}"
+            </p>
+          )}
+        </div>
 
         {/* Platform Filter Tabs with Region Dropdown */}
         <div className="flex items-center gap-4 mb-6 flex-wrap">

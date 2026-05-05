@@ -1581,21 +1581,33 @@ async function normalizeSurfaceBoundingBoxes(videoId: number): Promise<void> {
   }
 
   // Step 1: Filter out phantom and invalid surfaces
-  const MIN_SURFACE_AREA = 0.03; // 3% of frame area minimum
-  const MAX_SURFACE_HEIGHT = 0.40; // Surface seen at eye level shouldn't be >40% of frame height
+  // Height limits differ by orientation: horizontal surfaces (tables/desks)
+  // seen at eye level are inherently thin strips (max ~40%), but vertical
+  // surfaces (walls/doors/windows) legitimately span most of the frame.
+  // Without per-orientation limits, every detected wall got removed as
+  // "oversized" — exactly what the user just hit.
+  const MIN_SURFACE_AREA = 0.03; // 3% of frame area minimum (applies to both orientations)
+  const MAX_HORIZONTAL_HEIGHT = 0.40; // tables/desks at eye level
+  const MAX_VERTICAL_HEIGHT = 0.95; // walls can fill almost the entire frame
   const phantomIds: number[] = [];
   for (const s of surfaces) {
     const width = parseFloat(String(s.boundingBoxWidth));
     const height = parseFloat(String(s.boundingBoxHeight));
     const area = width * height;
+    const orientation = (s as any).orientation as string | null | undefined;
+    // Backstop for legacy rows that pre-date the orientation field —
+    // infer from surfaceType so the filter still does the right thing.
+    const isVertical = orientation === "vertical"
+      || ["wall", "door", "window"].includes((s.surfaceType || "").toLowerCase());
+    const heightLimit = isVertical ? MAX_VERTICAL_HEIGHT : MAX_HORIZONTAL_HEIGHT;
 
     if (area < MIN_SURFACE_AREA) {
       phantomIds.push(s.id);
       console.log(`[Normalize] Removing phantom surface ${s.id} (${s.surfaceType}, area=${(area * 100).toFixed(1)}% < ${(MIN_SURFACE_AREA * 100)}%)`);
-    } else if (height > MAX_SURFACE_HEIGHT && s.surfaceType !== "Filtered") {
-      // Bounding box is unrealistically tall — likely includes legs/floor/people
+    } else if (height > heightLimit && s.surfaceType !== "Filtered") {
+      // Bounding box exceeds the per-orientation max — likely overlaps people/floor
       phantomIds.push(s.id);
-      console.log(`[Normalize] Removing oversized surface ${s.id} (${s.surfaceType}, height=${(height * 100).toFixed(1)}% > ${(MAX_SURFACE_HEIGHT * 100)}%)`);
+      console.log(`[Normalize] Removing oversized ${isVertical ? "vertical" : "horizontal"} surface ${s.id} (${s.surfaceType}, height=${(height * 100).toFixed(1)}% > ${(heightLimit * 100)}%)`);
     }
   }
 
