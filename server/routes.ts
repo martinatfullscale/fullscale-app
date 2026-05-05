@@ -2520,10 +2520,16 @@ export async function registerRoutes(
     }
   });
 
-  // Get indexed videos for the user's library
-  app.get("/api/video-index", isGoogleAuthenticated, async (req: any, res) => {
-    const userId = req.googleUser.email;
-    const videos = await storage.getVideoIndex(userId);
+  // Get indexed videos for the user's library.
+  // Uses isFlexibleAuthenticated + dual-id (UUID OR email) so videos
+  // imported under either identifier are returned together — same pattern
+  // as /api/video-scan, the public profile endpoint, the PATCH endpoint,
+  // and the backfill endpoint. The previous email-only filter was hiding
+  // most videos from users whose imports landed under their UUID.
+  app.get("/api/video-index", isFlexibleAuthenticated, async (req: any, res) => {
+    const authUserId = req.authUserId;
+    const authEmail = req.authEmail;
+    const videos = await storage.getVideoIndex(authUserId, authEmail);
     res.json({ videos, total: videos.length });
   });
 
