@@ -893,6 +893,15 @@ export class DatabaseStorage implements IStorage {
       .where(eq(detectedSurfaces.id, surfaceId));
   }
 
+  // Toggle the creator-approved flag for a single surface. Used by the
+  // creator's per-surface review toggle in the scene modal.
+  async updateSurfaceApproval(surfaceId: number, approved: boolean): Promise<void> {
+    await db
+      .update(detectedSurfaces)
+      .set({ creatorApproved: approved })
+      .where(eq(detectedSurfaces.id, surfaceId));
+  }
+
   async getDetectedSurfaces(videoId: number): Promise<DetectedSurface[]> {
     return await db
       .select()

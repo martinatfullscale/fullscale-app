@@ -43,6 +43,8 @@ interface DatabaseSurface {
   videoId: number;
   timestamp: string;
   surfaceType: string;
+  orientation?: string | null;
+  creatorApproved?: boolean;
   confidence: string;
   boundingBoxX: string;
   boundingBoxY: string;
@@ -158,11 +160,13 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
     console.log(`[SceneAnalysisModal] adminEmail prop:`, adminEmail);
     setIsLoadingDbSurfaces(true);
     try {
-      // Include admin_email for flexible auth if available
-      let url = `/api/video/${videoId}/surfaces`;
-      if (adminEmail) {
-        url += `?admin_email=${encodeURIComponent(adminEmail)}`;
-      }
+      // includeUnapproved=true: this modal is the creator's review surface,
+      // so we want every detected surface (approved + pending) with its
+      // approval state visible. The endpoint enforces that this only returns
+      // unapproved data when the requester owns the video.
+      const params = new URLSearchParams({ includeUnapproved: "true" });
+      if (adminEmail) params.set("admin_email", adminEmail);
+      const url = `/api/video/${videoId}/surfaces?${params.toString()}`;
       console.log(`[SceneAnalysisModal] Fetching: ${url}`);
       const res = await fetch(url, { credentials: "include" });
       console.log(`[SceneAnalysisModal] Response status: ${res.status}`);
@@ -952,6 +956,76 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                     );
                   })()}
                 </div>
+
+                {/* Per-surface approval list. Surfaces default to hidden from
+                    brands; creator must explicitly approve each one to expose
+                    it in the marketplace. */}
+                {hasDbSurfaces && currentDbSurfaces.length > 0 && (
+                  <div className="p-4 rounded-xl bg-white/5 border border-white/10 space-y-2">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-sm font-medium text-white">Surfaces in this scene</span>
+                      <span className="text-xs text-muted-foreground">Approve to expose to brands</span>
+                    </div>
+                    {currentDbSurfaces.map((s) => {
+                      const isApproved = !!s.creatorApproved;
+                      const orientation = (s as any).orientation === "vertical" ? "vertical" : "horizontal";
+                      const confPct = Math.round(parseFloat(s.confidence) * 100);
+                      return (
+                        <div
+                          key={s.id}
+                          className={`flex items-center justify-between gap-3 p-2 rounded-lg border transition-colors ${
+                            isApproved
+                              ? "bg-emerald-500/10 border-emerald-500/40"
+                              : "bg-zinc-800/50 border-zinc-700"
+                          }`}
+                          data-testid={`surface-row-${s.id}`}
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <Badge
+                              variant="outline"
+                              className={`text-[10px] uppercase ${
+                                orientation === "vertical"
+                                  ? "border-blue-500/40 text-blue-300"
+                                  : "border-amber-500/40 text-amber-300"
+                              }`}
+                            >
+                              {orientation}
+                            </Badge>
+                            <span className="text-sm font-medium text-white truncate">{s.surfaceType}</span>
+                            <span className="text-xs text-muted-foreground">{confPct}%</span>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant={isApproved ? "default" : "secondary"}
+                            onClick={async () => {
+                              const next = !isApproved;
+                              // Optimistic update — flip immediately, revert on failure
+                              setDbSurfaces(prev => prev.map(x =>
+                                x.id === s.id ? { ...x, creatorApproved: next } : x
+                              ));
+                              try {
+                                const res = await fetch(`/api/surface/${s.id}/approval`, {
+                                  method: "PATCH",
+                                  headers: { "Content-Type": "application/json" },
+                                  credentials: "include",
+                                  body: JSON.stringify({ approved: next }),
+                                });
+                                if (!res.ok) throw new Error("approval failed");
+                              } catch {
+                                setDbSurfaces(prev => prev.map(x =>
+                                  x.id === s.id ? { ...x, creatorApproved: !next } : x
+                                ));
+                              }
+                            }}
+                            data-testid={`button-approve-surface-${s.id}`}
+                          >
+                            {isApproved ? "Approved" : "Approve"}
+                          </Button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
 
                 {hasDbSurfaces && dbSurfaces.length > 0 && (
                   <Button

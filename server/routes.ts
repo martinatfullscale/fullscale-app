@@ -43,7 +43,7 @@ import fs from "fs";
 import ytdl from "@distube/ytdl-core";
 import { decrypt, encrypt } from "./encryption";
 import { db } from "./db";
-import { users, users as usersTable, allowedUsers as allowedUsersTable, videoIndex as videoIndexTable, editorialClips } from "@shared/schema";
+import { users, users as usersTable, allowedUsers as allowedUsersTable, videoIndex as videoIndexTable, editorialClips, detectedSurfaces } from "@shared/schema";
 import { eq, sql } from "drizzle-orm";
 import crypto from "crypto";
 import sharp from "sharp";
@@ -3689,10 +3689,25 @@ export async function registerRoutes(
       return res.status(404).json({ error: "Video not found" });
     }
 
-    // No auth required - surfaces data is public for brand marketplace
+    // Approval filter: creators can opt-in surfaces for brand visibility.
+    // Default (anonymous request) = approved-only. The video owner can
+    // request includeUnapproved=true to see everything for the review UI.
+    // Owner check uses the same dual-id pattern as elsewhere; if no auth
+    // context (e.g. unauthenticated brand-side query), default applies.
+    const includeUnapproved = req.query.includeUnapproved === "true";
+    const requesterUserId = (req as any).authUserId;
+    const requesterEmail = (req as any).authEmail;
+    const isOwner = !!requesterUserId && (
+      video.userId === requesterUserId || video.userId === requesterEmail
+    );
+    const showAll = includeUnapproved && isOwner;
+
     const allSurfaces = await storage.getDetectedSurfaces(videoId);
     // Exclude surfaces filtered out by post-scan normalization (phantom/too-small detections)
-    const surfaces = allSurfaces.filter(s => s.surfaceType !== "Filtered");
+    let surfaces = allSurfaces.filter(s => s.surfaceType !== "Filtered");
+    if (!showAll) {
+      surfaces = surfaces.filter(s => (s as any).creatorApproved === true);
+    }
 
     // Enrich surfaces with frame availability info
     const framesDir = path.join(process.cwd(), "public", "uploads", "frames", videoId.toString());
@@ -3709,6 +3724,36 @@ export async function registerRoutes(
     });
 
     res.json({ surfaces: enrichedSurfaces, count: enrichedSurfaces.length });
+  });
+
+  // Creator toggles a single surface's approval state. Surfaces default to
+  // creator_approved=false at scan time — brands can't see them until the
+  // creator opts each one in via the scene modal toggle.
+  app.patch("/api/surface/:id/approval", isFlexibleAuthenticated, async (req: any, res) => {
+    const surfaceId = parseInt(req.params.id);
+    if (isNaN(surfaceId)) return res.status(400).json({ error: "Invalid surface ID" });
+
+    const { approved } = req.body || {};
+    if (typeof approved !== "boolean") {
+      return res.status(400).json({ error: "Body must include { approved: boolean }" });
+    }
+
+    // Look up surface → parent video for ownership check.
+    const [surface] = await db
+      .select()
+      .from(detectedSurfaces)
+      .where(eq(detectedSurfaces.id, surfaceId))
+      .limit(1);
+    if (!surface) return res.status(404).json({ error: "Surface not found" });
+
+    const video = await storage.getVideoById(surface.videoId);
+    if (!video) return res.status(404).json({ error: "Parent video not found" });
+
+    const isOwner = video.userId === req.authUserId || video.userId === req.authEmail;
+    if (!isOwner) return res.status(403).json({ error: "Not authorized to edit this video's surfaces" });
+
+    await storage.updateSurfaceApproval(surfaceId, approved);
+    res.json({ success: true, surfaceId, approved });
   });
 
   // Batch insert surfaces for a video (Admin only)
