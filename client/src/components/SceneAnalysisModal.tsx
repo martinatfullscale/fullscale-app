@@ -69,36 +69,16 @@ const PLACEMENT_SURFACES = [
   "oven", "toaster", "sink", "backpack", "handbag", "suitcase", "umbrella"
 ];
 
-// Build an iframe embed URL for the source platform. Returns null if the
-// video isn't from a supported social platform or the required identifiers
-// aren't present on the record.
-function getPlatformEmbedUrl(video: VideoWithScenes | null): string | null {
-  if (!video) return null;
+// True when the video can be played in-app via /api/video/:id/source.
+// We support local uploads + YT/IG/FB sources (downloaded on demand).
+function canPlayInApp(video: VideoWithScenes | null): boolean {
+  if (!video) return false;
+  if (video.filePath) return true;
   const platform = video.platform?.toLowerCase();
   const ytId = video.youtubeId;
-  const sourceUrl = video.sourceUrl;
-
-  if (platform === "youtube" && ytId && !ytId.includes(":") && !ytId.startsWith("upload-")) {
-    return `https://www.youtube.com/embed/${ytId}`;
-  }
-  if (platform === "instagram" && sourceUrl) {
-    // IG permalinks look like https://www.instagram.com/reel/<shortcode>/ — append "embed/" for the official embed.
-    const trimmed = sourceUrl.endsWith("/") ? sourceUrl : `${sourceUrl}/`;
-    return `${trimmed}embed/`;
-  }
-  if (platform === "facebook" && sourceUrl) {
-    return `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(sourceUrl)}&show_text=false`;
-  }
-  return null;
-}
-
-function getPlatformLabel(platform: string | null | undefined): string {
-  switch (platform?.toLowerCase()) {
-    case "youtube": return "YouTube";
-    case "instagram": return "Instagram";
-    case "facebook": return "Facebook";
-    default: return "Original";
-  }
+  if (platform === "youtube" && ytId && !ytId.includes(":") && !ytId.startsWith("upload-")) return true;
+  if ((platform === "instagram" || platform === "facebook") && ytId) return true;
+  return false;
 }
 
 export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVideo, onPlayFromTimestamp }: SceneAnalysisModalProps) {
@@ -597,41 +577,37 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
 
             <div className="flex flex-col lg:flex-row overflow-hidden">
               <div className="flex-1 min-w-0 relative overflow-hidden">
-                {/* "Watch original" toggle — only visible when the video is from
-                    a social platform we can embed. Switches the main display
-                    between scan-frame view (with bounding boxes) and an iframe
-                    of the platform's own player. */}
-                {(() => {
-                  const embedUrl = getPlatformEmbedUrl(video);
-                  if (!embedUrl) return null;
-                  return (
-                    <Button
-                      size="sm"
-                      variant={showEmbedPlayer ? "default" : "secondary"}
-                      onClick={() => setShowEmbedPlayer(s => !s)}
-                      className="absolute top-4 left-4 z-20 gap-1.5"
-                      data-testid="button-toggle-embed-player"
-                    >
-                      <Play className="w-4 h-4" />
-                      {showEmbedPlayer
-                        ? "Show scan view"
-                        : `Watch on ${getPlatformLabel(video?.platform)}`}
-                    </Button>
-                  );
-                })()}
+                {/* In-app playback toggle. Pulls the source via
+                    /api/video/:id/source (downloaded on demand to a per-instance
+                    temp cache, never persisted). Replaces the frame stack +
+                    bounding-box overlays with a native <video> player so
+                    creators stay in our UI — no leaving to YouTube/IG/FB. */}
+                {canPlayInApp(video) && (
+                  <Button
+                    size="sm"
+                    variant={showEmbedPlayer ? "default" : "secondary"}
+                    onClick={() => setShowEmbedPlayer(s => !s)}
+                    className="absolute top-4 left-4 z-20 gap-1.5"
+                    data-testid="button-toggle-inapp-player"
+                  >
+                    <Play className="w-4 h-4" />
+                    {showEmbedPlayer ? "Show scan view" : "Watch video"}
+                  </Button>
+                )}
 
                 <div className="relative overflow-hidden bg-black flex items-center justify-center" style={{ minHeight: '300px', maxHeight: '70vh' }}>
-                  {/* Embedded platform player (YT/IG/FB) — replaces the frame
-                      stack when toggled on. Source bytes aren't on our servers;
-                      we just iframe the platform's official embed. */}
-                  {showEmbedPlayer && getPlatformEmbedUrl(video) && (
-                    <iframe
-                      src={getPlatformEmbedUrl(video)!}
-                      className="w-full"
-                      style={{ aspectRatio: "16 / 9", maxHeight: "70vh", border: 0 }}
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                      allowFullScreen
-                      data-testid="iframe-platform-embed"
+                  {/* In-app player — streams from our backend. First load may
+                      take a few seconds while the source downloads to /tmp;
+                      subsequent loads within the cache TTL are instant. */}
+                  {showEmbedPlayer && video?.id && canPlayInApp(video) && (
+                    <video
+                      src={`/api/video/${video.id}/source`}
+                      controls
+                      autoPlay
+                      playsInline
+                      className="w-full max-h-[70vh] object-contain"
+                      style={{ background: "#000" }}
+                      data-testid="video-inapp-player"
                     />
                   )}
 

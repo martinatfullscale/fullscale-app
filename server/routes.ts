@@ -36,6 +36,7 @@ import { hashPassword, verifyPassword } from "./lib/password";
 import { addSignupToAirtable } from "./lib/airtable";
 import { setupPlatformAuth, importFacebookVideos, importInstagramMedia, importPersonalVideos, fetchInstagramVideoViews } from "./lib/platformAuth";
 import { pLimit } from "./lib/concurrency";
+import { getSourcePath } from "./lib/sourceCache";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
@@ -2518,6 +2519,64 @@ export async function registerRoutes(
       console.error("[YouTube Import] Error:", err);
       res.status(500).json({ error: "Failed to import selected videos" });
     }
+  });
+
+  // Stream a video's source bytes for in-app playback. Downloads on demand
+  // (cached in /tmp for ~1 hour) so creators + brands can watch without
+  // leaving the app — no iframe to YouTube/IG/FB. Supports HTTP Range so
+  // <video> seeking works. Source bytes never get persisted to GCS; the
+  // cache is per-instance ephemeral.
+  app.get("/api/video/:id/source", isFlexibleAuthenticated, async (req: any, res) => {
+    const videoId = parseInt(req.params.id);
+    if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+
+    const video = await storage.getVideoById(videoId);
+    if (!video) return res.status(404).json({ error: "Video not found" });
+
+    const isOwner = video.userId === req.authUserId || video.userId === req.authEmail;
+    if (!isOwner) return res.status(403).json({ error: "Not authorized" });
+
+    let sourcePath: string;
+    try {
+      sourcePath = await getSourcePath(video);
+    } catch (err: any) {
+      console.error(`[Video Source] ${videoId}: ${err.message}`);
+      return res.status(502).json({ error: "Source unavailable", detail: err.message });
+    }
+
+    // Range request handling — required for <video> seeking and partial loads.
+    const stat = fs.statSync(sourcePath);
+    const fileSize = stat.size;
+    const range = req.headers.range as string | undefined;
+
+    if (range) {
+      const match = range.match(/bytes=(\d+)-(\d*)/);
+      if (!match) return res.status(416).end();
+      const start = parseInt(match[1], 10);
+      const end = match[2] ? parseInt(match[2], 10) : fileSize - 1;
+      if (start >= fileSize || end >= fileSize) {
+        res.status(416).setHeader("Content-Range", `bytes */${fileSize}`).end();
+        return;
+      }
+      const chunkSize = end - start + 1;
+      res.writeHead(206, {
+        "Content-Range": `bytes ${start}-${end}/${fileSize}`,
+        "Accept-Ranges": "bytes",
+        "Content-Length": chunkSize,
+        "Content-Type": "video/mp4",
+        "Cache-Control": "private, max-age=3600",
+      });
+      fs.createReadStream(sourcePath, { start, end }).pipe(res);
+      return;
+    }
+
+    res.writeHead(200, {
+      "Content-Length": fileSize,
+      "Content-Type": "video/mp4",
+      "Accept-Ranges": "bytes",
+      "Cache-Control": "private, max-age=3600",
+    });
+    fs.createReadStream(sourcePath).pipe(res);
   });
 
   // Get indexed videos for the user's library.
