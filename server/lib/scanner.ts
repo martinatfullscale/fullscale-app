@@ -326,15 +326,25 @@ async function downloadVideoWithYtdl(youtubeId: string, outputPath: string): Pro
 
 async function downloadVideoWithYtDlp(youtubeId: string, outputPath: string): Promise<boolean> {
   return new Promise((resolve) => {
-    console.log(`[Scanner] Fallback: Using yt-dlp with mobile user agent...`);
-    const process = spawn("yt-dlp", [
-      "-f", "best[height<=720]",
+    console.log(`[Scanner] yt-dlp: downloading ${youtubeId}...`);
+    // Player-client strategy: try multiple in order. As of 2025-2026 the
+    // ios client is broken (Precondition check failed). tv_embedded + mweb
+    // + web_safari are the current bot-resistant clients per yt-dlp issues.
+    // Format: prefer mp4 ≤720p video+audio merged; fall back to any usable
+    // single-file format if separate streams aren't available.
+    const args = [
+      "-f", "bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[height<=720][ext=mp4]/best[height<=720]/best",
       "-o", outputPath,
       "--no-playlist",
+      "--no-warnings",
+      "--no-check-certificate",
+      "--retries", "3",
+      "--retry-sleep", "exp=2:30",
+      "--extractor-args", "youtube:player_client=tv_embedded,mweb,web_safari,android_vr",
       "--user-agent", MOBILE_SAFARI_USER_AGENT,
-      "--extractor-args", "youtube:player_client=ios",
       `https://www.youtube.com/watch?v=${youtubeId}`,
-    ]);
+    ];
+    const process = spawn("yt-dlp", args);
 
     let stderr = "";
     process.stderr.on("data", (data) => {
@@ -343,7 +353,9 @@ async function downloadVideoWithYtDlp(youtubeId: string, outputPath: string): Pr
 
     process.on("close", (code) => {
       if (code !== 0) {
-        console.error(`[Scanner] yt-dlp failed: ${stderr}`);
+        // Trim noisy yt-dlp warnings — keep only the last 500 chars for the log.
+        const tail = stderr.length > 500 ? stderr.slice(-500) : stderr;
+        console.error(`[Scanner] yt-dlp failed (exit ${code}): ${tail}`);
         resolve(false);
       } else {
         console.log(`[Scanner] yt-dlp download complete: ${outputPath}`);
@@ -352,7 +364,7 @@ async function downloadVideoWithYtDlp(youtubeId: string, outputPath: string): Pr
     });
 
     process.on("error", (err) => {
-      console.error(`[Scanner] yt-dlp error: ${err.message}`);
+      console.error(`[Scanner] yt-dlp spawn error: ${err.message}`);
       resolve(false);
     });
   });
