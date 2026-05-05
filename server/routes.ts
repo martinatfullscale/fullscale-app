@@ -34,7 +34,8 @@ import { processVideoExport } from "./lib/videoExporter";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 import { hashPassword, verifyPassword } from "./lib/password";
 import { addSignupToAirtable } from "./lib/airtable";
-import { setupPlatformAuth, importFacebookVideos, importInstagramMedia, importPersonalVideos } from "./lib/platformAuth";
+import { setupPlatformAuth, importFacebookVideos, importInstagramMedia, importPersonalVideos, fetchInstagramVideoViews } from "./lib/platformAuth";
+import pLimit from "p-limit";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
@@ -2817,84 +2818,135 @@ export async function registerRoutes(
     }
   });
 
-  // Backfill viewCount for the current user's YouTube videos that have
-  // viewCount=0. Useful for cleaning up videos imported before the sync
-  // endpoint was fixed to fetch statistics. Idempotent.
+  // Backfill viewCount for the current user's videos with viewCount=0.
+  // Handles YouTube (batch via videos?part=statistics) and Instagram (per-item
+  // via insights API). Both segments run independently — if YT isn't connected
+  // we still backfill IG, and vice versa. Idempotent.
   app.post("/api/video-index/backfill-viewcounts", isFlexibleAuthenticated, async (req: any, res) => {
     const authUserId = req.authUserId;
     const authEmail = req.authEmail;
 
+    const summary = {
+      youtube: { scanned: 0, candidates: 0, updated: 0, skipped: "" as string | undefined },
+      instagram: { scanned: 0, candidates: 0, updated: 0, skipped: "" as string | undefined },
+    };
+
     try {
-      let connection = await storage.getYoutubeConnection(authUserId);
-      if (!connection && authEmail && authEmail !== authUserId) {
-        connection = await storage.getYoutubeConnection(authEmail);
-      }
-      if (!connection) {
-        return res.status(400).json({ error: "YouTube not connected" });
-      }
-
-      let accessToken = connection.accessToken;
-      if (connection.expiresAt && new Date(connection.expiresAt) < new Date()) {
-        if (connection.refreshToken) {
-          const refreshed = await refreshAccessToken(connection.refreshToken);
-          if (refreshed) {
-            accessToken = refreshed.access_token;
-            await storage.upsertYoutubeConnection({
-              userId: connection.userId,
-              accessToken: refreshed.access_token,
-              refreshToken: connection.refreshToken,
-              expiresAt: new Date(Date.now() + refreshed.expires_in * 1000),
-              channelId: connection.channelId,
-              channelTitle: connection.channelTitle,
-            });
-          }
-        }
-      }
-
       const allVideos = await storage.getVideoIndex(authUserId, authEmail);
-      const targets = allVideos.filter(
+
+      // ─── YouTube ─────────────────────────────────────────────────────────
+      const ytTargets = allVideos.filter(
         v => v.platform === "youtube" && (!v.viewCount || v.viewCount === 0) && v.youtubeId
       );
+      summary.youtube.scanned = allVideos.filter(v => v.platform === "youtube").length;
+      summary.youtube.candidates = ytTargets.length;
 
-      if (targets.length === 0) {
-        return res.json({ success: true, scanned: allVideos.length, updated: 0, message: "No 0-view YouTube videos found." });
-      }
+      if (ytTargets.length > 0) {
+        let connection = await storage.getYoutubeConnection(authUserId);
+        if (!connection && authEmail && authEmail !== authUserId) {
+          connection = await storage.getYoutubeConnection(authEmail);
+        }
 
-      console.log(`[Backfill ViewCounts] User ${authEmail}: ${targets.length} of ${allVideos.length} videos need view-count backfill`);
-
-      const ytIdToVideoId = new Map(targets.map(v => [v.youtubeId!, v.id]));
-      const ytIds = Array.from(ytIdToVideoId.keys());
-
-      const statsMap: Record<string, number> = {};
-      for (let i = 0; i < ytIds.length; i += 50) {
-        const batch = ytIds.slice(i, i + 50);
-        try {
-          const statsUrl = `https://www.googleapis.com/youtube/v3/videos?part=statistics&id=${batch.join(",")}`;
-          const statsRes = await fetch(statsUrl, { headers: { Authorization: `Bearer ${accessToken}` } });
-          const statsData = await statsRes.json();
-          for (const v of (statsData.items || [])) {
-            statsMap[v.id] = parseInt(v.statistics?.viewCount || "0");
+        if (!connection) {
+          summary.youtube.skipped = "YouTube not connected";
+        } else {
+          let accessToken = connection.accessToken;
+          if (connection.expiresAt && new Date(connection.expiresAt) < new Date() && connection.refreshToken) {
+            const refreshed = await refreshAccessToken(connection.refreshToken);
+            if (refreshed) {
+              accessToken = refreshed.access_token;
+              await storage.upsertYoutubeConnection({
+                userId: connection.userId,
+                accessToken: refreshed.access_token,
+                refreshToken: connection.refreshToken,
+                expiresAt: new Date(Date.now() + refreshed.expires_in * 1000),
+                channelId: connection.channelId,
+                channelTitle: connection.channelTitle,
+              });
+            }
           }
-        } catch (err) {
-          console.error(`[Backfill ViewCounts] Stats batch failed:`, err);
+
+          const ytIdToVideoId = new Map(ytTargets.map(v => [v.youtubeId!, v.id]));
+          const ytIds = Array.from(ytIdToVideoId.keys());
+          const statsMap: Record<string, number> = {};
+          for (let i = 0; i < ytIds.length; i += 50) {
+            const batch = ytIds.slice(i, i + 50);
+            try {
+              const statsUrl = `https://www.googleapis.com/youtube/v3/videos?part=statistics&id=${batch.join(",")}`;
+              const statsRes = await fetch(statsUrl, { headers: { Authorization: `Bearer ${accessToken}` } });
+              const statsData = await statsRes.json();
+              for (const v of (statsData.items || [])) {
+                statsMap[v.id] = parseInt(v.statistics?.viewCount || "0");
+              }
+            } catch (err) {
+              console.error(`[Backfill ViewCounts] YT stats batch failed:`, err);
+            }
+          }
+
+          for (const ytId of ytIds) {
+            const videoDbId = ytIdToVideoId.get(ytId);
+            const viewCount = statsMap[ytId];
+            if (videoDbId == null || typeof viewCount !== "number") continue;
+            try {
+              await storage.updateVideoIndex(videoDbId, { viewCount });
+              summary.youtube.updated++;
+            } catch (err: any) {
+              console.error(`[Backfill ViewCounts] Failed YT video ${videoDbId}:`, err?.message || err);
+            }
+          }
         }
       }
 
-      let updated = 0;
-      for (const ytId of ytIds) {
-        const videoDbId = ytIdToVideoId.get(ytId);
-        const viewCount = statsMap[ytId];
-        if (videoDbId == null || typeof viewCount !== "number") continue;
-        try {
-          await storage.updateVideoIndex(videoDbId, { viewCount });
-          updated++;
-        } catch (err: any) {
-          console.error(`[Backfill ViewCounts] Failed to update video ${videoDbId}:`, err?.message || err);
+      // ─── Instagram ───────────────────────────────────────────────────────
+      // IG view counts come from the per-item insights API. Token lives on
+      // the User row (facebookAccessToken — also valid for the linked IG
+      // Business account). Per-item calls, so we throttle with p-limit.
+      const igTargets = allVideos.filter(
+        v => v.platform === "instagram" && (!v.viewCount || v.viewCount === 0) && v.youtubeId?.startsWith("instagram:")
+      );
+      summary.instagram.scanned = allVideos.filter(v => v.platform === "instagram").length;
+      summary.instagram.candidates = igTargets.length;
+
+      if (igTargets.length > 0) {
+        const user = await storage.getUserById(authUserId)
+          ?? (authEmail ? await storage.getUserByEmail(authEmail) : undefined);
+        const fbToken = safeDecrypt(user?.facebookAccessToken);
+        if (!fbToken) {
+          summary.instagram.skipped = "Facebook/Instagram not connected (no access token)";
+        } else {
+          const limit = pLimit(5);
+          const results = await Promise.all(
+            igTargets.map(v => limit(async () => {
+              const igMediaId = v.youtubeId!.slice("instagram:".length);
+              // We don't have media_type stored, so try the REELS metric first,
+              // then fall back to video_views. fetchInstagramVideoViews returns
+              // 0 on error and logs the reason.
+              const plays = await fetchInstagramVideoViews(igMediaId, "REELS", fbToken);
+              if (plays > 0) return { id: v.id, viewCount: plays };
+              const views = await fetchInstagramVideoViews(igMediaId, "VIDEO", fbToken);
+              return { id: v.id, viewCount: views };
+            }))
+          );
+          for (const r of results) {
+            if (r.viewCount <= 0) continue;
+            try {
+              await storage.updateVideoIndex(r.id, { viewCount: r.viewCount });
+              summary.instagram.updated++;
+            } catch (err: any) {
+              console.error(`[Backfill ViewCounts] Failed IG video ${r.id}:`, err?.message || err);
+            }
+          }
         }
       }
 
-      console.log(`[Backfill ViewCounts] User ${authEmail}: updated ${updated}/${targets.length}`);
-      res.json({ success: true, scanned: allVideos.length, candidates: targets.length, updated });
+      console.log(`[Backfill ViewCounts] User ${authEmail}: YT ${summary.youtube.updated}/${summary.youtube.candidates}, IG ${summary.instagram.updated}/${summary.instagram.candidates}`);
+      res.json({
+        success: true,
+        scanned: allVideos.length,
+        candidates: summary.youtube.candidates + summary.instagram.candidates,
+        updated: summary.youtube.updated + summary.instagram.updated,
+        breakdown: summary,
+      });
     } catch (error: any) {
       console.error("[Backfill ViewCounts] Error:", error);
       res.status(500).json({ success: false, error: error.message || "Backfill failed" });

@@ -5,6 +5,7 @@ import { users, videoIndex } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
 import { encrypt, decrypt } from "../encryption";
 import { categorizeVideos } from "./ai/categorize";
+import pLimit from "p-limit";
 
 interface TwitchProfile {
   id: string;
@@ -134,17 +135,47 @@ async function fetchInstagramMedia(igUserId: string, accessToken: string): Promi
     const url = `https://graph.facebook.com/v18.0/${igUserId}/media?fields=id,caption,media_type,media_url,thumbnail_url,timestamp,permalink&limit=50&access_token=${accessToken}`;
     const response = await fetch(url);
     const data = await response.json();
-    
+
     if (data.error) {
       console.error("[Graph API] Error fetching Instagram media:", data.error.message);
       return [];
     }
-    
+
     console.log(`[Graph API] Found ${data.data?.length || 0} Instagram media items`);
     return data.data || [];
   } catch (error) {
     console.error("[Graph API] Error fetching Instagram media:", error);
     return [];
+  }
+}
+
+// Fetch view count for a single Instagram media item via the insights API.
+// Different metrics are exposed depending on media_type:
+//   - VIDEO  → video_views (legacy metric, still works for older posts)
+//   - REELS  → plays (Reels-specific, the canonical metric)
+// We request both and take whichever is non-zero. Returns 0 on any error so
+// import doesn't fail when a single item's insights fetch breaks.
+export async function fetchInstagramVideoViews(
+  igMediaId: string,
+  mediaType: string,
+  accessToken: string,
+): Promise<number> {
+  try {
+    const metric = mediaType === "REELS" ? "plays" : "video_views";
+    const url = `https://graph.facebook.com/v18.0/${igMediaId}/insights?metric=${metric}&access_token=${encodeURIComponent(accessToken)}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data.error) {
+      // Common cases: media too old (>2 years), insights not available for that
+      // type, token missing instagram_manage_insights scope. Log once and move on.
+      console.warn(`[IG Insights] ${igMediaId} (${mediaType}): ${data.error.message}`);
+      return 0;
+    }
+    const value = data.data?.[0]?.values?.[0]?.value;
+    return typeof value === "number" ? value : 0;
+  } catch (err: any) {
+    console.warn(`[IG Insights] ${igMediaId} fetch failed: ${err.message}`);
+    return 0;
   }
 }
 
@@ -287,6 +318,16 @@ async function importInstagramMedia(userId: string, igUserId: string, accessToke
     }))
   );
 
+  // Fetch view counts in parallel with bounded concurrency. IG insights is a
+  // per-item endpoint (not batchable), so 50 candidates = 50 calls; cap at 5
+  // concurrent to stay well under Graph API rate limits.
+  const limit = pLimit(5);
+  const viewCounts = await Promise.all(
+    candidates.map(item => limit(() =>
+      fetchInstagramVideoViews(item.id, item.media_type, accessToken)
+    ))
+  );
+
   let imported = 0;
   for (let i = 0; i < candidates.length; i++) {
     const item = candidates[i];
@@ -297,7 +338,7 @@ async function importInstagramMedia(userId: string, igUserId: string, accessToke
         youtubeId: `instagram:${item.id}`,
         title: item.caption?.substring(0, 100) || "Instagram Video",
         description: item.caption || "",
-        viewCount: 0,
+        viewCount: viewCounts[i] || 0,
         thumbnailUrl: item.thumbnail_url || item.media_url || null,
         status: "Pending Scan",
         priorityScore: 50,
