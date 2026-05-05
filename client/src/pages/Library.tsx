@@ -206,6 +206,8 @@ interface DisplayVideo {
   thumbnailUrl?: string | null;
   category?: string;
   subcategory?: string | null;
+  youtubeId?: string | null;
+  sourceUrl?: string | null;
 }
 
 function getVideoStatusInfo(video: IndexedVideo): { status: string; statusColor: string; statusDot: string; aiStatus: string; aiText: string } {
@@ -307,6 +309,10 @@ function formatIndexedVideo(video: IndexedVideo): DisplayVideo {
     thumbnailUrl,
     category: video.category || undefined,
     subcategory: video.subcategory || undefined,
+    // Carry the platform identifiers through so the scene modal's "Watch on
+    // YouTube/Instagram/Facebook" embed button has what it needs.
+    youtubeId: (video as any).youtubeId || (video as any).youtube_id || null,
+    sourceUrl: (video as any).sourceUrl || (video as any).source_url || null,
   };
 }
 
