@@ -226,6 +226,12 @@ export const detectedSurfaces = pgTable("detected_surfaces", {
   lightingDirection: varchar("lighting_direction"), // left, right, top, top-left, top-right, ambient
   lightingIntensity: numeric("lighting_intensity"), // 0.0-1.0 (dim to bright)
   cameraAngle: varchar("camera_angle"), // eye-level, slightly-above, top-down, low-angle
+  // Surface orientation — drives placement type (horizontal=product, vertical=signage/poster)
+  orientation: varchar("orientation"), // "horizontal" | "vertical"
+  // Creator approval — surfaces are hidden from brands until the creator
+  // explicitly approves them. Default false (all hidden) per the
+  // creator-controlled exposure model.
+  creatorApproved: boolean("creator_approved").default(false).notNull(),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

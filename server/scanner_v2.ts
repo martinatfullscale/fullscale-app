@@ -134,6 +134,7 @@ interface ScanResult {
 
 interface DetectedSurface {
   surfaceType: string;
+  orientation?: "horizontal" | "vertical";  // horizontal = product placement, vertical = signage/poster
   confidence: number;
   boundingBox: {
     x: number;
@@ -171,6 +172,7 @@ interface GeminiBoundingBox {
 interface GeminiDetectedSurface {
   location: GeminiBoundingBox;
   surface_type: string;
+  orientation?: "horizontal" | "vertical";
   confidence: number;
   reasoning: string;
   lighting_direction?: string;  // left, right, top, top-left, top-right, ambient
@@ -193,86 +195,104 @@ interface GeminiSurfaceDetectionResult {
 // GEMINI AI PROMPT
 // ============================================================================
 
-const SURFACE_DETECTION_PROMPT = `You are analyzing a video frame to identify the SINGLE most prominent REAL, PHYSICAL flat surface where a product could naturally be placed.
+const SURFACE_DETECTION_PROMPT = `You are analyzing a video frame to identify REAL, PHYSICAL surfaces where a brand could naturally place product or signage.
 
-TASK: Find the ONE best flat surface (table, desk, countertop, shelf) visible in the frame where a small product like a beverage bottle, phone, or gadget could physically sit. Return ONLY the single most prominent and clearly visible surface.
+TASK: Find UP TO 3 of the best placement surfaces visible in the frame. Surfaces fall into two distinct categories with different placement use cases:
 
-CRITICAL RULES — RETURN MAXIMUM 1 SURFACE:
+  1. HORIZONTAL surfaces (orientation: "horizontal") — flat surfaces where physical objects can sit.
+     Examples: desks, tables, countertops, shelves, nightstands, coffee tables, studio desks.
+     Use case: bottles, cans, phones, gadgets, books, packaged goods.
+
+  2. VERTICAL surfaces (orientation: "vertical") — flat upright planes where signage/posters/art belong.
+     Examples: walls (the empty parts), doors, windows, large empty backdrops.
+     Use case: posters, brand banners, framed art, logos, projected signage.
+
+Return them ranked by suitability. Quality > quantity — if only one surface is genuinely usable, return only one. If none, return zero. Never inflate to hit 3.
+
+CRITICAL RULES:
+- Maximum 3 surfaces total across both orientations
 - Only detect REAL physical surfaces that exist in the 3D scene
-- Return ONLY the single best surface — the largest, clearest, most prominent flat horizontal surface
-- If multiple surfaces exist, pick the ONE that is most suitable for product placement (largest visible area, best lit, most natural for a product)
-- The bounding box must tightly wrap ONLY the visible, FLAT, HORIZONTAL surface area
-- The surface must occupy at least 5% of the total frame area (width * height) to be valid
-- Do NOT flag roads, sidewalks, floors, or ground surfaces
-- Do NOT flag walls, ceilings, curtains, or vertical surfaces (unless it's a shelf)
-- Do NOT flag bridges, buildings, vehicles, or outdoor structures
+- Each surface must occupy at least 5% of total frame area
+- Each surface must have CLEAR visual separation from people in the frame
+- Do NOT flag roads, sidewalks, ground, or floors
+- Do NOT flag ceilings or curtains
+- Do NOT flag bridges, vehicles, or outdoor structures
 - Do NOT flag areas with heavy motion blur or out-of-focus regions
-- Do NOT flag surfaces blocked by people's bodies or hands
-- Do NOT flag surfaces that are too small to place a product on
-- If a person occupies more than 50% of the frame (close-up, medium shot, or bust shot), return surfaces_found: false UNLESS a clear table/desk surface is ALSO prominently visible SEPARATE FROM the person's body
-- If the frame is an exterior/outdoor shot with no furniture, return surfaces_found: false
-- If the frame is a close-up of a person with no visible surfaces, return surfaces_found: false
+- Do NOT flag surfaces blocked by people's bodies, hands, or large objects
+- If a person occupies >50% of the frame (close-up, bust shot), return surfaces_found: false UNLESS a clear surface is ALSO prominently visible SEPARATE from the person
+- If the frame is exterior/outdoor with no architectural features, return surfaces_found: false
 
 ANTI-HALLUCINATION RULES (CRITICAL — READ CAREFULLY):
-- You MUST be able to clearly see the physical surface material (wood, glass, metal, stone, etc.)
+- You MUST be able to clearly see the physical surface material (wood, paint, drywall, glass, metal, stone)
 - The bounding box MUST NOT overlap with any person's body, clothing, arms, hands, or lap
-- If a laptop is on someone's lap, that is NOT a desk surface — it is a laptop on a person
-- If someone is wearing dark clothing, the dark area is NOT a desk — it is clothing
-- A microphone boom arm, monitor arm, or equipment mount is NOT a surface
-- Do NOT draw a bounding box that covers a person's chest, torso, or lap area and call it a "desk"
-- The surface must be GEOMETRICALLY SEPARATE from any person in the frame — there must be clear visual separation between the person's body and the surface edge
-- If you are unsure whether something is a real surface or just a dark/shadowy region near a person, return surfaces_found: false
+- A laptop on someone's lap is NOT a desk surface — it is a laptop on a person
+- Dark clothing is NOT a desk — it is clothing
+- A microphone boom, monitor arm, or equipment mount is NOT a surface
+- Do NOT bounding-box someone's chest/torso/lap area and call it a "desk"
+- The surface must be GEOMETRICALLY SEPARATE from any person — clear visual separation between body and surface edge
+- A wall texture you can't actually see (out of focus, behind people, in shadow) is NOT a wall placement surface
+- If unsure whether something is a real surface vs a shadow/dark region near a person, do NOT include it
 
-BOUNDING BOX RULES:
-- x, y = top-left corner of the surface as percentage of frame (0-100)
-- width, height = size of the surface area as percentage of frame (0-100)
-- The box must ONLY cover the visible FLAT HORIZONTAL surface where a product could physically sit
-- Do NOT include table legs, chairs, people, or the area BELOW the table in the bounding box
-- Do NOT include the area ABOVE the table in the bounding box
-- The height of a table/desk bounding box seen at eye level should be THIN (typically 5-20% of frame height), because you are looking at the surface edge-on
-- A wide table seen at eye level might be: x:15, y:55, width:70, height:10 (THIN horizontal strip)
-- A desk seen from slightly above might be: x:20, y:50, width:40, height:20
-- Do NOT make bounding boxes taller than 30% of frame height unless viewed from directly above (top-down)
-- The bounding box center (y + height/2) should be in the LOWER portion of the frame (y > 40%) for tables/desks at eye level
+HORIZONTAL surface bounding box rules:
+- The box must cover ONLY the visible flat top where a product could sit
+- Do NOT include table legs, chairs, people, or the area BELOW or ABOVE the table
+- A wide table at eye level is a THIN horizontal strip: x:15, y:55, width:70, height:10
+- A desk slightly above eye level: x:20, y:50, width:40, height:20
+- Box height should rarely exceed 30% of frame unless viewed top-down
+- For eye-level tables/desks, box center y > 40% (lower portion of frame)
 
-GOOD SURFACES (flag the single best one):
-- Studio desks in podcast/recording setups — but ONLY if you can see the actual desk surface (the flat top where objects sit), not just equipment or a person sitting
-- Desks, tables, countertops with visible flat area and clear surface material visible
-- Shelves or ledges with clear space
-- Nightstands, side tables, coffee tables
-- Kitchen counters with some clear space
+VERTICAL surface bounding box rules:
+- The box must cover only the EMPTY/UNOBSTRUCTED part of the wall/door/window
+- Do NOT include picture frames already on the wall, light switches, or wall fixtures
+- Do NOT include parts blocked by furniture or people
+- Walls usually have generous height: x:10, y:10, width:30, height:50 is normal
+- Box should be a substantial usable plane, not tiny patches between objects
+- The wall must be IN FOCUS — out-of-focus background walls are not placement surfaces
 
 PODCAST / INTERVIEW / TALKING-HEAD RULES:
-- In podcast or interview setups, people sit behind desks or tables — but the desk may NOT be visible in the frame
-- If a single person fills more than 40% of the frame (headshot, medium shot, bust shot, or solo interview angle), return surfaces_found: false — there is NO usable surface
-- If two or more people are visible but no clear table/desk surface is visible between them, return surfaces_found: false
-- Do NOT invent or hallucinate a "desk" or "table" that is not clearly visible with a defined horizontal edge and flat area
-- If you cannot see the actual surface top (the flat plane where a product would sit), do NOT flag it
-- A dark area below a person's torso is NOT a desk — it is clothing, lap, shadow, or dark background
-- Microphones, monitor stands, and equipment edges are NOT surfaces
-- Only flag a desk/table if you can clearly see: (1) the horizontal front edge of the table AND (2) some of the flat top surface behind that edge
-- If the desk is behind/below a person but you can only see a tiny sliver of it, return surfaces_found: false — the surface is not prominent enough
+- In these setups people sit behind desks; the desk top may NOT actually be visible
+- If a single person fills >40% of the frame, return surfaces_found: false UNLESS there's also a clearly visible wall (with usable empty area) or desk SEPARATE from the person
+- For walls behind subjects: only flag if the wall is in focus AND has a substantial empty area free of art, books, or shelving
+- Do NOT invent a "desk" you can't see — if you can't see the horizontal top plane, do NOT flag it
+- A dark area below someone's torso is NOT a desk — it's clothing/lap/shadow
+
+GOOD SURFACES (flag up to 3 of these):
+- Studio desks in podcast/recording setups (when desk top is visible)
+- Desks, tables, countertops with visible flat area
+- Shelves with clear space
+- Nightstands, side tables, coffee tables
+- Kitchen counters with some clear space
+- Walls with substantial empty/unobstructed sections (in focus)
+- Doors (when prominently visible in frame, not just edges)
+- Large windows (when behind something brand-relevant could go)
 
 BAD "SURFACES" (do NOT flag):
-- Roads, highways, pavement
-- Building edges, bridge structures
-- Sky, trees, outdoor scenery
-- Floors (even indoor floors)
-- Walls (even if flat)
-- Any area where a product would look unnatural
-- Dark regions below a person's chest/torso (these are NOT desks)
-- Inferred/assumed surfaces that are not clearly visible in the frame
-- A person's lap, thighs, or clothing — even if a laptop or object is resting on them
-- Equipment surfaces like laptop screens, monitor backs, or camera housings
+- Roads, highways, pavement, ground, floors (even indoor)
+- Ceilings, curtains
+- Sky, trees, outdoor scenery without architectural features
+- Building exteriors, bridges, vehicles
+- Walls that are completely out of focus (background blur)
+- Walls already covered with art, posters, or shelving (no usable empty area)
+- Dark regions below a person's chest/torso
+- Inferred/assumed surfaces not clearly visible
+- A person's lap, thighs, or clothing
+- Laptop screens, monitor faces, camera housings
+- Microphone boom arms, monitor stands
 
-For the surface found, provide:
-- **location**: Tight bounding box as {x, y, width, height} in percentages (0-100)
-- **surface_type**: desk, table, shelf, counter, nightstand, coffee_table, studio_desk
-- **confidence**: 0.0 to 1.0 — use >0.7 only if the surface is clearly, unambiguously visible. Use 0.4-0.6 if partially visible. Use <0.4 if uncertain (these will be filtered out).
-- **reasoning**: Brief explanation of why this is the best surface
-- **lighting_direction**: Where the main light source is coming from relative to the surface. One of: "left", "right", "top", "top-left", "top-right", "ambient" (if diffuse/even lighting)
-- **lighting_intensity**: 0.0 to 1.0 — how bright the scene is (0.0 = very dark, 0.5 = moderate, 1.0 = very bright/overexposed)
-- **camera_angle**: The camera's viewing angle relative to the surface. One of: "eye-level", "slightly-above", "top-down", "low-angle"
+CONFIDENCE GUIDANCE:
+- Use >0.7 only if surface is clearly, unambiguously visible with usable area
+- Use 0.4-0.6 for partially visible or partially obstructed
+- Use <0.4 for uncertain (will be filtered out — better to omit)
+
+For each surface, provide:
+- **location**: bounding box {x, y, width, height} in percentages (0-100)
+- **orientation**: "horizontal" or "vertical"
+- **surface_type**: desk, table, shelf, counter, nightstand, coffee_table, studio_desk, wall, door, window
+- **confidence**: 0.0 to 1.0 (see guidance above)
+- **reasoning**: brief explanation
+- **lighting_direction**: "left", "right", "top", "top-left", "top-right", "ambient"
+- **lighting_intensity**: 0.0 to 1.0
+- **camera_angle**: "eye-level", "slightly-above", "top-down", "low-angle"
 
 RESPOND IN THIS EXACT JSON FORMAT (no markdown, no code fences):
 {
@@ -281,12 +301,23 @@ RESPOND IN THIS EXACT JSON FORMAT (no markdown, no code fences):
   "surfaces": [
     {
       "location": {"x": 20, "y": 55, "width": 30, "height": 20},
+      "orientation": "horizontal",
       "surface_type": "studio_desk",
       "confidence": 0.85,
-      "reasoning": "Clear studio desk surface, well-lit, main placement area in podcast setup",
+      "reasoning": "Clear studio desk surface, well-lit, main placement area",
       "lighting_direction": "top-left",
       "lighting_intensity": 0.7,
       "camera_angle": "slightly-above"
+    },
+    {
+      "location": {"x": 5, "y": 5, "width": 35, "height": 45},
+      "orientation": "vertical",
+      "surface_type": "wall",
+      "confidence": 0.75,
+      "reasoning": "Empty unobstructed wall section behind subject, in focus",
+      "lighting_direction": "top",
+      "lighting_intensity": 0.6,
+      "camera_angle": "eye-level"
     }
   ],
   "recommended_placement": {
@@ -870,12 +901,28 @@ async function analyzeFrameWithGemini(
       return { ...defaultResult, aiAnalyzed: true };
     }
 
-    // Map Gemini surfaces, filter low-confidence, validate against ghost patterns
-    // We want exactly 1 prominent surface per frame to avoid ghost/duplicate detections
+    // Infer orientation from surface_type if Gemini didn't provide it explicitly.
+    // Vertical types: walls, doors, windows. Everything else is horizontal.
+    const inferOrientation = (surfaceType: string): "horizontal" | "vertical" => {
+      const t = surfaceType.toLowerCase();
+      if (t === "wall" || t === "door" || t === "window") return "vertical";
+      return "horizontal";
+    };
+
+    // Map Gemini surfaces, filter low-confidence, validate against ghost patterns.
+    // Up to 3 surfaces per frame, mixing horizontal (product placement) and
+    // vertical (poster/signage). Ghost filters apply only to horizontal — walls
+    // legitimately occupy the upper frame and span large vertical areas.
     const allSurfaces: DetectedSurface[] = parsed.surfaces
-      .filter((s: GeminiDetectedSurface) => s.confidence >= 0.6) // Higher threshold: only high-quality detections
+      .filter((s: GeminiDetectedSurface) => s.confidence >= 0.6)
       .filter((s: GeminiDetectedSurface) => {
-        // GHOST SURFACE FILTER — reject bounding boxes that likely overlap a person's body
+        const orientation = s.orientation || inferOrientation(s.surface_type);
+        if (orientation === "vertical") {
+          // Walls/doors/windows have different geometry — skip horizontal-surface ghost rules
+          return true;
+        }
+
+        // GHOST SURFACE FILTER (horizontal only) — reject boxes that likely overlap a person's body
         const bbX = s.location.x / 100;
         const bbY = s.location.y / 100;
         const bbW = s.location.width / 100;
@@ -884,30 +931,24 @@ async function analyzeFrameWithGemini(
         const centerY = bbY + bbH / 2;
         const area = bbW * bbH;
 
-        // Ghost pattern 1: Bounding box centered on person's torso area
-        // In podcast setups, person typically occupies frame center (x: 25-75%, y: 15-60%)
-        // A real desk/table surface should be BELOW the person (y > 55%) or to the SIDE
+        // Ghost pattern 1: small box centered on person's torso area
         const isInPersonZone = centerX > 0.20 && centerX < 0.80 && centerY > 0.15 && centerY < 0.55;
-        const isSmallArea = area < 0.10; // Small surfaces in person zone are very suspect
+        const isSmallArea = area < 0.10;
         if (isInPersonZone && isSmallArea) {
-          console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — bbox center (${(centerX*100).toFixed(0)}%, ${(centerY*100).toFixed(0)}%) is in person zone with small area ${(area*100).toFixed(1)}%`);
+          console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — bbox center (${(centerX*100).toFixed(0)}%, ${(centerY*100).toFixed(0)}%) in person zone, small area ${(area*100).toFixed(1)}%`);
           return false;
         }
 
-        // Ghost pattern 2: Tall bounding box overlapping person center
-        // Real desk surfaces seen at eye level should be thin (height < 25%)
-        // A bbox that is both tall AND centered on person area is likely on the person
+        // Ghost pattern 2: tall box overlapping person center (real eye-level tables are thin)
         if (bbH > 0.25 && centerY < 0.55 && centerX > 0.25 && centerX < 0.75) {
           console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — tall bbox (h=${(bbH*100).toFixed(0)}%) centered on person area`);
           return false;
         }
 
-        // Ghost pattern 3: Surface entirely in the upper half of frame
-        // Real tables/desks are almost always in the lower portion (y > 40%)
-        // unless it's a shelf (which is fine)
+        // Ghost pattern 3: horizontal surface entirely in upper frame (shelves exempt)
         const isShelf = s.surface_type.toLowerCase().includes('shelf');
         if (!isShelf && bbY + bbH < 0.40) {
-          console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — bbox entirely in upper frame (bottom edge at ${((bbY+bbH)*100).toFixed(0)}%)`);
+          console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — bbox entirely in upper frame (bottom at ${((bbY+bbH)*100).toFixed(0)}%)`);
           return false;
         }
 
@@ -915,6 +956,7 @@ async function analyzeFrameWithGemini(
       })
       .map((s: GeminiDetectedSurface) => ({
         surfaceType: s.surface_type.charAt(0).toUpperCase() + s.surface_type.slice(1),
+        orientation: s.orientation || inferOrientation(s.surface_type),
         confidence: s.confidence,
         boundingBox: {
           x: s.location.x / 100,
@@ -923,13 +965,12 @@ async function analyzeFrameWithGemini(
           height: s.location.height / 100,
         },
         timestamp,
-        // Lighting & camera data for realistic product placement
         lightingDirection: s.lighting_direction || undefined,
         lightingIntensity: typeof s.lighting_intensity === 'number' ? s.lighting_intensity : undefined,
         cameraAngle: s.camera_angle || undefined,
       }))
       .sort((a: DetectedSurface, b: DetectedSurface) => b.confidence - a.confidence)
-      .slice(0, 1); // Max 1 surface per frame — only the single most prominent surface
+      .slice(0, 3); // Max 3 surfaces per frame — quality > quantity, ranked by confidence
 
     if (allSurfaces.length === 0) {
       return { ...defaultResult, aiAnalyzed: true };
@@ -1977,6 +2018,7 @@ export async function processVideoScan(
               videoId,
               timestamp: timestamp.toString(),
               surfaceType: surface.surfaceType,
+              orientation: surface.orientation || null,
               confidence: surface.confidence.toString(),
               boundingBoxX: surface.boundingBox.x.toString(),
               boundingBoxY: surface.boundingBox.y.toString(),
@@ -1987,6 +2029,8 @@ export async function processVideoScan(
               lightingDirection: surface.lightingDirection || null,
               lightingIntensity: surface.lightingIntensity != null ? surface.lightingIntensity.toString() : null,
               cameraAngle: surface.cameraAngle || null,
+              // creatorApproved defaults to false in schema — surfaces hidden from
+              // brands until creator explicitly approves via UI toggle
             };
 
             const inserted = await storage.insertDetectedSurface(dbSurface);
