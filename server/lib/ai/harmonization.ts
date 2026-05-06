@@ -56,10 +56,26 @@ export interface HarmonizationResult {
 
 async function asBuffer(input: string | Buffer): Promise<Buffer> {
   if (Buffer.isBuffer(input)) return input;
+  // data URL: parse base64 payload directly. Without this branch, the
+  // fs.readFileSync fallback below would try to open a 100KB+ "filename"
+  // and ENAMETOOLONG. Brand product uploads land as data URLs so this
+  // branch hits real-world.
+  const dataMatch = input.match(/^data:[^;]+;base64,(.*)$/);
+  if (dataMatch) return Buffer.from(dataMatch[1], "base64");
   if (/^https?:\/\//.test(input)) {
     const res = await fetch(input);
     if (!res.ok) throw new Error(`Fetch ${input} failed: ${res.status}`);
     return Buffer.from(await res.arrayBuffer());
+  }
+  // Local-relative path → resolve against /storage handler if it's a
+  // /storage/... URL stored in the DB (brand products typically have these).
+  if (input.startsWith("/storage/") || input.startsWith("/uploads/")) {
+    // Server context: fetch via the local URL through our own backend
+    const localUrl = `http://localhost:${process.env.PORT || 5000}${input}`;
+    try {
+      const res = await fetch(localUrl);
+      if (res.ok) return Buffer.from(await res.arrayBuffer());
+    } catch { /* fall through to readFileSync */ }
   }
   const fs = await import("fs");
   return fs.readFileSync(input);
