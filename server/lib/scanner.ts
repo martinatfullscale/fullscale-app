@@ -329,6 +329,47 @@ interface DownloadOpts {
   trimToSeconds?: number;
   /** Hard kill timeout in ms. Default 3 minutes. */
   timeoutMs?: number;
+  /** OAuth access token. When set, sent via --add-header "Authorization: Bearer ..."
+   *  to bypass YouTube's anonymous-bot detection on the creator's own videos. */
+  oauthToken?: string;
+}
+
+/** Fetch only the duration of a YouTube video without downloading it.
+ *  Used to plan adaptive scan sampling for long-form content. */
+export async function getYoutubeVideoDuration(
+  youtubeId: string,
+  oauthToken?: string,
+): Promise<number | null> {
+  return new Promise((resolve) => {
+    const args = [
+      "--print", "%(duration)s",
+      "--skip-download",
+      "--no-warnings",
+      "--no-playlist",
+      "--extractor-args", "youtube:player_client=tv_embedded,mweb,web_safari,android_vr",
+    ];
+    if (oauthToken) {
+      args.push("--add-header", `Authorization:Bearer ${oauthToken}`);
+    }
+    args.push(`https://www.youtube.com/watch?v=${youtubeId}`);
+
+    const proc = spawn("yt-dlp", args);
+    let stdout = "";
+    let stderr = "";
+    proc.stdout.on("data", d => { stdout += d.toString(); });
+    proc.stderr.on("data", d => { stderr += d.toString(); });
+    const timer = setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} }, 30_000);
+    proc.on("close", (code) => {
+      clearTimeout(timer);
+      if (code !== 0) {
+        console.warn(`[Scanner] duration probe failed (exit ${code}): ${stderr.slice(-200)}`);
+        return resolve(null);
+      }
+      const sec = parseInt(stdout.trim(), 10);
+      resolve(Number.isFinite(sec) && sec > 0 ? sec : null);
+    });
+    proc.on("error", () => { clearTimeout(timer); resolve(null); });
+  });
 }
 
 async function downloadVideoWithYtDlp(
@@ -369,6 +410,15 @@ async function downloadVideoWithYtDlp(
       "--progress",           // show download progress
       "--no-part",            // write straight to outputPath, no .part renames
     ];
+    // Path B (OAuth): pass the creator's stored YouTube access token via
+    // Authorization header. yt-dlp forwards extra headers on its requests
+    // to YouTube — an authenticated user request bypasses bot-detection
+    // ("Sign in to confirm you're not a bot"). Falls back to anonymous
+    // when no token is supplied.
+    if (opts.oauthToken) {
+      args.push("--add-header", `Authorization:Bearer ${opts.oauthToken}`);
+      console.log(`[Scanner] yt-dlp: using OAuth token (Path B)`);
+    }
     if (trim && trim > 0) {
       // Cap to "first N seconds." For scan we only need ~48s of video frames,
       // so downloading a full 60-min podcast is pure waste. With a direct
@@ -428,7 +478,7 @@ export async function downloadVideo(
   outputPath: string,
   opts: DownloadOpts = {},
 ): Promise<boolean> {
-  console.log(`[Scanner] Downloading video ${youtubeId}${opts.trimToSeconds ? ` (trim ${opts.trimToSeconds}s)` : ""}...`);
+  console.log(`[Scanner] Downloading video ${youtubeId}${opts.trimToSeconds ? ` (trim ${opts.trimToSeconds}s)` : ""}${opts.oauthToken ? " [OAuth]" : ""}...`);
 
   // Try yt-dlp first — actively maintained, tracks YouTube backend changes.
   const ytdlpSuccess = await downloadVideoWithYtDlp(youtubeId, outputPath, opts);

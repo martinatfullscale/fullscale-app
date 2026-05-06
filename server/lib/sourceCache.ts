@@ -26,6 +26,7 @@ import type { VideoIndex } from "@shared/schema";
 import { downloadVideo as downloadYouTubeVideo } from "./scanner";
 import { downloadFacebookVideo, downloadInstagramVideo } from "./socialDownloader";
 import { safeDecrypt } from "./socialAnalytics";
+import { getFreshYoutubeTokenForUser } from "./youtubeAuth";
 
 const CACHE_DIR = path.join(os.tmpdir(), "fullscale-source-cache");
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
@@ -73,7 +74,12 @@ export async function getSourcePath(video: VideoIndex): Promise<string> {
     const ytId = video.youtubeId;
 
     if (platform === "youtube" && ytId && !ytId.includes(":") && !ytId.startsWith("upload-")) {
-      const ok = await downloadYouTubeVideo(ytId, target);
+      // Use the creator's stored OAuth token to bypass YT bot detection.
+      // For full-video player downloads (no trim), authenticated requests
+      // are critical — long, anonymous downloads are the most likely to
+      // hit "Sign in to confirm you're not a bot."
+      const oauthToken = await getFreshYoutubeTokenForUser(video.userId).catch(() => null);
+      const ok = await downloadYouTubeVideo(ytId, target, { oauthToken: oauthToken || undefined });
       if (!ok || !fs.existsSync(target)) throw new Error(`YouTube download failed for ${ytId}`);
       return target;
     }

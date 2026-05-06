@@ -25,9 +25,10 @@ import { storage } from "./storage";
 import type { InsertDetectedSurface } from "@shared/schema";
 import { GoogleGenAI } from "@google/genai";
 import { uploadFileToStorage, downloadToTempFile, storageServeUrl } from "./lib/objectStorage";
-import { downloadVideo as downloadYouTubeVideo } from "./lib/scanner";
+import { downloadVideo as downloadYouTubeVideo, getYoutubeVideoDuration } from "./lib/scanner";
 import { downloadFacebookVideo, downloadInstagramVideo } from "./lib/socialDownloader";
 import { safeDecrypt } from "./lib/socialAnalytics";
+import { getFreshYoutubeTokenForUser } from "./lib/youtubeAuth";
 
 // ============================================================================
 // GEMINI AI CLIENT
@@ -443,23 +444,27 @@ async function getFrameMetadata(framePath: string): Promise<{ width: number; hei
 
 async function extractFrames(
   videoPath: string,
-  outputDir: string
+  outputDir: string,
+  opts: { intervalSeconds?: number; maxFrames?: number } = {},
 ): Promise<string[]> {
   return new Promise((resolve, reject) => {
+    const intervalSeconds = opts.intervalSeconds ?? CONFIG.FRAME_INTERVAL_SECONDS;
+    const maxFrames = opts.maxFrames ?? CONFIG.MAX_FRAMES_PER_VIDEO;
     const absoluteVideoPath = path.resolve(videoPath);
     const absoluteOutputDir = path.resolve(outputDir);
     const outputPattern = path.join(absoluteOutputDir, "frame_%04d.jpg");
-    
+
     console.log(`[Scanner V2] Extracting frames from: ${absoluteVideoPath}`);
     console.log(`[Scanner V2] Output directory: ${absoluteOutputDir}`);
-    
+    console.log(`[Scanner V2] Plan: every ${intervalSeconds}s, up to ${maxFrames} frames`);
+
     if (!fs.existsSync(absoluteVideoPath)) {
       reject(new Error(`Video file not found: ${absoluteVideoPath}`));
       return;
     }
-    
+
     fs.mkdirSync(absoluteOutputDir, { recursive: true });
-    
+
     const ffmpegArgs = [
       "-nostdin",               // Non-interactive mode
       "-y",                     // Overwrite output files
@@ -467,9 +472,9 @@ async function extractFrames(
       "-an",                    // Skip audio (faster, avoids codec issues)
       "-vsync", "vfr",         // Variable frame rate (prevents duplicate frames)
       "-pix_fmt", "yuvj420p",  // Force JPEG-compatible pixel format (fixes HEVC/HDR)
-      "-vf", `fps=1/${CONFIG.FRAME_INTERVAL_SECONDS},scale='min(${CONFIG.FRAME_MAX_DIMENSION},iw)':'min(${CONFIG.FRAME_MAX_DIMENSION},ih)':force_original_aspect_ratio=decrease`,
+      "-vf", `fps=1/${intervalSeconds},scale='min(${CONFIG.FRAME_MAX_DIMENSION},iw)':'min(${CONFIG.FRAME_MAX_DIMENSION},ih)':force_original_aspect_ratio=decrease`,
       "-q:v", "2",
-      "-frames:v", CONFIG.MAX_FRAMES_PER_VIDEO.toString(),
+      "-frames:v", maxFrames.toString(),
       outputPattern,
     ];
     
@@ -1902,19 +1907,45 @@ export async function processVideoScan(
         && !id.startsWith("fb-") && !id.startsWith("demo-")
         && !id.startsWith("hero-");
 
+    let scanPlan: { intervalSeconds: number; maxFrames: number } = {
+      intervalSeconds: CONFIG.FRAME_INTERVAL_SECONDS,
+      maxFrames: CONFIG.MAX_FRAMES_PER_VIDEO,
+    };
+
     if (!videoPath && (video as any).platform === "youtube" && looksLikeRealYouTubeId(video.youtubeId)) {
       console.log(`[Scanner V2] No filePath; attempting YouTube download for ${video.youtubeId}`);
       fs.mkdirSync(tempDir, { recursive: true });
       const downloadPath = path.join(tempDir, `${video.youtubeId}.mp4`);
-      // Trim to roughly 2× the frame coverage window. We extract frames at
-      // FRAME_INTERVAL_SECONDS up to MAX_FRAMES_PER_VIDEO so we only need
-      // (MAX_FRAMES * INTERVAL) seconds of content. Padding with extra
-      // headroom so ffmpeg has muxer-friendly leeway around keyframes.
-      // For long-form podcasts this turns a 200MB+ download into ~5MB.
-      const trimSec = CONFIG.MAX_FRAMES_PER_VIDEO * CONFIG.FRAME_INTERVAL_SECONDS + 10;
+
+      // Path B (OAuth): pass the creator's stored YouTube token so anonymous
+      // bot detection doesn't block long downloads. Falls back to anonymous
+      // if no token is available.
+      const oauthToken = await getFreshYoutubeTokenForUser(video.userId).catch(() => null);
+
+      // Probe the actual video duration before downloading so we can plan
+      // adaptive sampling. For a 46-min podcast, we want frames spread across
+      // the WHOLE duration — sampling every 2s only of the first 48s misses
+      // 99% of the content. Target ~50 frames spread across the video.
+      const TARGET_FRAMES = 50;
+      const durationSec = await getYoutubeVideoDuration(video.youtubeId, oauthToken || undefined);
+      if (durationSec && durationSec > 0) {
+        const interval = Math.max(2, Math.ceil(durationSec / TARGET_FRAMES));
+        const maxFrames = Math.min(TARGET_FRAMES, Math.ceil(durationSec / interval));
+        scanPlan = { intervalSeconds: interval, maxFrames };
+        console.log(`[Scanner V2] Duration ${durationSec}s → adaptive plan: every ${interval}s × ${maxFrames} frames (covers full video)`);
+      } else {
+        console.log(`[Scanner V2] Duration unknown — falling back to default plan`);
+      }
+
+      // Download budget: enough seconds to cover the planned frames + a buffer.
+      // Capped at the actual duration so we never request beyond end-of-video.
+      const plannedRange = scanPlan.intervalSeconds * scanPlan.maxFrames + 30;
+      const trimSec = durationSec ? Math.min(durationSec, plannedRange) : plannedRange;
+
       const ok = await downloadYouTubeVideo(video.youtubeId, downloadPath, {
         trimToSeconds: trimSec,
-        timeoutMs: 3 * 60 * 1000, // 3min hard cap — short clip should download fast
+        timeoutMs: 8 * 60 * 1000, // 8min cap — long videos take longer even with adaptive trim
+        oauthToken: oauthToken || undefined,
       });
       if (ok && fs.existsSync(downloadPath)) {
         videoPath = downloadPath;
@@ -1983,9 +2014,10 @@ export async function processVideoScan(
     
     fs.mkdirSync(framesDir, { recursive: true });
     
-    // EXTRACT FRAMES
-    console.log(`[Scanner V2] Extracting frames...`);
-    const frames = await extractFrames(videoPath, framesDir);
+    // EXTRACT FRAMES — uses adaptive plan computed during YT download path,
+    // or CONFIG defaults for non-YT sources (uploaded files, IG/FB).
+    console.log(`[Scanner V2] Extracting frames with plan: every ${scanPlan.intervalSeconds}s × ${scanPlan.maxFrames} frames`);
+    const frames = await extractFrames(videoPath, framesDir, scanPlan);
     
     if (frames.length === 0) {
       await storage.updateVideoStatus(videoId, "Scan Failed");
@@ -2011,7 +2043,7 @@ export async function processVideoScan(
 
     for (let i = 0; i < frames.length; i++) {
       const framePath = frames[i];
-      const timestamp = i * CONFIG.FRAME_INTERVAL_SECONDS;
+      const timestamp = i * scanPlan.intervalSeconds;
 
       try {
         console.log(`[Scanner V2] Processing frame ${i + 1}/${frames.length} (${timestamp}s)...`);
@@ -2096,7 +2128,7 @@ export async function processVideoScan(
       existingSurfaces.forEach(s => framesWithSurfaces.add(parseInt(s.timestamp)));
       
       for (let i = 0; i < frames.length && totalSurfaces < CONFIG.MIN_SURFACES_BEFORE_FALLBACK + 2; i++) {
-        const timestamp = i * CONFIG.FRAME_INTERVAL_SECONDS;
+        const timestamp = i * scanPlan.intervalSeconds;
         if (!framesWithSurfaces.has(timestamp)) {
           const fallbackFrameFilename = `frame_${timestamp}s.jpg`;
 
