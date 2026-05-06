@@ -823,6 +823,17 @@ export default function Dashboard() {
                 <Button variant="outline" className="w-full justify-start" data-testid="button-view-api-docs">
                   View API Documentation
                 </Button>
+                <p className="text-[11px] text-muted-foreground/80 leading-relaxed pt-2">
+                  <a
+                    href="/privacy"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="hover:text-foreground underline underline-offset-2"
+                    data-testid="link-privacy-policy"
+                  >
+                    *View our privacy policy
+                  </a>
+                </p>
               </div>
             </motion.div>
 

@@ -722,8 +722,22 @@ export default function Settings() {
                 className="bg-white/5 rounded-xl border border-white/5 p-6"
               >
                 <h2 className="text-xl font-semibold text-white mb-2">Social Integrations</h2>
-                <p className="text-muted-foreground text-sm mb-6">Connect your social accounts to unlock multi-platform monetization</p>
-                
+                <p className="text-muted-foreground text-sm mb-2">Connect your social accounts to unlock multi-platform monetization</p>
+                <div className="mb-6 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-200/90 leading-relaxed">
+                  <span className="font-medium text-emerald-300">Your content stays yours.</span>{" "}
+                  We use read-only access to identify placement opportunities — we never post on your behalf,
+                  re-publish your videos, or share your content with anyone without your explicit approval.
+                  Disconnect anytime.{" "}
+                  <a
+                    href="/privacy"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="underline underline-offset-2 hover:text-emerald-100"
+                  >
+                    *View our privacy policy
+                  </a>
+                </div>
+
                 <div className="space-y-4">
                   {socialConnections.map((connection) => (
                     <div
