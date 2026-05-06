@@ -105,11 +105,14 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
   // Frame loading state — tracks whether the main frame image has loaded
   const [frameLoaded, setFrameLoaded] = useState(false);
   const [frameError, setFrameError] = useState(false);
-  // Toggles between scene-frame view and an embedded platform player so
-  // creators can watch the actual YT/IG/FB video alongside the scan results
-  // without leaving the modal. Source bytes aren't stored on our side
-  // (light-cloud model) — we just embed the platform's own player.
+  // Toggles between scene-frame view and the in-app video player streamed
+  // via /api/video/:id/source. First playback triggers a backend yt-dlp
+  // pull to a per-instance cache; subsequent plays within the TTL are
+  // instant. We surface the loading state to the user as a progress bar.
   const [showEmbedPlayer, setShowEmbedPlayer] = useState(false);
+  const [playerLoadProgress, setPlayerLoadProgress] = useState(0); // 0–100
+  const [playerCanPlay, setPlayerCanPlay] = useState(false);
+  const [playerError, setPlayerError] = useState<string | null>(null);
 
   // Local scenes state — starts from video.scenes, rebuilt after server rescan
   const [localScenes, setLocalScenes] = useState<Scene[]>(video?.scenes || []);
@@ -620,17 +623,71 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                 <div className="relative overflow-hidden bg-black flex items-center justify-center" style={{ minHeight: '300px', maxHeight: '70vh' }}>
                   {/* In-app player — streams from our backend. First load may
                       take a few seconds while the source downloads to /tmp;
-                      subsequent loads within the cache TTL are instant. */}
+                      subsequent loads within the cache TTL are instant.
+                      Surface buffering progress so the user knows what's
+                      happening instead of staring at a black box. */}
                   {showEmbedPlayer && video?.id && canPlayInApp(video) && (
-                    <video
-                      src={`/api/video/${video.id}/source`}
-                      controls
-                      autoPlay
-                      playsInline
-                      className="w-full max-h-[70vh] object-contain"
-                      style={{ background: "#000" }}
-                      data-testid="video-inapp-player"
-                    />
+                    <div className="relative w-full" style={{ background: "#000" }}>
+                      <video
+                        src={`/api/video/${video.id}/source`}
+                        controls
+                        autoPlay
+                        playsInline
+                        preload="auto"
+                        className="w-full max-h-[70vh] object-contain"
+                        data-testid="video-inapp-player"
+                        onProgress={(e) => {
+                          // HTMLMediaElement.buffered: TimeRanges of buffered segments.
+                          // Take the end of the last buffered range as % of duration.
+                          const v = e.currentTarget;
+                          if (v.duration > 0 && v.buffered.length > 0) {
+                            const bufferedEnd = v.buffered.end(v.buffered.length - 1);
+                            const pct = Math.min(100, Math.round((bufferedEnd / v.duration) * 100));
+                            setPlayerLoadProgress(pct);
+                          }
+                        }}
+                        onCanPlay={() => setPlayerCanPlay(true)}
+                        onError={(e) => {
+                          const v = e.currentTarget;
+                          const err = v.error;
+                          setPlayerError(err ? `Code ${err.code}: ${err.message || "playback error"}` : "Failed to load video");
+                        }}
+                        onWaiting={() => setPlayerCanPlay(false)}
+                        onPlaying={() => setPlayerCanPlay(true)}
+                      />
+
+                      {/* Loading overlay — visible until we have enough buffered to play */}
+                      {!playerCanPlay && !playerError && (
+                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/80 pointer-events-none">
+                          <Loader2 className="w-8 h-8 animate-spin text-emerald-400" />
+                          <div className="text-sm text-white">Loading video…</div>
+                          <div className="text-xs text-zinc-400">
+                            {playerLoadProgress > 0 ? `${playerLoadProgress}% buffered` : "Fetching from source"}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Error overlay */}
+                      {playerError && (
+                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/85 p-4 text-center">
+                          <Video className="w-8 h-8 text-red-400" />
+                          <div className="text-sm text-white">Couldn't load video</div>
+                          <div className="text-xs text-red-300 max-w-md">{playerError}</div>
+                        </div>
+                      )}
+
+                      {/* Persistent buffer-progress bar at the bottom — shows
+                          download progress beyond what's already played, so
+                          users can see how much is ready to seek to. */}
+                      {!playerError && playerLoadProgress > 0 && playerLoadProgress < 100 && (
+                        <div className="absolute bottom-0 left-0 right-0 h-1 bg-zinc-800/80 pointer-events-none">
+                          <div
+                            className="h-full bg-emerald-500/70 transition-[width] duration-300"
+                            style={{ width: `${playerLoadProgress}%` }}
+                          />
+                        </div>
+                      )}
+                    </div>
                   )}
 
                   {/* Layer 1: For local videos, always show <video> as the reliable base layer */}

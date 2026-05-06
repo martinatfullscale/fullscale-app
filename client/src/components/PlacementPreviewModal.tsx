@@ -25,6 +25,7 @@ import {
   Play,
   Pause,
   Film,
+  Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -549,6 +550,15 @@ export default function PlacementPreviewModal({
   const [exportStatus, setExportStatus] = useState<string | null>(null);
   const [exportJobId, setExportJobId] = useState<number | null>(null);
   const [exportOutputUrl, setExportOutputUrl] = useState<string | null>(null);
+
+  // Harmonization preview state — shows a before/after dialog comparing
+  // the flat product overlay (current canvas behavior) with the procedurally
+  // harmonized version (server-side, scene-preserving via sharp).
+  const [showHarmonizeCompare, setShowHarmonizeCompare] = useState(false);
+  const [isHarmonizing, setIsHarmonizing] = useState(false);
+  const [harmonizeError, setHarmonizeError] = useState<string | null>(null);
+  const [harmonizeFlatUrl, setHarmonizeFlatUrl] = useState<string | null>(null);
+  const [harmonizeResultUrl, setHarmonizeResultUrl] = useState<string | null>(null);
 
   // Refs
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -1837,6 +1847,52 @@ export default function PlacementPreviewModal({
                       <Download className="w-3.5 h-3.5" />
                       <span className="hidden sm:inline">Export Frame</span>
                     </Button>
+                    {/* Harmonize: server-side compositing with scene-aware
+                        lighting + contact shadow. Flat overlay (canvas) stays
+                        as the baseline; this opens a side-by-side dialog. */}
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      className="gap-1.5 text-xs sm:text-sm h-8"
+                      disabled={!selectedSurface || !productImage || isHarmonizing}
+                      onClick={async () => {
+                        if (!selectedSurface || !productImage) return;
+                        setIsHarmonizing(true);
+                        setHarmonizeError(null);
+                        setHarmonizeFlatUrl(null);
+                        setHarmonizeResultUrl(null);
+                        setShowHarmonizeCompare(true);
+                        try {
+                          const res = await fetch("/api/placement/harmonize", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            credentials: "include",
+                            body: JSON.stringify({
+                              surfaceId: selectedSurface.id,
+                              productImageUrl: productImage,
+                            }),
+                          });
+                          const data = await res.json();
+                          if (!res.ok || !data.success) {
+                            throw new Error(data.error || "Harmonization failed");
+                          }
+                          setHarmonizeFlatUrl(data.flatCompositeUrl || null);
+                          setHarmonizeResultUrl(data.imageUrl || null);
+                        } catch (err: any) {
+                          setHarmonizeError(err.message || "Harmonization failed");
+                        } finally {
+                          setIsHarmonizing(false);
+                        }
+                      }}
+                      data-testid="button-harmonize"
+                    >
+                      {isHarmonizing ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Sparkles className="w-3.5 h-3.5" />
+                      )}
+                      <span className="hidden sm:inline">{isHarmonizing ? "Harmonizing…" : "Harmonize"}</span>
+                    </Button>
                     {videoSrc && (
                       exportStatus === "complete" && exportOutputUrl ? (
                         <a href={`/api/exports/${exportJobId}/download`} download>
@@ -2580,6 +2636,106 @@ export default function PlacementPreviewModal({
                   )}
                 </div>
               </div>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+
+      {/* Harmonization compare dialog — opens on Harmonize button click,
+          shows flat composite vs harmonized result side-by-side. */}
+      {showHarmonizeCompare && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-[60] bg-black/85 flex items-center justify-center p-4"
+          onClick={() => setShowHarmonizeCompare(false)}
+        >
+          <motion.div
+            initial={{ scale: 0.95, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            exit={{ scale: 0.95, opacity: 0 }}
+            className="bg-zinc-900 border border-white/10 rounded-xl max-w-6xl w-full max-h-[90vh] overflow-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between p-4 border-b border-white/10">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-emerald-400" />
+                <h3 className="text-base font-semibold text-white">Placement comparison</h3>
+              </div>
+              <button
+                onClick={() => setShowHarmonizeCompare(false)}
+                className="p-1.5 rounded-full bg-black/50 hover:bg-black/70 text-white"
+                data-testid="button-close-harmonize"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-4">
+              {isHarmonizing && (
+                <div className="flex flex-col items-center justify-center py-16 gap-3">
+                  <Loader2 className="w-6 h-6 animate-spin text-emerald-400" />
+                  <p className="text-sm text-muted-foreground">Compositing + harmonizing…</p>
+                </div>
+              )}
+
+              {!isHarmonizing && harmonizeError && (
+                <div className="py-8 px-4 rounded-lg bg-red-500/10 border border-red-500/40">
+                  <p className="text-sm text-red-300">Harmonization failed: {harmonizeError}</p>
+                  <p className="text-xs text-muted-foreground mt-2">
+                    The flat overlay on the main canvas is unaffected — this is a preview tool only.
+                  </p>
+                </div>
+              )}
+
+              {!isHarmonizing && !harmonizeError && (harmonizeFlatUrl || harmonizeResultUrl) && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-sm font-medium text-white">Flat overlay</span>
+                      <Badge variant="outline" className="text-[10px]">baseline</Badge>
+                    </div>
+                    {harmonizeFlatUrl ? (
+                      <img
+                        src={harmonizeFlatUrl}
+                        alt="Flat composite"
+                        className="w-full rounded-lg border border-white/10"
+                      />
+                    ) : (
+                      <div className="w-full aspect-video rounded-lg border border-white/10 bg-zinc-800 flex items-center justify-center text-xs text-muted-foreground">
+                        Not available
+                      </div>
+                    )}
+                    <p className="text-xs text-muted-foreground mt-1.5">
+                      Product pasted at bbox without lighting adjustment.
+                    </p>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-sm font-medium text-white">Harmonized</span>
+                      <Badge className="text-[10px] bg-emerald-500/20 text-emerald-300 border-emerald-500/40">
+                        scene-aware
+                      </Badge>
+                    </div>
+                    {harmonizeResultUrl ? (
+                      <img
+                        src={harmonizeResultUrl}
+                        alt="Harmonized composite"
+                        className="w-full rounded-lg border border-emerald-500/40"
+                      />
+                    ) : (
+                      <div className="w-full aspect-video rounded-lg border border-white/10 bg-zinc-800 flex items-center justify-center text-xs text-muted-foreground">
+                        Not available
+                      </div>
+                    )}
+                    <p className="text-xs text-muted-foreground mt-1.5">
+                      Color cast + brightness matched to scene; contact shadow added. Scene pixels outside the bbox are unchanged.
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
           </motion.div>
         </motion.div>
