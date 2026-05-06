@@ -404,7 +404,9 @@ async function downloadVideoWithYtDlp(
         "b[height<=720][ext=mp4]/" +
         "bv*[height<=720]+ba/" +
         "b[height<=720]/" +
-        "best[ext=mp4]/best",
+        "best[ext=mp4]/" +
+        "best/" +
+        "worst",  // last-ditch — if even "best" fails, take whatever's downloadable
       "-o", outputPath,
       "--no-playlist",
       "--no-warnings",
@@ -487,27 +489,48 @@ export async function downloadVideo(
 ): Promise<boolean> {
   console.log(`[Scanner] Downloading video ${youtubeId}${opts.trimToSeconds ? ` (trim ${opts.trimToSeconds}s)` : ""}${opts.oauthToken ? " [OAuth]" : ""}...`);
 
-  // Try yt-dlp first — actively maintained, tracks YouTube backend changes.
-  const ytdlpSuccess = await downloadVideoWithYtDlp(youtubeId, outputPath, opts);
-  if (ytdlpSuccess) return true;
+  // Try 1: yt-dlp with OAuth (if provided) and trim
+  const try1 = await downloadVideoWithYtDlp(youtubeId, outputPath, opts);
+  if (try1) return true;
 
-  // If trimming failed, retry once without trim. Some YouTube videos only
-  // expose HLS playlists where --download-sections doesn't work cleanly
-  // ("Invalid data found in input" / ffmpeg exit 183). Falling back to a
-  // full download lets the scanner's own ffmpeg extract just the head it
-  // needs from a complete file, even if the file is bigger than ideal.
-  if (opts.trimToSeconds) {
-    console.log(`[Scanner] yt-dlp failed with trim; retrying full download (HLS fallback)...`);
-    const fullSuccess = await downloadVideoWithYtDlp(youtubeId, outputPath, {
+  // Try 2: yt-dlp WITHOUT OAuth + with trim. Some videos return a degraded
+  // (or empty) format set when the request includes the creator's token —
+  // depends on YouTube's per-video access flags. Anonymous can sometimes
+  // succeed where authenticated fails. Counterintuitive but real.
+  if (opts.oauthToken) {
+    console.log(`[Scanner] yt-dlp + OAuth failed; retrying anonymous...`);
+    const try2 = await downloadVideoWithYtDlp(youtubeId, outputPath, {
       ...opts,
-      trimToSeconds: undefined,
-      // Bump timeout since full download takes longer
-      timeoutMs: opts.timeoutMs ? opts.timeoutMs * 2 : 6 * 60 * 1000,
+      oauthToken: undefined,
     });
-    if (fullSuccess) return true;
+    if (try2) return true;
   }
 
-  console.log(`[Scanner] yt-dlp unavailable or failed, trying @distube/ytdl-core fallback...`);
+  // Try 3: yt-dlp without trim (HLS-only videos can't be trimmed cleanly).
+  if (opts.trimToSeconds) {
+    console.log(`[Scanner] yt-dlp failed with trim; retrying full download (HLS fallback)...`);
+    const try3 = await downloadVideoWithYtDlp(youtubeId, outputPath, {
+      ...opts,
+      trimToSeconds: undefined,
+      timeoutMs: opts.timeoutMs ? opts.timeoutMs * 2 : 6 * 60 * 1000,
+    });
+    if (try3) return true;
+
+    // Try 4: anonymous + no trim — last yt-dlp combination
+    if (opts.oauthToken) {
+      console.log(`[Scanner] yt-dlp full+OAuth failed; retrying anonymous full download...`);
+      const try4 = await downloadVideoWithYtDlp(youtubeId, outputPath, {
+        ...opts,
+        oauthToken: undefined,
+        trimToSeconds: undefined,
+        timeoutMs: opts.timeoutMs ? opts.timeoutMs * 2 : 6 * 60 * 1000,
+      });
+      if (try4) return true;
+    }
+  }
+
+  console.log(`[Scanner] All yt-dlp paths failed; trying @distube/ytdl-core fallback...`);
+  console.log(`[Scanner] DIAGNOSTIC: in Replit Shell, run \`yt-dlp --list-formats https://www.youtube.com/watch?v=${youtubeId}\` to see what formats are actually available.`);
   return downloadVideoWithYtdl(youtubeId, outputPath);
 }
 
