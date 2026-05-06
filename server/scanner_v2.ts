@@ -369,6 +369,25 @@ export function addToLocalAssetMap(videoId: string, filePath: string): void {
 // UTILITY FUNCTIONS
 // ============================================================================
 
+/** Parse ISO 8601 duration ("PT1H46M2S", "PT30M", "PT45S") to seconds.
+ *  Returns null if the input isn't a valid ISO 8601 duration. YouTube's
+ *  Data API returns durations in this format and we store them verbatim
+ *  on video_index.duration. Supports: hours (H), minutes (M), seconds (S);
+ *  ignores days/weeks since YT durations don't use them. */
+function parseIsoDuration(input: string | null | undefined): number | null {
+  if (!input || typeof input !== "string") return null;
+  // Plain seconds (already-numeric) — accept e.g. "2760"
+  const numeric = Number(input);
+  if (Number.isFinite(numeric) && numeric > 0) return numeric;
+  const m = input.match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?$/);
+  if (!m) return null;
+  const hours = parseInt(m[1] || "0", 10);
+  const minutes = parseInt(m[2] || "0", 10);
+  const seconds = parseFloat(m[3] || "0");
+  const total = hours * 3600 + minutes * 60 + seconds;
+  return total > 0 ? total : null;
+}
+
 async function getAvailableDiskSpaceMB(): Promise<number> {
   try {
     const tmpDir = os.tmpdir();
@@ -1912,6 +1931,20 @@ export async function processVideoScan(
       maxFrames: CONFIG.MAX_FRAMES_PER_VIDEO,
     };
 
+    // Resolve video duration. Primary source: the DB (YouTube import stores
+    // ISO 8601 like "PT1H46M2S" in video.duration). Fast + reliable since
+    // we already have it. Fallback: yt-dlp metadata probe — but that's
+    // slow and frequently times out on long videos, so we only try it if
+    // the DB doesn't have a duration.
+    const durationSec = (() => {
+      const fromDb = parseIsoDuration((video as any).duration);
+      if (fromDb && fromDb > 0) {
+        console.log(`[Scanner V2] Duration from DB: ${fromDb}s (${(fromDb/60).toFixed(1)} min)`);
+        return fromDb;
+      }
+      return null;
+    })();
+
     if (!videoPath && (video as any).platform === "youtube" && looksLikeRealYouTubeId(video.youtubeId)) {
       console.log(`[Scanner V2] No filePath; attempting YouTube download for ${video.youtubeId}`);
       fs.mkdirSync(tempDir, { recursive: true });
@@ -1922,29 +1955,40 @@ export async function processVideoScan(
       // if no token is available.
       const oauthToken = await getFreshYoutubeTokenForUser(video.userId).catch(() => null);
 
-      // Probe the actual video duration before downloading so we can plan
-      // adaptive sampling. For a 46-min podcast, we want frames spread across
-      // the WHOLE duration — sampling every 2s only of the first 48s misses
-      // 99% of the content. Target ~50 frames spread across the video.
-      const TARGET_FRAMES = 50;
-      const durationSec = await getYoutubeVideoDuration(video.youtubeId, oauthToken || undefined);
-      if (durationSec && durationSec > 0) {
-        const interval = Math.max(2, Math.ceil(durationSec / TARGET_FRAMES));
-        const maxFrames = Math.min(TARGET_FRAMES, Math.ceil(durationSec / interval));
+      // Plan adaptive sampling. For a 46-min podcast, we want frames spread
+      // across the WHOLE duration — sampling only first 48s misses 99% of
+      // content. Target ~75 frames across the video for rich coverage.
+      // Cost: 75 Gemini calls ≈ $0.03–0.08 per scan, acceptable.
+      const TARGET_FRAMES = 75;
+      let probedDuration = durationSec;
+      if (!probedDuration) {
+        // Last-resort yt-dlp probe (only if DB had nothing). Short timeout
+        // so we don't block the scan if it hangs.
+        probedDuration = await getYoutubeVideoDuration(video.youtubeId, oauthToken || undefined);
+        if (probedDuration) {
+          console.log(`[Scanner V2] Duration from yt-dlp probe: ${probedDuration}s`);
+        }
+      }
+      if (probedDuration && probedDuration > 0) {
+        const interval = Math.max(2, Math.ceil(probedDuration / TARGET_FRAMES));
+        const maxFrames = Math.min(TARGET_FRAMES, Math.ceil(probedDuration / interval));
         scanPlan = { intervalSeconds: interval, maxFrames };
-        console.log(`[Scanner V2] Duration ${durationSec}s → adaptive plan: every ${interval}s × ${maxFrames} frames (covers full video)`);
+        console.log(`[Scanner V2] Plan: every ${interval}s × ${maxFrames} frames (covers full ${probedDuration}s video)`);
       } else {
-        console.log(`[Scanner V2] Duration unknown — falling back to default plan`);
+        // Duration completely unknown — default to a reasonable spread.
+        // Downloads cap to 5min and we sample every 6s for ~50 frames,
+        // which is way better than the original 48s coverage.
+        scanPlan = { intervalSeconds: 6, maxFrames: 50 };
+        console.log(`[Scanner V2] Duration unknown — using fallback plan: every 6s × 50 frames (5min coverage)`);
       }
 
       // Download budget: enough seconds to cover the planned frames + a buffer.
-      // Capped at the actual duration so we never request beyond end-of-video.
       const plannedRange = scanPlan.intervalSeconds * scanPlan.maxFrames + 30;
-      const trimSec = durationSec ? Math.min(durationSec, plannedRange) : plannedRange;
+      const trimSec = probedDuration ? Math.min(probedDuration, plannedRange) : plannedRange;
 
       const ok = await downloadYouTubeVideo(video.youtubeId, downloadPath, {
         trimToSeconds: trimSec,
-        timeoutMs: 8 * 60 * 1000, // 8min cap — long videos take longer even with adaptive trim
+        timeoutMs: 10 * 60 * 1000, // 10min cap — long videos with full-duration scans take longer
         oauthToken: oauthToken || undefined,
       });
       if (ok && fs.existsSync(downloadPath)) {
