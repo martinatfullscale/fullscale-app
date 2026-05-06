@@ -3749,7 +3749,41 @@ export async function registerRoutes(
   });
 
   // PUBLIC endpoint - surfaces are viewable by brands on creator profiles
-  app.get("/api/video/:id/surfaces", async (req: any, res) => {
+  // Best-effort auth that NEVER rejects. Populates req.authUserId/authEmail
+  // when a session is present so downstream owner-aware logic can work, but
+  // anonymous callers still pass through (used by endpoints that are public
+  // for brands but want owner-only behavior for the creator).
+  const softAuth = async (req: any, _res: any, next: any) => {
+    try {
+      const googleUser = req.session?.googleUser;
+      if (googleUser?.email) {
+        req.authEmail = googleUser.email;
+        req.authUserId = (await storage.getUserByEmail(googleUser.email))?.id || googleUser.email;
+        return next();
+      }
+      if (req.isAuthenticated && req.isAuthenticated() && req.user?.claims) {
+        const claims = req.user.claims;
+        req.authEmail = claims.email;
+        req.authUserId = claims.sub || (await storage.getUserByEmail(claims.email))?.id || claims.email;
+        return next();
+      }
+      const sessionUserId = req.session?.userId;
+      if (sessionUserId) {
+        const user = await storage.getUserById(sessionUserId);
+        if (user?.email) {
+          req.authEmail = user.email;
+          req.authUserId = user.id;
+          return next();
+        }
+      }
+    } catch (err) {
+      // Auth failures here are not fatal — endpoint just runs as anonymous.
+      console.warn("[softAuth] auth lookup failed (continuing anonymously):", (err as any)?.message);
+    }
+    next();
+  };
+
+  app.get("/api/video/:id/surfaces", softAuth, async (req: any, res) => {
     const videoId = parseInt(req.params.id);
     if (isNaN(videoId)) {
       return res.status(400).json({ error: "Invalid video ID" });
