@@ -393,11 +393,18 @@ async function downloadVideoWithYtDlp(
     // protocol*=https filters to direct downloads; protocol*=m3u8 would
     // be the HLS path we want to avoid.
     const args = [
+      // Broad cascade — prefer direct mp4 ≤720p, but accept anything
+      // downloadable. Some videos (esp. long-form podcasts) only expose HLS
+      // streams; those would fail with a stricter selector. We dropped the
+      // protocol*=https filter that previously rejected HLS entirely — the
+      // first-try-with-trim, retry-without-trim flow in downloadVideo()
+      // handles HLS+trim ffmpeg failures by falling through to a full pull.
       "-f",
-        "bv*[height<=720][ext=mp4][protocol*=https]+ba[ext=m4a][protocol*=https]/" +
-        "b[height<=720][ext=mp4][protocol*=https]/" +
-        "b[ext=mp4][protocol*=https]/" +
-        "b[height<=720][ext=mp4]/best",
+        "bv*[height<=720][ext=mp4]+ba[ext=m4a]/" +
+        "b[height<=720][ext=mp4]/" +
+        "bv*[height<=720]+ba/" +
+        "b[height<=720]/" +
+        "best[ext=mp4]/best",
       "-o", outputPath,
       "--no-playlist",
       "--no-warnings",
