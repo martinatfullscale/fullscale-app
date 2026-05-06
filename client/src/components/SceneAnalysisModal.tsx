@@ -123,6 +123,24 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
       setFrameError(false);
     }
   }, [video?.id, video?.scenes, open]);
+
+  // Rebuild localScenes from freshly-fetched dbSurfaces. The video.scenes
+  // prop comes from Library at click time, which may be stale (e.g.,
+  // built when the user was unauthenticated and got 0 surfaces). Once the
+  // modal's own fetchDatabaseSurfaces returns real data, regenerate
+  // scenes by timestamp clusters so navigation arrows actually move
+  // through frames with content instead of one stale fallback scene.
+  useEffect(() => {
+    if (!video?.id) return;
+    if (dbSurfaces.length === 0) return;
+    const newScenes = buildScenesFromSurfaces(dbSurfaces, video.id);
+    if (newScenes.length === 0) return;
+    setLocalScenes(newScenes);
+    // Reset index if out of range; otherwise preserve user's navigation.
+    setCurrentSceneIndex(prev => prev >= newScenes.length ? 0 : prev);
+    setFrameLoaded(false);
+    setFrameError(false);
+  }, [dbSurfaces, video?.id]);
   
   const imageRef = useRef<HTMLImageElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -957,75 +975,116 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                   })()}
                 </div>
 
-                {/* Per-surface approval list. Surfaces default to hidden from
-                    brands; creator must explicitly approve each one to expose
-                    it in the marketplace. */}
-                {hasDbSurfaces && currentDbSurfaces.length > 0 && (
-                  <div className="p-4 rounded-xl bg-white/5 border border-white/10 space-y-2">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm font-medium text-white">Surfaces in this scene</span>
-                      <span className="text-xs text-muted-foreground">Approve to expose to brands</span>
-                    </div>
-                    {currentDbSurfaces.map((s) => {
-                      const isApproved = !!s.creatorApproved;
-                      const orientation = (s as any).orientation === "vertical" ? "vertical" : "horizontal";
-                      const confPct = Math.round(parseFloat(s.confidence) * 100);
-                      return (
-                        <div
-                          key={s.id}
-                          className={`flex items-center justify-between gap-3 p-2 rounded-lg border transition-colors ${
-                            isApproved
-                              ? "bg-emerald-500/10 border-emerald-500/40"
-                              : "bg-zinc-800/50 border-zinc-700"
-                          }`}
-                          data-testid={`surface-row-${s.id}`}
-                        >
-                          <div className="flex items-center gap-2 min-w-0">
-                            <Badge
-                              variant="outline"
-                              className={`text-[10px] uppercase ${
-                                orientation === "vertical"
-                                  ? "border-blue-500/40 text-blue-300"
-                                  : "border-amber-500/40 text-amber-300"
-                              }`}
+                {/* All-surfaces list — scrollable, every detected surface
+                    visible regardless of which scene is currently shown.
+                    Click a row to jump to its scene. Surfaces default to
+                    hidden from brands; creator approves to expose. */}
+                {hasDbSurfaces && dbSurfaces.length > 0 && (() => {
+                  const sortedSurfaces = [...dbSurfaces].sort(
+                    (a, b) => parseFloat(a.timestamp) - parseFloat(b.timestamp)
+                  );
+                  // Map surface timestamp → scene index so clicking jumps cleanly
+                  const tsToSceneIdx = new Map<number, number>();
+                  localScenes.forEach((scene, idx) => {
+                    const [m, s] = (scene.timestamp || "0:00").split(":").map(Number);
+                    const sec = (m || 0) * 60 + (s || 0);
+                    tsToSceneIdx.set(sec, idx);
+                  });
+                  const currentSceneTs = (() => {
+                    const scene = localScenes[currentSceneIndex];
+                    if (!scene) return -1;
+                    const [m, s] = scene.timestamp.split(":").map(Number);
+                    return (m || 0) * 60 + (s || 0);
+                  })();
+
+                  return (
+                    <div className="rounded-xl bg-white/5 border border-white/10">
+                      <div className="flex items-center justify-between p-4 border-b border-white/10 sticky top-0 bg-zinc-900/95 z-10">
+                        <span className="text-sm font-medium text-white">
+                          All detected surfaces ({dbSurfaces.length})
+                        </span>
+                        <span className="text-xs text-muted-foreground">Approve to expose to brands</span>
+                      </div>
+                      <div className="max-h-80 overflow-y-auto p-2 space-y-1.5">
+                        {sortedSurfaces.map((s) => {
+                          const isApproved = !!s.creatorApproved;
+                          const orientation = (s as any).orientation === "vertical" ? "vertical" : "horizontal";
+                          const confPct = Math.round(parseFloat(s.confidence) * 100);
+                          const ts = parseFloat(s.timestamp) || 0;
+                          const tsLabel = `${Math.floor(ts / 60)}:${String(Math.floor(ts % 60)).padStart(2, "0")}`;
+                          const isCurrentScene = Math.abs(ts - currentSceneTs) < 1;
+                          // Find nearest scene index for jump-on-click
+                          let nearestIdx = 0;
+                          let nearestDist = Infinity;
+                          tsToSceneIdx.forEach((idx, sceneTs) => {
+                            const d = Math.abs(sceneTs - ts);
+                            if (d < nearestDist) { nearestDist = d; nearestIdx = idx; }
+                          });
+                          return (
+                            <div
+                              key={s.id}
+                              className={`flex items-center justify-between gap-3 p-2 rounded-lg border transition-colors cursor-pointer hover:bg-white/5 ${
+                                isApproved
+                                  ? "bg-emerald-500/10 border-emerald-500/40"
+                                  : "bg-zinc-800/50 border-zinc-700"
+                              } ${isCurrentScene ? "ring-1 ring-primary/60" : ""}`}
+                              onClick={(e) => {
+                                // Don't jump if the user clicked the Approve button
+                                if ((e.target as HTMLElement).closest("button")) return;
+                                setCurrentSceneIndex(nearestIdx);
+                                setFrameLoaded(false);
+                              }}
+                              data-testid={`surface-row-${s.id}`}
                             >
-                              {orientation}
-                            </Badge>
-                            <span className="text-sm font-medium text-white truncate">{s.surfaceType}</span>
-                            <span className="text-xs text-muted-foreground">{confPct}%</span>
-                          </div>
-                          <Button
-                            size="sm"
-                            variant={isApproved ? "default" : "secondary"}
-                            onClick={async () => {
-                              const next = !isApproved;
-                              // Optimistic update — flip immediately, revert on failure
-                              setDbSurfaces(prev => prev.map(x =>
-                                x.id === s.id ? { ...x, creatorApproved: next } : x
-                              ));
-                              try {
-                                const res = await fetch(`/api/surface/${s.id}/approval`, {
-                                  method: "PATCH",
-                                  headers: { "Content-Type": "application/json" },
-                                  credentials: "include",
-                                  body: JSON.stringify({ approved: next }),
-                                });
-                                if (!res.ok) throw new Error("approval failed");
-                              } catch {
-                                setDbSurfaces(prev => prev.map(x =>
-                                  x.id === s.id ? { ...x, creatorApproved: !next } : x
-                                ));
-                              }
-                            }}
-                            data-testid={`button-approve-surface-${s.id}`}
-                          >
-                            {isApproved ? "Approved" : "Approve"}
-                          </Button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
+                              <div className="flex items-center gap-2 min-w-0 flex-1">
+                                <Badge
+                                  variant="outline"
+                                  className={`text-[10px] uppercase ${
+                                    orientation === "vertical"
+                                      ? "border-blue-500/40 text-blue-300"
+                                      : "border-amber-500/40 text-amber-300"
+                                  }`}
+                                >
+                                  {orientation}
+                                </Badge>
+                                <span className="text-sm font-medium text-white truncate">{s.surfaceType}</span>
+                                <span className="text-xs text-muted-foreground font-mono">{tsLabel}</span>
+                                <span className="text-xs text-muted-foreground">{confPct}%</span>
+                              </div>
+                              <Button
+                                size="sm"
+                                variant={isApproved ? "default" : "secondary"}
+                                onClick={async (e) => {
+                                  e.stopPropagation();
+                                  const next = !isApproved;
+                                  setDbSurfaces(prev => prev.map(x =>
+                                    x.id === s.id ? { ...x, creatorApproved: next } : x
+                                  ));
+                                  try {
+                                    const res = await fetch(`/api/surface/${s.id}/approval`, {
+                                      method: "PATCH",
+                                      headers: { "Content-Type": "application/json" },
+                                      credentials: "include",
+                                      body: JSON.stringify({ approved: next }),
+                                    });
+                                    if (!res.ok) throw new Error("approval failed");
+                                  } catch {
+                                    setDbSurfaces(prev => prev.map(x =>
+                                      x.id === s.id ? { ...x, creatorApproved: !next } : x
+                                    ));
+                                  }
+                                }}
+                                data-testid={`button-approve-surface-${s.id}`}
+                              >
+                                {isApproved ? "Approved" : "Approve"}
+                              </Button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {hasDbSurfaces && dbSurfaces.length > 0 && (
                   <Button
