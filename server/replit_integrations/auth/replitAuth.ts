@@ -42,7 +42,12 @@ export function getSession() {
     throw new Error("DATABASE_URL environment variable is required");
   }
   
-  const sessionTtl = 2 * 60 * 60 * 1000; // 2 hours
+  // 30 days. Sessions ARE persisted to Postgres (connect-pg-simple below), so
+  // they already survive server restarts/deploys. The only reason users were
+  // getting kicked out is that the previous 2hr TTL expired on idle. Bumping
+  // to 30 days gives a "stay logged in for the month" feel without weakening
+  // session hygiene — the cookie is still httpOnly + secure + sameSite=lax.
+  const sessionTtl = 30 * 24 * 60 * 60 * 1000;
   const pgStore = connectPg(session);
   const sessionStore = new pgStore({
     conString: dbUrl,
@@ -66,6 +71,7 @@ export function getSession() {
     store: sessionStore,
     resave: false,
     saveUninitialized: false,
+    rolling: true,         // sliding expiration — extend on each request
     proxy: true,
     cookie: {
       httpOnly: true,
