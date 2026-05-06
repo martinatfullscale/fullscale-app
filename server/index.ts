@@ -246,6 +246,13 @@ app.use((req, res, next) => {
     await registerRoutes(httpServer, app);
     log("Routes registered successfully");
 
+    // Warm up yt-dlp binary in the background (downloads latest if cached
+    // copy is stale). Non-blocking — server keeps starting while this runs.
+    // First-scan latency is meaningfully better when the warm-up has run.
+    import("./lib/ytDlpUpdater").then(m => m.ensureYtDlpReady()).catch(err =>
+      console.warn("[startup] yt-dlp warm-up failed (non-fatal):", err?.message)
+    );
+
     // Error handler
     app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
       const status = err.status || err.statusCode || 500;

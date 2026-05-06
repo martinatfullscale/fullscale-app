@@ -7,6 +7,7 @@ import sharp from "sharp";
 import { storage } from "../storage";
 import type { VideoIndex, InsertDetectedSurface } from "@shared/schema";
 import ytdl from "@distube/ytdl-core";
+import { getYtDlpPath } from "./ytDlpUpdater";
 
 const MOBILE_SAFARI_USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1";
 const ANDROID_USER_AGENT = "com.google.android.youtube/19.09.3 (Linux; U; Android 14; SM-G998B) gzip";
@@ -340,6 +341,7 @@ export async function getYoutubeVideoDuration(
   youtubeId: string,
   oauthToken?: string,
 ): Promise<number | null> {
+  const ytDlpBin = await getYtDlpPath();
   return new Promise((resolve) => {
     const args = [
       "--print", "%(duration)s",
@@ -353,7 +355,7 @@ export async function getYoutubeVideoDuration(
     }
     args.push(`https://www.youtube.com/watch?v=${youtubeId}`);
 
-    const proc = spawn("yt-dlp", args);
+    const proc = spawn(ytDlpBin, args);
     let stdout = "";
     let stderr = "";
     proc.stdout.on("data", d => { stdout += d.toString(); });
@@ -377,6 +379,7 @@ async function downloadVideoWithYtDlp(
   outputPath: string,
   opts: DownloadOpts = {},
 ): Promise<boolean> {
+  const ytDlpBin = await getYtDlpPath();
   return new Promise((resolve) => {
     const trim = opts.trimToSeconds;
     const timeoutMs = opts.timeoutMs ?? 3 * 60 * 1000;
@@ -438,7 +441,7 @@ async function downloadVideoWithYtDlp(
     }
     args.push(`https://www.youtube.com/watch?v=${youtubeId}`);
 
-    const proc = spawn("yt-dlp", args);
+    const proc = spawn(ytDlpBin, args);
 
     let stderr = "";
     let lastProgressAt = Date.now();
