@@ -7084,7 +7084,7 @@ export async function registerRoutes(
   app.post("/api/placements", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const userEmail = req.authEmail || "unknown";
-      const { videoId, surfaceId, productId, productImageUrl, transform, blend, sceneGroupId, role, bidId } = req.body;
+      const { videoId, surfaceId, productId, productImageUrl, transform, blend, sceneGroupId, role, bidId, harmonizedImageUrl, isHarmonized } = req.body;
 
       if (!videoId || !surfaceId || !productImageUrl || !transform || !blend) {
         return res.status(400).json({ error: "Missing required fields: videoId, surfaceId, productImageUrl, transform, blend" });
@@ -7115,6 +7115,8 @@ export async function registerRoutes(
         transform,
         blend,
         status: "active",
+        harmonizedImageUrl: harmonizedImageUrl || null,
+        isHarmonized: !!isHarmonized,
       });
 
       // Auto-propagate to matching surfaces in the same scene group (scene persistence)
@@ -7147,6 +7149,13 @@ export async function registerRoutes(
 
         for (const surface of matchingSurfaces) {
           try {
+            // Propagated placements inherit harmonization state from the
+            // anchor — if the creator picked "Harmonized" for the anchor
+            // surface, every surface in the same scene group also gets
+            // saved as harmonized. The harmonizedImageUrl is anchor-specific
+            // (different bbox = different render), so we don't copy the
+            // URL — render pipeline regenerates per-surface from
+            // isHarmonized=true.
             await storage.savePlacement({
               videoId,
               surfaceId: surface.id,
@@ -7158,6 +7167,8 @@ export async function registerRoutes(
               transform,
               blend,
               status: "active",
+              harmonizedImageUrl: null,
+              isHarmonized: !!isHarmonized,
             });
             propagatedCount++;
           } catch (propErr: any) {

@@ -73,6 +73,10 @@ interface PlacementPreviewModalProps {
     productId: number | null;
     transform: PlacementTransform;
     blend: PlacementBlend;
+    // Re-edit flow: preserve the creator's prior harmonize choice + URL
+    // so the modal opens in the same visual state as last saved.
+    isHarmonized?: boolean;
+    harmonizedImageUrl?: string | null;
   };
 }
 
@@ -918,6 +922,17 @@ export default function PlacementPreviewModal({
     setTransform({ ...initialPlacement.transform });
     setBlend({ ...initialPlacement.blend });
     setToolPanel("transform");
+    // Restore the creator's prior harmonize choice. If they had isHarmonized
+    // saved, default the toggle to that state and seed the cached URL so the
+    // overlay shows immediately without waiting for a re-fetch.
+    if (typeof initialPlacement.isHarmonized === "boolean") {
+      setHarmonizeEnabled(initialPlacement.isHarmonized);
+    }
+    if (initialPlacement.harmonizedImageUrl) {
+      setLiveHarmonizedUrl(initialPlacement.harmonizedImageUrl);
+      // Don't mark stale — the saved URL matches the saved transform
+      setHarmonizeStale(false);
+    }
     // If from catalog, pre-select the catalog product
     if (initialPlacement.productId && catalogProducts) {
       const match = catalogProducts.find((p: CatalogProduct) => p.id === initialPlacement.productId);
@@ -1805,6 +1820,11 @@ export default function PlacementPreviewModal({
           productImageUrl: productImage,
           transform,
           blend,
+          // Persist the creator's harmonize choice + the URL for the brand
+          // preview. Render pipeline (Commit 3) will regenerate harmonization
+          // per-frame when isHarmonized=true; this URL is the still preview.
+          isHarmonized: harmonizeEnabled,
+          harmonizedImageUrl: harmonizeEnabled ? liveHarmonizedUrl : null,
         }),
       });
       if (!res.ok) {

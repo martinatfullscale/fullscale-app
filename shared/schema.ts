@@ -390,6 +390,13 @@ export const savedPlacements = pgTable("saved_placements", {
     contrast: number;
   }>(),
   status: varchar("status").notNull().default("active"), // 'active', 'archived'
+  // Harmonization persistence — per-placement opt-in. When isHarmonized=true,
+  // brand-side previews + render pipeline use harmonizedImageUrl instead of
+  // the flat product overlay. URL points at fal.ai's CDN (or a future GCS
+  // copy if we move to durable storage). null when creator opted out via
+  // the Harmonized/Flat toggle in the placement modal.
+  harmonizedImageUrl: text("harmonized_image_url"),
+  isHarmonized: boolean("is_harmonized").default(false).notNull(),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
