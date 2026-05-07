@@ -573,6 +573,11 @@ export default function PlacementPreviewModal({
   // Track whether the user is actively dragging — we hide the harmonized
   // overlay during interaction so they can manipulate the canvas freely.
   const [isInteractingWithCanvas, setIsInteractingWithCanvas] = useState(false);
+  // Track whether the cursor is hovering over the canvas. When harmonized,
+  // we fade the overlay to ~25% on hover so the user can see the bbox
+  // handles to grab and adjust position/scale. Without this, the opaque
+  // overlay covers the handles and creators can't tell where to click.
+  const [isHoveringCanvas, setIsHoveringCanvas] = useState(false);
 
   // Refs
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -1891,6 +1896,29 @@ export default function PlacementPreviewModal({
                     {/* Harmonize: server-side compositing with scene-aware
                         lighting + contact shadow. Flat overlay (canvas) stays
                         as the baseline; this opens a side-by-side dialog. */}
+                    {/* Remove Harmonize — visible when a harmonized result is
+                        active. Lets the creator disable the harmonized overlay
+                        so they can adjust position/scale on the flat canvas,
+                        then re-click Harmonize to refresh, then Save to commit.
+                        Round-trip flow: harmonize → review → remove → adjust
+                        → harmonize → save. */}
+                    {(harmonizeEnabled || liveHarmonizedUrl) && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="gap-1.5 text-xs sm:text-sm h-8 border-amber-600/50 text-amber-300 hover:bg-amber-950/40 hover:text-amber-200"
+                        onClick={() => {
+                          setHarmonizeEnabled(false);
+                          setLiveHarmonizedUrl(null);
+                          setHarmonizeError(null);
+                        }}
+                        data-testid="button-remove-harmonize"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        <span className="hidden sm:inline">Remove Harmonize</span>
+                        <span className="sm:hidden">Revert</span>
+                      </Button>
+                    )}
                     <Button
                       size="sm"
                       variant="secondary"
@@ -1962,9 +1990,12 @@ export default function PlacementPreviewModal({
                           }
                           setHarmonizeFlatUrl(data.flatCompositeUrl || null);
                           setHarmonizeResultUrl(data.imageUrl || null);
-                          // Also seed the live overlay so the canvas can show
-                          // the harmonized result via the bottom-left toggle.
+                          // Seed the live overlay AND enable it so the canvas
+                          // shows the harmonized result immediately. The user
+                          // can disable via the "Remove Harmonize" button to
+                          // adjust placement, then re-harmonize.
                           setLiveHarmonizedUrl(data.imageUrl || null);
+                          if (data.imageUrl) setHarmonizeEnabled(true);
                         } catch (err: any) {
                           setHarmonizeError(err.message || "Harmonization failed");
                         } finally {
@@ -2027,6 +2058,8 @@ export default function PlacementPreviewModal({
                   style={{ minHeight: "200px" }}
                   onDragOver={(e) => e.preventDefault()}
                   onDrop={handleDrop}
+                  onMouseEnter={() => setIsHoveringCanvas(true)}
+                  onMouseLeave={() => setIsHoveringCanvas(false)}
                 >
                   <canvas
                     ref={canvasRef}
@@ -2047,19 +2080,33 @@ export default function PlacementPreviewModal({
                       dragging, show this image stretched to match the canvas.
                       We deliberately let it sit OVER the canvas (not replace it)
                       so the underlying canvas still receives interaction
-                      events for drag/scale/rotate — the overlay is hidden via
-                      pointer-events:none and toggles transparent during drag. */}
+                      events for drag/scale/rotate — pointer-events:none on the
+                      overlay routes clicks to the canvas underneath.
+                      Three opacity tiers so the user can both SEE the
+                      harmonized result and FIND the bbox handles:
+                        • full opacity when idle (mouse not over canvas)
+                        • ~25% on hover (handles + bbox visible underneath)
+                        • 0 during active drag (clean adjustment) */}
                   {harmonizeEnabled && liveHarmonizedUrl && !isVideoMode && (
                     <img
                       src={liveHarmonizedUrl}
                       alt="Harmonized placement preview"
                       className={cn(
                         "absolute inset-0 m-auto max-w-full max-h-full rounded-lg pointer-events-none transition-opacity duration-150",
-                        isInteractingWithCanvas || dragMode !== "none" ? "opacity-0" : "opacity-100",
+                        isInteractingWithCanvas || dragMode !== "none" ? "opacity-0" :
+                        isHoveringCanvas ? "opacity-25" : "opacity-100",
                       )}
                       style={{ objectFit: "contain" }}
                       data-testid="img-harmonized-overlay"
                     />
+                  )}
+
+                  {/* Hover hint when harmonized — tells the creator they can
+                      drag/scale to adjust, then re-harmonize. */}
+                  {harmonizeEnabled && liveHarmonizedUrl && !isVideoMode && isHoveringCanvas && dragMode === "none" && (
+                    <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 pointer-events-none rounded-md bg-black/70 backdrop-blur px-3 py-1 text-xs text-zinc-200">
+                      Drag the box to adjust — re-click <span className="text-emerald-300 font-medium">Harmonize</span> to refresh
+                    </div>
                   )}
 
                   {/* Subtle harmonize-status pill in the bottom-left of the
