@@ -1955,36 +1955,51 @@ export async function processVideoScan(
       // if no token is available.
       const oauthToken = await getFreshYoutubeTokenForUser(video.userId).catch(() => null);
 
-      // Plan adaptive sampling. For a 46-min podcast, we want frames spread
-      // across the WHOLE duration — sampling only first 48s misses 99% of
-      // content. Target ~75 frames across the video for rich coverage.
-      // Cost: 75 Gemini calls ≈ $0.03–0.08 per scan, acceptable.
-      const TARGET_FRAMES = 75;
+      // Plan adaptive sampling — duration-banded, NOT a fixed frame target.
+      // Fixed-target was wrong: 75 frames on a 30-min video = every 24s,
+      // way too sparse for podcasts where surfaces shift between cuts.
+      // Sliding scale gets denser sampling on shorter content where
+      // action density is higher, and reasonable spacing on longer
+      // content. Hard cap at 1 hour — anything longer scans only the
+      // first hour (creator-confirmed: nothing >1hr in scope).
+      const MAX_DURATION_SEC = 60 * 60; // 1 hour
       let probedDuration = durationSec;
       if (!probedDuration) {
-        // Last-resort yt-dlp probe (only if DB had nothing). Short timeout
-        // so we don't block the scan if it hangs.
         probedDuration = await getYoutubeVideoDuration(video.youtubeId, oauthToken || undefined);
         if (probedDuration) {
           console.log(`[Scanner V2] Duration from yt-dlp probe: ${probedDuration}s`);
         }
       }
+
+      const planFromDuration = (durSec: number): { intervalSeconds: number; maxFrames: number } => {
+        // Cap effective duration at 1hr — long videos still scan, just
+        // limited to first hour of content.
+        const eff = Math.min(durSec, MAX_DURATION_SEC);
+        let interval: number;
+        if (eff <= 5 * 60) interval = 2;          // ≤5min: every 2s
+        else if (eff <= 15 * 60) interval = 3;    // 5–15min: every 3s
+        else if (eff <= 30 * 60) interval = 4;    // 15–30min: every 4s
+        else interval = 5;                         // 30–60min: every 5s
+        const maxFrames = Math.ceil(eff / interval);
+        return { intervalSeconds: interval, maxFrames };
+      };
+
       if (probedDuration && probedDuration > 0) {
-        const interval = Math.max(2, Math.ceil(probedDuration / TARGET_FRAMES));
-        const maxFrames = Math.min(TARGET_FRAMES, Math.ceil(probedDuration / interval));
-        scanPlan = { intervalSeconds: interval, maxFrames };
-        console.log(`[Scanner V2] Plan: every ${interval}s × ${maxFrames} frames (covers full ${probedDuration}s video)`);
+        scanPlan = planFromDuration(probedDuration);
+        const coveredMin = (scanPlan.intervalSeconds * scanPlan.maxFrames / 60).toFixed(1);
+        const fullMin = (probedDuration / 60).toFixed(1);
+        const cappedNote = probedDuration > MAX_DURATION_SEC ? ` (CAPPED at 1hr — full video is ${fullMin}min)` : "";
+        console.log(`[Scanner V2] Plan: every ${scanPlan.intervalSeconds}s × ${scanPlan.maxFrames} frames = ${coveredMin}min coverage${cappedNote}`);
       } else {
-        // Duration completely unknown — default to a reasonable spread.
-        // Downloads cap to 5min and we sample every 6s for ~50 frames,
-        // which is way better than the original 48s coverage.
-        scanPlan = { intervalSeconds: 6, maxFrames: 50 };
-        console.log(`[Scanner V2] Duration unknown — using fallback plan: every 6s × 50 frames (5min coverage)`);
+        // Duration unknown — default to "5 min, every 2s" plan = 150 frames.
+        scanPlan = { intervalSeconds: 2, maxFrames: 150 };
+        console.log(`[Scanner V2] Duration unknown — using fallback plan: every 2s × 150 frames (5min coverage)`);
       }
 
       // Download budget: enough seconds to cover the planned frames + a buffer.
       const plannedRange = scanPlan.intervalSeconds * scanPlan.maxFrames + 30;
-      const trimSec = probedDuration ? Math.min(probedDuration, plannedRange) : plannedRange;
+      const cappedDuration = probedDuration ? Math.min(probedDuration, MAX_DURATION_SEC) : null;
+      const trimSec = cappedDuration ? Math.min(cappedDuration, plannedRange) : plannedRange;
 
       const ok = await downloadYouTubeVideo(video.youtubeId, downloadPath, {
         trimToSeconds: trimSec,
