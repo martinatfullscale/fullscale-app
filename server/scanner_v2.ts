@@ -234,6 +234,31 @@ ANTI-HALLUCINATION RULES (CRITICAL — READ CAREFULLY):
 - A wall texture you can't actually see (out of focus, behind people, in shadow) is NOT a wall placement surface
 - If unsure whether something is a real surface vs a shadow/dark region near a person, do NOT include it
 
+LABEL ACCURACY RULES (CRITICAL):
+- Before assigning a surface_type, look at the bounding box region and ask:
+  "What is physically there?" — match the LABEL to what you actually see.
+- If the region shows a vertical plane (wall, painted backdrop, curtain-back-panel,
+  textured background, mural, art on wall): label as "wall" with orientation:"vertical".
+  Do NOT label vertical regions as desk/table/countertop just because something brand-
+  shaped could go there. Wrong label = wrong placement physics downstream.
+- If the region shows a flat horizontal plane (table top, desk top, counter top, shelf
+  top): label as the appropriate horizontal type.
+- "studio_desk" specifically requires a visible HORIZONTAL desk surface (the flat top
+  where a podcaster would set their water bottle). Do NOT use "studio_desk" for an
+  upper-frame area, an arm-rest, a couch back, or anything that is not a flat horizontal
+  desk top. If you see a podcast/interview studio but the actual desk top is NOT visible
+  in the frame, do NOT flag a "studio_desk" surface.
+- "table" / "coffee_table" / "side_table" require a visible horizontal table top. If the
+  bbox is centered above floor level on a vertical plane, it is NOT a table.
+- A common error to AVOID: labeling the empty wall/backdrop next to a person as
+  "studio_desk" or "table". Walls behind/beside subjects in podcast scenes are walls.
+  Label them as "wall" with orientation:"vertical".
+- Couch backs, chair backs, headboards: not desks. If they're flat enough to hold a
+  poster they could be "wall" (vertical). If they're horizontal arm-rests with width,
+  they could be "table" but only if visible flat top is wide enough for a product.
+- When in doubt between desk and wall, ask: would a glass of water naturally rest on
+  this surface without falling? If no → it's not horizontal → it's wall (or filter).
+
 HORIZONTAL surface bounding box rules:
 - The box must cover ONLY the visible flat top where a product could sit
 - Do NOT include table legs, chairs, people, or the area BELOW or ABOVE the table
@@ -933,11 +958,41 @@ async function analyzeFrameWithGemini(
       return "horizontal";
     };
 
+    // Sanity-correct Gemini's worst label mistakes BEFORE filtering. The
+    // most common one we've seen: backdrops/walls behind subjects in
+    // podcast scenes get labeled "studio_desk" or "table" because Gemini
+    // sees brand-placement-shape but doesn't verify it's actually a
+    // horizontal surface. Re-label these as "wall" so downstream code +
+    // brand-side displays see the right surface type.
+    const correctMislabel = (s: GeminiDetectedSurface): GeminiDetectedSurface => {
+      const claimedType = s.surface_type.toLowerCase();
+      const claimedOrientation = s.orientation || inferOrientation(s.surface_type);
+      // Only inspect surfaces Gemini called horizontal (desks, tables, etc.)
+      if (claimedOrientation !== "horizontal") return s;
+      const bbY = s.location.y / 100;
+      const bbH = s.location.height / 100;
+      const centerY = bbY + bbH / 2;
+      // Common mislabel: bbox center is in the top 40% of the frame AND
+      // the bbox is reasonably tall (>25% frame height). Real horizontal
+      // surfaces at eye level are thin strips in the lower half; anything
+      // tall + high in the frame is almost certainly a wall/backdrop.
+      const isUpperHalf = centerY < 0.40;
+      const isTall = bbH > 0.25;
+      // Shelves are exempt — they legitimately appear high in the frame
+      const isShelf = claimedType.includes("shelf");
+      if (!isShelf && isUpperHalf && isTall) {
+        console.log(`[Gemini] LABEL CORRECTION: ${s.surface_type} → wall (bbox center y=${(centerY*100).toFixed(0)}%, h=${(bbH*100).toFixed(0)}% — likely a wall, not a horizontal surface)`);
+        return { ...s, surface_type: "wall", orientation: "vertical" };
+      }
+      return s;
+    };
+
     // Map Gemini surfaces, filter low-confidence, validate against ghost patterns.
     // Up to 3 surfaces per frame, mixing horizontal (product placement) and
     // vertical (poster/signage). Ghost filters apply only to horizontal — walls
     // legitimately occupy the upper frame and span large vertical areas.
     const allSurfaces: DetectedSurface[] = parsed.surfaces
+      .map(correctMislabel)
       .filter((s: GeminiDetectedSurface) => s.confidence >= 0.6)
       .filter((s: GeminiDetectedSurface) => {
         const orientation = s.orientation || inferOrientation(s.surface_type);
