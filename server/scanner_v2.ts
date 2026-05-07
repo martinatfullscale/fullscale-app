@@ -1690,8 +1690,11 @@ async function normalizeSurfaceBoundingBoxes(videoId: number): Promise<void> {
  * This prevents ghost/duplicate surfaces and ensures we show 1 prominent
  * surface with clear start/end timestamps.
  */
-async function groupSurfacesTemporally(videoId: number): Promise<void> {
-  console.log(`[Temporal] Starting temporal grouping for video ${videoId}`);
+async function groupSurfacesTemporally(
+  videoId: number,
+  intervalHint: number = CONFIG.FRAME_INTERVAL_SECONDS,
+): Promise<void> {
+  console.log(`[Temporal] Starting temporal grouping for video ${videoId} (interval hint: ${intervalHint}s)`);
 
   const surfaces = await storage.getDetectedSurfaces(videoId);
   const validSurfaces = surfaces.filter(s => s.surfaceType !== "Filtered" && s.surfaceType !== "Potential Surface");
@@ -1725,7 +1728,12 @@ async function groupSurfacesTemporally(videoId: number): Promise<void> {
 
     // Check if surfaces are consecutive (within 1.5x frame interval) and same type
     const isSameType = curr.surfaceType.toLowerCase() === prev.surfaceType.toLowerCase();
-    const isConsecutive = timeDiff <= CONFIG.FRAME_INTERVAL_SECONDS * 1.5;
+    // "Consecutive" means within 1.5× the actual scan interval. With the
+    // sliding-scale plan, intervals can be 2-5s — using a hard-coded
+    // CONFIG.FRAME_INTERVAL_SECONDS (=2) here would mark every 4-5s gap
+    // as non-consecutive, fragmenting tracks into one-frame slivers and
+    // filtering 95%+ of detections.
+    const isConsecutive = timeDiff <= intervalHint * 1.5;
 
     // Check bounding box overlap (center Y within 15% tolerance)
     const prevCenterY = parseFloat(String(prev.boundingBoxY)) + parseFloat(String(prev.boundingBoxHeight)) / 2;
@@ -1760,7 +1768,7 @@ async function groupSurfacesTemporally(videoId: number): Promise<void> {
 
   console.log(`[Temporal] Found ${tracks.length} surface track(s):`);
   for (const track of tracks) {
-    const duration = track.endTime - track.startTime + CONFIG.FRAME_INTERVAL_SECONDS;
+    const duration = track.endTime - track.startTime + intervalHint;
     console.log(`[Temporal]   ${track.surfaceType}: ${track.startTime}s - ${track.endTime}s (${duration}s, ${track.surfaces.length} frames, ${(track.avgConfidence * 100).toFixed(0)}% avg confidence)`);
   }
 
@@ -1769,8 +1777,8 @@ async function groupSurfacesTemporally(videoId: number): Promise<void> {
     // Store temporal range in scene_context for the surfaces in this track
     if (tracks.length === 1) {
       const track = tracks[0];
-      const duration = track.endTime - track.startTime + CONFIG.FRAME_INTERVAL_SECONDS;
-      const contextNote = `Visible: ${track.startTime}s - ${track.endTime + CONFIG.FRAME_INTERVAL_SECONDS}s (${duration}s)`;
+      const duration = track.endTime - track.startTime + intervalHint;
+      const contextNote = `Visible: ${track.startTime}s - ${track.endTime + intervalHint}s (${duration}s)`;
       for (const s of track.surfaces) {
         try {
           await storage.updateDetectedSurface(s.id, { sceneContext: contextNote });
@@ -1782,7 +1790,7 @@ async function groupSurfacesTemporally(videoId: number): Promise<void> {
 
   // Score tracks: prefer longer duration and higher confidence
   const scoredTracks = tracks.map(track => {
-    const duration = track.endTime - track.startTime + CONFIG.FRAME_INTERVAL_SECONDS;
+    const duration = track.endTime - track.startTime + intervalHint;
     // Score = duration (in seconds) * average confidence
     const score = duration * track.avgConfidence;
     return { ...track, score, duration };
@@ -1806,7 +1814,7 @@ async function groupSurfacesTemporally(videoId: number): Promise<void> {
   const winningTracks = Array.from(bestPerType.values());
   for (const t of winningTracks) {
     console.log(`[Temporal] Keeping ${t.surfaceType}: ${t.startTime}s - ${t.endTime}s (${t.duration}s, score=${t.score.toFixed(2)})`);
-    const contextNote = `Visible: ${t.startTime}s - ${t.endTime + CONFIG.FRAME_INTERVAL_SECONDS}s (${t.duration}s)`;
+    const contextNote = `Visible: ${t.startTime}s - ${t.endTime + intervalHint}s (${t.duration}s)`;
     for (const s of t.surfaces) {
       keepIds.add(s.id);
       try {
@@ -2231,7 +2239,7 @@ export async function processVideoScan(
     // TEMPORAL SURFACE GROUPING — Group consecutive surfaces into tracks
     // Keep only the best track (longest duration, highest confidence) and mark others as Filtered
     try {
-      await groupSurfacesTemporally(videoId);
+      await groupSurfacesTemporally(videoId, scanPlan.intervalSeconds);
     } catch (temporalErr) {
       console.error(`[Scanner V2] Temporal grouping failed (non-fatal):`, temporalErr);
     }
