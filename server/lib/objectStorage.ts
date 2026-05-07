@@ -115,24 +115,33 @@ export function getStorageStream(objectKey: string) {
 }
 
 /**
- * Generate a signed URL for direct client-side upload to Object Storage.
- * The client PUTs the file directly — the server never touches it.
+ * Generate a one-time upload URL for direct client-side upload to Object Storage.
+ * The client PUTs the file body directly — the server never touches the bytes.
  *
- * Returns { signedUrl, objectKey, serveUrl }.
+ * On Replit, ADC is provided via the workload-identity sidecar — there is NO
+ * `client_email` available locally, so v4 signed-URL local signing fails with
+ * "Cannot sign data without `client_email`". Instead we create a GCS resumable
+ * upload session: ADC is sufficient to AUTHORIZE the session creation, and the
+ * returned session URL accepts a single full-body PUT from the client without
+ * any further signing. Same client semantics as a presigned PUT URL.
+ *
+ * Returns { signedUrl, objectKey, serveUrl }. The `signedUrl` field name is
+ * preserved for client-side back-compat.
  */
 export async function getSignedUploadUrl(
   objectKey: string,
   contentType: string,
-  expiresInMinutes: number = 30
+  _expiresInMinutes: number = 30
 ): Promise<{ signedUrl: string; objectKey: string; serveUrl: string }> {
   const bucket = getBucket();
   const file = bucket.file(objectKey);
 
-  const [signedUrl] = await file.getSignedUrl({
-    version: "v4",
-    action: "write",
-    expires: Date.now() + expiresInMinutes * 60 * 1000,
-    contentType,
+  // createResumableUpload returns a session URL the client can PUT to. The
+  // entire file can be sent in a single PUT — chunking is optional.
+  // Content-Type is bound to the session at creation, but we also re-send it
+  // in the client PUT for safety.
+  const [signedUrl] = await file.createResumableUpload({
+    metadata: { contentType },
   });
 
   return {
