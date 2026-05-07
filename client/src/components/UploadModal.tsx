@@ -129,9 +129,17 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
     if (!selectedFile) return;
 
     setState("uploading");
-    // Presigned URL upload requires GCS service account (not available on Replit sidecar auth).
-    // All uploads go through the traditional FormData path for now.
-    const useDirectUpload = false;
+    // Direct-to-storage upload for files >50MB. Bypasses the Express server
+    // entirely — bytes flow from browser straight to GCS via a signed PUT.
+    // Solves the "stuck at 81%" problem on large uploads where Replit's
+    // deploy proxy + multer disk write created a bottleneck.
+    //
+    // Smaller files keep the FormData path (simpler, single round-trip).
+    // The earlier comment claiming "Presigned URL upload requires GCS service
+    // account (not available on Replit sidecar)" was outdated — the sidecar's
+    // workload identity supports v4 signing via signBlob.
+    const LARGE_FILE_THRESHOLD = 50 * 1024 * 1024; // 50 MB
+    const useDirectUpload = selectedFile.size > LARGE_FILE_THRESHOLD;
 
     if (useDirectUpload) {
       // ── Direct-to-storage presigned URL upload (bypasses server) ──
