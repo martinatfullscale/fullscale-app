@@ -220,7 +220,9 @@ Surfaces fall into two distinct categories with different placement use cases:
 
   1. HORIZONTAL surfaces (orientation: "horizontal") — flat surfaces where physical objects can sit.
      Examples: desks, tables, countertops, shelves, nightstands, coffee tables, studio desks.
-     Use case: bottles, cans, phones, gadgets, books, packaged goods.
+     Plus FLOOR space — indoor floor area with usable empty room for floor-resting products.
+     Use case: bottles, cans, phones, gadgets, books, packaged goods (table-top sized);
+     sneakers, shoe boxes, large bottles, plants, decorative props (floor-sized).
 
   2. VERTICAL surfaces (orientation: "vertical") — flat upright planes where signage/posters/art belong.
      Examples: walls (the empty parts), doors, windows, large empty backdrops.
@@ -233,8 +235,9 @@ CRITICAL RULES:
 - Only detect REAL physical surfaces that exist in the 3D scene
 - Each surface must occupy at least 5% of total frame area
 - Each surface must have CLEAR visual separation from people in the frame
-- Do NOT flag roads, sidewalks, ground, or floors
+- Do NOT flag roads, sidewalks, or outdoor ground (concrete, asphalt, dirt)
 - Do NOT flag ceilings or curtains
+- Indoor floors ARE valid (see FLOOR rules below) — but only when usable empty floor area is clearly visible
 - Do NOT flag bridges, vehicles, or outdoor structures
 - Do NOT flag areas with heavy motion blur or out-of-focus regions
 - Do NOT flag surfaces blocked by people's bodies, hands, or large objects
@@ -285,6 +288,22 @@ HORIZONTAL surface bounding box rules:
 - Box height should rarely exceed 30% of frame unless viewed top-down
 - For eye-level tables/desks, box center y > 40% (lower portion of frame)
 
+FLOOR surface rules (use surface_type:"floor", orientation:"horizontal"):
+- Only flag floor space when there's a CLEARLY VISIBLE empty patch of indoor
+  floor — wood, carpet, tile, concrete (interior), polished surfaces.
+- Use case is products that rest on the floor: sneakers, shoe boxes, large
+  drink bottles, decorative plants, suitcases, gym equipment, branded props.
+- The floor patch must be:
+  * IN FOCUS (not background blur)
+  * Empty of clutter — no shoes/cables/feet currently on that exact spot
+  * Big enough for a sneaker — at least 8% of frame area
+  * In the LOWER portion of the frame (box center y > 60%)
+- Box typically lives at the bottom of the frame: x:10, y:65, width:35, height:25
+  (a clear patch of carpet at someone's feet but not under their feet).
+- Do NOT flag the floor BENEATH a person's feet — they're standing on it.
+- Do NOT flag floor that's mostly out of focus (depth-of-field background).
+- Outdoor ground (sidewalks, asphalt, grass) is NOT floor — those stay excluded.
+
 VERTICAL surface bounding box rules:
 - The box must cover only the EMPTY/UNOBSTRUCTED part of the wall/door/window
 - Do NOT include picture frames already on the wall, light switches, or wall fixtures
@@ -315,18 +334,20 @@ PODCAST / INTERVIEW / TALKING-HEAD RULES (read carefully — we hallucinate here
 - If you cannot describe in one sentence "there is a [surface_type] at [location]
   made of [material]," then it is not a real surface and should not be flagged.
 
-GOOD SURFACES (flag up to 3 of these):
+GOOD SURFACES (flag up to 2 of these):
 - Studio desks in podcast/recording setups (when desk top is visible)
 - Desks, tables, countertops with visible flat area
 - Shelves with clear space
 - Nightstands, side tables, coffee tables
 - Kitchen counters with some clear space
+- Indoor FLOOR — clear empty patch of wood, carpet, tile, polished concrete
+  (in focus, not under someone's feet, big enough for a sneaker/large product)
 - Walls with substantial empty/unobstructed sections (in focus)
 - Doors (when prominently visible in frame, not just edges)
 - Large windows (when behind something brand-relevant could go)
 
 BAD "SURFACES" (do NOT flag):
-- Roads, highways, pavement, ground, floors (even indoor)
+- Roads, highways, pavement, outdoor ground (asphalt, dirt, grass)
 - Ceilings, curtains
 - Sky, trees, outdoor scenery without architectural features
 - Building exteriors, bridges, vehicles
@@ -346,7 +367,7 @@ CONFIDENCE GUIDANCE:
 For each surface, provide:
 - **location**: bounding box {x, y, width, height} in percentages (0-100)
 - **orientation**: "horizontal" or "vertical"
-- **surface_type**: desk, table, shelf, counter, nightstand, coffee_table, studio_desk, wall, door, window
+- **surface_type**: desk, table, shelf, counter, nightstand, coffee_table, studio_desk, floor, wall, door, window
 - **confidence**: 0.0 to 1.0 (see guidance above)
 - **reasoning**: brief explanation
 - **lighting_direction**: "left", "right", "top", "top-left", "top-right", "ambient"
