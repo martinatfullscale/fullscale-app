@@ -253,6 +253,16 @@ app.use((req, res, next) => {
       console.warn("[startup] yt-dlp warm-up failed (non-fatal):", err?.message)
     );
 
+    // Configure GCS bucket CORS once per process so direct-to-storage uploads
+    // (large-file path via resumable session URLs) don't fail the browser's
+    // preflight. Idempotent and cheap; non-blocking on failure since the
+    // server-side fallback (multer) still works without it.
+    import("./lib/objectStorage").then(m => m.ensureBucketCors())
+      .then(cfg => console.log(`[startup] GCS bucket CORS configured for direct uploads (origins: ${cfg.origin.join(", ")})`))
+      .catch(err =>
+        console.warn("[startup] GCS bucket CORS setup failed (non-fatal — direct uploads may CORS-error until manual fix):", err?.message)
+      );
+
     // Error handler
     app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
       const status = err.status || err.statusCode || 500;

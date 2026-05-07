@@ -2800,6 +2800,26 @@ export async function registerRoutes(
     }
   });
 
+  // Configure bucket CORS so the browser can PUT directly to GCS resumable
+  // upload session URLs without preflight failures. One-time setup per
+  // bucket; idempotent. Hit this once after a fresh deploy or whenever the
+  // direct-upload path returns "Network error during storage upload".
+  app.post("/api/admin/setup-bucket-cors", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const userEmail = req.user?.claims?.email || req.user?.email || "";
+      const { isAdminEmail } = await import("./lib/adminEmails");
+      if (!isAdminEmail(userEmail)) {
+        return res.status(403).json({ error: "Admin only" });
+      }
+      const { ensureBucketCors } = await import("./lib/objectStorage");
+      const config = await ensureBucketCors();
+      res.json({ ok: true, applied: config });
+    } catch (e: any) {
+      console.error("[admin/setup-bucket-cors] failed:", e);
+      res.status(500).json({ error: e.message || String(e) });
+    }
+  });
+
   // SPIKE: Harmonize a product image into a scene at a detected surface's
   // bounding box, using fal.ai ACE++. Returns the harmonized composite URL.
   // Test rig only — not yet wired into the placement UI. Hit with:

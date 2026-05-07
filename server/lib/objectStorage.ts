@@ -29,6 +29,38 @@ function getBucket() {
   return storage.bucket(bucketId);
 }
 
+/**
+ * Configure CORS on the bucket so the browser can PUT directly to resumable
+ * upload session URLs at storage.googleapis.com from the app's origin.
+ *
+ * Without this, the browser's CORS preflight against the resumable session
+ * URL fails and XHR surfaces a generic "Network error during storage upload".
+ *
+ * One-time setup per bucket. Idempotent — safe to call repeatedly.
+ */
+export async function ensureBucketCors(): Promise<{ origin: string[]; method: string[]; responseHeader: string[]; maxAgeSeconds: number }> {
+  const bucket = getBucket();
+  const corsConfig = [
+    {
+      origin: ["*"],
+      method: ["GET", "HEAD", "PUT", "POST", "OPTIONS"],
+      responseHeader: [
+        "Content-Type",
+        "Content-Length",
+        "Content-Range",
+        "Content-Disposition",
+        "Authorization",
+        "X-Goog-Resumable",
+        "X-Goog-Content-Length-Range",
+        "x-goog-resumable",
+      ],
+      maxAgeSeconds: 3600,
+    },
+  ];
+  await bucket.setCorsConfiguration(corsConfig);
+  return corsConfig[0];
+}
+
 export async function uploadBufferToStorage(
   buffer: Buffer,
   objectKey: string,
