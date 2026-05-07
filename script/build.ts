@@ -55,7 +55,14 @@ async function buildAll() {
     define: {
       "process.env.NODE_ENV": '"production"',
     },
-    minify: true,
+    // Minify is the memory hog during esbuild — on Replit's deploy
+    // container this was OOMing silently and the deploy step would
+    // fail with "There was an issue publishing your artifact" without
+    // any error visible in logs. Bundle-only (no minify) saves the
+    // most memory; the resulting dist/index.cjs is ~2x bigger but
+    // we're shipping a CJS bundle to a Node runtime, not over the
+    // wire to a browser, so size is a non-concern.
+    minify: false,
     external: externals,
     logLevel: "info",
   });
