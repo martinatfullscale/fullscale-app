@@ -2806,7 +2806,7 @@ export async function registerRoutes(
   //   POST /api/placement/harmonize
   //   { surfaceId: 137777, productImageUrl: "https://...png", prompt?: "..." }
   app.post("/api/placement/harmonize", isFlexibleAuthenticated, async (req: any, res) => {
-    const { surfaceId, productImageUrl, prompt } = req.body || {};
+    const { surfaceId, productImageUrl, prompt, productPlacementBbox } = req.body || {};
     if (typeof surfaceId !== "number" || !productImageUrl) {
       return res.status(400).json({ error: "Body must include { surfaceId: number, productImageUrl: string }" });
     }
@@ -2844,15 +2844,33 @@ export async function registerRoutes(
     const frameW = meta.width || 1280;
     const frameH = meta.height || 720;
 
+    // Use the client-supplied placement bbox when present (it reflects the
+    // user's drag/scale adjustments on the canvas). Fall back to the raw
+    // surface bbox if the client didn't compute one — older callers + the
+    // standalone diagnostic curl land here.
+    const placementBbox = (
+      productPlacementBbox &&
+      typeof productPlacementBbox.x === "number" &&
+      typeof productPlacementBbox.y === "number" &&
+      typeof productPlacementBbox.width === "number" &&
+      typeof productPlacementBbox.height === "number"
+    ) ? {
+      x: productPlacementBbox.x,
+      y: productPlacementBbox.y,
+      width: productPlacementBbox.width,
+      height: productPlacementBbox.height,
+    } : {
+      x: parseFloat(String(surface.boundingBoxX)),
+      y: parseFloat(String(surface.boundingBoxY)),
+      width: parseFloat(String(surface.boundingBoxWidth)),
+      height: parseFloat(String(surface.boundingBoxHeight)),
+    };
+    console.log(`[Harmonize] bbox source: ${productPlacementBbox ? "client-supplied (transform-aware)" : "surface fallback"}`);
+
     const result = await harmonizeProductIntoScene({
       sceneImage: sceneBuffer,
       productImage: productImageUrl,
-      bbox: {
-        x: parseFloat(String(surface.boundingBoxX)),
-        y: parseFloat(String(surface.boundingBoxY)),
-        width: parseFloat(String(surface.boundingBoxWidth)),
-        height: parseFloat(String(surface.boundingBoxHeight)),
-      },
+      bbox: placementBbox,
       frameDimensions: { width: frameW, height: frameH },
       prompt,
     });

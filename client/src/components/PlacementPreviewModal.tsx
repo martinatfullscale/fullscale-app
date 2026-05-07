@@ -564,14 +564,12 @@ export default function PlacementPreviewModal({
   const [harmonizeFlatUrl, setHarmonizeFlatUrl] = useState<string | null>(null);
   const [harmonizeResultUrl, setHarmonizeResultUrl] = useState<string | null>(null);
 
-  // Live-harmonize toggle — when ON, the canvas displays the harmonized
-  // composite instead of the flat overlay. Default ON per product spec
-  // ("creators see harmonized as the standard, can toggle off"). Stale
-  // flag triggers re-harmonize on bbox/product changes.
-  const [harmonizeEnabled, setHarmonizeEnabled] = useState(true);
+  // Manual harmonize state — user explicitly clicks the Harmonize button
+  // (no auto-fire). Server preserves the user's exact placement+scale
+  // because we send the post-transform bbox derived from canvas state,
+  // not the raw surface bbox.
+  const [harmonizeEnabled, setHarmonizeEnabled] = useState(false);
   const [liveHarmonizedUrl, setLiveHarmonizedUrl] = useState<string | null>(null);
-  const [harmonizeStale, setHarmonizeStale] = useState(false);
-  const harmonizeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Track whether the user is actively dragging — we hide the harmonized
   // overlay during interaction so they can manipulate the canvas freely.
   const [isInteractingWithCanvas, setIsInteractingWithCanvas] = useState(false);
@@ -872,48 +870,16 @@ export default function PlacementPreviewModal({
     }
   }, [open]);
 
-  // Mark harmonized result stale whenever the placement inputs change.
-  // Triggers a debounced re-fetch in the next effect.
+  // Invalidate cached harmonization when inputs change. Auto-trigger
+  // removed per product spec — user clicks Harmonize button to refresh
+  // the result. We just clear the stale URL so the canvas shows the flat
+  // overlay until they manually re-harmonize.
   useEffect(() => {
-    if (!harmonizeEnabled) return;
-    if (!selectedSurface || !productImage) return;
-    setHarmonizeStale(true);
-  }, [selectedSurface?.id, productImage, transform.offsetX, transform.offsetY, transform.scale, transform.rotation, harmonizeEnabled]);
-
-  // Debounced auto-harmonize. Waits 600ms after the last change so we don't
-  // fire mid-drag. Skips when modal is closed or interaction is in progress.
-  useEffect(() => {
-    if (!harmonizeEnabled || !harmonizeStale) return;
-    if (!selectedSurface || !productImage) return;
-    if (isInteractingWithCanvas) return;
-    if (harmonizeTimeoutRef.current) clearTimeout(harmonizeTimeoutRef.current);
-    harmonizeTimeoutRef.current = setTimeout(async () => {
-      setIsHarmonizing(true);
-      setHarmonizeError(null);
-      try {
-        const res = await fetch("/api/placement/harmonize", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({
-            surfaceId: selectedSurface.id,
-            productImageUrl: productImage,
-          }),
-        });
-        const data = await res.json();
-        if (!res.ok || !data.success) throw new Error(data.error || "Harmonization failed");
-        setLiveHarmonizedUrl(data.imageUrl || null);
-        setHarmonizeStale(false);
-      } catch (err: any) {
-        setHarmonizeError(err.message || "Harmonization failed");
-      } finally {
-        setIsHarmonizing(false);
-      }
-    }, 600);
-    return () => {
-      if (harmonizeTimeoutRef.current) clearTimeout(harmonizeTimeoutRef.current);
-    };
-  }, [harmonizeEnabled, harmonizeStale, selectedSurface?.id, productImage, isInteractingWithCanvas]);
+    setLiveHarmonizedUrl(null);
+    if (harmonizeEnabled) setHarmonizeEnabled(false);
+    // intentionally not depending on harmonizeEnabled (avoid loop)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSurface?.id, productImage, transform.offsetX, transform.offsetY, transform.scale, transform.rotation]);
 
   // Apply initialPlacement when modal opens with pre-loaded data (re-edit flow)
   useEffect(() => {
@@ -930,8 +896,6 @@ export default function PlacementPreviewModal({
     }
     if (initialPlacement.harmonizedImageUrl) {
       setLiveHarmonizedUrl(initialPlacement.harmonizedImageUrl);
-      // Don't mark stale — the saved URL matches the saved transform
-      setHarmonizeStale(false);
     }
     // If from catalog, pre-select the catalog product
     if (initialPlacement.productId && catalogProducts) {
@@ -1939,6 +1903,48 @@ export default function PlacementPreviewModal({
                         setHarmonizeFlatUrl(null);
                         setHarmonizeResultUrl(null);
                         setShowHarmonizeCompare(true);
+
+                        // Compute the product's actual normalized bbox after
+                        // applying user transforms. This mirrors drawProduct's
+                        // canvas math so the server places the product where
+                        // it currently sits on the canvas, not where the raw
+                        // surface bbox is. Without this, harmonize was
+                        // resizing + recentering to the surface bbox and
+                        // ignoring the user's adjustments.
+                        const surfaceX = selectedSurface.boundingBoxX;
+                        const surfaceY = selectedSurface.boundingBoxY;
+                        const surfaceW = selectedSurface.boundingBoxWidth;
+                        const surfaceH = selectedSurface.boundingBoxHeight;
+                        const productImg = productImgRef.current;
+                        const canvas = canvasRef.current;
+                        let productPlacementBbox = null;
+                        if (productImg && canvas && surfaceW > 0 && surfaceH > 0) {
+                          const prodAspect = productImg.naturalWidth / productImg.naturalHeight;
+                          const surfaceAspectInBbox = surfaceW / surfaceH;
+                          // Same aspect-fit logic as drawProduct (line 388),
+                          // but in normalized coordinates instead of pixels.
+                          let drawW: number, drawH: number;
+                          if (prodAspect > surfaceAspectInBbox) {
+                            drawW = surfaceW * transform.scale;
+                            drawH = (surfaceW / prodAspect) * transform.scale;
+                          } else {
+                            drawH = surfaceH * transform.scale;
+                            drawW = (surfaceH * prodAspect) * transform.scale;
+                          }
+                          // transform.offsetX/Y are in canvas pixels — convert
+                          // to normalized scene space using canvas dimensions.
+                          const offsetXNorm = transform.offsetX / Math.max(1, canvas.width);
+                          const offsetYNorm = transform.offsetY / Math.max(1, canvas.height);
+                          const centerXNorm = surfaceX + surfaceW / 2 + offsetXNorm;
+                          const centerYNorm = surfaceY + surfaceH / 2 + offsetYNorm;
+                          productPlacementBbox = {
+                            x: Math.max(0, Math.min(1, centerXNorm - drawW / 2)),
+                            y: Math.max(0, Math.min(1, centerYNorm - drawH / 2)),
+                            width: Math.max(0.01, Math.min(1, drawW)),
+                            height: Math.max(0.01, Math.min(1, drawH)),
+                          };
+                        }
+
                         try {
                           const res = await fetch("/api/placement/harmonize", {
                             method: "POST",
@@ -1947,6 +1953,7 @@ export default function PlacementPreviewModal({
                             body: JSON.stringify({
                               surfaceId: selectedSurface.id,
                               productImageUrl: productImage,
+                              productPlacementBbox,
                             }),
                           });
                           const data = await res.json();
@@ -1955,6 +1962,9 @@ export default function PlacementPreviewModal({
                           }
                           setHarmonizeFlatUrl(data.flatCompositeUrl || null);
                           setHarmonizeResultUrl(data.imageUrl || null);
+                          // Also seed the live overlay so the canvas can show
+                          // the harmonized result via the bottom-left toggle.
+                          setLiveHarmonizedUrl(data.imageUrl || null);
                         } catch (err: any) {
                           setHarmonizeError(err.message || "Harmonization failed");
                         } finally {
