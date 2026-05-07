@@ -167,21 +167,19 @@ async function applyProceduralHarmonization(
   const sceneBrightness = (meanR + meanG + meanB) / 3 / 255; // 0–1
   console.log(`[Harmonize/proc] Scene atmosphere: rgb(${meanR.toFixed(0)},${meanG.toFixed(0)},${meanB.toFixed(0)}), brightness=${sceneBrightness.toFixed(2)}`);
 
-  // ── Step 4: adjust product to match atmosphere ──
-  // Tint moves product color toward scene color (subtle, sharp's `tint`
-  // is multiplicative-ish — clamp the values so dark scenes don't blacken
-  // the product into invisibility).
-  const tintR = clamp(meanR, 100, 240);
-  const tintG = clamp(meanG, 100, 240);
-  const tintB = clamp(meanB, 100, 240);
-  // Brightness target: blend scene's brightness toward 1.0 a bit so the
-  // product doesn't disappear in dim scenes. Range typically 0.7–1.1.
-  const brightnessFactor = clamp(0.65 + sceneBrightness * 0.5, 0.70, 1.15);
+  // ── Step 4: adjust product to match scene LIGHTING (not scene COLOR) ──
+  // Hard rule: brand colors must stay recognizable. A Just Water carton has
+  // to read as Just Water blue/white, not gray-washed to match a dim podcast
+  // set. So no tint — that would shift the product's intrinsic palette.
+  // Instead we adjust ONLY the brightness to match scene exposure, keeping
+  // saturation full so brand colors stay crisp. The contact shadow (next
+  // step) handles the "this object belongs in this scene" feel.
+  const brightnessFactor = clamp(0.85 + sceneBrightness * 0.25, 0.85, 1.10);
   const productAdjusted = await sharp(productResized)
-    .modulate({ brightness: brightnessFactor, saturation: 0.92 })
-    .tint({ r: tintR, g: tintG, b: tintB })
+    .modulate({ brightness: brightnessFactor })
     .png()
     .toBuffer();
+  console.log(`[Harmonize/proc] Brightness adjustment: ${brightnessFactor.toFixed(2)}× (saturation + hue preserved)`);
 
   // ── Step 5: build a soft contact shadow underneath the product ──
   // Take the product's alpha channel as a silhouette, blur it heavily,
