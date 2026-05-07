@@ -50,3 +50,64 @@ export async function addSignupToAirtable(data: AirtableSignupData): Promise<boo
     return false;
   }
 }
+
+export interface AirtableSignupRecord {
+  id: string;
+  email: string | null;
+  firstName: string | null;
+  lastName: string | null;
+  authProvider: string | null;
+  status: string | null;
+  signupDate: string | null;
+  // Raw fields for anything we didn't map explicitly — Airtable bases
+  // accumulate ad-hoc columns over time, surface them rather than drop.
+  raw: Record<string, any>;
+  createdTime: string | null;
+}
+
+/** Fetch every signup record from Airtable. Handles pagination via offset.
+ *  Returns null if the API token is missing. Throws on network/HTTP errors.
+ */
+export async function listAirtableSignups(): Promise<AirtableSignupRecord[] | null> {
+  if (!AIRTABLE_API_TOKEN) {
+    console.warn("[Airtable] No API token configured");
+    return null;
+  }
+
+  const baseUrl = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodeURIComponent(AIRTABLE_TABLE_NAME)}`;
+  const all: AirtableSignupRecord[] = [];
+  let offset: string | undefined = undefined;
+  // Hard cap so a runaway loop or massive base doesn't lock the request.
+  const MAX_PAGES = 50; // 100 per page = 5000 records max
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const url = new URL(baseUrl);
+    url.searchParams.set("pageSize", "100");
+    if (offset) url.searchParams.set("offset", offset);
+
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${AIRTABLE_API_TOKEN}` },
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Airtable list failed ${res.status}: ${body.slice(0, 300)}`);
+    }
+    const data: any = await res.json();
+    for (const r of (data.records || [])) {
+      const f = r.fields || {};
+      all.push({
+        id: r.id,
+        email: f.Email || null,
+        firstName: f["First Name"] || null,
+        lastName: f["Last Name"] || null,
+        authProvider: f["Auth Provider"] || null,
+        status: f.Status || null,
+        signupDate: f["Signup Date"] || null,
+        raw: f,
+        createdTime: r.createdTime || null,
+      });
+    }
+    offset = data.offset;
+    if (!offset) break;
+  }
+  return all;
+}

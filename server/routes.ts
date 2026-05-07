@@ -33,7 +33,7 @@ import {
 import { processVideoExport } from "./lib/videoExporter";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 import { hashPassword, verifyPassword } from "./lib/password";
-import { addSignupToAirtable } from "./lib/airtable";
+import { addSignupToAirtable, listAirtableSignups } from "./lib/airtable";
 import { setupPlatformAuth, importFacebookVideos, importInstagramMedia, importPersonalVideos, fetchInstagramVideoViews } from "./lib/platformAuth";
 import { pLimit } from "./lib/concurrency";
 import { getSourcePath } from "./lib/sourceCache";
@@ -583,6 +583,74 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("[List Signups] Error:", err);
       res.status(500).json({ success: false, error: err.message || "List failed" });
+    }
+  });
+
+  // Pull every signup from the Airtable base (canonical source-of-truth
+  // for who has expressed interest — every signup gets POSTed there at
+  // registration time per the existing flow). Admin-gated. Compares
+  // against the Postgres allowlist + users table so you can spot drift.
+  app.get("/api/admin/airtable-signups", async (req: any, res) => {
+    try {
+      const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co'];
+      const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
+      if (!callerEmail || !adminEmails.map(e => e.toLowerCase()).includes(callerEmail.toLowerCase())) {
+        return res.status(403).json({ error: "Admin access required" });
+      }
+
+      const records = await listAirtableSignups();
+      if (records === null) {
+        return res.status(503).json({
+          error: "Airtable not configured",
+          detail: "AIRTABLE_API_TOKEN env var is not set on this deployment",
+        });
+      }
+
+      // Cross-reference with Postgres so you can see who's where
+      const allowlist = await db.select().from(allowedUsersTable);
+      const allUsers = await db.select({
+        email: usersTable.email,
+        isApproved: usersTable.isApproved,
+      }).from(usersTable);
+
+      const allowlistByEmail = new Map(allowlist.map(a => [(a.email || "").toLowerCase(), a]));
+      const usersByEmail = new Map(allUsers.map(u => [(u.email || "").toLowerCase(), u]));
+
+      const enriched = records.map(r => {
+        const lower = (r.email || "").toLowerCase();
+        const inAllowlist = allowlistByEmail.has(lower);
+        const inUsers = usersByEmail.has(lower);
+        return {
+          ...r,
+          inAllowlist,
+          inUsers,
+          // Discrepancy flags: Airtable record but no Postgres trail
+          driftLikely: !inAllowlist && !inUsers,
+        };
+      });
+
+      // Summary counts at the top so the response is scannable
+      const summary = {
+        airtableTotal: records.length,
+        inAllowlist: enriched.filter(r => r.inAllowlist).length,
+        inUsers: enriched.filter(r => r.inUsers).length,
+        driftLikely: enriched.filter(r => r.driftLikely).length,
+        byStatus: enriched.reduce((acc: Record<string, number>, r) => {
+          const k = r.status || "(none)";
+          acc[k] = (acc[k] || 0) + 1;
+          return acc;
+        }, {}),
+        byAuthProvider: enriched.reduce((acc: Record<string, number>, r) => {
+          const k = r.authProvider || "(none)";
+          acc[k] = (acc[k] || 0) + 1;
+          return acc;
+        }, {}),
+      };
+
+      res.json({ summary, records: enriched });
+    } catch (err: any) {
+      console.error("[Airtable Signups] Error:", err);
+      res.status(500).json({ success: false, error: err.message || "Fetch failed" });
     }
   });
 
