@@ -560,6 +560,18 @@ export default function PlacementPreviewModal({
   const [harmonizeFlatUrl, setHarmonizeFlatUrl] = useState<string | null>(null);
   const [harmonizeResultUrl, setHarmonizeResultUrl] = useState<string | null>(null);
 
+  // Live-harmonize toggle — when ON, the canvas displays the harmonized
+  // composite instead of the flat overlay. Default ON per product spec
+  // ("creators see harmonized as the standard, can toggle off"). Stale
+  // flag triggers re-harmonize on bbox/product changes.
+  const [harmonizeEnabled, setHarmonizeEnabled] = useState(true);
+  const [liveHarmonizedUrl, setLiveHarmonizedUrl] = useState<string | null>(null);
+  const [harmonizeStale, setHarmonizeStale] = useState(false);
+  const harmonizeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Track whether the user is actively dragging — we hide the harmonized
+  // overlay during interaction so they can manipulate the canvas freely.
+  const [isInteractingWithCanvas, setIsInteractingWithCanvas] = useState(false);
+
   // Refs
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -855,6 +867,49 @@ export default function PlacementPreviewModal({
       setExportOutputUrl(null);
     }
   }, [open]);
+
+  // Mark harmonized result stale whenever the placement inputs change.
+  // Triggers a debounced re-fetch in the next effect.
+  useEffect(() => {
+    if (!harmonizeEnabled) return;
+    if (!selectedSurface || !productImage) return;
+    setHarmonizeStale(true);
+  }, [selectedSurface?.id, productImage, transform.offsetX, transform.offsetY, transform.scale, transform.rotation, harmonizeEnabled]);
+
+  // Debounced auto-harmonize. Waits 600ms after the last change so we don't
+  // fire mid-drag. Skips when modal is closed or interaction is in progress.
+  useEffect(() => {
+    if (!harmonizeEnabled || !harmonizeStale) return;
+    if (!selectedSurface || !productImage) return;
+    if (isInteractingWithCanvas) return;
+    if (harmonizeTimeoutRef.current) clearTimeout(harmonizeTimeoutRef.current);
+    harmonizeTimeoutRef.current = setTimeout(async () => {
+      setIsHarmonizing(true);
+      setHarmonizeError(null);
+      try {
+        const res = await fetch("/api/placement/harmonize", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            surfaceId: selectedSurface.id,
+            productImageUrl: productImage,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || "Harmonization failed");
+        setLiveHarmonizedUrl(data.imageUrl || null);
+        setHarmonizeStale(false);
+      } catch (err: any) {
+        setHarmonizeError(err.message || "Harmonization failed");
+      } finally {
+        setIsHarmonizing(false);
+      }
+    }, 600);
+    return () => {
+      if (harmonizeTimeoutRef.current) clearTimeout(harmonizeTimeoutRef.current);
+    };
+  }, [harmonizeEnabled, harmonizeStale, selectedSurface?.id, productImage, isInteractingWithCanvas]);
 
   // Apply initialPlacement when modal opens with pre-loaded data (re-edit flow)
   useEffect(() => {
@@ -1523,6 +1578,7 @@ export default function PlacementPreviewModal({
     if (!selectedSurface || !productImgRef.current) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
+    setIsInteractingWithCanvas(true);
 
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width;
@@ -1607,6 +1663,7 @@ export default function PlacementPreviewModal({
 
   const handleCanvasMouseUp = useCallback(() => {
     setDragMode("none");
+    setIsInteractingWithCanvas(false);
   }, []);
 
   // ============================================================================
@@ -1954,6 +2011,52 @@ export default function PlacementPreviewModal({
                     onMouseLeave={handleCanvasMouseUp}
                     style={isVideoMode ? { pointerEvents: "none" } : undefined}
                   />
+
+                  {/* Live-harmonized overlay. When the toggle is on AND we have
+                      a fresh harmonized result AND the user isn't actively
+                      dragging, show this image stretched to match the canvas.
+                      We deliberately let it sit OVER the canvas (not replace it)
+                      so the underlying canvas still receives interaction
+                      events for drag/scale/rotate — the overlay is hidden via
+                      pointer-events:none and toggles transparent during drag. */}
+                  {harmonizeEnabled && liveHarmonizedUrl && !isVideoMode && (
+                    <img
+                      src={liveHarmonizedUrl}
+                      alt="Harmonized placement preview"
+                      className={cn(
+                        "absolute inset-0 m-auto max-w-full max-h-full rounded-lg pointer-events-none transition-opacity duration-150",
+                        isInteractingWithCanvas || dragMode !== "none" ? "opacity-0" : "opacity-100",
+                      )}
+                      style={{ objectFit: "contain" }}
+                      data-testid="img-harmonized-overlay"
+                    />
+                  )}
+
+                  {/* Subtle harmonize-status pill in the bottom-left of the
+                      canvas. Tells the user what they're looking at without
+                      taking up button-bar space. */}
+                  {hasProduct && (
+                    <div className="absolute bottom-2 left-2 z-10 flex items-center gap-2 rounded-md bg-black/70 backdrop-blur px-2 py-1">
+                      <button
+                        type="button"
+                        onClick={() => setHarmonizeEnabled(v => !v)}
+                        className={cn(
+                          "flex items-center gap-1.5 text-xs font-medium transition-colors",
+                          harmonizeEnabled ? "text-emerald-300" : "text-zinc-400 hover:text-zinc-200"
+                        )}
+                        data-testid="button-toggle-live-harmonize"
+                      >
+                        <Sparkles className="w-3 h-3" />
+                        {harmonizeEnabled ? "Harmonized" : "Flat"}
+                      </button>
+                      {harmonizeEnabled && isHarmonizing && (
+                        <Loader2 className="w-3 h-3 animate-spin text-emerald-300" />
+                      )}
+                      {harmonizeEnabled && harmonizeError && (
+                        <span className="text-xs text-red-300" title={harmonizeError}>!</span>
+                      )}
+                    </div>
+                  )}
 
                     {/* Hidden video element for playback mode */}
                   {videoSrc && (
