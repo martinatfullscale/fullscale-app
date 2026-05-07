@@ -39,6 +39,7 @@ import { pLimit } from "./lib/concurrency";
 import { getSourcePath } from "./lib/sourceCache";
 import { readFileFromStorage } from "./lib/objectStorage";
 import { harmonizeProductIntoScene } from "./lib/ai/harmonization";
+import { getYtDlpPath } from "./lib/ytDlpUpdater";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
@@ -2520,6 +2521,41 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("[YouTube Import] Error:", err);
       res.status(500).json({ error: "Failed to import selected videos" });
+    }
+  });
+
+  // Diagnostic: which yt-dlp binary is actually being used and what version.
+  // Useful for verifying that the self-updater landed and the cached binary
+  // is executable. Public — no sensitive info exposed.
+  app.get("/api/admin/yt-dlp-status", async (_req, res) => {
+    try {
+      const binPath = await getYtDlpPath();
+      const proc = require("child_process").spawn(binPath, ["--version"]);
+      let out = "";
+      let err = "";
+      proc.stdout.on("data", (d: Buffer) => { out += d.toString(); });
+      proc.stderr.on("data", (d: Buffer) => { err += d.toString(); });
+      const code: number = await new Promise(resolve => {
+        proc.on("close", resolve);
+        proc.on("error", () => resolve(-1));
+        setTimeout(() => { try { proc.kill(); } catch {} resolve(-2); }, 5000);
+      });
+      let cacheExists = false;
+      let cacheSize = 0;
+      try {
+        const stat = fs.statSync(`${require("os").tmpdir()}/yt-dlp-latest`);
+        cacheExists = true;
+        cacheSize = stat.size;
+      } catch {}
+      res.json({
+        binaryPath: binPath,
+        version: out.trim() || null,
+        exitCode: code,
+        stderr: err.trim().slice(0, 500) || null,
+        cache: { path: `${require("os").tmpdir()}/yt-dlp-latest`, exists: cacheExists, sizeBytes: cacheSize },
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
     }
   });
 

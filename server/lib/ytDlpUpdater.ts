@@ -18,7 +18,14 @@ import { spawn } from "child_process";
 
 const CACHE_PATH = path.join(os.tmpdir(), "yt-dlp-latest");
 const STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000; // refresh weekly
-const DOWNLOAD_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp";
+
+// yt-dlp ships several distribution flavors. The plain `yt-dlp` is a Python
+// zipapp that requires python3 on the host. Replit's Nix container *should*
+// have python3 but the probe failed in production (cached binary failed
+// --version probe = couldn't execute). Switching to `yt-dlp_linux` — a
+// PyInstaller bundle with Python embedded (~30MB), no host Python needed.
+// Linux x86_64 is what Replit runs on.
+const DOWNLOAD_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux";
 
 let cachedPath: string | null = null;
 let updateInFlight: Promise<string> | null = null;
@@ -52,12 +59,33 @@ async function downloadLatest(): Promise<string> {
 
 async function probeVersion(binPath: string): Promise<string | null> {
   return new Promise((resolve) => {
-    const proc = spawn(binPath, ["--version"]);
     let out = "";
+    let err = "";
+    let resolved = false;
+    const done = (val: string | null) => { if (!resolved) { resolved = true; resolve(val); } };
+    let proc;
+    try {
+      proc = spawn(binPath, ["--version"]);
+    } catch (e: any) {
+      console.warn(`[yt-dlp] probeVersion spawn threw for ${binPath}: ${e.message}`);
+      return done(null);
+    }
     proc.stdout.on("data", d => { out += d.toString(); });
-    proc.on("close", code => resolve(code === 0 ? out.trim() : null));
-    proc.on("error", () => resolve(null));
-    setTimeout(() => { try { proc.kill(); } catch {} resolve(null); }, 5000);
+    proc.stderr.on("data", d => { err += d.toString(); });
+    proc.on("close", code => {
+      if (code === 0) return done(out.trim());
+      console.warn(`[yt-dlp] probeVersion failed for ${binPath} (exit ${code}): ${err.trim().slice(0, 300) || "(no stderr)"}`);
+      done(null);
+    });
+    proc.on("error", e => {
+      console.warn(`[yt-dlp] probeVersion error for ${binPath}: ${e.message}`);
+      done(null);
+    });
+    setTimeout(() => {
+      console.warn(`[yt-dlp] probeVersion timeout for ${binPath} after 5s`);
+      try { proc.kill(); } catch {}
+      done(null);
+    }, 5000);
   });
 }
 
@@ -76,16 +104,23 @@ export async function getYtDlpPath(): Promise<string> {
       if (!isFresh()) {
         await downloadLatest();
       }
-      const version = await probeVersion(CACHE_PATH);
+      let version = await probeVersion(CACHE_PATH);
+      if (!version) {
+        // Probe failed on cached binary — could be stale cache from a
+        // previous bad download. Force re-download once and retry.
+        console.warn(`[yt-dlp] Cached binary failed probe; deleting and re-downloading...`);
+        try { fs.unlinkSync(CACHE_PATH); } catch {}
+        await downloadLatest();
+        version = await probeVersion(CACHE_PATH);
+      }
       if (version) {
         console.log(`[yt-dlp] Using cached binary version ${version} at ${CACHE_PATH}`);
         cachedPath = CACHE_PATH;
         return CACHE_PATH;
       }
-      throw new Error("Cached binary failed --version probe");
+      throw new Error("Cached binary failed --version probe (twice)");
     } catch (err: any) {
       console.warn(`[yt-dlp] Update failed (${err.message}); falling back to system yt-dlp`);
-      // Fall through to system binary
       const sysVersion = await probeVersion("yt-dlp");
       if (sysVersion) {
         console.log(`[yt-dlp] Using system binary version ${sysVersion}`);
