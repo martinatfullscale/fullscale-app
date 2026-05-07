@@ -198,7 +198,25 @@ interface GeminiSurfaceDetectionResult {
 
 const SURFACE_DETECTION_PROMPT = `You are analyzing a video frame to identify REAL, PHYSICAL surfaces where a brand could naturally place product or signage.
 
-TASK: Find UP TO 3 of the best placement surfaces visible in the frame. Surfaces fall into two distinct categories with different placement use cases:
+CRITICAL FRAMING — READ FIRST:
+This task heavily rewards FALSE POSITIVES if you let it. Most frames in
+podcast / interview / vlog content do NOT contain a usable placement
+surface — the camera is on people, not on furniture. Your default
+posture should be: "no clear surface exists in this frame, return empty."
+Only flag a surface when you can confidently describe what it is, where
+it sits in 3D space, and what it's made of. When in doubt, return empty.
+
+BEFORE PICKING ANY SURFACE — describe the 3D layout:
+- What is in the foreground (person, microphone, hands)?
+- What is in the mid-ground (furniture, props)?
+- What is in the background (walls, plants, decor)?
+- Where is the camera positioned (eye-level, above, below, behind)?
+This 3D understanding is required to avoid the most common error: treating
+a flat-looking 2D region as a horizontal surface when it's actually a
+wall, a curtain, a couch back, or empty space.
+
+TASK: Find UP TO 2 of the best placement surfaces visible in the frame.
+Surfaces fall into two distinct categories with different placement use cases:
 
   1. HORIZONTAL surfaces (orientation: "horizontal") — flat surfaces where physical objects can sit.
      Examples: desks, tables, countertops, shelves, nightstands, coffee tables, studio desks.
@@ -208,10 +226,10 @@ TASK: Find UP TO 3 of the best placement surfaces visible in the frame. Surfaces
      Examples: walls (the empty parts), doors, windows, large empty backdrops.
      Use case: posters, brand banners, framed art, logos, projected signage.
 
-Return them ranked by suitability. Quality > quantity — if only one surface is genuinely usable, return only one. If none, return zero. Never inflate to hit 3.
+Return them ranked by suitability. Quality > quantity — if only one surface is genuinely usable, return only one. If none, return zero. Never inflate to hit 2.
 
 CRITICAL RULES:
-- Maximum 3 surfaces total across both orientations
+- Maximum 2 surfaces total across both orientations
 - Only detect REAL physical surfaces that exist in the 3D scene
 - Each surface must occupy at least 5% of total frame area
 - Each surface must have CLEAR visual separation from people in the frame
@@ -275,12 +293,27 @@ VERTICAL surface bounding box rules:
 - Box should be a substantial usable plane, not tiny patches between objects
 - The wall must be IN FOCUS — out-of-focus background walls are not placement surfaces
 
-PODCAST / INTERVIEW / TALKING-HEAD RULES:
-- In these setups people sit behind desks; the desk top may NOT actually be visible
-- If a single person fills >40% of the frame, return surfaces_found: false UNLESS there's also a clearly visible wall (with usable empty area) or desk SEPARATE from the person
-- For walls behind subjects: only flag if the wall is in focus AND has a substantial empty area free of art, books, or shelving
-- Do NOT invent a "desk" you can't see — if you can't see the horizontal top plane, do NOT flag it
-- A dark area below someone's torso is NOT a desk — it's clothing/lap/shadow
+PODCAST / INTERVIEW / TALKING-HEAD RULES (read carefully — we hallucinate here):
+- Most podcast frames have NO usable surface. Default to surfaces_found:false.
+- People sitting on COUCHES with no visible coffee table → no surface. Return empty.
+  Couch arm-rests are NOT desks. Couch cushions are NOT tables. The throw pillow
+  next to them is NOT a surface.
+- People sitting in CHAIRS with no visible side table → no surface. Return empty.
+  The chair arm is not a surface.
+- The wall/backdrop BEHIND the subject: only flag as "wall" if it is IN FOCUS,
+  large, mostly empty (no existing art/posters/shelves filling it), and clearly
+  intended as a backdrop. A blurred or partially-visible background wall is NOT
+  a placement surface.
+- The decorative art piece, mural, or painted backdrop behind the subject is NOT
+  a placement target — it's existing decor and a brand poster wouldn't go there.
+- A "studio_desk" requires you to actually SEE the flat horizontal desk top in
+  the frame. If you can only see the front edge / the side / the equipment on
+  it but not the top plane, return empty for that surface.
+- A coffee table in front of the couch counts ONLY if its TOP is clearly visible
+  (not occluded by people's legs / drinks already on it / the camera angle being
+  too low to see the top).
+- If you cannot describe in one sentence "there is a [surface_type] at [location]
+  made of [material]," then it is not a real surface and should not be flagged.
 
 GOOD SURFACES (flag up to 3 of these):
 - Studio desks in podcast/recording setups (when desk top is visible)
@@ -993,7 +1026,7 @@ async function analyzeFrameWithGemini(
     // legitimately occupy the upper frame and span large vertical areas.
     const allSurfaces: DetectedSurface[] = parsed.surfaces
       .map(correctMislabel)
-      .filter((s: GeminiDetectedSurface) => s.confidence >= 0.6)
+      .filter((s: GeminiDetectedSurface) => s.confidence >= 0.75)
       .filter((s: GeminiDetectedSurface) => {
         const orientation = s.orientation || inferOrientation(s.surface_type);
         if (orientation === "vertical") {
@@ -1049,7 +1082,7 @@ async function analyzeFrameWithGemini(
         cameraAngle: s.camera_angle || undefined,
       }))
       .sort((a: DetectedSurface, b: DetectedSurface) => b.confidence - a.confidence)
-      .slice(0, 3); // Max 3 surfaces per frame — quality > quantity, ranked by confidence
+      .slice(0, 2); // Max 2 surfaces per frame — quality > quantity, ranked by confidence
 
     if (allSurfaces.length === 0) {
       return { ...defaultResult, aiAnalyzed: true };
