@@ -505,6 +505,87 @@ export async function registerRoutes(
     }
   });
 
+  // List every user who has signed up + every entry on the allowlist.
+  // Admin-gated. Returns:
+  //   users[]      — actually-registered users (have a User row)
+  //   allowlist[]  — emails on the allowlist (may or may not have signed in yet)
+  //   adminEmails  — current hardcoded admin list (what gets canSwitchRoles)
+  app.get("/api/admin/list-signups", async (req: any, res) => {
+    try {
+      const adminEmails = ['martin@gofullscale.co', 'martin@whtwrks.com', 'martincekechukwu@gmail.com', 'thekimkwilson@gmail.com', 'tamara@whtwrks.com', 'ben@muselabs.ai'];
+      const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
+      if (!callerEmail || !adminEmails.map(e => e.toLowerCase()).includes(callerEmail.toLowerCase())) {
+        return res.status(403).json({ error: "Admin access required" });
+      }
+
+      const allUsers = await db.select({
+        id: usersTable.id,
+        email: usersTable.email,
+        firstName: usersTable.firstName,
+        lastName: usersTable.lastName,
+        authProvider: usersTable.authProvider,
+        isApproved: usersTable.isApproved,
+        createdAt: usersTable.createdAt,
+      }).from(usersTable).orderBy(usersTable.createdAt);
+
+      const allAllowlist = await db.select().from(allowedUsersTable).orderBy(allowedUsersTable.addedAt);
+
+      // Right-join feel: surface every email seen across both tables, with state from each
+      const byEmail = new Map<string, any>();
+      for (const u of allUsers) {
+        const key = (u.email || "").toLowerCase();
+        if (!key) continue;
+        byEmail.set(key, {
+          email: u.email,
+          name: [u.firstName, u.lastName].filter(Boolean).join(" ") || null,
+          hasUserRow: true,
+          isApproved: u.isApproved,
+          authProvider: u.authProvider,
+          createdAt: u.createdAt,
+          allowlistType: null,
+          allowlistName: null,
+          isAdmin: adminEmails.includes((u.email || "").toLowerCase()),
+        });
+      }
+      for (const a of allAllowlist) {
+        const key = (a.email || "").toLowerCase();
+        if (!key) continue;
+        const existing = byEmail.get(key);
+        if (existing) {
+          existing.allowlistType = a.userType;
+          existing.allowlistName = a.name;
+          existing.allowlistAddedAt = a.addedAt;
+        } else {
+          byEmail.set(key, {
+            email: a.email,
+            name: a.name,
+            hasUserRow: false,
+            allowlistType: a.userType,
+            allowlistName: a.name,
+            allowlistAddedAt: a.addedAt,
+            isAdmin: adminEmails.includes((a.email || "").toLowerCase()),
+          });
+        }
+      }
+
+      const merged = Array.from(byEmail.values()).sort((a, b) => {
+        const ta = new Date(a.createdAt || a.allowlistAddedAt || 0).getTime();
+        const tb = new Date(b.createdAt || b.allowlistAddedAt || 0).getTime();
+        return tb - ta;
+      });
+
+      res.json({
+        adminEmails,
+        totalUsers: allUsers.length,
+        totalAllowlist: allAllowlist.length,
+        signups: merged,
+      });
+    } catch (err: any) {
+      console.error("[List Signups] Error:", err);
+      res.status(500).json({ success: false, error: err.message || "List failed" });
+    }
+  });
+
   app.post("/api/admin/migrate-surfaces", async (req: any, res) => {
     try {
       const adminEmails = ['martin@gofullscale.co', 'martin@whtwrks.com', 'martincekechukwu@gmail.com', 'thekimkwilson@gmail.com', 'tamara@whtwrks.com', 'ben@muselabs.ai'];
