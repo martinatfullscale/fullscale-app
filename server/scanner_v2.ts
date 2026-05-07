@@ -246,7 +246,7 @@ CRITICAL RULES:
 
 ANTI-HALLUCINATION RULES (CRITICAL — READ CAREFULLY):
 - You MUST be able to clearly see the physical surface material (wood, paint, drywall, glass, metal, stone)
-- The bounding box MUST NOT overlap with any person's body, clothing, arms, hands, or lap
+- The bounding box MUST NOT overlap with any person's body, clothing, arms, hands, lap, legs, knees, or feet
 - A laptop on someone's lap is NOT a desk surface — it is a laptop on a person
 - Dark clothing is NOT a desk — it is clothing
 - A microphone boom, monitor arm, or equipment mount is NOT a surface
@@ -254,6 +254,29 @@ ANTI-HALLUCINATION RULES (CRITICAL — READ CAREFULLY):
 - The surface must be GEOMETRICALLY SEPARATE from any person — clear visual separation between body and surface edge
 - A wall texture you can't actually see (out of focus, behind people, in shadow) is NOT a wall placement surface
 - If unsure whether something is a real surface vs a shadow/dark region near a person, do NOT include it
+
+PEOPLE / CHAIRS / FURNITURE-WITH-PEOPLE — STRICT BAN LIST (MOST COMMON HALLUCINATION):
+The single most common error in podcast/interview frames is labeling a person
+or the chair they're sitting in as a "coffee_table" / "table" / "studio_desk".
+These are NEVER placement surfaces — never flag them, never bound-box them:
+- A person's body, head, face, hair, neck, shoulders, arms, hands, lap, legs, knees, or feet
+- Clothing of any kind (shirt, jacket, hoodie, pants, suit, tracksuit) — even if it looks flat
+- The arm-rest, seat, back, or cushion of a chair, armchair, sofa, or couch
+- A leather/upholstered surface that has a person sitting on, against, or near it
+- A chair that contains a person — even the empty parts of the chair around them
+- The space between two seated people (that's a gap, not a coffee table)
+- A pillow, throw, blanket, or cushion on a chair or couch
+
+VERIFICATION CHECK before flagging ANY horizontal surface (run this mentally):
+1. Is there a person occupying or touching the bounding box region? → REJECT
+2. Is the box on or against a chair/sofa/armchair seat or back? → REJECT
+3. Could the entire bounding box be replaced by "person sitting" without changing the frame meaning? → REJECT
+4. Is the box on cushy/fabric/leather upholstery rather than a wood/glass/stone top? → REJECT
+5. Can I see a clear flat HORIZONTAL plane (a top edge where a glass would rest) inside the box? → If NO, REJECT
+
+PODCAST CHAIR SPECIFIC: In talking-head shows, hosts sit in chesterfield/leather
+armchairs. The LEATHER SEAT, ARM-REST, and CHAIR-BACK are NEVER coffee tables.
+Even if a chair arm looks like it could hold a small object, do NOT flag it.
 
 LABEL ACCURACY RULES (CRITICAL):
 - Before assigning a surface_type, look at the bounding box region and ask:
@@ -873,22 +896,67 @@ async function analyzeFrameForSurfaces(
 }
 
 /**
+ * IoU (intersection over union) between two normalized bounding boxes.
+ * Both boxes use {x, y, width, height} in 0-1 space.
+ */
+function bboxIoU(
+  a: { x: number; y: number; width: number; height: number },
+  b: { x: number; y: number; width: number; height: number },
+): number {
+  const ax2 = a.x + a.width;
+  const ay2 = a.y + a.height;
+  const bx2 = b.x + b.width;
+  const by2 = b.y + b.height;
+  const interX1 = Math.max(a.x, b.x);
+  const interY1 = Math.max(a.y, b.y);
+  const interX2 = Math.min(ax2, bx2);
+  const interY2 = Math.min(ay2, by2);
+  const interW = Math.max(0, interX2 - interX1);
+  const interH = Math.max(0, interY2 - interY1);
+  const interArea = interW * interH;
+  const aArea = a.width * a.height;
+  const bArea = b.width * b.height;
+  const union = aArea + bArea - interArea;
+  if (union <= 0) return 0;
+  return interArea / union;
+}
+
+/**
  * Remove overlapping surface detections, keeping the higher-confidence one.
- * Two surfaces overlap if their vertical centers are within 10% of frame height.
+ *
+ * Per-frame NMS: when two boxes overlap heavily (IoU > 0.4) OR have very close
+ * centers AND the same surface type, they describe the same physical surface
+ * and we keep the higher-confidence one. The previous y-center-only check
+ * missed the green+blue duplicate case where two coffee_table detections
+ * landed on the same actual coffee table with slightly different bboxes.
  */
 function deduplicateSurfaces(surfaces: DetectedSurface[]): DetectedSurface[] {
   if (surfaces.length <= 1) return surfaces;
 
-  // Sort by confidence descending
   const sorted = [...surfaces].sort((a, b) => b.confidence - a.confidence);
   const kept: DetectedSurface[] = [];
 
+  const IOU_THRESHOLD = 0.4;
+  const CENTER_DIST_THRESHOLD = 0.12;
+
+  const canonical = (t: string) => SURFACE_TYPE_SYNONYMS[t.toLowerCase()] || t;
+
   for (const surface of sorted) {
-    const centerY = surface.boundingBox.y + surface.boundingBox.height / 2;
+    const sType = canonical(surface.surfaceType);
+    const sCenterX = surface.boundingBox.x + surface.boundingBox.width / 2;
+    const sCenterY = surface.boundingBox.y + surface.boundingBox.height / 2;
+
     const overlaps = kept.some(k => {
+      const kType = canonical(k.surfaceType);
+      const kCenterX = k.boundingBox.x + k.boundingBox.width / 2;
       const kCenterY = k.boundingBox.y + k.boundingBox.height / 2;
-      return Math.abs(centerY - kCenterY) < 0.10;
+      const centerDist = Math.hypot(sCenterX - kCenterX, sCenterY - kCenterY);
+      const iou = bboxIoU(surface.boundingBox, k.boundingBox);
+      // Drop if same canonical type AND (high IoU OR very close centers)
+      const sameType = sType === kType;
+      return (sameType && iou > IOU_THRESHOLD) || (sameType && centerDist < CENTER_DIST_THRESHOLD);
     });
+
     if (!overlaps) {
       kept.push(surface);
     }
@@ -1063,6 +1131,8 @@ async function analyzeFrameWithGemini(
         const centerX = bbX + bbW / 2;
         const centerY = bbY + bbH / 2;
         const area = bbW * bbH;
+        const surfTypeLower = s.surface_type.toLowerCase();
+        const isFloor = surfTypeLower.includes('floor');
 
         // Ghost pattern 1: small box centered on person's torso area
         const isInPersonZone = centerX > 0.20 && centerX < 0.80 && centerY > 0.15 && centerY < 0.55;
@@ -1073,13 +1143,39 @@ async function analyzeFrameWithGemini(
         }
 
         // Ghost pattern 2: tall box overlapping person center (real eye-level tables are thin)
+        // Center frame: 0.25-0.75. Real eye-level tables are < 25% tall horizontal strips.
         if (bbH > 0.25 && centerY < 0.55 && centerX > 0.25 && centerX < 0.75) {
           console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — tall bbox (h=${(bbH*100).toFixed(0)}%) centered on person area`);
           return false;
         }
 
+        // Ghost pattern 2b: tall box on a SIDE-OF-FRAME person (the Shay Shay case).
+        // In two-host podcast frames, hosts sit at the LEFT (x ~0-0.30) and RIGHT
+        // (x ~0.70-1.0) of frame. Gemini sometimes calls a leather chair seat or
+        // a person's torso/lap/legs a "coffee_table" because it sees a flat-ish
+        // tone. Real coffee tables in these frames sit in the MIDDLE of frame
+        // between the two hosts — never against the left or right edge.
+        // Reject any horizontal-surface bbox whose center is in the outer thirds
+        // AND is taller than a real eye-level table strip (>20% frame height).
+        // Floor surfaces are exempt — floor space at someone's feet legitimately
+        // sits at the side of frame.
+        const isInSidePersonZone = !isFloor && (centerX < 0.30 || centerX > 0.70) && centerY > 0.10 && centerY < 0.85;
+        if (isInSidePersonZone && bbH > 0.20) {
+          console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — tall bbox (h=${(bbH*100).toFixed(0)}%) at side-of-frame person zone (cx=${(centerX*100).toFixed(0)}%)`);
+          return false;
+        }
+
+        // Ghost pattern 2c: bbox spans most of frame height — that's a person/chair, not a table.
+        // Real horizontal table-top boxes are short strips (< 30% height). Anything
+        // > 35% frame height that claims to be horizontal is a hallucinated
+        // bound-box around a person or piece of vertical furniture.
+        if (!isFloor && bbH > 0.35) {
+          console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — bbox too tall for a horizontal surface (h=${(bbH*100).toFixed(0)}%, max 35%)`);
+          return false;
+        }
+
         // Ghost pattern 3: horizontal surface entirely in upper frame (shelves exempt)
-        const isShelf = s.surface_type.toLowerCase().includes('shelf');
+        const isShelf = surfTypeLower.includes('shelf');
         if (!isShelf && bbY + bbH < 0.40) {
           console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — bbox entirely in upper frame (bottom at ${((bbY+bbH)*100).toFixed(0)}%)`);
           return false;
@@ -1634,12 +1730,18 @@ function canonicalSurfaceType(type: string): string {
  * Cluster surfaces by CANONICAL type and spatial proximity.
  * Two surfaces join the same cluster if:
  * - Same canonical type (Table/Desk/Studio_desk all merge)
- * - Bounding box centers are within CLUSTER_TOLERANCE of each other (normalized 0-1)
+ * - IoU > 0.30 against ANY existing surface in the cluster, OR
+ * - Bounding box centers are within CLUSTER_TOLERANCE of each other (fallback for thin strips)
+ *
+ * IoU-against-all-members fixes the green+blue duplicate case: when bboxes
+ * drift across frames, the rolling cluster member chain merges them into
+ * one cluster instead of breaking off a new one.
  */
 function clusterSurfaces(
   surfaces: Array<{ id: number; surfaceType: string; boundingBoxX: string; boundingBoxY: string; boundingBoxWidth: string; boundingBoxHeight: string; confidence: string }>,
 ): SurfaceCluster[] {
-  const CLUSTER_TOLERANCE = 0.20; // 20% of frame = same surface
+  const CLUSTER_TOLERANCE = 0.18; // L∞ center distance (fallback)
+  const IOU_MERGE = 0.30;
 
   const clusters: SurfaceCluster[] = [];
 
@@ -1651,17 +1753,24 @@ function clusterSurfaces(
     const centerX = bbX + bbW / 2;
     const centerY = bbY + bbH / 2;
     const canonical = canonicalSurfaceType(s.surfaceType);
+    const candidateBox = { x: bbX, y: bbY, width: bbW, height: bbH };
 
     let matched = false;
     for (const cluster of clusters) {
       if (canonicalSurfaceType(cluster.surfaceType) !== canonical) continue;
 
-      // Check if this surface's center is near any existing surface in the cluster
-      const representative = cluster.surfaces[0];
-      const repCX = representative.bbX + representative.bbW / 2;
-      const repCY = representative.bbY + representative.bbH / 2;
+      // Match against ANY member — bboxes drift across frames so the rolling
+      // chain (frame N matches N+1, N+1 matches N+2, ...) keeps the cluster
+      // intact even when the first and last bboxes wouldn't match each other.
+      const isMatch = cluster.surfaces.some(member => {
+        const memberBox = { x: member.bbX, y: member.bbY, width: member.bbW, height: member.bbH };
+        if (bboxIoU(candidateBox, memberBox) > IOU_MERGE) return true;
+        const mCX = member.bbX + member.bbW / 2;
+        const mCY = member.bbY + member.bbH / 2;
+        return Math.abs(centerX - mCX) < CLUSTER_TOLERANCE && Math.abs(centerY - mCY) < CLUSTER_TOLERANCE;
+      });
 
-      if (Math.abs(centerX - repCX) < CLUSTER_TOLERANCE && Math.abs(centerY - repCY) < CLUSTER_TOLERANCE) {
+      if (isMatch) {
         cluster.surfaces.push({ id: s.id, bbX, bbY, bbW, bbH, confidence: parseFloat(s.confidence) });
         matched = true;
         break;
@@ -1670,13 +1779,51 @@ function clusterSurfaces(
 
     if (!matched) {
       clusters.push({
-        surfaceType: canonical, // Use canonical name for the cluster
+        surfaceType: canonical,
         surfaces: [{ id: s.id, bbX, bbY, bbW, bbH, confidence: parseFloat(s.confidence) }],
       });
     }
   }
 
   return clusters;
+}
+
+/**
+ * After clustering produces the median bboxes, two SEPARATE clusters of the
+ * same canonical type can still end up overlapping (e.g. Gemini split the
+ * same coffee table into two semantic groups due to confidence drift).
+ * Merge clusters whose median bboxes have IoU > 0.4 — drop the
+ * lower-cumulative-confidence one, mark its surfaces Filtered.
+ */
+async function dedupeOverlappingClusters(
+  clusters: SurfaceCluster[],
+  computeMedianFn: (c: SurfaceCluster['surfaces']) => { x: number; y: number; w: number; h: number },
+): Promise<{ keep: SurfaceCluster[]; drop: SurfaceCluster[] }> {
+  const IOU_MERGE = 0.40;
+  const enriched = clusters.map(c => ({
+    cluster: c,
+    median: computeMedianFn(c.surfaces),
+    score: c.surfaces.reduce((sum, s) => sum + s.confidence, 0),
+  })).sort((a, b) => b.score - a.score);
+
+  const keep: SurfaceCluster[] = [];
+  const drop: SurfaceCluster[] = [];
+  for (const e of enriched) {
+    const eBox = { x: e.median.x, y: e.median.y, width: e.median.w, height: e.median.h };
+    const conflict = keep.find(k => {
+      if (canonicalSurfaceType(k.surfaceType) !== canonicalSurfaceType(e.cluster.surfaceType)) return false;
+      const kEnriched = enriched.find(x => x.cluster === k);
+      if (!kEnriched) return false;
+      const kBox = { x: kEnriched.median.x, y: kEnriched.median.y, width: kEnriched.median.w, height: kEnriched.median.h };
+      return bboxIoU(eBox, kBox) > IOU_MERGE;
+    });
+    if (conflict) {
+      drop.push(e.cluster);
+    } else {
+      keep.push(e.cluster);
+    }
+  }
+  return { keep, drop };
 }
 
 /**
@@ -1759,9 +1906,32 @@ async function normalizeSurfaceBoundingBoxes(videoId: number): Promise<void> {
 
   console.log(`[Normalize] Found ${clusters.length} cluster(s) from ${validSurfaces.length} surfaces`);
 
-  // Step 3: For each cluster with 2+ surfaces, compute median bbox and update all
+  // Step 2b: Drop overlapping clusters of the same canonical type. clusterSurfaces
+  // groups by IoU/center-distance against members, but two clusters of the same
+  // type can still drift far enough apart that no individual member matches —
+  // their MEDIANS, however, can still overlap heavily. This pass catches the
+  // green+blue duplicate case where Gemini split one real coffee table into two
+  // semantic groups across many frames.
+  const { keep: keptClusters, drop: droppedClusters } = await dedupeOverlappingClusters(clusters, computeMedianBBox);
+  if (droppedClusters.length > 0) {
+    console.log(`[Normalize] Dropping ${droppedClusters.length} overlapping cluster(s) of duplicate type`);
+    for (const cluster of droppedClusters) {
+      for (const surface of cluster.surfaces) {
+        try {
+          await storage.updateDetectedSurface(surface.id, {
+            surfaceType: "Filtered",
+            sceneContext: `Removed: duplicate ${cluster.surfaceType} cluster overlapping a stronger one`,
+          });
+        } catch (err) {
+          console.warn(`[Normalize] Failed to filter duplicate cluster surface ${surface.id}:`, err);
+        }
+      }
+    }
+  }
+
+  // Step 3: For each kept cluster with 2+ surfaces, compute median bbox and update all
   let normalizedCount = 0;
-  for (const cluster of clusters) {
+  for (const cluster of keptClusters) {
     if (cluster.surfaces.length < 2) continue;
 
     const medianBox = computeMedianBBox(cluster.surfaces);
@@ -1783,7 +1953,7 @@ async function normalizeSurfaceBoundingBoxes(videoId: number): Promise<void> {
     }
   }
 
-  console.log(`[Normalize] Normalized ${normalizedCount} surfaces across ${clusters.length} cluster(s)`);
+  console.log(`[Normalize] Normalized ${normalizedCount} surfaces across ${keptClusters.length} cluster(s)`);
 }
 
 // ============================================================================
