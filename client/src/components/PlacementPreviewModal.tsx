@@ -1919,6 +1919,15 @@ export default function PlacementPreviewModal({
                         <span className="sm:hidden">Revert</span>
                       </Button>
                     )}
+                    {/* Two harmonize buttons:
+                        - "Harmonize" (procedural, ~2s): scene-matched
+                          brightness + contact shadow on the flat product
+                          image. Fast iteration.
+                        - "3D Harmonize" (ai-3d, ~30-90s): runs the product
+                          image through TRELLIS to generate a 3D-aware render,
+                          then layers procedural lighting on top. Use when
+                          you want the product to read as a 3D object that
+                          belongs in the room rather than a flat sticker. */}
                     <Button
                       size="sm"
                       variant="secondary"
@@ -1982,6 +1991,7 @@ export default function PlacementPreviewModal({
                               surfaceId: selectedSurface.id,
                               productImageUrl: productImage,
                               productPlacementBbox,
+                              mode: "procedural",
                             }),
                           });
                           const data = await res.json();
@@ -2010,6 +2020,88 @@ export default function PlacementPreviewModal({
                         <Sparkles className="w-3.5 h-3.5" />
                       )}
                       <span className="hidden sm:inline">{isHarmonizing ? "Harmonizing…" : "Harmonize"}</span>
+                    </Button>
+                    {/* 3D Harmonize: TRELLIS image→3D mesh + procedural lighting.
+                        Slower (~30-90s) but produces a 3D-aware product render
+                        that reads as belonging in the scene rather than pasted on. */}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="gap-1.5 text-xs sm:text-sm h-8 border-violet-500/50 text-violet-300 hover:bg-violet-950/40 hover:text-violet-200"
+                      disabled={!selectedSurface || !productImage || isHarmonizing}
+                      onClick={async () => {
+                        if (!selectedSurface || !productImage) return;
+                        setIsHarmonizing(true);
+                        setHarmonizeError(null);
+                        setHarmonizeFlatUrl(null);
+                        setHarmonizeResultUrl(null);
+                        setShowHarmonizeCompare(true);
+
+                        const surfaceX = selectedSurface.boundingBoxX;
+                        const surfaceY = selectedSurface.boundingBoxY;
+                        const surfaceW = selectedSurface.boundingBoxWidth;
+                        const surfaceH = selectedSurface.boundingBoxHeight;
+                        const productImg = productImgRef.current;
+                        const canvas = canvasRef.current;
+                        let productPlacementBbox = null;
+                        if (productImg && canvas && surfaceW > 0 && surfaceH > 0) {
+                          const prodAspect = productImg.naturalWidth / productImg.naturalHeight;
+                          const surfaceAspectInBbox = surfaceW / surfaceH;
+                          let drawW: number, drawH: number;
+                          if (prodAspect > surfaceAspectInBbox) {
+                            drawW = surfaceW * transform.scale;
+                            drawH = (surfaceW / prodAspect) * transform.scale;
+                          } else {
+                            drawH = surfaceH * transform.scale;
+                            drawW = (surfaceH * prodAspect) * transform.scale;
+                          }
+                          const offsetXNorm = transform.offsetX / Math.max(1, canvas.width);
+                          const offsetYNorm = transform.offsetY / Math.max(1, canvas.height);
+                          const centerXNorm = surfaceX + surfaceW / 2 + offsetXNorm;
+                          const centerYNorm = surfaceY + surfaceH / 2 + offsetYNorm;
+                          productPlacementBbox = {
+                            x: Math.max(0, Math.min(1, centerXNorm - drawW / 2)),
+                            y: Math.max(0, Math.min(1, centerYNorm - drawH / 2)),
+                            width: Math.max(0.01, Math.min(1, drawW)),
+                            height: Math.max(0.01, Math.min(1, drawH)),
+                          };
+                        }
+
+                        try {
+                          const res = await fetch("/api/placement/harmonize", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            credentials: "include",
+                            body: JSON.stringify({
+                              surfaceId: selectedSurface.id,
+                              productImageUrl: productImage,
+                              productPlacementBbox,
+                              mode: "ai-3d",
+                            }),
+                          });
+                          const data = await res.json();
+                          if (!res.ok || !data.success) {
+                            throw new Error(data.error || "3D Harmonization failed");
+                          }
+                          setHarmonizeFlatUrl(data.flatCompositeUrl || null);
+                          setHarmonizeResultUrl(data.imageUrl || null);
+                          setLiveHarmonizedUrl(data.imageUrl || null);
+                          if (data.imageUrl) setHarmonizeEnabled(true);
+                        } catch (err: any) {
+                          setHarmonizeError(err.message || "3D Harmonization failed");
+                        } finally {
+                          setIsHarmonizing(false);
+                        }
+                      }}
+                      data-testid="button-harmonize-3d"
+                      title="Generate a 3D mesh of the product (TRELLIS) and composite it with scene lighting. Takes ~30-90s but reads as a real 3D object in the room."
+                    >
+                      {isHarmonizing ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Sparkles className="w-3.5 h-3.5" />
+                      )}
+                      <span className="hidden sm:inline">{isHarmonizing ? "3D…" : "3D Harmonize"}</span>
                     </Button>
                     {videoSrc && (
                       exportStatus === "complete" && exportOutputUrl ? (

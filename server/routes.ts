@@ -2887,12 +2887,19 @@ export async function registerRoutes(
     };
     console.log(`[Harmonize] bbox source: ${productPlacementBbox ? "client-supplied (transform-aware)" : "surface fallback"}`);
 
+    // mode: "procedural" (fast, default) or "ai-3d" (TRELLIS 3D mesh +
+    // procedural lighting). Client sends mode=ai-3d when the user clicks
+    // the new "3D Harmonize" button.
+    const mode = (req.body?.mode === "ai-3d" || req.body?.mode === "ai") ? "ai-3d" : "procedural";
+
     const result = await harmonizeProductIntoScene({
       sceneImage: sceneBuffer,
       productImage: productImageUrl,
       bbox: placementBbox,
       frameDimensions: { width: frameW, height: frameH },
       prompt,
+      mode,
+      cameraAngle: (surface as any).cameraAngle ?? undefined,
     });
 
     if (!result.success) {
@@ -2901,6 +2908,10 @@ export async function registerRoutes(
     res.json({
       success: true,
       imageUrl: result.imageUrl,
+      flatCompositeUrl: result.flatCompositeUrl,
+      trellisRenderUrl: result.trellisRenderUrl,
+      meshUrl: result.meshUrl,
+      mode: result.mode,
       elapsedMs: result.elapsedMs,
       surface: {
         id: surface.id,
