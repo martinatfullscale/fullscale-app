@@ -4463,7 +4463,25 @@ export async function registerRoutes(
       surfaces = surfaces.filter(s => (s as any).creatorApproved === true);
     }
 
-    // Enrich surfaces with frame availability info
+    // Pull scene-cut boundaries so the client can constrain placements to
+    // the same shot they were placed in. Format: array of seconds (start of
+    // each new shot after the first). Empty/null = single shot.
+    const sceneBoundariesRaw = (video as any).sceneBoundaries;
+    const sceneBoundaries: number[] = Array.isArray(sceneBoundariesRaw)
+      ? sceneBoundariesRaw.filter((t: any) => typeof t === "number" && Number.isFinite(t))
+      : [];
+
+    // Same scene-block math as the server-side scanner — kept in sync so
+    // the block IDs we emit match what cluster/temporal grouping used.
+    const sceneBlockFor = (t: number): number => {
+      if (sceneBoundaries.length === 0 || t < 0) return 0;
+      for (let i = 0; i < sceneBoundaries.length; i++) {
+        if (t < sceneBoundaries[i]) return i;
+      }
+      return sceneBoundaries.length;
+    };
+
+    // Enrich surfaces with frame availability info AND scene block ID
     const framesDir = path.join(process.cwd(), "public", "uploads", "frames", videoId.toString());
     const enrichedSurfaces = surfaces.map(s => {
       const ts = Math.floor(Number(s.timestamp));
@@ -4474,10 +4492,16 @@ export async function registerRoutes(
       // Backfill frameUrl if frame exists but surface has no URL
       const frameUrl = s.frameUrl || (frameExists ? `/uploads/frames/${videoId}/${frameFilename}` : null);
 
-      return { ...s, frameUrl, frameExists };
+      const sceneBlockId = sceneBlockFor(Number(s.timestamp) || 0);
+
+      return { ...s, frameUrl, frameExists, sceneBlockId };
     });
 
-    res.json({ surfaces: enrichedSurfaces, count: enrichedSurfaces.length });
+    res.json({
+      surfaces: enrichedSurfaces,
+      count: enrichedSurfaces.length,
+      sceneBoundaries,
+    });
   });
 
   // Creator toggles a single surface's approval state. Surfaces default to

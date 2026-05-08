@@ -626,8 +626,8 @@ export default function PlacementPreviewModal({
     frameCounter: 0,
   });
 
-  // Fetch video details to get file path for playback
-  const { data: videoDetails } = useQuery<{ filePath: string | null }>({
+  // Fetch video details to get file path for playback + scene-cut boundaries
+  const { data: videoDetails } = useQuery<{ filePath: string | null; sceneBoundaries?: number[] | null }>({
     queryKey: [`/api/video/${videoId}/details`],
     queryFn: async () => {
       const res = await fetch(`/api/video/${videoId}/details`);
@@ -637,6 +637,29 @@ export default function PlacementPreviewModal({
     enabled: open,
   });
   const videoSrc = resolveVideoSrc(videoDetails?.filePath);
+  // Scene-cut timestamps for this video (in seconds). Used to hide the
+  // placement when playback enters a different shot than the one the
+  // surface was detected in. Empty/undefined → single shot, no filtering.
+  const sceneBoundaries: number[] = Array.isArray(videoDetails?.sceneBoundaries)
+    ? (videoDetails!.sceneBoundaries as number[]).filter(t => typeof t === "number" && Number.isFinite(t))
+    : [];
+
+  // Same scene-block math as the server side so client + server agree on
+  // which shot a given timestamp belongs to.
+  const sceneBlockFor = useCallback((t: number): number => {
+    if (sceneBoundaries.length === 0 || t < 0) return 0;
+    for (let i = 0; i < sceneBoundaries.length; i++) {
+      if (t < sceneBoundaries[i]) return i;
+    }
+    return sceneBoundaries.length;
+  }, [sceneBoundaries]);
+
+  // The placement is bound to the surface's scene block. During video
+  // playback, when the playhead crosses into a different block, the
+  // product is hidden — it doesn't belong in that shot.
+  const placementBlockId = selectedSurface
+    ? sceneBlockFor(parseFloat(String((selectedSurface as any).timestamp ?? 0)) || 0)
+    : 0;
 
   // Fetch dense surface keyframes for accurate motion tracking
   const { data: denseKeyframesData, refetch: refetchKeyframes } = useQuery<{
@@ -1210,9 +1233,37 @@ export default function PlacementPreviewModal({
         }
       }
 
-      // Draw product if loaded (always renders regardless of toggle)
+      // Scene-block gate: during playback, hide the placement when the
+      // current playhead is in a different shot than the surface was
+      // detected in. Without this, the product visually "follows the
+      // camera" across cuts onto whatever surface happens to be on
+      // screen — clearly wrong. Only applies in video-playback mode;
+      // when reviewing a static scene frame the product always shows.
+      const playbackBlockId = useVideo ? sceneBlockFor(videoEl!.currentTime) : placementBlockId;
+      const inOriginalShot = playbackBlockId === placementBlockId;
+
+      // When playback has crossed into a different shot than the surface
+      // was placed on, show a small "out of scene" badge in the corner so
+      // the user understands why the placement disappeared. Without this
+      // badge, the product just vanishes mid-playback and looks like a bug.
+      if (useVideo && !inOriginalShot && hasProduct) {
+        const badgeText = "Placement hidden — different scene";
+        ctx.font = "11px Inter, system-ui, sans-serif";
+        const tw = ctx.measureText(badgeText).width;
+        const padX = 10, padY = 6;
+        const badgeW = tw + padX * 2;
+        const badgeH = 22;
+        const badgeX = canvas.width - badgeW - 12;
+        const badgeY = 12;
+        ctx.fillStyle = "rgba(0, 0, 0, 0.75)";
+        ctx.fillRect(badgeX, badgeY, badgeW, badgeH);
+        ctx.fillStyle = "rgba(251, 191, 36, 0.95)";
+        ctx.fillText(badgeText, badgeX + padX, badgeY + padY + 9);
+      }
+
+      // Draw product if loaded AND placement is in the active shot.
       const prodImg = productImgRef.current;
-      if (prodImg && prodImg.complete && bw > 0 && bh > 0) {
+      if (prodImg && prodImg.complete && bw > 0 && bh > 0 && inOriginalShot) {
         drawProduct(ctx, prodImg, bx, by, bw, bh, transform, blend);
 
         // Draw resize handles + rotation handle (hidden when toggle is off)
@@ -1266,7 +1317,7 @@ export default function PlacementPreviewModal({
     }
 
     animFrameRef.current = requestAnimationFrame(renderFrame);
-  }, [selectedSurface, transform, blend, isVideoMode, motionData, showBoundingBox]);
+  }, [selectedSurface, transform, blend, isVideoMode, motionData, showBoundingBox, sceneBlockFor, placementBlockId]);
 
   // Start/stop render loop
   useEffect(() => {
