@@ -215,7 +215,7 @@ This 3D understanding is required to avoid the most common error: treating
 a flat-looking 2D region as a horizontal surface when it's actually a
 wall, a curtain, a couch back, or empty space.
 
-TASK: Find UP TO 2 of the best placement surfaces visible in the frame.
+TASK: Find UP TO 4 of the best placement surfaces visible in the frame.
 Surfaces fall into two distinct categories with different placement use cases:
 
   1. HORIZONTAL surfaces (orientation: "horizontal") — flat surfaces where physical objects can sit.
@@ -231,7 +231,9 @@ Surfaces fall into two distinct categories with different placement use cases:
 Return them ranked by suitability. Quality > quantity — if only one surface is genuinely usable, return only one. If none, return zero. Never inflate to hit 2.
 
 CRITICAL RULES:
-- Maximum 2 surfaces total across both orientations
+- Maximum 4 surfaces total across both orientations (was 2; bumped to capture
+  complex scenes that have shelves AND tables AND floor AND walls all visible).
+  Still: quality > quantity. If only 2 are genuinely usable, return only 2.
 - Only detect REAL physical surfaces that exist in the 3D scene
 - Each surface must occupy at least 5% of total frame area
 - Each surface must have CLEAR visual separation from people in the frame
@@ -357,7 +359,7 @@ PODCAST / INTERVIEW / TALKING-HEAD RULES (read carefully — we hallucinate here
 - If you cannot describe in one sentence "there is a [surface_type] at [location]
   made of [material]," then it is not a real surface and should not be flagged.
 
-GOOD SURFACES (flag up to 2 of these):
+GOOD SURFACES (flag up to 4 of these):
 - Studio desks in podcast/recording setups (when desk top is visible)
 - Desks, tables, countertops with visible flat area
 - Shelves with clear space
@@ -368,6 +370,23 @@ GOOD SURFACES (flag up to 2 of these):
 - Walls with substantial empty/unobstructed sections (in focus)
 - Doors (when prominently visible in frame, not just edges)
 - Large windows (when behind something brand-relevant could go)
+
+PRIORITY GUIDANCE — DON'T LET TABLES CROWD OUT EVERYTHING:
+A common failure mode: when a frame has a side table + a clearly visible
+bookshelf + visible floor + visible wall, you return TWO instances of the
+side table (or duplicate detections of one table) and miss the bookshelf,
+floor, and wall. With the 4-surface cap, prefer DIVERSITY over duplicates:
+- If a substantial bookshelf is clearly visible (in focus, books/items
+  visible, multiple shelves), it MUST be one of your returned surfaces.
+  Don't skip it for a third side-table detection.
+- If a clear empty patch of indoor floor is visible in the lower frame
+  (carpet, wood, tile — at someone's feet but not under them), include it
+  as surface_type:"floor", orientation:"horizontal".
+- If a substantial empty wall is visible (in focus, not blurred, not
+  covered in art), include it as surface_type:"wall", orientation:"vertical".
+- Among the 4 returned: aim for at most ONE of each
+  {coffee_table, side_table, nightstand, table} unless there are genuinely
+  two distinct tables in the scene at different positions.
 
 BAD "SURFACES" (do NOT flag):
 - Roads, highways, pavement, outdoor ground (asphalt, dirt, grass)
@@ -1166,11 +1185,13 @@ async function analyzeFrameWithGemini(
         }
 
         // Ghost pattern 2c: bbox spans most of frame height — that's a person/chair, not a table.
-        // Real horizontal table-top boxes are short strips (< 30% height). Anything
-        // > 35% frame height that claims to be horizontal is a hallucinated
-        // bound-box around a person or piece of vertical furniture.
-        if (!isFloor && bbH > 0.35) {
-          console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — bbox too tall for a horizontal surface (h=${(bbH*100).toFixed(0)}%, max 35%)`);
+        // Real horizontal table-top boxes are short strips (< 25% height). Anything
+        // > 30% frame height that claims to be horizontal is a hallucinated
+        // bound-box around a person or piece of vertical furniture. Tightened
+        // from 0.35 → 0.30 because Gemini was returning 0.30-0.34 height
+        // bboxes around seated podcast hosts (torso to ankles) that survived.
+        if (!isFloor && bbH > 0.30) {
+          console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — bbox too tall for a horizontal surface (h=${(bbH*100).toFixed(0)}%, max 30%)`);
           return false;
         }
 
@@ -1199,7 +1220,10 @@ async function analyzeFrameWithGemini(
         cameraAngle: s.camera_angle || undefined,
       }))
       .sort((a: DetectedSurface, b: DetectedSurface) => b.confidence - a.confidence)
-      .slice(0, 2); // Max 2 surfaces per frame — quality > quantity, ranked by confidence
+      .slice(0, 4); // Max 4 surfaces per frame (was 2) — recall complex scenes
+                    // (shelves + tables + floor + wall) without dropping real
+                    // surfaces. Per-frame dedup + cluster IoU still merge
+                    // duplicates of the same physical surface downstream.
 
     if (allSurfaces.length === 0) {
       return { ...defaultResult, aiAnalyzed: true };

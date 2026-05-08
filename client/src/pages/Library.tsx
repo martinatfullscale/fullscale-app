@@ -899,8 +899,13 @@ export default function Library() {
               next.delete(videoId);
               return next;
             });
+            // Invalidate BOTH the videos list AND this video's surfaces query —
+            // the per-video surfaces query (`['/api/video', id, 'surfaces']`) is
+            // what the SceneAnalysisModal renders, so without invalidation the
+            // bbox overlays don't update until a hard refresh.
             queryClient.invalidateQueries({ queryKey: ["videos"] });
-            
+            queryClient.invalidateQueries({ queryKey: ['/api/video', videoId, 'surfaces'] });
+
             if (video.status?.toLowerCase().includes("ready") && video.adOpportunities > 0) {
               toast({
                 title: "Scan Complete",
@@ -923,7 +928,11 @@ export default function Library() {
           console.error("Poll error:", err);
         }
       }, 3000);
-      
+
+      // 20-minute polling window (was 2min). Multi-GB uploads can take 8-15min
+      // through Gemini at ~5MB/s with rate-limit backoff. The previous 2min
+      // timeout left the spinner stuck on the thumbnail forever for large files;
+      // user had to hard-refresh to see surfaces. 20min covers worst case.
       setTimeout(() => {
         clearInterval(pollInterval);
         setScanningVideoIds(prev => {
@@ -931,7 +940,11 @@ export default function Library() {
           next.delete(videoId);
           return next;
         });
-      }, 120000);
+        // Final cache invalidation in case the scan completed but the poll
+        // missed the status flip (network blip, tab backgrounded, etc).
+        queryClient.invalidateQueries({ queryKey: ["videos"] });
+        queryClient.invalidateQueries({ queryKey: ['/api/video', videoId, 'surfaces'] });
+      }, 20 * 60 * 1000);
     },
     onError: (error: Error, videoId) => {
       setScanningVideoIds(prev => {
