@@ -130,11 +130,12 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
 
     setState("uploading");
 
-    // Files >100 MB use chunked upload — bypasses Replit's ~5min Autoscale
-    // proxy timeout that was killing single-request large uploads at ~1.4 GB.
-    // Each chunk is its own short HTTP request (server-side relays into a
-    // GCS resumable session). Smaller files keep the simple FormData path.
-    const CHUNKED_THRESHOLD = 100 * 1024 * 1024;
+    // Files >20 MB use chunked upload. Lowered from 100 MB after observing
+    // that even mid-size files (~89 MB) crawled through the FormData/multer
+    // path on Replit (proxy buffering, /tmp pressure, single-request stalls).
+    // Chunked is faster + more reliable across the board — extra round-trips
+    // on small files are ~1s overhead, far less than a stalled 5min upload.
+    const CHUNKED_THRESHOLD = 20 * 1024 * 1024;
     const useChunked = selectedFile.size > CHUNKED_THRESHOLD;
 
     if (useChunked) {
