@@ -3442,12 +3442,30 @@ export async function registerRoutes(
       return res.status(403).json({ error: "Unauthorized" });
     }
 
+    // Single-flight check — if a scan is already running for this video,
+    // tell the user instead of stacking another scan or wiping surfaces.
+    // The actual lock is enforced inside processVideoScan; this just gives
+    // a clearer response when the user clicks Scan repeatedly.
+    const { isVideoScanInFlight } = await import("./scanner_v2");
+    if (isVideoScanInFlight(videoId)) {
+      console.log(`[BACKEND] Scan already running for video ${videoId} — declining duplicate request`);
+      return res.json({
+        success: true,
+        videoId,
+        alreadyRunning: true,
+        message: "A scan is already running for this video. Wait for it to complete before re-scanning.",
+      });
+    }
+
     console.log(`[BACKEND] Starting background scan process...`);
-    
+
     setImmediate(async () => {
       try {
         console.log(`[BACKEND] Background scan starting for video ${videoId}`);
-        // Always force rescan to allow retry on failed/empty scans
+        // forceRescan=true allows retry on failed/empty scans. The wipe of
+        // prior surfaces now happens ONLY after successful completion (see
+        // scanner_v2.ts processVideoScanInner) so a failed retry preserves
+        // any earlier good results.
         await processVideoScan(videoId, true);
         console.log(`[BACKEND] Background scan completed for video ${videoId}`);
       } catch (err) {

@@ -2131,17 +2131,69 @@ async function groupSurfacesTemporally(
 // MAIN SCAN FUNCTIONS
 // ============================================================================
 
+// Single-flight lock per videoId. Prevents stacked scans when the user clicks
+// the Scan button repeatedly while a scan is already running. Subsequent calls
+// for the same videoId join the in-flight promise rather than starting a new
+// scan, so the user gets one scan and one consistent result regardless of how
+// many times they click. The map clears once each scan settles.
+const SCAN_IN_FLIGHT = new Map<number, Promise<ScanResult>>();
+
+export function isVideoScanInFlight(videoId: number): boolean {
+  return SCAN_IN_FLIGHT.has(videoId);
+}
+
 export async function processVideoScan(
+  videoId: number,
+  forceRescan: boolean = false,
+  scanMode: keyof typeof scanModes = "standard"
+): Promise<ScanResult> {
+  // If a scan is already running for this video, return the existing promise.
+  // The caller's "click again" results in the same response as the original
+  // run — no wipe, no parallel work, no race.
+  const existing = SCAN_IN_FLIGHT.get(videoId);
+  if (existing) {
+    console.log(`[Scanner V2] Video ${videoId}: scan already in progress, joining existing run (forceRescan=${forceRescan} ignored)`);
+    return existing;
+  }
+
+  const promise = (async () => {
+    try {
+      return await processVideoScanInner(videoId, forceRescan, scanMode);
+    } finally {
+      SCAN_IN_FLIGHT.delete(videoId);
+    }
+  })();
+
+  SCAN_IN_FLIGHT.set(videoId, promise);
+  return promise;
+}
+
+async function processVideoScanInner(
   videoId: number,
   forceRescan: boolean = false,
   scanMode: keyof typeof scanModes = "standard"
 ): Promise<ScanResult> {
   console.log(`[Scanner V2] ========== STARTING SCAN ==========`);
   console.log(`[Scanner V2] Video ID: ${videoId}, Force Rescan: ${forceRescan}`);
-  
+
   const tempDir = path.join(os.tmpdir(), `scan-v2-${videoId}-${Date.now()}`);
   const framesDir = path.join(tempDir, "frames");
-  
+
+  // Snapshot existing surface IDs BEFORE any wipe. If this scan succeeds with
+  // new surfaces we'll delete the snapshotted ones at the end. If the scan
+  // fails or finds nothing, we leave the prior data alone — preserves the
+  // creator's previous results across an error or a click-twice rescan.
+  let priorSurfaceIds: number[] = [];
+  try {
+    const prior = await storage.getDetectedSurfaces(videoId);
+    priorSurfaceIds = prior.map(s => s.id);
+    if (priorSurfaceIds.length > 0) {
+      console.log(`[Scanner V2] Snapshotted ${priorSurfaceIds.length} existing surfaces — will replace only on successful scan`);
+    }
+  } catch (err: any) {
+    console.warn(`[Scanner V2] Could not snapshot existing surfaces:`, err?.message || err);
+  }
+
   try {
     // PRE-FLIGHT CHECKS
     const availableMB = await getAvailableDiskSpaceMB();
@@ -2353,9 +2405,11 @@ export async function processVideoScan(
     
     const fileSizeMB = fs.statSync(videoPath).size / 1024 / 1024;
     console.log(`[Scanner V2] Video file size: ${fileSizeMB.toFixed(2)}MB`);
-    
-    // UPDATE STATUS & CLEAR OLD DATA
-    await storage.clearDetectedSurfaces(videoId);
+
+    // UPDATE STATUS — but DO NOT wipe existing surfaces here. Wipe happens at
+    // the end on successful scan completion, so a failed/aborted scan never
+    // destroys the creator's prior data. Snapshotted IDs from above will be
+    // deleted in the success path below (search "Replace prior surfaces").
     await storage.updateVideoStatus(videoId, "Scanning");
     
     fs.mkdirSync(framesDir, { recursive: true });
@@ -2676,6 +2730,24 @@ export async function processVideoScan(
       finalStatus = "Ready (0 Spots)";
       console.warn(`[Scanner V2] 0 surfaces found despite Gemini being available. The video may not contain clear flat surfaces, or ghost filters may be too aggressive.`);
     }
+
+    // Replace prior surfaces ONLY now — scan succeeded. If totalSurfaces > 0,
+    // delete the snapshotted prior IDs so the new surfaces stand alone. If
+    // totalSurfaces == 0, KEEP the prior data — a re-scan that finds nothing
+    // shouldn't wipe creator's earlier good results.
+    if (totalSurfaces > 0 && priorSurfaceIds.length > 0) {
+      try {
+        for (const id of priorSurfaceIds) {
+          await storage.updateDetectedSurface(id, { surfaceType: "Filtered", sceneContext: "Replaced by re-scan" });
+        }
+        console.log(`[Scanner V2] Marked ${priorSurfaceIds.length} prior surfaces as Filtered (replaced by ${totalSurfaces} new surfaces)`);
+      } catch (err: any) {
+        console.warn(`[Scanner V2] Failed to filter prior surfaces:`, err?.message || err);
+      }
+    } else if (totalSurfaces === 0 && priorSurfaceIds.length > 0) {
+      console.log(`[Scanner V2] Re-scan found 0 surfaces — keeping ${priorSurfaceIds.length} prior surfaces intact (re-scan didn't find replacements)`);
+    }
+
     await storage.updateVideoStatus(videoId, finalStatus);
 
     console.log(`[Scanner V2] ========== SCAN COMPLETE ==========`);
@@ -2736,13 +2808,39 @@ export async function processVideoScan(
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error(`[Scanner V2] SCAN FAILED: ${errorMessage}`);
-    
+
+    // Roll back any partial new surfaces inserted during this failed run, so
+    // the creator's prior data (snapshotted above) remains the source of truth.
+    // Anything currently in the DB whose ID is NOT in priorSurfaceIds was
+    // inserted by THIS scan attempt — mark Filtered so it doesn't render.
     try {
-      await storage.updateVideoStatus(videoId, "Scan Failed");
+      const priorIdSet = new Set(priorSurfaceIds);
+      const current = await storage.getDetectedSurfaces(videoId);
+      const partialNew = current.filter(s => !priorIdSet.has(s.id) && s.surfaceType !== "Filtered");
+      if (partialNew.length > 0) {
+        for (const s of partialNew) {
+          try {
+            await storage.updateDetectedSurface(s.id, { surfaceType: "Filtered", sceneContext: "Removed: scan failed mid-way" });
+          } catch { /* ignore */ }
+        }
+        console.log(`[Scanner V2] Rolled back ${partialNew.length} partial new surfaces; ${priorSurfaceIds.length} prior surfaces restored as the active set`);
+      }
+    } catch (rollbackErr: any) {
+      console.warn(`[Scanner V2] Rollback of partial surfaces failed (non-fatal):`, rollbackErr?.message || rollbackErr);
+    }
+
+    try {
+      // If we had prior surfaces, status reverts to whatever Ready tier matches
+      // their count — otherwise mark Scan Failed.
+      if (priorSurfaceIds.length > 0) {
+        await storage.updateVideoStatus(videoId, `Ready (${priorSurfaceIds.length} Spots)`);
+      } else {
+        await storage.updateVideoStatus(videoId, "Scan Failed");
+      }
     } catch {
       // Ignore DB errors during error handling
     }
-    
+
     return {
       success: false,
       videoId,
