@@ -6,7 +6,11 @@
 // Fix: at import (and on every sync) we download the bytes once and re-upload
 // to our own object storage, then store *our* serve URL in the DB. That URL
 // never expires.
-import { uploadBufferToStorage } from "./objectStorage";
+import { spawn } from "child_process";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import { uploadBufferToStorage, uploadFileToStorage } from "./objectStorage";
 import { db } from "../db";
 import { videoIndex } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
@@ -61,26 +65,115 @@ export async function cacheRemoteThumbnail(
   }
 }
 
-// Helper for IG imports: cache thumbnail_url, ignore media_url (it's the MP4).
+// Fallback for when Graph API doesn't return a thumbnail_url at all (common
+// for older Reels, cross-posts, some Business accounts). Pulls one frame
+// from the video URL via ffmpeg's HTTP input — only enough bytes to decode
+// the first keyframe at t=1s, NOT a full download. Uploads the JPG to GCS
+// and returns the serve URL.
+async function extractFrameFromVideoUrl(
+  videoUrl: string,
+  objectKey: string,
+): Promise<string | null> {
+  const tempPath = path.join(
+    os.tmpdir(),
+    `igframe_${Date.now()}_${Math.floor(Math.random() * 1e6)}.jpg`,
+  );
+
+  const ok = await new Promise<boolean>((resolve) => {
+    // -ss before -i = fast input seek (downloads minimal bytes)
+    // -frames:v 1   = exactly one frame
+    // 480x270 max   = matches our normal thumbnail dimensions
+    const ff = spawn("ffmpeg", [
+      "-y",
+      "-loglevel", "error",
+      "-ss", "1",
+      "-i", videoUrl,
+      "-frames:v", "1",
+      "-vf", "scale=480:270:force_original_aspect_ratio=decrease,pad=480:270:(ow-iw)/2:(oh-ih)/2",
+      "-q:v", "3",
+      tempPath,
+    ]);
+
+    let stderr = "";
+    ff.stderr.on("data", (d: Buffer) => {
+      stderr += d.toString();
+    });
+    ff.on("close", (code) => {
+      if (code === 0 && fs.existsSync(tempPath)) {
+        resolve(true);
+      } else {
+        if (stderr) {
+          console.warn(
+            `[SocialThumb] ffmpeg frame extract failed: ${stderr.slice(-200)}`,
+          );
+        }
+        resolve(false);
+      }
+    });
+    ff.on("error", (err) => {
+      console.warn(`[SocialThumb] ffmpeg spawn error: ${err.message}`);
+      resolve(false);
+    });
+  });
+
+  if (!ok) return null;
+
+  try {
+    const url = await uploadFileToStorage(tempPath, objectKey);
+    return url;
+  } catch (err: any) {
+    console.warn(`[SocialThumb] frame upload failed: ${err.message}`);
+    return null;
+  } finally {
+    try {
+      fs.unlinkSync(tempPath);
+    } catch {}
+  }
+}
+
+// Helper for IG imports.
+//   1. If Graph API gave us a thumbnail_url, cache it (cheap fast path).
+//   2. If it didn't, extract a frame from media_url (the MP4) — heavier but
+//      reliable for Reels where IG's thumbnail field is null.
 export async function cacheInstagramThumbnail(
   igMediaId: string,
   thumbnailUrl: string | null | undefined,
+  videoUrl?: string | null | undefined,
 ): Promise<string | null> {
-  if (!thumbnailUrl) return null;
   const safeId = igMediaId.replace(/[^a-zA-Z0-9_-]/g, "_");
   const key = `public/thumbnails/instagram/${safeId}.jpg`;
-  return cacheRemoteThumbnail(thumbnailUrl, key);
+
+  if (thumbnailUrl) {
+    const cached = await cacheRemoteThumbnail(thumbnailUrl, key);
+    if (cached) return cached;
+  }
+
+  if (videoUrl) {
+    return extractFrameFromVideoUrl(videoUrl, key);
+  }
+
+  return null;
 }
 
-// Helper for FB imports: same idea, FB returns thumbnails[].uri.
+// Helper for FB imports — same fallback story for fbcdn URLs.
 export async function cacheFacebookThumbnail(
   fbVideoId: string,
   thumbnailUrl: string | null | undefined,
+  videoUrl?: string | null | undefined,
 ): Promise<string | null> {
-  if (!thumbnailUrl) return null;
   const safeId = fbVideoId.replace(/[^a-zA-Z0-9_-]/g, "_");
   const key = `public/thumbnails/facebook/${safeId}.jpg`;
-  return cacheRemoteThumbnail(thumbnailUrl, key);
+
+  if (thumbnailUrl) {
+    const cached = await cacheRemoteThumbnail(thumbnailUrl, key);
+    if (cached) return cached;
+  }
+
+  if (videoUrl) {
+    return extractFrameFromVideoUrl(videoUrl, key);
+  }
+
+  return null;
 }
 
 // Backfill: walk a user's existing IG/FB videos that still have an expiring
@@ -95,12 +188,17 @@ export async function cacheFacebookThumbnail(
 export async function refreshSocialThumbnails(
   userId: string,
   platform: "instagram" | "facebook",
-  mediaList: Array<{ id: string; thumbnail_url?: string | null; thumbnails?: { data?: Array<{ uri?: string }> } }>,
+  mediaList: Array<{
+    id: string;
+    media_url?: string | null;
+    thumbnail_url?: string | null;
+    source?: string | null;
+    thumbnails?: { data?: Array<{ uri?: string }> };
+  }>,
 ): Promise<{ refreshed: number; failed: number }> {
   if (mediaList.length === 0) return { refreshed: 0, failed: 0 };
 
   const idPrefix = platform === "instagram" ? "instagram:" : "facebook:";
-  const youtubeIds = mediaList.map((m) => `${idPrefix}${m.id}`);
 
   const existing = await db.query.videoIndex.findMany({
     where: and(
@@ -124,19 +222,17 @@ export async function refreshSocialThumbnails(
     // Has a non-CDN, non-/storage URL we don't recognize — leave alone.
     if (stored && !isExpiringSocialUrl(stored)) continue;
 
-    const remote =
+    const thumbCandidate =
       platform === "instagram"
         ? m.thumbnail_url
         : m.thumbnails?.data?.[0]?.uri;
-    if (!remote) {
-      // Graph API didn't give us a thumbnail this time either — skip.
-      continue;
-    }
+    const videoCandidate =
+      platform === "instagram" ? m.media_url : m.source;
 
     const local =
       platform === "instagram"
-        ? await cacheInstagramThumbnail(m.id, remote)
-        : await cacheFacebookThumbnail(m.id, remote);
+        ? await cacheInstagramThumbnail(m.id, thumbCandidate, videoCandidate)
+        : await cacheFacebookThumbnail(m.id, thumbCandidate, videoCandidate);
 
     if (local) {
       try {

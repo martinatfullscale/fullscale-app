@@ -117,7 +117,7 @@ async function fetchFacebookPageVideos(pageId: string, accessToken: string): Pro
 async function fetchPersonalProfileVideos(accessToken: string): Promise<any[]> {
   try {
     // Personal profile videos endpoint
-    const url = `https://graph.facebook.com/v18.0/me/videos?fields=id,title,description,created_time,thumbnails,permalink_url,length,views&type=uploaded&limit=50&access_token=${accessToken}`;
+    const url = `https://graph.facebook.com/v18.0/me/videos?fields=id,title,description,created_time,thumbnails,permalink_url,length,views,source&type=uploaded&limit=50&access_token=${accessToken}`;
     const response = await fetch(url);
     const data = await response.json();
     
@@ -220,11 +220,12 @@ async function importPersonalVideos(userId: string, accessToken: string): Promis
     candidates.map(v => ({ title: v.title || "Untitled Video", description: v.description || "" }))
   );
 
-  // Cache thumbnails to GCS — fbcdn URLs expire same as IG.
+  // Cache thumbnails to GCS — fbcdn URLs expire same as IG. v.source is the
+  // MP4 URL fallback for ffmpeg frame extraction.
   const fbLimit = pLimit(5);
   const cachedThumbnails = await Promise.all(
     candidates.map(v => fbLimit(() =>
-      cacheFacebookThumbnail(v.id, v.thumbnails?.data?.[0]?.uri)
+      cacheFacebookThumbnail(v.id, v.thumbnails?.data?.[0]?.uri, v.source)
     ))
   );
 
@@ -290,11 +291,12 @@ async function importFacebookVideos(userId: string, pageId: string, accessToken:
     candidates.map(c => ({ title: c.title, description: c.video.description || "" }))
   );
 
-  // Cache thumbnails to GCS — fbcdn URLs expire same as IG.
+  // Cache thumbnails to GCS — fbcdn URLs expire same as IG. video.source is
+  // the MP4 URL fallback for ffmpeg frame extraction.
   const fbPageLimit = pLimit(5);
   const cachedThumbnails = await Promise.all(
     candidates.map(c => fbPageLimit(() =>
-      cacheFacebookThumbnail(c.video.id, c.video.thumbnails?.data?.[0]?.uri)
+      cacheFacebookThumbnail(c.video.id, c.video.thumbnails?.data?.[0]?.uri, c.video.source)
     ))
   );
 
@@ -368,11 +370,12 @@ async function importInstagramMedia(userId: string, igUserId: string, accessToke
   );
 
   // Cache thumbnails to GCS in parallel — IG's CDN URLs expire so we never
-  // store the raw URL. Note: do NOT fall back to media_url for VIDEO/REELS;
-  // that's the MP4, not an image.
+  // store the raw URL. media_url is passed so cacheInstagramThumbnail can
+  // fall back to ffmpeg frame extraction when Graph API returns no
+  // thumbnail_url (common for older Reels).
   const cachedThumbnails = await Promise.all(
     candidates.map(item => limit(() =>
-      cacheInstagramThumbnail(item.id, item.thumbnail_url)
+      cacheInstagramThumbnail(item.id, item.thumbnail_url, item.media_url)
     ))
   );
 
