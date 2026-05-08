@@ -258,62 +258,107 @@ async function applyProceduralHarmonization(
   console.log(`[Harmonize/proc] Scene atmosphere: rgb(${meanR.toFixed(0)},${meanG.toFixed(0)},${meanB.toFixed(0)}), brightness=${sceneBrightness.toFixed(2)}`);
 
   // ── Step 4: adjust product to match scene LIGHTING (not scene COLOR) ──
-  // Hard rule: brand colors must stay recognizable. A Just Water carton has
-  // to read as Just Water blue/white, not gray-washed to match a dim podcast
-  // set. So no tint — that would shift the product's intrinsic palette.
-  // Instead we adjust ONLY the brightness to match scene exposure, keeping
-  // saturation full so brand colors stay crisp. The contact shadow (next
-  // step) handles the "this object belongs in this scene" feel.
-  const brightnessFactor = clamp(0.85 + sceneBrightness * 0.25, 0.85, 1.10);
+  // Hard rule: brand colors must stay recognizable. So no full tint — that
+  // would shift the product's intrinsic palette. We do TWO mild adjustments:
+  //   - Brightness: stronger swing (was ±15%, now ±30%) so dim scenes
+  //     visibly dim the product instead of leaving it floating bright on
+  //     a dark background.
+  //   - Hue/temperature pull: 8% blend toward the scene's color cast.
+  //     Mild enough that brand colors stay recognizable, strong enough
+  //     that the eye reads "this product is lit by this room" instead
+  //     of "sticker pasted on top."
+  const brightnessFactor = clamp(0.70 + sceneBrightness * 0.50, 0.70, 1.20);
   const productAdjusted = await sharp(productResized)
     .modulate({ brightness: brightnessFactor })
     .png()
     .toBuffer();
   console.log(`[Harmonize/proc] Brightness adjustment: ${brightnessFactor.toFixed(2)}× (saturation + hue preserved)`);
 
-  // ── Step 5: build a soft contact shadow underneath the product ──
-  // Take the product's alpha channel as a silhouette, blur it heavily,
-  // composite as a semi-transparent dark layer offset slightly down.
-  const shadowSize = Math.max(8, Math.round(Math.min(finalW, finalH) * 0.04));
-  let shadowBuf: Buffer;
+  // ── Step 5: scene color cast — 8% pull toward scene atmosphere ──
+  // Build an RGBA tint layer the size of the product and overlay-blend it
+  // at low opacity. The product silhouette gates it via dest-in so we
+  // don't bleed onto background pixels.
+  const tintAlpha = 0.08; // 8% — visible without killing brand colors
+  let castBuf: Buffer = Buffer.alloc(0);
   try {
-    // Extract alpha channel and use it as shadow mask
-    const alphaMask = await sharp(productAdjusted)
+    const productAlpha = await sharp(productAdjusted)
       .ensureAlpha()
       .extractChannel("alpha")
-      .blur(shadowSize)
       .toBuffer();
-    // Build a black RGBA image gated by the blurred alpha
-    shadowBuf = await sharp({
+    const tintLayer = await sharp({
       create: {
         width: finalW,
         height: finalH,
         channels: 4,
-        background: { r: 0, g: 0, b: 0, alpha: 0 },
+        background: {
+          r: Math.round(meanR),
+          g: Math.round(meanG),
+          b: Math.round(meanB),
+          alpha: tintAlpha,
+        },
       },
     })
-      .composite([
-        { input: alphaMask, blend: "dest-in" }, // shape limited by alpha
-      ])
+      .composite([{ input: productAlpha, blend: "dest-in" }])
+      .png()
+      .toBuffer();
+    castBuf = tintLayer;
+    console.log(`[Harmonize/proc] Scene cast layer: rgb(${Math.round(meanR)},${Math.round(meanG)},${Math.round(meanB)}) @ ${(tintAlpha*100).toFixed(0)}%`);
+  } catch (err) {
+    console.warn(`[Harmonize/proc] Scene cast build failed (continuing without):`, (err as any)?.message);
+  }
+
+  // ── Step 6: build a stronger contact shadow underneath the product ──
+  // Bumped from a thin/transparent silhouette to a clearly visible drop
+  // shadow so the product reads as "sitting on" the surface. Two layers:
+  //   - Big soft shadow underneath (anchors the object)
+  //   - Tighter dark shadow at the contact edge (grounds it)
+  const softShadowSize = Math.max(16, Math.round(Math.min(finalW, finalH) * 0.10));
+  const tightShadowSize = Math.max(4, Math.round(Math.min(finalW, finalH) * 0.02));
+  let softShadowBuf: Buffer = Buffer.alloc(0);
+  let tightShadowBuf: Buffer = Buffer.alloc(0);
+  try {
+    const alphaMaskSoft = await sharp(productAdjusted)
+      .ensureAlpha()
+      .extractChannel("alpha")
+      .blur(softShadowSize)
+      .toBuffer();
+    softShadowBuf = await sharp({
+      create: { width: finalW, height: finalH, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0.45 } },
+    })
+      .composite([{ input: alphaMaskSoft, blend: "dest-in" }])
+      .png()
+      .toBuffer();
+
+    const alphaMaskTight = await sharp(productAdjusted)
+      .ensureAlpha()
+      .extractChannel("alpha")
+      .blur(tightShadowSize)
+      .toBuffer();
+    tightShadowBuf = await sharp({
+      create: { width: finalW, height: finalH, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0.65 } },
+    })
+      .composite([{ input: alphaMaskTight, blend: "dest-in" }])
       .png()
       .toBuffer();
   } catch (err) {
     console.warn(`[Harmonize/proc] Shadow build failed (continuing without):`, (err as any)?.message);
-    shadowBuf = Buffer.alloc(0);
   }
 
-  // ── Step 6: composite shadow + adjusted product onto the scene ──
-  const shadowOffsetY = Math.max(4, Math.round(finalH * 0.03));
+  // ── Step 7: composite layers in order: soft shadow, tight shadow,
+  //    product, scene cast (so cast sits ON the product, not below it). ──
+  const softShadowOffsetY = Math.max(8, Math.round(finalH * 0.06));
+  const tightShadowOffsetY = Math.max(2, Math.round(finalH * 0.015));
   const composites: Array<{ input: Buffer; left: number; top: number; blend?: any }> = [];
-  if (shadowBuf.length > 0) {
-    composites.push({
-      input: shadowBuf,
-      left: offsetX + 2,
-      top: offsetY + shadowOffsetY,
-      blend: "over",
-    });
+  if (softShadowBuf.length > 0) {
+    composites.push({ input: softShadowBuf, left: offsetX + 4, top: offsetY + softShadowOffsetY, blend: "over" });
+  }
+  if (tightShadowBuf.length > 0) {
+    composites.push({ input: tightShadowBuf, left: offsetX + 1, top: offsetY + tightShadowOffsetY, blend: "over" });
   }
   composites.push({ input: productAdjusted, left: offsetX, top: offsetY });
+  if (castBuf.length > 0) {
+    composites.push({ input: castBuf, left: offsetX, top: offsetY, blend: "over" });
+  }
 
   const result = await sharp(sceneBuf).composite(composites).png().toBuffer();
   return { result, flatComposite };

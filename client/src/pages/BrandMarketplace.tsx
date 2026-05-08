@@ -65,6 +65,9 @@ interface FeaturedCreator {
   profileImage: string | null;
   thumbnails: string[];
   category?: string;
+  /** Optional: hex gradient pair for logo-card mode when no real thumbnail
+   *  exists. Server-side creators omit this; dummies set it. */
+  gradient?: [string, string];
   stats: {
     totalVideos: number;
     totalViews: number;
@@ -249,7 +252,11 @@ export default function BrandMarketplace() {
     staleTime: 5 * 60 * 1000, // Cache for 5 minutes
   });
 
-  // Dummy featured creators — 8 slots for 2 rows of 4
+  // Dummy featured creators — 8 slots for 2 rows of 4.
+  // Each uses a per-category gradient + initials in the rendering below
+  // (logo-card mode), instead of generic stock photos. Real creators uploaded
+  // via the API can supply their own logo/JPEG via `thumbnails[0]` and that
+  // image takes precedence over the gradient fallback.
   const DUMMY_FEATURED_CREATORS: FeaturedCreator[] = [
     {
       name: "Jaylen Carter",
@@ -257,7 +264,8 @@ export default function BrandMarketplace() {
       headline: "Culture & Lifestyle Creator",
       category: "Lifestyle",
       profileImage: null,
-      thumbnails: ["https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=640&h=360&fit=crop"],
+      thumbnails: [],
+      gradient: ["#a855f7", "#ec4899"], // purple → pink
       stats: { totalVideos: 24, totalViews: 1850000, totalSurfaces: 87, subscribers: 145000 },
     },
     {
@@ -266,7 +274,8 @@ export default function BrandMarketplace() {
       headline: "Podcast Host · Sports & Entertainment",
       category: "Sports",
       profileImage: null,
-      thumbnails: ["https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?w=640&h=360&fit=crop"],
+      thumbnails: [],
+      gradient: ["#f97316", "#ef4444"], // orange → red
       stats: { totalVideos: 38, totalViews: 3200000, totalSurfaces: 142, subscribers: 290000 },
     },
     {
@@ -275,7 +284,8 @@ export default function BrandMarketplace() {
       headline: "Tech Reviews & Unboxing",
       category: "Tech",
       profileImage: null,
-      thumbnails: ["https://images.unsplash.com/photo-1593642702821-c8da6771f0c6?w=640&h=360&fit=crop"],
+      thumbnails: [],
+      gradient: ["#0ea5e9", "#3b82f6"], // sky → blue
       stats: { totalVideos: 52, totalViews: 5400000, totalSurfaces: 210, subscribers: 420000 },
     },
     {
@@ -284,7 +294,8 @@ export default function BrandMarketplace() {
       headline: "Home & Interior Design",
       category: "Home",
       profileImage: null,
-      thumbnails: ["https://images.unsplash.com/photo-1618221195710-dd6b41faaea6?w=640&h=360&fit=crop"],
+      thumbnails: [],
+      gradient: ["#10b981", "#14b8a6"], // emerald → teal
       stats: { totalVideos: 31, totalViews: 2400000, totalSurfaces: 115, subscribers: 198000 },
     },
     {
@@ -293,7 +304,8 @@ export default function BrandMarketplace() {
       headline: "Music Production & Beats",
       category: "Music",
       profileImage: null,
-      thumbnails: ["https://images.unsplash.com/photo-1478737270239-2f02b77fc618?w=640&h=360&fit=crop"],
+      thumbnails: [],
+      gradient: ["#7c3aed", "#1e1b4b"], // violet → indigo-deep
       stats: { totalVideos: 67, totalViews: 8100000, totalSurfaces: 290, subscribers: 560000 },
     },
     {
@@ -302,7 +314,8 @@ export default function BrandMarketplace() {
       headline: "Fitness & Wellness Coach",
       category: "Fitness",
       profileImage: null,
-      thumbnails: ["https://images.unsplash.com/photo-1571019614242-c5c5dee9f50b?w=640&h=360&fit=crop"],
+      thumbnails: [],
+      gradient: ["#84cc16", "#22c55e"], // lime → green
       stats: { totalVideos: 45, totalViews: 4700000, totalSurfaces: 178, subscribers: 340000 },
     },
     {
@@ -311,7 +324,8 @@ export default function BrandMarketplace() {
       headline: "Auto & Motorsport",
       category: "Auto",
       profileImage: null,
-      thumbnails: ["https://images.unsplash.com/photo-1494976388531-d1058494cdd8?w=640&h=360&fit=crop"],
+      thumbnails: [],
+      gradient: ["#dc2626", "#1f2937"], // red → graphite
       stats: { totalVideos: 29, totalViews: 1600000, totalSurfaces: 64, subscribers: 125000 },
     },
     {
@@ -320,10 +334,34 @@ export default function BrandMarketplace() {
       headline: "Food & Cooking",
       category: "Food",
       profileImage: null,
-      thumbnails: ["https://images.unsplash.com/photo-1556909114-f6e7ad7d3136?w=640&h=360&fit=crop"],
+      thumbnails: [],
+      gradient: ["#f59e0b", "#dc2626"], // amber → red
       stats: { totalVideos: 41, totalViews: 3900000, totalSurfaces: 155, subscribers: 275000 },
     },
   ];
+
+  // Initials for logo-card fallback ("Jaylen Carter" → "JC").
+  const initialsFor = (name: string): string => {
+    const parts = name.trim().split(/\s+/).filter(Boolean);
+    if (parts.length === 0) return "?";
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  };
+
+  // Deterministic gradient picker for creators without one (e.g. real-API
+  // creators whose backend hasn't filled gradient yet). Uses slug hash to
+  // pick from a fixed palette so the same creator always gets the same colors.
+  const FALLBACK_GRADIENTS: Array<[string, string]> = [
+    ["#a855f7", "#ec4899"], ["#0ea5e9", "#3b82f6"], ["#10b981", "#14b8a6"],
+    ["#f97316", "#ef4444"], ["#7c3aed", "#1e1b4b"], ["#f59e0b", "#dc2626"],
+    ["#84cc16", "#22c55e"], ["#06b6d4", "#6366f1"],
+  ];
+  const gradientFor = (creator: FeaturedCreator): [string, string] => {
+    if (creator.gradient) return creator.gradient;
+    let h = 0;
+    for (let i = 0; i < creator.slug.length; i++) h = (h * 31 + creator.slug.charCodeAt(i)) | 0;
+    return FALLBACK_GRADIENTS[Math.abs(h) % FALLBACK_GRADIENTS.length];
+  };
 
   // Helper to format view counts
   const formatViews = (views: number) => {
@@ -662,18 +700,39 @@ export default function BrandMarketplace() {
                 >
                   <Link href={`/c/${creator.slug}`}>
                     <Card className="group overflow-hidden cursor-pointer border-white/10 hover:border-purple-500/40 transition-all duration-300">
-                      {/* Single key image with name overlay */}
+                      {/* Logo-card thumbnail. If the creator has uploaded a
+                          real image (logo/JPEG/photo) it renders that.
+                          Otherwise: per-creator gradient + initials, which
+                          looks like a brand logo placeholder rather than a
+                          generic stock photo. */}
                       <div className="relative aspect-video overflow-hidden">
-                        <img
-                          src={creator.thumbnails?.[0] || "https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?w=640&h=360&fit=crop"}
-                          alt={creator.name}
-                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                          onError={(e) => {
-                            (e.target as HTMLImageElement).src = "https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?w=640&h=360&fit=crop";
-                          }}
-                        />
+                        {creator.thumbnails?.[0] ? (
+                          <img
+                            src={creator.thumbnails[0]}
+                            alt={creator.name}
+                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                            onError={(e) => {
+                              // Hide broken image so the gradient sibling shows through.
+                              (e.target as HTMLImageElement).style.display = "none";
+                            }}
+                          />
+                        ) : (
+                          <div
+                            className="w-full h-full flex items-center justify-center group-hover:scale-105 transition-transform duration-300"
+                            style={{
+                              background: `linear-gradient(135deg, ${gradientFor(creator)[0]} 0%, ${gradientFor(creator)[1]} 100%)`,
+                            }}
+                          >
+                            <span className="text-5xl font-extrabold text-white/95 drop-shadow-md tracking-tight">
+                              {initialsFor(creator.name)}
+                            </span>
+                          </div>
+                        )}
                         <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent p-3">
                           <h3 className="font-semibold text-white text-sm truncate">{creator.name}</h3>
+                          {creator.headline && (
+                            <p className="text-[10px] text-white/70 truncate">{creator.headline}</p>
+                          )}
                         </div>
                       </div>
                       {/* Category badge + view count */}
