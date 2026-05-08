@@ -195,6 +195,12 @@ export const videoIndex = pgTable("video_index", {
   editorialError: text("editorial_error"),
   editorialClipCount: integer("editorial_clip_count").default(0),
   editorialCompletedAt: timestamp("editorial_completed_at"),
+  // Scene-cut timestamps detected during scan, used to prevent placements
+  // from following the camera across hard cuts. Format: array of seconds
+  // marking the START of each new shot, e.g. [0, 12.5, 28, 45.2]. A surface
+  // at timestamp t belongs to the block whose start <= t < next-start.
+  // Computed by ffmpeg scene-detect; null until first scan completes.
+  sceneBoundaries: jsonb("scene_boundaries"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });

@@ -662,6 +662,106 @@ async function extractFrames(
   });
 }
 
+/**
+ * Detect scene-cut timestamps in a video using ffmpeg's scene filter.
+ *
+ * Why: When the camera cuts to a different shot (e.g. wide podcast room →
+ * solo close-up), surfaces from one shot shouldn't merge with surfaces
+ * from the next, and product placements made in shot A shouldn't render
+ * in shot B. This function returns the timestamps (seconds) of detected
+ * cuts so downstream code can group surfaces by shot.
+ *
+ * Approach: ffmpeg's `select=gt(scene,N)` filter computes the per-frame
+ * scene-change probability (0-1, based on histogram diff between frames);
+ * when it crosses N (default 0.3), ffmpeg flags it as a cut. We pipe the
+ * showinfo output to stderr and parse `pts_time:` lines.
+ *
+ * Returns: sorted array of seconds, e.g. [12.5, 28.0, 45.2]. Always
+ * includes 0 implicitly as the start of the first shot — callers can
+ * prepend if needed. Empty array means no cuts detected (single shot).
+ *
+ * Cost: one extra ffmpeg pass over the video. ~10-20% of extract time.
+ * Acceptable since we already have the file local at this point.
+ */
+async function detectSceneCuts(
+  videoPath: string,
+  threshold: number = 0.3,
+): Promise<number[]> {
+  return new Promise((resolve) => {
+    const absoluteVideoPath = path.resolve(videoPath);
+    if (!fs.existsSync(absoluteVideoPath)) {
+      console.warn(`[Scene Cuts] Video not found: ${absoluteVideoPath}`);
+      resolve([]);
+      return;
+    }
+
+    // -vf "select='gt(scene,T)',showinfo" prints info for each detected cut.
+    // -an drops audio (faster). -f null discards the output (we only want stderr).
+    const args = [
+      "-nostdin",
+      "-i", absoluteVideoPath,
+      "-an",
+      "-vf", `select='gt(scene,${threshold})',showinfo`,
+      "-f", "null",
+      "-",
+    ];
+
+    console.log(`[Scene Cuts] Detecting cuts (threshold=${threshold}) in ${absoluteVideoPath}`);
+    const ffmpeg = spawn("ffmpeg", args);
+
+    let stderr = "";
+    ffmpeg.stderr.on("data", (data) => { stderr += data.toString(); });
+
+    // Cap at 5 minutes — even multi-GB videos shouldn't take longer for
+    // detection-only (no encode). If it does, return empty + log.
+    const timeout = setTimeout(() => {
+      try { ffmpeg.kill("SIGKILL"); } catch {}
+      console.warn(`[Scene Cuts] Timed out after 5min — returning empty cut list`);
+      resolve([]);
+    }, 5 * 60 * 1000);
+
+    ffmpeg.on("close", () => {
+      clearTimeout(timeout);
+      // showinfo lines look like: "[Parsed_showinfo_1 @ 0x...] n: 0 pts: ... pts_time:12.5 ..."
+      // We extract the pts_time values.
+      const cuts: number[] = [];
+      const re = /pts_time:(\d+(?:\.\d+)?)/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(stderr)) !== null) {
+        const t = parseFloat(m[1]);
+        if (Number.isFinite(t) && t > 0) cuts.push(t);
+      }
+      // Dedup + sort (shouldn't have duplicates but be safe).
+      const sorted = Array.from(new Set(cuts)).sort((a, b) => a - b);
+      console.log(`[Scene Cuts] Detected ${sorted.length} cut(s): ${sorted.slice(0, 10).map(t => t.toFixed(1)).join(", ")}${sorted.length > 10 ? " ..." : ""}`);
+      resolve(sorted);
+    });
+
+    ffmpeg.on("error", (err) => {
+      clearTimeout(timeout);
+      console.warn(`[Scene Cuts] ffmpeg spawn failed (non-fatal):`, err?.message || err);
+      resolve([]);
+    });
+  });
+}
+
+/**
+ * Given a sorted list of scene-cut timestamps and a target timestamp,
+ * return the 0-indexed scene block ID. Block N covers [cuts[N-1], cuts[N]),
+ * with block 0 starting at 0. Out-of-range timestamps clamp to the last
+ * block. Used downstream to constrain clusterSurfaces so the same
+ * "Coffee Table" detection in two different shots doesn't merge.
+ */
+function sceneBlockForTimestamp(cuts: number[], t: number): number {
+  if (cuts.length === 0 || t < 0) return 0;
+  // cuts are start-of-new-shot. If t < cuts[0], block 0.
+  // If cuts[i-1] <= t < cuts[i], block i.
+  for (let i = 0; i < cuts.length; i++) {
+    if (t < cuts[i]) return i;
+  }
+  return cuts.length;
+}
+
 // ============================================================================
 // EDGE-BASED SURFACE DETECTION (Sharp)
 // ============================================================================
@@ -1653,10 +1753,20 @@ async function captureSurfaceKeyframes(videoId: number): Promise<void> {
     return;
   }
 
+  // Load this video's scene-cut timestamps so cross-shot surfaces don't
+  // cluster together. A coffee table in shot A and a coffee table in shot B
+  // are different objects even if their bboxes look similar.
+  let sceneCuts: number[] = [];
+  try {
+    const video = await storage.getVideoById(videoId);
+    const raw = (video as any)?.sceneBoundaries;
+    if (Array.isArray(raw)) sceneCuts = raw.filter(t => typeof t === "number" && Number.isFinite(t));
+  } catch { /* ignore */ }
+
   // Cluster surfaces to identify which ones represent the same physical surface
   // Use the same clustering logic as normalization
-  const clusters = clusterSurfaces(validSurfaces as any);
-  console.log(`[Keyframes] Found ${clusters.length} cluster(s) across ${validSurfaces.length} surfaces`);
+  const clusters = clusterSurfaces(validSurfaces as any, sceneCuts);
+  console.log(`[Keyframes] Found ${clusters.length} cluster(s) across ${validSurfaces.length} surfaces (scene cuts: ${sceneCuts.length})`);
 
   const keyframeBatch: Array<{
     surfaceId: number;
@@ -1762,12 +1872,13 @@ function canonicalSurfaceType(type: string): string {
  * one cluster instead of breaking off a new one.
  */
 function clusterSurfaces(
-  surfaces: Array<{ id: number; surfaceType: string; boundingBoxX: string; boundingBoxY: string; boundingBoxWidth: string; boundingBoxHeight: string; confidence: string }>,
+  surfaces: Array<{ id: number; surfaceType: string; timestamp?: string | number; boundingBoxX: string; boundingBoxY: string; boundingBoxWidth: string; boundingBoxHeight: string; confidence: string }>,
+  sceneCuts: number[] = [],
 ): SurfaceCluster[] {
   const CLUSTER_TOLERANCE = 0.18; // L∞ center distance (fallback)
   const IOU_MERGE = 0.30;
 
-  const clusters: SurfaceCluster[] = [];
+  const clusters: (SurfaceCluster & { sceneBlockId?: number })[] = [];
 
   for (const s of surfaces) {
     const bbX = parseFloat(s.boundingBoxX);
@@ -1778,10 +1889,18 @@ function clusterSurfaces(
     const centerY = bbY + bbH / 2;
     const canonical = canonicalSurfaceType(s.surfaceType);
     const candidateBox = { x: bbX, y: bbY, width: bbW, height: bbH };
+    // Scene block — surfaces in different shots must NEVER cluster together,
+    // regardless of how similar their bboxes look. A coffee table at 0:13 in
+    // shot A and a coffee table at 0:28 in shot B are different physical
+    // objects in different rooms.
+    const ts = typeof s.timestamp === "number" ? s.timestamp : parseFloat(String(s.timestamp ?? 0));
+    const sceneBlockId = sceneBlockForTimestamp(sceneCuts, Number.isFinite(ts) ? ts : 0);
 
     let matched = false;
     for (const cluster of clusters) {
       if (canonicalSurfaceType(cluster.surfaceType) !== canonical) continue;
+      // HARD GATE: cross-shot clustering is never allowed.
+      if (cluster.sceneBlockId !== undefined && cluster.sceneBlockId !== sceneBlockId) continue;
 
       // Match against ANY member — bboxes drift across frames so the rolling
       // chain (frame N matches N+1, N+1 matches N+2, ...) keeps the cluster
@@ -1804,6 +1923,7 @@ function clusterSurfaces(
     if (!matched) {
       clusters.push({
         surfaceType: canonical,
+        sceneBlockId,
         surfaces: [{ id: s.id, bbX, bbY, bbW, bbH, confidence: parseFloat(s.confidence) }],
       });
     }
@@ -1924,11 +2044,18 @@ async function normalizeSurfaceBoundingBoxes(videoId: number): Promise<void> {
     }
   }
 
-  // Step 2: Cluster remaining valid surfaces
+  // Step 2: Cluster remaining valid surfaces. Pass scene cuts so cross-shot
+  // surfaces don't merge — same rationale as captureSurfaceKeyframes.
   const validSurfaces = surfaces.filter(s => !phantomIds.includes(s.id));
-  const clusters = clusterSurfaces(validSurfaces as any);
+  let sceneCuts: number[] = [];
+  try {
+    const video = await storage.getVideoById(videoId);
+    const raw = (video as any)?.sceneBoundaries;
+    if (Array.isArray(raw)) sceneCuts = raw.filter(t => typeof t === "number" && Number.isFinite(t));
+  } catch { /* ignore */ }
+  const clusters = clusterSurfaces(validSurfaces as any, sceneCuts);
 
-  console.log(`[Normalize] Found ${clusters.length} cluster(s) from ${validSurfaces.length} surfaces`);
+  console.log(`[Normalize] Found ${clusters.length} cluster(s) from ${validSurfaces.length} surfaces (scene cuts: ${sceneCuts.length})`);
 
   // Step 2b: Drop overlapping clusters of the same canonical type. clusterSurfaces
   // groups by IoU/center-distance against members, but two clusters of the same
@@ -2449,7 +2576,21 @@ async function processVideoScanInner(
     }
     
     console.log(`[Scanner V2] Extracted ${frames.length} frames`);
-    
+
+    // Detect scene cuts in parallel with the rest of the scan setup. Cuts
+    // are persisted on the video record so downstream code (cluster,
+    // placement render) can prevent surfaces from one shot bleeding into
+    // another. Failure here is non-fatal — empty cut list means treat the
+    // whole video as one scene block.
+    let sceneCuts: number[] = [];
+    try {
+      sceneCuts = await detectSceneCuts(videoPath);
+      await storage.updateVideoIndex(videoId, { sceneBoundaries: sceneCuts as any });
+      console.log(`[Scanner V2] Persisted ${sceneCuts.length} scene cut(s) to videoIndex.sceneBoundaries`);
+    } catch (sceneErr: any) {
+      console.warn(`[Scanner V2] Scene-cut detection failed (non-fatal):`, sceneErr?.message || sceneErr);
+    }
+
     const { isVertical } = await getFrameMetadata(frames[0]);
     console.log(`[Scanner V2] Video orientation: ${isVertical ? "VERTICAL (9:16)" : "HORIZONTAL (16:9)"}`);
     
