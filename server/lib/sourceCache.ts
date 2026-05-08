@@ -31,6 +31,11 @@ import { getFreshYoutubeTokenForUser } from "./youtubeAuth";
 const CACHE_DIR = path.join(os.tmpdir(), "fullscale-source-cache");
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 const SWEEP_INTERVAL_MS = 15 * 60 * 1000; // every 15 min
+// Hard cap on total cache disk usage. Without this the cache could grow
+// unbounded inside the 1-hour TTL window and choke /tmp on Replit deploy
+// (small /tmp shared with multer disk writes, frame extraction, etc).
+// When usage exceeds the cap, the sweeper evicts oldest-first until under.
+const CACHE_MAX_BYTES = 500 * 1024 * 1024; // 500 MB
 
 const inflight = new Map<number, Promise<string>>();
 
@@ -109,20 +114,54 @@ export async function getSourcePath(video: VideoIndex): Promise<string> {
 
 function sweep() {
   if (!fs.existsSync(CACHE_DIR)) return;
-  let removed = 0;
+
+  // Pass 1: evict by TTL.
+  let removedTtl = 0;
   for (const file of fs.readdirSync(CACHE_DIR)) {
     const full = path.join(CACHE_DIR, file);
     try {
       const stat = fs.statSync(full);
       if (Date.now() - stat.mtimeMs > CACHE_TTL_MS) {
         fs.unlinkSync(full);
-        removed++;
+        removedTtl++;
       }
     } catch {
       // ignore — file may have been deleted between readdir and stat
     }
   }
-  if (removed > 0) console.log(`[Source Cache] Swept ${removed} expired files`);
+
+  // Pass 2: enforce total-size cap. Survey what's left, sort oldest first,
+  // unlink until under the cap.
+  let totalBytes = 0;
+  const survivors: { path: string; size: number; mtimeMs: number }[] = [];
+  for (const file of fs.readdirSync(CACHE_DIR)) {
+    const full = path.join(CACHE_DIR, file);
+    try {
+      const stat = fs.statSync(full);
+      totalBytes += stat.size;
+      survivors.push({ path: full, size: stat.size, mtimeMs: stat.mtimeMs });
+    } catch {}
+  }
+
+  let removedSize = 0;
+  if (totalBytes > CACHE_MAX_BYTES) {
+    survivors.sort((a, b) => a.mtimeMs - b.mtimeMs); // oldest first
+    for (const s of survivors) {
+      if (totalBytes <= CACHE_MAX_BYTES) break;
+      try {
+        fs.unlinkSync(s.path);
+        totalBytes -= s.size;
+        removedSize++;
+      } catch {}
+    }
+  }
+
+  if (removedTtl > 0 || removedSize > 0) {
+    console.log(`[Source Cache] Swept ${removedTtl} expired + ${removedSize} oldest-for-size — now ${(totalBytes / 1024 / 1024).toFixed(1)} MB / ${(CACHE_MAX_BYTES / 1024 / 1024).toFixed(0)} MB cap`);
+  }
 }
 
+// Run an initial sweep at startup so a previous process's leftovers don't
+// linger past the size cap before the first interval fires.
+setTimeout(sweep, 5_000).unref();
 setInterval(sweep, SWEEP_INTERVAL_MS).unref();

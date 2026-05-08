@@ -93,6 +93,37 @@ export async function uploadFileToStorage(
   return `/${objectKey.replace(/^public\//, "storage/")}`;
 }
 
+/**
+ * Pipe a readable stream straight into Object Storage with no disk roundtrip.
+ * For large video uploads this avoids multer's two-pass /tmp write that was
+ * stalling client uploads at ~80% on Replit deploy (small /tmp + slow GCS
+ * copy back-pressuring the inbound TCP). Use `resumable: true` so chunked
+ * GCS uploads handle multi-GB files cleanly.
+ */
+export async function uploadStreamToStorage(
+  readStream: NodeJS.ReadableStream,
+  objectKey: string,
+  contentType?: string,
+): Promise<string> {
+  const bucket = getBucket();
+  const file = bucket.file(objectKey);
+  const ct = contentType || mime.lookup(objectKey) || "application/octet-stream";
+
+  await new Promise<void>((resolve, reject) => {
+    const writeStream = file.createWriteStream({
+      contentType: ct,
+      resumable: true,
+    });
+    readStream
+      .pipe(writeStream)
+      .on("error", reject)
+      .on("finish", resolve);
+    readStream.on("error", reject);
+  });
+
+  return `/${objectKey.replace(/^public\//, "storage/")}`;
+}
+
 export async function downloadToTempFile(
   objectKey: string,
   tempDir?: string

@@ -50,7 +50,7 @@ import { users, users as usersTable, allowedUsers as allowedUsersTable, videoInd
 import { eq, sql } from "drizzle-orm";
 import crypto from "crypto";
 import sharp from "sharp";
-import { uploadFileToStorage, fileExistsInStorage, objectKeyFromServeUrl, getStorageStream } from "./lib/objectStorage";
+import { uploadFileToStorage, uploadStreamToStorage, fileExistsInStorage, objectKeyFromServeUrl, getStorageStream } from "./lib/objectStorage";
 import { runTranscriptPipeline } from "./lib/remix/transcriptPipeline";
 import { runEditorialAutoPipeline, renderSingleEditorialClip } from "./lib/remix/editorialAutoPipeline";
 import { analyzeEditorial } from "./lib/ai/claude-dense/editorialAnalyzer";
@@ -3815,108 +3815,150 @@ export async function registerRoutes(
   });
 
   // Direct video upload endpoint (traditional — file passes through server)
-  app.post("/api/upload", isFlexibleAuthenticated, uploadMiddleware.single("video"), async (req: any, res) => {
-
+  // Streaming upload: parse the multipart body with busboy and pipe the file
+  // part DIRECTLY into Object Storage via createWriteStream. No /tmp roundtrip.
+  // Replaces the previous multer.diskStorage handler that buffered the entire
+  // file to /tmp first — that path stalled at ~80% on Replit deploy when /tmp
+  // filled up (source cache + frame extraction + multer all share /tmp), and
+  // the resulting TCP backpressure froze the browser upload progress.
+  app.post("/api/upload", isFlexibleAuthenticated, async (req: any, res) => {
     console.log(`[UPLOAD] User: ${req.authEmail || req.googleUser?.email}`);
-    console.log(`[UPLOAD] User: ${req.googleUser?.email}`);
-    
-    if (!req.file) {
-      console.log(`[UPLOAD] ERROR: No file received`);
-      return res.status(400).json({ error: "No video file uploaded" });
-    }
-
     const userId = req.authEmail || req.googleUser?.email;
-    const file = req.file;
-    const title = req.body.title || file.originalname.replace(/\.[^/.]+$/, "");
-    const category = req.body.category || "Other";
-    const subcategory = req.body.subcategory || null;
 
-    console.log(`[UPLOAD] File: ${file.originalname} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
-    console.log(`[UPLOAD] Saved as: ${file.filename}`);
-    console.log(`[UPLOAD] Title: ${title}`);
-    console.log(`[UPLOAD] Category: ${category}${subcategory ? ` / ${subcategory}` : ""}`);
-
+    let Busboy: any;
     try {
-      const uploadVideoId = `upload-${Date.now()}-${Math.random().toString(36).substring(7)}`;
-
-      const objectKey = `public/videos/${file.filename}`;
-      const storageUrl = await uploadFileToStorage(file.path, objectKey);
-      console.log(`[UPLOAD] Uploaded to Object Storage: ${storageUrl}`);
-
-      try { fs.unlinkSync(file.path); } catch {}
-
-      const video = await storage.insertVideo({
-        userId,
-        youtubeId: uploadVideoId,
-        title,
-        description: `Uploaded video: ${file.originalname}`,
-        thumbnailUrl: "/storage/uploads/default-thumbnail.png",
-        viewCount: 0,
-        publishedAt: new Date(),
-        status: "Pending Scan",
-        priorityScore: 80,
-        platform: "fullscale",
-        category,
-        subcategory,
-        isEvergreen: true,
-        duration: "0:00",
-        filePath: storageUrl,
-      });
-
-      console.log(`[UPLOAD] Video inserted with ID: ${video.id}`);
-      console.log(`[UPLOAD] Starting auto-scan...`);
-
-      // Mark editorial pipeline as pending immediately so UI can poll
-      storage.updateVideoEditorialStatus(video.id, "pending").catch((e: any) =>
-        console.warn(`[UPLOAD] Failed to set editorial pending: ${e?.message}`)
-      );
-
-      // Auto-extract real thumbnail from the video (replaces default placeholder)
-      extractThumbnailForVideo(video.id)
-        .then(thumbUrl => { if (thumbUrl) console.log(`[UPLOAD] Thumbnail extracted for ${video.id}: ${thumbUrl}`); })
-        .catch(() => {});
-
-      processVideoScan(video.id, true).then(result => {
-        console.log(`[UPLOAD] Auto-scan complete for ${video.id}: ${result.surfacesDetected} surfaces`);
-
-        // Feature A: Auto-generate editorial story-clips after scan completes.
-        // Runs transcript + narrative analysis + FFmpeg render in background.
-        // userId here is the email string (req.authEmail); we pass a numeric 0
-        // placeholder because the editorialClips schema requires integer userId
-        // but the auto-pipeline isn't tied to a specific user role.
-        const pipelineUserId = 0;
-        runEditorialAutoPipeline(video.id, pipelineUserId)
-          .then(r => {
-            if (r.success) {
-              console.log(`[UPLOAD] Editorial auto-pipeline: ${r.clipsRendered}/${r.clipsGenerated} rendered in ${(r.durationMs / 1000).toFixed(1)}s`);
-            } else {
-              console.warn(`[UPLOAD] Editorial auto-pipeline failed for ${video.id}: ${r.error}`);
-            }
-          })
-          .catch(err => {
-            console.error(`[UPLOAD] Editorial auto-pipeline error for ${video.id}:`, err?.message || err);
-          });
-      }).catch(err => {
-        console.error(`[UPLOAD] Auto-scan failed for ${video.id}:`, err.message);
-      });
-
-      res.json({ 
-        success: true, 
-        video: {
-          id: video.id,
-          title: video.title,
-          youtubeId: uploadVideoId,
-          videoUrl: storageUrl,
-          status: video.status,
-          platform: "fullscale"
-        },
-        message: "Video uploaded successfully. Click 'Scan' to analyze for ad placements."
-      });
-    } catch (error: any) {
-      console.error(`[UPLOAD] Error:`, error);
-      try { fs.unlinkSync(file.path); } catch {}
-      res.status(500).json({ error: "Failed to save video record" });
+      Busboy = (await import("busboy")).default;
+    } catch (err: any) {
+      console.error(`[UPLOAD] busboy import failed:`, err?.message);
+      return res.status(500).json({ error: "Upload parser unavailable" });
     }
+
+    const bb = Busboy({
+      headers: req.headers,
+      limits: { fileSize: 4 * 1024 * 1024 * 1024 }, // 4GB cap (matches prior multer limit)
+    });
+
+    const fields: Record<string, string> = {};
+    let uploadPromise: Promise<{ storageUrl: string; objectKey: string; filename: string; size: number }> | null = null;
+    let fileSeen = false;
+    let bytesReceived = 0;
+
+    bb.on("field", (name: string, val: string) => {
+      fields[name] = val;
+    });
+
+    bb.on("file", (fieldname: string, fileStream: NodeJS.ReadableStream, info: any) => {
+      if (fieldname !== "video") {
+        // Not the file we care about — drain to allow the stream to finish.
+        fileStream.resume();
+        return;
+      }
+      fileSeen = true;
+      const originalName: string = info?.filename || `upload-${Date.now()}.mp4`;
+      const mimeType: string = info?.mimeType || info?.mime || "video/mp4";
+      const safeName = originalName.replace(/[^a-zA-Z0-9._-]/g, "_");
+      const filename = `${Date.now()}-${safeName}`;
+      const objectKey = `public/videos/${filename}`;
+
+      console.log(`[UPLOAD] File: ${originalName} (mime: ${mimeType}) → ${objectKey}`);
+
+      // Track bytes for log only — no buffering.
+      fileStream.on("data", (chunk: Buffer) => { bytesReceived += chunk.length; });
+
+      uploadPromise = uploadStreamToStorage(fileStream, objectKey, mimeType)
+        .then(storageUrl => {
+          console.log(`[UPLOAD] Streamed to Object Storage: ${storageUrl} (${(bytesReceived / 1024 / 1024).toFixed(2)} MB)`);
+          return { storageUrl, objectKey, filename, size: bytesReceived };
+        });
+    });
+
+    bb.on("error", (err: any) => {
+      console.error(`[UPLOAD] busboy parse error:`, err?.message || err);
+      if (!res.headersSent) res.status(400).json({ error: `Upload parse error: ${err?.message || err}` });
+    });
+
+    bb.on("close", async () => {
+      try {
+        if (!fileSeen || !uploadPromise) {
+          if (!res.headersSent) res.status(400).json({ error: "No video file uploaded (expected multipart field 'video')" });
+          return;
+        }
+
+        const { storageUrl, filename, size } = await uploadPromise;
+
+        const title = fields.title || filename.replace(/\.[^/.]+$/, "");
+        const category = fields.category || "Other";
+        const subcategory = fields.subcategory || null;
+        const uploadVideoId = `upload-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+
+        const video = await storage.insertVideo({
+          userId,
+          youtubeId: uploadVideoId,
+          title,
+          description: `Uploaded video: ${filename}`,
+          thumbnailUrl: "/storage/uploads/default-thumbnail.png",
+          viewCount: 0,
+          publishedAt: new Date(),
+          status: "Pending Scan",
+          priorityScore: 80,
+          platform: "fullscale",
+          category,
+          subcategory,
+          isEvergreen: true,
+          duration: "0:00",
+          filePath: storageUrl,
+        });
+
+        console.log(`[UPLOAD] Video inserted with ID: ${video.id} (${(size / 1024 / 1024).toFixed(2)} MB)`);
+
+        // Reply to the client BEFORE spinning background jobs so the upload
+        // modal closes promptly even if the scan/editorial pipeline is slow.
+        res.json({
+          success: true,
+          video: {
+            id: video.id,
+            title: video.title,
+            youtubeId: uploadVideoId,
+            videoUrl: storageUrl,
+            status: video.status,
+            platform: "fullscale",
+          },
+          message: "Video uploaded successfully. Click 'Scan' to analyze for ad placements.",
+        });
+
+        // Mark editorial pipeline as pending immediately so UI can poll
+        storage.updateVideoEditorialStatus(video.id, "pending").catch((e: any) =>
+          console.warn(`[UPLOAD] Failed to set editorial pending: ${e?.message}`)
+        );
+
+        extractThumbnailForVideo(video.id)
+          .then(thumbUrl => { if (thumbUrl) console.log(`[UPLOAD] Thumbnail extracted for ${video.id}: ${thumbUrl}`); })
+          .catch(() => {});
+
+        processVideoScan(video.id, true).then(result => {
+          console.log(`[UPLOAD] Auto-scan complete for ${video.id}: ${result.surfacesDetected} surfaces`);
+          const pipelineUserId = 0;
+          runEditorialAutoPipeline(video.id, pipelineUserId)
+            .then(r => {
+              if (r.success) {
+                console.log(`[UPLOAD] Editorial auto-pipeline: ${r.clipsRendered}/${r.clipsGenerated} rendered in ${(r.durationMs / 1000).toFixed(1)}s`);
+              } else {
+                console.warn(`[UPLOAD] Editorial auto-pipeline failed for ${video.id}: ${r.error}`);
+              }
+            })
+            .catch(err => {
+              console.error(`[UPLOAD] Editorial auto-pipeline error for ${video.id}:`, err?.message || err);
+            });
+        }).catch(err => {
+          console.error(`[UPLOAD] Auto-scan failed for ${video.id}:`, err.message);
+        });
+      } catch (error: any) {
+        console.error(`[UPLOAD] Error:`, error?.message || error);
+        if (!res.headersSent) res.status(500).json({ error: error?.message || "Failed to save video" });
+      }
+    });
+
+    req.pipe(bb);
   });
 
   // Get single video with metadata (for Remix Engine)
