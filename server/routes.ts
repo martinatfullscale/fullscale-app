@@ -3822,6 +3822,7 @@ export async function registerRoutes(
   // filled up (source cache + frame extraction + multer all share /tmp), and
   // the resulting TCP backpressure froze the browser upload progress.
   app.post("/api/upload", isFlexibleAuthenticated, async (req: any, res) => {
+    const uploadStartedAt = Date.now();
     console.log(`[UPLOAD] User: ${req.authEmail || req.googleUser?.email}`);
     const userId = req.authEmail || req.googleUser?.email;
 
@@ -3862,13 +3863,49 @@ export async function registerRoutes(
 
       console.log(`[UPLOAD] File: ${originalName} (mime: ${mimeType}) → ${objectKey}`);
 
-      // Track bytes for log only — no buffering.
-      fileStream.on("data", (chunk: Buffer) => { bytesReceived += chunk.length; });
+      // Diagnostic logging — emit a line every 25MB received from busboy, so
+      // when an upload hangs we can tell whether it's the inbound parse or
+      // the outbound GCS write that's stuck.
+      let lastLoggedMB = 0;
+      let lastDataAt = Date.now();
+      fileStream.on("data", (chunk: Buffer) => {
+        bytesReceived += chunk.length;
+        lastDataAt = Date.now();
+        const currentMB = Math.floor(bytesReceived / (1024 * 1024));
+        if (currentMB - lastLoggedMB >= 25) {
+          console.log(`[UPLOAD] busboy received ${currentMB} MB (${((bytesReceived / 1024 / 1024) / ((Date.now() - uploadStartedAt) / 1000)).toFixed(1)} MB/s)`);
+          lastLoggedMB = currentMB;
+        }
+      });
+      fileStream.on("end", () => {
+        console.log(`[UPLOAD] busboy file stream ENDED at ${(bytesReceived / 1024 / 1024).toFixed(2)} MB`);
+      });
+      fileStream.on("error", (err: any) => {
+        console.error(`[UPLOAD] busboy file stream ERROR:`, err?.message || err);
+      });
+
+      // Watchdog: if no bytes flow for 90s, fail the request loudly so we
+      // see the silent-hang in the log and the client gets a real error.
+      const watchdog = setInterval(() => {
+        const sinceLast = Date.now() - lastDataAt;
+        if (sinceLast > 90_000) {
+          clearInterval(watchdog);
+          console.error(`[UPLOAD] WATCHDOG: no data for ${(sinceLast / 1000).toFixed(0)}s, aborting`);
+          (fileStream as any).destroy?.(new Error(`Upload watchdog: no data for ${(sinceLast / 1000).toFixed(0)}s`));
+        }
+      }, 15_000);
 
       uploadPromise = uploadStreamToStorage(fileStream, objectKey, mimeType)
         .then(storageUrl => {
-          console.log(`[UPLOAD] Streamed to Object Storage: ${storageUrl} (${(bytesReceived / 1024 / 1024).toFixed(2)} MB)`);
+          clearInterval(watchdog);
+          const elapsed = (Date.now() - uploadStartedAt) / 1000;
+          console.log(`[UPLOAD] Streamed to Object Storage: ${storageUrl} (${(bytesReceived / 1024 / 1024).toFixed(2)} MB in ${elapsed.toFixed(1)}s = ${((bytesReceived / 1024 / 1024) / elapsed).toFixed(1)} MB/s)`);
           return { storageUrl, objectKey, filename, size: bytesReceived };
+        })
+        .catch(err => {
+          clearInterval(watchdog);
+          console.error(`[UPLOAD] uploadStreamToStorage failed at ${(bytesReceived / 1024 / 1024).toFixed(2)} MB:`, err?.message || err);
+          throw err;
         });
     });
 

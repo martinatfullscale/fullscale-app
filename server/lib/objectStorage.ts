@@ -96,9 +96,13 @@ export async function uploadFileToStorage(
 /**
  * Pipe a readable stream straight into Object Storage with no disk roundtrip.
  * For large video uploads this avoids multer's two-pass /tmp write that was
- * stalling client uploads at ~80% on Replit deploy (small /tmp + slow GCS
- * copy back-pressuring the inbound TCP). Use `resumable: true` so chunked
- * GCS uploads handle multi-GB files cleanly.
+ * stalling client uploads at ~80% on Replit deploy.
+ *
+ * resumable: false uses a one-shot upload — simpler, fewer moving parts than
+ * the chunked resumable session (which silently hangs on Replit's network
+ * path with the workload-identity sidecar credentials). The library will
+ * still stream chunks as they arrive; "non-resumable" just means no chunked
+ * session protocol, not "buffer the whole file in RAM."
  */
 export async function uploadStreamToStorage(
   readStream: NodeJS.ReadableStream,
@@ -112,13 +116,14 @@ export async function uploadStreamToStorage(
   await new Promise<void>((resolve, reject) => {
     const writeStream = file.createWriteStream({
       contentType: ct,
-      resumable: true,
+      resumable: false,
     });
     readStream
       .pipe(writeStream)
       .on("error", reject)
       .on("finish", resolve);
     readStream.on("error", reject);
+    writeStream.on("error", reject);
   });
 
   return `/${objectKey.replace(/^public\//, "storage/")}`;
