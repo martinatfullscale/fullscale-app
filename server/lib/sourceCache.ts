@@ -55,9 +55,47 @@ function isFresh(filePath: string): boolean {
 // Resolves the local path to a playable mp4 for the given video, downloading
 // from the source platform if not already cached. Returns the local path.
 export async function getSourcePath(video: VideoIndex): Promise<string> {
-  // Locally-uploaded videos: serve straight from filePath, no cache needed.
-  if ((video as any).filePath) {
-    const direct = path.resolve(process.cwd(), (video as any).filePath);
+  const filePath = (video as any).filePath as string | null | undefined;
+
+  // GCS-backed uploads: filePath looks like "/storage/videos/<key>". Download
+  // the bytes to the on-disk cache so the player can stream from a real file.
+  // This is the path used by chunked-uploads (platform="fullscale") that
+  // landed in Object Storage rather than on the local workspace volume.
+  if (filePath?.startsWith("/storage/")) {
+    const target = cachePath(video.id);
+    if (fs.existsSync(target) && isFresh(target)) {
+      fs.utimesSync(target, new Date(), new Date());
+      return target;
+    }
+    if (inflight.has(video.id)) return inflight.get(video.id)!;
+    const promise = (async () => {
+      fs.mkdirSync(CACHE_DIR, { recursive: true });
+      const objectKey = filePath.replace(/^\/storage\//, "public/");
+      const { downloadToTempFile } = await import("./objectStorage");
+      const downloaded = await downloadToTempFile(objectKey, CACHE_DIR);
+      // downloadToTempFile uses basename(objectKey) for the local file;
+      // copy/rename into our cache slot so isFresh + sweep work.
+      try {
+        if (downloaded !== target) {
+          fs.copyFileSync(downloaded, target);
+          try { fs.unlinkSync(downloaded); } catch { /* ignore */ }
+        }
+      } catch (e: any) {
+        console.warn(`[Source Cache] Could not normalize cache path for video ${video.id}:`, e?.message);
+      }
+      return target;
+    })();
+    inflight.set(video.id, promise);
+    try {
+      return await promise;
+    } finally {
+      inflight.delete(video.id);
+    }
+  }
+
+  // Local-disk uploads (legacy workspace videos): serve straight from filePath.
+  if (filePath) {
+    const direct = path.resolve(process.cwd(), filePath);
     if (fs.existsSync(direct)) return direct;
   }
 
