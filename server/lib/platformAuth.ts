@@ -6,6 +6,11 @@ import { eq, and } from "drizzle-orm";
 import { encrypt, decrypt } from "../encryption";
 import { categorizeVideos } from "./ai/categorize";
 import { pLimit } from "./concurrency";
+import {
+  cacheInstagramThumbnail,
+  cacheFacebookThumbnail,
+  refreshSocialThumbnails,
+} from "./socialThumbnails";
 
 interface TwitchProfile {
   id: string;
@@ -215,6 +220,14 @@ async function importPersonalVideos(userId: string, accessToken: string): Promis
     candidates.map(v => ({ title: v.title || "Untitled Video", description: v.description || "" }))
   );
 
+  // Cache thumbnails to GCS — fbcdn URLs expire same as IG.
+  const fbLimit = pLimit(5);
+  const cachedThumbnails = await Promise.all(
+    candidates.map(v => fbLimit(() =>
+      cacheFacebookThumbnail(v.id, v.thumbnails?.data?.[0]?.uri)
+    ))
+  );
+
   let imported = 0;
   for (let i = 0; i < candidates.length; i++) {
     const video = candidates[i];
@@ -226,7 +239,7 @@ async function importPersonalVideos(userId: string, accessToken: string): Promis
         title: video.title || "Untitled Video",
         description: video.description || "",
         viewCount: video.views || 0,
-        thumbnailUrl: video.thumbnails?.data?.[0]?.uri || null,
+        thumbnailUrl: cachedThumbnails[i],
         status: "Pending Scan",
         priorityScore: 50,
         publishedAt: video.created_time ? new Date(video.created_time) : new Date(),
@@ -244,6 +257,7 @@ async function importPersonalVideos(userId: string, accessToken: string): Promis
   }
 
   console.log(`[Graph API] Imported ${imported} new personal profile videos`);
+  await refreshSocialThumbnails(userId, "facebook", videos);
   return imported;
 }
 
@@ -276,6 +290,14 @@ async function importFacebookVideos(userId: string, pageId: string, accessToken:
     candidates.map(c => ({ title: c.title, description: c.video.description || "" }))
   );
 
+  // Cache thumbnails to GCS — fbcdn URLs expire same as IG.
+  const fbPageLimit = pLimit(5);
+  const cachedThumbnails = await Promise.all(
+    candidates.map(c => fbPageLimit(() =>
+      cacheFacebookThumbnail(c.video.id, c.video.thumbnails?.data?.[0]?.uri)
+    ))
+  );
+
   let imported = 0;
   for (let i = 0; i < candidates.length; i++) {
     const { video, title } = candidates[i];
@@ -287,7 +309,7 @@ async function importFacebookVideos(userId: string, pageId: string, accessToken:
         title,
         description: video.description || "",
         viewCount: video.views || 0,
-        thumbnailUrl: video.thumbnails?.data?.[0]?.uri || null,
+        thumbnailUrl: cachedThumbnails[i],
         status: "Pending Scan",
         priorityScore: 50,
         publishedAt: video.created_time ? new Date(video.created_time) : new Date(),
@@ -305,6 +327,7 @@ async function importFacebookVideos(userId: string, pageId: string, accessToken:
   }
 
   console.log(`[Graph API] Imported ${imported} new Facebook videos`);
+  await refreshSocialThumbnails(userId, "facebook", videos);
   return imported;
 }
 
@@ -344,6 +367,15 @@ async function importInstagramMedia(userId: string, igUserId: string, accessToke
     ))
   );
 
+  // Cache thumbnails to GCS in parallel — IG's CDN URLs expire so we never
+  // store the raw URL. Note: do NOT fall back to media_url for VIDEO/REELS;
+  // that's the MP4, not an image.
+  const cachedThumbnails = await Promise.all(
+    candidates.map(item => limit(() =>
+      cacheInstagramThumbnail(item.id, item.thumbnail_url)
+    ))
+  );
+
   let imported = 0;
   for (let i = 0; i < candidates.length; i++) {
     const item = candidates[i];
@@ -355,7 +387,7 @@ async function importInstagramMedia(userId: string, igUserId: string, accessToke
         title: item.caption?.substring(0, 100) || "Instagram Video",
         description: item.caption || "",
         viewCount: viewCounts[i] || 0,
-        thumbnailUrl: item.thumbnail_url || item.media_url || null,
+        thumbnailUrl: cachedThumbnails[i],
         status: "Pending Scan",
         priorityScore: 50,
         publishedAt: item.timestamp ? new Date(item.timestamp) : new Date(),
@@ -372,6 +404,12 @@ async function importInstagramMedia(userId: string, igUserId: string, accessToke
   }
 
   console.log(`[Graph API] Imported ${imported} new Instagram videos/reels`);
+
+  // Backfill: existing IG videos in the index that still hold a CDN URL or
+  // null get their thumbnails re-cached now too. Cheap on subsequent syncs
+  // because already-cached entries (URL on /storage/) are skipped.
+  await refreshSocialThumbnails(userId, "instagram", media);
+
   return imported;
 }
 
