@@ -2601,10 +2601,19 @@ async function processVideoScanInner(
       console.error(`[Scanner V2] Temporal grouping failed (non-fatal):`, temporalErr);
     }
 
-    // Remove filtered/phantom surfaces from count
+    // Remove filtered/phantom surfaces from count.
+    // CRITICAL: only subtract NEW surfaces inserted during THIS scan run.
+    // With the snapshot/preserve-priors logic added earlier, the DB also
+    // contains old Filtered surfaces from previous scans — counting those
+    // here drove totalSurfaces to 0 even when this run inserted real
+    // detections (Floor + Shelf were vanishing this way on Call Her Daddy).
     const postNormSurfaces = await storage.getDetectedSurfaces(videoId);
-    const filteredOut = postNormSurfaces.filter(s => s.surfaceType === "Filtered").length;
+    const priorIdSet = new Set(priorSurfaceIds);
+    const filteredOut = postNormSurfaces
+      .filter(s => !priorIdSet.has(s.id) && s.surfaceType === "Filtered")
+      .length;
     totalSurfaces = Math.max(0, totalSurfaces - filteredOut);
+    console.log(`[Scanner V2] Net new active surfaces this run: ${totalSurfaces} (inserted - filtered ${filteredOut} new surfaces)`);
 
     // SCENE CONTEXT ENRICHMENT — FullScale Edge image analysis
     // Uses Sharp to analyze brightness, edges, and color to infer scene context
