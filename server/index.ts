@@ -25,6 +25,19 @@ declare module "http" {
 // This is required for secure cookies to work behind Replit's reverse proxy
 app.set("trust proxy", 1);
 
+// Process-level safety net: never let an unhandled promise rejection or
+// an uncaught exception take down the server. The deploy auto-restarts
+// after a crash but every restart costs ~10s of downtime + interrupts
+// in-flight work. Log loudly instead so we can fix the root cause.
+process.on("unhandledRejection", (reason: any, promise) => {
+  console.error("[process] UNHANDLED REJECTION:", reason?.message || reason);
+  if (reason?.stack) console.error(reason.stack);
+});
+process.on("uncaughtException", (err: any) => {
+  console.error("[process] UNCAUGHT EXCEPTION:", err?.message || err);
+  if (err?.stack) console.error(err.stack);
+});
+
 // ============================================
 // HIGHEST PRIORITY: Static assets before EVERYTHING
 // This ensures logo and videos load regardless of auth/session state

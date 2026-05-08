@@ -117,6 +117,9 @@ export async function uploadStreamToStorage(
     const writeStream = file.createWriteStream({
       contentType: ct,
       resumable: false,
+      // Generous timeout for large multi-GB uploads on Replit's network path.
+      // Default is ~60s which is too short for anything over a few hundred MB.
+      timeout: 30 * 60 * 1000, // 30 minutes
     });
     readStream
       .pipe(writeStream)

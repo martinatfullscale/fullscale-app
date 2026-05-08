@@ -3840,9 +3840,17 @@ export async function registerRoutes(
     });
 
     const fields: Record<string, string> = {};
-    let uploadPromise: Promise<{ storageUrl: string; objectKey: string; filename: string; size: number }> | null = null;
+    let uploadPromise: Promise<void> | null = null;
+    let uploadResult: { storageUrl: string; objectKey: string; filename: string; size: number } | null = null;
+    let uploadError: Error | null = null;
     let fileSeen = false;
     let bytesReceived = 0;
+    let responseSettled = false;
+    const settle = (fn: () => void) => {
+      if (responseSettled || res.headersSent) return;
+      responseSettled = true;
+      fn();
+    };
 
     bb.on("field", (name: string, val: string) => {
       fields[name] = val;
@@ -3886,42 +3894,67 @@ export async function registerRoutes(
 
       // Watchdog: if no bytes flow for 90s, fail the request loudly so we
       // see the silent-hang in the log and the client gets a real error.
+      // Wrapped in try/catch and runs unref'd so it never crashes the process.
       const watchdog = setInterval(() => {
-        const sinceLast = Date.now() - lastDataAt;
-        if (sinceLast > 90_000) {
-          clearInterval(watchdog);
-          console.error(`[UPLOAD] WATCHDOG: no data for ${(sinceLast / 1000).toFixed(0)}s, aborting`);
-          (fileStream as any).destroy?.(new Error(`Upload watchdog: no data for ${(sinceLast / 1000).toFixed(0)}s`));
+        try {
+          const sinceLast = Date.now() - lastDataAt;
+          if (sinceLast > 90_000) {
+            clearInterval(watchdog);
+            console.error(`[UPLOAD] WATCHDOG: no data for ${(sinceLast / 1000).toFixed(0)}s after ${(bytesReceived / 1024 / 1024).toFixed(2)} MB — aborting`);
+            try { (fileStream as any).destroy?.(new Error(`Upload watchdog: no data for ${(sinceLast / 1000).toFixed(0)}s after ${(bytesReceived / 1024 / 1024).toFixed(2)} MB`)); } catch { /* swallow */ }
+          }
+        } catch (err: any) {
+          console.error(`[UPLOAD] watchdog error (non-fatal):`, err?.message || err);
         }
       }, 15_000);
+      (watchdog as any).unref?.();
 
-      uploadPromise = uploadStreamToStorage(fileStream, objectKey, mimeType)
-        .then(storageUrl => {
+      // Store outcome in variables (NOT a thrown rejection) so we never leak
+      // an unhandled rejection. The .then handler always resolves the outer
+      // promise; success/failure is read from uploadResult / uploadError below.
+      uploadPromise = uploadStreamToStorage(fileStream, objectKey, mimeType).then(
+        storageUrl => {
           clearInterval(watchdog);
           const elapsed = (Date.now() - uploadStartedAt) / 1000;
           console.log(`[UPLOAD] Streamed to Object Storage: ${storageUrl} (${(bytesReceived / 1024 / 1024).toFixed(2)} MB in ${elapsed.toFixed(1)}s = ${((bytesReceived / 1024 / 1024) / elapsed).toFixed(1)} MB/s)`);
-          return { storageUrl, objectKey, filename, size: bytesReceived };
-        })
-        .catch(err => {
+          uploadResult = { storageUrl, objectKey, filename, size: bytesReceived };
+        },
+        err => {
           clearInterval(watchdog);
           console.error(`[UPLOAD] uploadStreamToStorage failed at ${(bytesReceived / 1024 / 1024).toFixed(2)} MB:`, err?.message || err);
-          throw err;
-        });
+          uploadError = err instanceof Error ? err : new Error(String(err));
+        },
+      );
     });
 
-    bb.on("error", (err: any) => {
+    bb.on("error", async (err: any) => {
       console.error(`[UPLOAD] busboy parse error:`, err?.message || err);
-      if (!res.headersSent) res.status(400).json({ error: `Upload parse error: ${err?.message || err}` });
+      // If an upload is in flight, wait for it to settle so we don't leak
+      // a rejection to the process when busboy aborts the stream.
+      if (uploadPromise) { try { await uploadPromise; } catch { /* swallowed */ } }
+      settle(() => res.status(400).json({ error: `Upload parse error: ${err?.message || err}` }));
     });
 
     bb.on("close", async () => {
       try {
         if (!fileSeen || !uploadPromise) {
-          if (!res.headersSent) res.status(400).json({ error: "No video file uploaded (expected multipart field 'video')" });
+          settle(() => res.status(400).json({ error: "No video file uploaded (expected multipart field 'video')" }));
           return;
         }
 
-        const { storageUrl, filename, size } = await uploadPromise;
+        // Always await the upload — uploadPromise resolves regardless of
+        // success (outcome is in uploadResult / uploadError).
+        await uploadPromise;
+
+        if (uploadError || !uploadResult) {
+          settle(() => res.status(500).json({
+            error: uploadError?.message || "Upload failed",
+            bytesReceived,
+          }));
+          return;
+        }
+
+        const { storageUrl, filename, size } = uploadResult;
 
         const title = fields.title || filename.replace(/\.[^/.]+$/, "");
         const category = fields.category || "Other";
@@ -3950,7 +3983,7 @@ export async function registerRoutes(
 
         // Reply to the client BEFORE spinning background jobs so the upload
         // modal closes promptly even if the scan/editorial pipeline is slow.
-        res.json({
+        settle(() => res.json({
           success: true,
           video: {
             id: video.id,
@@ -3961,7 +3994,7 @@ export async function registerRoutes(
             platform: "fullscale",
           },
           message: "Video uploaded successfully. Click 'Scan' to analyze for ad placements.",
-        });
+        }));
 
         // Mark editorial pipeline as pending immediately so UI can poll
         storage.updateVideoEditorialStatus(video.id, "pending").catch((e: any) =>
@@ -3991,8 +4024,18 @@ export async function registerRoutes(
         });
       } catch (error: any) {
         console.error(`[UPLOAD] Error:`, error?.message || error);
-        if (!res.headersSent) res.status(500).json({ error: error?.message || "Failed to save video" });
+        settle(() => res.status(500).json({ error: error?.message || "Failed to save video" }));
       }
+    });
+
+    // Last-resort safety net: if the request stream itself errors (client
+    // disconnected mid-upload, proxy killed the connection, etc), still
+    // settle the response and absorb any pending upload promise so we never
+    // leak an unhandled rejection.
+    req.on("error", async (err: any) => {
+      console.error(`[UPLOAD] Request stream error after ${(bytesReceived / 1024 / 1024).toFixed(2)} MB:`, err?.message || err);
+      if (uploadPromise) { try { await uploadPromise; } catch { /* swallowed */ } }
+      settle(() => res.status(500).json({ error: `Connection error: ${err?.message || err}`, bytesReceived }));
     });
 
     req.pipe(bb);
