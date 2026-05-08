@@ -794,6 +794,11 @@ export default function Library() {
     // Don't fetch until auth state is resolved — prevents briefly hitting /api/demo/videos
     // when hybridMode is "demo" while auth is still loading after a hard redirect
     enabled: !isAuthLoading || isPitchMode || isUrlAdminBypass,
+    // The server's /api/video-index endpoint kicks off a background IG/FB
+    // thumbnail refresh on each call. Re-poll every 15s so refreshed thumbs
+    // appear on the page without the user having to reload.
+    refetchInterval: 15_000,
+    refetchIntervalInBackground: false,
   });
 
   const syncMutation = useMutation({

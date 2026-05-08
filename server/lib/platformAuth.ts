@@ -88,7 +88,7 @@ async function fetchFacebookPageData(userAccessToken: string): Promise<FacebookP
 }
 
 // Fetch Facebook Page videos
-async function fetchFacebookPageVideos(pageId: string, accessToken: string): Promise<any[]> {
+export async function fetchFacebookPageVideos(pageId: string, accessToken: string): Promise<any[]> {
   try {
     // Include 'title' and 'name' fields - Facebook uses different fields for different video types
     const url = `https://graph.facebook.com/v18.0/${pageId}/videos?fields=id,title,name,description,created_time,thumbnails,permalink_url,length,views,source&limit=50&access_token=${accessToken}`;
@@ -114,7 +114,7 @@ async function fetchFacebookPageVideos(pageId: string, accessToken: string): Pro
 }
 
 // Fetch Facebook personal profile videos (requires user_videos permission)
-async function fetchPersonalProfileVideos(accessToken: string): Promise<any[]> {
+export async function fetchPersonalProfileVideos(accessToken: string): Promise<any[]> {
   try {
     // Personal profile videos endpoint
     const url = `https://graph.facebook.com/v18.0/me/videos?fields=id,title,description,created_time,thumbnails,permalink_url,length,views,source&type=uploaded&limit=50&access_token=${accessToken}`;
@@ -135,7 +135,7 @@ async function fetchPersonalProfileVideos(accessToken: string): Promise<any[]> {
 }
 
 // Fetch Instagram Business media
-async function fetchInstagramMedia(igUserId: string, accessToken: string): Promise<any[]> {
+export async function fetchInstagramMedia(igUserId: string, accessToken: string): Promise<any[]> {
   try {
     const url = `https://graph.facebook.com/v18.0/${igUserId}/media?fields=id,caption,media_type,media_url,thumbnail_url,timestamp,permalink&limit=50&access_token=${accessToken}`;
     const response = await fetch(url);

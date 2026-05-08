@@ -35,6 +35,7 @@ import { registerObjectStorageRoutes } from "./replit_integrations/object_storag
 import { hashPassword, verifyPassword } from "./lib/password";
 import { addSignupToAirtable, listAirtableSignups } from "./lib/airtable";
 import { setupPlatformAuth, importFacebookVideos, importInstagramMedia, importPersonalVideos, fetchInstagramVideoViews } from "./lib/platformAuth";
+import { maybeRefreshSocialThumbnailsInBackground } from "./lib/socialThumbnailAutoRefresh";
 import { pLimit } from "./lib/concurrency";
 import { getSourcePath } from "./lib/sourceCache";
 import { readFileFromStorage } from "./lib/objectStorage";
@@ -2997,6 +2998,12 @@ export async function registerRoutes(
     const authEmail = req.authEmail;
     const videos = await storage.getVideoIndex(authUserId, authEmail);
     res.json({ videos, total: videos.length });
+    // Background self-heal: if any IG/FB videos in this user's library still
+    // hold expired CDN URLs (or null thumbnails), re-fetch via Graph API and
+    // cache to GCS. Per-user 1h cooldown so this doesn't slam the API on
+    // every page load. React Query will pick up the new URLs on its next
+    // refetch — no manual sync click required.
+    maybeRefreshSocialThumbnailsInBackground(authUserId);
   });
 
   // Static demo videos for pitch mode - NEVER queries database
@@ -4676,6 +4683,9 @@ export async function registerRoutes(
     );
 
     res.json({ videos: videosWithCounts, total: videosWithCounts.length });
+    // Background self-heal for IG/FB thumbnails (signed CDN URLs that expire).
+    // Per-user 1h cooldown — see socialThumbnailAutoRefresh.ts.
+    maybeRefreshSocialThumbnailsInBackground(userId);
   });
 
   // YouTube Video Proxy - Experimental feature for scanning YouTube videos
