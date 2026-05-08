@@ -129,17 +129,14 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
     if (!selectedFile) return;
 
     setState("uploading");
-    // Direct-to-storage upload for files >50MB. Bypasses the Express server
-    // entirely — bytes flow from browser straight to GCS via a signed PUT.
-    // Solves the "stuck at 81%" problem on large uploads where Replit's
-    // deploy proxy + multer disk write created a bottleneck.
-    //
-    // Smaller files keep the FormData path (simpler, single round-trip).
-    // The earlier comment claiming "Presigned URL upload requires GCS service
-    // account (not available on Replit sidecar)" was outdated — the sidecar's
-    // workload identity supports v4 signing via signBlob.
-    const LARGE_FILE_THRESHOLD = 50 * 1024 * 1024; // 50 MB
-    const useDirectUpload = selectedFile.size > LARGE_FILE_THRESHOLD;
+    // Disabled the presigned-URL path: on Replit's workload-identity sidecar
+    // the v4 signer has no client_email to sign with, and even after switching
+    // to resumable upload sessions the browser preflight against
+    // storage.googleapis.com hit CORS rejections we can't reliably fix from
+    // the bucket-config side. Reverting to the FormData/multer path that
+    // historically handled multi-GB uploads on this deploy without issue.
+    // Re-enable this only after we have a verified end-to-end direct path.
+    const useDirectUpload = false;
 
     if (useDirectUpload) {
       // ── Direct-to-storage presigned URL upload (bypasses server) ──
