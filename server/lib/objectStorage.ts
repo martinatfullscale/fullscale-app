@@ -30,6 +30,32 @@ function getBucket() {
 }
 
 /**
+ * Create a GCS resumable upload session and return the session URL plus
+ * the bound objectKey. The server keeps the session URL and PUTs chunks
+ * to it as the client sends them — neither side needs the v4 signing
+ * machinery (no client_email required) and the chunks happen at the
+ * GCS edge, not buffered in /tmp.
+ *
+ * The returned `signedUrl` is the resumable session endpoint at
+ * storage.googleapis.com/upload/storage/v1/b/...
+ */
+export async function createResumableSession(
+  objectKey: string,
+  contentType: string,
+): Promise<{ sessionUrl: string; objectKey: string; serveUrl: string }> {
+  const bucket = getBucket();
+  const file = bucket.file(objectKey);
+  const [sessionUrl] = await file.createResumableUpload({
+    metadata: { contentType },
+  });
+  return {
+    sessionUrl,
+    objectKey,
+    serveUrl: storageServeUrl(objectKey),
+  };
+}
+
+/**
  * Configure CORS on the bucket so the browser can PUT directly to resumable
  * upload session URLs at storage.googleapis.com from the app's origin.
  *

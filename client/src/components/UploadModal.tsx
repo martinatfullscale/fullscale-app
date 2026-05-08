@@ -129,22 +129,19 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
     if (!selectedFile) return;
 
     setState("uploading");
-    // Disabled the presigned-URL path: on Replit's workload-identity sidecar
-    // the v4 signer has no client_email to sign with, and even after switching
-    // to resumable upload sessions the browser preflight against
-    // storage.googleapis.com hit CORS rejections we can't reliably fix from
-    // the bucket-config side. Reverting to the FormData/multer path that
-    // historically handled multi-GB uploads on this deploy without issue.
-    // Re-enable this only after we have a verified end-to-end direct path.
-    const useDirectUpload = false;
 
-    if (useDirectUpload) {
-      // ── Direct-to-storage presigned URL upload (bypasses server) ──
-      setProcessingLogs(["> Large file detected — uploading directly to storage..."]);
+    // Files >100 MB use chunked upload — bypasses Replit's ~5min Autoscale
+    // proxy timeout that was killing single-request large uploads at ~1.4 GB.
+    // Each chunk is its own short HTTP request (server-side relays into a
+    // GCS resumable session). Smaller files keep the simple FormData path.
+    const CHUNKED_THRESHOLD = 100 * 1024 * 1024;
+    const useChunked = selectedFile.size > CHUNKED_THRESHOLD;
+
+    if (useChunked) {
+      setProcessingLogs([`> Large file (${(selectedFile.size / 1024 / 1024).toFixed(0)} MB) — chunked upload starting...`]);
       try {
-        // Step 1: Get presigned URL
-        setProcessingLogs(prev => [...prev, "> Requesting secure upload link..."]);
-        const presignRes = await fetch("/api/upload/presign", {
+        // Step 1: init session, get sessionId + chunkSize from server
+        const initRes = await fetch("/api/upload/chunked/init", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
@@ -154,65 +151,74 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
             fileSize: selectedFile.size,
           }),
         });
-        if (!presignRes.ok) {
-          const err = await presignRes.json().catch(() => ({}));
-          throw new Error(err.error || "Failed to get upload URL");
+        if (!initRes.ok) {
+          const err = await initRes.json().catch(() => ({}));
+          throw new Error(err.error || "Failed to start upload session");
         }
-        const { signedUrl, objectKey, serveUrl } = await presignRes.json();
+        const { sessionId, chunkSize } = await initRes.json();
+        const totalChunks = Math.ceil(selectedFile.size / chunkSize);
+        setProcessingLogs(prev => [...prev, `> Session ${sessionId.slice(-8)}: ${totalChunks} chunks of ${(chunkSize / 1024 / 1024).toFixed(0)} MB`]);
 
-        // Step 2: Upload directly to Object Storage with progress
-        setProcessingLogs(prev => [...prev, "> Uploading to cloud storage..."]);
-        await new Promise<void>((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-          xhr.upload.onprogress = (e) => {
-            if (e.lengthComputable) {
-              const percent = Math.round((e.loaded / e.total) * 100);
-              setUploadProgress(percent);
-            }
-          };
-          xhr.onload = () => {
-            if (xhr.status >= 200 && xhr.status < 300) resolve();
-            else reject(new Error(`Storage upload failed: ${xhr.status}`));
-          };
-          xhr.onerror = () => reject(new Error("Network error during storage upload"));
-          xhr.open("PUT", signedUrl);
-          xhr.setRequestHeader("Content-Type", selectedFile.type || "video/mp4");
-          xhr.send(selectedFile);
-        });
+        // Step 2: upload chunks sequentially with progress
+        for (let i = 0; i < totalChunks; i++) {
+          const start = i * chunkSize;
+          const end = Math.min(start + chunkSize, selectedFile.size);
+          const chunk = selectedFile.slice(start, end);
+          const isLast = i === totalChunks - 1;
+          const contentRange = `bytes ${start}-${end - 1}/${isLast ? selectedFile.size : "*"}`;
 
-        // Step 3: Notify server that upload is complete
-        setProcessingLogs(prev => [...prev, "> Upload complete. Registering video..."]);
+          await new Promise<void>((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.onload = () => {
+              if (xhr.status >= 200 && xhr.status < 300) resolve();
+              else {
+                let msg = `Chunk ${i + 1}/${totalChunks} failed: ${xhr.status}`;
+                try { msg = JSON.parse(xhr.responseText).error || msg; } catch {}
+                reject(new Error(msg));
+              }
+            };
+            xhr.onerror = () => reject(new Error(`Network error on chunk ${i + 1}/${totalChunks}`));
+            xhr.open("PUT", `/api/upload/chunked/${sessionId}`);
+            xhr.withCredentials = true;
+            xhr.setRequestHeader("Content-Type", "application/octet-stream");
+            xhr.setRequestHeader("Content-Range", contentRange);
+            xhr.send(chunk);
+          });
+
+          const percent = Math.round(((i + 1) / totalChunks) * 100);
+          setUploadProgress(percent);
+        }
+
+        // Step 3: finalize → server creates DB record + fires scan
+        setProcessingLogs(prev => [...prev, "> All chunks uploaded. Finalizing..."]);
         setState("processing");
-        const completeRes = await fetch("/api/upload/complete", {
+        const finRes = await fetch(`/api/upload/chunked/${sessionId}/finalize`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
           body: JSON.stringify({
-            objectKey,
-            serveUrl,
             title: title || selectedFile.name.replace(/\.[^/.]+$/, ""),
             category,
             subcategory: subcategory || undefined,
-            originalFilename: selectedFile.name,
           }),
         });
-        if (!completeRes.ok) {
-          const err = await completeRes.json().catch(() => ({}));
-          throw new Error(err.error || "Failed to register video");
+        if (!finRes.ok) {
+          const err = await finRes.json().catch(() => ({}));
+          throw new Error(err.error || "Failed to finalize upload");
         }
-        const response = await completeRes.json();
+        const response = await finRes.json();
         setProcessingLogs(prev => [
           ...prev,
           `> Video saved: ${response.video.title}`,
           `> Video ID: ${response.video.id}`,
-          "> Scan + editorial clip pipeline started!",
+          "> Scan + editorial pipeline started!",
           "> SUCCESS: Video added to library.",
         ]);
         setState("complete");
         queryClient.invalidateQueries({ queryKey: ["videos"] });
         setTimeout(() => { onUploadComplete?.(); onClose(); }, 1500);
       } catch (error: any) {
-        setErrorMessage(error.message || "Direct upload failed");
+        setErrorMessage(error.message || "Chunked upload failed");
         setState("error");
       }
     } else {

@@ -3689,6 +3689,178 @@ export async function registerRoutes(
     }
   });
 
+  // ─── Chunked Upload (the real fix for >1.4 GB files on Replit) ──────────
+  //
+  // Replit's Autoscale deploy proxy kills request bodies after ~5min. At
+  // observed 4.8 MB/s throughput that caps single-request uploads at ~1.4 GB.
+  // The chunked flow splits the file client-side and the server relays each
+  // chunk into a GCS resumable upload session it holds open per-process.
+  //
+  //   POST /api/upload/chunked/init      → { sessionId, chunkSize }
+  //   PUT  /api/upload/chunked/:id       → 200 { received }, or 200 { done } on last chunk
+  //   POST /api/upload/chunked/:id/finalize → { videoId } once GCS finalizes
+
+  app.post("/api/upload/chunked/init", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const { filename, contentType, fileSize } = req.body || {};
+      if (!filename || !contentType || typeof fileSize !== "number" || fileSize <= 0) {
+        return res.status(400).json({ error: "Body must include { filename, contentType, fileSize }" });
+      }
+      const ext = path.extname(filename).toLowerCase();
+      const allowedExt = [".mp4", ".mov", ".webm", ".avi", ".m4v"];
+      if (!allowedExt.includes(ext)) {
+        return res.status(400).json({ error: `Unsupported file type: ${ext}. Allowed: ${allowedExt.join(", ")}` });
+      }
+      const MAX = 4 * 1024 * 1024 * 1024;
+      if (fileSize > MAX) {
+        return res.status(413).json({ error: `File too large: ${(fileSize / 1024 / 1024 / 1024).toFixed(2)} GB (max 4 GB)` });
+      }
+      const { createUploadSession } = await import("./lib/chunkedUpload");
+      const session = await createUploadSession({ filename, contentType, totalSize: fileSize });
+      // GCS resumable uploads accept chunks in multiples of 256 KB. 8 MB is a
+      // good balance: ~1.5s per chunk at 4.8 MB/s, well under the proxy timeout.
+      const CHUNK_SIZE = 8 * 1024 * 1024;
+      res.json({ sessionId: session.sessionId, chunkSize: CHUNK_SIZE });
+    } catch (err: any) {
+      console.error("[upload/chunked/init] error:", err?.message || err);
+      res.status(500).json({ error: err?.message || "Failed to start upload session" });
+    }
+  });
+
+  // PUT raw chunk bytes. Headers required:
+  //   Content-Range: bytes <start>-<end>/<total or *>
+  // The handler reads the request body into a Buffer, then PUTs it to the
+  // bound GCS resumable session URL with that same Content-Range. Express
+  // global json/urlencoded parsers skip non-matching content-types so the
+  // request stream reaches us untouched here.
+  app.put("/api/upload/chunked/:sessionId", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const { sessionId } = req.params;
+      const contentRange = req.header("content-range") || "";
+      const m = contentRange.match(/^bytes\s+(\d+)-(\d+)\/(\d+|\*)$/i);
+      if (!m) {
+        return res.status(400).json({ error: `Invalid Content-Range header: '${contentRange}' — expected 'bytes <start>-<end>/<total>'` });
+      }
+      const startByte = Number(m[1]);
+      const endByte = Number(m[2]);
+      const totalToken = m[3];
+      const isFinal = totalToken !== "*" && Number(totalToken) === endByte + 1;
+
+      const { getUploadSession, relayChunkToGcs } = await import("./lib/chunkedUpload");
+      const session = getUploadSession(sessionId);
+      if (!session) {
+        return res.status(404).json({ error: `Session ${sessionId} not found (expired or never created)` });
+      }
+      if (session.finalized) {
+        return res.status(409).json({ error: "Session already finalized" });
+      }
+
+      // Buffer the chunk in RAM (max ~8 MB, set by /init).
+      const chunks: Buffer[] = [];
+      let totalLen = 0;
+      await new Promise<void>((resolve, reject) => {
+        req.on("data", (c: Buffer) => { chunks.push(c); totalLen += c.length; });
+        req.on("end", () => resolve());
+        req.on("error", reject);
+      });
+      const chunk = Buffer.concat(chunks, totalLen);
+
+      const expectedLen = endByte - startByte + 1;
+      if (chunk.length !== expectedLen) {
+        return res.status(400).json({ error: `Chunk length mismatch: header says ${expectedLen}, body is ${chunk.length}` });
+      }
+
+      const result = await relayChunkToGcs({ session, chunk, startByte, isFinal });
+      res.json({
+        sessionId,
+        bytesReceived: result.bytesReceivedNow,
+        totalBytes: session.totalSize,
+        finalized: result.finalized,
+      });
+    } catch (err: any) {
+      console.error("[upload/chunked/:id] error:", err?.message || err);
+      res.status(500).json({ error: err?.message || "Chunk relay failed" });
+    }
+  });
+
+  // After the last chunk: create the videoIndex row + fire scan/editorial.
+  // Separate endpoint so the chunk loop on the client doesn't have to know
+  // about title/category/etc — it only ships bytes.
+  app.post("/api/upload/chunked/:sessionId/finalize", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const { sessionId } = req.params;
+      const { title: rawTitle, category, subcategory } = req.body || {};
+      const userId = req.authEmail || req.googleUser?.email;
+
+      const { getUploadSession, deleteUploadSession } = await import("./lib/chunkedUpload");
+      const session = getUploadSession(sessionId);
+      if (!session) {
+        return res.status(404).json({ error: `Session ${sessionId} not found` });
+      }
+      if (!session.finalized) {
+        return res.status(409).json({ error: `Upload not complete: ${session.bytesReceived}/${session.totalSize} bytes received` });
+      }
+
+      const title = (rawTitle && String(rawTitle).trim()) || session.filename.replace(/\.[^/.]+$/, "");
+      const uploadVideoId = `upload-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+
+      const video = await storage.insertVideo({
+        userId,
+        youtubeId: uploadVideoId,
+        title,
+        description: `Uploaded video: ${session.filename}`,
+        thumbnailUrl: "/storage/uploads/default-thumbnail.png",
+        viewCount: 0,
+        publishedAt: new Date(),
+        status: "Pending Scan",
+        priorityScore: 80,
+        platform: "fullscale",
+        category: category || "Other",
+        subcategory: subcategory || null,
+        isEvergreen: true,
+        duration: "0:00",
+        filePath: session.serveUrl,
+      });
+
+      console.log(`[upload/chunked/finalize] Video ${video.id} created: ${session.filename} (${(session.totalSize / 1024 / 1024).toFixed(1)} MB) → ${session.serveUrl}`);
+
+      // Reply BEFORE background work so client modal closes promptly.
+      res.json({
+        success: true,
+        video: {
+          id: video.id,
+          title: video.title,
+          youtubeId: uploadVideoId,
+          videoUrl: session.serveUrl,
+          status: video.status,
+          platform: "fullscale",
+        },
+      });
+
+      deleteUploadSession(sessionId);
+
+      // Fire scan + editorial pipeline in background.
+      storage.updateVideoEditorialStatus(video.id, "pending").catch((e: any) =>
+        console.warn(`[upload/chunked/finalize] editorial-pending failed: ${e?.message}`)
+      );
+      extractThumbnailForVideo(video.id)
+        .then(thumbUrl => { if (thumbUrl) console.log(`[upload/chunked/finalize] Thumbnail: ${thumbUrl}`); })
+        .catch(() => {});
+      processVideoScan(video.id, true).then(result => {
+        console.log(`[upload/chunked/finalize] Auto-scan complete for ${video.id}: ${result.surfacesDetected} surfaces`);
+        runEditorialAutoPipeline(video.id, 0)
+          .then(r => {
+            if (r.success) console.log(`[upload/chunked/finalize] Editorial: ${r.clipsRendered}/${r.clipsGenerated} in ${(r.durationMs / 1000).toFixed(1)}s`);
+            else console.warn(`[upload/chunked/finalize] Editorial failed: ${r.error}`);
+          })
+          .catch(err => console.error(`[upload/chunked/finalize] Editorial error:`, err?.message || err));
+      }).catch(err => console.error(`[upload/chunked/finalize] Auto-scan failed:`, err?.message));
+    } catch (err: any) {
+      console.error("[upload/chunked/:id/finalize] error:", err?.message || err);
+      res.status(500).json({ error: err?.message || "Failed to finalize upload" });
+    }
+  });
+
   // ─── Direct-to-Storage Upload (presigned URL — no server bottleneck) ────
 
   // Step 1: Get a presigned URL for the client to upload directly to Object Storage
