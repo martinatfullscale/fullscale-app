@@ -4504,10 +4504,16 @@ export async function registerRoutes(
       return { ...s, frameUrl, frameExists, sceneBlockId };
     });
 
+    // Pass through the perceptual scene index too — lets the client know
+    // which shots belong to the same physical scene (host shot returns 5x
+    // = sceneId 0 for all five). Used for placement continuity rendering.
+    const sceneIndex = (video as any).sceneIndex || null;
+
     res.json({
       surfaces: enrichedSurfaces,
       count: enrichedSurfaces.length,
       sceneBoundaries,
+      sceneIndex,
     });
   });
 
@@ -7674,20 +7680,36 @@ export async function registerRoutes(
         return res.json({ placement: directPlacement, source: "direct" });
       }
 
-      // Fallback: find placement via fuzzy spatial matching (same type + nearby position)
       const allSurfaces = await storage.getDetectedSurfaces(videoId);
       const targetSurface = allSurfaces.find(s => s.id === surfaceId);
       if (targetSurface) {
+        const tType = targetSurface.surfaceType.toLowerCase();
+        const tSceneId = (targetSurface as any).sceneId;
+
+        // SCENE MATCH (preferred): same sceneId + same surfaceType. Scene
+        // clustering means :08 and :46 in a podcast that flips host↔guest
+        // both resolve to the same coffee table. Drop a mug at :08, click
+        // :46, you see the mug — no re-establishing required.
+        if (typeof tSceneId === "number") {
+          for (const p of videoplacements) {
+            const pSurface = allSurfaces.find(s => s.id === p.surfaceId);
+            if (!pSurface) continue;
+            if ((pSurface as any).sceneId !== tSceneId) continue;
+            if (pSurface.surfaceType.toLowerCase() !== tType) continue;
+            return res.json({ placement: p, source: "scene_match" });
+          }
+        }
+
+        // Fallback: fuzzy spatial match (same type + nearby center). Used
+        // for surfaces detected before sceneId existed in the schema.
         const tBBX = parseFloat(String(targetSurface.boundingBoxX));
         const tBBY = parseFloat(String(targetSurface.boundingBoxY));
         const tBBW = parseFloat(String(targetSurface.boundingBoxWidth));
         const tBBH = parseFloat(String(targetSurface.boundingBoxHeight));
         const tCX = tBBX + tBBW / 2;
         const tCY = tBBY + tBBH / 2;
-        const tType = targetSurface.surfaceType.toLowerCase();
         const FUZZY_TOLERANCE = 0.20;
 
-        // Find any surface that has a placement and is spatially similar
         for (const p of videoplacements) {
           const pSurface = allSurfaces.find(s => s.id === p.surfaceId);
           if (!pSurface || pSurface.surfaceType.toLowerCase() !== tType) continue;

@@ -29,6 +29,7 @@ import { downloadVideo as downloadYouTubeVideo, getYoutubeVideoDuration } from "
 import { downloadFacebookVideo, downloadInstagramVideo } from "./lib/socialDownloader";
 import { safeDecrypt } from "./lib/socialAnalytics";
 import { getFreshYoutubeTokenForUser } from "./lib/youtubeAuth";
+import { buildSceneIndex, sceneIdForTimestamp, type SceneIndex } from "./lib/scenes/sceneIndex";
 
 // ============================================================================
 // GEMINI AI CLIENT
@@ -1872,13 +1873,13 @@ function canonicalSurfaceType(type: string): string {
  * one cluster instead of breaking off a new one.
  */
 function clusterSurfaces(
-  surfaces: Array<{ id: number; surfaceType: string; timestamp?: string | number; boundingBoxX: string; boundingBoxY: string; boundingBoxWidth: string; boundingBoxHeight: string; confidence: string }>,
+  surfaces: Array<{ id: number; surfaceType: string; timestamp?: string | number; boundingBoxX: string; boundingBoxY: string; boundingBoxWidth: string; boundingBoxHeight: string; confidence: string; sceneId?: number | null }>,
   sceneCuts: number[] = [],
 ): SurfaceCluster[] {
   const CLUSTER_TOLERANCE = 0.18; // L∞ center distance (fallback)
   const IOU_MERGE = 0.30;
 
-  const clusters: (SurfaceCluster & { sceneBlockId?: number })[] = [];
+  const clusters: (SurfaceCluster & { sceneKey?: number })[] = [];
 
   for (const s of surfaces) {
     const bbX = parseFloat(s.boundingBoxX);
@@ -1889,18 +1890,22 @@ function clusterSurfaces(
     const centerY = bbY + bbH / 2;
     const canonical = canonicalSurfaceType(s.surfaceType);
     const candidateBox = { x: bbX, y: bbY, width: bbW, height: bbH };
-    // Scene block — surfaces in different shots must NEVER cluster together,
-    // regardless of how similar their bboxes look. A coffee table at 0:13 in
-    // shot A and a coffee table at 0:28 in shot B are different physical
-    // objects in different rooms.
+    // Scene key — prefer the persisted sceneId (from sceneIndex's perceptual
+    // clustering), fall back to per-shot sceneBlock for surfaces that were
+    // detected before scene-first indexing shipped. Two surfaces with the
+    // same sceneId are in the same physical scene (host shot returns), so
+    // cross-shot clustering IS allowed there. Different sceneId = different
+    // room = never cluster.
     const ts = typeof s.timestamp === "number" ? s.timestamp : parseFloat(String(s.timestamp ?? 0));
-    const sceneBlockId = sceneBlockForTimestamp(sceneCuts, Number.isFinite(ts) ? ts : 0);
+    const sceneKey = (typeof s.sceneId === "number")
+      ? s.sceneId
+      : sceneBlockForTimestamp(sceneCuts, Number.isFinite(ts) ? ts : 0);
 
     let matched = false;
     for (const cluster of clusters) {
       if (canonicalSurfaceType(cluster.surfaceType) !== canonical) continue;
-      // HARD GATE: cross-shot clustering is never allowed.
-      if (cluster.sceneBlockId !== undefined && cluster.sceneBlockId !== sceneBlockId) continue;
+      // HARD GATE: different scenes never cluster.
+      if (cluster.sceneKey !== undefined && cluster.sceneKey !== sceneKey) continue;
 
       // Match against ANY member — bboxes drift across frames so the rolling
       // chain (frame N matches N+1, N+1 matches N+2, ...) keeps the cluster
@@ -1923,7 +1928,7 @@ function clusterSurfaces(
     if (!matched) {
       clusters.push({
         surfaceType: canonical,
-        sceneBlockId,
+        sceneKey,
         surfaces: [{ id: s.id, bbX, bbY, bbW, bbH, confidence: parseFloat(s.confidence) }],
       });
     }
@@ -2583,12 +2588,27 @@ async function processVideoScanInner(
     // another. Failure here is non-fatal — empty cut list means treat the
     // whole video as one scene block.
     let sceneCuts: number[] = [];
+    let sceneIndex: SceneIndex | null = null;
     try {
       sceneCuts = await detectSceneCuts(videoPath);
       await storage.updateVideoIndex(videoId, { sceneBoundaries: sceneCuts as any });
       console.log(`[Scanner V2] Persisted ${sceneCuts.length} scene cut(s) to videoIndex.sceneBoundaries`);
     } catch (sceneErr: any) {
       console.warn(`[Scanner V2] Scene-cut detection failed (non-fatal):`, sceneErr?.message || sceneErr);
+    }
+
+    // Cluster shots into unique scenes (host shot vs guest shot, etc).
+    // dHash similarity — same scene returning across cuts gets the same
+    // sceneId so placements carry across visually-identical shots. This
+    // fixes the :08/:46 disappearing-placement bug at the data layer.
+    try {
+      sceneIndex = await buildSceneIndex(videoPath, sceneCuts);
+      if (sceneIndex) {
+        await storage.updateVideoIndex(videoId, { sceneIndex: sceneIndex as any });
+        console.log(`[Scanner V2] Persisted scene index: ${sceneIndex.sceneCount} unique scene(s) across ${sceneIndex.shots.length} shot(s)`);
+      }
+    } catch (sidxErr: any) {
+      console.warn(`[Scanner V2] Scene index build failed (non-fatal):`, sidxErr?.message || sidxErr);
     }
 
     const { isVertical } = await getFrameMetadata(frames[0]);
@@ -2651,6 +2671,13 @@ async function processVideoScanInner(
         if (analysis.hasSurface && analysis.surfaces.length > 0) {
           const frameUrl = `/storage/uploads/frames/${videoId}/${frameFilename}`;
 
+          // Resolve sceneId for this timestamp once per frame (all surfaces
+          // in this frame share the same scene). Falls back to scene 0 when
+          // no index was built (degenerate single-scene video).
+          const sceneIdForFrame = sceneIndex
+            ? sceneIdForTimestamp(sceneIndex, timestamp)
+            : 0;
+
           for (const surface of analysis.surfaces) {
             const dbSurface: InsertDetectedSurface = {
               videoId,
@@ -2667,12 +2694,15 @@ async function processVideoScanInner(
               lightingDirection: surface.lightingDirection || null,
               lightingIntensity: surface.lightingIntensity != null ? surface.lightingIntensity.toString() : null,
               cameraAngle: surface.cameraAngle || null,
+              // Scene cluster — same physical set across cuts gets same ID,
+              // unlocks placement continuity in the frontend.
+              sceneId: sceneIdForFrame,
               // creatorApproved defaults to false in schema — surfaces hidden from
               // brands until creator explicitly approves via UI toggle
             };
 
             const inserted = await storage.insertDetectedSurface(dbSurface);
-            console.log(`[Scanner V2] *** SURFACE FOUND: ${surface.surfaceType} at ${timestamp}s (confidence: ${(surface.confidence * 100).toFixed(1)}%, id: ${inserted.id}) ***`);
+            console.log(`[Scanner V2] *** SURFACE FOUND: ${surface.surfaceType} at ${timestamp}s scene=${sceneIdForFrame} (confidence: ${(surface.confidence * 100).toFixed(1)}%, id: ${inserted.id}) ***`);
             totalSurfaces++;
           }
         }
@@ -2709,6 +2739,7 @@ async function processVideoScanInner(
             frameUrl: `/storage/uploads/frames/${videoId}/${fallbackFrameFilename}`,
             surroundings: null,
             sceneContext: "Fallback detection - potential placement area",
+            sceneId: sceneIndex ? sceneIdForTimestamp(sceneIndex, timestamp) : 0,
           };
 
           await storage.insertDetectedSurface(dbSurface);

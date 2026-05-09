@@ -201,6 +201,14 @@ export const videoIndex = pgTable("video_index", {
   // at timestamp t belongs to the block whose start <= t < next-start.
   // Computed by ffmpeg scene-detect; null until first scan completes.
   sceneBoundaries: jsonb("scene_boundaries"),
+  // Scene-first index. Cuts give us shot boundaries but don't tell us which
+  // shots are the SAME scene returning (e.g. podcast cuts host↔guest 10x —
+  // that's 2 scenes, not 10). This field clusters shots by perceptual
+  // similarity so a placement on the host's coffee table at :08 carries to
+  // every other host shot. Format:
+  //   { shots: [{shotIdx, sceneId, tStart, tEnd, hash}], sceneCount, cuts }
+  // Computed by sceneIndex.ts after sceneBoundaries; null until scan.
+  sceneIndex: jsonb("scene_index"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
@@ -238,6 +246,12 @@ export const detectedSurfaces = pgTable("detected_surfaces", {
   // explicitly approves them. Default false (all hidden) per the
   // creator-controlled exposure model.
   creatorApproved: boolean("creator_approved").default(false).notNull(),
+  // Scene cluster ID from sceneIndex — surfaces with the same sceneId are in
+  // the same physical scene (e.g. host's couch across all host-shot returns).
+  // Used to propagate placements across visually-similar shots: drop a mug
+  // on the coffee table at :08, it shows up at :46 too. Null for surfaces
+  // detected before scene clustering shipped.
+  sceneId: integer("scene_id"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
