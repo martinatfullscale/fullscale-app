@@ -1750,10 +1750,15 @@ async function enrichSurfacesWithContext(
     return;
   }
 
-  // Group surfaces by timestamp — only analyze one frame per unique timestamp
+  // Group surfaces by rounded timestamp — matches the scanner's filename
+  // convention (Math.round(t) under scene-first sampling). Math.floor was
+  // here previously and lost every scene-first surface whose timestamp
+  // landed >= x.5s (e.g. 64.5s → looked for "frame_64s.jpg" but scanner
+  // saved "frame_65s.jpg"). Math.round is uniform-scan-compatible too —
+  // integer timestamps round to themselves.
   const timestampMap = new Map<number, typeof surfaces>();
   for (const surface of surfaces) {
-    const ts = Math.floor(Number(surface.timestamp));
+    const ts = Math.round(Number(surface.timestamp));
     if (!timestampMap.has(ts)) {
       timestampMap.set(ts, []);
     }
@@ -1764,12 +1769,22 @@ async function enrichSurfacesWithContext(
 
   let enrichedCount = 0;
 
-  for (const [timestamp, surfacesAtTime] of timestampMap) {
-    const frameFilename = `frame_${timestamp}s.jpg`;
-    const framePath = path.join(permanentFramesDir, frameFilename);
+  for (const [timestamp, surfacesAtTime] of Array.from(timestampMap.entries())) {
+    // Try the canonical filename first (Math.round of timestamp), then
+    // fall back to Math.floor for legacy surfaces from older scans whose
+    // frames were saved with the floor convention.
+    const candidates = [
+      `frame_${timestamp}s.jpg`,
+      `frame_${Math.floor(Number(surfacesAtTime[0].timestamp))}s.jpg`,
+    ];
+    let framePath = "";
+    for (const fn of candidates) {
+      const p = path.join(permanentFramesDir, fn);
+      if (fs.existsSync(p)) { framePath = p; break; }
+    }
 
-    if (!fs.existsSync(framePath)) {
-      console.log(`[FullScale Edge Context] Frame not found: ${frameFilename}, skipping`);
+    if (!framePath) {
+      console.log(`[FullScale Edge Context] Frame not found in ${permanentFramesDir} (tried ${candidates.join(", ")}), skipping`);
       continue;
     }
 
@@ -2920,13 +2935,35 @@ async function processVideoScanInner(
       const enrichmentDir = path.join(tempDir, "enrichment_frames");
       fs.mkdirSync(enrichmentDir, { recursive: true });
       const enrichmentSurfaces = await storage.getDetectedSurfaces(videoId);
-      const enrichmentTimestamps = new Set(enrichmentSurfaces.map(s => Math.floor(Number(s.timestamp))));
-      for (const ts of enrichmentTimestamps) {
-        try {
-          const objKey = `public/uploads/frames/${videoId}/frame_${ts}s.jpg`;
-          const tempPath = await downloadToTempFile(objKey, enrichmentDir);
-          console.log(`[Scanner V2] Downloaded frame for enrichment: ${tempPath}`);
-        } catch { /* frame may not exist */ }
+
+      // Pre-download each surface's frame from GCS. Prefer surface.frameUrl
+      // (the EXACT path scanner saved — most reliable), with Math.round
+      // (current scanner) and Math.floor (legacy) fallbacks. Was Math.floor-
+      // only previously; that path lost all scene-first surfaces with
+      // non-integer timestamps because scanner uses Math.round naming.
+      const downloadedKeys = new Set<string>();
+      for (const s of enrichmentSurfaces) {
+        const tsFloat = Number(s.timestamp);
+        const candidateKeys: string[] = [];
+        if (s.frameUrl) {
+          candidateKeys.push(
+            s.frameUrl
+              .replace(/^\/storage\//, "public/")
+              .replace(/^\/uploads\//, "public/uploads/"),
+          );
+        }
+        candidateKeys.push(`public/uploads/frames/${videoId}/frame_${Math.round(tsFloat)}s.jpg`);
+        candidateKeys.push(`public/uploads/frames/${videoId}/frame_${Math.floor(tsFloat)}s.jpg`);
+
+        for (const objKey of candidateKeys) {
+          if (downloadedKeys.has(objKey)) break;
+          try {
+            const tempPath = await downloadToTempFile(objKey, enrichmentDir);
+            downloadedKeys.add(objKey);
+            console.log(`[Scanner V2] Downloaded frame for enrichment: ${tempPath}`);
+            break; // first key that resolves wins
+          } catch { /* try next candidate */ }
+        }
       }
       await enrichSurfacesWithContext(videoId, enrichmentDir);
     } catch (enrichErr) {
