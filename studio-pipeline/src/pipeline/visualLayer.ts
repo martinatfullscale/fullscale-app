@@ -42,9 +42,20 @@ const IMAGE_MOTION_PROMPTS: Record<string, string> = {
 /**
  * Generate a visual for a scene.
  *
- * MVP:  Pass the slide image straight through (zero cost).
- * V1:   Hybrid — image-to-video for photos, text-to-video for text-heavy slides.
- * V2:   Reserved.
+ * PHASE 0 (current): Ken Burns over the raw slide PNG for EVERY slide.
+ *   Pure ffmpeg, zero generative model, zero drift, zero hallucinated content.
+ *   Images are rendered exactly as they appear in the source deck.
+ *
+ * Milestone 3.5: Hybrid routing by scene.treatment.
+ *   - "seedance" → Seedance 1.5 Pro image-to-video (photo/product/graphic slides)
+ *   - "kenburns" → FFmpeg Ken Burns (text-heavy slides — zero drift)
+ *   - "static_highlight" → Ken Burns with minimal zoom (data/chart slides)
+ *
+ * The classifier in storyExtractor.ts assigns treatment per slide based on
+ * slideCategory. Text-heavy slides stay deterministic; photo-dominant slides
+ * get cinematic AI motion. Best of both worlds.
+ *
+ * Tier "mvp" still short-circuits to raw stills for fast test runs.
  */
 export async function generateVisual(
   scene: Scene,
@@ -59,9 +70,19 @@ export async function generateVisual(
     return slideImagePath;
   }
 
-  // ALL slides use Seedance 1.5 Pro image-to-video.
-  // Sends the actual slide image and adds cinematic motion.
-  return generateSeedanceImageToVideoClip(scene, slideImagePath);
+  // Route by treatment — set by Claude's slide classification in storyExtractor
+  const treatment = scene.treatment || "kenburns";
+
+  if (treatment === "seedance") {
+    // Photo-dominant slides (person, product, graphic, title without text):
+    // Seedance adds cinematic motion — breathing, parallax, push-in.
+    // If Seedance fails (no FAL_KEY, API error), falls back to Ken Burns.
+    return generateSeedanceImageToVideoClip(scene, slideImagePath);
+  }
+
+  // Text-heavy slides (text, data) and static_highlight:
+  // Ken Burns over the raw PNG — zero drift, zero hallucination.
+  return generateKenBurnsClip(scene, slideImagePath);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -185,12 +206,22 @@ function buildImageToVideoPrompt(scene: Scene): string {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// FALLBACK: Ken Burns zoom (FFmpeg only, no AI, no distortion)
+// PRIMARY PATH (Phase 0): Ken Burns zoom over raw slide PNG
 // ═══════════════════════════════════════════════════════════════
 
 /**
- * Generate a Ken Burns (slow pan+zoom) clip from the slide image.
- * Used as fallback when both Kling and Seedance fail.
+ * Generate a Ken Burns (slow pan + zoom) clip from the raw slide image.
+ *
+ * This is now the PRIMARY rendering path for every Studio scene, not a
+ * fallback. The source slide PNG is upscaled to 2560×1440 (for pan
+ * headroom), then zoompan outputs a 1280×720 @ 24fps clip with a subtle
+ * zoom ramp (1.00× → 1.02×) across the scene duration.
+ *
+ * Guarantees:
+ *   - Text is rendered exactly as in the source slide (ffmpeg does not
+ *     regenerate pixels — it samples them)
+ *   - No drift, no hallucinated figures, no distortion
+ *   - If ffmpeg fails for any reason, falls back to the raw still image
  */
 async function generateKenBurnsClip(
   scene: Scene,
@@ -201,7 +232,7 @@ async function generateKenBurnsClip(
   const duration = Math.max(5, scene.estimatedDurationSeconds || 10);
   const totalFrames = duration * 24;
 
-  console.log(`[VisualLayer] Scene ${scene.sceneNumber}: Ken Burns fallback (${duration}s)`);
+  console.log(`[VisualLayer] Scene ${scene.sceneNumber}: Ken Burns (${duration}s) — zero-drift path`);
 
   const panX = "iw/2-(iw/zoom/2)";
   const panY = "ih/2-(ih/zoom/2)";
@@ -222,7 +253,8 @@ async function generateKenBurnsClip(
       videoPath,
     ], { timeout: 60000 }, (err: any) => {
       if (err) {
-        console.error(`[VisualLayer] Ken Burns failed: ${err.message}`);
+        console.error(`[VisualLayer] Ken Burns failed for scene ${scene.sceneNumber}: ${err.message}`);
+        console.warn(`[VisualLayer] Falling back to raw still image`);
         resolve(slideImagePath);
         return;
       }

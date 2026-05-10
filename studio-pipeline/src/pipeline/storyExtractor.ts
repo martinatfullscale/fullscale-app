@@ -345,6 +345,13 @@ For each scene return ALL of these fields:
 - estimatedDurationSeconds (integer, 6-14)
 - ycFrameworkRole ("problem" | "solution" | "market" | "product" | "traction" | "team" | "ask" | "hook" | "other")
 
+CLOSING SCENE RULES (CRITICAL — the last scene must land):
+- The FINAL scene MUST be a strong, confident close — not a summary or trailing off.
+- If the deck has an "ask" slide (fundraise, partnership, CTA), use it as the closer.
+- End with a direct call to action: "Let's talk." / "Here's how to reach us." / "We're raising $X — join us."
+- The last line the viewer hears should make them want to respond. No filler, no "thank you for watching."
+- ycFrameworkRole for the final scene should be "ask" whenever possible.
+
 Also return a top-level field:
 - totalDurationSeconds (sum of all scene durations — must be ≤ 120)`,
   });

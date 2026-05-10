@@ -3,15 +3,23 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import { parsePDF, parsePPTX, type ParsedDocument } from "./parser.js";
-import { extractStory, type StoryScript, type DeckIntent } from "./storyExtractor.js";
+import { extractStory, type StoryScript, type DeckIntent, type Scene } from "./storyExtractor.js";
 import { slidesToImages, generateVisual } from "./visualLayer.js";
 import { generateVoice } from "./voiceSynth.js";
-import { assembleVideo, type AssemblyScene } from "./assembler.js";
+import { generateAvatarClip, resetPortraitCache, type AvatarProvider, type AvatarResolution } from "./avatarLayer.js";
+import { assembleVideo, type AssemblyScene, type SceneLayout } from "./assembler.js";
 
 export interface PipelineOptions {
   visualTier?: "mvp" | "v1" | "v2";
   deckIntent?: DeckIntent;
   onStageChange?: (stage: string, progress: number) => void;
+
+  // Phase 1: avatar integration
+  avatarMode?: "none" | "upload" | "stock";
+  avatarImagePath?: string;       // For "upload" mode — local path to headshot
+  avatarStockId?: string;         // For "stock" mode — ID from avatar manifest
+  avatarProvider?: AvatarProvider;
+  avatarResolution?: AvatarResolution;
 }
 
 export interface PipelineResult {
@@ -147,8 +155,10 @@ export async function runPipeline(
       const batchPromises = batchScenes.map((scene, idx) => {
         const globalIdx = batch + idx;
         return generateVoice(scene.narration, scene.sceneNumber, audioDir)
-          .then((audioPath) => {
-            audioPaths[globalIdx] = audioPath;
+          .then((result) => {
+            // generateVoice returns VoiceResult (or a string in legacy callers).
+            // runPipelineFromScript already unwraps this; mirror it here.
+            audioPaths[globalIdx] = typeof result === "string" ? result : result.audioPath;
             completedVoice++;
             const progress = 10 + Math.round((completedVoice / storyScript.scenes.length) * 80);
             logStage("adding-voice", progress);
@@ -275,8 +285,52 @@ export async function extractStoryOnly(
   return { jobId, workDir, slideImages, storyScript, parsedDoc, documentType };
 }
 
+// ─── Layout routing ─────────────────────────────────────────────
+// Decides per-scene how avatar and slide share the frame.
+// Uses slideCategory from the Claude-classified story script.
+
+function getSceneLayout(scene: Scene, isLastScene: boolean): SceneLayout {
+  // Closing / "ask" scenes → founder delivers the ask directly
+  if (isLastScene || scene.ycFrameworkRole === "ask") return "avatar-full";
+
+  switch (scene.slideCategory) {
+    case "title":
+      return "avatar-full";      // Strong opening — founder's face, no slide clutter
+    case "text":
+    case "data":
+      return "avatar-pip";       // Content-heavy — slide readable, founder in corner
+    case "person":
+    case "product":
+    case "graphic":
+    default:
+      return "slide-only";       // Visual hero — let the slide speak, VO only
+  }
+}
+
 /**
- * Stages 4-6: Generate visuals + voice + assemble.
+ * Resolve the portrait path for avatar generation.
+ * For "upload" mode, uses the provided path directly.
+ * For "stock" mode, looks up the stock avatar library (Milestone 4).
+ * For "none", returns null (skip avatar).
+ */
+function resolvePortraitPath(options: PipelineOptions): string | null {
+  const mode = options.avatarMode || "none";
+  if (mode === "none") return null;
+  if (mode === "upload" && options.avatarImagePath) {
+    if (fs.existsSync(options.avatarImagePath)) return options.avatarImagePath;
+    console.warn(`[Pipeline] Avatar image not found: ${options.avatarImagePath}`);
+    return null;
+  }
+  if (mode === "stock" && options.avatarStockId) {
+    // TODO (Milestone 4): look up stock avatar from manifest
+    console.warn(`[Pipeline] Stock avatar library not yet implemented — skipping avatar`);
+    return null;
+  }
+  return null;
+}
+
+/**
+ * Stages 4-6: Generate visuals + voice + avatar + assemble.
  * Takes a (possibly edited) story script and the workDir from extractStoryOnly().
  */
 export async function runPipelineFromScript(
@@ -324,15 +378,29 @@ export async function runPipelineFromScript(
     logStage("adding-voice", 10);
     const audioDir = path.join(workDir, "audio");
     const audioPaths: string[] = new Array(storyScript.scenes.length);
-    const CONCURRENCY = 3;
+    const VOICE_CONCURRENCY = 3;
     let completedVoice = 0;
 
-    for (let batch = 0; batch < storyScript.scenes.length; batch += CONCURRENCY) {
-      const batchScenes = storyScript.scenes.slice(batch, batch + CONCURRENCY);
+    for (let batch = 0; batch < storyScript.scenes.length; batch += VOICE_CONCURRENCY) {
+      const batchScenes = storyScript.scenes.slice(batch, batch + VOICE_CONCURRENCY);
       const batchPromises = batchScenes.map((scene, idx) => {
         const globalIdx = batch + idx;
         return generateVoice(scene.narration, scene.sceneNumber, audioDir).then((result) => {
-          audioPaths[globalIdx] = typeof result === "string" ? result : result.audioPath;
+          const voiceResult = typeof result === "string" ? { audioPath: result, actualDurationSec: 0, wordTimings: [] } : result;
+          audioPaths[globalIdx] = voiceResult.audioPath;
+
+          // Use the ACTUAL audio duration from ElevenLabs, not Claude's estimate.
+          // Claude estimates 6-14s per scene but ElevenLabs generates to fit the text.
+          // If we keep Claude's shorter estimate, the assembler truncates the audio
+          // mid-sentence with -t. Using the real duration ensures the voice finishes.
+          if (voiceResult.actualDurationSec > 0) {
+            const oldDur = storyScript.scenes[globalIdx].estimatedDurationSeconds;
+            storyScript.scenes[globalIdx].estimatedDurationSeconds = Math.ceil(voiceResult.actualDurationSec) + 1; // +1s buffer
+            if (storyScript.scenes[globalIdx].estimatedDurationSeconds !== oldDur) {
+              console.log(`[Pipeline] Scene ${globalIdx + 1} duration: ${oldDur}s → ${storyScript.scenes[globalIdx].estimatedDurationSeconds}s (matched to actual audio)`);
+            }
+          }
+
           completedVoice++;
           const progress = 10 + Math.round((completedVoice / storyScript.scenes.length) * 80);
           logStage("adding-voice", progress);
@@ -342,20 +410,75 @@ export async function runPipelineFromScript(
     }
     logStage("adding-voice", 100);
 
-    // Stage 6: Assemble
+    // ─── Stage 5.5: Avatar generation (Phase 1) ────────────────
+    // Compute per-scene layout, then generate avatar clips for scenes
+    // that need them (avatar-full or avatar-pip).
+
+    const portraitPath = resolvePortraitPath(options);
+    const sceneLayouts: SceneLayout[] = storyScript.scenes.map((scene, i) =>
+      portraitPath ? getSceneLayout(scene, i === storyScript.scenes.length - 1) : "slide-only"
+    );
+    const avatarPaths: (string | null)[] = new Array(storyScript.scenes.length).fill(null);
+
+    if (portraitPath) {
+      logStage("avatar", 5);
+      resetPortraitCache();
+      const avatarDir = path.join(workDir, "avatars");
+      const AVATAR_CONCURRENCY = 6;
+      let completedAvatars = 0;
+
+      // Only generate avatars for scenes that need them
+      const avatarJobs = storyScript.scenes
+        .map((scene, i) => ({ scene, idx: i, layout: sceneLayouts[i] }))
+        .filter(({ layout }) => layout === "avatar-full" || layout === "avatar-pip");
+
+      console.log(`[Pipeline] Generating ${avatarJobs.length}/${storyScript.scenes.length} avatar clips (${AVATAR_CONCURRENCY}x parallel)`);
+
+      for (let batch = 0; batch < avatarJobs.length; batch += AVATAR_CONCURRENCY) {
+        const batchJobs = avatarJobs.slice(batch, batch + AVATAR_CONCURRENCY);
+        const batchPromises = batchJobs.map(({ scene, idx }) =>
+          generateAvatarClip(audioPaths[idx], scene.sceneNumber, avatarDir, {
+            portraitPath,
+            provider: options.avatarProvider || "aurora",
+            resolution: options.avatarResolution || "480p",
+          }).then((avatarPath) => {
+            avatarPaths[idx] = avatarPath;
+            completedAvatars++;
+            const progress = 5 + Math.round((completedAvatars / avatarJobs.length) * 90);
+            logStage("avatar", progress);
+          })
+        );
+        await Promise.all(batchPromises);
+      }
+      logStage("avatar", 100);
+    } else {
+      console.log(`[Pipeline] No avatar — all scenes will be slide-only`);
+    }
+
+    // ─── Stage 6: Assemble ──────────────────────────────────────
     logStage("assembling", 10);
     const assemblyScenes: AssemblyScene[] = storyScript.scenes.map((scene, i) => {
       const visualPath = sceneVisuals[i];
-      const isVideo = visualPath.endsWith(".mp4");
+      const layout = sceneLayouts[i];
+      // If avatar generation failed for a scene that needed it, fall back to slide-only
+      const effectiveLayout = (layout !== "slide-only" && !avatarPaths[i]) ? "slide-only" : layout;
+
+      // For avatar-pip scenes, use the RAW SLIDE IMAGE (not Ken Burns video)
+      // so the slide background is perfectly static. Ken Burns motion competes
+      // with the avatar PIP for visual attention and is distracting.
+      // For slide-only scenes, keep Ken Burns (adds life to voice-only slides).
+      // For avatar-full scenes, the slide isn't shown so it doesn't matter.
+      const slideIndex = Math.min((scene.sourcePages[0] || 1) - 1, slideImages.length - 1);
+      const useStaticSlide = effectiveLayout === "avatar-pip";
+      const slideVisual = useStaticSlide ? slideImages[slideIndex] : visualPath;
+      const isVideo = slideVisual.endsWith(".mp4");
+
       return {
-        ...(isVideo ? { videoFile: visualPath } : { imageFile: visualPath }),
+        ...(isVideo ? { videoFile: slideVisual } : { imageFile: slideVisual }),
         audioFile: audioPaths[i],
         durationSeconds: scene.estimatedDurationSeconds,
-        // Pass through highlight data for the assembler to render overlays
-        keyPhrase: scene.keyPhrase,
-        highlightRegion: scene.highlightRegion,
-        highlightStartSec: scene.highlightStartSec,
-        highlightEndSec: scene.highlightEndSec,
+        avatarFile: avatarPaths[i] || undefined,
+        layout: effectiveLayout,
       };
     });
 
@@ -435,4 +558,5 @@ function escapeXml(str: string): string {
 // Re-export types for convenience
 export type { ParsedDocument } from "./parser.js";
 export type { StoryScript, Scene, DeckIntent, SlideCategory } from "./storyExtractor.js";
-export type { AssemblyScene } from "./assembler.js";
+export type { AssemblyScene, SceneLayout } from "./assembler.js";
+export type { AvatarProvider, AvatarResolution, AvatarOptions } from "./avatarLayer.js";
