@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { TopBar } from "@/components/TopBar";
 import { User, CreditCard, Bell, CheckCircle, ExternalLink, Save, Link2, Loader2, ChevronDown, RefreshCw, Trash2, Star, Mic, Globe } from "lucide-react";
@@ -108,9 +108,12 @@ export default function Settings() {
     podcastName: "",
     podcastUrl: "",
     websiteUrl: "",
+    cardImageUrl: "" as string | null | "",
   });
   const [isSavingCreatorProfile, setIsSavingCreatorProfile] = useState(false);
   const [creatorProfileLoaded, setCreatorProfileLoaded] = useState(false);
+  const [isUploadingCardImage, setIsUploadingCardImage] = useState(false);
+  const cardImageInputRef = useRef<HTMLInputElement | null>(null);
 
   // Load creator profile when tab is opened
   useEffect(() => {
@@ -133,6 +136,7 @@ export default function Settings() {
                 podcastName: profileData.creator.podcastName || "",
                 podcastUrl: profileData.creator.podcastUrl || "",
                 websiteUrl: profileData.creator.websiteUrl || "",
+                cardImageUrl: profileData.creator.cardImageUrl || "",
               });
             }
           }
@@ -164,6 +168,73 @@ export default function Settings() {
       toast({ title: "Save failed", description: err.message, variant: "destructive" });
     } finally {
       setIsSavingCreatorProfile(false);
+    }
+  };
+
+  // Upload featured creator card image. The endpoint persists it onto the
+  // profile immediately, so we just refresh local state on success — no
+  // separate save click needed.
+  const handleCardImageUpload = async (file: File | null) => {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      toast({
+        title: "Wrong file type",
+        description: "Pick a PNG, JPG, or WebP image.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      toast({
+        title: "File too large",
+        description: "Card image must be under 10MB.",
+        variant: "destructive",
+      });
+      return;
+    }
+    setIsUploadingCardImage(true);
+    try {
+      const fd = new FormData();
+      fd.append("image", file);
+      const res = await fetch("/api/creator/card-image", {
+        method: "POST",
+        credentials: "include",
+        body: fd,
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Upload failed");
+      }
+      const data = await res.json();
+      setCreatorProfile((p) => ({ ...p, cardImageUrl: data.cardImageUrl }));
+      toast({
+        title: "Card image updated",
+        description: "Your featured creator card now uses this image.",
+      });
+    } catch (err: any) {
+      toast({ title: "Upload failed", description: err.message, variant: "destructive" });
+    } finally {
+      setIsUploadingCardImage(false);
+      if (cardImageInputRef.current) cardImageInputRef.current.value = "";
+    }
+  };
+
+  const handleClearCardImage = async () => {
+    try {
+      const res = await fetch("/api/creator/profile", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ cardImageUrl: "" }),
+      });
+      if (!res.ok) throw new Error("Failed to clear card image");
+      setCreatorProfile((p) => ({ ...p, cardImageUrl: "" }));
+      toast({
+        title: "Card image cleared",
+        description: "Card will fall back to your first video frame.",
+      });
+    } catch (err: any) {
+      toast({ title: "Clear failed", description: err.message, variant: "destructive" });
     }
   };
 
@@ -603,6 +674,76 @@ export default function Settings() {
                 </p>
 
                 <div className="space-y-6">
+                  {/* Featured creator card image — what brands see in the
+                      marketplace. Upload directly here; saves immediately,
+                      no separate "Save profile" click required. */}
+                  <div className="space-y-2">
+                    <Label className="text-white flex items-center gap-2">
+                      <Star className="w-3.5 h-3.5" />
+                      Featured Creator Card Image
+                    </Label>
+                    <p className="text-xs text-muted-foreground">
+                      The image brands see on the marketplace card. Upload your
+                      logo or a brand-aligned image. 16:9 ratio renders best
+                      (will be letterboxed on dark background otherwise).
+                      Defaults to your first video's thumbnail when blank.
+                    </p>
+                    <div className="flex gap-3 items-start">
+                      <div className="w-48 aspect-video rounded-lg overflow-hidden border border-white/10 bg-black/40 flex-shrink-0">
+                        {creatorProfile.cardImageUrl ? (
+                          <img
+                            src={creatorProfile.cardImageUrl}
+                            alt="Card preview"
+                            className="w-full h-full object-contain"
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-xs text-muted-foreground text-center px-2">
+                            Card preview
+                            <br />
+                            (no image yet)
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <input
+                          ref={cardImageInputRef}
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={(e) => handleCardImageUpload(e.target.files?.[0] ?? null)}
+                        />
+                        <Button
+                          type="button"
+                          onClick={() => cardImageInputRef.current?.click()}
+                          disabled={isUploadingCardImage}
+                          variant="outline"
+                          size="sm"
+                          className="gap-2"
+                        >
+                          {isUploadingCardImage ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Save className="w-3.5 h-3.5" />
+                          )}
+                          {creatorProfile.cardImageUrl ? "Replace image" : "Upload image"}
+                        </Button>
+                        {creatorProfile.cardImageUrl && (
+                          <Button
+                            type="button"
+                            onClick={handleClearCardImage}
+                            disabled={isUploadingCardImage}
+                            variant="ghost"
+                            size="sm"
+                            className="gap-2 text-muted-foreground"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            Clear
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
                   <div className="space-y-2">
                     <Label htmlFor="slug" className="text-white flex items-center gap-2">
                       <Globe className="w-3.5 h-3.5" />

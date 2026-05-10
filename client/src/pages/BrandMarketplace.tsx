@@ -63,6 +63,10 @@ interface FeaturedCreator {
   slug: string;
   headline: string | null;
   profileImage: string | null;
+  /** Creator-controlled card image (logo / brand image). Takes precedence
+   *  over thumbnails[0] when present — the creator picked this exact image
+   *  to represent themselves on the marketplace. */
+  cardImageUrl?: string | null;
   thumbnails: string[];
   category?: string;
   /** Optional: hex gradient pair for logo-card mode when no real thumbnail
@@ -700,13 +704,25 @@ export default function BrandMarketplace() {
                 >
                   <Link href={`/c/${creator.slug}`}>
                     <Card className="group overflow-hidden cursor-pointer border-white/10 hover:border-purple-500/40 transition-all duration-300">
-                      {/* Logo-card thumbnail. If the creator has uploaded a
-                          real image (logo/JPEG/photo) it renders that.
-                          Otherwise: per-creator gradient + initials, which
-                          looks like a brand logo placeholder rather than a
-                          generic stock photo. */}
+                      {/* Card image priority:
+                            1. cardImageUrl — creator-uploaded brand image
+                               (Settings → Creator Profile → Card Image).
+                               This is what creators control directly.
+                            2. thumbnails[0] — first video frame (legacy
+                               fallback for creators who haven't uploaded).
+                            3. Gradient + initials — final fallback for
+                               creators with no videos either. */}
                       <div className="relative aspect-video overflow-hidden">
-                        {creator.thumbnails?.[0] ? (
+                        {creator.cardImageUrl ? (
+                          <img
+                            src={creator.cardImageUrl}
+                            alt={creator.name}
+                            className="w-full h-full object-contain bg-[#111117] group-hover:scale-105 transition-transform duration-300"
+                            onError={(e) => {
+                              (e.target as HTMLImageElement).style.display = "none";
+                            }}
+                          />
+                        ) : creator.thumbnails?.[0] ? (
                           <img
                             src={creator.thumbnails[0]}
                             alt={creator.name}

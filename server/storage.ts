@@ -296,7 +296,7 @@ export interface IStorage {
   // Creator profile methods
   getFeaturedCreators(): Promise<AllowedUser[]>;
   getCreatorBySlug(slug: string): Promise<AllowedUser | undefined>;
-  updateCreatorProfile(email: string, updates: { bio?: string; headline?: string; podcastName?: string; podcastUrl?: string; websiteUrl?: string; slug?: string }): Promise<void>;
+  updateCreatorProfile(email: string, updates: { bio?: string; headline?: string; podcastName?: string; podcastUrl?: string; websiteUrl?: string; slug?: string; cardImageUrl?: string | null }): Promise<void>;
   updateVideoSubcategory(videoId: number, subcategory: string): Promise<void>;
 
   // ── Studio Subscription Methods ──
@@ -2145,7 +2145,7 @@ export class DatabaseStorage implements IStorage {
 
   async updateCreatorProfile(
     email: string,
-    updates: { bio?: string; headline?: string; podcastName?: string; podcastUrl?: string; websiteUrl?: string; slug?: string }
+    updates: { bio?: string; headline?: string; podcastName?: string; podcastUrl?: string; websiteUrl?: string; slug?: string; cardImageUrl?: string | null }
   ): Promise<void> {
     const normalizedEmail = email.toLowerCase().trim();
     await db

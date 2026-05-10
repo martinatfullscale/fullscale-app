@@ -118,6 +118,12 @@ export const allowedUsers = pgTable("allowed_users", {
   podcastName: varchar("podcast_name"), // Podcast title if applicable
   podcastUrl: varchar("podcast_url"), // Podcast link
   websiteUrl: varchar("website_url"), // Personal/company website
+  // Creator-controlled image for the Featured Creator card on the brand
+  // marketplace. Distinct from the Google avatar (profileImageUrl) — this
+  // is a logo / brand image the creator picks specifically for marketplace
+  // surface-area. When null, the card falls back to first video thumbnail,
+  // then gradient + initials.
+  cardImageUrl: text("card_image_url"),
 });
 
 export const insertAllowedUserSchema = createInsertSchema(allowedUsers).omit({

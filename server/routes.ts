@@ -6435,6 +6435,7 @@ export async function registerRoutes(
           email: creator.email,
           slug: creator.slug || slug,
           profileImage: userProfile?.profileImageUrl || null,
+          cardImageUrl: (creator as any).cardImageUrl || null,
           bio: creator.bio || null,
           headline: creator.headline || null,
           podcastName: creator.podcastName || null,
@@ -6509,6 +6510,9 @@ export async function registerRoutes(
           slug: creator.slug,
           headline: creator.headline || null,
           profileImage: userProfile?.profileImageUrl || null,
+          // Creator-controlled card image (logo/brand). Frontend uses this
+          // as the primary card visual when present; thumbnails fall back.
+          cardImageUrl: (creator as any).cardImageUrl || null,
           thumbnails,
           stats: {
             totalVideos: allCreatorVideos.length,
@@ -6534,13 +6538,18 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      const { bio, headline, podcastName, podcastUrl, websiteUrl, slug } = req.body;
+      const { bio, headline, podcastName, podcastUrl, websiteUrl, slug, cardImageUrl } = req.body;
       const updates: any = {};
       if (bio !== undefined) updates.bio = bio;
       if (headline !== undefined) updates.headline = headline;
       if (podcastName !== undefined) updates.podcastName = podcastName;
       if (podcastUrl !== undefined) updates.podcastUrl = podcastUrl;
       if (websiteUrl !== undefined) updates.websiteUrl = websiteUrl;
+      // Featured creator card image. Accepts a /storage/... URL produced by
+      // the upload endpoint, or empty string to clear back to default.
+      if (cardImageUrl !== undefined) {
+        updates.cardImageUrl = cardImageUrl === "" ? null : cardImageUrl;
+      }
       if (slug !== undefined) {
         // Validate slug: lowercase, alphanumeric + hyphens only
         const cleanSlug = slug.toLowerCase().replace(/[^a-z0-9-]/g, "");
@@ -6562,6 +6571,55 @@ export async function registerRoutes(
       res.status(500).json({ error: "Failed to update profile" });
     }
   });
+
+  // Upload featured creator card image. Single multipart 'image' field.
+  // Resizes to 800x450 (16:9 max — matches card render aspect), uploads to
+  // GCS, returns serve URL. Caller is expected to PATCH /api/creator/profile
+  // with { cardImageUrl: <url> } to actually save it on the profile.
+  app.post(
+    "/api/creator/card-image",
+    isFlexibleAuthenticated,
+    imageUpload.single("image"),
+    async (req: any, res) => {
+      try {
+        const email = req.session?.googleUser?.email || req.user?.claims?.email || req.authEmail;
+        if (!email) {
+          return res.status(401).json({ error: "Not authenticated" });
+        }
+        if (!req.file?.buffer) {
+          return res.status(400).json({ error: "No image uploaded (expected multipart field 'image')" });
+        }
+
+        const sharp = (await import("sharp")).default;
+        // Letterbox to 800x450 (16:9). Preserves aspect, fills letterbox with
+        // a dark color so logos with transparency don't show through to a
+        // weird background when rendered on the card.
+        const outBuf = await sharp(req.file.buffer)
+          .resize(800, 450, {
+            fit: "contain",
+            background: { r: 17, g: 17, b: 23, alpha: 1 }, // matches marketplace bg
+          })
+          .png()
+          .toBuffer();
+
+        const slug = email.toLowerCase().replace(/[^a-z0-9]/g, "_");
+        const ts = Date.now();
+        const objectKey = `public/uploads/creator-cards/${slug}_${ts}.png`;
+
+        const { uploadBufferToStorage } = await import("./lib/objectStorage");
+        const url = await uploadBufferToStorage(outBuf, objectKey);
+
+        // Save it onto the profile immediately — UI can still PATCH again
+        // if user wants to clear it, but typical flow is upload = use it.
+        await storage.updateCreatorProfile(email, { cardImageUrl: url });
+
+        res.json({ success: true, cardImageUrl: url });
+      } catch (err: any) {
+        console.error("Error uploading creator card image:", err);
+        res.status(500).json({ error: err?.message || "Upload failed" });
+      }
+    },
+  );
 
   // Update video subcategory (authenticated)
   app.patch("/api/videos/:videoId/subcategory", isFlexibleAuthenticated, async (req: any, res) => {
