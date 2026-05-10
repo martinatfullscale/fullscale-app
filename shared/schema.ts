@@ -423,6 +423,23 @@ export const savedPlacements = pgTable("saved_placements", {
   // the Harmonized/Flat toggle in the placement modal.
   harmonizedImageUrl: text("harmonized_image_url"),
   isHarmonized: boolean("is_harmonized").default(false).notNull(),
+  // Frame-by-frame keyframes for fine-grained placement editing. When
+  // empty / null the placement uses the base `transform` constant. When
+  // populated, the render pipeline lerps between adjacent keyframes by
+  // playback time. Each keyframe captures a full transform snapshot at
+  // a specific timestamp (seconds) so the creator can pin the product to
+  // exact frames where motion tracking drifts.
+  // Format: [{ t: 12.5, transform: {offsetX, offsetY, scale, rotation, flipH} }]
+  keyframes: jsonb("keyframes").$type<Array<{
+    t: number;
+    transform: {
+      offsetX: number;
+      offsetY: number;
+      scale: number;
+      rotation: number;
+      flipH: boolean;
+    };
+  }>>(),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });

@@ -527,6 +527,45 @@ export default function PlacementPreviewModal({
   const [blend, setBlend] = useState<PlacementBlend>({ ...DEFAULT_BLEND });
   const [showBoundingBox, setShowBoundingBox] = useState(true);
 
+  // Frame-by-frame keyframes for fine-grained placement editing. When the
+  // creator wants to pin the product to specific moments where motion
+  // tracking drifts, they capture the current transform at the current
+  // playback time. Render-time interpolation lerps between adjacent
+  // keyframes so the product moves smoothly across edits.
+  type Keyframe = { t: number; transform: PlacementTransform };
+  const [keyframes, setKeyframes] = useState<Keyframe[]>([]);
+
+  // Compute the effective transform at a given playback time. Returns the
+  // base transform when no keyframes, the keyframe value at exact match,
+  // or a linear interpolation between bracketing keyframes. Past the last
+  // keyframe, holds at the last value (no extrapolation — extrapolating
+  // a rotation can yield wildly off-screen products).
+  const effectiveTransformAt = useCallback((t: number): PlacementTransform => {
+    if (keyframes.length === 0) return transform;
+    if (keyframes.length === 1) return keyframes[0].transform;
+    // Sorted by t (server validates this; assume sorted on load).
+    if (t <= keyframes[0].t) return keyframes[0].transform;
+    if (t >= keyframes[keyframes.length - 1].t) return keyframes[keyframes.length - 1].transform;
+    // Find bracketing pair.
+    for (let i = 0; i < keyframes.length - 1; i++) {
+      const a = keyframes[i];
+      const b = keyframes[i + 1];
+      if (t >= a.t && t <= b.t) {
+        const span = b.t - a.t;
+        const u = span > 0 ? (t - a.t) / span : 0;
+        return {
+          offsetX: a.transform.offsetX + (b.transform.offsetX - a.transform.offsetX) * u,
+          offsetY: a.transform.offsetY + (b.transform.offsetY - a.transform.offsetY) * u,
+          scale: a.transform.scale + (b.transform.scale - a.transform.scale) * u,
+          rotation: a.transform.rotation + (b.transform.rotation - a.transform.rotation) * u,
+          // Boolean can't lerp — snap at midpoint.
+          flipH: u < 0.5 ? a.transform.flipH : b.transform.flipH,
+        };
+      }
+    }
+    return transform;
+  }, [keyframes, transform]);
+
   // Drag interaction state
   const [dragMode, setDragMode] = useState<DragMode>("none");
   const [dragStart, setDragStart] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
@@ -896,6 +935,12 @@ export default function PlacementPreviewModal({
               contrast: p.blend.contrast ?? 0,
             });
           }
+          // Restore keyframes if any are saved on this placement.
+          if (Array.isArray((p as any).keyframes)) {
+            setKeyframes((p as any).keyframes);
+          } else {
+            setKeyframes([]);
+          }
           console.log(`[PlacementPreview] Auto-loaded placement (${data.source}) for surface ${selectedSurface.id}`);
         }
       } catch (err) {
@@ -917,6 +962,7 @@ export default function PlacementPreviewModal({
       setToolPanel("product");
       setTransform({ ...DEFAULT_TRANSFORM });
       setBlend({ ...DEFAULT_BLEND });
+      setKeyframes([]);
       setDragMode("none");
       setIsSaving(false);
       setSaveSuccess(false);
@@ -1351,7 +1397,13 @@ export default function PlacementPreviewModal({
       if (prodImg && prodImg.complete && bw > 0 && bh > 0 && sceneOpacity > 0.05) {
         ctx.save();
         ctx.globalAlpha = sceneOpacity;
-        drawProduct(ctx, prodImg, bx, by, bw, bh, transform, blend);
+        // Use keyframe-interpolated transform during playback so frame-by-
+        // frame edits actually take effect. When paused (or when there are
+        // no keyframes) this reduces to the base `transform` constant.
+        const renderTransform = useVideo
+          ? effectiveTransformAt(videoEl!.currentTime)
+          : transform;
+        drawProduct(ctx, prodImg, bx, by, bw, bh, renderTransform, blend);
         ctx.restore();
 
         // Draw resize handles + rotation handle (hidden when toggle is off)
@@ -1405,7 +1457,7 @@ export default function PlacementPreviewModal({
     }
 
     animFrameRef.current = requestAnimationFrame(renderFrame);
-  }, [selectedSurface, transform, blend, isVideoMode, motionData, showBoundingBox, sceneBlockFor, placementBlockId, sceneIdFor, placementSceneId]);
+  }, [selectedSurface, transform, blend, isVideoMode, motionData, showBoundingBox, sceneBlockFor, placementBlockId, sceneIdFor, placementSceneId, keyframes, effectiveTransformAt]);
 
   // Start/stop render loop
   useEffect(() => {
@@ -1933,6 +1985,10 @@ export default function PlacementPreviewModal({
           // per-frame when isHarmonized=true; this URL is the still preview.
           isHarmonized: harmonizeEnabled,
           harmonizedImageUrl: harmonizeEnabled ? liveHarmonizedUrl : null,
+          // Frame-by-frame keyframes — only sent when the creator added
+          // any. Empty array → backend stores null which falls back to
+          // the constant `transform` at render time.
+          keyframes: keyframes.length > 0 ? keyframes : null,
         }),
       });
       if (!res.ok) {
@@ -2502,6 +2558,116 @@ export default function PlacementPreviewModal({
                     </div>
                   )}
                 </div>
+
+                {/* Frame-by-frame keyframe timeline. Visible during video
+                    playback when a product is loaded. Lets the creator pin
+                    the product to specific moments for accuracy when motion
+                    tracking drifts. Diamond markers represent keyframes;
+                    drag to reposition in time, click to seek. */}
+                {isVideoMode && videoDuration > 0 && productImage && (
+                  <div className="mt-3 p-3 bg-black/30 rounded-lg">
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-xs text-muted-foreground">
+                        Frame-by-frame edit
+                        {keyframes.length > 0 && (
+                          <span className="ml-1 text-white/70">
+                            · {keyframes.length} keyframe{keyframes.length !== 1 ? "s" : ""}
+                          </span>
+                        )}
+                      </p>
+                      <div className="flex gap-1">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-6 text-[10px] px-2 gap-1"
+                          onClick={() => {
+                            // Capture current transform at current playback time
+                            const t = videoCurrentTime;
+                            const exists = keyframes.find((k) => Math.abs(k.t - t) < 0.05);
+                            if (exists) {
+                              // Update existing keyframe at this time
+                              setKeyframes((prev) =>
+                                prev.map((k) =>
+                                  Math.abs(k.t - t) < 0.05
+                                    ? { t, transform: { ...transform } }
+                                    : k,
+                                ).sort((a, b) => a.t - b.t),
+                              );
+                              toast({ title: "Keyframe updated", description: `at ${t.toFixed(2)}s` });
+                            } else {
+                              setKeyframes((prev) =>
+                                [...prev, { t, transform: { ...transform } }].sort((a, b) => a.t - b.t),
+                              );
+                              toast({ title: "Keyframe added", description: `at ${t.toFixed(2)}s` });
+                            }
+                          }}
+                        >
+                          + Keyframe
+                        </Button>
+                        {keyframes.length > 0 && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 text-[10px] px-2 text-muted-foreground"
+                            onClick={() => {
+                              setKeyframes([]);
+                              toast({ title: "Keyframes cleared" });
+                            }}
+                          >
+                            Clear
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                    {/* Timeline strip */}
+                    <div
+                      className="relative h-6 bg-black/40 rounded cursor-pointer overflow-hidden"
+                      onClick={(e) => {
+                        if (!videoRef.current) return;
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const u = (e.clientX - rect.left) / rect.width;
+                        const t = Math.max(0, Math.min(videoDuration, u * videoDuration));
+                        videoRef.current.currentTime = t;
+                        setVideoCurrentTime(t);
+                      }}
+                    >
+                      {/* Playhead */}
+                      <div
+                        className="absolute top-0 bottom-0 w-px bg-white/80 pointer-events-none"
+                        style={{ left: `${(videoCurrentTime / videoDuration) * 100}%` }}
+                      />
+                      {/* Keyframe diamond markers */}
+                      {keyframes.map((kf, i) => (
+                        <div
+                          key={i}
+                          className="absolute top-1/2 w-3 h-3 bg-amber-400 rotate-45 -translate-x-1/2 -translate-y-1/2 ring-1 ring-black/60 hover:bg-amber-300 cursor-pointer"
+                          style={{ left: `${(kf.t / videoDuration) * 100}%` }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            // Single click = seek to this keyframe
+                            if (videoRef.current) {
+                              videoRef.current.currentTime = kf.t;
+                              setVideoCurrentTime(kf.t);
+                            }
+                          }}
+                          onDoubleClick={(e) => {
+                            e.stopPropagation();
+                            // Double click = delete this keyframe
+                            setKeyframes((prev) => prev.filter((_, j) => j !== i));
+                            toast({ title: "Keyframe removed", description: `at ${kf.t.toFixed(2)}s` });
+                          }}
+                          title={`Keyframe @ ${kf.t.toFixed(2)}s — click to seek, double-click to delete`}
+                        />
+                      ))}
+                    </div>
+                    <p className="text-[10px] text-muted-foreground mt-1 leading-tight">
+                      Pause, drag the product into position, then click <span className="text-amber-400">+ Keyframe</span> to pin
+                      it. Playback interpolates between keyframes for smooth motion. Click a diamond to seek; double-click to delete.
+                    </p>
+                  </div>
+                )}
 
                 {/* Surface selector strip */}
                 {surfacesWithFrames.length > 1 && (

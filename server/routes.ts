@@ -7570,10 +7570,26 @@ export async function registerRoutes(
   app.post("/api/placements", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const userEmail = req.authEmail || "unknown";
-      const { videoId, surfaceId, productId, productImageUrl, transform, blend, sceneGroupId, role, bidId, harmonizedImageUrl, isHarmonized } = req.body;
+      const { videoId, surfaceId, productId, productImageUrl, transform, blend, sceneGroupId, role, bidId, harmonizedImageUrl, isHarmonized, keyframes } = req.body;
 
       if (!videoId || !surfaceId || !productImageUrl || !transform || !blend) {
         return res.status(400).json({ error: "Missing required fields: videoId, surfaceId, productImageUrl, transform, blend" });
+      }
+
+      // Validate keyframes shape if provided. Each entry must have `t` and
+      // a complete transform — partial keyframes break the lerp.
+      let validatedKeyframes: any = null;
+      if (Array.isArray(keyframes)) {
+        validatedKeyframes = keyframes
+          .filter((k: any) =>
+            typeof k?.t === "number" &&
+            typeof k?.transform?.offsetX === "number" &&
+            typeof k?.transform?.offsetY === "number" &&
+            typeof k?.transform?.scale === "number" &&
+            typeof k?.transform?.rotation === "number" &&
+            typeof k?.transform?.flipH === "boolean",
+          )
+          .sort((a: any, b: any) => a.t - b.t);
       }
 
       // Auto-compute scene group ID from the anchor surface for scene persistence
@@ -7603,6 +7619,7 @@ export async function registerRoutes(
         status: "active",
         harmonizedImageUrl: harmonizedImageUrl || null,
         isHarmonized: !!isHarmonized,
+        keyframes: validatedKeyframes,
       });
 
       // Auto-propagate to matching surfaces in the same scene group (scene persistence)
@@ -7879,7 +7896,29 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Invalid placement ID" });
       }
 
-      const updated = await storage.updatePlacement(placementId, req.body);
+      // Defensive validation for keyframes — incomplete entries break the
+      // render-time lerp (NaN propagates and product disappears).
+      const updates = { ...req.body };
+      if ("keyframes" in updates) {
+        if (Array.isArray(updates.keyframes)) {
+          updates.keyframes = updates.keyframes
+            .filter((k: any) =>
+              typeof k?.t === "number" &&
+              typeof k?.transform?.offsetX === "number" &&
+              typeof k?.transform?.offsetY === "number" &&
+              typeof k?.transform?.scale === "number" &&
+              typeof k?.transform?.rotation === "number" &&
+              typeof k?.transform?.flipH === "boolean",
+            )
+            .sort((a: any, b: any) => a.t - b.t);
+        } else if (updates.keyframes === null) {
+          // Explicit null = clear all keyframes.
+        } else {
+          delete updates.keyframes;
+        }
+      }
+
+      const updated = await storage.updatePlacement(placementId, updates);
       if (!updated) {
         return res.status(404).json({ error: "Placement not found" });
       }
