@@ -298,6 +298,137 @@ function angleForCameraAngle(cameraAngle: string | undefined): number {
 }
 
 /**
+ * Estimate the scene's surface tilt at the placement bbox using Depth
+ * Anything v2. Returns yaw (rotation around vertical axis, ±90°) and
+ * pitch (rotation around horizontal, ±45°) of the surface relative to
+ * the camera. Used to render the TRELLIS GLB at a matching angle so the
+ * 3D product reads as integrated into the scene rather than facing
+ * camera straight-on like a sticker.
+ *
+ * Algorithm:
+ *   1. Upload scene to fal, run fal-ai/imageutils/depth (DAv2)
+ *   2. Download depth map (grayscale, brighter = closer)
+ *   3. Sample depth at 5 points within bbox: center, L, R, T, B
+ *   4. Horizontal slope (R - L) → yaw direction:
+ *      - left further → surface tilts away to left → yaw RIGHT (+)
+ *      - right further → surface tilts away to right → yaw LEFT (-)
+ *   5. Vertical slope (B - T) → pitch direction:
+ *      - top further → surface seen from above → pitch UP (+)
+ *      - bottom further → surface seen from below → pitch DOWN (-)
+ *
+ * Returns null on any failure — caller falls back to default 30° 3/4 view.
+ */
+async function estimateSceneAngleFromDepth(
+  sceneBuf: Buffer,
+  bbox: HarmonizationInput["bbox"],
+  dims: HarmonizationInput["frameDimensions"],
+): Promise<{ yawDeg: number; pitchDeg: number } | null> {
+  const falKey = process.env.FAL_KEY;
+  if (!falKey) return null;
+  fal.config({ credentials: falKey });
+
+  try {
+    const t0 = Date.now();
+    const sceneUrl = await uploadBuffer(sceneBuf, "scene-for-depth.png", "image/png");
+
+    // fal-ai/imageutils/depth wraps Depth Anything v2 with a simple
+    // image-in/depth-image-out interface. Returns a grayscale PNG where
+    // brighter = closer to camera.
+    const result: any = await fal.subscribe("fal-ai/imageutils/depth", {
+      input: { image_url: sceneUrl } as any,
+      logs: false,
+    });
+    const data = result?.data ?? result;
+    const depthMapUrl: string | undefined =
+      data?.image?.url ?? data?.depth?.url ?? data?.output?.url;
+    if (!depthMapUrl) {
+      console.warn(`[Harmonize/depth] No depth map URL in response — keys: ${Object.keys(data || {}).join(",")}`);
+      return null;
+    }
+
+    const depthRes = await fetch(depthMapUrl);
+    if (!depthRes.ok) return null;
+    const depthBuf = Buffer.from(await depthRes.arrayBuffer());
+
+    // Sample depth at 5 points inside the bbox. Convert normalized bbox
+    // coords to pixel coords in the depth image.
+    const sharp = (await import("sharp")).default;
+    const depthMeta = await sharp(depthBuf).metadata();
+    const dW = depthMeta.width || dims.width;
+    const dH = depthMeta.height || dims.height;
+
+    // Sample points (5 px inset to avoid edge artifacts at the bbox border)
+    const inset = 0.1;
+    const pts: Array<[number, number]> = [
+      [bbox.x + bbox.width / 2, bbox.y + bbox.height / 2],                     // center
+      [bbox.x + bbox.width * inset, bbox.y + bbox.height / 2],                  // left
+      [bbox.x + bbox.width * (1 - inset), bbox.y + bbox.height / 2],            // right
+      [bbox.x + bbox.width / 2, bbox.y + bbox.height * inset],                  // top
+      [bbox.x + bbox.width / 2, bbox.y + bbox.height * (1 - inset)],            // bottom
+    ];
+
+    // Pull raw grayscale buffer for fast pixel reads.
+    const { data: rawData, info } = await sharp(depthBuf)
+      .resize(dW, dH, { fit: "fill" })
+      .grayscale()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+
+    const sampleAt = (nx: number, ny: number): number => {
+      const px = clamp(Math.round(nx * info.width), 0, info.width - 1);
+      const py = clamp(Math.round(ny * info.height), 0, info.height - 1);
+      return rawData[py * info.width + px];
+    };
+    const [center, left, right, top, bottom] = pts.map(([x, y]) => sampleAt(x, y));
+
+    // Slope across bbox. Larger denominator (wider/taller bbox) → smaller
+    // slope per unit normalized. Multiply by a sensitivity constant tuned
+    // empirically — depth deltas of ~30 grayscale units across half a
+    // bbox typically correspond to ~20-30° of surface tilt.
+    const horizSlope = (right - left) / Math.max(0.05, bbox.width);
+    const vertSlope = (bottom - top) / Math.max(0.05, bbox.height);
+    const SENSITIVITY = 0.4;
+    const yawDeg = clamp(-horizSlope * SENSITIVITY, -45, 45);
+    const pitchDeg = clamp(-vertSlope * SENSITIVITY, -30, 30);
+
+    const elapsed = Date.now() - t0;
+    console.log(
+      `[Harmonize/depth] ${elapsed}ms — center:${center} L:${left} R:${right} T:${top} B:${bottom} → yaw:${yawDeg.toFixed(1)}° pitch:${pitchDeg.toFixed(1)}°`,
+    );
+    return { yawDeg, pitchDeg };
+  } catch (err: any) {
+    console.warn(`[Harmonize/depth] Failed: ${err?.message || err}`);
+    return null;
+  }
+}
+
+/**
+ * Apply a vertical perspective shear via sharp affine to simulate a small
+ * pitch angle. TRELLIS turnaround MP4 only varies yaw; pitch we have to
+ * fake at the 2D level. ±20° pitch produces a noticeable shear that reads
+ * as "looking at the product from above/below" without needing a real
+ * GLB re-render. Larger pitch values would benefit from actual 3D render
+ * (the next iteration of this work).
+ */
+async function applyPitchShear(
+  imageBuf: Buffer,
+  pitchDeg: number,
+): Promise<Buffer> {
+  if (Math.abs(pitchDeg) < 3) return imageBuf;
+  const sharp = (await import("sharp")).default;
+  const radians = (pitchDeg * Math.PI) / 180;
+  const shearAmount = Math.tan(radians) * 0.5;
+  // sharp affine: [a, b, c, d] is the transform matrix
+  // For vertical shear (y' = y + shearAmount * x): [1, 0, shearAmount, 1]
+  return sharp(imageBuf)
+    .affine([1, 0, shearAmount, 1], {
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    })
+    .png()
+    .toBuffer();
+}
+
+/**
  * Remove the background from a TRELLIS render so we don't composite a black
  * rectangle onto the scene. TRELLIS renders the 3D mesh on an opaque dark
  * background (no alpha channel) — when we drop that into the scene,
@@ -695,22 +826,51 @@ export async function harmonizeProductIntoScene(
       let icLightRelitUrl: string | undefined;
 
       try {
-        const trellis = await runTrellis3D(productBuf);
+        // Stage A.0 — depth analysis IN PARALLEL with TRELLIS. Depth
+        // Anything v2 estimates the surface tilt at the placement bbox so
+        // we can render the product at a matching camera angle instead of
+        // the default 30° 3/4 view (the user's "looks like a 2D scene"
+        // complaint stems from this perspective mismatch).
+        const [trellis, depthAngle] = await Promise.all([
+          runTrellis3D(productBuf),
+          estimateSceneAngleFromDepth(sceneBuf, input.bbox, input.frameDimensions),
+        ]);
         trellisRenderUrl = trellis.renderUrl;
         meshUrl = trellis.meshUrl;
 
-        // Stage A.1 — pull the angle-specific frame from the turnaround MP4
-        // when available. For "eye-level" / "slightly-above" / "low-angle"
-        // we use 30° 3/4 (looks most product-like). Falls back to the
-        // default front-facing preview when no turnaround is returned.
+        // Stage A.1 — pull the angle-specific frame from the turnaround MP4.
+        // Priority for selecting the angle:
+        //   1. Depth-derived yaw (best — matches actual scene geometry)
+        //   2. cameraAngle metadata hint (Gemini's labeling — coarse but
+        //      sometimes meaningful)
+        //   3. Fixed 30° 3/4 default
         if (trellis.turnaroundVideoUrl) {
-          const angle = angleForCameraAngle(input.cameraAngle);
+          // depthAngle.yawDeg is in [-45, +45]. Map to turnaround position
+          // [0, 1) where 0 = front, 0.083 = +30° right (3/4 from camera).
+          // Sign flip: positive yaw means the surface tilts away to the
+          // RIGHT, so the camera sees the LEFT side of the product more —
+          // we want the turnaround frame that shows the PRODUCT'S right
+          // (which is the camera's left).
+          let angle: number;
+          if (depthAngle) {
+            const yawNormalized = (-depthAngle.yawDeg / 360 + 1) % 1;
+            angle = yawNormalized;
+          } else {
+            angle = angleForCameraAngle(input.cameraAngle);
+          }
           const frameBuf = await extractTurnaroundFrame(trellis.turnaroundVideoUrl, angle);
           if (frameBuf) {
-            renderedProductBuf = frameBuf;
-            // Re-upload so IC-Light has a URL to consume.
-            renderedProductUrl = await uploadBuffer(frameBuf, "trellis-angle.png", "image/png");
-            console.log(`[Harmonize/ai-3d] Extracted turnaround frame at angle ${angle.toFixed(3)} (${input.cameraAngle ?? "default"}); ${frameBuf.length} bytes`);
+            // Apply pitch shear if depth analysis gave us a vertical tilt.
+            const pitchedBuf = depthAngle && Math.abs(depthAngle.pitchDeg) > 3
+              ? await applyPitchShear(frameBuf, depthAngle.pitchDeg)
+              : frameBuf;
+            renderedProductBuf = pitchedBuf;
+            renderedProductUrl = await uploadBuffer(pitchedBuf, "trellis-angle.png", "image/png");
+            console.log(
+              `[Harmonize/ai-3d] Extracted turnaround frame at angle ${angle.toFixed(3)} ` +
+              `(yaw:${depthAngle?.yawDeg.toFixed(1) ?? "default"}° ` +
+              `pitch:${depthAngle?.pitchDeg.toFixed(1) ?? "0"}°); ${pitchedBuf.length} bytes`,
+            );
           }
         }
 
