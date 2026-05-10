@@ -210,14 +210,21 @@ async function runIcLightRelight(
     // The SDK's typed input doesn't include background_image_url for the
     // base iclight-v2 endpoint, but the underlying API does accept it on
     // background-conditioned deployments. Cast to any so TS doesn't block.
-    // If the param is silently dropped we still get useful relighting
-    // from the prompt alone — better than no relight.
+    //
+    // Tuning notes: started at guidance=5.0 / steps=25 — over-aggressive
+    // relight was washing out brand colors and adding hallucinated detail
+    // to the product (user feedback: "3D harmonize is worse"). Dropped to
+    // guidance=2.5 / steps=18 to keep IC-Light's role narrow: match scene
+    // light direction + color temperature, don't redesign the product.
     const input: any = {
       image_url: productRenderUrl,
       background_image_url: sceneCropUrl,
       prompt,
-      guidance_scale: 5.0,
-      num_inference_steps: 25,
+      guidance_scale: 2.5,
+      num_inference_steps: 18,
+      // Cap how much IC-Light can deviate from the input. Without this,
+      // higher-saturation products tend to come back desaturated.
+      strength: 0.45,
     };
     const result: any = await fal.subscribe("fal-ai/iclight-v2", {
       input,
@@ -659,7 +666,12 @@ export async function harmonizeProductIntoScene(
 
       // Stage B — IC-Light relighting. Crop the scene around the bbox to
       // give IC-Light real lighting context (ceiling, walls, ambient).
-      if (renderedProductUrl) {
+      // Set HARMONIZE_DISABLE_ICLIGHT=true to skip this stage entirely
+      // (TRELLIS render goes straight to procedural composite). Use that
+      // toggle when IC-Light is net-negative on a particular product
+      // category — currently safer for stylized/illustrated products.
+      const skipIcLight = process.env.HARMONIZE_DISABLE_ICLIGHT === "true";
+      if (renderedProductUrl && !skipIcLight) {
         try {
           const sceneCrop = await cropSceneForLighting(
             sceneBuf, input.bbox, input.frameDimensions,
@@ -679,6 +691,8 @@ export async function harmonizeProductIntoScene(
         } catch (err: any) {
           console.warn(`[Harmonize/ai-3d] IC-Light failed (${err?.message || err}); using un-relit TRELLIS render`);
         }
+      } else if (skipIcLight) {
+        console.log(`[Harmonize/ai-3d] HARMONIZE_DISABLE_ICLIGHT=true — skipping relight stage`);
       }
 
       const { result, flatComposite } = await applyProceduralHarmonization(

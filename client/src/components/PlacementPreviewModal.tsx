@@ -633,6 +633,21 @@ export default function PlacementPreviewModal({
     frameCounter: 0,
   });
 
+  // Smooths the product visibility transition when playback crosses
+  // scene boundaries. Without this the product hard-pops in/out on every
+  // cut, which the user described as "looks like it's being dropped in
+  // each time". 200ms ease-out feels natural — long enough to read as
+  // intentional, short enough to not lag the playback experience.
+  const sceneTransitionRef = useRef<{
+    targetOpacity: number;     // 1 if currently in scene, 0 if not
+    currentOpacity: number;    // animated value, eases toward target
+    lastFrameTime: number;     // for delta-time integration
+  }>({
+    targetOpacity: 1,
+    currentOpacity: 1,
+    lastFrameTime: 0,
+  });
+
   // Fetch video details to get file path for playback + scene-cut boundaries
   // + perceptual scene index (which clusters shots that revisit the same
   // physical scene into a single sceneId).
@@ -1266,28 +1281,51 @@ export default function PlacementPreviewModal({
 
       // Scene gate: during playback, hide the placement when the current
       // playhead is in a different SCENE than the surface was detected in.
-      // Prefer perceptual sceneId (carries across same-scene shot returns
-      // — drop a mug on the host's coffee table at :08, it stays visible
-      // when the camera returns to that shot at :46). Fall back to
-      // per-shot sceneBlock for videos scanned before scene clustering.
+      // Prefer perceptual sceneId (carries across same-scene shot returns).
+      // CRITICAL: when the placement HAS a sceneId but sceneIdFor returns
+      // null (sceneIndex query still loading or transient miss), default
+      // to SHOWING the product — the prior fall-through to per-shot
+      // block was incorrectly hiding the product mid-playback because
+      // shot blocks change at every cut even within the same scene.
       let inOriginalShot: boolean;
       if (useVideo && placementSceneId !== null) {
         const playbackSceneId = sceneIdFor(videoEl!.currentTime);
-        // If both lookups produce a sceneId, gate by sceneId equality.
-        // If playback fell outside the indexed range, fall back to block math.
-        inOriginalShot = playbackSceneId !== null
-          ? playbackSceneId === placementSceneId
-          : sceneBlockFor(videoEl!.currentTime) === placementBlockId;
+        if (playbackSceneId !== null) {
+          inOriginalShot = playbackSceneId === placementSceneId;
+        } else {
+          // Optimistic fallback: scene data not loaded → assume same scene.
+          // Better to briefly show a stale placement than to flash hide it.
+          inOriginalShot = true;
+        }
       } else {
         const playbackBlockId = useVideo ? sceneBlockFor(videoEl!.currentTime) : placementBlockId;
         inOriginalShot = playbackBlockId === placementBlockId;
       }
 
-      // When playback has crossed into a different shot than the surface
-      // was placed on, show a small "out of scene" badge in the corner so
-      // the user understands why the placement disappeared. Without this
-      // badge, the product just vanishes mid-playback and looks like a bug.
-      if (useVideo && !inOriginalShot && hasProduct) {
+      // Smooth opacity transition between in-scene/out-of-scene states.
+      // Updates targetOpacity from the gate decision, then eases the
+      // currentOpacity toward it using delta-time integration so the
+      // transition feels consistent regardless of frame rate.
+      const ts = sceneTransitionRef.current;
+      const newTarget = inOriginalShot ? 1 : 0;
+      if (ts.targetOpacity !== newTarget) {
+        ts.targetOpacity = newTarget;
+      }
+      const now = performance.now();
+      const dt = ts.lastFrameTime ? Math.min(0.1, (now - ts.lastFrameTime) / 1000) : 0;
+      ts.lastFrameTime = now;
+      // 200ms total transition — easing rate computed so opacity
+      // changes by 1.0 in 0.2 seconds = rate of 5/sec.
+      const FADE_RATE_PER_SEC = 5;
+      const delta = (ts.targetOpacity - ts.currentOpacity) * FADE_RATE_PER_SEC * dt;
+      ts.currentOpacity = Math.max(0, Math.min(1, ts.currentOpacity + delta));
+      const sceneOpacity = ts.currentOpacity;
+
+      // "Placement hidden" badge — fades in inversely with the product
+      // (when product is fully invisible, badge is fully visible). Same
+      // 200ms ease so they cross over smoothly.
+      const badgeOpacity = 1 - sceneOpacity;
+      if (useVideo && badgeOpacity > 0.05 && hasProduct) {
         const badgeText = "Placement hidden — different scene";
         ctx.font = "11px Inter, system-ui, sans-serif";
         const tw = ctx.measureText(badgeText).width;
@@ -1296,16 +1334,25 @@ export default function PlacementPreviewModal({
         const badgeH = 22;
         const badgeX = canvas.width - badgeW - 12;
         const badgeY = 12;
-        ctx.fillStyle = "rgba(0, 0, 0, 0.75)";
+        ctx.fillStyle = `rgba(0, 0, 0, ${0.75 * badgeOpacity})`;
         ctx.fillRect(badgeX, badgeY, badgeW, badgeH);
-        ctx.fillStyle = "rgba(251, 191, 36, 0.95)";
+        ctx.fillStyle = `rgba(251, 191, 36, ${0.95 * badgeOpacity})`;
         ctx.fillText(badgeText, badgeX + padX, badgeY + padY + 9);
       }
 
-      // Draw product if loaded AND placement is in the active shot.
+      // Draw product if loaded AND scene-fade hasn't fully hidden it.
+      // Use sceneOpacity (0..1, eased) to crossfade smoothly across cuts
+      // — pure on/off pop felt like the product was being "dropped in
+      // each time" per the user's report. We draw whenever opacity > 0.05
+      // (avoids paying the draw cost when essentially invisible) and
+      // wrap drawProduct in a globalAlpha so the existing blend logic
+      // is preserved without a parameter-passing rewrite.
       const prodImg = productImgRef.current;
-      if (prodImg && prodImg.complete && bw > 0 && bh > 0 && inOriginalShot) {
+      if (prodImg && prodImg.complete && bw > 0 && bh > 0 && sceneOpacity > 0.05) {
+        ctx.save();
+        ctx.globalAlpha = sceneOpacity;
         drawProduct(ctx, prodImg, bx, by, bw, bh, transform, blend);
+        ctx.restore();
 
         // Draw resize handles + rotation handle (hidden when toggle is off)
         if (showBoundingBox) {
