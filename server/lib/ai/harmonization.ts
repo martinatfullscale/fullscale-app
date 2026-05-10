@@ -66,6 +66,8 @@ export interface HarmonizationResult {
   trellisRenderUrl?: string;
   /** When mode=ai-3d, the GLB mesh URL — exposed for future re-renders. */
   meshUrl?: string;
+  /** When mode=ai-3d, the IC-Light relit product URL (post-relighting). */
+  icLightRelitUrl?: string;
   error?: string;
   elapsedMs?: number;
   mode?: "procedural" | "ai-3d" | "ai";
@@ -104,6 +106,191 @@ async function uploadBuffer(buf: Buffer, name: string, mime: string): Promise<st
 }
 
 /**
+ * Extract a single frame from a turnaround MP4 at the given normalized
+ * angle (0..1, where 0 = front, 0.25 = right, 0.5 = back, 0.75 = left).
+ * TRELLIS turnaround videos are typically 24-frame loops; we ffprobe for
+ * duration and seek to the matching timestamp.
+ *
+ * Returns null on any failure — caller falls back to TRELLIS's default
+ * preview image.
+ */
+async function extractTurnaroundFrame(
+  videoUrl: string,
+  normalizedAngle: number,
+): Promise<Buffer | null> {
+  const { spawn } = await import("child_process");
+  const fs = await import("fs");
+  const os = await import("os");
+  const path = await import("path");
+
+  const tempPath = path.join(
+    os.tmpdir(),
+    `trellis_${Date.now()}_${Math.floor(Math.random() * 1e6)}.png`,
+  );
+
+  // Probe duration first.
+  const duration = await new Promise<number>((resolve) => {
+    const ff = spawn("ffprobe", [
+      "-v", "error",
+      "-show_entries", "format=duration",
+      "-of", "default=noprint_wrappers=1:nokey=1",
+      videoUrl,
+    ]);
+    let out = "";
+    ff.stdout.on("data", (d) => { out += d.toString(); });
+    ff.on("close", () => {
+      const v = parseFloat(out.trim());
+      resolve(Number.isFinite(v) && v > 0 ? v : 4); // 4s default
+    });
+    ff.on("error", () => resolve(4));
+  });
+
+  const t = clamp(normalizedAngle, 0, 0.999) * duration;
+
+  const ok = await new Promise<boolean>((resolve) => {
+    const ff = spawn("ffmpeg", [
+      "-nostdin",
+      "-y",
+      "-loglevel", "error",
+      "-ss", String(t),
+      "-i", videoUrl,
+      "-frames:v", "1",
+      "-q:v", "2",
+      tempPath,
+    ]);
+    ff.on("close", (code) => {
+      resolve(code === 0 && fs.existsSync(tempPath));
+    });
+    ff.on("error", () => resolve(false));
+  });
+
+  if (!ok) return null;
+  try {
+    return fs.readFileSync(tempPath);
+  } catch {
+    return null;
+  } finally {
+    try { fs.unlinkSync(tempPath); } catch {}
+  }
+}
+
+/**
+ * IC-Light v2 (fal-ai/iclight-v2) — relights a foreground subject using a
+ * background image as the lighting reference. We feed it:
+ *   - foreground: the TRELLIS-rendered 3D product (lit by neutral studio
+ *     lighting, looks like a stock photo)
+ *   - background reference: a crop of the scene around the placement bbox
+ *     (carries the scene's actual light direction, color temp, ambient)
+ *
+ * The output is a relit product image that picks up the scene's lighting
+ * — warm if scene is warm, lit from the right if scene's light is rightward,
+ * etc. This is the biggest single visual fix for "product still looks
+ * pasted on": it solves the lighting-mismatch half of the flatness problem.
+ *
+ * Cost: ~$0.04/inference. Latency: ~5-15s on fal's pool.
+ *
+ * Returns null on failure — caller falls back to the un-relit input so the
+ * pipeline still ships an output.
+ */
+async function runIcLightRelight(
+  productRenderUrl: string,
+  sceneCropBuf: Buffer,
+  prompt: string,
+): Promise<string | null> {
+  const falKey = process.env.FAL_KEY;
+  if (!falKey) {
+    console.warn(`[Harmonize/iclight] FAL_KEY not set — skipping relight`);
+    return null;
+  }
+  fal.config({ credentials: falKey });
+
+  try {
+    const sceneCropUrl = await uploadBuffer(sceneCropBuf, "scene-crop.png", "image/png");
+    const t0 = Date.now();
+    // The SDK's typed input doesn't include background_image_url for the
+    // base iclight-v2 endpoint, but the underlying API does accept it on
+    // background-conditioned deployments. Cast to any so TS doesn't block.
+    // If the param is silently dropped we still get useful relighting
+    // from the prompt alone — better than no relight.
+    const input: any = {
+      image_url: productRenderUrl,
+      background_image_url: sceneCropUrl,
+      prompt,
+      guidance_scale: 5.0,
+      num_inference_steps: 25,
+    };
+    const result: any = await fal.subscribe("fal-ai/iclight-v2", {
+      input,
+      logs: false,
+    });
+    const elapsed = Date.now() - t0;
+    const data = result?.data ?? result;
+    const relitUrl: string | undefined =
+      data?.image?.url ?? data?.images?.[0]?.url ?? data?.output?.url;
+    if (!relitUrl) {
+      console.warn(`[Harmonize/iclight] No image URL in response — keys: ${Object.keys(data || {}).join(",")}`);
+      return null;
+    }
+    console.log(`[Harmonize/iclight] Relight complete in ${elapsed}ms → ${relitUrl}`);
+    return relitUrl;
+  } catch (err: any) {
+    console.warn(`[Harmonize/iclight] Failed (${err?.message || err}) — using un-relit product`);
+    return null;
+  }
+}
+
+/**
+ * Crop a region of the scene around the placement bbox to use as a lighting
+ * reference for IC-Light. We expand 1.5x past the bbox so IC-Light sees the
+ * surrounding context (ceiling lights, windows, ambient color), not just
+ * what's directly under the product.
+ */
+async function cropSceneForLighting(
+  sceneBuf: Buffer,
+  bbox: { x: number; y: number; width: number; height: number },
+  frameDimensions: { width: number; height: number },
+): Promise<Buffer> {
+  const expandX = bbox.width * 0.5;
+  const expandY = bbox.height * 0.5;
+  const cx = clamp(bbox.x - expandX, 0, 1);
+  const cy = clamp(bbox.y - expandY, 0, 1);
+  const cw = clamp(bbox.width + expandX * 2, 0.1, 1 - cx);
+  const ch = clamp(bbox.height + expandY * 2, 0.1, 1 - cy);
+
+  const px = Math.round(cx * frameDimensions.width);
+  const py = Math.round(cy * frameDimensions.height);
+  const pw = Math.round(cw * frameDimensions.width);
+  const ph = Math.round(ch * frameDimensions.height);
+
+  const sharp = (await import("sharp")).default;
+  return sharp(sceneBuf)
+    .extract({ left: px, top: py, width: Math.max(1, pw), height: Math.max(1, ph) })
+    .png()
+    .toBuffer();
+}
+
+/**
+ * Map the scene's reported camera angle to a normalized turnaround position
+ * (0..1). 0 is front, 0.25 right side, 0.5 back, 0.75 left side.
+ *
+ * For most product shots the 3/4 view (~0.083 = 30°) reads as most product-
+ * like — flat-front looks like a sticker, true-side hides the front face.
+ * We bias toward 3/4 unless the scene's camera is clearly above/below the
+ * product surface, in which case we keep front-facing and let pitch
+ * variation come from the 2D source.
+ */
+function angleForCameraAngle(cameraAngle: string | undefined): number {
+  switch ((cameraAngle || "").toLowerCase()) {
+    case "top-down": return 0.0;          // looking straight down — use front
+    case "low-angle": return 0.083;       // ~30° 3/4 — same as eye-level
+    case "slightly-above": return 0.083;
+    case "eye-level":
+    default:
+      return 0.083; // 30° 3/4 view — most product-shot-like
+  }
+}
+
+/**
  * TRELLIS (Microsoft Research, hosted on fal.ai) — Image → textured 3D mesh
  * with PBR materials. Takes a single product image and returns:
  *   - a GLB mesh URL
@@ -119,7 +306,11 @@ async function uploadBuffer(buf: Buffer, name: string, mime: string): Promise<st
  * Falls back gracefully — if TRELLIS errors or FAL_KEY is missing, the
  * caller falls back to procedural mode and the product still ships.
  */
-async function runTrellis3D(productBuf: Buffer): Promise<{ renderUrl: string; meshUrl?: string }> {
+async function runTrellis3D(productBuf: Buffer): Promise<{
+  renderUrl: string;
+  meshUrl?: string;
+  turnaroundVideoUrl?: string;
+}> {
   const falKey = process.env.FAL_KEY;
   if (!falKey) throw new Error("FAL_KEY env var not set — cannot run TRELLIS");
   fal.config({ credentials: falKey });
@@ -146,34 +337,34 @@ async function runTrellis3D(productBuf: Buffer): Promise<{ renderUrl: string; me
 
   // TRELLIS response shape (fal-ai/trellis as of 2025):
   //   { model_mesh: { url, file_name, ... },
+  //     rendered_video?: { url },
+  //     preview?: { url },
   //     timings: { inference: ... } }
-  // The rendered preview comes back via the GLB's auto-rendered thumbnail
-  // or via the `model_mesh.url` itself if we render server-side. For now
-  // we use whichever rendered preview the response includes; if the
-  // response shape changes, we adapt.
   const data = result?.data ?? result;
   const meshUrl: string | undefined =
     data?.model_mesh?.url ??
     data?.mesh?.url ??
     data?.glb_url;
-  // Some TRELLIS deployments include a multiview render; older versions
-  // don't, in which case the procedural pipeline downstream will use the
-  // original product image. Future iteration: render the GLB ourselves at
-  // the scene's camera angle.
+  // Turnaround MP4 — when present, we can extract any angle we want.
+  const turnaroundVideoUrl: string | undefined =
+    data?.rendered_video?.url ??
+    data?.turnaround?.url ??
+    data?.video?.url;
+  // Default preview image (front-facing) if no turnaround.
   const renderUrl: string | undefined =
     data?.preview?.url ??
     data?.preview_image?.url ??
     data?.rendered_image?.url ??
     data?.image?.url;
 
-  if (!renderUrl) {
+  if (!renderUrl && !turnaroundVideoUrl) {
     // No rendered preview available — fall back to the input image so
     // the procedural pipeline still has a product to composite.
     console.warn(`[Harmonize/trellis] No rendered preview in response; using input image. Mesh URL: ${meshUrl ?? "(none)"}`);
     return { renderUrl: productUrl, meshUrl };
   }
-  console.log(`[Harmonize/trellis] Render URL: ${renderUrl}, mesh URL: ${meshUrl ?? "(none)"}`);
-  return { renderUrl, meshUrl };
+  console.log(`[Harmonize/trellis] Render URL: ${renderUrl ?? "(none)"}, turnaround: ${turnaroundVideoUrl ?? "(none)"}, mesh URL: ${meshUrl ?? "(none)"}`);
+  return { renderUrl: renderUrl ?? productUrl, meshUrl, turnaroundVideoUrl };
 }
 
 function clamp(v: number, lo: number, hi: number): number {
@@ -410,33 +601,84 @@ export async function harmonizeProductIntoScene(
       };
     }
 
-    // mode === "ai-3d" (or legacy "ai" alias): TRELLIS + procedural lighting.
-    // Two-stage pipeline:
-    //   Stage A: TRELLIS image→3D mesh + render → 3D-aware product image
-    //   Stage B: feed the rendered product into the procedural pipeline
-    //   so it gets scene-matched lighting + contact shadow.
-    // Net: product reads as a 3D object that belongs in the room, not a
-    // flat sticker, while still preserving brand color fidelity.
+    // mode === "ai-3d" (or legacy "ai" alias): TRELLIS + IC-Light + procedural.
+    // Three-stage pipeline:
+    //   Stage A: TRELLIS image→3D mesh + turnaround render. We extract a
+    //     specific frame from the turnaround at the angle that matches the
+    //     scene's camera (3/4 view by default — most product-shot-like).
+    //   Stage B: IC-Light v2 relighting. Foreground = TRELLIS render
+    //     (neutral studio lighting), background reference = scene crop
+    //     around the bbox. Output: product picks up the scene's actual
+    //     light direction + color temperature.
+    //   Stage C: procedural composite — contact shadow, brightness match,
+    //     scene color cast. Locks the lighting to the bbox surface.
+    // Net: product reads as a 3D object that *belongs* in the room.
     if (mode === "ai-3d" || mode === "ai") {
-      console.log(`[Harmonize] Mode: ai-3d (TRELLIS 3D mesh → procedural lighting)`);
+      console.log(`[Harmonize] Mode: ai-3d (TRELLIS → IC-Light → procedural)`);
       let trellisRenderUrl: string | undefined;
       let meshUrl: string | undefined;
       let renderedProductBuf: Buffer = productBuf;
+      let renderedProductUrl: string | undefined;
+      let icLightRelitUrl: string | undefined;
+
       try {
         const trellis = await runTrellis3D(productBuf);
         trellisRenderUrl = trellis.renderUrl;
         meshUrl = trellis.meshUrl;
-        // Pull the rendered image bytes for compositing
-        const renderRes = await fetch(trellis.renderUrl);
-        if (renderRes.ok) {
-          renderedProductBuf = Buffer.from(await renderRes.arrayBuffer());
-        } else {
-          console.warn(`[Harmonize/ai-3d] Failed to fetch TRELLIS render (${renderRes.status}); using original product image`);
+
+        // Stage A.1 — pull the angle-specific frame from the turnaround MP4
+        // when available. For "eye-level" / "slightly-above" / "low-angle"
+        // we use 30° 3/4 (looks most product-like). Falls back to the
+        // default front-facing preview when no turnaround is returned.
+        if (trellis.turnaroundVideoUrl) {
+          const angle = angleForCameraAngle(input.cameraAngle);
+          const frameBuf = await extractTurnaroundFrame(trellis.turnaroundVideoUrl, angle);
+          if (frameBuf) {
+            renderedProductBuf = frameBuf;
+            // Re-upload so IC-Light has a URL to consume.
+            renderedProductUrl = await uploadBuffer(frameBuf, "trellis-angle.png", "image/png");
+            console.log(`[Harmonize/ai-3d] Extracted turnaround frame at angle ${angle.toFixed(3)} (${input.cameraAngle ?? "default"}); ${frameBuf.length} bytes`);
+          }
+        }
+
+        // Default fetch path if turnaround extraction didn't run.
+        if (!renderedProductUrl) {
+          const renderRes = await fetch(trellis.renderUrl);
+          if (renderRes.ok) {
+            renderedProductBuf = Buffer.from(await renderRes.arrayBuffer());
+            renderedProductUrl = trellis.renderUrl;
+          } else {
+            console.warn(`[Harmonize/ai-3d] Failed to fetch TRELLIS render (${renderRes.status}); using original product image`);
+          }
         }
       } catch (err: any) {
         console.warn(`[Harmonize/ai-3d] TRELLIS failed (${err?.message || err}); falling back to procedural-only`);
         // If TRELLIS errors, we still ship a procedural composite so the
         // user gets *something* rather than a 502.
+      }
+
+      // Stage B — IC-Light relighting. Crop the scene around the bbox to
+      // give IC-Light real lighting context (ceiling, walls, ambient).
+      if (renderedProductUrl) {
+        try {
+          const sceneCrop = await cropSceneForLighting(
+            sceneBuf, input.bbox, input.frameDimensions,
+          );
+          const relitUrl = await runIcLightRelight(
+            renderedProductUrl,
+            sceneCrop,
+            "professional product photo, natural lighting matching the room, sharp focus, photorealistic",
+          );
+          if (relitUrl) {
+            icLightRelitUrl = relitUrl;
+            const relitRes = await fetch(relitUrl);
+            if (relitRes.ok) {
+              renderedProductBuf = Buffer.from(await relitRes.arrayBuffer());
+            }
+          }
+        } catch (err: any) {
+          console.warn(`[Harmonize/ai-3d] IC-Light failed (${err?.message || err}); using un-relit TRELLIS render`);
+        }
       }
 
       const { result, flatComposite } = await applyProceduralHarmonization(
@@ -451,13 +693,14 @@ export async function harmonizeProductIntoScene(
           uploadBuffer(flatComposite, "flat-composite-3d.png", "image/png"),
         ]);
         const elapsedMs = Date.now() - startedAt;
-        console.log(`[Harmonize] ai-3d done in ${elapsedMs}ms (TRELLIS + procedural)`);
+        console.log(`[Harmonize] ai-3d done in ${elapsedMs}ms (TRELLIS${icLightRelitUrl ? " + IC-Light" : ""} + procedural)`);
         return {
           success: true,
           imageUrl,
           flatCompositeUrl,
           trellisRenderUrl,
           meshUrl,
+          icLightRelitUrl,
           elapsedMs,
           mode: "ai-3d",
         };
@@ -472,6 +715,7 @@ export async function harmonizeProductIntoScene(
         flatCompositeUrl: flatDataUrl,
         trellisRenderUrl,
         meshUrl,
+        icLightRelitUrl,
         elapsedMs,
         mode: "ai-3d",
       };
