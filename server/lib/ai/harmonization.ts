@@ -298,6 +298,46 @@ function angleForCameraAngle(cameraAngle: string | undefined): number {
 }
 
 /**
+ * Remove the background from a TRELLIS render so we don't composite a black
+ * rectangle onto the scene. TRELLIS renders the 3D mesh on an opaque dark
+ * background (no alpha channel) — when we drop that into the scene,
+ * everything outside the product silhouette shows as a black box.
+ *
+ * Uses fal-ai/birefnet-v2 — best-in-class general-purpose background
+ * remover, ~3-6s, ~$0.01/call. Returns the same image with alpha applied
+ * so only the product silhouette is opaque.
+ *
+ * Falls back to the input URL on any failure (caller composites with
+ * black bg — visible but better than no harmonize at all).
+ */
+async function removeBackgroundForCompositing(imageUrl: string): Promise<string | null> {
+  const falKey = process.env.FAL_KEY;
+  if (!falKey) return null;
+  fal.config({ credentials: falKey });
+
+  try {
+    const t0 = Date.now();
+    const result: any = await fal.subscribe("fal-ai/birefnet/v2", {
+      input: { image_url: imageUrl } as any,
+      logs: false,
+    });
+    const elapsed = Date.now() - t0;
+    const data = result?.data ?? result;
+    const cleanUrl: string | undefined =
+      data?.image?.url ?? data?.images?.[0]?.url ?? data?.output?.url;
+    if (!cleanUrl) {
+      console.warn(`[Harmonize/birefnet] No image URL in response — keys: ${Object.keys(data || {}).join(",")}`);
+      return null;
+    }
+    console.log(`[Harmonize/birefnet] Background removed in ${elapsed}ms → ${cleanUrl}`);
+    return cleanUrl;
+  } catch (err: any) {
+    console.warn(`[Harmonize/birefnet] Failed (${err?.message || err}) — keeping bg`);
+    return null;
+  }
+}
+
+/**
  * TRELLIS (Microsoft Research, hosted on fal.ai) — Image → textured 3D mesh
  * with PBR materials. Takes a single product image and returns:
  *   - a GLB mesh URL
@@ -416,8 +456,34 @@ async function applyProceduralHarmonization(
   const pxW = clamp(Math.round(bbox.width * W), 1, W - pxX);
   const pxH = clamp(Math.round(bbox.height * H), 1, H - pxY);
 
+  // ── Step 0: ensure product has alpha channel ──
+  // If the input PNG/JPG has no transparency (e.g. a product photo on a
+  // dark studio backdrop — what the user's Shark vacuum image was), the
+  // composite below paints the entire rectangle including the backdrop,
+  // producing the visible "black box around product" artifact. Detect
+  // missing alpha and auto-strip the bg via fal-ai/birefnet. Skipped
+  // (cheap path) when alpha already present — proper PNG cutouts pay
+  // no extra latency.
+  let workingProductBuf = productBuf;
+  try {
+    const inMeta = await sharp(productBuf).metadata();
+    if (!inMeta.hasAlpha && process.env.FAL_KEY) {
+      console.log(`[Harmonize/procedural] Product has no alpha channel — auto-stripping background`);
+      const tempUrl = await uploadBuffer(productBuf, "product-noalpha.png", "image/png");
+      const cleanUrl = await removeBackgroundForCompositing(tempUrl);
+      if (cleanUrl) {
+        const cleanRes = await fetch(cleanUrl);
+        if (cleanRes.ok) {
+          workingProductBuf = Buffer.from(await cleanRes.arrayBuffer());
+        }
+      }
+    }
+  } catch (err: any) {
+    console.warn(`[Harmonize/procedural] Alpha detection / bg-strip failed: ${err?.message}`);
+  }
+
   // ── Step 1: resize product to fit the bbox, preserving aspect ──
-  const productResized = await sharp(productBuf)
+  const productResized = await sharp(workingProductBuf)
     .resize(pxW, pxH, { fit: "inside", background: { r: 0, g: 0, b: 0, alpha: 0 } })
     .png()
     .toBuffer();
@@ -656,6 +722,28 @@ export async function harmonizeProductIntoScene(
             renderedProductUrl = trellis.renderUrl;
           } else {
             console.warn(`[Harmonize/ai-3d] Failed to fetch TRELLIS render (${renderRes.status}); using original product image`);
+          }
+        }
+
+        // Stage A.2 — background removal. TRELLIS renders the 3D mesh on
+        // an opaque dark background (no alpha). Without this step the
+        // procedural composite drops a literal black rectangle around the
+        // product silhouette into the scene — directly visible as the
+        // "black border" the user reported. birefnet-v2 strips the bg in
+        // ~3-6s and returns a transparent-bg PNG. Done BEFORE IC-Light so
+        // the relight isn't fighting halo pixels.
+        if (renderedProductUrl) {
+          const cleanUrl = await removeBackgroundForCompositing(renderedProductUrl);
+          if (cleanUrl) {
+            try {
+              const cleanRes = await fetch(cleanUrl);
+              if (cleanRes.ok) {
+                renderedProductBuf = Buffer.from(await cleanRes.arrayBuffer());
+                renderedProductUrl = cleanUrl;
+              }
+            } catch (err: any) {
+              console.warn(`[Harmonize/ai-3d] Failed to fetch bg-removed render (${err?.message || err}); using TRELLIS render with bg`);
+            }
           }
         }
       } catch (err: any) {
