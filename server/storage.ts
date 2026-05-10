@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { eq, desc, and, or, sql, inArray } from "drizzle-orm";
+import { eq, desc, and, or, sql, inArray, ne } from "drizzle-orm";
 import {
   monetizationItems,
   youtubeConnections,
@@ -911,10 +911,22 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getSurfaceCountByVideo(videoId: number): Promise<number> {
+    // Filter out "Filtered" surfaceType — those are soft-deleted by the
+    // scanner's snapshot/swap on rescan (preserves prior IDs in case of
+    // a failed rescan, but they shouldn't count as ad opportunities).
+    // Without this filter, every rescan accumulates the count: 4 → 8 →
+    // 12 → 56 even though only 4 are actually active. User feedback:
+    // "I think that each time I'm running a scan - it's just aggregating
+    // the surfaces found".
     const surfaces = await db
       .select()
       .from(detectedSurfaces)
-      .where(eq(detectedSurfaces.videoId, videoId));
+      .where(
+        and(
+          eq(detectedSurfaces.videoId, videoId),
+          ne(detectedSurfaces.surfaceType, "Filtered"),
+        ),
+      );
     return surfaces.length;
   }
 
@@ -1191,12 +1203,23 @@ export class DatabaseStorage implements IStorage {
     creatorUserId: string,
     status: string = "pending_creator_review",
   ): Promise<BrandPlacementAssignment[]> {
+    // Dual-id resolution. video.userId is sometimes email (file uploads),
+    // sometimes UUID (IG/FB imports). The placement creator_user_id is set
+    // from video.userId, but the inbox query passes req.authUserId which
+    // is always the UUID. Without the OR, an email-keyed video's
+    // placements never reach the UUID-authenticated user's inbox.
+    // User-facing symptom: "I've clicked on request placement a few times
+    // already and I have yet to receive a notification in my inbox."
+    const user = await this.getUserById(creatorUserId);
+    const aliases = [creatorUserId];
+    if (user?.email && user.email !== creatorUserId) aliases.push(user.email);
+
     return await db
       .select()
       .from(brandPlacementAssignments)
       .where(
         and(
-          eq(brandPlacementAssignments.creatorUserId, creatorUserId),
+          inArray(brandPlacementAssignments.creatorUserId, aliases),
           eq(brandPlacementAssignments.status, status),
         ),
       )
@@ -1258,12 +1281,17 @@ export class DatabaseStorage implements IStorage {
    * Count of pending placements for a creator — used for inbox badge.
    */
   async countPendingPlacementsForCreator(creatorUserId: string): Promise<number> {
+    // Same dual-id alias as getCreatorPlacements — see comment above.
+    const user = await this.getUserById(creatorUserId);
+    const aliases = [creatorUserId];
+    if (user?.email && user.email !== creatorUserId) aliases.push(user.email);
+
     const result = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(brandPlacementAssignments)
       .where(
         and(
-          eq(brandPlacementAssignments.creatorUserId, creatorUserId),
+          inArray(brandPlacementAssignments.creatorUserId, aliases),
           eq(brandPlacementAssignments.status, "pending_creator_review"),
         ),
       );

@@ -6616,13 +6616,15 @@ export async function registerRoutes(
         }
 
         const sharp = (await import("sharp")).default;
-        // Letterbox to 800x450 (16:9). Preserves aspect, fills letterbox with
-        // a dark color so logos with transparency don't show through to a
-        // weird background when rendered on the card.
+        // Resize to max 1600x900 preserving original aspect — NO letterbox.
+        // The marketplace card uses CSS object-cover so the visual cropping
+        // happens at display time. Storing the raw aspect means a creator
+        // who uploads a 16:9 brand image gets exactly that, while a square
+        // logo gets cropped to fit the card without black bars baked in.
         const outBuf = await sharp(req.file.buffer)
-          .resize(800, 450, {
-            fit: "contain",
-            background: { r: 17, g: 17, b: 23, alpha: 1 }, // matches marketplace bg
+          .resize(1600, 900, {
+            fit: "inside",          // preserve aspect, no padding
+            withoutEnlargement: true, // don't upscale tiny logos
           })
           .png()
           .toBuffer();

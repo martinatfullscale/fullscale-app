@@ -717,7 +717,7 @@ export default function BrandMarketplace() {
                           <img
                             src={creator.cardImageUrl}
                             alt={creator.name}
-                            className="w-full h-full object-contain bg-[#111117] group-hover:scale-105 transition-transform duration-300"
+                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                             onError={(e) => {
                               (e.target as HTMLImageElement).style.display = "none";
                             }}
