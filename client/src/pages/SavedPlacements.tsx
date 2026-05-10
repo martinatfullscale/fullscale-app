@@ -99,7 +99,9 @@ export default function SavedPlacements() {
     const fetchSurfaces = async () => {
       setLoadingSurfaces(true);
       try {
-        const res = await fetch(`/api/video/${quickEditPlacement.videoId}/surfaces`, { credentials: "include" });
+        // Owner is editing their own placement — show all surfaces (the
+        // anchor surface might not be creatorApproved yet on a new scan).
+        const res = await fetch(`/api/video/${quickEditPlacement.videoId}/surfaces?includeUnapproved=true`, { credentials: "include" });
         if (res.ok) {
           const surfaces = await res.json();
           // Filter to just the surface this placement is on

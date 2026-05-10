@@ -2681,12 +2681,16 @@ async function processVideoScanInner(
     let usedSceneFirst = false;
 
     if (sceneIndex && sceneIndex.sceneCount > 0) {
-      // Aim for ~3 samples per scene if we can fit, capping total at the
-      // existing MAX_FRAMES_PER_VIDEO budget. So: 2 scenes → 6 frames.
-      // 30 scenes → 30 frames (1 each, hits the cap).
+      // Aim for ~6 samples per scene if we can fit, capping total at the
+      // existing MAX_FRAMES_PER_VIDEO budget. Empirical tuning on Call
+      // Her Daddy (3 scenes × 3 frames = 9 frames → only 4 surfaces) —
+      // bumping to 6/scene catches different framing within each scene
+      // (host leans forward, host sits back, etc.) for ~2x surface yield
+      // without significantly more Gemini cost. So: 2 scenes → 12 frames.
+      // 4 scenes → 24 frames (hits cap). 24 scenes → 24 frames (1 each).
       const desiredPerScene = Math.max(
         1,
-        Math.min(3, Math.floor(CONFIG.MAX_FRAMES_PER_VIDEO / sceneIndex.sceneCount)),
+        Math.min(6, Math.floor(CONFIG.MAX_FRAMES_PER_VIDEO / sceneIndex.sceneCount)),
       );
       const samples = sampleMultiTimestampsPerScene(sceneIndex, desiredPerScene);
       // Hard-cap at the per-video budget to keep Gemini cost predictable.

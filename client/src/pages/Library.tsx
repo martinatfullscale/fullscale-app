@@ -629,10 +629,15 @@ export default function Library() {
     console.log(`[Library] Checking real mode: isRealMode=${isRealMode}, videoId >= 50: ${videoId >= 50}`);
     if (isRealMode && videoId >= 50) {
       try {
-        // Pass admin_email for flexible auth if user is admin
-        const url = isAdminUser 
-          ? `/api/video/${videoId}/surfaces?admin_email=${encodeURIComponent(userEmail)}`
-          : `/api/video/${videoId}/surfaces`;
+        // Pass admin_email for flexible auth if user is admin.
+        // includeUnapproved=true: when the owner is browsing their own
+        // library, show ALL detected surfaces (not just creatorApproved).
+        // Without this, fresh-scanned videos look empty because every new
+        // surface defaults to creatorApproved=false until explicitly
+        // approved via the review UI.
+        const params = new URLSearchParams({ includeUnapproved: "true" });
+        if (isAdminUser && userEmail) params.set("admin_email", userEmail);
+        const url = `/api/video/${videoId}/surfaces?${params.toString()}`;
         console.log(`[Library] Fetching surfaces from: ${url}`);
         const res = await fetch(url, { credentials: "include" });
         console.log(`[Library] Response status: ${res.status}`);

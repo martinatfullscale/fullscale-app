@@ -223,7 +223,10 @@ export default function Dashboard() {
     };
 
     try {
-      const res = await fetch(`/api/video/${video.id}/surfaces`, { credentials: "include" });
+      // Owner viewing their own dashboard — show all surfaces, not just
+      // creatorApproved=true. Without this, freshly scanned videos look
+      // empty because every new surface defaults to unapproved.
+      const res = await fetch(`/api/video/${video.id}/surfaces?includeUnapproved=true`, { credentials: "include" });
       if (res.ok) {
         const data = await res.json();
         

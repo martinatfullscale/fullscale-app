@@ -214,29 +214,40 @@ export async function buildSceneIndex(
 
   console.log(`[SceneIndex] Hashing ${shots.length} shots from ${cuts.length} cuts (duration ${duration.toFixed(1)}s)`);
 
-  // Extract keyframe + hash per shot. Sample at the shot midpoint for the
-  // most representative frame.
+  // Extract keyframe + hash per shot in PARALLEL with concurrency cap.
+  // Sequential ffmpeg spawns were ~3-4 minutes on a 60-shot podcast (cold-
+  // start dominates per call). Parallel-8 takes ~30s for the same video
+  // since ffmpeg's input seek is I/O bound, not CPU. Sharp's dHash is
+  // CPU-bound but cheap enough that 8 in flight doesn't peg the box.
+  const CONCURRENCY = 8;
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "scene-idx-"));
-  const hashes: string[] = [];
+  const hashes: string[] = new Array(shots.length).fill("");
+
+  async function processShot(shot: { shotIdx: number; tStart: number; tEnd: number }, slot: number): Promise<void> {
+    const midpoint = shot.tStart + (shot.tEnd - shot.tStart) / 2;
+    const keyframePath = path.join(tempDir, `shot_${shot.shotIdx}.jpg`);
+    const ok = await extractKeyframe(videoPath, midpoint, keyframePath);
+    if (!ok) {
+      hashes[slot] = `fail${shot.shotIdx.toString(16).padStart(12, "0")}`;
+      return;
+    }
+    try {
+      hashes[slot] = await computeDHash(keyframePath);
+    } catch (err: any) {
+      console.warn(`[SceneIndex] dHash failed for shot ${shot.shotIdx}: ${err.message}`);
+      hashes[slot] = `fail${shot.shotIdx.toString(16).padStart(12, "0")}`;
+    } finally {
+      try { fs.unlinkSync(keyframePath); } catch {}
+    }
+  }
+
   try {
-    for (const shot of shots) {
-      const midpoint = shot.tStart + (shot.tEnd - shot.tStart) / 2;
-      const keyframePath = path.join(tempDir, `shot_${shot.shotIdx}.jpg`);
-      const ok = await extractKeyframe(videoPath, midpoint, keyframePath);
-      if (!ok) {
-        // Failure → unique placeholder hash so this shot becomes its own scene.
-        hashes.push(`fail${shot.shotIdx.toString(16).padStart(12, "0")}`);
-        continue;
-      }
-      try {
-        const hash = await computeDHash(keyframePath);
-        hashes.push(hash);
-      } catch (err: any) {
-        console.warn(`[SceneIndex] dHash failed for shot ${shot.shotIdx}: ${err.message}`);
-        hashes.push(`fail${shot.shotIdx.toString(16).padStart(12, "0")}`);
-      } finally {
-        try { fs.unlinkSync(keyframePath); } catch {}
-      }
+    // Process in CONCURRENCY-sized waves. Promise.all per wave so errors
+    // in one shot don't stall the others, and the next wave starts as
+    // soon as the previous finishes.
+    for (let i = 0; i < shots.length; i += CONCURRENCY) {
+      const wave = shots.slice(i, i + CONCURRENCY);
+      await Promise.all(wave.map((shot, j) => processShot(shot, i + j)));
     }
   } finally {
     try { fs.rmdirSync(tempDir); } catch {}
