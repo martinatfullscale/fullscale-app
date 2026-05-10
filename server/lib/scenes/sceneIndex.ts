@@ -303,3 +303,35 @@ export function sampleTimestampsPerScene(index: SceneIndex): Array<{
     tSample: shot.tStart + (shot.tEnd - shot.tStart) / 2,
   }));
 }
+
+// Like sampleTimestampsPerScene but returns up to `perScene` timestamps per
+// scene — picks the midpoints of the top-K longest shots in each scene.
+// Catches drift within a scene that has many shots (e.g. host scene where
+// the host moves through different parts of the couch over 30 shots — one
+// keyframe might miss it).
+export function sampleMultiTimestampsPerScene(
+  index: SceneIndex,
+  perScene: number = 2,
+): Array<{ sceneId: number; t: number; shotIdx: number }> {
+  const byScene = new Map<number, SceneShot[]>();
+  for (const shot of index.shots) {
+    const arr = byScene.get(shot.sceneId) ?? [];
+    arr.push(shot);
+    byScene.set(shot.sceneId, arr);
+  }
+  const samples: Array<{ sceneId: number; t: number; shotIdx: number }> = [];
+  for (const [sceneId, shots] of Array.from(byScene.entries())) {
+    const sorted = [...shots].sort(
+      (a, b) => (b.tEnd - b.tStart) - (a.tEnd - a.tStart),
+    );
+    const top = sorted.slice(0, Math.max(1, perScene));
+    for (const shot of top) {
+      samples.push({
+        sceneId,
+        shotIdx: shot.shotIdx,
+        t: shot.tStart + (shot.tEnd - shot.tStart) / 2,
+      });
+    }
+  }
+  return samples.sort((a, b) => a.t - b.t);
+}

@@ -29,7 +29,7 @@ import { downloadVideo as downloadYouTubeVideo, getYoutubeVideoDuration } from "
 import { downloadFacebookVideo, downloadInstagramVideo } from "./lib/socialDownloader";
 import { safeDecrypt } from "./lib/socialAnalytics";
 import { getFreshYoutubeTokenForUser } from "./lib/youtubeAuth";
-import { buildSceneIndex, sceneIdForTimestamp, type SceneIndex } from "./lib/scenes/sceneIndex";
+import { buildSceneIndex, sceneIdForTimestamp, sampleMultiTimestampsPerScene, type SceneIndex } from "./lib/scenes/sceneIndex";
 
 // ============================================================================
 // GEMINI AI CLIENT
@@ -661,6 +661,80 @@ async function extractFrames(
       reject(err);
     });
   });
+}
+
+/**
+ * Extract one frame at each requested timestamp. Used by the scene-first
+ * scan path — instead of sampling the video uniformly every N seconds, we
+ * sample at the midpoints of representative shots per unique scene.
+ *
+ * Returns parallel arrays so the caller can map frame[i] → its real
+ * timestamp (vs. extractFrames where timestamp = i × interval).
+ */
+async function extractFramesAtTimestamps(
+  videoPath: string,
+  outputDir: string,
+  timestamps: number[],
+): Promise<{ frames: string[]; timestamps: number[] }> {
+  const absoluteVideoPath = path.resolve(videoPath);
+  const absoluteOutputDir = path.resolve(outputDir);
+  fs.mkdirSync(absoluteOutputDir, { recursive: true });
+
+  const out: { frames: string[]; timestamps: number[] } = { frames: [], timestamps: [] };
+
+  for (let i = 0; i < timestamps.length; i++) {
+    const t = timestamps[i];
+    const outPath = path.join(absoluteOutputDir, `scene_frame_${i.toString().padStart(4, "0")}.jpg`);
+
+    const ok = await new Promise<boolean>((resolve) => {
+      // -ss BEFORE -i = fast input seek (decoder skips most of the file).
+      // 480 max dim is plenty for Gemini surface detection and saves bytes.
+      const ff = spawn("ffmpeg", [
+        "-nostdin",
+        "-y",
+        "-loglevel", "error",
+        "-ss", String(Math.max(0, t)),
+        "-i", absoluteVideoPath,
+        "-an",
+        "-frames:v", "1",
+        "-pix_fmt", "yuvj420p",
+        "-vf", `scale='min(${CONFIG.FRAME_MAX_DIMENSION},iw)':'min(${CONFIG.FRAME_MAX_DIMENSION},ih)':force_original_aspect_ratio=decrease`,
+        "-q:v", "2",
+        outPath,
+      ]);
+      let stderr = "";
+      ff.stderr.on("data", (d) => { stderr += d.toString(); });
+      const tm = setTimeout(() => {
+        try { ff.kill("SIGKILL"); } catch {}
+        console.warn(`[Scanner V2] Timestamp extract t=${t}s timed out`);
+        resolve(false);
+      }, 60_000);
+      ff.on("close", (code) => {
+        clearTimeout(tm);
+        if (code === 0 && fs.existsSync(outPath)) {
+          resolve(true);
+        } else {
+          if (stderr) {
+            console.warn(`[Scanner V2] Timestamp extract t=${t}s failed: ${stderr.slice(-150)}`);
+          }
+          resolve(false);
+        }
+      });
+      ff.on("error", (err) => {
+        clearTimeout(tm);
+        console.warn(`[Scanner V2] Timestamp extract spawn error t=${t}s: ${err.message}`);
+        resolve(false);
+      });
+    });
+
+    if (ok) {
+      out.frames.push(outPath);
+      out.timestamps.push(t);
+    }
+  }
+
+  console.log(`[Scanner V2] Scene-first extraction: ${out.frames.length}/${timestamps.length} frames at requested timestamps`);
+  return out;
 }
 
 /**
@@ -2569,24 +2643,13 @@ async function processVideoScanInner(
     await storage.updateVideoStatus(videoId, "Scanning");
     
     fs.mkdirSync(framesDir, { recursive: true });
-    
-    // EXTRACT FRAMES — uses adaptive plan computed during YT download path,
-    // or CONFIG defaults for non-YT sources (uploaded files, IG/FB).
-    console.log(`[Scanner V2] Extracting frames with plan: every ${scanPlan.intervalSeconds}s × ${scanPlan.maxFrames} frames`);
-    const frames = await extractFrames(videoPath, framesDir, scanPlan);
-    
-    if (frames.length === 0) {
-      await storage.updateVideoStatus(videoId, "Scan Failed");
-      return { success: false, videoId, surfacesDetected: 0, error: "No frames extracted" };
-    }
-    
-    console.log(`[Scanner V2] Extracted ${frames.length} frames`);
 
-    // Detect scene cuts in parallel with the rest of the scan setup. Cuts
-    // are persisted on the video record so downstream code (cluster,
-    // placement render) can prevent surfaces from one shot bleeding into
-    // another. Failure here is non-fatal — empty cut list means treat the
-    // whole video as one scene block.
+    // SCENE-FIRST: detect cuts and cluster shots into unique scenes BEFORE
+    // extracting frames. This lets us sample 1-2 frames per UNIQUE SCENE
+    // rather than uniformly across the timeline — Call Her Daddy with 60
+    // cuts but 2 unique scenes goes from 50 frames to 4 frames (~12x cost
+    // reduction on Gemini calls). Failure here is non-fatal — falls back
+    // to uniform extraction.
     let sceneCuts: number[] = [];
     let sceneIndex: SceneIndex | null = null;
     try {
@@ -2597,10 +2660,6 @@ async function processVideoScanInner(
       console.warn(`[Scanner V2] Scene-cut detection failed (non-fatal):`, sceneErr?.message || sceneErr);
     }
 
-    // Cluster shots into unique scenes (host shot vs guest shot, etc).
-    // dHash similarity — same scene returning across cuts gets the same
-    // sceneId so placements carry across visually-identical shots. This
-    // fixes the :08/:46 disappearing-placement bug at the data layer.
     try {
       sceneIndex = await buildSceneIndex(videoPath, sceneCuts);
       if (sceneIndex) {
@@ -2610,6 +2669,56 @@ async function processVideoScanInner(
     } catch (sidxErr: any) {
       console.warn(`[Scanner V2] Scene index build failed (non-fatal):`, sidxErr?.message || sidxErr);
     }
+
+    // Choose extraction strategy.
+    //   Scene-first (preferred): N unique scenes → 1-3 frames each, capped
+    //   at MAX_FRAMES_PER_VIDEO. Each frame is tagged with its real
+    //   timestamp so sceneId lookup downstream is correct.
+    //   Uniform fallback: every N seconds (legacy behavior). Used when
+    //   sceneIndex couldn't be built or has no scenes.
+    let frames: string[] = [];
+    let frameTimestamps: number[] = [];
+    let usedSceneFirst = false;
+
+    if (sceneIndex && sceneIndex.sceneCount > 0) {
+      // Aim for ~3 samples per scene if we can fit, capping total at the
+      // existing MAX_FRAMES_PER_VIDEO budget. So: 2 scenes → 6 frames.
+      // 30 scenes → 30 frames (1 each, hits the cap).
+      const desiredPerScene = Math.max(
+        1,
+        Math.min(3, Math.floor(CONFIG.MAX_FRAMES_PER_VIDEO / sceneIndex.sceneCount)),
+      );
+      const samples = sampleMultiTimestampsPerScene(sceneIndex, desiredPerScene);
+      // Hard-cap at the per-video budget to keep Gemini cost predictable.
+      const trimmed = samples.slice(0, CONFIG.MAX_FRAMES_PER_VIDEO);
+      console.log(`[Scanner V2] Scene-first extraction: ${trimmed.length} frames across ${sceneIndex.sceneCount} unique scene(s) (${desiredPerScene}/scene target)`);
+
+      const result = await extractFramesAtTimestamps(
+        videoPath,
+        framesDir,
+        trimmed.map(s => s.t),
+      );
+      if (result.frames.length > 0) {
+        frames = result.frames;
+        frameTimestamps = result.timestamps;
+        usedSceneFirst = true;
+      } else {
+        console.warn(`[Scanner V2] Scene-first extraction returned 0 frames — falling back to uniform`);
+      }
+    }
+
+    if (!usedSceneFirst) {
+      console.log(`[Scanner V2] Extracting frames with plan: every ${scanPlan.intervalSeconds}s × ${scanPlan.maxFrames} frames`);
+      frames = await extractFrames(videoPath, framesDir, scanPlan);
+      frameTimestamps = frames.map((_, i) => i * scanPlan.intervalSeconds);
+    }
+
+    if (frames.length === 0) {
+      await storage.updateVideoStatus(videoId, "Scan Failed");
+      return { success: false, videoId, surfacesDetected: 0, error: "No frames extracted" };
+    }
+
+    console.log(`[Scanner V2] Using ${frames.length} frames (${usedSceneFirst ? "scene-first" : "uniform"})`);
 
     const { isVertical } = await getFrameMetadata(frames[0]);
     console.log(`[Scanner V2] Video orientation: ${isVertical ? "VERTICAL (9:16)" : "HORIZONTAL (16:9)"}`);
@@ -2628,13 +2737,19 @@ async function processVideoScanInner(
 
     for (let i = 0; i < frames.length; i++) {
       const framePath = frames[i];
-      const timestamp = i * scanPlan.intervalSeconds;
+      // Real timestamp at this frame — scene-first sets this to the
+      // representative shot midpoint per scene; uniform fallback uses
+      // i × intervalSeconds. sceneId lookup downstream needs the real t.
+      const timestamp = frameTimestamps[i] ?? i * scanPlan.intervalSeconds;
+      // Round to int seconds for filename uniqueness without colliding
+      // (multiple scene-first samples can land between integer seconds).
+      const tsKey = Math.round(timestamp);
 
       try {
-        console.log(`[Scanner V2] Processing frame ${i + 1}/${frames.length} (${timestamp}s)...`);
+        console.log(`[Scanner V2] Processing frame ${i + 1}/${frames.length} (${timestamp.toFixed(2)}s)...`);
 
         // Save ALL valid frames to permanent directory for thumbnail strip
-        const frameFilename = `frame_${timestamp}s.jpg`;
+        const frameFilename = `frame_${tsKey}s.jpg`;
 
         try {
           const frameSize = fs.statSync(framePath).size;
@@ -2717,15 +2832,23 @@ async function processVideoScanInner(
     if (totalSurfaces < CONFIG.MIN_SURFACES_BEFORE_FALLBACK && frames.length > 0) {
       console.log(`[Scanner V2] Low surface count (${totalSurfaces}), adding fallback surfaces...`);
       
-      // Find frames that didn't get surfaces and add potential surfaces
+      // Find frames that didn't get surfaces and add potential surfaces.
+      // Scene-first sampling produces non-integer timestamps (e.g. 14.7s)
+      // so we round before set membership comparison — same key the
+      // fallback loop below uses for the frameUrl filename.
       const framesWithSurfaces = new Set<number>();
       const existingSurfaces = await storage.getDetectedSurfaces(videoId);
-      existingSurfaces.forEach(s => framesWithSurfaces.add(parseInt(s.timestamp)));
+      existingSurfaces.forEach(s => framesWithSurfaces.add(Math.round(parseFloat(String(s.timestamp)))));
       
       for (let i = 0; i < frames.length && totalSurfaces < CONFIG.MIN_SURFACES_BEFORE_FALLBACK + 2; i++) {
-        const timestamp = i * scanPlan.intervalSeconds;
-        if (!framesWithSurfaces.has(timestamp)) {
-          const fallbackFrameFilename = `frame_${timestamp}s.jpg`;
+        // Use real per-frame timestamp (scene-first or uniform) instead of
+        // recomputing from the loop index — uniform pre-existing behavior
+        // happens to match, scene-first uses non-uniform sampling so the
+        // reconstruction would be wrong without this.
+        const timestamp = frameTimestamps[i] ?? i * scanPlan.intervalSeconds;
+        const tsKey = Math.round(timestamp);
+        if (!framesWithSurfaces.has(tsKey)) {
+          const fallbackFrameFilename = `frame_${tsKey}s.jpg`;
 
           const dbSurface = {
             videoId,
@@ -2743,7 +2866,7 @@ async function processVideoScanInner(
           };
 
           await storage.insertDetectedSurface(dbSurface);
-          console.log(`[Scanner V2] *** FALLBACK SURFACE at ${timestamp}s (confidence: ${(CONFIG.FALLBACK_CONFIDENCE * 100).toFixed(1)}%) ***`);
+          console.log(`[Scanner V2] *** FALLBACK SURFACE at ${timestamp.toFixed(2)}s (confidence: ${(CONFIG.FALLBACK_CONFIDENCE * 100).toFixed(1)}%) ***`);
           totalSurfaces++;
         }
       }

@@ -60,6 +60,13 @@ interface Surface {
   lightingDirection?: string | null;  // left, right, top, top-left, top-right, ambient
   lightingIntensity?: number | null;  // 0.0-1.0
   cameraAngle?: string | null;       // eye-level, slightly-above, top-down, low-angle
+  // Scene cluster ID — surfaces with same sceneId are in the same physical
+  // scene (host shot returns 5x in a podcast). Drives same-scene placement
+  // continuity in the JUMP TO row and the placement auto-loader.
+  sceneId?: number | null;
+  // Per-shot block ID (legacy — pre-perceptual-clustering). Still emitted
+  // by the surfaces endpoint for backwards compat with the render filter.
+  sceneBlockId?: number | null;
 }
 
 interface PlacementPreviewModalProps {
@@ -627,7 +634,13 @@ export default function PlacementPreviewModal({
   });
 
   // Fetch video details to get file path for playback + scene-cut boundaries
-  const { data: videoDetails } = useQuery<{ filePath: string | null; sceneBoundaries?: number[] | null }>({
+  // + perceptual scene index (which clusters shots that revisit the same
+  // physical scene into a single sceneId).
+  const { data: videoDetails } = useQuery<{
+    filePath: string | null;
+    sceneBoundaries?: number[] | null;
+    sceneIndex?: { shots: Array<{ shotIdx: number; sceneId: number; tStart: number; tEnd: number }> } | null;
+  }>({
     queryKey: [`/api/video/${videoId}/details`],
     queryFn: async () => {
       const res = await fetch(`/api/video/${videoId}/details`);
@@ -654,12 +667,30 @@ export default function PlacementPreviewModal({
     return sceneBoundaries.length;
   }, [sceneBoundaries]);
 
-  // The placement is bound to the surface's scene block. During video
-  // playback, when the playhead crosses into a different block, the
-  // product is hidden — it doesn't belong in that shot.
+  // Perceptual scene cluster lookup — same physical set across cuts gets
+  // the same sceneId. Used so a placement on the host's coffee table at
+  // :08 keeps rendering when the camera returns to the same set at :46
+  // (different shot block, but same sceneId).
+  const sceneIdFor = useCallback((t: number): number | null => {
+    const shots = videoDetails?.sceneIndex?.shots;
+    if (!Array.isArray(shots) || shots.length === 0) return null;
+    for (const shot of shots) {
+      if (t >= shot.tStart && t < shot.tEnd) return shot.sceneId;
+    }
+    return shots[shots.length - 1].sceneId;
+  }, [videoDetails?.sceneIndex]);
+
+  // The placement is bound to the surface's scene. Prefer the perceptual
+  // sceneId (carries across same-scene shot returns); fall back to per-shot
+  // sceneBlock for videos scanned before the scene index existed.
   const placementBlockId = selectedSurface
     ? sceneBlockFor(parseFloat(String((selectedSurface as any).timestamp ?? 0)) || 0)
     : 0;
+  const placementSceneId = selectedSurface
+    ? (typeof (selectedSurface as any).sceneId === "number"
+        ? (selectedSurface as any).sceneId
+        : sceneIdFor(parseFloat(String((selectedSurface as any).timestamp ?? 0)) || 0))
+    : null;
 
   // Fetch dense surface keyframes for accurate motion tracking
   const { data: denseKeyframesData, refetch: refetchKeyframes } = useQuery<{
@@ -1233,14 +1264,24 @@ export default function PlacementPreviewModal({
         }
       }
 
-      // Scene-block gate: during playback, hide the placement when the
-      // current playhead is in a different shot than the surface was
-      // detected in. Without this, the product visually "follows the
-      // camera" across cuts onto whatever surface happens to be on
-      // screen — clearly wrong. Only applies in video-playback mode;
-      // when reviewing a static scene frame the product always shows.
-      const playbackBlockId = useVideo ? sceneBlockFor(videoEl!.currentTime) : placementBlockId;
-      const inOriginalShot = playbackBlockId === placementBlockId;
+      // Scene gate: during playback, hide the placement when the current
+      // playhead is in a different SCENE than the surface was detected in.
+      // Prefer perceptual sceneId (carries across same-scene shot returns
+      // — drop a mug on the host's coffee table at :08, it stays visible
+      // when the camera returns to that shot at :46). Fall back to
+      // per-shot sceneBlock for videos scanned before scene clustering.
+      let inOriginalShot: boolean;
+      if (useVideo && placementSceneId !== null) {
+        const playbackSceneId = sceneIdFor(videoEl!.currentTime);
+        // If both lookups produce a sceneId, gate by sceneId equality.
+        // If playback fell outside the indexed range, fall back to block math.
+        inOriginalShot = playbackSceneId !== null
+          ? playbackSceneId === placementSceneId
+          : sceneBlockFor(videoEl!.currentTime) === placementBlockId;
+      } else {
+        const playbackBlockId = useVideo ? sceneBlockFor(videoEl!.currentTime) : placementBlockId;
+        inOriginalShot = playbackBlockId === placementBlockId;
+      }
 
       // When playback has crossed into a different shot than the surface
       // was placed on, show a small "out of scene" badge in the corner so
@@ -1317,7 +1358,7 @@ export default function PlacementPreviewModal({
     }
 
     animFrameRef.current = requestAnimationFrame(renderFrame);
-  }, [selectedSurface, transform, blend, isVideoMode, motionData, showBoundingBox, sceneBlockFor, placementBlockId]);
+  }, [selectedSurface, transform, blend, isVideoMode, motionData, showBoundingBox, sceneBlockFor, placementBlockId, sceneIdFor, placementSceneId]);
 
   // Start/stop render loop
   useEffect(() => {
@@ -2424,11 +2465,25 @@ export default function PlacementPreviewModal({
                         <button
                           key={surface.id}
                           onClick={() => {
+                            // Same-scene jump: keep the in-memory placement
+                            // so an unsaved drop at :08 still shows on :46.
+                            // The loadExistingPlacement effect will then
+                            // overlay any saved scene_match it finds. If the
+                            // user is jumping to a different scene entirely,
+                            // reset transform/blend to that scene's lighting
+                            // defaults — old placement doesn't apply.
+                            const prevSceneId = (selectedSurface as any)?.sceneId;
+                            const nextSceneId = (surface as any)?.sceneId;
+                            const sameScene =
+                              typeof prevSceneId === "number" &&
+                              typeof nextSceneId === "number" &&
+                              prevSceneId === nextSceneId;
+
                             setSelectedSurface(surface);
-                            // Reset transform for new surface
-                            setTransform({ ...DEFAULT_TRANSFORM });
-                            // Auto-populate blend from lighting data
-                            setBlend(getAutoBlendDefaults(surface));
+                            if (!sameScene) {
+                              setTransform({ ...DEFAULT_TRANSFORM });
+                              setBlend(getAutoBlendDefaults(surface));
+                            }
                           }}
                           className={`relative flex-shrink-0 w-20 h-14 rounded-md overflow-hidden border-2 transition-all ${
                             selectedSurface?.id === surface.id
