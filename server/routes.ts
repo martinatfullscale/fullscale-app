@@ -2845,19 +2845,44 @@ export async function registerRoutes(
     const isOwner = video.userId === req.authUserId || video.userId === req.authEmail;
     if (!isOwner) return res.status(403).json({ error: "Not authorized" });
 
-    // Resolve the scene frame at the surface's timestamp. Frames live in GCS
-    // at public/uploads/frames/<videoId>/frame_<ts>s.jpg.
-    const ts = Math.floor(parseFloat(String(surface.timestamp)));
-    const frameKey = `public/uploads/frames/${surface.videoId}/frame_${ts}s.jpg`;
-    let sceneBuffer: Buffer;
-    try {
-      sceneBuffer = await readFileFromStorage(frameKey);
-    } catch (err: any) {
+    // Resolve the scene frame. Prefer the surface.frameUrl (saved by the
+    // scanner with the EXACT filename it uploaded — e.g. "frame_15s.jpg"
+    // even when timestamp is 14.7s under scene-first sampling). Fall back
+    // to recomputing from timestamp using BOTH Math.round (current scanner)
+    // AND Math.floor (legacy scanner) so old surfaces still work.
+    const tsFloat = parseFloat(String(surface.timestamp));
+    const candidateKeys: string[] = [];
+    if (surface.frameUrl) {
+      // /storage/uploads/frames/91093/frame_15s.jpg → public/uploads/frames/91093/frame_15s.jpg
+      const fromUrl = surface.frameUrl
+        .replace(/^\/storage\//, "public/")
+        .replace(/^\/uploads\//, "public/uploads/");
+      candidateKeys.push(fromUrl);
+    }
+    candidateKeys.push(`public/uploads/frames/${surface.videoId}/frame_${Math.round(tsFloat)}s.jpg`);
+    candidateKeys.push(`public/uploads/frames/${surface.videoId}/frame_${Math.floor(tsFloat)}s.jpg`);
+
+    let sceneBuffer: Buffer | null = null;
+    let usedKey = "";
+    let lastErr: any = null;
+    for (const key of candidateKeys) {
+      try {
+        sceneBuffer = await readFileFromStorage(key);
+        usedKey = key;
+        break;
+      } catch (err: any) {
+        lastErr = err;
+      }
+    }
+    if (!sceneBuffer) {
       return res.status(404).json({
         error: "Scene frame not found in storage",
-        detail: err?.message,
-        frameKey,
+        detail: lastErr?.message,
+        triedKeys: candidateKeys,
       });
+    }
+    if (usedKey !== candidateKeys[0]) {
+      console.log(`[Harmonize] Used fallback frame key: ${usedKey} (first try: ${candidateKeys[0]})`);
     }
 
     // Get frame dimensions for mask building.
@@ -7759,7 +7784,13 @@ export async function registerRoutes(
         }
 
         // Fallback: fuzzy spatial match (same type + nearby center). Used
-        // for surfaces detected before sceneId existed in the schema.
+        // for surfaces detected before sceneId existed. CRITICAL: when
+        // BOTH surfaces have sceneIds and they differ, refuse the match —
+        // a "Table" in scene 0 (host's coffee table) and a "Table" in
+        // scene 1 (guest's side table) at similar normalized centers
+        // were getting matched and product was visually "moving" between
+        // scenes. The scene check above already covers same-scene; this
+        // fallback now only fires when sceneId is truly unknown.
         const tBBX = parseFloat(String(targetSurface.boundingBoxX));
         const tBBY = parseFloat(String(targetSurface.boundingBoxY));
         const tBBW = parseFloat(String(targetSurface.boundingBoxWidth));
@@ -7771,6 +7802,9 @@ export async function registerRoutes(
         for (const p of videoplacements) {
           const pSurface = allSurfaces.find(s => s.id === p.surfaceId);
           if (!pSurface || pSurface.surfaceType.toLowerCase() !== tType) continue;
+          // Hard gate: if both have sceneIds and they differ, never match.
+          const pSceneId = (pSurface as any).sceneId;
+          if (typeof tSceneId === "number" && typeof pSceneId === "number" && tSceneId !== pSceneId) continue;
           const pBBX = parseFloat(String(pSurface.boundingBoxX));
           const pBBY = parseFloat(String(pSurface.boundingBoxY));
           const pBBW = parseFloat(String(pSurface.boundingBoxWidth));

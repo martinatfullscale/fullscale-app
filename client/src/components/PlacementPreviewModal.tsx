@@ -2465,13 +2465,15 @@ export default function PlacementPreviewModal({
                         <button
                           key={surface.id}
                           onClick={() => {
-                            // Same-scene jump: keep the in-memory placement
-                            // so an unsaved drop at :08 still shows on :46.
-                            // The loadExistingPlacement effect will then
-                            // overlay any saved scene_match it finds. If the
-                            // user is jumping to a different scene entirely,
-                            // reset transform/blend to that scene's lighting
-                            // defaults — old placement doesn't apply.
+                            // Same-scene jump: keep product + transform so
+                            // an unsaved drop at :08 still shows on :46.
+                            // Different-scene jump: clear EVERYTHING — the
+                            // user is now editing a placement in a different
+                            // physical scene, the old product/transform/blend
+                            // don't apply. Without this clear the product
+                            // visually re-renders on the new surface's bbox
+                            // (looks like the product "moved" — the
+                            // user's exact complaint).
                             const prevSceneId = (selectedSurface as any)?.sceneId;
                             const nextSceneId = (surface as any)?.sceneId;
                             const sameScene =
@@ -2481,9 +2483,18 @@ export default function PlacementPreviewModal({
 
                             setSelectedSurface(surface);
                             if (!sameScene) {
+                              setProductImage(null);
+                              setProductFile(null);
+                              setSelectedCatalogProduct(null);
+                              productImgRef.current = null;
                               setTransform({ ...DEFAULT_TRANSFORM });
                               setBlend(getAutoBlendDefaults(surface));
                             }
+                            // The loadExistingPlacement effect runs next
+                            // (driven by selectedSurface.id change) and
+                            // restores any saved scene_match for the new
+                            // surface — so a previously SAVED placement on
+                            // this scene reloads automatically.
                           }}
                           className={`relative flex-shrink-0 w-20 h-14 rounded-md overflow-hidden border-2 transition-all ${
                             selectedSurface?.id === surface.id
@@ -2496,6 +2507,29 @@ export default function PlacementPreviewModal({
                             alt={`Surface ${surface.surfaceType}`}
                             className="w-full h-full object-cover"
                           />
+                          {/* Scene indicator dot — color cycles per sceneId
+                              so the user can see at a glance which thumbs
+                              belong to the same physical scene. Click into
+                              same-color dots = placement persists. Click
+                              into a different color = product clears (the
+                              "different scene" rule the data layer
+                              enforces). */}
+                          {typeof (surface as any).sceneId === "number" && (
+                            <span
+                              className="absolute top-1 left-1 w-2.5 h-2.5 rounded-full ring-1 ring-black/60"
+                              style={{
+                                backgroundColor: [
+                                  "#a78bfa", // purple — scene 0
+                                  "#34d399", // green  — scene 1
+                                  "#fbbf24", // amber  — scene 2
+                                  "#f87171", // red    — scene 3
+                                  "#60a5fa", // blue   — scene 4
+                                  "#f472b6", // pink   — scene 5
+                                ][((surface as any).sceneId as number) % 6],
+                              }}
+                              title={`Scene ${(surface as any).sceneId}`}
+                            />
+                          )}
                           <span className="absolute bottom-0 left-0 right-0 bg-black/70 text-[8px] text-white text-center py-0.5">
                             {surface.surfaceType}
                           </span>
