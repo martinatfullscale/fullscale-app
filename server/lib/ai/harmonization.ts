@@ -822,53 +822,67 @@ async function applyProceduralHarmonization(
   console.log(`[Harmonize/proc] Scene atmosphere: rgb(${meanR.toFixed(0)},${meanG.toFixed(0)},${meanB.toFixed(0)}), brightness=${sceneBrightness.toFixed(2)}`);
 
   // ── Step 4: adjust product to match scene LIGHTING (not scene COLOR) ──
-  // Hard rule: brand colors must stay recognizable. So no full tint — that
-  // would shift the product's intrinsic palette. We do TWO mild adjustments:
-  //   - Brightness: stronger swing (was ±15%, now ±30%) so dim scenes
-  //     visibly dim the product instead of leaving it floating bright on
-  //     a dark background.
-  //   - Hue/temperature pull: 8% blend toward the scene's color cast.
-  //     Mild enough that brand colors stay recognizable, strong enough
-  //     that the eye reads "this product is lit by this room" instead
-  //     of "sticker pasted on top."
-  const brightnessFactor = clamp(0.70 + sceneBrightness * 0.50, 0.70, 1.20);
-  const productAdjusted = await sharp(productResized)
-    .modulate({ brightness: brightnessFactor })
-    .png()
-    .toBuffer();
-  console.log(`[Harmonize/proc] Brightness adjustment: ${brightnessFactor.toFixed(2)}× (saturation + hue preserved)`);
+  // User feedback: "flat overlay looks better than harmonized." The prior
+  // pipeline was being too aggressive — dimming bright products to match
+  // dim scenes when the product image already had good native lighting.
+  //
+  // New conservative rule: ONLY adjust brightness if the scene-to-product
+  // delta is large. Skip adjustment when scene brightness is already close
+  // to the product's natural luminance. Cap the maximum change at ±15%
+  // (was ±30%) so adjustments are subtle.
+  const productStats = await sharp(productResized).stats();
+  const prodMeanR = productStats.channels[0]?.mean ?? 128;
+  const prodMeanG = productStats.channels[1]?.mean ?? 128;
+  const prodMeanB = productStats.channels[2]?.mean ?? 128;
+  const productBrightness = (prodMeanR + prodMeanG + prodMeanB) / 3 / 255;
+  const brightnessDelta = sceneBrightness - productBrightness;
 
-  // ── Step 5: scene color cast — 8% pull toward scene atmosphere ──
-  // Build an RGBA tint layer the size of the product and overlay-blend it
-  // at low opacity. The product silhouette gates it via dest-in so we
-  // don't bleed onto background pixels.
-  const tintAlpha = 0.08; // 8% — visible without killing brand colors
+  // Only nudge brightness if the delta exceeds 15% — otherwise leave it.
+  let brightnessFactor = 1.0;
+  if (Math.abs(brightnessDelta) > 0.15) {
+    // Half-pull toward scene brightness, capped at ±15%.
+    brightnessFactor = clamp(1.0 + brightnessDelta * 0.5, 0.85, 1.15);
+  }
+  const productAdjusted = brightnessFactor !== 1.0
+    ? await sharp(productResized).modulate({ brightness: brightnessFactor }).png().toBuffer()
+    : productResized;
+  console.log(`[Harmonize/proc] Product brightness=${productBrightness.toFixed(2)}, scene=${sceneBrightness.toFixed(2)}, delta=${brightnessDelta.toFixed(2)} → factor=${brightnessFactor.toFixed(2)}×${brightnessFactor === 1.0 ? " (skipped — within tolerance)" : ""}`);
+
+  // ── Step 5: scene color cast — DISABLED by default ──
+  // The 8% tint was visible enough to make products look "off-color"
+  // even when the brightness match was disabled. User comparison
+  // showed flat overlay looking better than harmonized — the cast
+  // was the main culprit. Set HARMONIZE_ENABLE_COLOR_CAST=true to
+  // re-enable for products that genuinely need it (very saturated
+  // products on neutral scenes, or vice versa).
   let castBuf: Buffer = Buffer.alloc(0);
-  try {
-    const productAlpha = await sharp(productAdjusted)
-      .ensureAlpha()
-      .extractChannel("alpha")
-      .toBuffer();
-    const tintLayer = await sharp({
-      create: {
-        width: finalW,
-        height: finalH,
-        channels: 4,
-        background: {
-          r: Math.round(meanR),
-          g: Math.round(meanG),
-          b: Math.round(meanB),
-          alpha: tintAlpha,
+  if (process.env.HARMONIZE_ENABLE_COLOR_CAST === "true") {
+    const tintAlpha = 0.05; // even more conservative when opt-in
+    try {
+      const productAlpha = await sharp(productAdjusted)
+        .ensureAlpha()
+        .extractChannel("alpha")
+        .toBuffer();
+      castBuf = await sharp({
+        create: {
+          width: finalW,
+          height: finalH,
+          channels: 4,
+          background: {
+            r: Math.round(meanR),
+            g: Math.round(meanG),
+            b: Math.round(meanB),
+            alpha: tintAlpha,
+          },
         },
-      },
-    })
-      .composite([{ input: productAlpha, blend: "dest-in" }])
-      .png()
-      .toBuffer();
-    castBuf = tintLayer;
-    console.log(`[Harmonize/proc] Scene cast layer: rgb(${Math.round(meanR)},${Math.round(meanG)},${Math.round(meanB)}) @ ${(tintAlpha*100).toFixed(0)}%`);
-  } catch (err) {
-    console.warn(`[Harmonize/proc] Scene cast build failed (continuing without):`, (err as any)?.message);
+      })
+        .composite([{ input: productAlpha, blend: "dest-in" }])
+        .png()
+        .toBuffer();
+      console.log(`[Harmonize/proc] Scene cast layer (opt-in): rgb(${Math.round(meanR)},${Math.round(meanG)},${Math.round(meanB)}) @ ${(tintAlpha*100).toFixed(0)}%`);
+    } catch (err) {
+      console.warn(`[Harmonize/proc] Scene cast build failed (continuing without):`, (err as any)?.message);
+    }
   }
 
   // ── Step 6: build a stronger contact shadow underneath the product ──
@@ -903,7 +917,9 @@ async function applyProceduralHarmonization(
     softShadowBuf = await sharp({
       create: {
         width: paddedW, height: paddedH, channels: 4,
-        background: { r: 0, g: 0, b: 0, alpha: 0.45 },
+        // Was 0.45 — too dark, made the product look like it was
+        // floating in a dark cloud. 0.20 is enough to anchor it.
+        background: { r: 0, g: 0, b: 0, alpha: 0.20 },
       },
     })
       .composite([{ input: alphaMaskSoft, blend: "dest-in" }])
@@ -922,7 +938,8 @@ async function applyProceduralHarmonization(
     tightShadowBuf = await sharp({
       create: {
         width: paddedW, height: paddedH, channels: 4,
-        background: { r: 0, g: 0, b: 0, alpha: 0.65 },
+        // Was 0.65 — too dark for a contact shadow.
+        background: { r: 0, g: 0, b: 0, alpha: 0.35 },
       },
     })
       .composite([{ input: alphaMaskTight, blend: "dest-in" }])
@@ -1016,17 +1033,19 @@ export async function harmonizeProductIntoScene(
       );
 
       if (!editedCropUrl) {
-        // LOUD log so the deploy logs make this obvious. The user reported
-        // a harmonize result that looked procedural and asked why generative
-        // didn't run — they couldn't tell because the response was still
-        // success=true. Server log now flags the fallback explicitly; the
-        // response carries mode="procedural" + fellBackFromKontext=true.
-        console.warn(`[Harmonize/generative] ⚠️  FLUX Kontext FAILED — falling back to procedural composite. Check FAL_KEY and the [Harmonize/kontext] error line above.`);
-        const { result, flatComposite } = await applyProceduralHarmonization(
+        // LOUD log so the deploy logs make this obvious. User feedback:
+        // "the flat overlay looks better than the harmonized" — meaning
+        // even the procedural fallback was making things WORSE than just
+        // showing the bare composite. New fallback: return the FLAT
+        // composite (product pasted at bbox, no procedural processing)
+        // so a Kontext failure produces no degradation. Procedural is
+        // still available via mode="procedural" explicitly.
+        console.warn(`[Harmonize/generative] ⚠️  FLUX Kontext FAILED — returning FLAT composite (no procedural processing). Check FAL_KEY and the [Harmonize/kontext] error line above.`);
+        const { flatComposite } = await applyProceduralHarmonization(
           sceneBuf, productBuf, input.bbox, input.frameDimensions,
         );
         const [imageUrl, flatCompositeUrl] = await Promise.all([
-          uploadBuffer(result, "harmonized-fallback.png", "image/png"),
+          uploadBuffer(flatComposite, "flat-fallback.png", "image/png"),
           uploadBuffer(flatComposite, "flat-composite.png", "image/png"),
         ]);
         return {
@@ -1034,8 +1053,8 @@ export async function harmonizeProductIntoScene(
           imageUrl,
           flatCompositeUrl,
           elapsedMs: Date.now() - startedAt,
-          mode: "procedural",
-          error: "FLUX Kontext failed — fell back to procedural composite. See server logs for the underlying error.",
+          mode: "procedural", // Kept as procedural for client compat
+          error: "FLUX Kontext failed — returning flat composite (no processing). See server logs for the underlying error.",
         };
       }
 
