@@ -2948,7 +2948,15 @@ export async function registerRoutes(
       flatCompositeUrl: result.flatCompositeUrl,
       trellisRenderUrl: result.trellisRenderUrl,
       meshUrl: result.meshUrl,
+      kontextOutputUrl: result.kontextOutputUrl,
+      // requestedMode is what the client asked for; mode is what actually
+      // ran. When the user requests "generative" but Kontext fails, mode
+      // comes back "procedural" — the client should surface that so the
+      // user knows the better path didn't execute.
+      requestedMode: mode,
       mode: result.mode,
+      fellBack: mode !== result.mode,
+      warning: result.error,
       elapsedMs: result.elapsedMs,
       surface: {
         id: surface.id,

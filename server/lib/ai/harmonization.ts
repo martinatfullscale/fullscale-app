@@ -272,7 +272,16 @@ async function runFluxKontext(
     console.log(`[Harmonize/kontext] Edit complete in ${elapsed}ms → ${outputUrl}`);
     return outputUrl;
   } catch (err: any) {
-    console.warn(`[Harmonize/kontext] Failed (${err?.message || err})`);
+    // Verbose error logging so we can pin down why Kontext is failing.
+    // Common causes: wrong endpoint slug, FAL_KEY missing, account doesn't
+    // have access to flux-pro, payload shape mismatch. fal errors carry
+    // status + body that's much more useful than just .message.
+    const errMessage = err?.message || String(err);
+    const errStatus = err?.status || err?.response?.status;
+    const errBody = err?.body || err?.response?.body || err?.response?.data;
+    console.error(`[Harmonize/kontext] ❌ FAILED: ${errMessage}`);
+    if (errStatus) console.error(`[Harmonize/kontext] HTTP status: ${errStatus}`);
+    if (errBody) console.error(`[Harmonize/kontext] Response body: ${typeof errBody === "string" ? errBody : JSON.stringify(errBody)}`);
     return null;
   }
 }
@@ -867,18 +876,35 @@ async function applyProceduralHarmonization(
   // shadow so the product reads as "sitting on" the surface. Two layers:
   //   - Big soft shadow underneath (anchors the object)
   //   - Tighter dark shadow at the contact edge (grounds it)
+  //
+  // CRITICAL: extend the alpha canvas BEFORE blurring. Without padding the
+  // blur kernel hits the buffer edge and clips, producing a hard alpha
+  // boundary around the bbox — exactly the "dark rectangle around the
+  // product" the user reported in the harmonized vs flat comparison.
+  // Padding by 2x the blur radius gives the kernel room to taper to 0.
   const softShadowSize = Math.max(16, Math.round(Math.min(finalW, finalH) * 0.10));
   const tightShadowSize = Math.max(4, Math.round(Math.min(finalW, finalH) * 0.02));
+  const softPad = softShadowSize * 2;
+  const tightPad = tightShadowSize * 2;
+  const paddedW = finalW + softPad * 2;
+  const paddedH = finalH + softPad * 2;
   let softShadowBuf: Buffer = Buffer.alloc(0);
   let tightShadowBuf: Buffer = Buffer.alloc(0);
   try {
     const alphaMaskSoft = await sharp(productAdjusted)
       .ensureAlpha()
       .extractChannel("alpha")
+      .extend({
+        top: softPad, bottom: softPad, left: softPad, right: softPad,
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
+      })
       .blur(softShadowSize)
       .toBuffer();
     softShadowBuf = await sharp({
-      create: { width: finalW, height: finalH, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0.45 } },
+      create: {
+        width: paddedW, height: paddedH, channels: 4,
+        background: { r: 0, g: 0, b: 0, alpha: 0.45 },
+      },
     })
       .composite([{ input: alphaMaskSoft, blend: "dest-in" }])
       .png()
@@ -887,10 +913,17 @@ async function applyProceduralHarmonization(
     const alphaMaskTight = await sharp(productAdjusted)
       .ensureAlpha()
       .extractChannel("alpha")
+      .extend({
+        top: softPad, bottom: softPad, left: softPad, right: softPad,
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
+      })
       .blur(tightShadowSize)
       .toBuffer();
     tightShadowBuf = await sharp({
-      create: { width: finalW, height: finalH, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0.65 } },
+      create: {
+        width: paddedW, height: paddedH, channels: 4,
+        background: { r: 0, g: 0, b: 0, alpha: 0.65 },
+      },
     })
       .composite([{ input: alphaMaskTight, blend: "dest-in" }])
       .png()
@@ -901,14 +934,27 @@ async function applyProceduralHarmonization(
 
   // ── Step 7: composite layers in order: soft shadow, tight shadow,
   //    product, scene cast (so cast sits ON the product, not below it). ──
+  // Shadows now live on a PADDED canvas (paddedW × paddedH). To place
+  // them at the same absolute pixel position as the product, we shift
+  // the composite offset back by softPad pixels.
   const softShadowOffsetY = Math.max(8, Math.round(finalH * 0.06));
   const tightShadowOffsetY = Math.max(2, Math.round(finalH * 0.015));
   const composites: Array<{ input: Buffer; left: number; top: number; blend?: any }> = [];
   if (softShadowBuf.length > 0) {
-    composites.push({ input: softShadowBuf, left: offsetX + 4, top: offsetY + softShadowOffsetY, blend: "over" });
+    composites.push({
+      input: softShadowBuf,
+      left: offsetX - softPad + 4,
+      top: offsetY - softPad + softShadowOffsetY,
+      blend: "over",
+    });
   }
   if (tightShadowBuf.length > 0) {
-    composites.push({ input: tightShadowBuf, left: offsetX + 1, top: offsetY + tightShadowOffsetY, blend: "over" });
+    composites.push({
+      input: tightShadowBuf,
+      left: offsetX - softPad + 1,
+      top: offsetY - softPad + tightShadowOffsetY,
+      blend: "over",
+    });
   }
   composites.push({ input: productAdjusted, left: offsetX, top: offsetY });
   if (castBuf.length > 0) {
@@ -970,7 +1016,12 @@ export async function harmonizeProductIntoScene(
       );
 
       if (!editedCropUrl) {
-        console.warn(`[Harmonize/generative] Kontext returned nothing — falling back to procedural`);
+        // LOUD log so the deploy logs make this obvious. The user reported
+        // a harmonize result that looked procedural and asked why generative
+        // didn't run — they couldn't tell because the response was still
+        // success=true. Server log now flags the fallback explicitly; the
+        // response carries mode="procedural" + fellBackFromKontext=true.
+        console.warn(`[Harmonize/generative] ⚠️  FLUX Kontext FAILED — falling back to procedural composite. Check FAL_KEY and the [Harmonize/kontext] error line above.`);
         const { result, flatComposite } = await applyProceduralHarmonization(
           sceneBuf, productBuf, input.bbox, input.frameDimensions,
         );
@@ -984,6 +1035,7 @@ export async function harmonizeProductIntoScene(
           flatCompositeUrl,
           elapsedMs: Date.now() - startedAt,
           mode: "procedural",
+          error: "FLUX Kontext failed — fell back to procedural composite. See server logs for the underlying error.",
         };
       }
 

@@ -2206,11 +2206,25 @@ export default function PlacementPreviewModal({
                           setHarmonizeFlatUrl(data.flatCompositeUrl || null);
                           setHarmonizeResultUrl(data.imageUrl || null);
                           // Seed the live overlay AND enable it so the canvas
-                          // shows the harmonized result immediately. The user
-                          // can disable via the "Remove Harmonize" button to
-                          // adjust placement, then re-harmonize.
+                          // shows the harmonized result immediately.
                           setLiveHarmonizedUrl(data.imageUrl || null);
                           if (data.imageUrl) setHarmonizeEnabled(true);
+                          // Surface fallback warnings — the user asked for
+                          // generative but Kontext failed; toast lets them
+                          // know the better path didn't run and what they
+                          // see is the procedural fallback.
+                          if (data.fellBack && data.warning) {
+                            toast({
+                              title: "Fell back to procedural",
+                              description: data.warning,
+                              variant: "destructive",
+                            });
+                          } else if (data.mode === "generative") {
+                            toast({
+                              title: "Generative harmonize complete",
+                              description: `FLUX Kontext, ${(data.elapsedMs / 1000).toFixed(1)}s`,
+                            });
+                          }
                         } catch (err: any) {
                           setHarmonizeError(err.message || "Harmonization failed");
                         } finally {
