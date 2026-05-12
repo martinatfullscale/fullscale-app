@@ -1327,15 +1327,17 @@ export default function PlacementPreviewModal({
 
       // Scene gate: during playback, hide the placement when the current
       // playhead is in a different SCENE than the surface was detected in.
-      // Prefer perceptual sceneId (carries across same-scene shot returns).
-      // CRITICAL: when the placement HAS a sceneId but sceneIdFor returns
-      // null (sceneIndex query still loading or transient miss), default
-      // to SHOWING the product — the prior fall-through to per-shot
-      // block was incorrectly hiding the product mid-playback because
-      // shot blocks change at every cut even within the same scene.
+      // PREDICTIVE LOOK-AHEAD: peek 150ms ahead and gate on the FUTURE
+      // playhead's sceneId. This makes the 200ms fade-out start BEFORE
+      // the actual cut, so the product is fully invisible by the time
+      // the cut paints. Was previously gating on currentTime only, which
+      // means the fade started AT the cut and the product remained
+      // visible for ~100ms past the cut while easing to opacity 0.
+      const LOOK_AHEAD_MS = 150;
       let inOriginalShot: boolean;
       if (useVideo && placementSceneId !== null) {
-        const playbackSceneId = sceneIdFor(videoEl!.currentTime);
+        const lookAheadT = videoEl!.currentTime + LOOK_AHEAD_MS / 1000;
+        const playbackSceneId = sceneIdFor(lookAheadT);
         if (playbackSceneId !== null) {
           inOriginalShot = playbackSceneId === placementSceneId;
         } else {
@@ -1344,7 +1346,9 @@ export default function PlacementPreviewModal({
           inOriginalShot = true;
         }
       } else {
-        const playbackBlockId = useVideo ? sceneBlockFor(videoEl!.currentTime) : placementBlockId;
+        // Same predictive look-ahead for the legacy shot-block path.
+        const tForGate = useVideo ? videoEl!.currentTime + LOOK_AHEAD_MS / 1000 : videoEl!.currentTime;
+        const playbackBlockId = useVideo ? sceneBlockFor(tForGate) : placementBlockId;
         inOriginalShot = playbackBlockId === placementBlockId;
       }
 
@@ -2186,7 +2190,13 @@ export default function PlacementPreviewModal({
                               surfaceId: selectedSurface.id,
                               productImageUrl: productImage,
                               productPlacementBbox,
-                              mode: "procedural",
+                              // Use FLUX Kontext generative harmonization —
+                              // the model SEES the scene context (lighting,
+                              // perspective, depth) and generates pixels
+                              // that look native. ~15-30s, ~$0.05/call.
+                              // Falls back to procedural inside the server
+                              // if Kontext fails for any reason.
+                              mode: "generative",
                             }),
                           });
                           const data = await res.json();

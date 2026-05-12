@@ -157,6 +157,115 @@ async function extractKeyframe(
   });
 }
 
+// Refine an ffmpeg-detected cut to the exact frame of visual discontinuity.
+// ffmpeg's scene filter at threshold=0.3 triggers AFTER the histogram diff
+// exceeds threshold, which means the reported timestamp is 1-2 frames late.
+// The user's symptom: product visible briefly past the cut, then disappears.
+//
+// Algorithm: extract a dense burst of frames around the approximate cut
+// (default ±400ms at 60fps = ~48 frames). Compute dHash for each, find the
+// adjacent pair with maximum hamming distance — that's where the actual
+// visual change happens. Return its timestamp.
+//
+// Cost: ~48 ffmpeg+dHash ops per cut. With CONCURRENCY=8 → ~6s wall time
+// per cut. For a 60-cut podcast that's ~6 min wall total, but parallelized
+// across cuts the total stays bounded. Run AFTER the initial cut detect
+// and BEFORE sceneIndex clustering.
+async function refineCutBoundary(
+  videoPath: string,
+  approxT: number,
+  windowMs: number = 400,
+): Promise<number> {
+  const sampleHz = 60;
+  const halfWindow = windowMs / 1000;
+  const startT = Math.max(0, approxT - halfWindow);
+  const endT = approxT + halfWindow;
+  const frameCount = Math.round((endT - startT) * sampleHz);
+  if (frameCount < 4) return approxT;
+
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "cut-refine-"));
+  const burstPattern = path.join(tempDir, "f_%04d.jpg");
+
+  // Extract a dense burst via fps filter. One ffmpeg call → many frames.
+  // Much faster than calling extractKeyframe 48 times.
+  const ok = await new Promise<boolean>((resolve) => {
+    const ff = spawn("ffmpeg", [
+      "-nostdin",
+      "-y",
+      "-loglevel", "error",
+      "-ss", String(startT),
+      "-to", String(endT),
+      "-i", videoPath,
+      "-vf", `fps=${sampleHz},scale=160:-1`,
+      "-q:v", "5",
+      burstPattern,
+    ]);
+    let stderr = "";
+    ff.stderr.on("data", (d) => { stderr += d.toString(); });
+    ff.on("close", (code) => {
+      if (code === 0) resolve(true);
+      else {
+        console.warn(`[SceneIndex/refine] burst extract failed at t=${approxT}: ${stderr.slice(-150)}`);
+        resolve(false);
+      }
+    });
+    ff.on("error", () => resolve(false));
+  });
+
+  if (!ok) {
+    try { fs.rmdirSync(tempDir, { recursive: true } as any); } catch {}
+    return approxT;
+  }
+
+  // List frames, hash each, find adjacent pair with max hamming distance.
+  try {
+    const files = fs.readdirSync(tempDir)
+      .filter((f) => f.endsWith(".jpg"))
+      .sort()
+      .map((f) => path.join(tempDir, f));
+
+    if (files.length < 4) return approxT;
+
+    const hashes: string[] = [];
+    for (const f of files) {
+      try {
+        hashes.push(await computeDHash(f));
+      } catch {
+        hashes.push("");
+      }
+    }
+
+    let maxDist = 0;
+    let cutIdx = 0;
+    for (let i = 1; i < hashes.length; i++) {
+      if (!hashes[i] || !hashes[i - 1]) continue;
+      const d = hammingDistance(hashes[i - 1], hashes[i]);
+      if (d > maxDist) {
+        maxDist = d;
+        cutIdx = i;
+      }
+    }
+
+    // Convert burst index back to absolute timestamp. ffmpeg's fps filter
+    // outputs frame i at startT + i / fps (roughly — there's a half-frame
+    // bias from the resampler that we ignore since we're going for ±1 frame).
+    const refinedT = startT + cutIdx / sampleHz;
+
+    console.log(
+      `[SceneIndex/refine] cut ${approxT.toFixed(3)}s → ${refinedT.toFixed(3)}s ` +
+      `(burst dist=${maxDist}, idx=${cutIdx}/${hashes.length})`,
+    );
+    return refinedT;
+  } finally {
+    try {
+      for (const f of fs.readdirSync(tempDir)) {
+        try { fs.unlinkSync(path.join(tempDir, f)); } catch {}
+      }
+      fs.rmdirSync(tempDir);
+    } catch {}
+  }
+}
+
 // Probe video duration via ffprobe — needed to compute the last shot's tEnd.
 async function probeDuration(videoPath: string): Promise<number> {
   return new Promise((resolve) => {
@@ -198,8 +307,28 @@ export async function buildSceneIndex(
     return null;
   }
 
+  // Refine each ffmpeg-detected cut to the exact frame of visual change.
+  // Run in waves of CONCURRENCY (same as the hashing pass below) to keep
+  // wall time bounded. Skipped if cuts is empty / very short video.
+  let refinedCuts = cuts.filter((t) => t > 0 && t < duration);
+  if (refinedCuts.length > 0 && refinedCuts.length < 200) {
+    console.log(`[SceneIndex] Refining ${refinedCuts.length} cut boundaries with frame-accurate sampling`);
+    const REFINE_CONCURRENCY = 8;
+    const refined: number[] = new Array(refinedCuts.length);
+    for (let i = 0; i < refinedCuts.length; i += REFINE_CONCURRENCY) {
+      const wave = refinedCuts.slice(i, i + REFINE_CONCURRENCY);
+      const results = await Promise.all(
+        wave.map((t) => refineCutBoundary(videoPath, t)),
+      );
+      for (let j = 0; j < results.length; j++) {
+        refined[i + j] = results[j];
+      }
+    }
+    refinedCuts = refined.sort((a, b) => a - b);
+  }
+
   // Build shot list: [0, cuts[0]), [cuts[0], cuts[1]), ..., [cuts[N-1], duration)
-  const shotStarts = [0, ...cuts.filter((t) => t > 0 && t < duration)];
+  const shotStarts = [0, ...refinedCuts];
   const shots: Array<{ shotIdx: number; tStart: number; tEnd: number }> = [];
   for (let i = 0; i < shotStarts.length; i++) {
     const tStart = shotStarts[i];
@@ -277,7 +406,11 @@ export async function buildSceneIndex(
     console.log(`[SceneIndex]   Scene ${sid}: ${shotList.length} shot(s) [${shotList.slice(0, 8).join(", ")}${shotList.length > 8 ? " ..." : ""}]`);
   }
 
-  return { shots: indexedShots, sceneCount, cuts };
+  // Return REFINED cuts so downstream consumers (placement render filter,
+  // surface clustering) use the frame-accurate boundaries instead of
+  // ffmpeg's approximate ones. Was returning the input `cuts` previously —
+  // that's why the user saw products bleed past cuts before disappearing.
+  return { shots: indexedShots, sceneCount, cuts: refinedCuts };
 }
 
 // Look up the sceneId covering a given video timestamp. Returns 0 if no

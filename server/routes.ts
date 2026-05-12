@@ -2913,10 +2913,17 @@ export async function registerRoutes(
     };
     console.log(`[Harmonize] bbox source: ${productPlacementBbox ? "client-supplied (transform-aware)" : "surface fallback"}`);
 
-    // mode: "procedural" (fast, default) or "ai-3d" (TRELLIS 3D mesh +
-    // procedural lighting). Client sends mode=ai-3d when the user clicks
-    // the new "3D Harmonize" button.
-    const mode = (req.body?.mode === "ai-3d" || req.body?.mode === "ai") ? "ai-3d" : "procedural";
+    // mode: "generative" (FLUX Kontext, default — analyzes scene + product
+    // and generates native-looking pixels), "ai-3d" (TRELLIS + IC-Light),
+    // or "procedural" (legacy sharp-only). Client typically sends
+    // "generative" for the main Harmonize button now.
+    const requestedMode = req.body?.mode;
+    const mode: "generative" | "ai-3d" | "procedural" =
+      requestedMode === "generative"
+        ? "generative"
+        : requestedMode === "ai-3d" || requestedMode === "ai"
+          ? "ai-3d"
+          : "procedural";
 
     const result = await harmonizeProductIntoScene({
       sceneImage: sceneBuffer,
@@ -2926,7 +2933,11 @@ export async function registerRoutes(
       prompt,
       mode,
       cameraAngle: (surface as any).cameraAngle ?? undefined,
-    });
+      // Pass surfaceType so Kontext's prompt can reference it
+      // ("place product on the coffee table" reads better than "place
+      // product on the surface").
+      surfaceType: surface.surfaceType,
+    } as any);
 
     if (!result.success) {
       return res.status(502).json({ success: false, error: result.error, elapsedMs: result.elapsedMs });
@@ -4056,7 +4067,17 @@ export async function registerRoutes(
   // the resulting TCP backpressure froze the browser upload progress.
   app.post("/api/upload", isFlexibleAuthenticated, async (req: any, res) => {
     const uploadStartedAt = Date.now();
+    // Phase timestamps for end-to-end timing diagnostics. User has been
+    // reporting "upload takes forever on small files" — these markers let
+    // us pin down where time is actually going (network in, GCS out,
+    // DB insert, or just the polling on the client). t0 = request hit.
+    const phaseLog = (phase: string) => {
+      const elapsed = ((Date.now() - uploadStartedAt) / 1000).toFixed(2);
+      console.log(`[UPLOAD] @ ${elapsed}s — ${phase}`);
+    };
+    phaseLog("request received");
     console.log(`[UPLOAD] User: ${req.authEmail || req.googleUser?.email}`);
+    console.log(`[UPLOAD] Content-Length: ${req.headers["content-length"] || "unknown"} bytes`);
     const userId = req.authEmail || req.googleUser?.email;
 
     let Busboy: any;
@@ -4104,22 +4125,31 @@ export async function registerRoutes(
 
       console.log(`[UPLOAD] File: ${originalName} (mime: ${mimeType}) → ${objectKey}`);
 
-      // Diagnostic logging — emit a line every 25MB received from busboy, so
-      // when an upload hangs we can tell whether it's the inbound parse or
-      // the outbound GCS write that's stuck.
+      // Diagnostic logging — every 5MB for small files, every 25MB for
+      // big ones, plus the first byte marker. Small-file uploads need
+      // visibility too (the "upload takes forever on small video" report
+      // came from <30MB files where the prior 25MB-only logging was
+      // effectively silent).
       let lastLoggedMB = 0;
       let lastDataAt = Date.now();
+      let firstByteAt: number | null = null;
+      const LOG_INTERVAL_MB = 5;
       fileStream.on("data", (chunk: Buffer) => {
         bytesReceived += chunk.length;
         lastDataAt = Date.now();
+        if (firstByteAt === null) {
+          firstByteAt = Date.now();
+          phaseLog(`first byte received (${chunk.length} bytes)`);
+        }
         const currentMB = Math.floor(bytesReceived / (1024 * 1024));
-        if (currentMB - lastLoggedMB >= 25) {
-          console.log(`[UPLOAD] busboy received ${currentMB} MB (${((bytesReceived / 1024 / 1024) / ((Date.now() - uploadStartedAt) / 1000)).toFixed(1)} MB/s)`);
+        if (currentMB - lastLoggedMB >= LOG_INTERVAL_MB) {
+          const sinceFirstByte = ((Date.now() - firstByteAt) / 1000) || 0.001;
+          console.log(`[UPLOAD] busboy received ${currentMB} MB (${((bytesReceived / 1024 / 1024) / sinceFirstByte).toFixed(1)} MB/s in-stream)`);
           lastLoggedMB = currentMB;
         }
       });
       fileStream.on("end", () => {
-        console.log(`[UPLOAD] busboy file stream ENDED at ${(bytesReceived / 1024 / 1024).toFixed(2)} MB`);
+        phaseLog(`busboy file stream ENDED at ${(bytesReceived / 1024 / 1024).toFixed(2)} MB`);
       });
       fileStream.on("error", (err: any) => {
         console.error(`[UPLOAD] busboy file stream ERROR:`, err?.message || err);
@@ -4149,7 +4179,8 @@ export async function registerRoutes(
         storageUrl => {
           clearInterval(watchdog);
           const elapsed = (Date.now() - uploadStartedAt) / 1000;
-          console.log(`[UPLOAD] Streamed to Object Storage: ${storageUrl} (${(bytesReceived / 1024 / 1024).toFixed(2)} MB in ${elapsed.toFixed(1)}s = ${((bytesReceived / 1024 / 1024) / elapsed).toFixed(1)} MB/s)`);
+          phaseLog(`GCS write complete (${(bytesReceived / 1024 / 1024).toFixed(2)} MB)`);
+          console.log(`[UPLOAD] Streamed to Object Storage: ${storageUrl} — ${((bytesReceived / 1024 / 1024) / elapsed).toFixed(1)} MB/s overall`);
           uploadResult = { storageUrl, objectKey, filename, size: bytesReceived };
         },
         err => {
@@ -4212,10 +4243,12 @@ export async function registerRoutes(
           filePath: storageUrl,
         });
 
+        phaseLog(`DB insert complete, video.id=${video.id}`);
         console.log(`[UPLOAD] Video inserted with ID: ${video.id} (${(size / 1024 / 1024).toFixed(2)} MB)`);
 
         // Reply to the client BEFORE spinning background jobs so the upload
         // modal closes promptly even if the scan/editorial pipeline is slow.
+        phaseLog(`response sent — upload phase done (${(size / 1024 / 1024).toFixed(2)} MB)`);
         settle(() => res.json({
           success: true,
           video: {

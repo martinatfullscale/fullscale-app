@@ -2678,8 +2678,17 @@ async function processVideoScanInner(
     try {
       sceneIndex = await buildSceneIndex(videoPath, sceneCuts);
       if (sceneIndex) {
-        await storage.updateVideoIndex(videoId, { sceneIndex: sceneIndex as any });
-        console.log(`[Scanner V2] Persisted scene index: ${sceneIndex.sceneCount} unique scene(s) across ${sceneIndex.shots.length} shot(s)`);
+        // The scene index build refines the ffmpeg cuts to frame-accurate
+        // timestamps. Persist the REFINED cuts to sceneBoundaries so the
+        // placement render filter (which reads videoIndex.sceneBoundaries)
+        // gates on the same exact timestamps the scanner used. Without this
+        // overwrite, sceneBoundaries holds the raw 1-2-frames-late ffmpeg
+        // values and products bleed past cuts before the filter catches up.
+        await storage.updateVideoIndex(videoId, {
+          sceneIndex: sceneIndex as any,
+          sceneBoundaries: sceneIndex.cuts as any,
+        });
+        console.log(`[Scanner V2] Persisted scene index: ${sceneIndex.sceneCount} unique scene(s) across ${sceneIndex.shots.length} shot(s); refined ${sceneIndex.cuts.length} cuts`);
       }
     } catch (sidxErr: any) {
       console.warn(`[Scanner V2] Scene index build failed (non-fatal):`, sidxErr?.message || sidxErr);

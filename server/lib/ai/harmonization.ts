@@ -40,13 +40,18 @@ export interface HarmonizationInput {
   /** Optional prompt nudge — currently used only by the AI path. */
   prompt?: string;
   /**
-   * "procedural" — fast (sharp-only, ~2s), no 3D awareness. Default.
+   * "procedural" — fast (sharp-only, ~2s), no 3D awareness. Legacy.
    * "ai-3d" — TRELLIS 2D→3D mesh + multi-view render, then procedural
    *   lighting on top. Slower (~30-90s) but the product reads as a 3D
    *   object that belongs in the room rather than a flat sticker.
    * "ai" — legacy alias for "ai-3d" (used by older clients).
+   * "generative" — FLUX Kontext multi-image editing. State-of-the-art
+   *   for "make this product look native to this scene": the model sees
+   *   the scene + the product reference and GENERATES pixels in the
+   *   bbox region that look like the product was actually there at
+   *   shoot time. ~15-30s, ~$0.05/call. Default for new placements.
    */
-  mode?: "procedural" | "ai-3d" | "ai";
+  mode?: "procedural" | "ai-3d" | "ai" | "generative";
   /**
    * Optional camera angle hint for the AI render — "eye-level" |
    * "slightly-above" | "top-down" | "low-angle". Used to choose which
@@ -54,6 +59,12 @@ export interface HarmonizationInput {
    * for the scene's camera. If absent, "eye-level" is used.
    */
   cameraAngle?: string;
+  /**
+   * Surface type label (e.g. "Coffee Table", "Wall") — used by generative
+   * mode to anchor the Kontext prompt in concrete language. Falls back
+   * to "surface" when absent.
+   */
+  surfaceType?: string;
 }
 
 export interface HarmonizationResult {
@@ -68,9 +79,11 @@ export interface HarmonizationResult {
   meshUrl?: string;
   /** When mode=ai-3d, the IC-Light relit product URL (post-relighting). */
   icLightRelitUrl?: string;
+  /** When mode=generative, the FLUX Kontext output URL pre-composite. */
+  kontextOutputUrl?: string;
   error?: string;
   elapsedMs?: number;
-  mode?: "procedural" | "ai-3d" | "ai";
+  mode?: "procedural" | "ai-3d" | "ai" | "generative";
 }
 
 async function asBuffer(input: string | Buffer): Promise<Buffer> {
@@ -172,6 +185,153 @@ async function extractTurnaroundFrame(
   } finally {
     try { fs.unlinkSync(tempPath); } catch {}
   }
+}
+
+/**
+ * Generative harmonization via FLUX Kontext (Black Forest Labs, hosted on
+ * fal.ai). The fundamentally different approach: instead of compositing a
+ * 2D product onto a scene and trying to relight it, we hand the model
+ *   - the scene crop around the placement bbox
+ *   - the product image as a reference
+ *   - a natural-language edit instruction
+ * and let it GENERATE pixels in the crop that look native — matching the
+ * scene's lighting, perspective, texture, and depth-of-field.
+ *
+ * This is what the user has been asking for: "analyze the background video
+ * and align it with the needs of the 2D static image." Kontext is designed
+ * exactly for this — multi-image instruction-following editing.
+ *
+ * Pipeline:
+ *   1. Crop scene to a padded region around the bbox (1.5x) — gives the
+ *      model surrounding lighting/perspective context.
+ *   2. Submit crop + product image to fal-ai/flux-pro/kontext with edit
+ *      instruction.
+ *   3. Composite the edited crop back into the full scene at the same
+ *      location.
+ *
+ * Cost: ~$0.04-0.06/call. Latency: ~15-30s on fal's GPU pool.
+ *
+ * Returns the URL of the generated crop, or null on any failure (caller
+ * falls back to procedural composite — never blocks).
+ */
+async function runFluxKontext(
+  sceneCropUrl: string,
+  productImageUrl: string,
+  surfaceType: string,
+  cameraAngle: string | undefined,
+): Promise<string | null> {
+  const falKey = process.env.FAL_KEY;
+  if (!falKey) return null;
+  fal.config({ credentials: falKey });
+
+  // Build an edit instruction that emphasizes integration cues. The
+  // explicit camera-angle hint helps when Gemini gave us one — Kontext
+  // is sensitive to perspective language.
+  const angleHint =
+    cameraAngle === "low-angle"
+      ? "viewed from slightly below"
+      : cameraAngle === "top-down"
+      ? "viewed from above"
+      : cameraAngle === "slightly-above"
+      ? "viewed from slightly above"
+      : "at eye level";
+
+  const prompt =
+    `Place the product from the reference image on the ${surfaceType.toLowerCase()} ` +
+    `at the indicated location, ${angleHint}. The product should look like it was ` +
+    `physically present when this scene was photographed: matching the room's ` +
+    `lighting direction and color temperature, casting a realistic contact shadow ` +
+    `on the surface beneath it, with depth-of-field consistent with the rest of ` +
+    `the frame. Preserve the product's exact shape, colors, and branding. Keep ` +
+    `the rest of the scene unchanged.`;
+
+  try {
+    const t0 = Date.now();
+    // fal-ai/flux-pro/kontext — multi-image editing. The first image is
+    // the base; reference_images carries additional context (the product).
+    const result: any = await fal.subscribe("fal-ai/flux-pro/kontext", {
+      input: {
+        image_url: sceneCropUrl,
+        reference_images: [{ url: productImageUrl }],
+        prompt,
+        guidance_scale: 3.5,
+        num_inference_steps: 28,
+        safety_tolerance: "5",
+        output_format: "png",
+      } as any,
+      logs: false,
+    });
+    const elapsed = Date.now() - t0;
+    const data = result?.data ?? result;
+    const outputUrl: string | undefined =
+      data?.images?.[0]?.url ?? data?.image?.url ?? data?.output?.url;
+    if (!outputUrl) {
+      console.warn(`[Harmonize/kontext] No image URL in response — keys: ${Object.keys(data || {}).join(",")}`);
+      return null;
+    }
+    console.log(`[Harmonize/kontext] Edit complete in ${elapsed}ms → ${outputUrl}`);
+    return outputUrl;
+  } catch (err: any) {
+    console.warn(`[Harmonize/kontext] Failed (${err?.message || err})`);
+    return null;
+  }
+}
+
+/**
+ * Crop the scene to a padded region around the bbox, return both the crop
+ * buffer AND the pixel-space crop rectangle (for compositing back later).
+ * Padding gives the generative model enough surrounding context — a 1px-
+ * tight crop forces it to hallucinate edges. 1.5x extents work well in
+ * practice.
+ */
+async function cropSceneForKontext(
+  sceneBuf: Buffer,
+  bbox: HarmonizationInput["bbox"],
+  dims: HarmonizationInput["frameDimensions"],
+): Promise<{ cropBuf: Buffer; rect: { x: number; y: number; w: number; h: number } }> {
+  const W = dims.width;
+  const H = dims.height;
+  // 1.5x extents around the bbox center
+  const padX = bbox.width * 0.5;
+  const padY = bbox.height * 0.5;
+  const x0 = clamp(bbox.x - padX, 0, 1);
+  const y0 = clamp(bbox.y - padY, 0, 1);
+  const x1 = clamp(bbox.x + bbox.width + padX, 0, 1);
+  const y1 = clamp(bbox.y + bbox.height + padY, 0, 1);
+
+  const left = Math.round(x0 * W);
+  const top = Math.round(y0 * H);
+  const width = Math.max(1, Math.round((x1 - x0) * W));
+  const height = Math.max(1, Math.round((y1 - y0) * H));
+
+  const sharp = (await import("sharp")).default;
+  const cropBuf = await sharp(sceneBuf)
+    .extract({ left, top, width, height })
+    .png()
+    .toBuffer();
+
+  return { cropBuf, rect: { x: left, y: top, w: width, h: height } };
+}
+
+/**
+ * Composite an edited crop back into the original scene at the rect where
+ * it was extracted from. Uses sharp's composite — the edited crop just
+ * overlays at the right pixel offset.
+ */
+async function compositeKontextCropBack(
+  sceneBuf: Buffer,
+  cropBuf: Buffer,
+  rect: { x: number; y: number; w: number; h: number },
+): Promise<Buffer> {
+  const sharp = (await import("sharp")).default;
+  // Ensure the crop matches the rect size (Kontext may pad slightly).
+  const resizedCrop = await sharp(cropBuf)
+    .resize(rect.w, rect.h, { fit: "fill" })
+    .toBuffer();
+  return sharp(sceneBuf)
+    .composite([{ input: resizedCrop, left: rect.x, top: rect.y }])
+    .png()
+    .toBuffer();
 }
 
 /**
@@ -770,6 +930,98 @@ export async function harmonizeProductIntoScene(
       asBuffer(input.productImage),
     ]);
 
+    // ─── GENERATIVE MODE (FLUX Kontext) — the seamless-integration path ───
+    // The user's complaint: "it doesn't analyze the background video and
+    // align it with the needs of the 2D static image." This mode is the
+    // structural fix — Kontext takes scene + product reference + prompt
+    // and generates pixels in the crop that look native. No compositing
+    // tricks; the model handles lighting, perspective, depth-of-field.
+    if (mode === "generative") {
+      console.log(`[Harmonize] Mode: generative (FLUX Kontext multi-image edit)`);
+
+      // Need surface type for the prompt — pull from input or default.
+      const surfaceType = (input as any).surfaceType || "surface";
+
+      // Stage 1: extract the padded crop around the bbox.
+      const { cropBuf, rect } = await cropSceneForKontext(
+        sceneBuf, input.bbox, input.frameDimensions,
+      );
+
+      const falKey = process.env.FAL_KEY;
+      if (!falKey) {
+        return {
+          success: false,
+          error: "FAL_KEY not set — generative mode requires fal.ai access",
+          elapsedMs: Date.now() - startedAt,
+          mode,
+        };
+      }
+      fal.config({ credentials: falKey });
+
+      // Stage 2: upload both crop and product to fal so Kontext can read them.
+      const [sceneCropUrl, productUrl] = await Promise.all([
+        uploadBuffer(cropBuf, "scene-crop.png", "image/png"),
+        uploadBuffer(productBuf, "product.png", "image/png"),
+      ]);
+
+      // Stage 3: hand to Kontext.
+      const editedCropUrl = await runFluxKontext(
+        sceneCropUrl, productUrl, surfaceType, input.cameraAngle,
+      );
+
+      if (!editedCropUrl) {
+        console.warn(`[Harmonize/generative] Kontext returned nothing — falling back to procedural`);
+        const { result, flatComposite } = await applyProceduralHarmonization(
+          sceneBuf, productBuf, input.bbox, input.frameDimensions,
+        );
+        const [imageUrl, flatCompositeUrl] = await Promise.all([
+          uploadBuffer(result, "harmonized-fallback.png", "image/png"),
+          uploadBuffer(flatComposite, "flat-composite.png", "image/png"),
+        ]);
+        return {
+          success: true,
+          imageUrl,
+          flatCompositeUrl,
+          elapsedMs: Date.now() - startedAt,
+          mode: "procedural",
+        };
+      }
+
+      // Stage 4: download Kontext output, composite back into full scene.
+      const editedCropRes = await fetch(editedCropUrl);
+      if (!editedCropRes.ok) {
+        return {
+          success: false,
+          error: `Failed to fetch Kontext output: ${editedCropRes.status}`,
+          elapsedMs: Date.now() - startedAt,
+          mode,
+        };
+      }
+      const editedCropBuf = Buffer.from(await editedCropRes.arrayBuffer());
+      const finalBuf = await compositeKontextCropBack(sceneBuf, editedCropBuf, rect);
+
+      // Also build the flat composite for before/after comparison.
+      const { flatComposite } = await applyProceduralHarmonization(
+        sceneBuf, productBuf, input.bbox, input.frameDimensions,
+      );
+
+      const [imageUrl, flatCompositeUrl] = await Promise.all([
+        uploadBuffer(finalBuf, "harmonized-generative.png", "image/png"),
+        uploadBuffer(flatComposite, "flat-composite.png", "image/png"),
+      ]);
+
+      const elapsedMs = Date.now() - startedAt;
+      console.log(`[Harmonize] generative done in ${elapsedMs}ms (Kontext)`);
+      return {
+        success: true,
+        imageUrl,
+        flatCompositeUrl,
+        kontextOutputUrl: editedCropUrl,
+        elapsedMs,
+        mode: "generative",
+      };
+    }
+
     if (mode === "procedural") {
       console.log(`[Harmonize] Mode: procedural (sharp, scene-preserving)`);
       const { result, flatComposite } = await applyProceduralHarmonization(
@@ -985,7 +1237,7 @@ export async function harmonizeProductIntoScene(
 
     return {
       success: false,
-      error: `Unknown harmonization mode: ${mode}. Use procedural | ai-3d.`,
+      error: `Unknown harmonization mode: ${mode}. Use generative | procedural | ai-3d.`,
       elapsedMs: Date.now() - startedAt,
       mode,
     };
