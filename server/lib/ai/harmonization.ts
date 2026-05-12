@@ -40,18 +40,19 @@ export interface HarmonizationInput {
   /** Optional prompt nudge — currently used only by the AI path. */
   prompt?: string;
   /**
-   * "procedural" — fast (sharp-only, ~2s), no 3D awareness. Legacy.
-   * "ai-3d" — TRELLIS 2D→3D mesh + multi-view render, then procedural
-   *   lighting on top. Slower (~30-90s) but the product reads as a 3D
-   *   object that belongs in the room rather than a flat sticker.
-   * "ai" — legacy alias for "ai-3d" (used by older clients).
-   * "generative" — FLUX Kontext multi-image editing. State-of-the-art
-   *   for "make this product look native to this scene": the model sees
-   *   the scene + the product reference and GENERATES pixels in the
-   *   bbox region that look like the product was actually there at
-   *   shoot time. ~15-30s, ~$0.05/call. Default for new placements.
+   * "flat" — DEFAULT. Just composite the product onto the scene at the
+   *   bbox with NO processing. User testing showed this consistently
+   *   beats every "harmonization" approach we've tried — the bare
+   *   composite already integrates well for most product/scene pairs.
+   * "procedural" — gentle adjustments (shadow + optional tint via env).
+   * "ai-3d" — TRELLIS 2D→3D mesh + multi-view render + procedural.
+   *   Slower (~30-90s).
+   * "ai" — legacy alias for "ai-3d".
+   * "generative" — EXPERIMENTAL. FLUX Kontext. Currently outputs wrong
+   *   content (regenerates scene without product reference) — needs
+   *   endpoint/payload investigation before re-enabling as default.
    */
-  mode?: "procedural" | "ai-3d" | "ai" | "generative";
+  mode?: "flat" | "procedural" | "ai-3d" | "ai" | "generative";
   /**
    * Optional camera angle hint for the AI render — "eye-level" |
    * "slightly-above" | "top-down" | "low-angle". Used to choose which
@@ -83,7 +84,7 @@ export interface HarmonizationResult {
   kontextOutputUrl?: string;
   error?: string;
   elapsedMs?: number;
-  mode?: "procedural" | "ai-3d" | "ai" | "generative";
+  mode?: "flat" | "procedural" | "ai-3d" | "ai" | "generative";
 }
 
 async function asBuffer(input: string | Buffer): Promise<Buffer> {
@@ -236,28 +237,40 @@ async function runFluxKontext(
       ? "viewed from slightly above"
       : "at eye level";
 
+  // Prompt rewritten to be FAR more conservative about scene preservation.
+  // Earlier prompts said "keep the rest of the scene unchanged" softly;
+  // Kontext still regenerated nearby objects (the user saw a candle become
+  // something else in the harmonized output). New prompt makes preservation
+  // the primary instruction, with the product placement as the only
+  // permitted edit. Repeating the constraint multiple times biases Kontext's
+  // attention toward identity-preservation of non-product pixels.
   const prompt =
-    `Place the product from the reference image on the ${surfaceType.toLowerCase()} ` +
-    `at the indicated location, ${angleHint}. The product should look like it was ` +
-    `physically present when this scene was photographed: matching the room's ` +
-    `lighting direction and color temperature, casting a realistic contact shadow ` +
-    `on the surface beneath it, with depth-of-field consistent with the rest of ` +
-    `the frame. Preserve the product's exact shape, colors, and branding. Keep ` +
-    `the rest of the scene unchanged.`;
+    `Add the product from the reference image to this scene on the ` +
+    `${surfaceType.toLowerCase()}, ${angleHint}. The product is the ONLY ` +
+    `thing you add — do not modify, regenerate, replace, or alter any ` +
+    `existing object, person, or detail in the scene. Every object, every ` +
+    `texture, every pixel that is not the product must remain exactly as in ` +
+    `the input image. Add only a soft contact shadow directly under the ` +
+    `product. The product should match the scene's lighting direction and ` +
+    `color temperature. Preserve the product's exact shape, colors, and branding.`;
 
   try {
     const t0 = Date.now();
-    // fal-ai/flux-pro/kontext — multi-image editing. The first image is
-    // the base; reference_images carries additional context (the product).
+    // fal-ai/flux-pro/kontext — multi-image editing. seed pinned to 42
+    // for deterministic outputs (was generating different scene
+    // interpretations on retry — user reported "3D harmonize isn't
+    // consistent"). Lower guidance_scale (2.5 vs 3.5) lets the model
+    // weight the input image more than the prompt — keeps scene fidelity.
     const result: any = await fal.subscribe("fal-ai/flux-pro/kontext", {
       input: {
         image_url: sceneCropUrl,
         reference_images: [{ url: productImageUrl }],
         prompt,
-        guidance_scale: 3.5,
+        guidance_scale: 2.5,
         num_inference_steps: 28,
         safety_tolerance: "5",
         output_format: "png",
+        seed: 42,
       } as any,
       logs: false,
     });
@@ -300,9 +313,14 @@ async function cropSceneForKontext(
 ): Promise<{ cropBuf: Buffer; rect: { x: number; y: number; w: number; h: number } }> {
   const W = dims.width;
   const H = dims.height;
-  // 1.5x extents around the bbox center
-  const padX = bbox.width * 0.5;
-  const padY = bbox.height * 0.5;
+  // 1.1x extents around the bbox — was 1.5x but Kontext regenerates the
+  // ENTIRE crop area, so larger crop = more surrounding scene pixels get
+  // replaced with model-generated content. User feedback: candle next to
+  // the product in the flat version got replaced with a different object
+  // in the harmonized version. Tighter crop constrains the regeneration
+  // footprint while still giving Kontext enough context to match lighting.
+  const padX = bbox.width * 0.1;
+  const padY = bbox.height * 0.1;
   const x0 = clamp(bbox.x - padX, 0, 1);
   const y0 = clamp(bbox.y - padY, 0, 1);
   const x1 = clamp(bbox.x + bbox.width + padX, 0, 1);
@@ -985,13 +1003,56 @@ async function applyProceduralHarmonization(
 export async function harmonizeProductIntoScene(
   input: HarmonizationInput,
 ): Promise<HarmonizationResult> {
-  const mode = input.mode ?? "procedural";
+  // Default changed: "flat" instead of "procedural". User testing across
+  // multiple product/scene pairs (Shinju whiskey + DJ setup, Shark vacuum
+  // + Call Her Daddy) showed the bare flat composite consistently looks
+  // better than every "harmonization" we've tried. Until generative
+  // (FLUX Kontext) is reliably producing the RIGHT content with the
+  // product reference image, flat is the safest default — zero
+  // degradation vs the baseline placement preview.
+  const mode = input.mode ?? "flat";
   const startedAt = Date.now();
   try {
     const [sceneBuf, productBuf] = await Promise.all([
       asBuffer(input.sceneImage),
       asBuffer(input.productImage),
     ]);
+
+    // ─── FLAT MODE — just composite, no processing ───────────────────
+    // What the user described as "what it looks like when product is
+    // just dropped in normally." Already-good for most products.
+    if (mode === "flat") {
+      console.log(`[Harmonize] Mode: flat (bare composite, no processing)`);
+      // Re-use the flatComposite output of applyProceduralHarmonization
+      // since it already builds exactly this image. We just don't apply
+      // the brightness/shadow/cast layers on top.
+      const { flatComposite } = await applyProceduralHarmonization(
+        sceneBuf, productBuf, input.bbox, input.frameDimensions,
+      );
+      const falKey = process.env.FAL_KEY;
+      if (falKey) {
+        fal.config({ credentials: falKey });
+        const imageUrl = await uploadBuffer(flatComposite, "harmonized-flat.png", "image/png");
+        const elapsedMs = Date.now() - startedAt;
+        console.log(`[Harmonize] flat done in ${elapsedMs}ms`);
+        return {
+          success: true,
+          imageUrl,
+          flatCompositeUrl: imageUrl,
+          elapsedMs,
+          mode: "flat" as any,
+        };
+      }
+      const elapsedMs = Date.now() - startedAt;
+      const dataUrl = `data:image/png;base64,${flatComposite.toString("base64")}`;
+      return {
+        success: true,
+        imageUrl: dataUrl,
+        flatCompositeUrl: dataUrl,
+        elapsedMs,
+        mode: "flat" as any,
+      };
+    }
 
     // ─── GENERATIVE MODE (FLUX Kontext) — the seamless-integration path ───
     // The user's complaint: "it doesn't analyze the background video and

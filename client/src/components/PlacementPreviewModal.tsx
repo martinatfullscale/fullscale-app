@@ -2190,13 +2190,16 @@ export default function PlacementPreviewModal({
                               surfaceId: selectedSurface.id,
                               productImageUrl: productImage,
                               productPlacementBbox,
-                              // Use FLUX Kontext generative harmonization —
-                              // the model SEES the scene context (lighting,
-                              // perspective, depth) and generates pixels
-                              // that look native. ~15-30s, ~$0.05/call.
-                              // Falls back to procedural inside the server
-                              // if Kontext fails for any reason.
-                              mode: "generative",
+                              // Default to "flat" — the bare composite the
+                              // user already sees in the placement preview.
+                              // No brightness/tint/shadow processing. User
+                              // testing showed flat looks BETTER than any
+                              // procedural or generative path so far (the
+                              // procedural added a visible dark rectangle,
+                              // generative regenerated wrong content).
+                              // The 3D Harmonize button is the experimental
+                              // AI path until Kontext is debugged.
+                              mode: "flat",
                             }),
                           });
                           const data = await res.json();
@@ -3363,15 +3366,15 @@ export default function PlacementPreviewModal({
 
                   <div>
                     <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm font-medium text-white">Harmonized</span>
+                      <span className="text-sm font-medium text-white">Saved composite</span>
                       <Badge className="text-[10px] bg-emerald-500/20 text-emerald-300 border-emerald-500/40">
-                        scene-aware
+                        what brands see
                       </Badge>
                     </div>
                     {harmonizeResultUrl ? (
                       <img
                         src={harmonizeResultUrl}
-                        alt="Harmonized composite"
+                        alt="Saved composite"
                         className="w-full rounded-lg border border-emerald-500/40"
                       />
                     ) : (
@@ -3380,7 +3383,9 @@ export default function PlacementPreviewModal({
                       </div>
                     )}
                     <p className="text-xs text-muted-foreground mt-1.5">
-                      Color cast + brightness matched to scene; contact shadow added. Scene pixels outside the bbox are unchanged.
+                      The flat composite — same image rendered in the preview.
+                      Click "3D Harmonize" (purple) to try the experimental AI
+                      path that generates scene-native pixels.
                     </p>
                   </div>
                 </div>
