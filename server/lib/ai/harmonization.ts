@@ -1305,17 +1305,35 @@ export async function harmonizeProductIntoScene(
       let icLightRelitUrl: string | undefined;
 
       try {
-        // Stage A.0 — depth analysis IN PARALLEL with TRELLIS. Depth
-        // Anything v2 estimates the surface tilt at the placement bbox so
-        // we can render the product at a matching camera angle instead of
-        // the default 30° 3/4 view (the user's "looks like a 2D scene"
-        // complaint stems from this perspective mismatch).
-        const [trellis, depthAngle] = await Promise.all([
-          runTrellis3D(productBuf),
+        // Stage A.0 — depth analysis. TRELLIS by default is now SKIPPED
+        // because fal-ai/trellis returns only a GLB mesh URL (no preview
+        // image, no turnaround video) — verified in production logs:
+        //   [Harmonize/trellis] No rendered preview in response;
+        //   using input image. Mesh URL: ...
+        // That means our angle picker had nothing to extract from, the
+        // pipeline silently fell back to the original product image, and
+        // we were paying ~62s of TRELLIS latency for zero 3D benefit.
+        //
+        // Set HARMONIZE_USE_TRELLIS=true to re-enable (e.g. if the fal
+        // endpoint changes to return previews). For now: depth-derived
+        // pitch shear of the original product image, then the standard
+        // bg-removal → IC-Light → procedural pipeline runs as before.
+        const useTrellis = process.env.HARMONIZE_USE_TRELLIS === "true";
+        const [trellisResult, depthAngle] = await Promise.all([
+          useTrellis
+            ? runTrellis3D(productBuf).catch((err) => {
+                console.warn(`[Harmonize/ai-3d] TRELLIS errored (${err?.message}) — proceeding without`);
+                return null;
+              })
+            : Promise.resolve(null),
           estimateSceneAngleFromDepth(sceneBuf, input.bbox, input.frameDimensions),
         ]);
+        const trellis = trellisResult ?? { renderUrl: "", meshUrl: undefined, turnaroundVideoUrl: undefined };
         trellisRenderUrl = trellis.renderUrl;
         meshUrl = trellis.meshUrl;
+        if (!useTrellis) {
+          console.log(`[Harmonize/ai-3d] TRELLIS skipped (HARMONIZE_USE_TRELLIS≠true) — saved ~60s. Using original product image with depth-derived pitch shear.`);
+        }
 
         // Stage A.1 — pull the angle-specific frame from the turnaround MP4.
         // Priority for selecting the angle:
@@ -1354,13 +1372,32 @@ export async function harmonizeProductIntoScene(
         }
 
         // Default fetch path if turnaround extraction didn't run.
+        // Now also handles the TRELLIS-skipped case: applies depth-derived
+        // pitch shear directly to the ORIGINAL product image instead of
+        // a TRELLIS render. Net effect: product gets a slight perspective
+        // adjustment matching the scene tilt without the TRELLIS roundtrip.
         if (!renderedProductUrl) {
-          const renderRes = await fetch(trellis.renderUrl);
-          if (renderRes.ok) {
-            renderedProductBuf = Buffer.from(await renderRes.arrayBuffer());
-            renderedProductUrl = trellis.renderUrl;
-          } else {
-            console.warn(`[Harmonize/ai-3d] Failed to fetch TRELLIS render (${renderRes.status}); using original product image`);
+          let buf: Buffer = productBuf;
+          if (depthAngle && Math.abs(depthAngle.pitchDeg) > 3) {
+            buf = await applyPitchShear(productBuf, depthAngle.pitchDeg);
+            console.log(`[Harmonize/ai-3d] Applied pitch shear ${depthAngle.pitchDeg.toFixed(1)}° directly to product (no TRELLIS render available)`);
+          }
+          renderedProductBuf = buf;
+          if (process.env.FAL_KEY) {
+            try {
+              renderedProductUrl = await uploadBuffer(buf, "product-pitched.png", "image/png");
+            } catch { /* downstream falls back gracefully */ }
+          }
+          // Fall back to the legacy TRELLIS fetch only if a renderUrl was
+          // actually returned (TRELLIS-skipped path leaves it empty).
+          if (!renderedProductUrl && trellis.renderUrl) {
+            try {
+              const renderRes = await fetch(trellis.renderUrl);
+              if (renderRes.ok) {
+                renderedProductBuf = Buffer.from(await renderRes.arrayBuffer());
+                renderedProductUrl = trellis.renderUrl;
+              }
+            } catch { /* swallow */ }
           }
         }
 
