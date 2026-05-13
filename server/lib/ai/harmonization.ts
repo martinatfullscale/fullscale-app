@@ -397,6 +397,17 @@ async function lockProductOverHarmonized(
   productBuf: Buffer,
   bbox: HarmonizationInput["bbox"],
   dims: HarmonizationInput["frameDimensions"],
+  // OPTIONAL atmosphere — when provided, applies the same brightness
+  // adjustment AND a soft scene-color tint to the locked product. Without
+  // this, the lock pass pastes the bare original product back over the
+  // harmonized scene and effectively undoes every harmonization effect
+  // (brightness match, color cast, anything that touched product pixels
+  // in PASS 1). The visual result is "flat overlay" — exactly the bug.
+  atmosphere?: {
+    brightnessFactor: number;
+    sceneRgb: { r: number; g: number; b: number };
+    sceneBrightness: number;
+  },
 ): Promise<Buffer> {
   const W = dims.width;
   const H = dims.height;
@@ -428,12 +439,60 @@ async function lockProductOverHarmonized(
   // already set the scale via the placement modal. fit: "inside" would
   // letterbox and silently change the visible size, which is exactly the
   // size-drift bug we're fixing here.
-  const productAtSize = await sharp(workingProductBuf)
+  let productAtSize = await sharp(workingProductBuf)
     .resize(pxW, pxH, { fit: "fill" })
     .png()
     .toBuffer();
 
-  console.log(`[Harmonize/lock] Compositing original product at exact bbox: ${pxW}x${pxH} @ (${pxX}, ${pxY})`);
+  // Apply scene atmosphere to the LOCKED product so harmonization
+  // effects survive PASS 2. Two passes:
+  //   (a) brightness modulate — same factor PASS 1 computed
+  //   (b) soft-light tint with scene RGB at low alpha — picks up the
+  //       scene's color temperature without destroying brand color
+  if (atmosphere) {
+    const bf = atmosphere.brightnessFactor;
+    if (Math.abs(bf - 1) > 0.02) {
+      productAtSize = await sharp(productAtSize)
+        .modulate({ brightness: bf })
+        .png()
+        .toBuffer();
+      console.log(`[Harmonize/lock] Applied brightness factor ${bf.toFixed(2)}× to locked product`);
+    }
+    // Tint alpha scales with how DIFFERENT the scene is from neutral.
+    // A neutral-grey scene (~rgb 128,128,128) gets ~0 tint. A warm
+    // amber scene (high R, low B) gets up to 0.18 tint. Capped at 0.18
+    // so brand color is preserved.
+    const { r, g, b } = atmosphere.sceneRgb;
+    const chroma = Math.max(Math.abs(r - 128), Math.abs(g - 128), Math.abs(b - 128)) / 128;
+    const tintAlpha = clamp(chroma * 0.25, 0, 0.18);
+    if (tintAlpha > 0.02) {
+      // Build a tint sheet and apply it ONLY where the product has
+      // alpha (mask = product alpha) so the tint doesn't bleed onto
+      // the surrounding scene through transparent regions.
+      const productAlpha = await sharp(productAtSize)
+        .ensureAlpha()
+        .extractChannel("alpha")
+        .toBuffer();
+      const tintSheet = await sharp({
+        create: {
+          width: pxW,
+          height: pxH,
+          channels: 4,
+          background: { r, g, b, alpha: tintAlpha },
+        },
+      })
+        .composite([{ input: productAlpha, blend: "dest-in" }])
+        .png()
+        .toBuffer();
+      productAtSize = await sharp(productAtSize)
+        .composite([{ input: tintSheet, blend: "soft-light" }])
+        .png()
+        .toBuffer();
+      console.log(`[Harmonize/lock] Applied scene tint rgb(${r},${g},${b}) @ alpha=${tintAlpha.toFixed(2)} (chroma=${chroma.toFixed(2)})`);
+    }
+  }
+
+  console.log(`[Harmonize/lock] Compositing locked product at bbox: ${pxW}x${pxH} @ (${pxX}, ${pxY})`);
 
   return sharp(harmonizedSceneBuf)
     .composite([{ input: productAtSize, left: pxX, top: pxY }])
@@ -847,7 +906,18 @@ async function applyProceduralHarmonization(
   bbox: HarmonizationInput["bbox"],
   dims: HarmonizationInput["frameDimensions"],
   lighting?: { direction?: string; intensity?: number },
-): Promise<{ result: Buffer; flatComposite: Buffer }> {
+): Promise<{
+  result: Buffer;
+  flatComposite: Buffer;
+  // Scene atmosphere — exposed so PASS 2 (lock pass) can re-apply the
+  // same brightness/tint to the original product. Without this, PASS 2
+  // pastes the bare product back and undoes every harmonization effect.
+  atmosphere?: {
+    brightnessFactor: number;
+    sceneRgb: { r: number; g: number; b: number };
+    sceneBrightness: number;
+  };
+}> {
   const W = dims.width;
   const H = dims.height;
   const pxX = clamp(Math.round(bbox.x * W), 0, W - 1);
@@ -1094,17 +1164,33 @@ async function applyProceduralHarmonization(
   let shadowDx = 0;
   let shadowDy = Math.max(10, Math.round(finalH * 0.08));
   switch (lightDir) {
-    case "left": shadowDx = Math.round(finalW * 0.14); shadowDy = Math.round(finalH * 0.06); break;
-    case "right": shadowDx = -Math.round(finalW * 0.14); shadowDy = Math.round(finalH * 0.06); break;
-    case "top-left": shadowDx = Math.round(finalW * 0.12); shadowDy = Math.round(finalH * 0.10); break;
-    case "top-right": shadowDx = -Math.round(finalW * 0.12); shadowDy = Math.round(finalH * 0.10); break;
-    case "top": shadowDx = 0; shadowDy = Math.round(finalH * 0.14); break;
+    case "left": shadowDx = Math.round(finalW * 0.14); shadowDy = Math.round(finalH * 0.10); break;
+    case "right": shadowDx = -Math.round(finalW * 0.14); shadowDy = Math.round(finalH * 0.10); break;
+    case "top-left": shadowDx = Math.round(finalW * 0.12); shadowDy = Math.round(finalH * 0.14); break;
+    case "top-right": shadowDx = -Math.round(finalW * 0.12); shadowDy = Math.round(finalH * 0.14); break;
+    case "top": shadowDx = 0; shadowDy = Math.round(finalH * 0.18); break;
     case "ambient":
-    default: shadowDx = Math.round(finalW * 0.04); shadowDy = Math.round(finalH * 0.08); break;
+    default:
+      // "Ambient" doesn't mean NO shadow — it means SOFT, MULTI-DIRECTIONAL
+      // shadow. Pure ambient light (overcast outdoors, big softbox above
+      // a table) still casts a visible drop. Previous magnitudes (0.04W,
+      // 0.08H) on a 77x206 product evaluated to (3, 16) → invisible after
+      // intensity scaling. Bump to slight slant + meaningful drop so even
+      // ambient surfaces get a readable cast.
+      shadowDx = Math.round(finalW * 0.10);
+      shadowDy = Math.round(finalH * 0.18);
+      break;
   }
   // Length-modulate by intensity (brighter scene = longer/sharper shadow).
   shadowDx = Math.round(shadowDx * lightIntensity);
   shadowDy = Math.round(shadowDy * lightIntensity);
+  // Floor: if the product is taller than ~150px, the shadow MUST be at
+  // least 25px to register visually against the surface. Without this,
+  // small intensities or "ambient" cases produce shadows the eye can't
+  // see, making the harmonized output indistinguishable from flat.
+  if (finalH >= 150) {
+    shadowDy = Math.max(25, shadowDy);
+  }
   // Loud diagnostic — shows BOTH the raw input from DB and the resolved
   // values, so you can tell from logs whether the surface row had
   // lighting metadata populated or whether we fell through to defaults.
@@ -1139,7 +1225,15 @@ async function applyProceduralHarmonization(
   }
 
   const result = await sharp(sceneBuf).composite(composites).png().toBuffer();
-  return { result, flatComposite };
+  return {
+    result,
+    flatComposite,
+    atmosphere: {
+      brightnessFactor,
+      sceneRgb: { r: Math.round(meanR), g: Math.round(meanG), b: Math.round(meanB) },
+      sceneBrightness,
+    },
+  };
 }
 
 export async function harmonizeProductIntoScene(
@@ -1277,21 +1371,25 @@ export async function harmonizeProductIntoScene(
       // recolored product).
       const kontextSceneBuf = await compositeKontextCropBack(sceneBuf, editedCropBuf, rect);
 
+      // Build flat composite + sample scene atmosphere FIRST so PASS 2
+      // can apply scene brightness/tint to the locked product. Without
+      // atmosphere, the lock pass undoes everything Kontext changed on
+      // the product itself (only Kontext's surface-around-product edits
+      // survive — usually invisible).
+      const { flatComposite, atmosphere } = await applyProceduralHarmonization(
+        sceneBuf, productBuf, input.bbox, input.frameDimensions,
+      );
+
       // PASS 2: Lock the original product over the Kontext-modified scene.
       // Guarantees position/size/color rules. Scene-level adjustments
       // Kontext made (contact shadow, light reflection on the surface
       // around the product) survive because the original product is
       // composited at the EXACT bbox — surrounding pixels stay whatever
-      // Kontext produced.
+      // Kontext produced. Atmosphere thread keeps brightness/color match.
       const finalBuf = await lockProductOverHarmonized(
-        kontextSceneBuf, productBuf, input.bbox, input.frameDimensions,
+        kontextSceneBuf, productBuf, input.bbox, input.frameDimensions, atmosphere,
       );
-      console.log(`[Harmonize] PASS 2 — locked original product over Kontext scene`);
-
-      // Also build the flat composite for before/after comparison.
-      const { flatComposite } = await applyProceduralHarmonization(
-        sceneBuf, productBuf, input.bbox, input.frameDimensions,
-      );
+      console.log(`[Harmonize] PASS 2 — locked atmosphere-treated product over Kontext scene`);
 
       const [imageUrl, flatCompositeUrl] = await Promise.all([
         uploadBuffer(finalBuf, "harmonized-generative.png", "image/png"),
@@ -1523,7 +1621,7 @@ export async function harmonizeProductIntoScene(
 
       // PASS 1: TRELLIS (3D mesh) + procedural composite + IC-Light
       // produces a scene with the modified/relit product at the bbox.
-      const { result, flatComposite } = await applyProceduralHarmonization(
+      const { result, flatComposite, atmosphere } = await applyProceduralHarmonization(
         sceneBuf, renderedProductBuf, input.bbox, input.frameDimensions,
         { direction: input.lightingDirection, intensity: input.lightingIntensity },
       );
@@ -1532,10 +1630,16 @@ export async function harmonizeProductIntoScene(
       // IC-Light-relit version) over the result. Preserves position,
       // size, and brand color while keeping the procedural shadow and
       // any scene-level adjustments around the product silhouette.
+      //
+      // CRITICAL: pass `atmosphere` so PASS 2 re-applies the same
+      // brightness adjustment + soft scene tint to the locked product.
+      // Without this, the lock pass undoes every harmonization effect
+      // (the bug user observed: harmonized output indistinguishable
+      // from flat overlay).
       const lockedResult = await lockProductOverHarmonized(
-        result, productBuf, input.bbox, input.frameDimensions,
+        result, productBuf, input.bbox, input.frameDimensions, atmosphere,
       );
-      console.log(`[Harmonize] PASS 2 — locked original product over TRELLIS scene`);
+      console.log(`[Harmonize] PASS 2 — locked atmosphere-treated product over TRELLIS scene`);
 
       const falKey = process.env.FAL_KEY;
       if (falKey) {
