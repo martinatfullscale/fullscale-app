@@ -446,6 +446,116 @@ function computeHarmonizeProgress(mode: HarmonizeMode | null, elapsedMs: number,
 }
 
 // ============================================================================
+// HARMONIZE HISTORY — RECENT RUNS PERSISTED LOCALLY
+// ============================================================================
+//
+// Keeps a short rolling log of successful harmonize runs in localStorage so
+// the user can re-apply a previous result without paying the 12-60s server
+// roundtrip again. Cap is HARMONIZE_HISTORY_LIMIT entries — newest first,
+// FIFO trim. Failures are not logged (they have nothing to reuse).
+//
+// We store the full URL set + transform + bbox so reuse is a pure client
+// op: set state, no network call. If the result URL has been GC'd from the
+// bucket (signed-URL expiry, manual cleanup), the <img> just fails to
+// load — the entry still functions as a transform-only recall via the
+// "Reuse settings" path.
+interface HarmonizeHistoryEntry {
+  id: string;
+  timestamp: number;
+  mode: HarmonizeMode;
+  surfaceId: number;
+  productImageUrl: string;
+  resultImageUrl: string;
+  flatCompositeUrl: string | null;
+  bbox: { x: number; y: number; width: number; height: number };
+  transform: { scale: number; offsetX: number; offsetY: number; rotation: number; flipH: boolean };
+  elapsedMs: number;
+  // Coarse fingerprint of the source video / image being placed onto.
+  // Used to badge "same scene" entries without requiring an exact match.
+  videoFingerprint: string | null;
+}
+
+const HARMONIZE_HISTORY_KEY = "harmonize-history-v1";
+const HARMONIZE_HISTORY_LIMIT = 20;
+
+function loadHarmonizeHistory(): HarmonizeHistoryEntry[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(HARMONIZE_HISTORY_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (e: any) =>
+        e &&
+        typeof e.id === "string" &&
+        typeof e.timestamp === "number" &&
+        typeof e.resultImageUrl === "string",
+    );
+  } catch {
+    return [];
+  }
+}
+
+function saveHarmonizeHistory(entries: HarmonizeHistoryEntry[]): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      HARMONIZE_HISTORY_KEY,
+      JSON.stringify(entries.slice(0, HARMONIZE_HISTORY_LIMIT)),
+    );
+  } catch {
+    // localStorage full or disabled — silent failure, history is non-critical
+  }
+}
+
+function appendHarmonizeHistory(entry: HarmonizeHistoryEntry): HarmonizeHistoryEntry[] {
+  const existing = loadHarmonizeHistory();
+  // Dedupe: if the same surface+product+mode just ran, replace the prior
+  // entry instead of stacking — keeps the log focused on "what I've
+  // tried" rather than "every time I clicked the button."
+  const filtered = existing.filter(
+    (e) =>
+      !(
+        e.surfaceId === entry.surfaceId &&
+        e.productImageUrl === entry.productImageUrl &&
+        e.mode === entry.mode &&
+        Date.now() - e.timestamp < 60_000
+      ),
+  );
+  const next = [entry, ...filtered].slice(0, HARMONIZE_HISTORY_LIMIT);
+  saveHarmonizeHistory(next);
+  return next;
+}
+
+function clearHarmonizeHistory(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(HARMONIZE_HISTORY_KEY);
+  } catch {}
+}
+
+// Short stable fingerprint of a video/image source URL for the "same
+// scene" badge. Hash isn't cryptographic — just needs to be consistent
+// across reloads for the same src.
+function fingerprintVideoSrc(src: string | null | undefined): string | null {
+  if (!src) return null;
+  let h = 0;
+  for (let i = 0; i < src.length; i++) {
+    h = (h * 31 + src.charCodeAt(i)) | 0;
+  }
+  return h.toString(36);
+}
+
+function formatHistoryTimestamp(ms: number): string {
+  const diff = Date.now() - ms;
+  if (diff < 60_000) return "just now";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+  return `${Math.floor(diff / 86_400_000)}d ago`;
+}
+
+// ============================================================================
 // COMPUTE ASPECT-CORRECT PLACEMENT BBOX (CLIENT → SERVER)
 // ============================================================================
 //
@@ -788,6 +898,12 @@ export default function PlacementPreviewModal({
   const [harmonizeStartedAt, setHarmonizeStartedAt] = useState<number | null>(null);
   const [harmonizeElapsedMs, setHarmonizeElapsedMs] = useState(0);
   const [harmonizeDoneAt100, setHarmonizeDoneAt100] = useState(false);
+  // Rolling history of recent successful harmonize runs (localStorage-backed).
+  // Lets the user re-apply a previous result without re-running the server.
+  const [harmonizeHistory, setHarmonizeHistory] = useState<HarmonizeHistoryEntry[]>([]);
+  useEffect(() => {
+    setHarmonizeHistory(loadHarmonizeHistory());
+  }, []);
 
   // Manual harmonize state — user explicitly clicks the Harmonize button
   // (no auto-fire). Server preserves the user's exact placement+scale
@@ -2082,6 +2198,48 @@ export default function PlacementPreviewModal({
     []
   );
 
+  // Re-apply a previously logged harmonize entry. Pure client op — sets
+  // the result URLs + transform back into local state. No server call.
+  // The "Reuse settings" path restores only the transform (useful when the
+  // result image has 404'd from the bucket).
+  const reuseHarmonizeEntry = useCallback(
+    (entry: HarmonizeHistoryEntry, opts: { transformOnly?: boolean } = {}) => {
+      setTransform({
+        scale: entry.transform.scale,
+        offsetX: entry.transform.offsetX,
+        offsetY: entry.transform.offsetY,
+        rotation: entry.transform.rotation,
+        flipH: entry.transform.flipH,
+      });
+      if (!opts.transformOnly) {
+        setHarmonizeFlatUrl(entry.flatCompositeUrl);
+        setHarmonizeResultUrl(entry.resultImageUrl);
+        setLiveHarmonizedUrl(entry.resultImageUrl);
+        setHarmonizeEnabled(true);
+        setHarmonizeError(null);
+        setShowHarmonizeCompare(true);
+        toast({
+          title: "Reused previous harmonize",
+          description: `${entry.mode === "ai-3d" ? "3D" : "Procedural"} • ${formatHistoryTimestamp(entry.timestamp)}`,
+        });
+      } else {
+        toast({
+          title: "Reused placement settings",
+          description: "Transform restored — click Harmonize to regenerate.",
+        });
+      }
+    },
+    [toast],
+  );
+
+  const removeHarmonizeEntry = useCallback((id: string) => {
+    setHarmonizeHistory((prev) => {
+      const next = prev.filter((e) => e.id !== id);
+      saveHarmonizeHistory(next);
+      return next;
+    });
+  }, []);
+
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     const file = e.dataTransfer.files[0];
@@ -2385,6 +2543,30 @@ export default function PlacementPreviewModal({
                           // shows the harmonized result immediately.
                           setLiveHarmonizedUrl(data.imageUrl || null);
                           if (data.imageUrl) setHarmonizeEnabled(true);
+                          // Append to rolling history so the user can re-apply
+                          // this exact result later without rerunning.
+                          if (data.imageUrl && productPlacementBbox) {
+                            const next = appendHarmonizeHistory({
+                              id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                              timestamp: Date.now(),
+                              mode: "auto",
+                              surfaceId: selectedSurface.id,
+                              productImageUrl: productImage,
+                              resultImageUrl: data.imageUrl,
+                              flatCompositeUrl: data.flatCompositeUrl || null,
+                              bbox: productPlacementBbox,
+                              transform: {
+                                scale: transform.scale,
+                                offsetX: transform.offsetX,
+                                offsetY: transform.offsetY,
+                                rotation: transform.rotation,
+                                flipH: transform.flipH,
+                              },
+                              elapsedMs: typeof data.elapsedMs === "number" ? data.elapsedMs : 0,
+                              videoFingerprint: fingerprintVideoSrc(videoSrc),
+                            });
+                            setHarmonizeHistory(next);
+                          }
                           // Surface fallback warnings — the user asked for
                           // generative but Kontext failed; toast lets them
                           // know the better path didn't run and what they
@@ -2477,6 +2659,30 @@ export default function PlacementPreviewModal({
                           setHarmonizeResultUrl(data.imageUrl || null);
                           setLiveHarmonizedUrl(data.imageUrl || null);
                           if (data.imageUrl) setHarmonizeEnabled(true);
+                          // Append to rolling history — same shape as the
+                          // regular Harmonize button, just mode="ai-3d".
+                          if (data.imageUrl && productPlacementBbox) {
+                            const next = appendHarmonizeHistory({
+                              id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                              timestamp: Date.now(),
+                              mode: "ai-3d",
+                              surfaceId: selectedSurface.id,
+                              productImageUrl: productImage,
+                              resultImageUrl: data.imageUrl,
+                              flatCompositeUrl: data.flatCompositeUrl || null,
+                              bbox: productPlacementBbox,
+                              transform: {
+                                scale: transform.scale,
+                                offsetX: transform.offsetX,
+                                offsetY: transform.offsetY,
+                                rotation: transform.rotation,
+                                flipH: transform.flipH,
+                              },
+                              elapsedMs: typeof data.elapsedMs === "number" ? data.elapsedMs : 0,
+                              videoFingerprint: fingerprintVideoSrc(videoSrc),
+                            });
+                            setHarmonizeHistory(next);
+                          }
                         } catch (err: any) {
                           setHarmonizeError(err.message || "3D Harmonization failed");
                         } finally {
@@ -3605,6 +3811,140 @@ export default function PlacementPreviewModal({
                       path that generates scene-native pixels.
                     </p>
                   </div>
+                </div>
+              )}
+
+              {/* Recent harmonize history — local-only rolling log so the
+                  user can re-apply a prior result without burning another
+                  12-60s server roundtrip. Same-context entries get badges
+                  so the most relevant runs surface visually. */}
+              {!isHarmonizing && harmonizeHistory.length > 0 && (
+                <div className="mt-6 pt-4 border-t border-white/10">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-medium text-white">
+                        Recent harmonizes
+                      </span>
+                      <Badge variant="outline" className="text-[10px] h-4 px-1.5">
+                        {harmonizeHistory.length}
+                      </Badge>
+                    </div>
+                    <button
+                      onClick={() => {
+                        clearHarmonizeHistory();
+                        setHarmonizeHistory([]);
+                        toast({ title: "Cleared harmonize history" });
+                      }}
+                      className="text-[10px] text-muted-foreground hover:text-white transition-colors"
+                      data-testid="button-clear-harmonize-history"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                  <div className="flex gap-2 overflow-x-auto pb-2 -mx-1 px-1">
+                    {harmonizeHistory.map((entry) => {
+                      const sameSurface = selectedSurface?.id === entry.surfaceId;
+                      const sameProduct = productImage === entry.productImageUrl;
+                      const sameScene =
+                        entry.videoFingerprint != null &&
+                        entry.videoFingerprint === fingerprintVideoSrc(videoSrc);
+                      return (
+                        <div
+                          key={entry.id}
+                          className="group relative flex-shrink-0 w-28 rounded-md border border-white/10 bg-zinc-900/60 overflow-hidden hover:border-emerald-400/60 transition-colors"
+                          data-testid={`history-entry-${entry.id}`}
+                        >
+                          <button
+                            onClick={() => reuseHarmonizeEntry(entry)}
+                            className="block w-full"
+                            title={`Reuse: ${entry.mode === "ai-3d" ? "3D Harmonize" : "Harmonize"} • ${formatHistoryTimestamp(entry.timestamp)}`}
+                          >
+                            <div className="aspect-video bg-black flex items-center justify-center">
+                              <img
+                                src={entry.resultImageUrl}
+                                alt={`Harmonize from ${formatHistoryTimestamp(entry.timestamp)}`}
+                                className="w-full h-full object-cover"
+                                loading="lazy"
+                                onError={(e) => {
+                                  // Result image was GC'd — show a fallback
+                                  // tile so the entry still functions for
+                                  // transform recall.
+                                  (e.currentTarget as HTMLImageElement).style.display = "none";
+                                  (e.currentTarget.nextSibling as HTMLElement | null)?.classList.remove("hidden");
+                                }}
+                              />
+                              <span className="hidden text-[10px] text-muted-foreground px-2 text-center">
+                                Image expired
+                              </span>
+                            </div>
+                            <div className="p-1.5 flex flex-col gap-1">
+                              <div className="flex items-center justify-between gap-1">
+                                <Badge
+                                  variant="outline"
+                                  className={cn(
+                                    "text-[9px] h-3.5 px-1 leading-none",
+                                    entry.mode === "ai-3d"
+                                      ? "border-violet-400/50 text-violet-300"
+                                      : "border-emerald-400/50 text-emerald-300",
+                                  )}
+                                >
+                                  {entry.mode === "ai-3d" ? "3D" : "Auto"}
+                                </Badge>
+                                <span className="text-[9px] text-muted-foreground">
+                                  {formatHistoryTimestamp(entry.timestamp)}
+                                </span>
+                              </div>
+                              {(sameSurface || sameProduct || sameScene) && (
+                                <div className="flex flex-wrap gap-0.5">
+                                  {sameSurface && (
+                                    <span className="text-[8px] px-1 py-0.5 rounded bg-emerald-500/15 text-emerald-300 leading-none">
+                                      surface
+                                    </span>
+                                  )}
+                                  {sameProduct && (
+                                    <span className="text-[8px] px-1 py-0.5 rounded bg-emerald-500/15 text-emerald-300 leading-none">
+                                      product
+                                    </span>
+                                  )}
+                                  {sameScene && !sameSurface && (
+                                    <span className="text-[8px] px-1 py-0.5 rounded bg-emerald-500/15 text-emerald-300 leading-none">
+                                      scene
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          </button>
+                          <div className="absolute top-1 right-1 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                reuseHarmonizeEntry(entry, { transformOnly: true });
+                              }}
+                              className="p-0.5 rounded bg-black/60 hover:bg-black/90 text-white"
+                              title="Restore transform only (re-run server)"
+                            >
+                              <RotateCcw className="w-2.5 h-2.5" />
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                removeHarmonizeEntry(entry.id);
+                              }}
+                              className="p-0.5 rounded bg-black/60 hover:bg-red-600 text-white"
+                              title="Remove from history"
+                            >
+                              <X className="w-2.5 h-2.5" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <p className="text-[10px] text-muted-foreground mt-2">
+                    Click a tile to re-apply that result instantly. Hover for
+                    "transform only" (re-run with the same placement) or remove.
+                  </p>
                 </div>
               )}
             </div>
