@@ -4265,18 +4265,27 @@ export async function registerRoutes(
         // Extract thumbnail SYNCHRONOUSLY before responding. User feedback:
         // "I really hate that the My Library doesn't pull a thumbnail into
         // the container immediately." Was running in background → library
-        // card showed blank for up to 15s while React Query polled. Worth
-        // ~1-2s extra latency on the upload response to land a real
-        // thumbnail in the library immediately. Hard 5s timeout — if
-        // ffmpeg hangs on a tricky codec we don't block the upload.
+        // card showed blank for up to 15s while React Query polled.
+        //
+        // 15s timeout (was 5s). Extraction has to round-trip: download
+        // video back from GCS (~3-5s for 50MB), ffmpeg seek + frame
+        // (~1-2s), upload thumbnail to GCS (~1s). 5s was getting hit
+        // before extraction could complete. 15s covers >95% of uploads.
+        // Promise.race still allows the slow path to update the DB after
+        // the response is sent — library's next 15s poll picks it up.
         let thumbnailUrl: string | null = null;
         try {
+          // Capture the in-flight extraction so it keeps running after we
+          // detach. Sets the DB column when it eventually finishes, so the
+          // library's next refetch shows the thumbnail even if we time out.
+          const extractionPromise = extractThumbnailForVideo(video.id);
+          extractionPromise.catch(() => {}); // prevent unhandled rejection if we detach
           thumbnailUrl = await Promise.race([
-            extractThumbnailForVideo(video.id),
+            extractionPromise,
             new Promise<null>(resolve => setTimeout(() => {
-              console.warn(`[UPLOAD] Thumbnail extraction timed out at 5s — responding without`);
+              console.warn(`[UPLOAD] Thumbnail extraction >15s — responding without; DB will get it when ffmpeg finishes`);
               resolve(null);
-            }, 5000)),
+            }, 15000)),
           ]);
           if (thumbnailUrl) {
             phaseLog(`thumbnail extracted: ${thumbnailUrl}`);
