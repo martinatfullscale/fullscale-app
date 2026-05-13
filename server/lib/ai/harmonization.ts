@@ -492,6 +492,59 @@ async function lockProductOverHarmonized(
     }
   }
 
+  // ── Alpha-feather the bbox rectangle's outer edge ────────────────
+  // The lock pass lays `productAtSize` (a pxW × pxH layer) on top of
+  // the PASS 1 output. The product PNG has its own silhouette alpha,
+  // but anything painted by PASS 1 onto the SCENE inside the bbox
+  // (cast shadows blurred against the rect boundary, brightness halos,
+  // tint bleed) shows as a faint rectangle ghost in the final output
+  // — exactly the "bbox around the product" the user reported.
+  //
+  // Fix: feather the OUTER 8-12px of the bbox rectangle so the layer
+  // fades to transparent right at the boundary. The product's own
+  // alpha is intersected with this rectangular feather, so the
+  // silhouette interior stays 100% opaque (sharp bottle edges) but
+  // anything within ~feather-px of the bbox border softly fades.
+  //
+  // Defense in depth: even if a future op accidentally paints into a
+  // rectangular region, this fade hides the boundary.
+  const FEATHER_PX = clamp(
+    Math.round(Math.min(pxW, pxH) * 0.05),
+    8,
+    20,
+  );
+  try {
+    const innerW = Math.max(1, pxW - FEATHER_PX * 2);
+    const innerH = Math.max(1, pxH - FEATHER_PX * 2);
+    const opaqueInnerRect = await sharp({
+      create: {
+        width: innerW, height: innerH, channels: 4,
+        background: { r: 255, g: 255, b: 255, alpha: 1 },
+      },
+    }).png().toBuffer();
+    const featherMask = await sharp({
+      create: {
+        width: pxW, height: pxH, channels: 4,
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
+      },
+    })
+      .composite([{ input: opaqueInnerRect, left: FEATHER_PX, top: FEATHER_PX }])
+      .blur(FEATHER_PX)
+      .png()
+      .toBuffer();
+    // `dest-in` keeps the destination's color where the source has alpha
+    // and multiplies destination alpha by source alpha — so the product's
+    // existing silhouette alpha is preserved in the interior and faded
+    // to 0 at the outer FEATHER_PX rim of the bbox.
+    productAtSize = await sharp(productAtSize)
+      .composite([{ input: featherMask, blend: "dest-in" }])
+      .png()
+      .toBuffer();
+    console.log(`[Harmonize/lock] Applied ${FEATHER_PX}px alpha-feather to bbox edge`);
+  } catch (err: any) {
+    console.warn(`[Harmonize/lock] Feather mask failed (continuing without): ${err?.message}`);
+  }
+
   console.log(`[Harmonize/lock] Compositing locked product at bbox: ${pxW}x${pxH} @ (${pxX}, ${pxY})`);
 
   return sharp(harmonizedSceneBuf)
@@ -1414,6 +1467,62 @@ async function applyProceduralHarmonization(
 
   const tightShadowOffsetY = Math.max(2, Math.round(finalH * 0.015));
   const composites: Array<{ input: Buffer; left: number; top: number; blend?: any }> = [];
+
+  // ── Contact (ground) shadow ──────────────────────────────────────
+  // A real product resting on a surface casts a darker pool right at
+  // its base — ambient occlusion where the object meets the ground.
+  // Without this, the product reads as floating even when the cast
+  // shadow is correct. Renders ONLY when the surface is horizontal
+  // (table, counter, turntable) — wall-mounted products don't have
+  // a ground pool.
+  //
+  // The shape is a squat ellipse: ~95% of product width, ~20% of
+  // product width tall. Centered horizontally on the product. Top
+  // positioned so 70% of the ellipse extends BELOW the product base
+  // (the visible ground shadow); the remaining 30% is hidden when
+  // the product is painted on top.
+  const surfaceNormal = options?.regionAnalysis?.surfaceNormal;
+  const wantContactShadow = surfaceNormal !== "vertical"; // default true
+  if (wantContactShadow && finalH >= 60) {
+    try {
+      const contactW = Math.max(20, Math.round(finalW * 0.95));
+      const contactH = Math.max(8, Math.round(finalW * 0.20));
+      // SVG ellipse → sharp PNG. Inline opacity in fill makes the
+      // darkest spot in the center and the blur softens the edges.
+      const contactAlpha = clamp(0.45 * lightIntensity, 0.20, 0.55);
+      const ellipseSvg =
+        `<svg width="${contactW}" height="${contactH}" xmlns="http://www.w3.org/2000/svg">` +
+        `<ellipse cx="${contactW / 2}" cy="${contactH / 2}" ` +
+        `rx="${contactW / 2 - 1}" ry="${contactH / 2 - 1}" ` +
+        `fill="rgba(0,0,0,${contactAlpha})" />` +
+        `</svg>`;
+      const contactBlur = Math.max(3, Math.round(contactW * 0.04));
+      const contactShadowBuf = await sharp(Buffer.from(ellipseSvg))
+        .blur(contactBlur)
+        .png()
+        .toBuffer();
+      // Position: centered horizontally on the product, top-edge sits
+      // at 70% of the ellipse height ABOVE the product's base. So 30%
+      // of the ellipse sits behind the product silhouette (hidden when
+      // product paints on top) and 70% extends below as visible ground
+      // shadow on the surface.
+      const contactLeft = offsetX + Math.round((finalW - contactW) / 2);
+      const contactTop = offsetY + finalH - Math.round(contactH * 0.3);
+      composites.push({
+        input: contactShadowBuf,
+        left: contactLeft,
+        top: contactTop,
+        blend: "over",
+      });
+      console.log(
+        `[Harmonize/proc] Contact shadow: ${contactW}×${contactH} @ alpha ${contactAlpha.toFixed(2)} ` +
+        `blur ${contactBlur}px positioned (${contactLeft}, ${contactTop})`,
+      );
+    } catch (err: any) {
+      console.warn(`[Harmonize/proc] Contact shadow failed: ${err?.message || err}`);
+    }
+  }
+
   if (softShadowBuf.length > 0) {
     composites.push({
       input: softShadowBuf,
