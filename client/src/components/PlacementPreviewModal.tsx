@@ -650,12 +650,17 @@ function computeAspectCorrectPlacementBbox(args: {
   const offsetYNorm = transform.offsetY / Math.max(1, canvas.height);
   const centerXNorm = surface.boundingBoxX + surfaceW / 2 + offsetXNorm;
   const centerYNorm = surface.boundingBoxY + surfaceH / 2 + offsetYNorm;
-  return {
-    x: Math.max(0, Math.min(1, centerXNorm - drawW / 2)),
-    y: Math.max(0, Math.min(1, centerYNorm - drawH / 2)),
-    width: Math.max(0.01, Math.min(1, drawW)),
-    height: Math.max(0.01, Math.min(1, drawH)),
-  };
+
+  // Two-sided clamp so the product cannot extend off the right/bottom
+  // edge of the frame. Previously we only clamped the top-left to [0,1]
+  // which let the bbox extend past the right/bottom edge (the "bottle
+  // clipped at the left of the frame" bug — user dragged toward the
+  // edge and we sent a bbox the server couldn't fully render).
+  const finalW = Math.max(0.01, Math.min(1, drawW));
+  const finalH = Math.max(0.01, Math.min(1, drawH));
+  const finalX = Math.max(0, Math.min(1 - finalW, centerXNorm - finalW / 2));
+  const finalY = Math.max(0, Math.min(1 - finalH, centerYNorm - finalH / 2));
+  return { x: finalX, y: finalY, width: finalW, height: finalH };
 }
 
 // ============================================================================

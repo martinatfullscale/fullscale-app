@@ -729,20 +729,48 @@ async function estimateSceneAngleFromDepth(
 }
 
 /**
+ * Surface types where the placement is on a horizontal plane (the bottle
+ * stands vertical, period). Depth-Anything's vertical gradient sampling
+ * can misread the depth fall-off of a horizontal surface (e.g. a turntable
+ * platter, a table receding from the camera) and infer a non-zero pitch
+ * that visibly tilts the product. For these we skip pitch shear entirely.
+ *
+ * Match is case-insensitive + substring — covers "table", "tabletop",
+ * "side table", "coffee table", etc.
+ */
+const HORIZONTAL_SURFACE_TOKENS = [
+  "table", "counter", "countertop", "shelf", "tabletop", "platter",
+  "turntable", "deck", "floor", "ground", "desk", "bar top", "bar",
+  "tray", "podium", "stand", "ledge",
+];
+
+function isHorizontalSurface(surfaceType: string | undefined | null): boolean {
+  if (!surfaceType) return false;
+  const norm = surfaceType.toLowerCase();
+  return HORIZONTAL_SURFACE_TOKENS.some((t) => norm.includes(t));
+}
+
+/**
  * Apply a vertical perspective shear via sharp affine to simulate a small
  * pitch angle. TRELLIS turnaround MP4 only varies yaw; pitch we have to
- * fake at the 2D level. ±20° pitch produces a noticeable shear that reads
- * as "looking at the product from above/below" without needing a real
- * GLB re-render. Larger pitch values would benefit from actual 3D render
- * (the next iteration of this work).
+ * fake at the 2D level. Larger pitch values would benefit from actual 3D
+ * render (Phase 2 of this work).
+ *
+ * Clamped to ±5° — beyond that, 2D shear stops reading as perspective and
+ * starts reading as visible distortion (the "twisted bottle" user issue).
+ * Depth-Anything's raw estimate was reaching ±30°, which is what produced
+ * the visibly skewed product. For real perspective beyond 5° we need a
+ * proper 3D render.
  */
 async function applyPitchShear(
   imageBuf: Buffer,
   pitchDeg: number,
 ): Promise<Buffer> {
-  if (Math.abs(pitchDeg) < 3) return imageBuf;
+  const PITCH_CAP_DEG = 5;
+  const clamped = Math.max(-PITCH_CAP_DEG, Math.min(PITCH_CAP_DEG, pitchDeg));
+  if (Math.abs(clamped) < 3) return imageBuf;
   const sharp = (await import("sharp")).default;
-  const radians = (pitchDeg * Math.PI) / 180;
+  const radians = (clamped * Math.PI) / 180;
   const shearAmount = Math.tan(radians) * 0.5;
   // sharp affine: [a, b, c, d] is the transform matrix
   // For vertical shear (y' = y + shearAmount * x): [1, 0, shearAmount, 1]
@@ -906,6 +934,20 @@ async function applyProceduralHarmonization(
   bbox: HarmonizationInput["bbox"],
   dims: HarmonizationInput["frameDimensions"],
   lighting?: { direction?: string; intensity?: number },
+  options?: {
+    // Optional original product buffer used SOLELY to build the
+    // `flatComposite` output. When the caller passes a `productBuf` that
+    // has been pitch-sheared / IC-Light-relit / TRELLIS-rendered, that
+    // modified buffer is what feeds the harmonized `result` — but the
+    // "flat" composite should remain an honest baseline (the bare PNG
+    // the user already sees on the canvas, no processing). Pass the
+    // pre-processing product here to keep the flat overlay truly flat.
+    //
+    // Bug this fixes: ai-3d mode was generating the flat composite from
+    // the sheared product, so the "flat overlay" the user saw also had
+    // the (sometimes wrong) pitch tilt baked in.
+    flatCompositeProductBuf?: Buffer;
+  },
 ): Promise<{
   result: Buffer;
   flatComposite: Buffer;
@@ -976,8 +1018,40 @@ async function applyProceduralHarmonization(
   const offsetY = pxY;
 
   // ── Step 2: build flat composite (Stage 1, no AI) ──
+  // The flat composite is the honest baseline — what the user already
+  // sees on the canvas, nothing more. If the caller has pre-processed
+  // `productBuf` (pitch shear, IC-Light relight, TRELLIS render), they
+  // can pass the ORIGINAL untouched product as `options.flatCompositeProductBuf`
+  // so the flat overlay doesn't inherit any of those modifications.
+  let flatProductBuf = options?.flatCompositeProductBuf;
+  if (flatProductBuf) {
+    // The original may not have alpha — auto-strip just like we do for
+    // the working buffer above, so the flat overlay doesn't paint a
+    // rectangle background onto the scene.
+    try {
+      const origMeta = await sharp(flatProductBuf).metadata();
+      if (!origMeta.hasAlpha && process.env.FAL_KEY) {
+        const tempUrl = await uploadBuffer(flatProductBuf, "product-flat-noalpha.png", "image/png");
+        const cleanUrl = await removeBackgroundForCompositing(tempUrl);
+        if (cleanUrl) {
+          const cleanRes = await fetch(cleanUrl);
+          if (cleanRes.ok) {
+            flatProductBuf = Buffer.from(await cleanRes.arrayBuffer());
+          }
+        }
+      }
+    } catch (err: any) {
+      console.warn(`[Harmonize/proc] Flat-overlay alpha strip failed: ${err?.message}`);
+    }
+  } else {
+    flatProductBuf = workingProductBuf;
+  }
+  const flatProductResized = await sharp(flatProductBuf)
+    .resize(pxW, pxH, { fit: "fill", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+    .png()
+    .toBuffer();
   const flatComposite = await sharp(sceneBuf)
-    .composite([{ input: productResized, left: offsetX, top: offsetY }])
+    .composite([{ input: flatProductResized, left: offsetX, top: offsetY }])
     .png()
     .toBuffer();
 
@@ -1479,6 +1553,14 @@ export async function harmonizeProductIntoScene(
         // pitch shear of the original product image, then the standard
         // bg-removal → IC-Light → procedural pipeline runs as before.
         const useTrellis = process.env.HARMONIZE_USE_TRELLIS === "true";
+        // Suppress depth-based pitch on horizontal surfaces. Bottles on a
+        // turntable / counter / tabletop stand VERTICAL — Depth-Anything's
+        // vertical-gradient sampling reads the depth fall-off as a tilt
+        // and produces a visibly skewed product. Geometric fact: any
+        // upright product on a horizontal plane has zero pitch relative
+        // to the camera's vertical axis.
+        const surfaceType = (input as any).surfaceType || "";
+        const surfaceIsHorizontal = isHorizontalSurface(surfaceType);
         const [trellisResult, depthAngle] = await Promise.all([
           useTrellis
             ? runTrellis3D(productBuf).catch((err) => {
@@ -1486,13 +1568,18 @@ export async function harmonizeProductIntoScene(
                 return null;
               })
             : Promise.resolve(null),
-          estimateSceneAngleFromDepth(sceneBuf, input.bbox, input.frameDimensions),
+          surfaceIsHorizontal
+            ? Promise.resolve(null)
+            : estimateSceneAngleFromDepth(sceneBuf, input.bbox, input.frameDimensions),
         ]);
         const trellis = trellisResult ?? { renderUrl: "", meshUrl: undefined, turnaroundVideoUrl: undefined };
         trellisRenderUrl = trellis.renderUrl;
         meshUrl = trellis.meshUrl;
         if (!useTrellis) {
           console.log(`[Harmonize/ai-3d] TRELLIS skipped (HARMONIZE_USE_TRELLIS≠true) — saved ~60s. Using original product image with depth-derived pitch shear.`);
+        }
+        if (surfaceIsHorizontal) {
+          console.log(`[Harmonize/ai-3d] Surface "${surfaceType}" is horizontal → skipping depth-based pitch shear (product stays vertical).`);
         }
 
         // Stage A.1 — pull the angle-specific frame from the turnaround MP4.
@@ -1621,9 +1708,15 @@ export async function harmonizeProductIntoScene(
 
       // PASS 1: TRELLIS (3D mesh) + procedural composite + IC-Light
       // produces a scene with the modified/relit product at the bbox.
+      // CRITICAL: pass the ORIGINAL `productBuf` as the flat-composite
+      // source. Otherwise the "flat overlay" we ship back would inherit
+      // the pitch shear / IC-Light tint from `renderedProductBuf` — and
+      // the user would see a "flat" baseline that's already been
+      // processed (the "twisted bottle on flat overlay" bug).
       const { result, flatComposite, atmosphere } = await applyProceduralHarmonization(
         sceneBuf, renderedProductBuf, input.bbox, input.frameDimensions,
         { direction: input.lightingDirection, intensity: input.lightingIntensity },
+        { flatCompositeProductBuf: productBuf },
       );
 
       // PASS 2: Lock the ORIGINAL product (not the TRELLIS-rendered or
