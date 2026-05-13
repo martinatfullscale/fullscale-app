@@ -27,6 +27,7 @@
 
 import { fal } from "@fal-ai/client";
 import sharp from "sharp";
+import { renderGlbAtAngle } from "./glbRenderer";
 
 export interface HarmonizationInput {
   /** URL or local path to the base scene frame (jpg/png). */
@@ -1012,7 +1013,7 @@ async function removeBackgroundForCompositing(imageUrl: string): Promise<string 
  * caller falls back to procedural mode and the product still ships.
  */
 async function runTrellis3D(productBuf: Buffer): Promise<{
-  renderUrl: string;
+  renderUrl?: string;
   meshUrl?: string;
   turnaroundVideoUrl?: string;
 }> {
@@ -1063,34 +1064,33 @@ async function runTrellis3D(productBuf: Buffer): Promise<{
     data?.image?.url;
 
   if (!renderUrl && !turnaroundVideoUrl) {
-    // No rendered preview available — fall back to the input image so
-    // the procedural pipeline still has a product to composite.
-    console.warn(`[Harmonize/trellis] No rendered preview in response; using input image. Mesh URL: ${meshUrl ?? "(none)"}`);
-    return { renderUrl: productUrl, meshUrl };
+    // Expected path as of 2025/2026: fal-ai/trellis returns mesh ONLY.
+    // Caller is responsible for rendering the GLB via glbRenderer.ts.
+    // We deliberately do NOT smuggle productUrl back as renderUrl here —
+    // doing so masks the "no real render" state and tricks the
+    // orchestrator into compositing the 2D input image at full TRELLIS
+    // latency cost.
+    console.log(`[Harmonize/trellis] Mesh-only response (renderer will rasterize). Mesh URL: ${meshUrl ?? "(none)"}`);
+    return { meshUrl };
   }
   console.log(`[Harmonize/trellis] Render URL: ${renderUrl ?? "(none)"}, turnaround: ${turnaroundVideoUrl ?? "(none)"}, mesh URL: ${meshUrl ?? "(none)"}`);
-  return { renderUrl: renderUrl ?? productUrl, meshUrl, turnaroundVideoUrl };
+  return { renderUrl, meshUrl, turnaroundVideoUrl };
 }
 
 /**
- * Hunyuan3D-2 (Tencent, hosted on fal.ai as fal-ai/hunyuan3d-v2) —
- * Image → textured 3D mesh AND a rendered preview image.
+ * Hunyuan3D-2 (Tencent, hosted on fal.ai as fal-ai/hunyuan3d/v2) —
+ * Image → textured 3D mesh (GLB).
  *
- * Why it exists in addition to TRELLIS: fal-ai/trellis returns only a
- * GLB mesh URL (no preview image, no turnaround video). Without a
- * preview, our ai-3d pipeline can't actually composite a 3D render
- * into the scene — it falls back to using the original 2D product
- * image (we paid ~60s of TRELLIS latency for nothing). Hunyuan-3D-2
- * returns BOTH the mesh AND a rendered image, so it's the path that
- * actually delivers a 3D-aware product render.
+ * NOTE: Despite earlier comments here, Hunyuan-3D-2 only returns a mesh —
+ * NO rendered preview image, NO turnaround video. Same as TRELLIS. The
+ * full 3D-aware render comes from feeding the GLB into glbRenderer.ts.
  *
- * Falls back to TRELLIS if Hunyuan errors. Falls back to null if both
- * fail (caller continues with original 2D product + depth-shear).
+ * Falls back to null on error (caller drops back to the next mesh source).
  *
- * Cost: ~$0.20/inference. Latency: ~30-60s.
+ * Cost: ~$0.16/inference (white mesh) or ~$0.48 (textured). Latency: ~30-60s.
  */
 async function runHunyuan3D(productBuf: Buffer): Promise<{
-  renderUrl: string;
+  renderUrl?: string;
   meshUrl?: string;
   turnaroundVideoUrl?: string;
 } | null> {
@@ -1106,7 +1106,8 @@ async function runHunyuan3D(productBuf: Buffer): Promise<{
     //   { model_mesh: {url}, textured_mesh: {url}, rendered_preview: {url?}, ... }
     // Field names may vary across the fal-ai/hunyuan3d-* family — we
     // defensively check several variants.
-    const result: any = await fal.subscribe("fal-ai/hunyuan3d-v2", {
+    // Correct endpoint slug is "hunyuan3d/v2" (slash). The "-v2" form 404s.
+    const result: any = await fal.subscribe("fal-ai/hunyuan3d/v2", {
       input: { input_image_url: productUrl } as any,
       logs: false,
     });
@@ -1134,12 +1135,15 @@ async function runHunyuan3D(productBuf: Buffer): Promise<{
       `[Harmonize/hunyuan3d] mesh:${meshUrl ?? "(none)"} render:${renderUrl ?? "(none)"} turnaround:${turnaroundVideoUrl ?? "(none)"} ` +
       `keys:${Object.keys(data || {}).join(",")}`,
     );
-    if (!renderUrl && !turnaroundVideoUrl) {
-      console.warn(`[Harmonize/hunyuan3d] No rendered preview in response — falling back`);
+    // Hunyuan-3D-2 typically returns mesh ONLY. That's fine now — the
+    // caller (runProduct3DGeneration → harmonize pipeline) will rasterize
+    // the GLB via glbRenderer.ts. Only bail out if we got literally nothing.
+    if (!renderUrl && !turnaroundVideoUrl && !meshUrl) {
+      console.warn(`[Harmonize/hunyuan3d] No mesh OR render in response — falling back`);
       return null;
     }
     return {
-      renderUrl: renderUrl ?? "",
+      renderUrl,
       meshUrl,
       turnaroundVideoUrl,
     };
@@ -1150,40 +1154,160 @@ async function runHunyuan3D(productBuf: Buffer): Promise<{
 }
 
 /**
- * Unified 2D→3D pipeline. Tries Hunyuan3D first (returns rendered
- * preview), falls back to TRELLIS (mesh only — caller would need an
- * external renderer to use it). Returns null if both fail or 3D is
- * disabled.
+ * Hunyuan3D v3 (Tencent, hosted on fal.ai as fal-ai/hunyuan3d-v3/image-to-3d) —
+ * the current state-of-the-art image→3D model as of 2026.
  *
- * Toggle: HARMONIZE_USE_3D=true (preferred) OR legacy HARMONIZE_USE_TRELLIS=true.
+ * Why v3 over v2: 8K PBR textures (vs v2's 1K), film-quality geometry, and
+ * a thumbnail render included in the response. Community benchmarks rate
+ * v3 above Rodin (4K PBR) for product-photography fidelity, and it's
+ * cheaper than Rodin to boot.
+ *
+ * For brand-critical product placement this matters because the textures
+ * are baked from the actual product image. Higher texture resolution =
+ * crisper logos and labels in the final composite.
+ *
+ * Response shape:
+ *   {
+ *     model_glb: { url, ... },
+ *     thumbnail: { url, ... },        // canonical 3/4 preview render
+ *     model_urls: { glb, fbx, obj, usdz },
+ *     seed: number
+ *   }
+ *
+ * Returns null on error so the caller can fall back to v2 / Trellis.
  */
-async function runProduct3DGeneration(productBuf: Buffer): Promise<{
-  renderUrl: string;
+async function runHunyuan3DV3(productBuf: Buffer): Promise<{
+  renderUrl?: string;
   meshUrl?: string;
   turnaroundVideoUrl?: string;
-  source: "hunyuan" | "trellis";
+} | null> {
+  const falKey = process.env.FAL_KEY;
+  if (!falKey) return null;
+  fal.config({ credentials: falKey });
+
+  try {
+    const productUrl = await uploadBuffer(productBuf, "product-hunyuan-v3.png", "image/png");
+    console.log(`[Harmonize/hunyuan3d-v3] Uploaded product to fal: ${productUrl}`);
+    const t0 = Date.now();
+    const result: any = await fal.subscribe("fal-ai/hunyuan3d-v3/image-to-3d", {
+      input: {
+        input_image_url: productUrl,
+        // PBR materials are the whole point of using v3 — without this
+        // we lose the texture-quality edge over v2. Default in the API
+        // is reportedly off, so we set it explicitly.
+        enable_pbr: true,
+        // 500k faces is the v3 default and gives strong geometric detail
+        // without ballooning render time. Raise to 1.5M for hero shots
+        // if quality testing shows it's needed.
+        face_count: 500000,
+        generate_type: "Normal",
+        polygon_type: "triangle",
+      } as any,
+      logs: false,
+    });
+    const elapsed = Date.now() - t0;
+    console.log(`[Harmonize/hunyuan3d-v3] Inference complete in ${elapsed}ms`);
+
+    const data = result?.data ?? result;
+    // Defensive parsing — exact field names vary across fal endpoint
+    // versions. v3 docs say `model_glb` + `thumbnail` but we check the
+    // legacy v2 names too in case fal normalizes them later.
+    const meshUrl: string | undefined =
+      data?.model_glb?.url ??
+      data?.model_urls?.glb ??
+      data?.model_mesh?.url ??
+      data?.textured_mesh?.url ??
+      data?.mesh?.url ??
+      data?.glb_url;
+    const renderUrl: string | undefined =
+      data?.thumbnail?.url ??
+      data?.preview?.url ??
+      data?.rendered_preview?.url ??
+      data?.image?.url;
+
+    console.log(
+      `[Harmonize/hunyuan3d-v3] mesh:${meshUrl ?? "(none)"} thumbnail:${renderUrl ?? "(none)"} ` +
+        `keys:${Object.keys(data || {}).join(",")}`,
+    );
+    if (!meshUrl && !renderUrl) {
+      console.warn(`[Harmonize/hunyuan3d-v3] No mesh OR thumbnail in response — falling back`);
+      return null;
+    }
+    return { renderUrl, meshUrl };
+  } catch (err: any) {
+    console.warn(`[Harmonize/hunyuan3d-v3] Failed (${err?.message || err})`);
+    return null;
+  }
+}
+
+/**
+ * Unified 2D→3D pipeline. Priority order:
+ *   1. Hunyuan3D v3 (SOTA 2026 — 8K PBR textures, film-quality geometry,
+ *      thumbnail render included). Best brand-fidelity for product shots.
+ *   2. Hunyuan3D v2 (proven — used in production through early 2026).
+ *      Mesh-only, ~1K textures.
+ *   3. TRELLIS (cheap fallback, $0.02/gen — visual fidelity but weaker
+ *      PBR. Last resort.)
+ *
+ * All return GLB mesh + optional preview. The harmonize pipeline always
+ * feeds the GLB into glbRenderer.ts for the scene-aware render — the
+ * thumbnail (when present) is only used as a fallback if the renderer
+ * itself fails.
+ *
+ * Returns null if all three fail or 3D is disabled.
+ *
+ * Env toggles:
+ *   HARMONIZE_USE_3D=true              — master switch (preferred)
+ *   HARMONIZE_USE_TRELLIS=true         — legacy alias for HARMONIZE_USE_3D
+ *   HARMONIZE_MESH_SOURCE=v3|v2|trellis — pin a specific model (skip ladder)
+ */
+async function runProduct3DGeneration(productBuf: Buffer): Promise<{
+  renderUrl?: string;
+  meshUrl?: string;
+  turnaroundVideoUrl?: string;
+  source: "hunyuan-v3" | "hunyuan-v2" | "trellis";
 } | null> {
   const use3D = process.env.HARMONIZE_USE_3D === "true" ||
                 process.env.HARMONIZE_USE_TRELLIS === "true";
   if (!use3D) return null;
 
-  // Try Hunyuan3D first — it returns a rendered preview, which is what
-  // we actually need for compositing. TRELLIS without an external GLB
-  // renderer can't produce an image we can use.
-  const hunyuan = await runHunyuan3D(productBuf).catch(() => null);
-  if (hunyuan && (hunyuan.renderUrl || hunyuan.turnaroundVideoUrl)) {
-    return { ...hunyuan, source: "hunyuan" };
+  const pin = (process.env.HARMONIZE_MESH_SOURCE || "").toLowerCase();
+
+  // Tier 1: Hunyuan3D v3 — SOTA for product photography as of 2026.
+  if (!pin || pin === "v3" || pin === "hunyuan-v3") {
+    const v3 = await runHunyuan3DV3(productBuf).catch(() => null);
+    if (v3 && (v3.meshUrl || v3.renderUrl)) {
+      return { ...v3, source: "hunyuan-v3" };
+    }
+    if (pin === "v3" || pin === "hunyuan-v3") {
+      console.warn(`[Harmonize/3d-gen] HARMONIZE_MESH_SOURCE pinned to v3 but it failed — returning null`);
+      return null;
+    }
   }
 
-  // Fallback to TRELLIS (mesh-only — preview will be empty, but if the
-  // fal endpoint ever starts returning previews this picks them up).
-  try {
-    const trellis = await runTrellis3D(productBuf);
-    if (trellis.renderUrl || trellis.turnaroundVideoUrl) {
-      return { ...trellis, source: "trellis" };
+  // Tier 2: Hunyuan3D v2 — proven path.
+  if (!pin || pin === "v2" || pin === "hunyuan-v2") {
+    const v2 = await runHunyuan3D(productBuf).catch(() => null);
+    if (v2 && (v2.meshUrl || v2.renderUrl || v2.turnaroundVideoUrl)) {
+      return { ...v2, source: "hunyuan-v2" };
     }
-  } catch (err: any) {
-    console.warn(`[Harmonize/3d-gen] TRELLIS fallback also failed: ${err?.message || err}`);
+    if (pin === "v2" || pin === "hunyuan-v2") {
+      console.warn(`[Harmonize/3d-gen] HARMONIZE_MESH_SOURCE pinned to v2 but it failed — returning null`);
+      return null;
+    }
+  }
+
+  // Tier 3: TRELLIS — last-resort fallback. Cheap ($0.02) but lower
+  // texture quality than Hunyuan v3/v2.
+  if (!pin || pin === "trellis") {
+    try {
+      const trellis = await runTrellis3D(productBuf);
+      if (trellis.meshUrl || trellis.renderUrl || trellis.turnaroundVideoUrl) {
+        return { ...trellis, source: "trellis" };
+      }
+    } catch (err: any) {
+      console.warn(`[Harmonize/3d-gen] TRELLIS fallback also failed: ${err?.message || err}`);
+    }
   }
 
   return null;
@@ -2072,19 +2196,22 @@ export async function harmonizeProductIntoScene(
       const regionAnalysis = await regionAnalysisPromise;
 
       try {
-        // Stage A.0 — depth analysis. TRELLIS by default is now SKIPPED
-        // because fal-ai/trellis returns only a GLB mesh URL (no preview
-        // image, no turnaround video) — verified in production logs:
-        //   [Harmonize/trellis] No rendered preview in response;
-        //   using input image. Mesh URL: ...
-        // That means our angle picker had nothing to extract from, the
-        // pipeline silently fell back to the original product image, and
-        // we were paying ~62s of TRELLIS latency for zero 3D benefit.
+        // Stage A.0 — depth analysis + 2D→3D mesh generation in parallel.
         //
-        // Set HARMONIZE_USE_TRELLIS=true to re-enable (e.g. if the fal
-        // endpoint changes to return previews). For now: depth-derived
-        // pitch shear of the original product image, then the standard
-        // bg-removal → IC-Light → procedural pipeline runs as before.
+        // History: fal-ai/trellis and fal-ai/hunyuan3d/v2 both return GLB
+        // mesh only (no preview image, no turnaround video). Earlier the
+        // pipeline lied to itself ("renderUrl = productUrl"), composited
+        // the original 2D image, and paid ~100s of inference for nothing.
+        //
+        // Now: the mesh is rasterized via glbRenderer.ts (puppeteer +
+        // three.js, SwiftShader software WebGL) at the camera angle
+        // derived from depth analysis and the lighting direction from
+        // input.lightingDirection. Result: a scene-aware 2D render that
+        // feeds the bg-removal → IC-Light → procedural composite stages.
+        //
+        // Gate: HARMONIZE_USE_3D=true (preferred) OR HARMONIZE_USE_TRELLIS=true.
+        // GLB renderer specifically can be disabled with
+        // HARMONIZE_DISABLE_GLB_RENDER=true if it misbehaves in prod.
         // Decide whether to compute depth-based pitch. Two suppress
         // conditions:
         //   1. Per-surface metadata says the surface is horizontal
@@ -2162,16 +2289,19 @@ export async function harmonizeProductIntoScene(
         }
 
         // PRIORITY ORDER for source of `renderedProductBuf`:
-        //   1. Turnaround frame extracted above (best — depth-matched 3D
-        //      view of the actual product)
+        //   1. Turnaround frame extracted above (best when the 3D service
+        //      returns a turnaround video — depth-matched 3D view of the
+        //      actual product, no rendering cost)
         //   2. Direct rendered preview URL from Hunyuan3D / TRELLIS
-        //      (good — a 3D-aware render even without per-angle control)
-        //   3. Depth-shear of original 2D product (fallback — no 3D, just
-        //      a perspective tilt to suggest depth)
-        //
-        // Previously path #3 ran BEFORE #2 which meant we threw away the
-        // 3D render in favor of a flat sheared 2D image. Now #2 wins
-        // whenever the 3D service returned a preview URL.
+        //      (good — a 3D-aware render even without per-angle control —
+        //      but neither fal endpoint currently returns one)
+        //   3. GLB rendered via our headless renderer at the scene's
+        //      depth-derived yaw/pitch (THIS is the path that runs in
+        //      production as of 2026: Trellis/Hunyuan return mesh-only,
+        //      we rasterize the GLB ourselves with scene-matched camera
+        //      and lighting)
+        //   4. Depth-shear of original 2D product (final fallback — no 3D,
+        //      just a perspective tilt to suggest depth)
         if (!renderedProductUrl && trellis.renderUrl) {
           try {
             const renderRes = await fetch(trellis.renderUrl);
@@ -2192,7 +2322,63 @@ export async function harmonizeProductIntoScene(
           }
         }
 
-        // Final fallback: original 2D product with optional depth-shear.
+        // Path #3 — GLB → 2D via headless renderer. Runs when the fal
+        // service returned a mesh but no preview/turnaround. We feed the
+        // GLB plus the scene's camera angle and lighting direction into
+        // three.js (via puppeteer/SwiftShader) and get back a
+        // transparent-bg PNG that already has the correct perspective
+        // and light alignment for the placement.
+        //
+        // Gate: disabled via HARMONIZE_DISABLE_GLB_RENDER=true so we can
+        // turn it off without code change if the renderer misbehaves in
+        // prod. Errors here fall through to path #4 (2D + shear).
+        if (
+          !renderedProductUrl &&
+          trellis.meshUrl &&
+          process.env.HARMONIZE_DISABLE_GLB_RENDER !== "true"
+        ) {
+          try {
+            // Camera convention mapping:
+            //   - depthAngle.yawDeg: positive = surface tilts away to the right
+            //   - We want the camera to see the product from a slight angle
+            //     matching the scene perspective. A small yaw offset (the
+            //     scene's natural 3/4 angle) plus depth-derived yaw.
+            //   - When suppressShear=true (horizontal surface), use a
+            //     fixed 3/4 product-shot angle instead of depth yaw.
+            const baseYaw = 25; // standard 3/4 product shot
+            const yawDeg = suppressShear
+              ? baseYaw
+              : baseYaw + (depthAngle?.yawDeg ?? 0);
+            const pitchDeg = suppressShear
+              ? 10
+              : 10 + (depthAngle?.pitchDeg ?? 0);
+
+            const glbBuf = await renderGlbAtAngle({
+              glbUrl: trellis.meshUrl,
+              yawDeg,
+              pitchDeg,
+              lightDir: input.lightingDirection,
+              lightIntensity: input.lightingIntensity ?? 1.0,
+              width: 1024,
+              height: 1024,
+            });
+            renderedProductBuf = glbBuf;
+            renderedProductUrl = process.env.FAL_KEY
+              ? await uploadBuffer(glbBuf, "product-glb-rendered.png", "image/png")
+              : undefined;
+            console.log(
+              `[Harmonize/ai-3d] GLB rendered at yaw:${yawDeg.toFixed(1)}° pitch:${pitchDeg.toFixed(1)}° ` +
+                `(depth yaw:${depthAngle?.yawDeg.toFixed(1) ?? "n/a"}°, pitch:${depthAngle?.pitchDeg.toFixed(1) ?? "n/a"}°, ` +
+                `suppressShear:${suppressShear})`,
+            );
+          } catch (err: any) {
+            console.warn(
+              `[Harmonize/ai-3d] GLB rasterization failed (${err?.message || err}); falling back to 2D + shear`,
+            );
+          }
+        }
+
+        // Path #4 — final fallback: original 2D product with optional depth-shear.
         if (!renderedProductUrl) {
           let buf: Buffer = productBuf;
           if (depthAngle && Math.abs(depthAngle.pitchDeg) > 3) {

@@ -4,7 +4,11 @@ hidden = [".config", ".git", "generated-icon.png", "node_modules", "dist"]
 
 [nix]
 channel = "stable-24_11"
-packages = ["ffmpeg", "poppler_utils", "yt-dlp"]
+# chromium + system fonts: required by puppeteer for the GLB renderer
+# (server/lib/ai/glbRenderer.ts). The PUPPETEER_EXECUTABLE_PATH env below
+# points the renderer at the nix-provided chromium instead of relying on
+# the bundled binary, which won't find its shared libs in the nix store.
+packages = ["ffmpeg", "poppler_utils", "yt-dlp", "chromium", "fontconfig"]
 
 [[ports]]
 localPort = 5000
@@ -12,6 +16,10 @@ externalPort = 80
 
 [env]
 PORT = "5000"
+# Skip puppeteer's chromium download at install time (~280MB); we use the
+# nix-provided chromium binary at runtime. PUPPETEER_EXECUTABLE_PATH is
+# resolved lazily by glbRenderer.ts via `which chromium`.
+PUPPETEER_SKIP_DOWNLOAD = "true"
 
 [deployment]
 deploymentTarget = "gce"
