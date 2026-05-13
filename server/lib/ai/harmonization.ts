@@ -1072,6 +1072,123 @@ async function runTrellis3D(productBuf: Buffer): Promise<{
   return { renderUrl: renderUrl ?? productUrl, meshUrl, turnaroundVideoUrl };
 }
 
+/**
+ * Hunyuan3D-2 (Tencent, hosted on fal.ai as fal-ai/hunyuan3d-v2) —
+ * Image → textured 3D mesh AND a rendered preview image.
+ *
+ * Why it exists in addition to TRELLIS: fal-ai/trellis returns only a
+ * GLB mesh URL (no preview image, no turnaround video). Without a
+ * preview, our ai-3d pipeline can't actually composite a 3D render
+ * into the scene — it falls back to using the original 2D product
+ * image (we paid ~60s of TRELLIS latency for nothing). Hunyuan-3D-2
+ * returns BOTH the mesh AND a rendered image, so it's the path that
+ * actually delivers a 3D-aware product render.
+ *
+ * Falls back to TRELLIS if Hunyuan errors. Falls back to null if both
+ * fail (caller continues with original 2D product + depth-shear).
+ *
+ * Cost: ~$0.20/inference. Latency: ~30-60s.
+ */
+async function runHunyuan3D(productBuf: Buffer): Promise<{
+  renderUrl: string;
+  meshUrl?: string;
+  turnaroundVideoUrl?: string;
+} | null> {
+  const falKey = process.env.FAL_KEY;
+  if (!falKey) return null;
+  fal.config({ credentials: falKey });
+
+  try {
+    const productUrl = await uploadBuffer(productBuf, "product-hunyuan.png", "image/png");
+    console.log(`[Harmonize/hunyuan3d] Uploaded product to fal: ${productUrl}`);
+    const t0 = Date.now();
+    // fal-ai/hunyuan3d-v2 takes { input_image_url } and returns
+    //   { model_mesh: {url}, textured_mesh: {url}, rendered_preview: {url?}, ... }
+    // Field names may vary across the fal-ai/hunyuan3d-* family — we
+    // defensively check several variants.
+    const result: any = await fal.subscribe("fal-ai/hunyuan3d-v2", {
+      input: { input_image_url: productUrl } as any,
+      logs: false,
+    });
+    const elapsed = Date.now() - t0;
+    console.log(`[Harmonize/hunyuan3d] Inference complete in ${elapsed}ms`);
+
+    const data = result?.data ?? result;
+    const meshUrl: string | undefined =
+      data?.model_mesh?.url ??
+      data?.textured_mesh?.url ??
+      data?.mesh?.url ??
+      data?.glb_url;
+    const renderUrl: string | undefined =
+      data?.rendered_preview?.url ??
+      data?.preview?.url ??
+      data?.rendered_image?.url ??
+      data?.image?.url ??
+      data?.images?.[0]?.url;
+    const turnaroundVideoUrl: string | undefined =
+      data?.rendered_video?.url ??
+      data?.turnaround?.url ??
+      data?.video?.url;
+
+    console.log(
+      `[Harmonize/hunyuan3d] mesh:${meshUrl ?? "(none)"} render:${renderUrl ?? "(none)"} turnaround:${turnaroundVideoUrl ?? "(none)"} ` +
+      `keys:${Object.keys(data || {}).join(",")}`,
+    );
+    if (!renderUrl && !turnaroundVideoUrl) {
+      console.warn(`[Harmonize/hunyuan3d] No rendered preview in response — falling back`);
+      return null;
+    }
+    return {
+      renderUrl: renderUrl ?? "",
+      meshUrl,
+      turnaroundVideoUrl,
+    };
+  } catch (err: any) {
+    console.warn(`[Harmonize/hunyuan3d] Failed (${err?.message || err})`);
+    return null;
+  }
+}
+
+/**
+ * Unified 2D→3D pipeline. Tries Hunyuan3D first (returns rendered
+ * preview), falls back to TRELLIS (mesh only — caller would need an
+ * external renderer to use it). Returns null if both fail or 3D is
+ * disabled.
+ *
+ * Toggle: HARMONIZE_USE_3D=true (preferred) OR legacy HARMONIZE_USE_TRELLIS=true.
+ */
+async function runProduct3DGeneration(productBuf: Buffer): Promise<{
+  renderUrl: string;
+  meshUrl?: string;
+  turnaroundVideoUrl?: string;
+  source: "hunyuan" | "trellis";
+} | null> {
+  const use3D = process.env.HARMONIZE_USE_3D === "true" ||
+                process.env.HARMONIZE_USE_TRELLIS === "true";
+  if (!use3D) return null;
+
+  // Try Hunyuan3D first — it returns a rendered preview, which is what
+  // we actually need for compositing. TRELLIS without an external GLB
+  // renderer can't produce an image we can use.
+  const hunyuan = await runHunyuan3D(productBuf).catch(() => null);
+  if (hunyuan && (hunyuan.renderUrl || hunyuan.turnaroundVideoUrl)) {
+    return { ...hunyuan, source: "hunyuan" };
+  }
+
+  // Fallback to TRELLIS (mesh-only — preview will be empty, but if the
+  // fal endpoint ever starts returning previews this picks them up).
+  try {
+    const trellis = await runTrellis3D(productBuf);
+    if (trellis.renderUrl || trellis.turnaroundVideoUrl) {
+      return { ...trellis, source: "trellis" };
+    }
+  } catch (err: any) {
+    console.warn(`[Harmonize/3d-gen] TRELLIS fallback also failed: ${err?.message || err}`);
+  }
+
+  return null;
+}
+
 function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
 }
@@ -1820,7 +1937,6 @@ export async function harmonizeProductIntoScene(
         // endpoint changes to return previews). For now: depth-derived
         // pitch shear of the original product image, then the standard
         // bg-removal → IC-Light → procedural pipeline runs as before.
-        const useTrellis = process.env.HARMONIZE_USE_TRELLIS === "true";
         // Decide whether to compute depth-based pitch. Two suppress
         // conditions:
         //   1. Per-surface metadata says the surface is horizontal
@@ -1837,22 +1953,22 @@ export async function harmonizeProductIntoScene(
           Math.abs(regionAnalysis.tiltDegrees) < 5
         );
         const suppressShear = surfaceIsHorizontal || regionSaysFlat;
-        const [trellisResult, depthAngle] = await Promise.all([
-          useTrellis
-            ? runTrellis3D(productBuf).catch((err) => {
-                console.warn(`[Harmonize/ai-3d] TRELLIS errored (${err?.message}) — proceeding without`);
-                return null;
-              })
-            : Promise.resolve(null),
+        // 3D model generation via the unified wrapper — tries Hunyuan3D
+        // (returns rendered preview) first, falls back to TRELLIS (mesh
+        // only). Returns null when 3D is disabled or both services fail.
+        const [gen3DResult, depthAngle] = await Promise.all([
+          runProduct3DGeneration(productBuf),
           suppressShear
             ? Promise.resolve(null)
             : estimateSceneAngleFromDepth(sceneBuf, input.bbox, input.frameDimensions),
         ]);
-        const trellis = trellisResult ?? { renderUrl: "", meshUrl: undefined, turnaroundVideoUrl: undefined };
+        const trellis = gen3DResult ?? { renderUrl: "", meshUrl: undefined, turnaroundVideoUrl: undefined };
         trellisRenderUrl = trellis.renderUrl;
         meshUrl = trellis.meshUrl;
-        if (!useTrellis) {
-          console.log(`[Harmonize/ai-3d] TRELLIS skipped (HARMONIZE_USE_TRELLIS≠true) — saved ~60s. Using original product image with depth-derived pitch shear.`);
+        if (!gen3DResult) {
+          console.log(`[Harmonize/ai-3d] 3D model generation skipped or failed — using original product image with depth-derived pitch shear.`);
+        } else {
+          console.log(`[Harmonize/ai-3d] 3D model from ${gen3DResult.source} — render:${gen3DResult.renderUrl ? "yes" : "no"} mesh:${gen3DResult.meshUrl ? "yes" : "no"}`);
         }
         if (suppressShear) {
           const why = surfaceIsHorizontal
@@ -1897,33 +2013,49 @@ export async function harmonizeProductIntoScene(
           }
         }
 
-        // Default fetch path if turnaround extraction didn't run.
-        // Now also handles the TRELLIS-skipped case: applies depth-derived
-        // pitch shear directly to the ORIGINAL product image instead of
-        // a TRELLIS render. Net effect: product gets a slight perspective
-        // adjustment matching the scene tilt without the TRELLIS roundtrip.
+        // PRIORITY ORDER for source of `renderedProductBuf`:
+        //   1. Turnaround frame extracted above (best — depth-matched 3D
+        //      view of the actual product)
+        //   2. Direct rendered preview URL from Hunyuan3D / TRELLIS
+        //      (good — a 3D-aware render even without per-angle control)
+        //   3. Depth-shear of original 2D product (fallback — no 3D, just
+        //      a perspective tilt to suggest depth)
+        //
+        // Previously path #3 ran BEFORE #2 which meant we threw away the
+        // 3D render in favor of a flat sheared 2D image. Now #2 wins
+        // whenever the 3D service returned a preview URL.
+        if (!renderedProductUrl && trellis.renderUrl) {
+          try {
+            const renderRes = await fetch(trellis.renderUrl);
+            if (renderRes.ok) {
+              renderedProductBuf = Buffer.from(await renderRes.arrayBuffer());
+              renderedProductUrl = trellis.renderUrl;
+              console.log(`[Harmonize/ai-3d] Using direct 3D render (no turnaround extraction needed)`);
+              // Apply pitch shear on top of the 3D render if depth says
+              // so AND the surface isn't flat (suppressShear).
+              if (depthAngle && Math.abs(depthAngle.pitchDeg) > 3 && !suppressShear) {
+                renderedProductBuf = await applyPitchShear(renderedProductBuf, depthAngle.pitchDeg);
+                renderedProductUrl = await uploadBuffer(renderedProductBuf, "product-3d-pitched.png", "image/png");
+                console.log(`[Harmonize/ai-3d] Applied pitch shear ${depthAngle.pitchDeg.toFixed(1)}° on top of 3D render`);
+              }
+            }
+          } catch (err: any) {
+            console.warn(`[Harmonize/ai-3d] Failed to fetch 3D render (${err?.message || err}); falling back`);
+          }
+        }
+
+        // Final fallback: original 2D product with optional depth-shear.
         if (!renderedProductUrl) {
           let buf: Buffer = productBuf;
           if (depthAngle && Math.abs(depthAngle.pitchDeg) > 3) {
             buf = await applyPitchShear(productBuf, depthAngle.pitchDeg);
-            console.log(`[Harmonize/ai-3d] Applied pitch shear ${depthAngle.pitchDeg.toFixed(1)}° directly to product (no TRELLIS render available)`);
+            console.log(`[Harmonize/ai-3d] Applied pitch shear ${depthAngle.pitchDeg.toFixed(1)}° directly to original 2D product (no 3D render available)`);
           }
           renderedProductBuf = buf;
           if (process.env.FAL_KEY) {
             try {
               renderedProductUrl = await uploadBuffer(buf, "product-pitched.png", "image/png");
             } catch { /* downstream falls back gracefully */ }
-          }
-          // Fall back to the legacy TRELLIS fetch only if a renderUrl was
-          // actually returned (TRELLIS-skipped path leaves it empty).
-          if (!renderedProductUrl && trellis.renderUrl) {
-            try {
-              const renderRes = await fetch(trellis.renderUrl);
-              if (renderRes.ok) {
-                renderedProductBuf = Buffer.from(await renderRes.arrayBuffer());
-                renderedProductUrl = trellis.renderUrl;
-              }
-            } catch { /* swallow */ }
           }
         }
 
