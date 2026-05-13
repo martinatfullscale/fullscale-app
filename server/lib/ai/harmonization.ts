@@ -66,6 +66,17 @@ export interface HarmonizationInput {
    * to "surface" when absent.
    */
   surfaceType?: string;
+  /**
+   * Scene light direction at the placement bbox — drives the directional
+   * cast shadow. Values: "left" | "right" | "top" | "top-left" |
+   * "top-right" | "ambient". Falls back to "top" if absent.
+   */
+  lightingDirection?: string;
+  /**
+   * Scene light intensity 0..1 — modulates cast shadow opacity.
+   * Bright scene = sharper shadow; dim scene = softer shadow.
+   */
+  lightingIntensity?: number;
 }
 
 export interface HarmonizationResult {
@@ -835,6 +846,7 @@ async function applyProceduralHarmonization(
   productBuf: Buffer,
   bbox: HarmonizationInput["bbox"],
   dims: HarmonizationInput["frameDimensions"],
+  lighting?: { direction?: string; intensity?: number },
 ): Promise<{ result: Buffer; flatComposite: Buffer }> {
   const W = dims.width;
   const H = dims.height;
@@ -1053,21 +1065,47 @@ async function applyProceduralHarmonization(
   // Shadows now live on a PADDED canvas (paddedW × paddedH). To place
   // them at the same absolute pixel position as the product, we shift
   // the composite offset back by softPad pixels.
-  const softShadowOffsetY = Math.max(8, Math.round(finalH * 0.06));
+  //
+  // DIRECTIONAL CAST SHADOW: when lighting.direction is provided
+  // (sourced from the surface's Gemini-detected lighting metadata),
+  // the soft shadow shifts AWAY from the light source — left light
+  // = shadow on right, top light = shadow below, etc. Length scaled
+  // by light intensity. This is what gives the product a "cast on
+  // surface" feel rather than a generic radial drop shadow.
+  const lightDir = (lighting?.direction || "top").toLowerCase();
+  const lightIntensity = clamp(lighting?.intensity ?? 0.6, 0.2, 1.0);
+  // Shadow offset relative to product height. Top light → shadow below
+  // (positive Y). Left light → shadow on right (positive X). Etc.
+  let shadowDx = 0;
+  let shadowDy = Math.max(8, Math.round(finalH * 0.06));
+  switch (lightDir) {
+    case "left": shadowDx = Math.round(finalW * 0.10); shadowDy = Math.round(finalH * 0.04); break;
+    case "right": shadowDx = -Math.round(finalW * 0.10); shadowDy = Math.round(finalH * 0.04); break;
+    case "top-left": shadowDx = Math.round(finalW * 0.08); shadowDy = Math.round(finalH * 0.08); break;
+    case "top-right": shadowDx = -Math.round(finalW * 0.08); shadowDy = Math.round(finalH * 0.08); break;
+    case "top": shadowDx = 0; shadowDy = Math.round(finalH * 0.10); break;
+    case "ambient":
+    default: shadowDx = 0; shadowDy = Math.round(finalH * 0.06); break;
+  }
+  // Length-modulate by intensity (brighter scene = longer/sharper shadow).
+  shadowDx = Math.round(shadowDx * lightIntensity);
+  shadowDy = Math.round(shadowDy * lightIntensity);
+  console.log(`[Harmonize/proc] Directional shadow — light:${lightDir} intensity:${lightIntensity.toFixed(2)} → offset(${shadowDx}, ${shadowDy})`);
+
   const tightShadowOffsetY = Math.max(2, Math.round(finalH * 0.015));
   const composites: Array<{ input: Buffer; left: number; top: number; blend?: any }> = [];
   if (softShadowBuf.length > 0) {
     composites.push({
       input: softShadowBuf,
-      left: offsetX - softPad + 4,
-      top: offsetY - softPad + softShadowOffsetY,
+      left: offsetX - softPad + shadowDx,
+      top: offsetY - softPad + shadowDy,
       blend: "over",
     });
   }
   if (tightShadowBuf.length > 0) {
     composites.push({
       input: tightShadowBuf,
-      left: offsetX - softPad + 1,
+      left: offsetX - softPad + Math.round(shadowDx * 0.2),
       top: offsetY - softPad + tightShadowOffsetY,
       blend: "over",
     });
@@ -1253,6 +1291,7 @@ export async function harmonizeProductIntoScene(
       console.log(`[Harmonize] Mode: procedural (sharp, scene-preserving)`);
       const { result, flatComposite } = await applyProceduralHarmonization(
         sceneBuf, productBuf, input.bbox, input.frameDimensions,
+        { direction: input.lightingDirection, intensity: input.lightingIntensity },
       );
 
       // Upload both to fal.ai storage so the test rig can show before/after.
@@ -1463,6 +1502,7 @@ export async function harmonizeProductIntoScene(
       // produces a scene with the modified/relit product at the bbox.
       const { result, flatComposite } = await applyProceduralHarmonization(
         sceneBuf, renderedProductBuf, input.bbox, input.frameDimensions,
+        { direction: input.lightingDirection, intensity: input.lightingIntensity },
       );
 
       // PASS 2: Lock the ORIGINAL product (not the TRELLIS-rendered or

@@ -2155,18 +2155,40 @@ export default function PlacementPreviewModal({
                         const canvas = canvasRef.current;
                         let productPlacementBbox = null;
                         if (productImg && canvas && surfaceW > 0 && surfaceH > 0) {
+                          // CRITICAL: aspect math must use VISUAL aspect, not
+                          // normalized. surfaceW/surfaceH are 0-1 normalized
+                          // coords; for a non-square frame their ratio is NOT
+                          // the visual aspect. Multiplying by canvas.width and
+                          // canvas.height converts to actual pixel ratio so the
+                          // fit decision matches what the browser canvas
+                          // actually renders.
+                          //
+                          // Symptom of the prior (broken) math: bottle visibly
+                          // squished thinner in harmonized output vs the flat
+                          // overlay. Server's fit:"fill" was stretching to a
+                          // bbox whose aspect didn't match the product's
+                          // visual aspect.
                           const prodAspect = productImg.naturalWidth / productImg.naturalHeight;
-                          const surfaceAspectInBbox = surfaceW / surfaceH;
-                          // Same aspect-fit logic as drawProduct (line 388),
-                          // but in normalized coordinates instead of pixels.
-                          let drawW: number, drawH: number;
-                          if (prodAspect > surfaceAspectInBbox) {
-                            drawW = surfaceW * transform.scale;
-                            drawH = (surfaceW / prodAspect) * transform.scale;
+                          const surfaceVisualW = surfaceW * canvas.width;
+                          const surfaceVisualH = surfaceH * canvas.height;
+                          const surfaceVisualAspect = surfaceVisualW / surfaceVisualH;
+
+                          // Compute the product's pixel size on canvas using
+                          // the SAME logic the renderFrame uses (visual aspect
+                          // fit). Then convert back to normalized so the bbox
+                          // sent to the server preserves the product's true
+                          // aspect ratio.
+                          let visualDrawW: number, visualDrawH: number;
+                          if (prodAspect > surfaceVisualAspect) {
+                            visualDrawW = surfaceVisualW * transform.scale;
+                            visualDrawH = (surfaceVisualW / prodAspect) * transform.scale;
                           } else {
-                            drawH = surfaceH * transform.scale;
-                            drawW = (surfaceH * prodAspect) * transform.scale;
+                            visualDrawH = surfaceVisualH * transform.scale;
+                            visualDrawW = (surfaceVisualH * prodAspect) * transform.scale;
                           }
+                          const drawW = visualDrawW / canvas.width;
+                          const drawH = visualDrawH / canvas.height;
+
                           // transform.offsetX/Y are in canvas pixels — convert
                           // to normalized scene space using canvas dimensions.
                           const offsetXNorm = transform.offsetX / Math.max(1, canvas.width);

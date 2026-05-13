@@ -2937,6 +2937,14 @@ export async function registerRoutes(
       // ("place product on the coffee table" reads better than "place
       // product on the surface").
       surfaceType: surface.surfaceType,
+      // Pass the surface's detected lighting direction + intensity so
+      // procedural can render a directional CAST SHADOW (not just a
+      // contact shadow). Without this every shadow drops straight down
+      // regardless of where the room's actual light source is.
+      lightingDirection: (surface as any).lightingDirection || undefined,
+      lightingIntensity: (surface as any).lightingIntensity != null
+        ? parseFloat(String((surface as any).lightingIntensity))
+        : undefined,
     } as any);
 
     if (!result.success) {
