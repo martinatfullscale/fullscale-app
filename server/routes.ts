@@ -2925,6 +2925,20 @@ export async function registerRoutes(
           ? "ai-3d"
           : "procedural";
 
+    // Loud diagnostic — surfaces scanned BEFORE the lighting columns
+    // existed on detected_surfaces will have NULL here, in which case
+    // applyProceduralHarmonization falls through to its directional
+    // default (top-left @ 0.85). Logged so we can tell from deploy logs
+    // whether a "shadow looks wrong" report is data-missing or code-bug.
+    const surfaceLightingDir = (surface as any).lightingDirection ?? null;
+    const surfaceLightingInt = (surface as any).lightingIntensity ?? null;
+    console.log(
+      `[Harmonize] ===> SURFACE ${surfaceId} lighting from DB: ` +
+      `direction=${JSON.stringify(surfaceLightingDir)} ` +
+      `intensity=${JSON.stringify(surfaceLightingInt)}` +
+      (surfaceLightingDir == null ? " (NULL — proc will use directional default)" : ""),
+    );
+
     const result = await harmonizeProductIntoScene({
       sceneImage: sceneBuffer,
       productImage: productImageUrl,
@@ -2941,9 +2955,9 @@ export async function registerRoutes(
       // procedural can render a directional CAST SHADOW (not just a
       // contact shadow). Without this every shadow drops straight down
       // regardless of where the room's actual light source is.
-      lightingDirection: (surface as any).lightingDirection || undefined,
-      lightingIntensity: (surface as any).lightingIntensity != null
-        ? parseFloat(String((surface as any).lightingIntensity))
+      lightingDirection: surfaceLightingDir || undefined,
+      lightingIntensity: surfaceLightingInt != null
+        ? parseFloat(String(surfaceLightingInt))
         : undefined,
     } as any);
 

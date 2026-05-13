@@ -1072,25 +1072,48 @@ async function applyProceduralHarmonization(
   // = shadow on right, top light = shadow below, etc. Length scaled
   // by light intensity. This is what gives the product a "cast on
   // surface" feel rather than a generic radial drop shadow.
-  const lightDir = (lighting?.direction || "top").toLowerCase();
-  const lightIntensity = clamp(lighting?.intensity ?? 0.6, 0.2, 1.0);
+  //
+  // DEFAULT FALLBACK: when DB has no lighting metadata (surface scanned
+  // before the lighting columns existed), we MUST NOT default to
+  // "top"/0.6 — that math evaluates to finalH*0.06 which is identical
+  // to the old fixed offset, so the directional path looks IDENTICAL
+  // to the old non-directional output. Default to "top-left" + 0.85
+  // intensity so even un-lit-metadata surfaces get a visibly slanted
+  // cast shadow. (Most natural indoor lighting comes from upper-left
+  // anyway — windows, ceiling lamps off-center.)
+  const inputDirRaw = lighting?.direction;
+  const inputIntRaw = lighting?.intensity;
+  const dbHasLighting = inputDirRaw != null || inputIntRaw != null;
+  const lightDir = (inputDirRaw || "top-left").toLowerCase();
+  const lightIntensity = clamp(inputIntRaw ?? 0.85, 0.2, 1.0);
   // Shadow offset relative to product height. Top light → shadow below
   // (positive Y). Left light → shadow on right (positive X). Etc.
+  // Magnitudes bumped vs prior pass — old "top" produced finalH*0.06
+  // which collided with the old default. Now even "top" is dramatic
+  // enough to read as a real cast.
   let shadowDx = 0;
-  let shadowDy = Math.max(8, Math.round(finalH * 0.06));
+  let shadowDy = Math.max(10, Math.round(finalH * 0.08));
   switch (lightDir) {
-    case "left": shadowDx = Math.round(finalW * 0.10); shadowDy = Math.round(finalH * 0.04); break;
-    case "right": shadowDx = -Math.round(finalW * 0.10); shadowDy = Math.round(finalH * 0.04); break;
-    case "top-left": shadowDx = Math.round(finalW * 0.08); shadowDy = Math.round(finalH * 0.08); break;
-    case "top-right": shadowDx = -Math.round(finalW * 0.08); shadowDy = Math.round(finalH * 0.08); break;
-    case "top": shadowDx = 0; shadowDy = Math.round(finalH * 0.10); break;
+    case "left": shadowDx = Math.round(finalW * 0.14); shadowDy = Math.round(finalH * 0.06); break;
+    case "right": shadowDx = -Math.round(finalW * 0.14); shadowDy = Math.round(finalH * 0.06); break;
+    case "top-left": shadowDx = Math.round(finalW * 0.12); shadowDy = Math.round(finalH * 0.10); break;
+    case "top-right": shadowDx = -Math.round(finalW * 0.12); shadowDy = Math.round(finalH * 0.10); break;
+    case "top": shadowDx = 0; shadowDy = Math.round(finalH * 0.14); break;
     case "ambient":
-    default: shadowDx = 0; shadowDy = Math.round(finalH * 0.06); break;
+    default: shadowDx = Math.round(finalW * 0.04); shadowDy = Math.round(finalH * 0.08); break;
   }
   // Length-modulate by intensity (brighter scene = longer/sharper shadow).
   shadowDx = Math.round(shadowDx * lightIntensity);
   shadowDy = Math.round(shadowDy * lightIntensity);
-  console.log(`[Harmonize/proc] Directional shadow — light:${lightDir} intensity:${lightIntensity.toFixed(2)} → offset(${shadowDx}, ${shadowDy})`);
+  // Loud diagnostic — shows BOTH the raw input from DB and the resolved
+  // values, so you can tell from logs whether the surface row had
+  // lighting metadata populated or whether we fell through to defaults.
+  console.log(
+    `[Harmonize/proc] ===> CAST SHADOW dbHasLighting=${dbHasLighting} ` +
+    `inputDir=${JSON.stringify(inputDirRaw)} inputInt=${JSON.stringify(inputIntRaw)} ` +
+    `→ resolved dir=${lightDir} int=${lightIntensity.toFixed(2)} ` +
+    `→ offset(${shadowDx}, ${shadowDy}) on product ${finalW}x${finalH}`,
+  );
 
   const tightShadowOffsetY = Math.max(2, Math.round(finalH * 0.015));
   const composites: Array<{ input: Buffer; left: number; top: number; blend?: any }> = [];
