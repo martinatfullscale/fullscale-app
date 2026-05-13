@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 
@@ -379,6 +380,72 @@ function getFilterString(blend: PlacementBlend): string {
 }
 
 // ============================================================================
+// HARMONIZE PROGRESS ESTIMATION
+// ============================================================================
+//
+// The harmonize endpoint returns a single response when the entire pipeline
+// finishes — no SSE/streaming. We drive a determinate progress bar from
+// elapsed time vs an expected duration per mode, capping at 95% so we
+// never falsely claim completion. Stage labels rotate at expected
+// milestones so the user has a sense of what the server is currently
+// doing. If a run overshoots its expected duration, the bar crawls
+// 90→95 over the next half-duration instead of getting stuck at the cap.
+//
+// Tuned to typical observed durations from server logs:
+//   auto  (procedural):       ~12s  (bg removal → composite → lock → upload)
+//   ai-3d (TRELLIS/IC-Light):  ~60s  (bg → depth → lighting → 3D composite → lock → upload)
+type HarmonizeMode = "auto" | "ai-3d";
+
+const HARMONIZE_STAGE_PLAN: Record<HarmonizeMode, { expectedMs: number; stages: Array<{ untilT: number; label: string }> }> = {
+  auto: {
+    expectedMs: 12_000,
+    stages: [
+      { untilT: 0.20, label: "Removing background" },
+      { untilT: 0.70, label: "Compositing into scene" },
+      { untilT: 0.90, label: "Locking product detail" },
+      { untilT: 1.00, label: "Finalizing" },
+    ],
+  },
+  "ai-3d": {
+    expectedMs: 60_000,
+    stages: [
+      { untilT: 0.08, label: "Removing background" },
+      { untilT: 0.25, label: "Analyzing scene depth" },
+      { untilT: 0.40, label: "Analyzing scene lighting" },
+      { untilT: 0.85, label: "Compositing 3D-aware render" },
+      { untilT: 0.95, label: "Locking product detail" },
+      { untilT: 1.00, label: "Finalizing" },
+    ],
+  },
+};
+
+function computeHarmonizeProgress(mode: HarmonizeMode | null, elapsedMs: number, doneAt100: boolean): {
+  percent: number;
+  label: string;
+  isOvertime: boolean;
+} {
+  if (doneAt100) return { percent: 100, label: "Done", isOvertime: false };
+  if (!mode) return { percent: 0, label: "", isOvertime: false };
+  const plan = HARMONIZE_STAGE_PLAN[mode];
+  const t = elapsedMs / plan.expectedMs;
+  const isOvertime = t >= 1.0;
+  // 0 → 90 over expected duration, then crawl 90 → 95 over the next
+  // half-duration. Cap at 95 so we never preempt the real "done".
+  let percent: number;
+  if (t < 1.0) {
+    percent = Math.max(2, Math.min(90, t * 90));
+  } else {
+    const overshoot = Math.min(1.0, (t - 1.0) / 0.5); // 0→1 over the next 0.5× expected
+    percent = 90 + overshoot * 5;
+  }
+  // Find current stage label
+  const tClamped = Math.min(0.999, t);
+  const stage = plan.stages.find((s) => tClamped < s.untilT) || plan.stages[plan.stages.length - 1];
+  const label = isOvertime ? `${stage.label} (taking longer than usual)` : stage.label;
+  return { percent, label, isOvertime };
+}
+
+// ============================================================================
 // COMPUTE ASPECT-CORRECT PLACEMENT BBOX (CLIENT → SERVER)
 // ============================================================================
 //
@@ -712,6 +779,15 @@ export default function PlacementPreviewModal({
   const [harmonizeError, setHarmonizeError] = useState<string | null>(null);
   const [harmonizeFlatUrl, setHarmonizeFlatUrl] = useState<string | null>(null);
   const [harmonizeResultUrl, setHarmonizeResultUrl] = useState<string | null>(null);
+  // Progress tracking — the server endpoint isn't streamed so we drive a
+  // determinate bar from elapsed time vs expected duration. Caps at 95%
+  // so we never falsely claim "done"; snaps to 100% on completion.
+  // Stage labels rotate at expected milestones so the user sees what
+  // the server is roughly doing right now.
+  const [harmonizeMode, setHarmonizeMode] = useState<"auto" | "ai-3d" | null>(null);
+  const [harmonizeStartedAt, setHarmonizeStartedAt] = useState<number | null>(null);
+  const [harmonizeElapsedMs, setHarmonizeElapsedMs] = useState(0);
+  const [harmonizeDoneAt100, setHarmonizeDoneAt100] = useState(false);
 
   // Manual harmonize state — user explicitly clicks the Harmonize button
   // (no auto-fire). Server preserves the user's exact placement+scale
@@ -1103,6 +1179,20 @@ export default function PlacementPreviewModal({
     // intentionally not depending on harmonizeEnabled (avoid loop)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSurface?.id, productImage, transform.offsetX, transform.offsetY, transform.scale, transform.rotation]);
+
+  // Harmonize progress timer — drives the determinate progress bar from
+  // elapsed time while a harmonize request is in flight. Updates every
+  // 200ms which is smooth enough for a progress bar without thrashing.
+  useEffect(() => {
+    if (!isHarmonizing || !harmonizeStartedAt) {
+      setHarmonizeElapsedMs(0);
+      return;
+    }
+    const tick = () => setHarmonizeElapsedMs(Date.now() - harmonizeStartedAt);
+    tick();
+    const id = window.setInterval(tick, 200);
+    return () => window.clearInterval(id);
+  }, [isHarmonizing, harmonizeStartedAt]);
 
   // Apply initialPlacement when modal opens with pre-loaded data (re-edit flow)
   useEffect(() => {
@@ -2242,6 +2332,11 @@ export default function PlacementPreviewModal({
                         setHarmonizeFlatUrl(null);
                         setHarmonizeResultUrl(null);
                         setShowHarmonizeCompare(true);
+                        // Progress bar bookkeeping — start timer at click,
+                        // clear the prior "done" state.
+                        setHarmonizeMode("auto");
+                        setHarmonizeStartedAt(Date.now());
+                        setHarmonizeDoneAt100(false);
 
                         // Build the bbox we send to the harmonize endpoint.
                         // Routed through the shared helper so this can never
@@ -2309,7 +2404,12 @@ export default function PlacementPreviewModal({
                         } catch (err: any) {
                           setHarmonizeError(err.message || "Harmonization failed");
                         } finally {
+                          // Briefly show 100% so the bar visibly completes
+                          // before the result panel takes over.
+                          setHarmonizeDoneAt100(true);
                           setIsHarmonizing(false);
+                          setHarmonizeStartedAt(null);
+                          window.setTimeout(() => setHarmonizeMode(null), 600);
                         }
                       }}
                       data-testid="button-harmonize"
@@ -2336,6 +2436,11 @@ export default function PlacementPreviewModal({
                         setHarmonizeFlatUrl(null);
                         setHarmonizeResultUrl(null);
                         setShowHarmonizeCompare(true);
+                        // 3D mode has a much longer expected duration — the
+                        // progress bar tunes its pace from this mode tag.
+                        setHarmonizeMode("ai-3d");
+                        setHarmonizeStartedAt(Date.now());
+                        setHarmonizeDoneAt100(false);
 
                         // 3D Harmonize bbox — same shared helper as the
                         // regular Harmonize button. Single source of truth
@@ -2375,7 +2480,10 @@ export default function PlacementPreviewModal({
                         } catch (err: any) {
                           setHarmonizeError(err.message || "3D Harmonization failed");
                         } finally {
+                          setHarmonizeDoneAt100(true);
                           setIsHarmonizing(false);
+                          setHarmonizeStartedAt(null);
+                          window.setTimeout(() => setHarmonizeMode(null), 600);
                         }
                       }}
                       data-testid="button-harmonize-3d"
@@ -2504,7 +2612,14 @@ export default function PlacementPreviewModal({
                         {harmonizeEnabled ? "Harmonized" : "Flat"}
                       </button>
                       {harmonizeEnabled && isHarmonizing && (
-                        <Loader2 className="w-3 h-3 animate-spin text-emerald-300" />
+                        <div className="flex items-center gap-1.5 text-emerald-300">
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                          <span className="text-[10px] tabular-nums">
+                            {Math.round(
+                              computeHarmonizeProgress(harmonizeMode, harmonizeElapsedMs, harmonizeDoneAt100).percent,
+                            )}%
+                          </span>
+                        </div>
                       )}
                       {harmonizeEnabled && harmonizeError && (
                         <span className="text-xs text-red-300" title={harmonizeError}>!</span>
@@ -3388,12 +3503,51 @@ export default function PlacementPreviewModal({
             </div>
 
             <div className="p-4">
-              {isHarmonizing && (
-                <div className="flex flex-col items-center justify-center py-16 gap-3">
-                  <Loader2 className="w-6 h-6 animate-spin text-emerald-400" />
-                  <p className="text-sm text-muted-foreground">Compositing + harmonizing…</p>
-                </div>
-              )}
+              {isHarmonizing && (() => {
+                const { percent, label, isOvertime } = computeHarmonizeProgress(
+                  harmonizeMode,
+                  harmonizeElapsedMs,
+                  harmonizeDoneAt100,
+                );
+                const elapsedSec = (harmonizeElapsedMs / 1000).toFixed(1);
+                const expectedSec = harmonizeMode
+                  ? Math.round(HARMONIZE_STAGE_PLAN[harmonizeMode].expectedMs / 1000)
+                  : null;
+                return (
+                  <div className="flex flex-col items-center justify-center py-12 gap-4 max-w-md mx-auto">
+                    <div className="flex items-center gap-2 text-emerald-300">
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                      <span className="text-sm font-medium">
+                        {harmonizeMode === "ai-3d" ? "3D Harmonize" : "Harmonize"}
+                      </span>
+                    </div>
+                    <Progress
+                      value={percent}
+                      className={cn(
+                        "h-2 w-full",
+                        isOvertime ? "[&>div]:bg-amber-400" : "[&>div]:bg-emerald-400",
+                      )}
+                      data-testid="harmonize-progress"
+                    />
+                    <div className="flex items-center justify-between w-full text-xs text-muted-foreground">
+                      <span data-testid="harmonize-stage">{label || "Starting…"}</span>
+                      <span className="tabular-nums">
+                        {Math.round(percent)}%
+                        {expectedSec !== null && (
+                          <span className="text-muted-foreground/60 ml-2">
+                            {elapsedSec}s / ~{expectedSec}s
+                          </span>
+                        )}
+                      </span>
+                    </div>
+                    {isOvertime && (
+                      <p className="text-[11px] text-amber-300/80 text-center">
+                        Taking longer than usual — still running, hang tight.
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
 
               {!isHarmonizing && harmonizeError && (
                 <div className="py-8 px-4 rounded-lg bg-red-500/10 border border-red-500/40">
