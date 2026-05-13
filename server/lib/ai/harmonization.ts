@@ -1189,6 +1189,142 @@ async function runProduct3DGeneration(productBuf: Buffer): Promise<{
   return null;
 }
 
+/**
+ * Phase 3 seam refinement — fal-ai/flux/dev/image-to-image at very low
+ * strength, masked to ONLY the ring around the product silhouette.
+ *
+ * Why masked: previous attempts to use FLUX Kontext as a primary path
+ * showed it regenerating the WHOLE bbox region (the candle next to the
+ * product got replaced, brand details drifted). Masking to a ~12-20px
+ * ring around the silhouette constrains the model to ONLY touch the
+ * seam zone — product interior + scene interior are preserved as-is.
+ *
+ * The seam zone is where the lock pass meets the harmonized scene:
+ * any residual hard edge, color mismatch, or contact-shadow ringing
+ * gets smoothed by a low-strength regeneration. Product label, brand
+ * color, scene composition all remain intact.
+ *
+ * Gated behind HARMONIZE_SEAM_REFINE=true. Off by default — experimental.
+ * Cost: ~$0.04/call, ~8-15s latency.
+ */
+async function runSeamRefinement(
+  harmonizedBuf: Buffer,
+  bbox: HarmonizationInput["bbox"],
+  dims: HarmonizationInput["frameDimensions"],
+  productBuf: Buffer,
+): Promise<Buffer | null> {
+  if (process.env.HARMONIZE_SEAM_REFINE !== "true") return null;
+  const falKey = process.env.FAL_KEY;
+  if (!falKey) return null;
+
+  try {
+    const t0 = Date.now();
+    const W = dims.width;
+    const H = dims.height;
+    const pxX = clamp(Math.round(bbox.x * W), 0, W - 1);
+    const pxY = clamp(Math.round(bbox.y * H), 0, H - 1);
+    const pxW = clamp(Math.round(bbox.width * W), 1, W - pxX);
+    const pxH = clamp(Math.round(bbox.height * H), 1, H - pxY);
+
+    // Build a ring mask around the product silhouette. White (1) where
+    // the model should regenerate, black (0) where it should preserve.
+    //
+    // Construction: take the product's alpha channel, blur it OUTWARD
+    // (creates a halo extending RING_PX beyond the silhouette), then
+    // subtract a slightly contracted version of the alpha so the
+    // interior stays black. Net result: a ring straddling the silhouette
+    // boundary, ~RING_PX wide on each side.
+    const RING_PX = Math.max(8, Math.round(Math.min(pxW, pxH) * 0.06));
+
+    // Resize product to bbox size to extract its silhouette at frame scale.
+    const productAlpha = await sharp(productBuf)
+      .ensureAlpha()
+      .resize(pxW, pxH, { fit: "fill" })
+      .extractChannel("alpha")
+      .toBuffer();
+
+    // Outer halo: blur the alpha. Pixels within RING_PX of the
+    // silhouette get partial alpha. Normalise + threshold pushes them
+    // to fully white in the ring.
+    const dilatedAlpha = await sharp(productAlpha)
+      .blur(RING_PX)
+      .linear(3.0, 0) // boost contrast → ring is solid-ish
+      .threshold(64)
+      .toBuffer();
+
+    // Inner contraction: blur the inverted alpha to "erode" the
+    // silhouette inward, then invert back. Subtracting from the dilated
+    // version leaves us only the ring.
+    const erodedAlpha = await sharp(productAlpha)
+      .negate()
+      .blur(RING_PX)
+      .linear(3.0, 0)
+      .threshold(64)
+      .negate()
+      .toBuffer();
+
+    // Ring = dilated - eroded (where dilated is white but eroded is also
+    // white, they cancel; only the difference — the ring band — remains).
+    // sharp's `composite` with `multiply` of the inverse achieves this.
+    const erodedInverted = await sharp(erodedAlpha).negate().toBuffer();
+    const ringBand = await sharp(dilatedAlpha)
+      .joinChannel(erodedInverted)
+      .composite([{ input: erodedInverted, blend: "multiply" }])
+      .extractChannel(0)
+      .toBuffer();
+
+    // Frame-sized mask with the ring placed at the bbox. Background
+    // black = preserve, ring white = regenerate.
+    const fullMask = await sharp({
+      create: { width: W, height: H, channels: 3, background: { r: 0, g: 0, b: 0 } },
+    })
+      .composite([{ input: ringBand, left: pxX, top: pxY }])
+      .png()
+      .toBuffer();
+
+    fal.config({ credentials: falKey });
+    const [imageUrl, maskUrl] = await Promise.all([
+      uploadBuffer(harmonizedBuf, "harmonized-pre-refine.png", "image/png"),
+      uploadBuffer(fullMask, "seam-mask.png", "image/png"),
+    ]);
+    const result: any = await fal.subscribe("fal-ai/flux-1.1-pro/inpainting", {
+      input: {
+        image_url: imageUrl,
+        mask_url: maskUrl,
+        prompt:
+          "photorealistic, sharp focus, natural lighting, smooth blending, " +
+          "no visible seams or edits, preserve product identity and scene composition",
+        strength: 0.30,
+        guidance_scale: 3.0,
+        num_inference_steps: 28,
+        safety_tolerance: "5",
+        output_format: "png",
+        seed: 42,
+      } as any,
+      logs: false,
+    });
+    const elapsed = Date.now() - t0;
+    const data = result?.data ?? result;
+    const outputUrl: string | undefined =
+      data?.images?.[0]?.url ?? data?.image?.url ?? data?.output?.url;
+    if (!outputUrl) {
+      console.warn(`[Harmonize/seam-refine] No image URL in response`);
+      return null;
+    }
+    const res = await fetch(outputUrl);
+    if (!res.ok) {
+      console.warn(`[Harmonize/seam-refine] Failed to fetch refined image: ${res.status}`);
+      return null;
+    }
+    const buf = Buffer.from(await res.arrayBuffer());
+    console.log(`[Harmonize/seam-refine] Refined in ${elapsed}ms (ring ${RING_PX}px) → ${outputUrl}`);
+    return buf;
+  } catch (err: any) {
+    console.warn(`[Harmonize/seam-refine] Failed: ${err?.message || err}`);
+    return null;
+  }
+}
+
 function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
 }
@@ -1838,10 +1974,22 @@ export async function harmonizeProductIntoScene(
       // around the product) survive because the original product is
       // composited at the EXACT bbox — surrounding pixels stay whatever
       // Kontext produced. Atmosphere thread keeps brightness/color match.
-      const finalBuf = await lockProductOverHarmonized(
+      let finalBuf = await lockProductOverHarmonized(
         kontextSceneBuf, productBuf, input.bbox, input.frameDimensions, atmosphere,
       );
       console.log(`[Harmonize] PASS 2 — locked atmosphere-treated product over Kontext scene`);
+
+      // PASS 3 (optional) — masked seam refinement via Flux inpainting.
+      // Gated by HARMONIZE_SEAM_REFINE=true; off by default. When on,
+      // smooths the ring around the product silhouette without touching
+      // product interior or scene interior.
+      const refined = await runSeamRefinement(
+        finalBuf, input.bbox, input.frameDimensions, productBuf,
+      );
+      if (refined) {
+        finalBuf = refined;
+        console.log(`[Harmonize] PASS 3 — masked seam refinement applied`);
+      }
 
       const [imageUrl, flatCompositeUrl] = await Promise.all([
         uploadBuffer(finalBuf, "harmonized-generative.png", "image/png"),
@@ -2143,10 +2291,21 @@ export async function harmonizeProductIntoScene(
       // Without this, the lock pass undoes every harmonization effect
       // (the bug user observed: harmonized output indistinguishable
       // from flat overlay).
-      const lockedResult = await lockProductOverHarmonized(
+      let lockedResult = await lockProductOverHarmonized(
         result, productBuf, input.bbox, input.frameDimensions, atmosphere,
       );
       console.log(`[Harmonize] PASS 2 — locked atmosphere-treated product over TRELLIS scene`);
+
+      // PASS 3 (optional) — masked seam refinement via Flux inpainting.
+      // Gated by HARMONIZE_SEAM_REFINE=true; off by default. Same as the
+      // generative-mode branch — refines only the silhouette ring.
+      const refined3d = await runSeamRefinement(
+        lockedResult, input.bbox, input.frameDimensions, productBuf,
+      );
+      if (refined3d) {
+        lockedResult = refined3d;
+        console.log(`[Harmonize] PASS 3 — masked seam refinement applied (ai-3d)`);
+      }
 
       const falKey = process.env.FAL_KEY;
       if (falKey) {
