@@ -4254,8 +4254,31 @@ export async function registerRoutes(
         phaseLog(`DB insert complete, video.id=${video.id}`);
         console.log(`[UPLOAD] Video inserted with ID: ${video.id} (${(size / 1024 / 1024).toFixed(2)} MB)`);
 
-        // Reply to the client BEFORE spinning background jobs so the upload
-        // modal closes promptly even if the scan/editorial pipeline is slow.
+        // Extract thumbnail SYNCHRONOUSLY before responding. User feedback:
+        // "I really hate that the My Library doesn't pull a thumbnail into
+        // the container immediately." Was running in background → library
+        // card showed blank for up to 15s while React Query polled. Worth
+        // ~1-2s extra latency on the upload response to land a real
+        // thumbnail in the library immediately. Hard 5s timeout — if
+        // ffmpeg hangs on a tricky codec we don't block the upload.
+        let thumbnailUrl: string | null = null;
+        try {
+          thumbnailUrl = await Promise.race([
+            extractThumbnailForVideo(video.id),
+            new Promise<null>(resolve => setTimeout(() => {
+              console.warn(`[UPLOAD] Thumbnail extraction timed out at 5s — responding without`);
+              resolve(null);
+            }, 5000)),
+          ]);
+          if (thumbnailUrl) {
+            phaseLog(`thumbnail extracted: ${thumbnailUrl}`);
+          }
+        } catch (err: any) {
+          console.warn(`[UPLOAD] Thumbnail extraction failed: ${err?.message}`);
+        }
+
+        // Reply to the client now — modal closes, library card has a real
+        // thumbnailUrl (if extraction succeeded within the timeout).
         phaseLog(`response sent — upload phase done (${(size / 1024 / 1024).toFixed(2)} MB)`);
         settle(() => res.json({
           success: true,
@@ -4264,6 +4287,7 @@ export async function registerRoutes(
             title: video.title,
             youtubeId: uploadVideoId,
             videoUrl: storageUrl,
+            thumbnailUrl: thumbnailUrl || null,
             status: video.status,
             platform: "fullscale",
           },
@@ -4274,10 +4298,6 @@ export async function registerRoutes(
         storage.updateVideoEditorialStatus(video.id, "pending").catch((e: any) =>
           console.warn(`[UPLOAD] Failed to set editorial pending: ${e?.message}`)
         );
-
-        extractThumbnailForVideo(video.id)
-          .then(thumbUrl => { if (thumbUrl) console.log(`[UPLOAD] Thumbnail extracted for ${video.id}: ${thumbUrl}`); })
-          .catch(() => {});
 
         processVideoScan(video.id, true).then(result => {
           console.log(`[UPLOAD] Auto-scan complete for ${video.id}: ${result.surfacesDetected} surfaces`);
@@ -6688,6 +6708,70 @@ export async function registerRoutes(
       }
     },
   );
+
+  // POST /api/creator/card-image/reprocess — strip baked-in letterbox bars
+  // from an existing card image. The original upload (pre-9e1401d) used
+  // sharp's fit:"contain" with #111117 padding, baking dark bars INTO the
+  // saved file. New uploads don't do this, but creators who already uploaded
+  // get stuck with the bars unless they re-upload. This endpoint re-fetches
+  // their stored card image, finds the actual non-letterbox bounding box by
+  // detecting the dominant edge color, crops to it, and re-uploads.
+  app.post("/api/creator/card-image/reprocess", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const email = req.session?.googleUser?.email || req.user?.claims?.email || req.authEmail;
+      if (!email) return res.status(401).json({ error: "Not authenticated" });
+
+      // Pull the existing card URL from the profile.
+      const slug = email.split("@")[0].toLowerCase();
+      const profile = await storage.getCreatorBySlug(slug)
+        ?? (await storage.getFeaturedCreators()).find(c => c.email.toLowerCase() === email.toLowerCase());
+      const existingUrl = (profile as any)?.cardImageUrl;
+      if (!existingUrl) {
+        return res.status(404).json({ error: "No existing card image to reprocess" });
+      }
+
+      // Fetch the current image (whether on /storage/ or external URL).
+      const localBase = `http://localhost:${process.env.PORT || 5000}`;
+      const fetchUrl = existingUrl.startsWith("/") ? `${localBase}${existingUrl}` : existingUrl;
+      const fetchRes = await fetch(fetchUrl);
+      if (!fetchRes.ok) {
+        return res.status(502).json({ error: `Could not fetch existing card: ${fetchRes.status}` });
+      }
+      const inBuf = Buffer.from(await fetchRes.arrayBuffer());
+
+      const sharp = (await import("sharp")).default;
+      // sharp.trim() removes uniform border color automatically. Threshold
+      // 30 is permissive for the dark #111117 letterbox bars from the
+      // prior upload code. If no border detected, returns the original
+      // unchanged (no-op).
+      const trimmed = await sharp(inBuf)
+        .trim({ threshold: 30 })
+        .png()
+        .toBuffer();
+
+      const beforeMeta = await sharp(inBuf).metadata();
+      const afterMeta = await sharp(trimmed).metadata();
+      console.log(`[CardImage/reprocess] ${email}: ${beforeMeta.width}x${beforeMeta.height} → ${afterMeta.width}x${afterMeta.height}`);
+
+      const ts = Date.now();
+      const safeSlug = email.toLowerCase().replace(/[^a-z0-9]/g, "_");
+      const objectKey = `public/uploads/creator-cards/${safeSlug}_${ts}.png`;
+      const { uploadBufferToStorage } = await import("./lib/objectStorage");
+      const newUrl = await uploadBufferToStorage(trimmed, objectKey);
+      await storage.updateCreatorProfile(email, { cardImageUrl: newUrl });
+
+      res.json({
+        success: true,
+        cardImageUrl: newUrl,
+        before: { w: beforeMeta.width, h: beforeMeta.height },
+        after: { w: afterMeta.width, h: afterMeta.height },
+        trimmedPixels: (beforeMeta.width || 0) * (beforeMeta.height || 0) - (afterMeta.width || 0) * (afterMeta.height || 0),
+      });
+    } catch (err: any) {
+      console.error("Error reprocessing creator card image:", err);
+      res.status(500).json({ error: err?.message || "Reprocess failed" });
+    }
+  });
 
   // Update video subcategory (authenticated)
   app.patch("/api/videos/:videoId/subcategory", isFlexibleAuthenticated, async (req: any, res) => {
