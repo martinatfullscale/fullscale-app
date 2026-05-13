@@ -379,6 +379,109 @@ function getFilterString(blend: PlacementBlend): string {
 }
 
 // ============================================================================
+// COMPUTE ASPECT-CORRECT PLACEMENT BBOX (CLIENT → SERVER)
+// ============================================================================
+//
+// Single source of truth for "what bbox do we send to a server endpoint
+// that composites the product into a scene frame." Every harmonize /
+// composite endpoint MUST use this — do not roll your own normalized-
+// aspect math.
+//
+// Why this exists: surface bboxes are stored normalized 0-1 against
+// DIFFERENT axes (W against frame width, H against frame height). On a
+// non-square frame the ratio surfaceW/surfaceH is NOT visual aspect.
+// Naive "drawW = surfaceH * prodAspect" math collapses the product
+// width by frameW/frameH (e.g. 0.5625× on 9:16 → bottle reads as
+// skinny). Server-side compositors use sharp's fit:"fill" deliberately
+// (see harmonization.ts:443), so they stretch to whatever bbox the
+// client sends — meaning aspect drift here translates 1:1 to a
+// squished/stretched product in the output.
+//
+// This helper:
+//   1. Converts surface dims to canvas pixels first → real visual aspect
+//   2. Aspect-fits the product into the surface bbox (preserves prodAspect)
+//   3. Applies user transform (scale, offset)
+//   4. Safety-clamps the final normalized bbox so its visual aspect on
+//      the actual scene frame matches the product's natural aspect
+//      within 5% — guards against canvas vs frame dim drift
+//
+// Works for any combination of:
+//   - product aspect (tall, wide, square, ultra-thin)
+//   - frame aspect (9:16, 16:9, 1:1, 4:5, etc.)
+//   - canvas size, surface dims, user transform
+//
+// Returns null if inputs are insufficient (image not loaded, zero dims).
+function computeAspectCorrectPlacementBbox(args: {
+  surface: {
+    boundingBoxX: number;
+    boundingBoxY: number;
+    boundingBoxWidth: number;
+    boundingBoxHeight: number;
+  };
+  productImg: HTMLImageElement | null;
+  canvas: HTMLCanvasElement | null;
+  frameSource: { width: number; height: number };
+  transform: { scale: number; offsetX: number; offsetY: number };
+  logTag?: string;
+}): { x: number; y: number; width: number; height: number } | null {
+  const { surface, productImg, canvas, frameSource, transform } = args;
+  const logTag = args.logTag || "PlacementBbox";
+  if (!productImg || !canvas) return null;
+  if (!productImg.naturalWidth || !productImg.naturalHeight) return null;
+  if (!canvas.width || !canvas.height) return null;
+  const surfaceW = surface.boundingBoxWidth;
+  const surfaceH = surface.boundingBoxHeight;
+  if (surfaceW <= 0 || surfaceH <= 0) return null;
+
+  const prodAspect = productImg.naturalWidth / productImg.naturalHeight;
+  const surfaceVisualW = surfaceW * canvas.width;
+  const surfaceVisualH = surfaceH * canvas.height;
+  const surfaceVisualAspect = surfaceVisualW / surfaceVisualH;
+
+  // Aspect-fit product into surface bbox in pixel space, then convert
+  // back to normalized for the wire format.
+  let visualDrawW: number, visualDrawH: number;
+  if (prodAspect > surfaceVisualAspect) {
+    visualDrawW = surfaceVisualW * transform.scale;
+    visualDrawH = (surfaceVisualW / prodAspect) * transform.scale;
+  } else {
+    visualDrawH = surfaceVisualH * transform.scale;
+    visualDrawW = (surfaceVisualH * prodAspect) * transform.scale;
+  }
+  let drawW = visualDrawW / canvas.width;
+  let drawH = visualDrawH / canvas.height;
+
+  // Safety clamp — re-derive width if visual aspect on the actual
+  // scene frame has drifted >5% from the product's natural aspect.
+  // If frame source dims are unknown, canvas IS the frame, so no drift.
+  const frameW = frameSource.width || canvas.width;
+  const frameH = frameSource.height || canvas.height;
+  const visualAspectOnFrame = (drawW * frameW) / Math.max(1, drawH * frameH);
+  const aspectDriftRatio = visualAspectOnFrame / prodAspect;
+  if (frameW > 0 && frameH > 0 && (aspectDriftRatio < 0.95 || aspectDriftRatio > 1.05)) {
+    const correctedDrawW = (drawH * frameH * prodAspect) / frameW;
+    console.log(
+      `[${logTag}] ⚠️  ASPECT DRIFT: visual=${visualAspectOnFrame.toFixed(3)} natural=${prodAspect.toFixed(3)} drift=${((aspectDriftRatio - 1) * 100).toFixed(1)}% → drawW ${drawW.toFixed(4)} → ${correctedDrawW.toFixed(4)}`,
+    );
+    drawW = correctedDrawW;
+  }
+  console.log(
+    `[${logTag}] prodPNG ${productImg.naturalWidth}x${productImg.naturalHeight} (aspect ${prodAspect.toFixed(3)}) | canvas ${canvas.width}x${canvas.height} | frame ${frameW}x${frameH} | surface bbox ${surfaceW.toFixed(3)}x${surfaceH.toFixed(3)} | drawn bbox ${drawW.toFixed(4)}x${drawH.toFixed(4)} → frame px ${Math.round(drawW * frameW)}x${Math.round(drawH * frameH)} (visual aspect ${((drawW * frameW) / (drawH * frameH)).toFixed(3)})`,
+  );
+
+  const offsetXNorm = transform.offsetX / Math.max(1, canvas.width);
+  const offsetYNorm = transform.offsetY / Math.max(1, canvas.height);
+  const centerXNorm = surface.boundingBoxX + surfaceW / 2 + offsetXNorm;
+  const centerYNorm = surface.boundingBoxY + surfaceH / 2 + offsetYNorm;
+  return {
+    x: Math.max(0, Math.min(1, centerXNorm - drawW / 2)),
+    y: Math.max(0, Math.min(1, centerYNorm - drawH / 2)),
+    width: Math.max(0.01, Math.min(1, drawW)),
+    height: Math.max(0.01, Math.min(1, drawH)),
+  };
+}
+
+// ============================================================================
 // DRAW PRODUCT WITH FULL TRANSFORM + BLEND
 // ============================================================================
 
@@ -2140,97 +2243,21 @@ export default function PlacementPreviewModal({
                         setHarmonizeResultUrl(null);
                         setShowHarmonizeCompare(true);
 
-                        // Compute the product's actual normalized bbox after
-                        // applying user transforms. This mirrors drawProduct's
-                        // canvas math so the server places the product where
-                        // it currently sits on the canvas, not where the raw
-                        // surface bbox is. Without this, harmonize was
-                        // resizing + recentering to the surface bbox and
-                        // ignoring the user's adjustments.
-                        const surfaceX = selectedSurface.boundingBoxX;
-                        const surfaceY = selectedSurface.boundingBoxY;
-                        const surfaceW = selectedSurface.boundingBoxWidth;
-                        const surfaceH = selectedSurface.boundingBoxHeight;
-                        const productImg = productImgRef.current;
-                        const canvas = canvasRef.current;
-                        let productPlacementBbox = null;
-                        if (productImg && canvas && surfaceW > 0 && surfaceH > 0) {
-                          // CRITICAL: aspect math must use VISUAL aspect, not
-                          // normalized. surfaceW/surfaceH are 0-1 normalized
-                          // coords; for a non-square frame their ratio is NOT
-                          // the visual aspect. Multiplying by canvas.width and
-                          // canvas.height converts to actual pixel ratio so the
-                          // fit decision matches what the browser canvas
-                          // actually renders.
-                          //
-                          // Symptom of the prior (broken) math: bottle visibly
-                          // squished thinner in harmonized output vs the flat
-                          // overlay. Server's fit:"fill" was stretching to a
-                          // bbox whose aspect didn't match the product's
-                          // visual aspect.
-                          const prodAspect = productImg.naturalWidth / productImg.naturalHeight;
-                          const surfaceVisualW = surfaceW * canvas.width;
-                          const surfaceVisualH = surfaceH * canvas.height;
-                          const surfaceVisualAspect = surfaceVisualW / surfaceVisualH;
-
-                          // Compute the product's pixel size on canvas using
-                          // the SAME logic the renderFrame uses (visual aspect
-                          // fit). Then convert back to normalized so the bbox
-                          // sent to the server preserves the product's true
-                          // aspect ratio.
-                          let visualDrawW: number, visualDrawH: number;
-                          if (prodAspect > surfaceVisualAspect) {
-                            visualDrawW = surfaceVisualW * transform.scale;
-                            visualDrawH = (surfaceVisualW / prodAspect) * transform.scale;
-                          } else {
-                            visualDrawH = surfaceVisualH * transform.scale;
-                            visualDrawW = (surfaceVisualH * prodAspect) * transform.scale;
-                          }
-                          let drawW = visualDrawW / canvas.width;
-                          let drawH = visualDrawH / canvas.height;
-
-                          // SAFETY CLAMP — force the bbox sent to the server
-                          // to preserve the product's NATURAL aspect ratio on
-                          // the actual scene frame (not the canvas). The
-                          // server uses the scene frame's pixel dims; if
-                          // canvas aspect drifts from frame aspect for any
-                          // reason (container sizing, zoom, motion-tracked
-                          // surface dims diverging from baseSurface), the
-                          // visual aspect on the rendered frame can end up
-                          // != prodAspect → bottle thinned/squished.
-                          //
-                          // We use the frame source dims (sourceWidth/Height
-                          // from the video element or static frame image).
-                          // If unknown, skip the clamp (canvas dims are the
-                          // best guess and already match in that case).
-                          const frameW = (videoRef.current?.videoWidth) || (frameImgRef.current?.naturalWidth) || canvas.width;
-                          const frameH = (videoRef.current?.videoHeight) || (frameImgRef.current?.naturalHeight) || canvas.height;
-                          const visualAspectOnFrame = (drawW * frameW) / Math.max(1, drawH * frameH);
-                          const aspectDriftRatio = visualAspectOnFrame / prodAspect;
-                          if (frameW > 0 && frameH > 0 && (aspectDriftRatio < 0.95 || aspectDriftRatio > 1.05)) {
-                            // Drift > 5% — re-derive width to make visual
-                            // aspect on frame == prodAspect, keeping height
-                            // (height is what the user "sees" the bottle as
-                            // tall, which is the surface-fit dimension).
-                            const correctedDrawW = (drawH * frameH * prodAspect) / frameW;
-                            console.log(`[Harmonize/client] ⚠️  ASPECT DRIFT: visual=${visualAspectOnFrame.toFixed(3)} natural=${prodAspect.toFixed(3)} drift=${((aspectDriftRatio - 1) * 100).toFixed(1)}% → drawW ${drawW.toFixed(4)} → ${correctedDrawW.toFixed(4)}`);
-                            drawW = correctedDrawW;
-                          }
-                          console.log(`[Harmonize/client] prodPNG ${productImg.naturalWidth}x${productImg.naturalHeight} (aspect ${prodAspect.toFixed(3)}) | canvas ${canvas.width}x${canvas.height} | frame ${frameW}x${frameH} | surface bbox ${surfaceW.toFixed(3)}x${surfaceH.toFixed(3)} | drawn bbox ${drawW.toFixed(4)}x${drawH.toFixed(4)} → frame px ${Math.round(drawW * frameW)}x${Math.round(drawH * frameH)} (visual aspect ${((drawW * frameW) / (drawH * frameH)).toFixed(3)})`);
-
-                          // transform.offsetX/Y are in canvas pixels — convert
-                          // to normalized scene space using canvas dimensions.
-                          const offsetXNorm = transform.offsetX / Math.max(1, canvas.width);
-                          const offsetYNorm = transform.offsetY / Math.max(1, canvas.height);
-                          const centerXNorm = surfaceX + surfaceW / 2 + offsetXNorm;
-                          const centerYNorm = surfaceY + surfaceH / 2 + offsetYNorm;
-                          productPlacementBbox = {
-                            x: Math.max(0, Math.min(1, centerXNorm - drawW / 2)),
-                            y: Math.max(0, Math.min(1, centerYNorm - drawH / 2)),
-                            width: Math.max(0.01, Math.min(1, drawW)),
-                            height: Math.max(0.01, Math.min(1, drawH)),
-                          };
-                        }
+                        // Build the bbox we send to the harmonize endpoint.
+                        // Routed through the shared helper so this can never
+                        // drift from the 3D Harmonize path or any future
+                        // composite-by-bbox endpoint.
+                        const productPlacementBbox = computeAspectCorrectPlacementBbox({
+                          surface: selectedSurface,
+                          productImg: productImgRef.current,
+                          canvas: canvasRef.current,
+                          frameSource: {
+                            width: videoRef.current?.videoWidth || frameImgRef.current?.naturalWidth || 0,
+                            height: videoRef.current?.videoHeight || frameImgRef.current?.naturalHeight || 0,
+                          },
+                          transform,
+                          logTag: "Harmonize/client",
+                        });
 
                         try {
                           const res = await fetch("/api/placement/harmonize", {
@@ -2310,69 +2337,20 @@ export default function PlacementPreviewModal({
                         setHarmonizeResultUrl(null);
                         setShowHarmonizeCompare(true);
 
-                        // 3D Harmonize bbox computation — MUST match the
-                        // regular Harmonize math above. Earlier this block
-                        // had its own un-clamped copy that ignored the
-                        // canvas vs frame aspect, which is why the bottle
-                        // came out skinny on a 9:16 scene frame even after
-                        // the regular Harmonize button was fixed. Keep the
-                        // two blocks in lockstep.
-                        const surfaceX = selectedSurface.boundingBoxX;
-                        const surfaceY = selectedSurface.boundingBoxY;
-                        const surfaceW = selectedSurface.boundingBoxWidth;
-                        const surfaceH = selectedSurface.boundingBoxHeight;
-                        const productImg = productImgRef.current;
-                        const canvas = canvasRef.current;
-                        let productPlacementBbox = null;
-                        if (productImg && canvas && surfaceW > 0 && surfaceH > 0) {
-                          // Visual aspect — surfaceW/surfaceH are 0-1
-                          // normalized to DIFFERENT axes (frame W vs H), so
-                          // their ratio ≠ visual aspect on a non-square
-                          // frame. Convert to canvas pixels first.
-                          const prodAspect = productImg.naturalWidth / productImg.naturalHeight;
-                          const surfaceVisualW = surfaceW * canvas.width;
-                          const surfaceVisualH = surfaceH * canvas.height;
-                          const surfaceVisualAspect = surfaceVisualW / surfaceVisualH;
-
-                          let visualDrawW: number, visualDrawH: number;
-                          if (prodAspect > surfaceVisualAspect) {
-                            visualDrawW = surfaceVisualW * transform.scale;
-                            visualDrawH = (surfaceVisualW / prodAspect) * transform.scale;
-                          } else {
-                            visualDrawH = surfaceVisualH * transform.scale;
-                            visualDrawW = (surfaceVisualH * prodAspect) * transform.scale;
-                          }
-                          let drawW = visualDrawW / canvas.width;
-                          let drawH = visualDrawH / canvas.height;
-
-                          // SAFETY CLAMP — force the bbox sent to the
-                          // server to preserve the product's NATURAL
-                          // aspect on the actual scene frame (not the
-                          // canvas). The server composites against frame
-                          // pixels; if canvas aspect drifts from frame
-                          // aspect, the bottle ends up squished.
-                          const frameW = (videoRef.current?.videoWidth) || (frameImgRef.current?.naturalWidth) || canvas.width;
-                          const frameH = (videoRef.current?.videoHeight) || (frameImgRef.current?.naturalHeight) || canvas.height;
-                          const visualAspectOnFrame = (drawW * frameW) / Math.max(1, drawH * frameH);
-                          const aspectDriftRatio = visualAspectOnFrame / prodAspect;
-                          if (frameW > 0 && frameH > 0 && (aspectDriftRatio < 0.95 || aspectDriftRatio > 1.05)) {
-                            const correctedDrawW = (drawH * frameH * prodAspect) / frameW;
-                            console.log(`[Harmonize3D/client] ⚠️  ASPECT DRIFT: visual=${visualAspectOnFrame.toFixed(3)} natural=${prodAspect.toFixed(3)} drift=${((aspectDriftRatio - 1) * 100).toFixed(1)}% → drawW ${drawW.toFixed(4)} → ${correctedDrawW.toFixed(4)}`);
-                            drawW = correctedDrawW;
-                          }
-                          console.log(`[Harmonize3D/client] prodPNG ${productImg.naturalWidth}x${productImg.naturalHeight} (aspect ${prodAspect.toFixed(3)}) | canvas ${canvas.width}x${canvas.height} | frame ${frameW}x${frameH} | surface bbox ${surfaceW.toFixed(3)}x${surfaceH.toFixed(3)} | drawn bbox ${drawW.toFixed(4)}x${drawH.toFixed(4)} → frame px ${Math.round(drawW * frameW)}x${Math.round(drawH * frameH)} (visual aspect ${((drawW * frameW) / (drawH * frameH)).toFixed(3)})`);
-
-                          const offsetXNorm = transform.offsetX / Math.max(1, canvas.width);
-                          const offsetYNorm = transform.offsetY / Math.max(1, canvas.height);
-                          const centerXNorm = surfaceX + surfaceW / 2 + offsetXNorm;
-                          const centerYNorm = surfaceY + surfaceH / 2 + offsetYNorm;
-                          productPlacementBbox = {
-                            x: Math.max(0, Math.min(1, centerXNorm - drawW / 2)),
-                            y: Math.max(0, Math.min(1, centerYNorm - drawH / 2)),
-                            width: Math.max(0.01, Math.min(1, drawW)),
-                            height: Math.max(0.01, Math.min(1, drawH)),
-                          };
-                        }
+                        // 3D Harmonize bbox — same shared helper as the
+                        // regular Harmonize button. Single source of truth
+                        // so neither path can drift from the other again.
+                        const productPlacementBbox = computeAspectCorrectPlacementBbox({
+                          surface: selectedSurface,
+                          productImg: productImgRef.current,
+                          canvas: canvasRef.current,
+                          frameSource: {
+                            width: videoRef.current?.videoWidth || frameImgRef.current?.naturalWidth || 0,
+                            height: videoRef.current?.videoHeight || frameImgRef.current?.naturalHeight || 0,
+                          },
+                          transform,
+                          logTag: "Harmonize3D/client",
+                        });
 
                         try {
                           const res = await fetch("/api/placement/harmonize", {
