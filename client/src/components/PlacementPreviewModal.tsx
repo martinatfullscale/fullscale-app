@@ -2310,6 +2310,13 @@ export default function PlacementPreviewModal({
                         setHarmonizeResultUrl(null);
                         setShowHarmonizeCompare(true);
 
+                        // 3D Harmonize bbox computation — MUST match the
+                        // regular Harmonize math above. Earlier this block
+                        // had its own un-clamped copy that ignored the
+                        // canvas vs frame aspect, which is why the bottle
+                        // came out skinny on a 9:16 scene frame even after
+                        // the regular Harmonize button was fixed. Keep the
+                        // two blocks in lockstep.
                         const surfaceX = selectedSurface.boundingBoxX;
                         const surfaceY = selectedSurface.boundingBoxY;
                         const surfaceW = selectedSurface.boundingBoxWidth;
@@ -2318,16 +2325,43 @@ export default function PlacementPreviewModal({
                         const canvas = canvasRef.current;
                         let productPlacementBbox = null;
                         if (productImg && canvas && surfaceW > 0 && surfaceH > 0) {
+                          // Visual aspect — surfaceW/surfaceH are 0-1
+                          // normalized to DIFFERENT axes (frame W vs H), so
+                          // their ratio ≠ visual aspect on a non-square
+                          // frame. Convert to canvas pixels first.
                           const prodAspect = productImg.naturalWidth / productImg.naturalHeight;
-                          const surfaceAspectInBbox = surfaceW / surfaceH;
-                          let drawW: number, drawH: number;
-                          if (prodAspect > surfaceAspectInBbox) {
-                            drawW = surfaceW * transform.scale;
-                            drawH = (surfaceW / prodAspect) * transform.scale;
+                          const surfaceVisualW = surfaceW * canvas.width;
+                          const surfaceVisualH = surfaceH * canvas.height;
+                          const surfaceVisualAspect = surfaceVisualW / surfaceVisualH;
+
+                          let visualDrawW: number, visualDrawH: number;
+                          if (prodAspect > surfaceVisualAspect) {
+                            visualDrawW = surfaceVisualW * transform.scale;
+                            visualDrawH = (surfaceVisualW / prodAspect) * transform.scale;
                           } else {
-                            drawH = surfaceH * transform.scale;
-                            drawW = (surfaceH * prodAspect) * transform.scale;
+                            visualDrawH = surfaceVisualH * transform.scale;
+                            visualDrawW = (surfaceVisualH * prodAspect) * transform.scale;
                           }
+                          let drawW = visualDrawW / canvas.width;
+                          let drawH = visualDrawH / canvas.height;
+
+                          // SAFETY CLAMP — force the bbox sent to the
+                          // server to preserve the product's NATURAL
+                          // aspect on the actual scene frame (not the
+                          // canvas). The server composites against frame
+                          // pixels; if canvas aspect drifts from frame
+                          // aspect, the bottle ends up squished.
+                          const frameW = (videoRef.current?.videoWidth) || (frameImgRef.current?.naturalWidth) || canvas.width;
+                          const frameH = (videoRef.current?.videoHeight) || (frameImgRef.current?.naturalHeight) || canvas.height;
+                          const visualAspectOnFrame = (drawW * frameW) / Math.max(1, drawH * frameH);
+                          const aspectDriftRatio = visualAspectOnFrame / prodAspect;
+                          if (frameW > 0 && frameH > 0 && (aspectDriftRatio < 0.95 || aspectDriftRatio > 1.05)) {
+                            const correctedDrawW = (drawH * frameH * prodAspect) / frameW;
+                            console.log(`[Harmonize3D/client] ⚠️  ASPECT DRIFT: visual=${visualAspectOnFrame.toFixed(3)} natural=${prodAspect.toFixed(3)} drift=${((aspectDriftRatio - 1) * 100).toFixed(1)}% → drawW ${drawW.toFixed(4)} → ${correctedDrawW.toFixed(4)}`);
+                            drawW = correctedDrawW;
+                          }
+                          console.log(`[Harmonize3D/client] prodPNG ${productImg.naturalWidth}x${productImg.naturalHeight} (aspect ${prodAspect.toFixed(3)}) | canvas ${canvas.width}x${canvas.height} | frame ${frameW}x${frameH} | surface bbox ${surfaceW.toFixed(3)}x${surfaceH.toFixed(3)} | drawn bbox ${drawW.toFixed(4)}x${drawH.toFixed(4)} → frame px ${Math.round(drawW * frameW)}x${Math.round(drawH * frameH)} (visual aspect ${((drawW * frameW) / (drawH * frameH)).toFixed(3)})`);
+
                           const offsetXNorm = transform.offsetX / Math.max(1, canvas.width);
                           const offsetYNorm = transform.offsetY / Math.max(1, canvas.height);
                           const centerXNorm = surfaceX + surfaceW / 2 + offsetXNorm;
