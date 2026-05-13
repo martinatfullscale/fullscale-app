@@ -362,6 +362,75 @@ async function compositeKontextCropBack(
 }
 
 /**
+ * SECOND PASS — verification + product lock.
+ *
+ * After any harmonization (Kontext, procedural, ai-3d), we composite the
+ * ORIGINAL product image back over the harmonized result at the exact
+ * user-specified bbox. This guarantees the user's three product rules:
+ *   1. Don't move the product from its placement
+ *   2. Don't change the size
+ *   3. Don't change the color
+ *
+ * The harmonized output's contribution is everything OUTSIDE the product
+ * silhouette — scene-level adjustments (contact shadow, ambient
+ * brightening, subtle reflections) that Kontext or procedural added in
+ * response to the product's presence. These survive the lock pass because
+ * the original product is composited at exactly the original bbox; the
+ * surrounding pixels remain whatever the harmonization produced.
+ *
+ * Result: product identity preserved bit-for-bit, scene-level
+ * harmonization preserved.
+ */
+async function lockProductOverHarmonized(
+  harmonizedSceneBuf: Buffer,
+  productBuf: Buffer,
+  bbox: HarmonizationInput["bbox"],
+  dims: HarmonizationInput["frameDimensions"],
+): Promise<Buffer> {
+  const W = dims.width;
+  const H = dims.height;
+  const pxX = clamp(Math.round(bbox.x * W), 0, W - 1);
+  const pxY = clamp(Math.round(bbox.y * H), 0, H - 1);
+  const pxW = clamp(Math.round(bbox.width * W), 1, W - pxX);
+  const pxH = clamp(Math.round(bbox.height * H), 1, H - pxY);
+
+  // Ensure product has alpha so the composite respects the silhouette
+  // (otherwise we paint a rectangle, including any backdrop in the
+  // product image).
+  let workingProductBuf = productBuf;
+  try {
+    const inMeta = await sharp(productBuf).metadata();
+    if (!inMeta.hasAlpha && process.env.FAL_KEY) {
+      const tempUrl = await uploadBuffer(productBuf, "product-lock-noalpha.png", "image/png");
+      const cleanUrl = await removeBackgroundForCompositing(tempUrl);
+      if (cleanUrl) {
+        const cleanRes = await fetch(cleanUrl);
+        if (cleanRes.ok) {
+          workingProductBuf = Buffer.from(await cleanRes.arrayBuffer());
+        }
+      }
+    }
+  } catch { /* keep original */ }
+
+  // Resize product to EXACTLY the user-specified bbox dimensions. fit:
+  // "fill" stretches if aspect differs — that's intentional, the user
+  // already set the scale via the placement modal. fit: "inside" would
+  // letterbox and silently change the visible size, which is exactly the
+  // size-drift bug we're fixing here.
+  const productAtSize = await sharp(workingProductBuf)
+    .resize(pxW, pxH, { fit: "fill" })
+    .png()
+    .toBuffer();
+
+  console.log(`[Harmonize/lock] Compositing original product at exact bbox: ${pxW}x${pxH} @ (${pxX}, ${pxY})`);
+
+  return sharp(harmonizedSceneBuf)
+    .composite([{ input: productAtSize, left: pxX, top: pxY }])
+    .png()
+    .toBuffer();
+}
+
+/**
  * IC-Light v2 (fal-ai/iclight-v2) — relights a foreground subject using a
  * background image as the lighting reference. We feed it:
  *   - foreground: the TRELLIS-rendered 3D product (lit by neutral studio
@@ -800,17 +869,29 @@ async function applyProceduralHarmonization(
     console.warn(`[Harmonize/procedural] Alpha detection / bg-strip failed: ${err?.message}`);
   }
 
-  // ── Step 1: resize product to fit the bbox, preserving aspect ──
+  // ── Step 1: resize product to EXACT bbox dimensions ──
+  // Was fit:"inside" which letterboxed the product within the bbox and
+  // centered it via offsetX/Y math below. That introduced position +
+  // size drift between the browser preview (which respects user's exact
+  // transform) and the server composite. fit:"fill" sizes to exactly
+  // the bbox the client requested — no letterbox, no centering offset.
+  // The client is expected to send a productPlacementBbox that already
+  // matches the visible product dimensions on canvas.
   const productResized = await sharp(workingProductBuf)
-    .resize(pxW, pxH, { fit: "inside", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+    .resize(pxW, pxH, { fit: "fill", background: { r: 0, g: 0, b: 0, alpha: 0 } })
     .png()
     .toBuffer();
   const productMeta = await sharp(productResized).metadata();
   const finalW = productMeta.width || pxW;
   const finalH = productMeta.height || pxH;
-  // Center the product within the bbox if aspect ratios differ
-  const offsetX = pxX + Math.floor((pxW - finalW) / 2);
-  const offsetY = pxY + Math.floor((pxH - finalH) / 2);
+  // Place product at the EXACT bbox top-left, no centering offset.
+  // With fit:"fill" above, finalW===pxW and finalH===pxH, so the
+  // centering math was a no-op anyway — but when it WASN'T (legacy
+  // fit:"inside"), this offset shifted the product visibly relative to
+  // where the user dropped it in the canvas. Removing the centering
+  // ensures: server bbox (pxX, pxY) == user-intended position.
+  const offsetX = pxX;
+  const offsetY = pxY;
 
   // ── Step 2: build flat composite (Stage 1, no AI) ──
   const flatComposite = await sharp(sceneBuf)
@@ -1130,7 +1211,21 @@ export async function harmonizeProductIntoScene(
         };
       }
       const editedCropBuf = Buffer.from(await editedCropRes.arrayBuffer());
-      const finalBuf = await compositeKontextCropBack(sceneBuf, editedCropBuf, rect);
+      // PASS 1: Kontext-modified scene (with shadows, lighting reflections,
+      // ambient adjustments — but possibly with the wrong product or
+      // recolored product).
+      const kontextSceneBuf = await compositeKontextCropBack(sceneBuf, editedCropBuf, rect);
+
+      // PASS 2: Lock the original product over the Kontext-modified scene.
+      // Guarantees position/size/color rules. Scene-level adjustments
+      // Kontext made (contact shadow, light reflection on the surface
+      // around the product) survive because the original product is
+      // composited at the EXACT bbox — surrounding pixels stay whatever
+      // Kontext produced.
+      const finalBuf = await lockProductOverHarmonized(
+        kontextSceneBuf, productBuf, input.bbox, input.frameDimensions,
+      );
+      console.log(`[Harmonize] PASS 2 — locked original product over Kontext scene`);
 
       // Also build the flat composite for before/after comparison.
       const { flatComposite } = await applyProceduralHarmonization(
@@ -1143,7 +1238,7 @@ export async function harmonizeProductIntoScene(
       ]);
 
       const elapsedMs = Date.now() - startedAt;
-      console.log(`[Harmonize] generative done in ${elapsedMs}ms (Kontext)`);
+      console.log(`[Harmonize] generative done in ${elapsedMs}ms (Kontext + product lock)`);
       return {
         success: true,
         imageUrl,
@@ -1327,19 +1422,30 @@ export async function harmonizeProductIntoScene(
         console.log(`[Harmonize/ai-3d] HARMONIZE_DISABLE_ICLIGHT=true — skipping relight stage`);
       }
 
+      // PASS 1: TRELLIS (3D mesh) + procedural composite + IC-Light
+      // produces a scene with the modified/relit product at the bbox.
       const { result, flatComposite } = await applyProceduralHarmonization(
         sceneBuf, renderedProductBuf, input.bbox, input.frameDimensions,
       );
+
+      // PASS 2: Lock the ORIGINAL product (not the TRELLIS-rendered or
+      // IC-Light-relit version) over the result. Preserves position,
+      // size, and brand color while keeping the procedural shadow and
+      // any scene-level adjustments around the product silhouette.
+      const lockedResult = await lockProductOverHarmonized(
+        result, productBuf, input.bbox, input.frameDimensions,
+      );
+      console.log(`[Harmonize] PASS 2 — locked original product over TRELLIS scene`);
 
       const falKey = process.env.FAL_KEY;
       if (falKey) {
         fal.config({ credentials: falKey });
         const [imageUrl, flatCompositeUrl] = await Promise.all([
-          uploadBuffer(result, "harmonized-3d.png", "image/png"),
+          uploadBuffer(lockedResult, "harmonized-3d.png", "image/png"),
           uploadBuffer(flatComposite, "flat-composite-3d.png", "image/png"),
         ]);
         const elapsedMs = Date.now() - startedAt;
-        console.log(`[Harmonize] ai-3d done in ${elapsedMs}ms (TRELLIS${icLightRelitUrl ? " + IC-Light" : ""} + procedural)`);
+        console.log(`[Harmonize] ai-3d done in ${elapsedMs}ms (TRELLIS${icLightRelitUrl ? " + IC-Light" : ""} + procedural + product lock)`);
         return {
           success: true,
           imageUrl,
@@ -1353,7 +1459,7 @@ export async function harmonizeProductIntoScene(
       }
 
       const elapsedMs = Date.now() - startedAt;
-      const dataUrl = `data:image/png;base64,${result.toString("base64")}`;
+      const dataUrl = `data:image/png;base64,${lockedResult.toString("base64")}`;
       const flatDataUrl = `data:image/png;base64,${flatComposite.toString("base64")}`;
       return {
         success: true,
