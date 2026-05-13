@@ -751,6 +751,126 @@ function isHorizontalSurface(surfaceType: string | undefined | null): boolean {
 }
 
 /**
+ * Per-placement region analysis via Gemini Vision.
+ *
+ * The per-SURFACE lighting/cameraAngle metadata we get from initial scene
+ * scanning is too coarse — a turntable surface has different lighting at
+ * different spots (the platter vs. the mixer vs. the unused space next
+ * to the slipmat). When the user drops a product at a specific bbox, we
+ * want to analyze that EXACT region for:
+ *   - surface normal (horizontal/vertical/tilted + degrees) → drives pitch
+ *   - shadow direction + intensity → drives our cast-shadow params
+ *   - dominant hue + saturation + luminance → drives color cast
+ *   - neighboring objects → drives "is this space cramped or open"
+ *   - recommended scale → catches "bottle as tall as the mixer" mistakes
+ *
+ * Single Gemini 2.5 Flash call with a cropped scene region. Returns null
+ * on failure — callers fall back to per-surface metadata + defaults.
+ *
+ * Cost: ~$0.002/call, ~1-2s latency. Cheap enough to run on every
+ * harmonize invocation.
+ */
+export interface PlacementRegionAnalysis {
+  surfaceNormal: "horizontal" | "vertical" | "tilted-toward-camera" | "tilted-away";
+  tiltDegrees: number; // -45..+45, 0 = perpendicular to camera axis
+  existingShadowDirection: "top-left" | "top" | "top-right" | "left" | "right" | "bottom-left" | "bottom" | "bottom-right" | "ambient";
+  existingShadowIntensity: number; // 0.0..1.0
+  dominantHueDeg: number; // 0..360 (red=0, green=120, blue=240)
+  dominantSaturation: number; // 0..1
+  averageLuminance: number; // 0..1
+  neighboringObjects: string[]; // ["turntable platter", "vinyl records"]
+  openSpaceClass: "cramped" | "open" | "isolated";
+  recommendedScale: number; // 0.5..1.5 multiplier on user's chosen scale
+}
+
+async function analyzePlacementRegion(
+  sceneBuf: Buffer,
+  bbox: HarmonizationInput["bbox"],
+  dims: HarmonizationInput["frameDimensions"],
+): Promise<PlacementRegionAnalysis | null> {
+  const apiKey = process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
+  if (!apiKey) {
+    console.log(`[Harmonize/region-analysis] No AI_INTEGRATIONS_GEMINI_API_KEY — skipping per-placement analysis`);
+    return null;
+  }
+  try {
+    const t0 = Date.now();
+    // Crop the scene to the bbox + 25% margin so Gemini sees both the
+    // exact placement spot AND its surroundings (what's above the table,
+    // what's beside it, the room's general lighting).
+    const W = dims.width;
+    const H = dims.height;
+    const pxX = clamp(Math.round(bbox.x * W), 0, W - 1);
+    const pxY = clamp(Math.round(bbox.y * H), 0, H - 1);
+    const pxW = clamp(Math.round(bbox.width * W), 1, W - pxX);
+    const pxH = clamp(Math.round(bbox.height * H), 1, H - pxY);
+    const marginX = Math.round(pxW * 0.25);
+    const marginY = Math.round(pxH * 0.25);
+    const cropRegion = clipRegion(
+      { left: pxX - marginX, top: pxY - marginY, width: pxW + marginX * 2, height: pxH + marginY * 2 },
+      W, H,
+    );
+    const cropBuf = await sharp(sceneBuf).extract(cropRegion).jpeg({ quality: 85 }).toBuffer();
+    const base64 = cropBuf.toString("base64");
+
+    const prompt = `You are analyzing a region of a scene where a product will be placed via image compositing. Return ONLY a JSON object (no markdown, no prose) with these exact fields:
+
+{
+  "surfaceNormal": "horizontal" | "vertical" | "tilted-toward-camera" | "tilted-away",
+  "tiltDegrees": <number -45 to 45, 0 = perpendicular to camera axis>,
+  "existingShadowDirection": "top-left" | "top" | "top-right" | "left" | "right" | "bottom-left" | "bottom" | "bottom-right" | "ambient",
+  "existingShadowIntensity": <number 0.0-1.0, how strong are existing shadows in this region>,
+  "dominantHueDeg": <number 0-360, dominant hue: red=0, yellow=60, green=120, cyan=180, blue=240, magenta=300>,
+  "dominantSaturation": <number 0.0-1.0>,
+  "averageLuminance": <number 0.0-1.0, 0=black, 1=white>,
+  "neighboringObjects": [<array of strings naming objects visible in this region>],
+  "openSpaceClass": "cramped" | "open" | "isolated",
+  "recommendedScale": <number 0.5-1.5, multiplier suggesting whether the placement bbox is appropriately sized for objects already in this region>
+}
+
+Analyze for a product compositing task: surfaceNormal tells us how to orient the product (most surfaces a product rests on are "horizontal" — tables, counters, shelves, turntables, floors). tiltDegrees is the camera perspective tilt of that surface (0 = surface plane is perpendicular to camera, large = surface is tilted). existingShadow* tells us about real shadows already in the scene (we'll match these). dominant* describes the color of pixels in this region (drives subtle color-cast adjustment on the composited product). neighboringObjects gives semantic context. openSpaceClass = "isolated" if there's empty space around, "cramped" if competing objects are very close, "open" otherwise. recommendedScale: 1.0 = product bbox is right-sized for this space, <1 = product is too big, >1 = product could be larger.`;
+
+    const { GoogleGenAI } = await import("@google/genai");
+    const ai = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        apiVersion: "",
+        baseUrl: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL,
+      },
+    });
+    const response: any = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { text: prompt },
+            { inlineData: { mimeType: "image/jpeg", data: base64 } },
+          ],
+        },
+      ],
+    });
+    const text = (response.text || "").trim();
+    // Strip markdown fences if Gemini added them despite the prompt.
+    const cleaned = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+    const parsed = JSON.parse(cleaned) as PlacementRegionAnalysis;
+
+    const elapsed = Date.now() - t0;
+    console.log(
+      `[Harmonize/region-analysis] ${elapsed}ms — normal:${parsed.surfaceNormal}(${parsed.tiltDegrees.toFixed(0)}°) ` +
+      `shadow:${parsed.existingShadowDirection}@${parsed.existingShadowIntensity.toFixed(2)} ` +
+      `hue:${parsed.dominantHueDeg.toFixed(0)}° sat:${parsed.dominantSaturation.toFixed(2)} lum:${parsed.averageLuminance.toFixed(2)} ` +
+      `space:${parsed.openSpaceClass} scale:${parsed.recommendedScale.toFixed(2)}x ` +
+      `nearby:[${parsed.neighboringObjects.slice(0, 3).join(", ")}]`,
+    );
+    return parsed;
+  } catch (err: any) {
+    console.warn(`[Harmonize/region-analysis] Failed: ${err?.message || err}`);
+    return null;
+  }
+}
+
+/**
  * Apply a vertical perspective shear via sharp affine to simulate a small
  * pitch angle. TRELLIS turnaround MP4 only varies yaw; pitch we have to
  * fake at the 2D level. Larger pitch values would benefit from actual 3D
@@ -947,6 +1067,11 @@ async function applyProceduralHarmonization(
     // the sheared product, so the "flat overlay" the user saw also had
     // the (sometimes wrong) pitch tilt baked in.
     flatCompositeProductBuf?: Buffer;
+    // Per-placement region analysis from Gemini Vision. When provided,
+    // OVERRIDES the per-surface `lighting` arg with values measured at
+    // the exact placement bbox. Drives shadow direction, intensity,
+    // and (TBD) color cast. See analyzePlacementRegion.
+    regionAnalysis?: PlacementRegionAnalysis | null;
   },
 ): Promise<{
   result: Buffer;
@@ -1225,11 +1350,23 @@ async function applyProceduralHarmonization(
   // intensity so even un-lit-metadata surfaces get a visibly slanted
   // cast shadow. (Most natural indoor lighting comes from upper-left
   // anyway — windows, ceiling lamps off-center.)
-  const inputDirRaw = lighting?.direction;
-  const inputIntRaw = lighting?.intensity;
+  // Per-placement region analysis (Gemini-measured at this exact bbox)
+  // takes precedence over the per-surface DB metadata. Falls back to DB,
+  // then to defaults.
+  const regionShadowDir = options?.regionAnalysis?.existingShadowDirection;
+  const regionShadowInt = options?.regionAnalysis?.existingShadowIntensity;
+  const inputDirRaw = regionShadowDir ?? lighting?.direction;
+  const inputIntRaw = regionShadowInt ?? lighting?.intensity;
   const dbHasLighting = inputDirRaw != null || inputIntRaw != null;
+  const regionWins = regionShadowDir != null || regionShadowInt != null;
   const lightDir = (inputDirRaw || "top-left").toLowerCase();
   const lightIntensity = clamp(inputIntRaw ?? 0.85, 0.2, 1.0);
+  if (regionWins) {
+    console.log(
+      `[Harmonize/proc] Using PER-PLACEMENT shadow (Gemini region): dir=${regionShadowDir} int=${regionShadowInt?.toFixed(2)} ` +
+      `(would have used DB: dir=${lighting?.direction} int=${lighting?.intensity})`,
+    );
+  }
   // Shadow offset relative to product height. Top light → shadow below
   // (positive Y). Left light → shadow on right (positive X). Etc.
   // Magnitudes bumped vs prior pass — old "top" produced finalH*0.06
@@ -1327,6 +1464,21 @@ export async function harmonizeProductIntoScene(
       asBuffer(input.sceneImage),
       asBuffer(input.productImage),
     ]);
+
+    // ─── Phase 1: per-placement region analysis ─────────────────────────
+    // Runs in parallel with the main pipeline (kicked off here, awaited
+    // when we actually need the values inside `applyProceduralHarmonization`
+    // and the ai-3d branch). The Gemini call adds ~1-2s of latency but
+    // gives us per-placement (not just per-surface) shadow / color /
+    // tilt data — see PlacementRegionAnalysis for what it returns.
+    //
+    // We don't wait on this before deciding which mode to run, because
+    // "flat" mode should remain instant. The promise is awaited only by
+    // paths that actually use the data.
+    const regionAnalysisPromise: Promise<PlacementRegionAnalysis | null> =
+      mode === "flat"
+        ? Promise.resolve(null) // flat doesn't use it, save the cost
+        : analyzePlacementRegion(sceneBuf, input.bbox, input.frameDimensions);
 
     // ─── FLAT MODE — just composite, no processing ───────────────────
     // What the user described as "what it looks like when product is
@@ -1484,9 +1636,11 @@ export async function harmonizeProductIntoScene(
 
     if (mode === "procedural") {
       console.log(`[Harmonize] Mode: procedural (sharp, scene-preserving)`);
+      const regionAnalysis = await regionAnalysisPromise;
       const { result, flatComposite } = await applyProceduralHarmonization(
         sceneBuf, productBuf, input.bbox, input.frameDimensions,
         { direction: input.lightingDirection, intensity: input.lightingIntensity },
+        { regionAnalysis },
       );
 
       // Upload both to fal.ai storage so the test rig can show before/after.
@@ -1537,6 +1691,11 @@ export async function harmonizeProductIntoScene(
       let renderedProductBuf: Buffer = productBuf;
       let renderedProductUrl: string | undefined;
       let icLightRelitUrl: string | undefined;
+      // Hoisted to the branch scope so the procedural PASS 1 call (which
+      // lives outside the try block) can still see it. We await the
+      // region analysis result here; the analysis was kicked off in
+      // parallel up at the top of harmonizeProductIntoScene.
+      const regionAnalysis = await regionAnalysisPromise;
 
       try {
         // Stage A.0 — depth analysis. TRELLIS by default is now SKIPPED
@@ -1553,14 +1712,22 @@ export async function harmonizeProductIntoScene(
         // pitch shear of the original product image, then the standard
         // bg-removal → IC-Light → procedural pipeline runs as before.
         const useTrellis = process.env.HARMONIZE_USE_TRELLIS === "true";
-        // Suppress depth-based pitch on horizontal surfaces. Bottles on a
-        // turntable / counter / tabletop stand VERTICAL — Depth-Anything's
-        // vertical-gradient sampling reads the depth fall-off as a tilt
-        // and produces a visibly skewed product. Geometric fact: any
-        // upright product on a horizontal plane has zero pitch relative
-        // to the camera's vertical axis.
+        // Decide whether to compute depth-based pitch. Two suppress
+        // conditions:
+        //   1. Per-surface metadata says the surface is horizontal
+        //      (table, counter, turntable, etc.) — substring match on
+        //      HORIZONTAL_SURFACE_TOKENS.
+        //   2. Per-placement Gemini region analysis says surfaceNormal
+        //      is "horizontal" OR |tiltDegrees| < 5 (essentially flat).
+        // Either signal suffices. Region analysis happens in parallel,
+        // so we await it here before deciding.
         const surfaceType = (input as any).surfaceType || "";
         const surfaceIsHorizontal = isHorizontalSurface(surfaceType);
+        const regionSaysFlat = regionAnalysis != null && (
+          regionAnalysis.surfaceNormal === "horizontal" ||
+          Math.abs(regionAnalysis.tiltDegrees) < 5
+        );
+        const suppressShear = surfaceIsHorizontal || regionSaysFlat;
         const [trellisResult, depthAngle] = await Promise.all([
           useTrellis
             ? runTrellis3D(productBuf).catch((err) => {
@@ -1568,7 +1735,7 @@ export async function harmonizeProductIntoScene(
                 return null;
               })
             : Promise.resolve(null),
-          surfaceIsHorizontal
+          suppressShear
             ? Promise.resolve(null)
             : estimateSceneAngleFromDepth(sceneBuf, input.bbox, input.frameDimensions),
         ]);
@@ -1578,8 +1745,11 @@ export async function harmonizeProductIntoScene(
         if (!useTrellis) {
           console.log(`[Harmonize/ai-3d] TRELLIS skipped (HARMONIZE_USE_TRELLIS≠true) — saved ~60s. Using original product image with depth-derived pitch shear.`);
         }
-        if (surfaceIsHorizontal) {
-          console.log(`[Harmonize/ai-3d] Surface "${surfaceType}" is horizontal → skipping depth-based pitch shear (product stays vertical).`);
+        if (suppressShear) {
+          const why = surfaceIsHorizontal
+            ? `surfaceType "${surfaceType}" is horizontal`
+            : `Gemini region analysis says flat (${regionAnalysis?.surfaceNormal}, ${regionAnalysis?.tiltDegrees.toFixed(0)}°)`;
+          console.log(`[Harmonize/ai-3d] Pitch shear suppressed — ${why}. Product stays vertical.`);
         }
 
         // Stage A.1 — pull the angle-specific frame from the turnaround MP4.
@@ -1713,10 +1883,13 @@ export async function harmonizeProductIntoScene(
       // the pitch shear / IC-Light tint from `renderedProductBuf` — and
       // the user would see a "flat" baseline that's already been
       // processed (the "twisted bottle on flat overlay" bug).
+      // Also: thread the per-placement region analysis through so the
+      // procedural shadow/lighting uses Gemini's measurement at this
+      // exact bbox rather than the coarse per-surface DB metadata.
       const { result, flatComposite, atmosphere } = await applyProceduralHarmonization(
         sceneBuf, renderedProductBuf, input.bbox, input.frameDimensions,
         { direction: input.lightingDirection, intensity: input.lightingIntensity },
-        { flatCompositeProductBuf: productBuf },
+        { flatCompositeProductBuf: productBuf, regionAnalysis },
       );
 
       // PASS 2: Lock the ORIGINAL product (not the TRELLIS-rendered or
