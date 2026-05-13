@@ -2186,8 +2186,37 @@ export default function PlacementPreviewModal({
                             visualDrawH = surfaceVisualH * transform.scale;
                             visualDrawW = (surfaceVisualH * prodAspect) * transform.scale;
                           }
-                          const drawW = visualDrawW / canvas.width;
-                          const drawH = visualDrawH / canvas.height;
+                          let drawW = visualDrawW / canvas.width;
+                          let drawH = visualDrawH / canvas.height;
+
+                          // SAFETY CLAMP — force the bbox sent to the server
+                          // to preserve the product's NATURAL aspect ratio on
+                          // the actual scene frame (not the canvas). The
+                          // server uses the scene frame's pixel dims; if
+                          // canvas aspect drifts from frame aspect for any
+                          // reason (container sizing, zoom, motion-tracked
+                          // surface dims diverging from baseSurface), the
+                          // visual aspect on the rendered frame can end up
+                          // != prodAspect → bottle thinned/squished.
+                          //
+                          // We use the frame source dims (sourceWidth/Height
+                          // from the video element or static frame image).
+                          // If unknown, skip the clamp (canvas dims are the
+                          // best guess and already match in that case).
+                          const frameW = (videoRef.current?.videoWidth) || (frameImgRef.current?.naturalWidth) || canvas.width;
+                          const frameH = (videoRef.current?.videoHeight) || (frameImgRef.current?.naturalHeight) || canvas.height;
+                          const visualAspectOnFrame = (drawW * frameW) / Math.max(1, drawH * frameH);
+                          const aspectDriftRatio = visualAspectOnFrame / prodAspect;
+                          if (frameW > 0 && frameH > 0 && (aspectDriftRatio < 0.95 || aspectDriftRatio > 1.05)) {
+                            // Drift > 5% — re-derive width to make visual
+                            // aspect on frame == prodAspect, keeping height
+                            // (height is what the user "sees" the bottle as
+                            // tall, which is the surface-fit dimension).
+                            const correctedDrawW = (drawH * frameH * prodAspect) / frameW;
+                            console.log(`[Harmonize/client] ⚠️  ASPECT DRIFT: visual=${visualAspectOnFrame.toFixed(3)} natural=${prodAspect.toFixed(3)} drift=${((aspectDriftRatio - 1) * 100).toFixed(1)}% → drawW ${drawW.toFixed(4)} → ${correctedDrawW.toFixed(4)}`);
+                            drawW = correctedDrawW;
+                          }
+                          console.log(`[Harmonize/client] prodPNG ${productImg.naturalWidth}x${productImg.naturalHeight} (aspect ${prodAspect.toFixed(3)}) | canvas ${canvas.width}x${canvas.height} | frame ${frameW}x${frameH} | surface bbox ${surfaceW.toFixed(3)}x${surfaceH.toFixed(3)} | drawn bbox ${drawW.toFixed(4)}x${drawH.toFixed(4)} → frame px ${Math.round(drawW * frameW)}x${Math.round(drawH * frameH)} (visual aspect ${((drawW * frameW) / (drawH * frameH)).toFixed(3)})`);
 
                           // transform.offsetX/Y are in canvas pixels — convert
                           // to normalized scene space using canvas dimensions.
