@@ -1377,11 +1377,13 @@ export default function Landing() {
           {/* Desktop Navigation - visible at 600px and above.
               FullScale Creates / Studio were moved to the footer (see
               Footer.tsx > Products section). Header now carries only the
-              two top-of-funnel CTAs: "For Brands" → brand signup page,
-              and "Sign In" for returning users. */}
+              two top-of-funnel CTAs: "For Brands" → /brands marketing
+              landing (which has its own "Sign Up Now" CTAs that go to
+              /brand-signup, the approval-gated form), and "Sign In"
+              for returning users. */}
           <div className="hidden min-[600px]:flex items-center gap-3">
             <a
-              href="/brand-signup"
+              href="/brands"
               className="px-5 py-2 rounded-lg font-medium text-sm border border-emerald-400/40 text-emerald-300 bg-emerald-400/5 backdrop-blur-sm hover:bg-emerald-400/15 transition-colors min-h-[44px] flex items-center gap-2"
               data-testid="link-nav-brands"
             >
@@ -1400,7 +1402,7 @@ export default function Landing() {
           {/* Mobile Icon Buttons - visible below 600px with 1.5rem spacing from logo */}
           <div className="flex min-[600px]:hidden items-center gap-3 ml-6">
             <a
-              href="/brand-signup"
+              href="/brands"
               className="p-2 rounded-lg border border-emerald-400/40 text-emerald-300 bg-emerald-400/5 backdrop-blur-sm hover:bg-emerald-400/15 transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center"
               data-testid="link-mobile-brands"
               aria-label="For Brands"
