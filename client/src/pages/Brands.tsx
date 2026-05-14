@@ -65,17 +65,10 @@ import sceneGamerAugmented from "@assets/generated_images/brands_gamer_augmented
  * videoFailed fallback, window.matchMedia breakpoint switching).
  */
 
-// Brand partners shown in the marquee strip. Logos live in
-// client/public/brand-logos/{slug}.png and are served at /brand-logos/{slug}.png.
-// If a logo PNG is missing, the <img onError> handler replaces it with the
-// brand name rendered as styled text so the section never breaks.
-const BRAND_PARTNERS = [
-  { slug: "just-water", name: "JUST Water" },
-  { slug: "naturade", name: "Naturade" },
-  { slug: "shinju", name: "Shinju Japanese Whisky" },
-  { slug: "vegan-smart", name: "VeganSmart" },
-  { slug: "seto-holdings", name: "SETO Holdings" },
-] as const;
+// (BRAND_PARTNERS marquee removed — landing page now carries the single
+// canonical logo cloud at Landing.tsx > partnerLogos. Brand logos for
+// JUST Water / Naturade / Shinju / VeganSmart / SETO remain available at
+// client/public/brand-logos/{slug}.png if a future section needs them.)
 
 const FRICTION_TRADITIONAL = [
   { icon: Clock, text: "Spend weeks sourcing and vetting creator talent" },
@@ -454,52 +447,9 @@ export default function Brands() {
         </div>
       </section>
 
-      {/* Brand Partner Strip — marquee of brands using FullScale */}
-      <section className="py-10 md:py-16 overflow-hidden border-y bg-card/30">
-        <p className="text-[10px] md:text-xs uppercase tracking-widest text-muted-foreground/60 mb-6 md:mb-8 font-medium text-center">
-          Trusted by leading brands
-        </p>
-        <div className="relative w-full overflow-hidden">
-          <div className="flex w-max animate-brand-marquee hover:[animation-play-state:paused]">
-            {[...Array(4)].map((_, setIndex) => (
-              <div key={setIndex} className="flex items-center shrink-0" style={{ gap: "4rem" }}>
-                {BRAND_PARTNERS.map((brand) => (
-                  <div
-                    key={`${setIndex}-${brand.slug}`}
-                    className="px-5 py-3 md:px-6 md:py-4 rounded-xl backdrop-blur-md bg-white/95 border border-white/10 hover:bg-white hover:scale-105 hover:shadow-lg hover:shadow-emerald-500/5 transition-all duration-300 ml-16 first:ml-16 flex items-center justify-center"
-                    style={{ minWidth: "160px", height: "72px" }}
-                  >
-                    <img
-                      src={`/brand-logos/${brand.slug}.png`}
-                      alt={brand.name}
-                      loading="lazy"
-                      className="max-h-10 md:max-h-12 w-auto object-contain"
-                      onError={(e) => {
-                        // Graceful fallback: if PNG isn't saved yet, show brand name as styled text
-                        const img = e.currentTarget;
-                        const fallback = document.createElement("span");
-                        fallback.className = "text-sm md:text-base font-bold tracking-tight text-slate-900";
-                        fallback.textContent = brand.name;
-                        img.replaceWith(fallback);
-                      }}
-                      data-testid={`img-brand-${brand.slug}`}
-                    />
-                  </div>
-                ))}
-              </div>
-            ))}
-          </div>
-        </div>
-        <style>{`
-          @keyframes brand-marquee {
-            0% { transform: translateX(0); }
-            100% { transform: translateX(-25%); }
-          }
-          .animate-brand-marquee {
-            animation: brand-marquee 30s linear infinite;
-          }
-        `}</style>
-      </section>
+      {/* (Brand Partner Strip removed — the single canonical logo cloud
+          now lives on the landing page only, so this page no longer
+          duplicates the "trusted by" surface.) */}
 
       {/* Section 3 — "See it in action" — 3-scene Reality-vs-Augmented slider showcase */}
       <section className="relative overflow-hidden py-20">
