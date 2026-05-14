@@ -430,9 +430,18 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Admin access required" });
       }
 
-      const { email, name, sendWelcomeEmail: sendEmail = true, dryRun = false } = req.body || {};
+      const { email, name, sendWelcomeEmail: sendEmail = true, dryRun = false, role = "co-builder" } = req.body || {};
       if (!email || !name) {
-        return res.status(400).json({ error: "Body must include { email, name, sendWelcomeEmail?, dryRun? }" });
+        return res.status(400).json({ error: "Body must include { email, name, sendWelcomeEmail?, dryRun?, role? }" });
+      }
+      // Valid roles control which welcome-email copy renders. The
+      // allowlist row + admin grant are identical regardless of role —
+      // role only changes the framing we send the user.
+      //   "co-builder" — building the product alongside the team (Ben)
+      //   "tester"     — using the platform to find bugs / give feedback (Remi)
+      const validRoles = ["co-builder", "tester"];
+      if (!validRoles.includes(role)) {
+        return res.status(400).json({ error: `role must be one of: ${validRoles.join(", ")}` });
       }
 
       // 1. Allowlist row — if it doesn't exist, create as creator (admin can switch)
@@ -451,13 +460,30 @@ export async function registerRoutes(
         allowlistAction = "created";
       }
 
-      // 2. Welcome email body — plain, friendly, login-link forward
-      const subject = `You're in: FullScale co-builder access`;
+      // 2. Welcome email body — copy branches on role so a tester
+      // doesn't get told they're a co-builder (and vice versa).
       const loginUrl = "https://gofullscale.co/auth";
+      const firstName = name.split(" ")[0];
+
+      const subject =
+        role === "tester"
+          ? "You're in: FullScale tester access"
+          : "You're in: FullScale co-builder access";
+
+      const roleIntro =
+        role === "tester"
+          ? `You've been added as a tester. You have admin access — both <strong>creator</strong> and <strong>brand</strong> views are available; flip between them from the role switcher in the top nav. Use that god-mode visibility to find anything broken or confusing and report it back.`
+          : `You've been added as a co-builder. You have admin access — both <strong>creator</strong> and <strong>brand</strong> views are available; flip between them from the role switcher in the top nav.`;
+
+      const closing =
+        role === "tester"
+          ? `Whatever you find — broken UI, weird flows, confusing copy, slow pages — send it directly to me. Bug reports are the whole reason you're here.`
+          : `Anything looks broken or weird, ping me directly. Welcome aboard.`;
+
       const html = `
         <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto; padding: 24px; color: #111;">
-          <h2 style="margin: 0 0 16px 0; font-weight: 600;">Welcome to FullScale, ${name.split(" ")[0]}.</h2>
-          <p style="line-height: 1.5;">You've been added as a co-builder. You have admin access — both <strong>creator</strong> and <strong>brand</strong> views are available; flip between them from the role switcher in the top nav.</p>
+          <h2 style="margin: 0 0 16px 0; font-weight: 600;">Welcome to FullScale, ${firstName}.</h2>
+          <p style="line-height: 1.5;">${roleIntro}</p>
           <p style="line-height: 1.5;">Sign in at <a href="${loginUrl}" style="color: #059669; font-weight: 500;">${loginUrl}</a> with your Google account (${email}).</p>
           <p style="line-height: 1.5; margin-top: 24px;">A few quick notes:</p>
           <ul style="line-height: 1.6; padding-left: 18px;">
@@ -465,7 +491,7 @@ export async function registerRoutes(
             <li><strong>Brand marketplace</strong> — browse creator content, drop products on detected surfaces, harmonize, save placements.</li>
             <li><strong>Scene Analysis</strong> — open any video to see the surfaces our scan picked up; toggle approval per-surface to expose them to brands.</li>
           </ul>
-          <p style="line-height: 1.5; margin-top: 24px;">Anything looks broken or weird, ping me directly. Welcome aboard.</p>
+          <p style="line-height: 1.5; margin-top: 24px;">${closing}</p>
           <p style="line-height: 1.5; margin-top: 32px; color: #6b7280;">— Martin</p>
         </div>
       `;
