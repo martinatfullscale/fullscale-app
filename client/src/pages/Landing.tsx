@@ -21,6 +21,7 @@ import beautyFrame from "@assets/generated_images/beauty_vlog_frame.png";
 import travelFrame from "@assets/generated_images/travel_vlog_frame.png";
 import gamingFrame from "@assets/generated_images/gaming_stream_frame.png";
 import { Footer } from "@/components/Footer";
+import { LogoCloud } from "@/components/ui/logo-cloud-4";
 import { Slider } from "@/components/ui/slider";
 import { SceneComparisonSlider } from "@/components/SceneComparisonSlider";
 
@@ -48,6 +49,20 @@ import demoBeautyAugmented from "@assets/generated_images/brands_beauty_augmente
 // SURFACE ENGINE - REAL COMPUTER VISION LOGIC FOR VERTICAL VIDEO TRACKING
 // Implements: Camera intrinsics, ROI filtering, adaptive thresholds, homography
 // ============================================================================
+
+// "Powered by" logo cloud — rendered under the hero. Logos pulled from
+// svgl.app's stable CDN; `dark:invert` on the <img> in LogoCloud handles
+// dark-mode rendering of the wordmarks.
+const partnerLogos = [
+  { src: "https://svgl.app/library/google-gemini-icon.svg", alt: "Google Gemini" },
+  { src: "https://svgl.app/library/claude-ai-wordmark-icon_light.svg", alt: "Claude" },
+  { src: "https://svgl.app/library/openai_wordmark_light.svg", alt: "OpenAI" },
+  { src: "https://svgl.app/library/nvidia-wordmark-light.svg", alt: "Nvidia" },
+  { src: "https://svgl.app/library/youtube_dark.svg", alt: "YouTube" },
+  { src: "https://svgl.app/library/instagram.svg", alt: "Instagram" },
+  { src: "https://svgl.app/library/stripe.svg", alt: "Stripe" },
+  { src: "https://svgl.app/library/github_wordmark_light.svg", alt: "GitHub" },
+];
 
 // Camera intrinsics configuration
 const CAMERA_CONFIG = {
@@ -1459,6 +1474,24 @@ export default function Landing() {
             <div className="w-1.5 h-3 rounded-full bg-white/50" />
           </div>
         </motion.div>
+      </section>
+
+      {/* Powered By logo cloud — social proof slot directly under the hero.
+          No background color (inherits page bg per the integration brief).
+          Logos point to svgl.app's stable hosted SVGs. The marquee fades
+          in/out at both edges via ProgressiveBlur. */}
+      <section className="py-10 md:py-16 relative">
+        <div className="container mx-auto px-4">
+          <h2 className="mb-6 md:mb-8 text-center">
+            <span className="block font-medium text-[10px] md:text-xs uppercase tracking-[0.2em] text-muted-foreground/70">
+              Powered by
+            </span>
+            <span className="block mt-1 font-semibold text-base md:text-lg text-white/90 tracking-tight">
+              Best-in-class AI and creator platforms
+            </span>
+          </h2>
+          <LogoCloud logos={partnerLogos} />
+        </div>
       </section>
 
       {/* Reality vs Augmented Section - compact on mobile */}
