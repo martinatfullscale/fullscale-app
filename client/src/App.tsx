@@ -37,6 +37,7 @@ import ComingSoon from "@/pages/ComingSoon";
 import FullScaleCreates from "@/pages/FullScaleCreates";
 import Brands from "@/pages/Brands";
 import BrandOnboarding from "@/pages/BrandOnboarding";
+import BrandSignUp from "@/pages/BrandSignUp";
 import StudioUpload from "@/pages/StudioUpload";
 import FullScaleStudio from "@/pages/FullScaleStudio";
 import StudioPricing from "@/pages/StudioPricing";
@@ -193,6 +194,7 @@ function Router() {
         <Route path="/creates" component={FullScaleCreates} />
         <Route path="/brands" component={Brands} />
         <Route path="/brands/onboarding" component={BrandOnboarding} />
+        <Route path="/brand-signup" component={BrandSignUp} />
         <Route path="/about" component={ComingSoon} />
         <Route path="/waitlist" component={WaitlistPage} />
         <Route path="/c/:slug" component={CreatorProfile} />
@@ -223,6 +225,7 @@ function Router() {
         <Route path="/" component={Landing} />
         <Route path="/creates" component={FullScaleCreates} />
         <Route path="/brands" component={Brands} />
+        <Route path="/brand-signup" component={BrandSignUp} />
         <Route path="/about" component={ComingSoon} />
         <Route path="/c/:slug" component={CreatorProfile} />
         <Route path="/s/:slug" component={SharedView} />
@@ -254,6 +257,7 @@ function Router() {
       <Route path="/creates" component={FullScaleCreates} />
       <Route path="/brands" component={Brands} />
       <Route path="/brands/onboarding" component={BrandOnboarding} />
+      <Route path="/brand-signup" component={BrandSignUp} />
       <Route path="/about" component={ComingSoon} />
       <Route path="/c/:slug" component={CreatorProfile} />
       <Route path="/s/:slug" component={SharedView} />

@@ -265,7 +265,7 @@ export default function Brands() {
               <Briefcase className="w-3 h-3 mr-1" />
               For Brands
             </Badge>
-            <a href="/auth?mode=signup&userType=brand" data-testid="link-brands-header-signup">
+            <a href="/brand-signup" data-testid="link-brands-header-signup">
               <Button size="sm" className="gap-1.5 bg-emerald-500 hover:bg-emerald-500/90 text-white">
                 Sign Up Now
                 <ArrowRight className="w-3.5 h-3.5" />
@@ -316,7 +316,7 @@ export default function Brands() {
               Drop your product into podcast desks, DJ booths, gaming setups, and creator studios — without the heavy friction of finding talent, negotiating rates, or chasing reshoots. Test creator-product associations before you commit the big budget.
             </p>
             <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-              <a href="/auth?mode=signup&userType=brand" data-testid="link-brands-hero-signup">
+              <a href="/brand-signup" data-testid="link-brands-hero-signup">
                 <Button
                   size="lg"
                   className="gap-2 bg-emerald-500 hover:bg-emerald-500/90 text-white shadow-2xl shadow-emerald-500/20"
@@ -780,7 +780,7 @@ export default function Brands() {
               Sign up and our team walks you through a brief tailored to your brand, budget, and audience. Pick a creator, test a placement, see the numbers — before you commit.
             </p>
             <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-              <a href="/auth?mode=signup&userType=brand" data-testid="link-brands-final-signup">
+              <a href="/brand-signup" data-testid="link-brands-final-signup">
                 <Button
                   size="lg"
                   className="gap-2 bg-emerald-500 hover:bg-emerald-500/90 text-white shadow-2xl shadow-emerald-500/25 px-8"

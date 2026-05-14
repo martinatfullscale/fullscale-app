@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link } from "wouter";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 import { SiInstagram } from "react-icons/si";
-import { Mail, Users } from "lucide-react";
+import { Mail, Users, Film, Wand2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 export function Footer() {
@@ -21,7 +21,7 @@ export function Footer() {
     <footer className="relative z-10 bg-card/50 border-t border-white/5">
       <div className="container mx-auto px-6 py-12 pb-8">
         {/* Main footer content */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-8">
           <div>
             <img src={logoUrl} alt="FullScale Creator Portal" className="h-8 w-auto mb-4" />
             <p className="text-xs text-primary/80 font-medium uppercase tracking-wider mb-2">Creator Portal</p>
@@ -29,6 +29,35 @@ export function Footer() {
               224 W 35th St Ste 500 #450,<br />
               New York, NY 10001
             </p>
+          </div>
+
+          {/* Products — moved from the landing header. Keeps Creates and
+              Studio discoverable without competing with the For Brands /
+              Sign In CTAs at the top of every page. */}
+          <div>
+            <h4 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground/80 mb-4">Products</h4>
+            <ul className="space-y-3">
+              <li>
+                <a
+                  href="/creates"
+                  className="text-sm text-muted-foreground/60 hover:text-white transition-colors inline-flex items-center gap-2"
+                  data-testid="link-footer-creates"
+                >
+                  <Film className="w-4 h-4" />
+                  FullScale Creates
+                </a>
+              </li>
+              <li>
+                <a
+                  href="/studio"
+                  className="text-sm text-muted-foreground/60 hover:text-white transition-colors inline-flex items-center gap-2"
+                  data-testid="link-footer-studio"
+                >
+                  <Wand2 className="w-4 h-4" />
+                  FullScale Studio
+                </a>
+              </li>
+            </ul>
           </div>
 
           <div>

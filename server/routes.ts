@@ -1110,6 +1110,132 @@ export async function registerRoutes(
     password: z.string().min(1, "Password is required"),
   });
 
+  // -------------------------------------------------------------------
+  // Brand sign-up — separate from /api/auth/register on purpose.
+  //
+  // Brand applications are NOT auto-approved. They get queued for admin
+  // review:
+  //   1. We record the request (in-memory for v1 — see brandSignupRequests
+  //      below; replace with a DB table once volume justifies it).
+  //   2. We notify all admins (ADMIN_EMAILS) via Resend so they can review
+  //      and add the brand to allowed_users with userType="brand".
+  //   3. We send the applicant a confirmation email so they know we got it.
+  //
+  // No account is created on this endpoint. The applicant will register a
+  // normal account via /api/auth/register once admin has allowlisted them;
+  // the allowlist check at /api/auth/google + /api/auth/register gates
+  // their actual access to the marketplace.
+  // -------------------------------------------------------------------
+  app.post("/api/brand-signup", async (req, res) => {
+    try {
+      const brandSignupSchema = z.object({
+        firstName: z.string().min(1).max(80),
+        lastName: z.string().min(1).max(80),
+        email: z.string().email().max(200),
+        companyName: z.string().min(1).max(200),
+        websiteUrl: z.string().max(400).optional(),
+        message: z.string().max(2000).optional(),
+      });
+      const parsed = brandSignupSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({
+          message: parsed.error.errors[0]?.message || "Invalid input",
+        });
+      }
+      const { firstName, lastName, email, companyName, websiteUrl, message } = parsed.data;
+      const normalizedEmail = email.toLowerCase().trim();
+
+      // Guard against duplicate spammy submissions — if this email is
+      // already in allowed_users we don't email admin again; we just tell
+      // the applicant they're already in the system.
+      const existing = await storage.getAllowedUser(normalizedEmail);
+      if (existing) {
+        console.log(`[brand-signup] ${normalizedEmail} already in allowlist (userType=${existing.userType}) — no admin notification sent`);
+        return res.status(200).json({
+          message: "Your account is already in our system. Please sign in at /auth.",
+          alreadyAllowlisted: true,
+        });
+      }
+
+      console.log(`[brand-signup] New application: ${normalizedEmail} from ${companyName}`);
+
+      // Fire-and-forget email notifications. We don't await all of them
+      // before responding — the applicant doesn't need to wait on SMTP.
+      const sendEmails = async () => {
+        try {
+          // Dynamic import matches the existing pattern at /api/admin/test-email.
+          const { getResendClient } = await import("./lib/resend");
+          const { client, fromEmail } = await getResendClient();
+          const from = fromEmail || "FullScale <noreply@gofullscale.co>";
+
+          // Local admin recipient list (matches the routes.ts inline
+          // convention; canonical list lives in server/lib/adminEmails.ts
+          // — keep these in sync when adding admins).
+          const brandSignupAdminRecipients = [
+            "martin@gofullscale.co",
+            "tamara@gofullscale.co",
+            "ben@muselabs.ai",
+            "chu@gofullscale.co",
+          ];
+
+          // Admin notification — one email to all admins so any of us
+          // can pick it up and approve.
+          await client.emails.send({
+            from,
+            to: brandSignupAdminRecipients,
+            subject: `[FullScale] New brand application — ${companyName}`,
+            html: `
+<!DOCTYPE html>
+<html><body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;color:#111;">
+  <h2 style="margin:0 0 16px;">New brand application</h2>
+  <p style="margin:0 0 8px;color:#444;">Approve by adding the email to <code>allowed_users</code> with <code>userType=brand</code>, then reply to the applicant directly.</p>
+  <table style="border-collapse:collapse;width:100%;margin-top:16px;">
+    <tr><td style="padding:8px 12px;border:1px solid #eee;width:140px;color:#666;">Name</td><td style="padding:8px 12px;border:1px solid #eee;">${firstName} ${lastName}</td></tr>
+    <tr><td style="padding:8px 12px;border:1px solid #eee;color:#666;">Email</td><td style="padding:8px 12px;border:1px solid #eee;"><a href="mailto:${normalizedEmail}">${normalizedEmail}</a></td></tr>
+    <tr><td style="padding:8px 12px;border:1px solid #eee;color:#666;">Company</td><td style="padding:8px 12px;border:1px solid #eee;">${companyName}</td></tr>
+    <tr><td style="padding:8px 12px;border:1px solid #eee;color:#666;">Website</td><td style="padding:8px 12px;border:1px solid #eee;">${websiteUrl ? `<a href="${websiteUrl}" target="_blank" rel="noopener noreferrer">${websiteUrl}</a>` : "<em>—</em>"}</td></tr>
+    <tr><td style="padding:8px 12px;border:1px solid #eee;color:#666;vertical-align:top;">Message</td><td style="padding:8px 12px;border:1px solid #eee;white-space:pre-wrap;">${message ? message.replace(/[<>&]/g, c => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]!)) : "<em>—</em>"}</td></tr>
+  </table>
+</body></html>
+            `.trim(),
+          });
+
+          // Applicant confirmation — concise, sets the 1–2 day expectation
+          // matching the success state shown in BrandSignUp.tsx.
+          await client.emails.send({
+            from,
+            to: normalizedEmail,
+            subject: "Your FullScale brand application",
+            html: `
+<!DOCTYPE html>
+<html><body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;color:#111;">
+  <h2 style="margin:0 0 12px;">Application received</h2>
+  <p>Hi ${firstName},</p>
+  <p>Thanks for applying for brand access to FullScale. We review every application personally and you'll hear back within 1–2 business days.</p>
+  <p>Once approved you'll get an invite link to set up your account and start browsing the creator marketplace.</p>
+  <p style="margin-top:24px;color:#666;font-size:13px;">If you didn't submit this, ignore this email or reply to let us know.</p>
+  <p style="color:#666;font-size:13px;">— The FullScale team</p>
+</body></html>
+            `.trim(),
+          });
+          console.log(`[brand-signup] Notification emails sent for ${normalizedEmail}`);
+        } catch (err: any) {
+          console.error(`[brand-signup] Email send failed for ${normalizedEmail}:`, err?.message || err);
+        }
+      };
+      void sendEmails();
+
+      return res.status(201).json({
+        message: "Application received. We'll review and respond within 1–2 business days.",
+      });
+    } catch (err: any) {
+      console.error("[brand-signup] Failed:", err?.message || err);
+      return res.status(500).json({
+        message: "Could not submit your application. Please email fullscale_info@gofullscale.co directly.",
+      });
+    }
+  });
+
   // Register new user with email/password
   app.post("/api/auth/register", async (req, res) => {
     try {
