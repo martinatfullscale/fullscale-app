@@ -66,6 +66,7 @@ import demoBeautyAugmented from "@assets/generated_images/brands_beauty_augmente
 // text instead of a broken-image icon (see logo-cloud-4.tsx onError).
 const partnerLogos = [
   { src: "/brand-logos/just-water.png",     alt: "JUST Water" },
+  { src: "/brand-logos/mizzou.png",         alt: "Mizzou" },
   { src: "/brand-logos/naturade.png",       alt: "Naturade" },
   { src: "/brand-logos/shinju.png",         alt: "Shinju Japanese Whisky" },
   { src: "/brand-logos/vegan-smart.png",    alt: "VeganSmart" },
