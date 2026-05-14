@@ -23,14 +23,17 @@ export function LogoCloud({ logos }: LogoCloudProps) {
         {logos.map((logo) => (
           <div
             key={`logo-${logo.alt}`}
-            className="flex items-center justify-center shrink-0 rounded-xl bg-white/95 border border-white/10 backdrop-blur-md px-5 py-3 md:px-6 md:py-4 shadow-lg shadow-black/20"
+            className="flex items-center justify-center shrink-0 rounded-xl bg-white/95 border border-white/10 backdrop-blur-md p-2 shadow-lg shadow-black/20 overflow-hidden"
             style={{ minWidth: "160px", height: "72px" }}
           >
             <img
               alt={logo.alt}
               src={logo.src}
               loading="lazy"
-              className="pointer-events-none select-none max-h-10 md:max-h-12 w-auto object-contain"
+              // h-full + w-full + object-contain: logo fills the pill's
+              // full bounding box (minus the 8px p-2 padding) while
+              // preserving its aspect ratio so it never gets distorted.
+              className="pointer-events-none select-none h-full w-full object-contain"
               onError={(e) => {
                 // Graceful fallback: if the logo file is missing (e.g.
                 // the PNG hasn't been dropped into client/public/brand-logos
