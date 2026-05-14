@@ -50,18 +50,26 @@ import demoBeautyAugmented from "@assets/generated_images/brands_beauty_augmente
 // Implements: Camera intrinsics, ROI filtering, adaptive thresholds, homography
 // ============================================================================
 
-// "Powered by" logo cloud — rendered under the hero. Logos pulled from
-// svgl.app's stable CDN; `dark:invert` on the <img> in LogoCloud handles
-// dark-mode rendering of the wordmarks.
+// "Already used by Best in the Game" logo cloud — brand customers shown
+// under the hero. Logo files live at client/public/brand-logos/<slug>.png
+// and are served at /brand-logos/<slug>.png.
+//
+// To add/replace a brand:
+//   1. Drop a transparent PNG (or SVG) into client/public/brand-logos/
+//      Recommended size: ~200px tall, transparent background, light/white
+//      wordmark so the `dark:invert` style in LogoCloud renders correctly.
+//   2. Add or edit an entry below — `src` points at the file path,
+//      `alt` is the brand name (used as graceful text fallback if the
+//      image fails to load).
+//
+// If a logo PNG is missing, the LogoCloud renders the `alt` as styled
+// text instead of a broken-image icon (see logo-cloud-4.tsx onError).
 const partnerLogos = [
-  { src: "https://svgl.app/library/google-gemini-icon.svg", alt: "Google Gemini" },
-  { src: "https://svgl.app/library/claude-ai-wordmark-icon_light.svg", alt: "Claude" },
-  { src: "https://svgl.app/library/openai_wordmark_light.svg", alt: "OpenAI" },
-  { src: "https://svgl.app/library/nvidia-wordmark-light.svg", alt: "Nvidia" },
-  { src: "https://svgl.app/library/youtube_dark.svg", alt: "YouTube" },
-  { src: "https://svgl.app/library/instagram.svg", alt: "Instagram" },
-  { src: "https://svgl.app/library/stripe.svg", alt: "Stripe" },
-  { src: "https://svgl.app/library/github_wordmark_light.svg", alt: "GitHub" },
+  { src: "/brand-logos/just-water.png",     alt: "JUST Water" },
+  { src: "/brand-logos/naturade.png",       alt: "Naturade" },
+  { src: "/brand-logos/shinju.png",         alt: "Shinju Japanese Whisky" },
+  { src: "/brand-logos/vegan-smart.png",    alt: "VeganSmart" },
+  { src: "/brand-logos/seto-holdings.png",  alt: "SETO Holdings" },
 ];
 
 // Camera intrinsics configuration
@@ -1476,18 +1484,19 @@ export default function Landing() {
         </motion.div>
       </section>
 
-      {/* Powered By logo cloud — social proof slot directly under the hero.
-          No background color (inherits page bg per the integration brief).
-          Logos point to svgl.app's stable hosted SVGs. The marquee fades
-          in/out at both edges via ProgressiveBlur. */}
+      {/* "Already used by Best in the Game" logo cloud — social proof
+          slot directly under the hero. No background color (inherits
+          page bg). The marquee fades in/out at both edges via
+          ProgressiveBlur. Edit the `partnerLogos` array near the top
+          of this file to add/replace brands. */}
       <section className="py-10 md:py-16 relative">
         <div className="container mx-auto px-4">
           <h2 className="mb-6 md:mb-8 text-center">
-            <span className="block font-medium text-[10px] md:text-xs uppercase tracking-[0.2em] text-muted-foreground/70">
-              Powered by
+            <span className="block font-medium text-xl md:text-2xl text-muted-foreground">
+              Already used by
             </span>
-            <span className="block mt-1 font-semibold text-base md:text-lg text-white/90 tracking-tight">
-              Best-in-class AI and creator platforms
+            <span className="block font-black text-2xl md:text-3xl text-primary tracking-tight">
+              Best in the Game
             </span>
           </h2>
           <LogoCloud logos={partnerLogos} />

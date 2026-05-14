@@ -27,6 +27,18 @@ export function LogoCloud({ logos }: LogoCloudProps) {
             loading="lazy"
             src={logo.src}
             width="auto"
+            onError={(e) => {
+              // Graceful fallback: if the logo file is missing (e.g.
+              // the PNG hasn't been dropped into client/public/brand-logos
+              // yet), swap the <img> for a styled text version of the
+              // brand name so the marquee never breaks.
+              const img = e.currentTarget;
+              const fallback = document.createElement("span");
+              fallback.className =
+                "pointer-events-none select-none text-sm md:text-base font-semibold tracking-tight text-white/80 whitespace-nowrap";
+              fallback.textContent = logo.alt;
+              img.replaceWith(fallback);
+            }}
           />
         ))}
       </InfiniteSlider>
