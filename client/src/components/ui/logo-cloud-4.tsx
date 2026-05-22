@@ -35,39 +35,54 @@ export function LogoCloud({ logos }: LogoCloudProps) {
   const isMobile = useIsMobile();
 
   // Numeric props can't be responsive via Tailwind — branch on viewport.
-  // Mobile: tighter gap + faster scroll so logos cycle visibly inside the
-  // narrower viewport. Desktop: roomier gap + slower, calmer scroll.
-  const gap = isMobile ? 16 : 32;
+  const gap = isMobile ? 12 : 32;
   const speed = isMobile ? 25 : 45;
   const speedOnHover = isMobile ? 15 : 20;
+
+  // FIXED pill dimensions (not min-w), so flex children can't expand the
+  // pill beyond what we want. Previous min-w-[110px] meant a wide logo
+  // image could blow the pill out and crowd siblings.
+  const pillWidth = isMobile ? 130 : 180;
+  const pillHeight = isMobile ? 60 : 72;
 
   return (
     <div className="relative mx-auto max-w-5xl py-4 md:py-6">
       {/* Each brand sits in a white rounded pill so the marquee reads
           uniformly regardless of whether the source PNG has a
-          transparent, white, or colored background. Pill sizing is
-          mobile-first: 110px wide / 56px tall on phones, 160px / 72px
-          on tablet+ where there's room. */}
+          transparent, white, or colored background. */}
       <InfiniteSlider gap={gap} reverse speed={speed} speedOnHover={speedOnHover}>
         {logos.map((logo) => (
           <div
             key={`logo-${logo.alt}`}
-            className="flex items-center justify-center shrink-0 rounded-xl bg-white/95 border border-white/10 backdrop-blur-md p-2 shadow-lg shadow-black/20 overflow-hidden min-w-[110px] h-14 md:min-w-[160px] md:h-[72px]"
+            className="flex items-center justify-center shrink-0 rounded-xl bg-white/95 border border-white/10 backdrop-blur-md shadow-lg shadow-black/20 overflow-hidden"
+            style={{
+              width: `${pillWidth}px`,
+              height: `${pillHeight}px`,
+              padding: "8px",
+            }}
           >
             <img
               alt={logo.alt}
               src={logo.src}
-              loading="lazy"
-              // h-full + w-full + object-contain: logo fills the pill's
-              // full bounding box (minus the 8px p-2 padding) while
-              // preserving its aspect ratio so it never gets distorted.
-              className="pointer-events-none select-none h-full w-full object-contain"
+              // Eager load — was lazy, which on iOS Safari can defer
+              // these long enough that pills appear empty for several
+              // seconds while the marquee scrolls.
+              loading="eager"
+              decoding="async"
+              className="pointer-events-none select-none object-contain"
+              // Classic responsive-image pattern: width/height auto with
+              // max constraints. This always renders correctly across
+              // Safari/Chrome/Firefox, unlike h-full w-full which can
+              // collapse to 0×0 inside flex containers on iOS Safari.
+              style={{
+                maxWidth: "100%",
+                maxHeight: "100%",
+                width: "auto",
+                height: "auto",
+              }}
               onError={(e) => {
-                // Graceful fallback: if the logo file is missing (e.g.
-                // the PNG hasn't been dropped into client/public/brand-logos
-                // yet), swap the <img> for a styled text version of the
-                // brand name so the marquee never breaks. Dark text on
-                // the white pill keeps it readable.
+                // Graceful fallback: if the logo file is missing, swap
+                // the <img> for a styled text version of the brand name.
                 const img = e.currentTarget;
                 const fallback = document.createElement("span");
                 fallback.className =
@@ -80,16 +95,16 @@ export function LogoCloud({ logos }: LogoCloudProps) {
         ))}
       </InfiniteSlider>
 
-      {/* Edge fade — narrower on mobile (32px) so we don't eat half the
-          viewport, fuller on desktop (80px). */}
+      {/* Edge fade — narrow on mobile (24px) so we don't eat the viewport,
+          fuller on desktop (80px). */}
       <ProgressiveBlur
         blurIntensity={1}
-        className="pointer-events-none absolute top-0 left-0 h-full w-[32px] md:w-[80px]"
+        className="pointer-events-none absolute top-0 left-0 h-full w-[24px] md:w-[80px]"
         direction="left"
       />
       <ProgressiveBlur
         blurIntensity={1}
-        className="pointer-events-none absolute top-0 right-0 h-full w-[32px] md:w-[80px]"
+        className="pointer-events-none absolute top-0 right-0 h-full w-[24px] md:w-[80px]"
         direction="right"
       />
     </div>
