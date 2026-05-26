@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence, useInView } from "framer-motion";
-import { Zap, Shield, Video, X, Ban, DollarSign, TrendingUp, Users, Sparkles, Cpu, Eye, Timer, Layers, Mail, User, Plus, Globe, ArrowRight, Film, Wand2, Briefcase, MousePointerClick } from "lucide-react";
+import { Zap, Shield, Video, X, Ban, DollarSign, TrendingUp, Users, Sparkles, Cpu, Eye, Timer, Layers, Mail, User, Plus, Globe, ArrowRight, Film, Wand2, Briefcase, MousePointerClick, CalendarCheck } from "lucide-react";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 import logoBlackAmbition from "@assets/logo-black-ambition_1767712118620.png";
 import logoMayDavis from "@assets/logo-may-davis_1767712118621.png";
@@ -2029,12 +2029,14 @@ export default function Landing() {
                       Get a personalized walkthrough of the platform, see the AI in action, and discuss partnership opportunities directly with our founder.
                     </p>
                     <a
-                      href="mailto:fullscale_info@gofullscale.co?subject=FullScale Demo Request - Founding Cohort"
+                      href="https://calendar.app.google/4qtCGoZiAUMMEJzT9"
+                      target="_blank"
+                      rel="noopener noreferrer"
                       className="inline-flex items-center gap-2 px-10 py-4 rounded-xl bg-primary hover:bg-primary/90 text-white font-bold text-lg shadow-lg shadow-primary/30 hover:shadow-primary/50 hover:-translate-y-1 transition-all duration-300"
-                      data-testid="button-email-demo"
+                      data-testid="button-book-demo"
                     >
-                      <Mail className="w-5 h-5" />
-                      Email our team for a demo
+                      <CalendarCheck className="w-5 h-5" />
+                      Book Your Founders Tour
                     </a>
                     <p className="mt-4 text-sm text-muted-foreground">
                       Limited spots available in the Founding Cohort
