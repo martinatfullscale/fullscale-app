@@ -505,7 +505,7 @@ export default function BrandOnboarding() {
                   <ArrowRight className="w-4 h-4" />
                 </Button>
               </a>
-              <a href="mailto:hello@gofullscale.co">
+              <a href="mailto:martin@gofullscale.co">
                 <Button size="lg" variant="outline" className="gap-2 border-emerald-400/40 text-emerald-300 hover:bg-emerald-400/10">
                   <Mail className="w-4 h-4" />
                   Email our team

@@ -740,7 +740,7 @@ export default function Brands() {
                 </Button>
               </a>
               <a
-                href="mailto:hello@gofullscale.co?subject=Brand%20Interest%20%E2%80%94%20FullScale"
+                href="mailto:martin@gofullscale.co?subject=Brand%20Interest%20%E2%80%94%20FullScale"
                 data-testid="link-brands-final-talk"
               >
                 <Button
