@@ -2029,14 +2029,14 @@ export default function Landing() {
                       Get a personalized walkthrough of the platform, see the AI in action, and discuss partnership opportunities directly with our founder.
                     </p>
                     <a
-                      href="https://calendar.app.google/4qtCGoZiAUMMEJzT9"
+                      href="https://airtable.com/appW0JuWDr1mcpCtN/pagUoOCii6OPMWPZd/form"
                       target="_blank"
                       rel="noopener noreferrer"
                       className="inline-flex items-center gap-2 px-10 py-4 rounded-xl bg-primary hover:bg-primary/90 text-white font-bold text-lg shadow-lg shadow-primary/30 hover:shadow-primary/50 hover:-translate-y-1 transition-all duration-300"
-                      data-testid="button-book-demo"
+                      data-testid="button-request-demo"
                     >
                       <CalendarCheck className="w-5 h-5" />
-                      Book Your Founders Tour
+                      Request a Founders Tour
                     </a>
                     <p className="mt-4 text-sm text-muted-foreground">
                       Limited spots available in the Founding Cohort
