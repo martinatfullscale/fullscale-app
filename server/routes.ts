@@ -616,6 +616,181 @@ export async function registerRoutes(
 
   // Pull every signup from the Airtable base (canonical source-of-truth
   // for who has expressed interest — every signup gets POSTed there at
+  // -------------------------------------------------------------------
+  // AIRTABLE APPROVAL WEBHOOK
+  // -------------------------------------------------------------------
+  // Receives a callback from Airtable Automations when an admin toggles
+  // an applicant's Status to "Approved" or "Declined" in either:
+  //   - the BrandApplications table (base app9YlRgIcR9M29p6)
+  //   - the Creator Submissions table (base appF4oLhgbf143xe7)
+  //
+  // On Approved:
+  //   1. Add to allowed_users with the matching userType (brand|creator).
+  //      Idempotent — skips if already present.
+  //   2. Flip users.isApproved=true if the applicant has already signed
+  //      in once (their User row exists). For brands this is typically
+  //      false — they haven't OAuth'd yet — and that's fine, the
+  //      allowlist alone gates access on next signin.
+  //   3. Send the applicant a "you're in" welcome email via Resend,
+  //      branched on userType.
+  //
+  // On Declined:
+  //   No DB mutation. We could optionally email a polite decline here —
+  //   left off by default to avoid surprise emails. Toggle on via the
+  //   sendDeclineEmail flag in the request body if you want it.
+  //
+  // Auth:
+  //   Header `X-Airtable-Webhook-Secret` must match the
+  //   AIRTABLE_WEBHOOK_SECRET env var on Replit. Configure the matching
+  //   header in each Airtable Automation's "Send webhook" action.
+  //
+  // Setup walkthrough is in the user's onboarding doc (or ask Martin).
+  // -------------------------------------------------------------------
+  app.post("/api/admin/airtable-approval-webhook", async (req, res) => {
+    try {
+      const expectedSecret = process.env.AIRTABLE_WEBHOOK_SECRET;
+      if (!expectedSecret) {
+        console.error("[airtable-webhook] AIRTABLE_WEBHOOK_SECRET not set — refusing all requests");
+        return res.status(500).json({ error: "Webhook secret not configured on server" });
+      }
+      const presentedSecret = req.headers["x-airtable-webhook-secret"];
+      if (!presentedSecret || presentedSecret !== expectedSecret) {
+        console.warn(`[airtable-webhook] Invalid secret (got: ${presentedSecret ? "wrong value" : "no header"})`);
+        return res.status(401).json({ error: "Invalid or missing webhook secret" });
+      }
+
+      const {
+        email,
+        firstName,
+        lastName,
+        company,
+        userType,
+        status,
+        recordId,
+        tableName,
+        sendDeclineEmail = false,
+      } = req.body || {};
+
+      if (!email || typeof email !== "string") {
+        return res.status(400).json({ error: "Missing required field: email" });
+      }
+      if (!status || typeof status !== "string") {
+        return res.status(400).json({ error: "Missing required field: status" });
+      }
+
+      const normalizedEmail = email.toLowerCase().trim();
+      const normalizedStatus = status.trim().toLowerCase();
+      // Infer userType from tableName if not explicitly provided. Useful
+      // because the Airtable Automation builder sometimes forgets to set it.
+      const inferredUserType: "brand" | "creator" =
+        userType === "brand" || userType === "creator"
+          ? userType
+          : tableName === "BrandApplications"
+            ? "brand"
+            : "creator";
+
+      console.log(
+        `[airtable-webhook] ${normalizedStatus.toUpperCase()} for ${normalizedEmail} ` +
+          `(userType=${inferredUserType}, table=${tableName ?? "?"}, recordId=${recordId ?? "?"})`,
+      );
+
+      if (normalizedStatus === "approved") {
+        // 1. Allowlist row — idempotent.
+        const existing = await storage.getAllowedUser(normalizedEmail);
+        let allowlistAction: "created" | "exists" | "updated";
+        if (!existing) {
+          await storage.addAllowedUser({
+            email: normalizedEmail,
+            name: [firstName, lastName].filter(Boolean).join(" ") || company || normalizedEmail,
+            userType: inferredUserType,
+          });
+          allowlistAction = "created";
+        } else if (existing.userType !== inferredUserType) {
+          await storage.updateAllowedUserRole(normalizedEmail, inferredUserType);
+          allowlistAction = "updated";
+        } else {
+          allowlistAction = "exists";
+        }
+
+        // 2. Flip users.isApproved=true IF they already have a User row
+        // (typical for creators who signed up via Google before approval;
+        // typical NOT for brands who applied via Airtable form and haven't
+        // OAuth'd yet — that's fine).
+        const userFlipped = await storage.setUserApproved(normalizedEmail, true);
+
+        // 3. Welcome email (fire-and-forget — webhook should still 200 even
+        // if Resend hiccups, so the Airtable Automation doesn't retry the
+        // whole approval).
+        const { sendApprovalEmail } = await import("./lib/resend");
+        const emailResult = await sendApprovalEmail({
+          email: normalizedEmail,
+          firstName: firstName || "there",
+          userType: inferredUserType,
+          companyName: company,
+        });
+
+        return res.json({
+          ok: true,
+          action: "approved",
+          allowlist: allowlistAction,
+          userApprovalFlipped: userFlipped,
+          email: emailResult,
+          recordId,
+          tableName,
+        });
+      }
+
+      if (normalizedStatus === "declined") {
+        // Optional decline email. Off by default.
+        let emailResult: any = { sent: false, reason: "sendDeclineEmail flag was false" };
+        if (sendDeclineEmail === true) {
+          // Reuse approval email shell but with decline copy — simple inline
+          // for now since this is rarely used.
+          try {
+            const { getResendClient } = await import("./lib/resend");
+            const { client, fromEmail } = await getResendClient();
+            if (client) {
+              const result = await client.emails.send({
+                from: fromEmail || "FullScale <noreply@gofullscale.co>",
+                to: normalizedEmail,
+                subject: "Your FullScale application",
+                html: `
+                  <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto; padding: 24px; color: #111;">
+                    <p>Hi ${firstName || "there"},</p>
+                    <p>Thanks for your interest in FullScale. After reviewing your application we're not able to bring you onto the platform at this time. We try to be selective during the founding cohort to keep the experience tight for the brands and creators we've onboarded.</p>
+                    <p>If your situation changes (new product line, different audience focus, more content volume) you're welcome to reapply.</p>
+                    <p style="margin-top: 32px; color: #6b7280;">— Martin</p>
+                  </div>
+                `,
+              });
+              emailResult = { sent: true, id: (result as any)?.data?.id };
+            }
+          } catch (err: any) {
+            emailResult = { sent: false, reason: err?.message || String(err) };
+          }
+        }
+        return res.json({
+          ok: true,
+          action: "declined",
+          email: emailResult,
+          recordId,
+          tableName,
+        });
+      }
+
+      // Status changed to something we don't act on (e.g. back to Pending,
+      // or some new option). Return ok so Airtable doesn't retry.
+      return res.json({
+        ok: true,
+        action: "ignored",
+        reason: `Status "${status}" is not actionable (only approved/declined)`,
+      });
+    } catch (err: any) {
+      console.error("[airtable-webhook] Handler error:", err?.message || err, err?.stack);
+      return res.status(500).json({ error: "Webhook handler failed", detail: err?.message || String(err) });
+    }
+  });
+
   // registration time per the existing flow). Admin-gated. Compares
   // against the Postgres allowlist + users table so you can spot drift.
   app.get("/api/admin/airtable-signups", async (req: any, res) => {

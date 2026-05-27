@@ -111,6 +111,10 @@ export interface IStorage {
   // User authentication methods
   getUserByEmail(email: string): Promise<User | undefined>;
   getUserById(id: string): Promise<User | undefined>;
+  /** Flip users.isApproved for an existing user. Returns false if no
+   *  user row matches the email (caller should treat as "allowlisted
+   *  but not signed in yet" — fine, OAuth will flip approval on signin). */
+  setUserApproved(email: string, approved: boolean): Promise<boolean>;
   createUser(user: UpsertUser): Promise<User>;
   upsertUserByEmail(user: UpsertUser): Promise<User>;
   
@@ -340,6 +344,16 @@ export class DatabaseStorage implements IStorage {
   async getUserById(id: string): Promise<User | undefined> {
     const [user] = await db.select().from(users).where(eq(users.id, id));
     return user;
+  }
+
+  async setUserApproved(email: string, approved: boolean): Promise<boolean> {
+    const normalizedEmail = email.toLowerCase().trim();
+    const result = await db
+      .update(users)
+      .set({ isApproved: approved })
+      .where(eq(users.email, normalizedEmail))
+      .returning({ id: users.id });
+    return result.length > 0;
   }
 
   async createUser(userData: UpsertUser): Promise<User> {

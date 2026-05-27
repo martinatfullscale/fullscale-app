@@ -561,3 +561,74 @@ export async function sendAdminNotification(userData: {
     throw error;
   }
 }
+
+/**
+ * Email an applicant whose Airtable application was approved by admin.
+ * Branches copy by userType — brands and creators get different welcome
+ * framing because their next steps differ.
+ *
+ * Triggered by the Airtable approval webhook
+ * (POST /api/admin/airtable-approval-webhook in routes.ts).
+ */
+export async function sendApprovalEmail(params: {
+  email: string;
+  firstName: string;
+  userType: "brand" | "creator";
+  companyName?: string;
+}): Promise<{ sent: boolean; id?: string; reason?: string }> {
+  try {
+    const { client, fromEmail } = await getResendClient();
+    if (!client) return { sent: false, reason: "Resend client not available" };
+
+    const loginUrl = "https://gofullscale.co/auth";
+    const greeting = `Welcome to FullScale, ${params.firstName}.`;
+
+    const body =
+      params.userType === "brand"
+        ? `
+          <p>Your brand application${params.companyName ? ` for <strong>${params.companyName}</strong>` : ""} has been approved.</p>
+          <p>Sign in at <a href="${loginUrl}" style="color: #10b981; font-weight: 500;">${loginUrl}</a> using the same email you applied with (${params.email}). You'll land in the brand marketplace where you can:</p>
+          <ul style="line-height: 1.6; padding-left: 18px;">
+            <li>Browse creator content and AI-detected placement surfaces</li>
+            <li>Drop products into approved scenes with harmonization</li>
+            <li>Test creator-product fit before committing to a full campaign</li>
+          </ul>
+          <p>We'll be in touch with a personalized brief once you're set up — pick a few creators that catch your eye and we'll handle the rest.</p>
+        `
+        : `
+          <p>Your creator account has been approved.</p>
+          <p>Sign in at <a href="${loginUrl}" style="color: #10b981; font-weight: 500;">${loginUrl}</a> using ${params.email}. From there:</p>
+          <ul style="line-height: 1.6; padding-left: 18px;">
+            <li>Connect your YouTube or Instagram to import videos</li>
+            <li>Our AI scans for product placement surfaces in your content</li>
+            <li>Approve surfaces you want brands to see — you stay in control of every placement</li>
+          </ul>
+          <p>You're in the founding cohort. If anything looks broken or off, ping me directly.</p>
+        `;
+
+    const subject =
+      params.userType === "brand"
+        ? `You're in: FullScale brand access approved`
+        : `You're in: FullScale creator access approved`;
+
+    const result = await client.emails.send({
+      from: fromEmail || "FullScale <noreply@gofullscale.co>",
+      to: params.email,
+      subject,
+      html: `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto; padding: 24px; color: #111;">
+          <h2 style="margin: 0 0 16px 0; font-weight: 600;">${greeting}</h2>
+          ${body}
+          <p style="line-height: 1.5; margin-top: 32px; color: #6b7280;">— Martin</p>
+        </div>
+      `,
+    });
+
+    const id = (result as any)?.data?.id;
+    console.log(`[Resend] Approval email sent to ${params.email} (${params.userType}): ${id}`);
+    return { sent: true, id };
+  } catch (error: any) {
+    console.error("[Resend] Failed to send approval email:", error?.message || error);
+    return { sent: false, reason: error?.message || String(error) };
+  }
+}
