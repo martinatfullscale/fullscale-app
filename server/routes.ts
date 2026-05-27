@@ -33,7 +33,7 @@ import {
 import { processVideoExport } from "./lib/videoExporter";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 import { hashPassword, verifyPassword } from "./lib/password";
-import { addSignupToAirtable, listAirtableSignups } from "./lib/airtable";
+import { addSignupToAirtable, listAirtableSignups, addBrandApplicationToAirtable } from "./lib/airtable";
 import { setupPlatformAuth, importFacebookVideos, importInstagramMedia, importPersonalVideos, fetchInstagramVideoViews } from "./lib/platformAuth";
 import { maybeRefreshSocialThumbnailsInBackground } from "./lib/socialThumbnailAutoRefresh";
 import { pLimit } from "./lib/concurrency";
@@ -1185,6 +1185,19 @@ export async function registerRoutes(
       }
 
       console.log(`[brand-signup] New application: ${normalizedEmail} from ${companyName}`);
+
+      // Mirror to Airtable "BrandApplications" so admin has a queryable
+      // record. Fire-and-forget — Airtable being down should never block
+      // the applicant's submission. addBrandApplicationToAirtable swallows
+      // its own errors and logs them.
+      void addBrandApplicationToAirtable({
+        email: normalizedEmail,
+        firstName,
+        lastName,
+        companyName,
+        websiteUrl: websiteUrl || null,
+        message: message || null,
+      });
 
       // Fire-and-forget email notifications. We don't await all of them
       // before responding — the applicant doesn't need to wait on SMTP.
