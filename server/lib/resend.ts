@@ -577,49 +577,51 @@ export async function sendApprovalEmail(params: {
   companyName?: string;
 }): Promise<{ sent: boolean; id?: string; reason?: string }> {
   try {
-    const { client, fromEmail } = await getResendClient();
+    const { client } = await getResendClient();
     if (!client) return { sent: false, reason: "Resend client not available" };
 
-    const loginUrl = "https://gofullscale.co/auth";
-    const greeting = `Welcome to FullScale, ${params.firstName}.`;
+    // Personal touches:
+    //  - Sent FROM martin@gofullscale.co (not noreply@) so it reads as a
+    //    1:1 note and replies land in Martin's inbox.
+    //  - reply_to set explicitly as a belt-and-suspenders in case any
+    //    relay rewrites the From.
+    //  - Founder-voice copy, no bulleted feature dump.
+    const fromAddress = "Martin at FullScale <martin@gofullscale.co>";
+    const replyTo = "martin@gofullscale.co";
+    const loginUrl = "https://gofullscale.co/auth?mode=signup";
+    const calendarUrl = "https://cal.com/martinatfullscale";
+    const p = "margin: 0 0 16px 0; line-height: 1.55;";
+    const link = "color: #10b981; font-weight: 500;";
 
     const body =
       params.userType === "brand"
         ? `
-          <p>Your brand application${params.companyName ? ` for <strong>${params.companyName}</strong>` : ""} has been approved.</p>
-          <p>Sign in at <a href="${loginUrl}" style="color: #10b981; font-weight: 500;">${loginUrl}</a> using the same email you applied with (${params.email}). You'll land in the brand marketplace where you can:</p>
-          <ul style="line-height: 1.6; padding-left: 18px;">
-            <li>Browse creator content and AI-detected placement surfaces</li>
-            <li>Drop products into approved scenes with harmonization</li>
-            <li>Test creator-product fit before committing to a full campaign</li>
-          </ul>
-          <p>We'll be in touch with a personalized brief once you're set up — pick a few creators that catch your eye and we'll handle the rest.</p>
+          <p style="${p}">Hi ${params.firstName},</p>
+          <p style="${p}">I went through your application${params.companyName ? ` for <strong>${params.companyName}</strong>` : ""} myself — really glad to have you in. We're keeping the founding group small and intentional${params.companyName ? `, and ${params.companyName} is exactly the kind of brand we built this for` : ""}.</p>
+          <p style="${p}">To get started, sign in at <a href="${loginUrl}" style="${link}">gofullscale.co</a> with ${params.email} and you'll be in the marketplace. Look around, browse the creators, and flag a few whose content feels right${params.companyName ? ` for ${params.companyName}` : ""}. Once you do, I'll put together a tailored placement brief and walk you through it personally.</p>
+          <p style="${p}">If you'd rather talk it through first, grab any time that works: <a href="${calendarUrl}" style="${link}">cal.com/martinatfullscale</a>. I'd genuinely love to hear what you're trying to accomplish.</p>
+          <p style="${p}">Talk soon,</p>
         `
         : `
-          <p>Your creator account has been approved.</p>
-          <p>Sign in at <a href="${loginUrl}" style="color: #10b981; font-weight: 500;">${loginUrl}</a> using ${params.email}. From there:</p>
-          <ul style="line-height: 1.6; padding-left: 18px;">
-            <li>Connect your YouTube or Instagram to import videos</li>
-            <li>Our AI scans for product placement surfaces in your content</li>
-            <li>Approve surfaces you want brands to see — you stay in control of every placement</li>
-          </ul>
-          <p>You're in the founding cohort. If anything looks broken or off, ping me directly.</p>
+          <p style="${p}">Hi ${params.firstName},</p>
+          <p style="${p}">Just approved your account — welcome in. You're part of the founding creator cohort, which means you're helping shape how this whole thing works.</p>
+          <p style="${p}">To get rolling: sign in at <a href="${loginUrl}" style="${link}">gofullscale.co</a>, connect your YouTube or Instagram, and our AI starts finding natural product-placement moments in your content. You stay in full control — nothing reaches a brand until you approve it.</p>
+          <p style="${p}">I'm around if you hit anything weird or have ideas. Just reply to this email — it comes straight to me.</p>
+          <p style="${p}">Glad you're here,</p>
         `;
 
-    const subject =
-      params.userType === "brand"
-        ? `You're in: FullScale brand access approved`
-        : `You're in: FullScale creator access approved`;
+    // Personal subject — no "access approved" corporate phrasing.
+    const subject = `Welcome to FullScale, ${params.firstName}`;
 
     const result = await client.emails.send({
-      from: fromEmail || "FullScale <noreply@gofullscale.co>",
+      from: fromAddress,
+      replyTo,
       to: params.email,
       subject,
       html: `
         <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto; padding: 24px; color: #111;">
-          <h2 style="margin: 0 0 16px 0; font-weight: 600;">${greeting}</h2>
           ${body}
-          <p style="line-height: 1.5; margin-top: 32px; color: #6b7280;">— Martin</p>
+          <p style="margin: 0; line-height: 1.4;"><strong>Martin</strong><br/><span style="color: #6b7280;">Founder, FullScale</span></p>
         </div>
       `,
     });
