@@ -17,31 +17,66 @@ export async function addSignupToAirtable(data: AirtableSignupData): Promise<boo
     return false;
   }
 
-  try {
-    const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodeURIComponent(AIRTABLE_TABLE_NAME)}`;
-    
-    const response = await fetch(url, {
+  const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodeURIComponent(AIRTABLE_TABLE_NAME)}`;
+  const headers = {
+    Authorization: `Bearer ${AIRTABLE_API_TOKEN}`,
+    "Content-Type": "application/json",
+  };
+
+  // Full field set we'd LIKE to write. But the Creator Submissions table
+  // structure has drifted over time (e.g. the status field became a linked
+  // "Submission Statuses" table, "Status"/"Auth Provider"/"Signup Date"
+  // may not exist). Airtable rejects the ENTIRE insert if ANY field name is
+  // unknown — which would silently drop new creators from the table.
+  //
+  // So: try the full payload first; if Airtable 422s on an unknown field,
+  // retry with just the core fields that are guaranteed to exist. A creator
+  // landing with only name+email beats not landing at all.
+  const fullFields: Record<string, any> = {
+    Email: data.email,
+    "First Name": data.firstName || "",
+    "Last Name": data.lastName || "",
+    "Auth Provider": data.authProvider,
+    Approval: data.isApproved ? "Approved" : "Pending",
+    "Signup Date": new Date().toISOString().split("T")[0],
+  };
+  const coreFields: Record<string, any> = {
+    Email: data.email,
+    "First Name": data.firstName || "",
+    "Last Name": data.lastName || "",
+  };
+
+  async function attempt(fields: Record<string, any>): Promise<Response> {
+    return fetch(url, {
       method: "POST",
-      headers: {
-        "Authorization": `Bearer ${AIRTABLE_API_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        fields: {
-          Email: data.email,
-          "First Name": data.firstName || "",
-          "Last Name": data.lastName || "",
-          "Auth Provider": data.authProvider,
-          "Status": data.isApproved ? "Approved" : "Pending",
-          "Signup Date": new Date().toISOString().split("T")[0],
-        },
-      }),
+      headers,
+      // typecast lets Airtable coerce single-select values (e.g. create the
+      // "Pending" option if it's missing) rather than erroring.
+      body: JSON.stringify({ fields, typecast: true }),
     });
+  }
+
+  try {
+    let response = await attempt(fullFields);
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error("[Airtable] Failed to add signup:", response.status, errorText);
-      return false;
+      // 422 UNKNOWN_FIELD_NAME → table structure differs from fullFields.
+      // Retry with the minimal guaranteed set so the creator still lands.
+      if (response.status === 422) {
+        console.warn(
+          `[Airtable] Full insert rejected (${response.status}: ${errorText.slice(0, 200)}) — retrying with core fields only`,
+        );
+        response = await attempt(coreFields);
+        if (!response.ok) {
+          const retryErr = await response.text();
+          console.error("[Airtable] Core-field retry also failed:", response.status, retryErr.slice(0, 200));
+          return false;
+        }
+      } else {
+        console.error("[Airtable] Failed to add signup:", response.status, errorText.slice(0, 200));
+        return false;
+      }
     }
 
     console.log(`[Airtable] Successfully added signup: ${data.email}`);
