@@ -634,3 +634,52 @@ export async function sendApprovalEmail(params: {
     return { sent: false, reason: error?.message || String(error) };
   }
 }
+
+/**
+ * Email a demo requester with Martin's cal.com booking link so they can
+ * self-schedule. Triggered by the Airtable approval webhook when a row
+ * lands in the FullScale Demo table (requestType="demo").
+ *
+ * Unlike the approval email, this grants no access — it's purely a warm
+ * "let's find a time" note. Sent from martin@ so replies reach him.
+ */
+export async function sendDemoSchedulingEmail(params: {
+  email: string;
+  firstName: string;
+  companyName?: string;
+}): Promise<{ sent: boolean; id?: string; reason?: string }> {
+  try {
+    const { client } = await getResendClient();
+    if (!client) return { sent: false, reason: "Resend client not available" };
+
+    const fromAddress = "Martin at FullScale <martin@gofullscale.co>";
+    const replyTo = "martin@gofullscale.co";
+    const calendarUrl = "https://cal.com/martinatfullscale";
+    const p = "margin: 0 0 16px 0; line-height: 1.55;";
+    const link = "color: #10b981; font-weight: 500;";
+
+    const result = await client.emails.send({
+      from: fromAddress,
+      replyTo,
+      to: params.email,
+      subject: `Let's find a time, ${params.firstName}`,
+      html: `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto; padding: 24px; color: #111;">
+          <p style="${p}">Hi ${params.firstName},</p>
+          <p style="${p}">Thanks for asking for a look at FullScale${params.companyName ? ` — I'd love to show you what it could do for <strong>${params.companyName}</strong>` : ""}. I'll walk you through it personally: how the AI places products into real creator content, and where it fits for what you're working on.</p>
+          <p style="${p}">Grab whatever time works best here: <a href="${calendarUrl}" style="${link}">cal.com/martinatfullscale</a></p>
+          <p style="${p}">If none of those slots work, just reply to this email and we'll figure it out.</p>
+          <p style="${p}">Looking forward to it,</p>
+          <p style="margin: 0; line-height: 1.4;"><strong>Martin</strong><br/><span style="color: #6b7280;">Founder, FullScale</span></p>
+        </div>
+      `,
+    });
+
+    const id = (result as any)?.data?.id;
+    console.log(`[Resend] Demo scheduling email sent to ${params.email}: ${id}`);
+    return { sent: true, id };
+  } catch (error: any) {
+    console.error("[Resend] Failed to send demo scheduling email:", error?.message || error);
+    return { sent: false, reason: error?.message || String(error) };
+  }
+}

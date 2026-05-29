@@ -668,12 +668,50 @@ export async function registerRoutes(
         status,
         recordId,
         tableName,
+        requestType,
         sendDeclineEmail = false,
       } = req.body || {};
 
       if (!email || typeof email !== "string") {
         return res.status(400).json({ error: "Missing required field: email" });
       }
+
+      const normalizedEmailEarly = email.toLowerCase().trim();
+
+      // -----------------------------------------------------------------
+      // DEMO branch — fires BEFORE the status/approval logic.
+      //
+      // Demo requests aren't access approvals: there's no allowlist row,
+      // no isApproved flip. We just send the requester a warm note from
+      // Martin with the cal.com booking link so they can self-schedule.
+      //
+      // Triggered when requestType === "demo" OR the source table is the
+      // FullScale Demo table. No `status` required — works on a
+      // "record created" Airtable trigger (fires the moment someone
+      // submits the demo form).
+      // -----------------------------------------------------------------
+      const isDemo =
+        requestType === "demo" ||
+        tableName === "FullScale Demo" ||
+        tableName === "Demo Requests" ||
+        tableName === "FullScaleDemo";
+      if (isDemo) {
+        console.log(`[airtable-webhook] DEMO request from ${normalizedEmailEarly} (table=${tableName ?? "?"})`);
+        const { sendDemoSchedulingEmail } = await import("./lib/resend");
+        const emailResult = await sendDemoSchedulingEmail({
+          email: normalizedEmailEarly,
+          firstName: firstName || "there",
+          companyName: company,
+        });
+        return res.json({
+          ok: true,
+          action: "demo-scheduling-email-sent",
+          email: emailResult,
+          recordId,
+          tableName,
+        });
+      }
+
       if (!status || typeof status !== "string") {
         return res.status(400).json({ error: "Missing required field: status" });
       }
