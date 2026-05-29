@@ -335,6 +335,72 @@ interface DownloadOpts {
   oauthToken?: string;
 }
 
+/**
+ * Resolve a yt-dlp cookies file from env, if configured. Cookies are the
+ * single most effective YouTube bot-detection bypass — they make yt-dlp's
+ * requests look like a real signed-in session, which datacenter IPs
+ * (Replit) otherwise get blocked from. Cookies from ANY logged-in account
+ * work for downloading ANY public video, so a single dedicated FullScale
+ * Google account's cookies cover every creator's public content — no
+ * per-creator token needed.
+ *
+ * Two ways to supply cookies:
+ *   YTDLP_COOKIES       — the full Netscape-format cookies.txt CONTENT,
+ *                         pasted into a Replit secret. Written to a temp
+ *                         file at runtime (best for Replit — no persistent
+ *                         filesystem needed).
+ *   YTDLP_COOKIES_PATH  — absolute path to a cookies.txt already on disk.
+ *
+ * Returns the path to pass to `--cookies`, or null if neither is set.
+ * Cached so we only write the temp file once per process.
+ */
+let cachedCookiesPath: string | null | undefined;
+function resolveCookiesFile(): string | null {
+  if (cachedCookiesPath !== undefined) return cachedCookiesPath;
+
+  const inlineContent = process.env.YTDLP_COOKIES;
+  if (inlineContent && inlineContent.trim()) {
+    try {
+      const tmp = path.join(os.tmpdir(), "yt-cookies.txt");
+      fs.writeFileSync(tmp, inlineContent, { mode: 0o600 });
+      console.log(`[Scanner] Wrote yt-dlp cookies from YTDLP_COOKIES env → ${tmp}`);
+      cachedCookiesPath = tmp;
+      return tmp;
+    } catch (err: any) {
+      console.warn(`[Scanner] Failed to write cookies temp file: ${err?.message}`);
+    }
+  }
+
+  const explicitPath = process.env.YTDLP_COOKIES_PATH;
+  if (explicitPath && fs.existsSync(explicitPath)) {
+    cachedCookiesPath = explicitPath;
+    return explicitPath;
+  }
+
+  cachedCookiesPath = null;
+  return null;
+}
+
+/**
+ * Push cookies + proxy args onto a yt-dlp arg list if configured. Shared by
+ * the duration probe and the download so they authenticate identically.
+ *   YTDLP_PROXY — e.g. http://user:pass@host:port — routes around the
+ *   flagged datacenter IP via a residential/mobile proxy. Most robust
+ *   bot-detection bypass; pairs well with (or works without) cookies.
+ */
+function applyYtDlpAuthArgs(args: string[], context: string): void {
+  const cookies = resolveCookiesFile();
+  if (cookies) {
+    args.push("--cookies", cookies);
+    console.log(`[Scanner] ${context}: using cookies (signed-in session)`);
+  }
+  const proxy = process.env.YTDLP_PROXY?.trim();
+  if (proxy) {
+    args.push("--proxy", proxy);
+    console.log(`[Scanner] ${context}: using proxy`);
+  }
+}
+
 /** Fetch only the duration of a YouTube video without downloading it.
  *  Used to plan adaptive scan sampling for long-form content. */
 export async function getYoutubeVideoDuration(
@@ -353,6 +419,7 @@ export async function getYoutubeVideoDuration(
     if (oauthToken) {
       args.push("--add-header", `Authorization:Bearer ${oauthToken}`);
     }
+    applyYtDlpAuthArgs(args, "duration probe");
     args.push(`https://www.youtube.com/watch?v=${youtubeId}`);
 
     const proc = spawn(ytDlpBin, args);
@@ -431,6 +498,9 @@ async function downloadVideoWithYtDlp(
       args.push("--add-header", `Authorization:Bearer ${opts.oauthToken}`);
       console.log(`[Scanner] yt-dlp: using OAuth token (Path B)`);
     }
+    // Cookies + proxy (env-driven). Cookies are the heavy hitter against
+    // the "Sign in to confirm you're not a bot" block on datacenter IPs.
+    applyYtDlpAuthArgs(args, "yt-dlp download");
     if (trim && trim > 0) {
       // Cap to "first N seconds." For scan we only need ~48s of video frames,
       // so downloading a full 60-min podcast is pure waste. With a direct
