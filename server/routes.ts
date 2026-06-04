@@ -119,6 +119,8 @@ const FOUNDING_MEMBERS = [
   // Co-builders — admin access, both creator + brand views via role switching
   'ben@muselabs.ai',
   'remiguyton@gmail.com',
+  'scottmmills@outlook.com',
+  'juanroviraesteve@gmail.com',
   // Test account provisioned for Google OAuth verification reviewers.
   // Lives on the allowlist so verification reviewers can register/sign in
   // and complete the OAuth flow end-to-end without waitlist friction.
@@ -345,7 +347,7 @@ export async function registerRoutes(
   // exact state Google reviewers need.
   app.post("/api/admin/provision-test-creator", async (req: any, res) => {
     try {
-      const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com'];
+      const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
       const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email || req.query.admin_email;
       if (!callerEmail || !adminEmails.map((e: string) => e.toLowerCase()).includes(callerEmail.toLowerCase())) {
         return res.status(403).json({ error: "Admin access required" });
@@ -424,7 +426,7 @@ export async function registerRoutes(
   // DB row and sends the notification.
   app.post("/api/admin/onboard-cobuilder", async (req: any, res) => {
     try {
-      const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com'];
+      const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
       const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
       if (!callerEmail || !adminEmails.map(e => e.toLowerCase()).includes(callerEmail.toLowerCase())) {
         return res.status(403).json({ error: "Admin access required" });
@@ -540,7 +542,7 @@ export async function registerRoutes(
   //   adminEmails  — current hardcoded admin list (what gets canSwitchRoles)
   app.get("/api/admin/list-signups", async (req: any, res) => {
     try {
-      const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com'];
+      const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
       const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
       if (!callerEmail || !adminEmails.map(e => e.toLowerCase()).includes(callerEmail.toLowerCase())) {
         return res.status(403).json({ error: "Admin access required" });
@@ -833,7 +835,7 @@ export async function registerRoutes(
   // against the Postgres allowlist + users table so you can spot drift.
   app.get("/api/admin/airtable-signups", async (req: any, res) => {
     try {
-      const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com'];
+      const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
       const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
       if (!callerEmail || !adminEmails.map(e => e.toLowerCase()).includes(callerEmail.toLowerCase())) {
         return res.status(403).json({ error: "Admin access required" });
@@ -897,7 +899,7 @@ export async function registerRoutes(
 
   app.post("/api/admin/migrate-surfaces", async (req: any, res) => {
     try {
-      const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com'];
+      const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
       const email = req.session?.googleUser?.email || req.user?.claims?.email;
       if (!email || !adminEmails.map((e: string) => e.toLowerCase()).includes(email.toLowerCase())) {
         return res.status(403).json({ error: "Admin access required" });
@@ -1265,7 +1267,7 @@ export async function registerRoutes(
   // Dev-only admin login bypass — skips Google OAuth for admin emails
   // Creates a real session so the entire app works (Library, Dashboard, etc.)
   app.post("/api/auth/dev-login", async (req: any, res) => {
-    const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com'];
+    const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
     const isDevelopment = process.env.NODE_ENV !== 'production';
 
     if (!isDevelopment) {
@@ -1430,6 +1432,8 @@ export async function registerRoutes(
             "ben@muselabs.ai",
             "chu@gofullscale.co",
             "remiguyton@gmail.com",
+            "scottmmills@outlook.com",
+            "juanroviraesteve@gmail.com",
           ];
 
           // Admin notification — one email to all admins so any of us
@@ -1721,7 +1725,7 @@ export async function registerRoutes(
   // Flexible auth middleware - works with Google OAuth, Replit Auth, or Facebook session
   // Used for endpoints that should work for authenticated users regardless of method
   const isFlexibleAuthenticated = async (req: any, res: any, next: any) => {
-    const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com'];
+    const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
     const isDevelopment = process.env.NODE_ENV !== 'production';
     
     // First try Google OAuth session
@@ -2738,7 +2742,7 @@ export async function registerRoutes(
     const userEmail = req.authEmail;
     
     // Only allow admin emails
-    const adminEmails = ["martin@gofullscale.co", "tamara@gofullscale.co", "ben@muselabs.ai", "chu@gofullscale.co", "remiguyton@gmail.com"];
+    const adminEmails = ["martin@gofullscale.co", "tamara@gofullscale.co", "ben@muselabs.ai", "chu@gofullscale.co", "remiguyton@gmail.com", "scottmmills@outlook.com", "juanroviraesteve@gmail.com"];
     if (!adminEmails.includes(userEmail)) {
       return res.status(403).json({ error: "Admin only endpoint" });
     }
@@ -3976,7 +3980,7 @@ export async function registerRoutes(
     }
 
     // Only allow updates for admin-owned videos
-    const adminEmailsList = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com'];
+    const adminEmailsList = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
     if (!adminEmailsList.includes(video.userId)) {
       return res.status(403).json({ error: "Can only update admin-owned videos" });
     }
@@ -4155,7 +4159,7 @@ export async function registerRoutes(
   // Batch extract thumbnails for all videos with local files (admin only)
   app.post("/api/thumbnails/extract-all", isFlexibleAuthenticated, async (req: any, res) => {
     // Admin only - batch operation
-    const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com'];
+    const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
     if (!adminEmails.includes(req.authEmail || '')) {
       return res.status(403).json({ error: "Admin only endpoint" });
     }
@@ -5050,7 +5054,7 @@ export async function registerRoutes(
     const authEmail = req.authEmail;
     
     // Admin only
-    const adminEmails = ["martin@gofullscale.co", "tamara@gofullscale.co", "ben@muselabs.ai", "chu@gofullscale.co", "remiguyton@gmail.com"];
+    const adminEmails = ["martin@gofullscale.co", "tamara@gofullscale.co", "ben@muselabs.ai", "chu@gofullscale.co", "remiguyton@gmail.com", "scottmmills@outlook.com", "juanroviraesteve@gmail.com"];
     if (!adminEmails.includes(authEmail)) {
       return res.status(403).json({ error: "Admin access required" });
     }
@@ -5111,7 +5115,7 @@ export async function registerRoutes(
     const authEmail = req.authEmail;
     
     // Admin only
-    const adminEmails = ["martin@gofullscale.co", "tamara@gofullscale.co", "ben@muselabs.ai", "chu@gofullscale.co", "remiguyton@gmail.com"];
+    const adminEmails = ["martin@gofullscale.co", "tamara@gofullscale.co", "ben@muselabs.ai", "chu@gofullscale.co", "remiguyton@gmail.com", "scottmmills@outlook.com", "juanroviraesteve@gmail.com"];
     if (!adminEmails.includes(authEmail)) {
       return res.status(403).json({ error: "Admin access required" });
     }
@@ -5157,10 +5161,30 @@ export async function registerRoutes(
 
   // Get videos with their Ad Opportunity counts
   app.get("/api/video-index/with-opportunities", isFlexibleAuthenticated, async (req: any, res) => {
-    const userId = req.authUserId;
-    const authEmail = req.authEmail;
-    console.log(`[VideoIndex] Fetching videos for userId: ${userId}, authEmail: ${authEmail}`);
-    
+    let userId = req.authUserId;
+    let authEmail = req.authEmail;
+    let viewingAs: string | null = null;
+
+    // Admin "view as user" — pass ?as=<email> to load that user's library
+    // instead of your own. Silently ignored for non-admins. Used by the
+    // Library page's admin-only dropdown so co-builders / collaborators
+    // can browse Martin's (or any creator's) library without account
+    // sharing or password-sharing.
+    const asEmailRaw = (req.query.as as string | undefined)?.toLowerCase().trim();
+    if (asEmailRaw && req.isAdmin) {
+      const otherUser = await storage.getUserByEmail(asEmailRaw);
+      if (otherUser) {
+        userId = otherUser.id;
+        authEmail = otherUser.email;
+        viewingAs = otherUser.email;
+        console.log(`[VideoIndex] Admin ${req.authEmail} viewing-as ${viewingAs}`);
+      } else {
+        console.warn(`[VideoIndex] Admin ${req.authEmail} requested view-as "${asEmailRaw}" but user not found`);
+      }
+    }
+
+    console.log(`[VideoIndex] Fetching videos for userId: ${userId}, authEmail: ${authEmail}${viewingAs ? " (view-as)" : ""}`);
+
     const videos = await storage.getVideoIndex(userId, authEmail);
     console.log(`[VideoIndex] Found ${videos.length} videos for user`);
     
@@ -5185,10 +5209,63 @@ export async function registerRoutes(
       })
     );
 
-    res.json({ videos: videosWithCounts, total: videosWithCounts.length });
+    res.json({
+      videos: videosWithCounts,
+      total: videosWithCounts.length,
+      // Echo whose library this actually represents (null = your own).
+      // Client uses this to render the "Viewing as X" banner so admins
+      // can't accidentally lose track of whose library they're looking at.
+      viewingAs,
+    });
     // Background self-heal for IG/FB thumbnails (signed CDN URLs that expire).
     // Per-user 1h cooldown — see socialThumbnailAutoRefresh.ts.
     maybeRefreshSocialThumbnailsInBackground(userId);
+  });
+
+  // Admin endpoint: list every user + their video count, so the Library
+  // page's view-as dropdown can populate. Returns email + name + count
+  // so the admin can pick someone informed. Non-admins get 403.
+  //
+  // Done as a single grouped SQL query (left-join + count) to avoid the
+  // N-queries shape that would have been needed via storage methods.
+  // videoIndex is dual-keyed (user_id stores either UUID or email), so
+  // we count rows whose user_id matches either users.id OR users.email.
+  app.get("/api/admin/users-with-libraries", isFlexibleAuthenticated, async (req: any, res) => {
+    if (!req.isAdmin) {
+      return res.status(403).json({ error: "Admin access required" });
+    }
+    try {
+      const rows = await db
+        .select({
+          id: users.id,
+          email: users.email,
+          firstName: users.firstName,
+          lastName: users.lastName,
+          videoCount: sql<number>`COUNT(${videoIndexTable.id})::int`,
+        })
+        .from(users)
+        .leftJoin(
+          videoIndexTable,
+          sql`${videoIndexTable.userId} = ${users.id} OR ${videoIndexTable.userId} = ${users.email}`,
+        )
+        .groupBy(users.id, users.email, users.firstName, users.lastName)
+        .orderBy(sql`COUNT(${videoIndexTable.id}) DESC`);
+
+      // Return all users; client decides whether to hide empty libraries.
+      // Even empty-library users are useful as "view as" targets for
+      // people debugging brand-side flows.
+      res.json({
+        users: rows.map(r => ({
+          email: r.email,
+          firstName: r.firstName,
+          lastName: r.lastName,
+          videoCount: r.videoCount ?? 0,
+        })),
+      });
+    } catch (err: any) {
+      console.error("[Admin/users-with-libraries] Error:", err?.message || err);
+      res.status(500).json({ error: err?.message || "Failed to list users" });
+    }
   });
 
   // YouTube Video Proxy - Experimental feature for scanning YouTube videos
@@ -5614,7 +5691,7 @@ export async function registerRoutes(
   });
 
   // Admin emails that can switch between roles
-  const ADMIN_EMAILS = ["martin@gofullscale.co", "tamara@gofullscale.co", "ben@muselabs.ai", "chu@gofullscale.co", "remiguyton@gmail.com"];
+  const ADMIN_EMAILS = ["martin@gofullscale.co", "tamara@gofullscale.co", "ben@muselabs.ai", "chu@gofullscale.co", "remiguyton@gmail.com", "scottmmills@outlook.com", "juanroviraesteve@gmail.com"];
 
   // Get user type (creator or brand) for routing - supports admin role override
   // Supports: Google OAuth, Replit OIDC, Facebook session auth

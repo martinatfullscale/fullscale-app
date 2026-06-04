@@ -50,6 +50,9 @@ type PlatformFilter = "all" | "youtube" | "instagram" | "twitch" | "facebook" | 
 interface VideoIndexResponse {
   videos: IndexedVideo[];
   total: number;
+  /** Echoed by the server when ?as=<email> was honored. Null when the
+   *  admin is viewing their own library. Drives the "Viewing as" banner. */
+  viewingAs?: string | null;
 }
 
 const demoVideoData = [
@@ -570,7 +573,43 @@ export default function Library() {
   const [remixVideoId, setRemixVideoId] = useState<number | null>(null);
   const [distributionOpen, setDistributionOpen] = useState(false);
   const [distributionVideoId, setDistributionVideoId] = useState<number | null>(null);
-  
+
+  // ----- Admin "view as user" -----
+  // Reads ?as=<email> from the URL on mount and any time the URL changes.
+  // When set (and the caller is admin), the library endpoint returns that
+  // user's videos instead of the caller's own. Backed by the server-side
+  // override in GET /api/video-index/with-opportunities.
+  const [viewAsEmail, setViewAsEmail] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    const params = new URLSearchParams(window.location.search);
+    const v = params.get("as");
+    return v ? v.toLowerCase().trim() || null : null;
+  });
+  useEffect(() => {
+    const onPop = () => {
+      const params = new URLSearchParams(window.location.search);
+      const v = params.get("as");
+      setViewAsEmail(v ? v.toLowerCase().trim() || null : null);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+  /** Strip ?as= from the URL and clear local state — "Return to my library". */
+  const clearViewAs = () => {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("as");
+    window.history.replaceState({}, "", url.toString());
+    setViewAsEmail(null);
+  };
+  /** Set ?as=<email> in the URL and trigger refetch. */
+  const setViewAs = (email: string | null) => {
+    const url = new URL(window.location.href);
+    if (email) url.searchParams.set("as", email);
+    else url.searchParams.delete("as");
+    window.history.replaceState({}, "", url.toString());
+    setViewAsEmail(email);
+  };
+
   // Admin emails for flexible auth fallback (supports URL param bypass in dev)
   const ADMIN_EMAILS = ['martin@gofullscale.co', 'martin@whtwrks.com', 'martincekechukwu@gmail.com'];
   
@@ -764,23 +803,31 @@ export default function Library() {
   const DEMO_DATA_VERSION = 2;
   
   const { data: videoData, isLoading: isLoadingVideos, isError: isVideosError, isFetching: isFetchingVideos, refetch: refetchVideos } = useQuery<VideoIndexResponse>({
-    queryKey: ["videos", isPitchMode, mode, DEMO_DATA_VERSION, isAdminUser, userEmail] as const,
+    queryKey: ["videos", isPitchMode, mode, DEMO_DATA_VERSION, isAdminUser, userEmail, viewAsEmail] as const,
     queryFn: async ({ queryKey }) => {
       // Extract isPitchMode and mode from queryKey to avoid stale closure
-      const [, pitchModeFromKey, modeFromKey, , isAdmin, email] = queryKey;
-      
+      const [, pitchModeFromKey, modeFromKey, , isAdmin, email, viewAs] = queryKey;
+
       console.log(`[Library] ===== QUERY FN DEBUG =====`);
       console.log(`[Library] queryKey:`, queryKey);
       console.log(`[Library] pitchModeFromKey: ${pitchModeFromKey}`);
       console.log(`[Library] modeFromKey: ${modeFromKey}`);
-      console.log(`[Library] isAdmin: ${isAdmin}, email: ${email}`);
-      
+      console.log(`[Library] isAdmin: ${isAdmin}, email: ${email}, viewAs: ${viewAs ?? "(self)"}`);
+
       let endpoint = pitchModeFromKey ? "/api/demo/videos" : (modeFromKey === "real" ? "/api/video-index/with-opportunities" : "/api/demo/videos");
-      
-      // Add admin_email param for flexible auth
+
+      // Build query string — preserve existing admin_email behavior + tack
+      // on the new "view as user" param when set. Both are admin-only on
+      // the server side.
+      const params = new URLSearchParams();
       if (!pitchModeFromKey && modeFromKey === "real" && isAdmin && email) {
-        endpoint += `?admin_email=${encodeURIComponent(email as string)}`;
+        params.set("admin_email", email as string);
       }
+      if (!pitchModeFromKey && modeFromKey === "real" && viewAs) {
+        params.set("as", viewAs as string);
+      }
+      const qs = params.toString();
+      if (qs) endpoint += `?${qs}`;
       
       console.log(`[Library] FINAL endpoint: ${endpoint}`);
       console.log(`[Library] Expected: /api/video-index/with-opportunities?admin_email=...`);
@@ -1211,8 +1258,29 @@ export default function Library() {
     <div className="min-h-screen bg-background text-foreground font-sans selection:bg-primary/20">
       <TopBar />
 
+      {/* "Viewing as" banner — visible whenever an admin has opted into
+          another user's library via ?as=<email>. Mirrors the server-side
+          override (videoData.viewingAs is the authoritative source). Keeps
+          the admin oriented and gives them a one-click "Return" path. */}
+      {videoData?.viewingAs && (
+        <div className="bg-amber-500/15 border-y border-amber-500/30 px-6 py-2.5 flex items-center justify-between gap-3 text-sm" data-testid="banner-viewing-as">
+          <div className="text-amber-100">
+            <span className="text-amber-200/70">Viewing as</span>{" "}
+            <span className="font-semibold text-amber-100" data-testid="text-viewing-as-email">{videoData.viewingAs}</span>
+            <span className="text-amber-200/70"> — actions you take here happen against your own account; only the displayed videos are theirs.</span>
+          </div>
+          <button
+            onClick={clearViewAs}
+            className="shrink-0 px-3 py-1 rounded-md text-xs font-medium border border-amber-400/40 text-amber-100 hover:bg-amber-400/15 transition-colors"
+            data-testid="button-return-to-my-library"
+          >
+            Return to my library
+          </button>
+        </div>
+      )}
+
       <main className="p-8 max-w-7xl mx-auto">
-        <motion.div 
+        <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           className="mb-8 flex flex-wrap items-start justify-between gap-4"
