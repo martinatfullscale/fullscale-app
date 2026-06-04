@@ -109,12 +109,10 @@ const uploadMiddleware = multer({
 // the appropriate granter. To revoke: remove it. They also need to be on
 // allowed_users to sign in at all (use /api/admin/onboard-cobuilder).
 // -----------------------------------------------------------------------
-const LIBRARY_VIEW_GRANTS: Record<string, string[]> = {
-  "martin@gofullscale.co": [
-    "scottmmills@outlook.com",
-    "juanroviraesteve@gmail.com",
-  ],
-};
+// (Empty by default — Scott + Juan moved to ADMIN_EMAILS for full access
+// per Martin's direction. Re-populate this map if you ever want to grant
+// someone library-view-only access without admin powers.)
+const LIBRARY_VIEW_GRANTS: Record<string, string[]> = {};
 
 // Separate multer for image uploads (memory storage for compositing)
 const imageUpload = multer({
@@ -142,9 +140,8 @@ const FOUNDING_MEMBERS = [
   // Co-builders — admin access, both creator + brand views via role switching
   'ben@muselabs.ai',
   'remiguyton@gmail.com',
-  // Scott + Juan are allowlisted SEPARATELY (see onboard-cobuilder runs),
-  // NOT in this admin list — they're library-view-only collaborators,
-  // not admins. See LIBRARY_VIEW_GRANTS for their narrow access.
+  'scottmmills@outlook.com',
+  'juanroviraesteve@gmail.com',
   // Test account provisioned for Google OAuth verification reviewers.
   // Lives on the allowlist so verification reviewers can register/sign in
   // and complete the OAuth flow end-to-end without waitlist friction.
@@ -371,7 +368,7 @@ export async function registerRoutes(
   // exact state Google reviewers need.
   app.post("/api/admin/provision-test-creator", async (req: any, res) => {
     try {
-      const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com'];
+      const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
       const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email || req.query.admin_email;
       if (!callerEmail || !adminEmails.map((e: string) => e.toLowerCase()).includes(callerEmail.toLowerCase())) {
         return res.status(403).json({ error: "Admin access required" });
@@ -450,15 +447,22 @@ export async function registerRoutes(
   // DB row and sends the notification.
   app.post("/api/admin/onboard-cobuilder", async (req: any, res) => {
     try {
-      const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com'];
+      const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
       const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
       if (!callerEmail || !adminEmails.map(e => e.toLowerCase()).includes(callerEmail.toLowerCase())) {
         return res.status(403).json({ error: "Admin access required" });
       }
 
-      const { email, name, sendWelcomeEmail: sendEmail = true, dryRun = false, role = "co-builder" } = req.body || {};
+      const {
+        email,
+        name,
+        sendWelcomeEmail: sendEmail = true,
+        dryRun = false,
+        role = "co-builder",
+        password,
+      } = req.body || {};
       if (!email || !name) {
-        return res.status(400).json({ error: "Body must include { email, name, sendWelcomeEmail?, dryRun?, role? }" });
+        return res.status(400).json({ error: "Body must include { email, name, sendWelcomeEmail?, dryRun?, role?, password? }" });
       }
       // Valid roles control which welcome-email copy renders. The
       // allowlist row + admin grant are identical regardless of role —
@@ -468,6 +472,13 @@ export async function registerRoutes(
       const validRoles = ["co-builder", "tester"];
       if (!validRoles.includes(role)) {
         return res.status(400).json({ error: `role must be one of: ${validRoles.join(", ")}` });
+      }
+      // Optional password — when provided, we pre-create a User row with
+      // the hashed password so the person can sign in via email+password
+      // INSTEAD OF Google OAuth. Useful for collaborators who don't have
+      // a usable Google account or just prefer not to OAuth in.
+      if (password !== undefined && (typeof password !== "string" || password.length < 6)) {
+        return res.status(400).json({ error: "password must be a string of 6+ characters" });
       }
 
       // 1. Allowlist row — if it doesn't exist, create as creator (admin can switch)
@@ -484,6 +495,33 @@ export async function registerRoutes(
         allowlistAction = "created";
       } else {
         allowlistAction = "created";
+      }
+
+      // 1b. Pre-create the User row with hashed password if requested.
+      // Without this they'd still need to go through /api/auth/register to
+      // set a password, which means another browser flow. Pre-creating
+      // means the person can go straight to /auth and log in.
+      const firstNameForUser = name.split(" ")[0];
+      const lastNameForUser = name.split(" ").slice(1).join(" ") || "";
+      let userAction: "created" | "exists" | "skipped" = "skipped";
+      if (password && !dryRun) {
+        const existingUser = await storage.getUserByEmail(email);
+        if (existingUser) {
+          userAction = "exists";
+          console.warn(`[onboard-cobuilder] User row already exists for ${email}; password NOT updated (use a password-reset flow to change it).`);
+        } else {
+          const hashed = await hashPassword(password);
+          await storage.createUser({
+            email: email.toLowerCase().trim(),
+            password: hashed,
+            firstName: firstNameForUser,
+            lastName: lastNameForUser,
+            isApproved: true,
+            authProvider: "email",
+          });
+          userAction = "created";
+          console.log(`[onboard-cobuilder] Created User row for ${email} with hashed password (auth via email+password).`);
+        }
       }
 
       // 2. Welcome email body — copy branches on role so a tester
@@ -506,11 +544,21 @@ export async function registerRoutes(
           ? `Whatever you find — broken UI, weird flows, confusing copy, slow pages — send it directly to me. Bug reports are the whole reason you're here.`
           : `Anything looks broken or weird, ping me directly. Welcome aboard.`;
 
+      // Sign-in instructions branch on whether a password was provisioned.
+      // If yes: tell them to use email+password (no Google required). If no:
+      // keep the original "sign in with Google" copy.
+      const signInLine = password
+        ? `Sign in at <a href="${loginUrl}" style="color: #059669; font-weight: 500;">${loginUrl}</a> with:<br/><br/>` +
+          `&nbsp;&nbsp;<strong>Email:</strong> ${email}<br/>` +
+          `&nbsp;&nbsp;<strong>Password:</strong> ${password}<br/><br/>` +
+          `(Save these somewhere — you can change the password from the account menu after you sign in.)`
+        : `Sign in at <a href="${loginUrl}" style="color: #059669; font-weight: 500;">${loginUrl}</a> with your Google account (${email}).`;
+
       const html = `
         <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto; padding: 24px; color: #111;">
           <h2 style="margin: 0 0 16px 0; font-weight: 600;">Welcome to FullScale, ${firstName}.</h2>
           <p style="line-height: 1.5;">${roleIntro}</p>
-          <p style="line-height: 1.5;">Sign in at <a href="${loginUrl}" style="color: #059669; font-weight: 500;">${loginUrl}</a> with your Google account (${email}).</p>
+          <p style="line-height: 1.5;">${signInLine}</p>
           <p style="line-height: 1.5; margin-top: 24px;">A few quick notes:</p>
           <ul style="line-height: 1.6; padding-left: 18px;">
             <li><strong>Library</strong> — connect a YouTube account to import videos and run scans.</li>
@@ -549,6 +597,7 @@ export async function registerRoutes(
         success: true,
         dryRun,
         allowlist: { action: allowlistAction, email, name, userType: "creator" },
+        user: { action: userAction, passwordSet: !!password },
         email: emailResult,
         previewSubject: subject,
         previewHtmlLength: html.length,
@@ -566,7 +615,7 @@ export async function registerRoutes(
   //   adminEmails  — current hardcoded admin list (what gets canSwitchRoles)
   app.get("/api/admin/list-signups", async (req: any, res) => {
     try {
-      const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com'];
+      const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
       const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
       if (!callerEmail || !adminEmails.map(e => e.toLowerCase()).includes(callerEmail.toLowerCase())) {
         return res.status(403).json({ error: "Admin access required" });
@@ -859,7 +908,7 @@ export async function registerRoutes(
   // against the Postgres allowlist + users table so you can spot drift.
   app.get("/api/admin/airtable-signups", async (req: any, res) => {
     try {
-      const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com'];
+      const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
       const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
       if (!callerEmail || !adminEmails.map(e => e.toLowerCase()).includes(callerEmail.toLowerCase())) {
         return res.status(403).json({ error: "Admin access required" });
@@ -923,7 +972,7 @@ export async function registerRoutes(
 
   app.post("/api/admin/migrate-surfaces", async (req: any, res) => {
     try {
-      const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com'];
+      const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
       const email = req.session?.googleUser?.email || req.user?.claims?.email;
       if (!email || !adminEmails.map((e: string) => e.toLowerCase()).includes(email.toLowerCase())) {
         return res.status(403).json({ error: "Admin access required" });
@@ -1291,7 +1340,7 @@ export async function registerRoutes(
   // Dev-only admin login bypass — skips Google OAuth for admin emails
   // Creates a real session so the entire app works (Library, Dashboard, etc.)
   app.post("/api/auth/dev-login", async (req: any, res) => {
-    const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com'];
+    const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
     const isDevelopment = process.env.NODE_ENV !== 'production';
 
     if (!isDevelopment) {
@@ -1456,6 +1505,8 @@ export async function registerRoutes(
             "ben@muselabs.ai",
             "chu@gofullscale.co",
             "remiguyton@gmail.com",
+            "scottmmills@outlook.com",
+            "juanroviraesteve@gmail.com",
           ];
 
           // Admin notification — one email to all admins so any of us
@@ -1747,7 +1798,7 @@ export async function registerRoutes(
   // Flexible auth middleware - works with Google OAuth, Replit Auth, or Facebook session
   // Used for endpoints that should work for authenticated users regardless of method
   const isFlexibleAuthenticated = async (req: any, res: any, next: any) => {
-    const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com'];
+    const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
     const isDevelopment = process.env.NODE_ENV !== 'production';
     
     // First try Google OAuth session
@@ -2764,7 +2815,7 @@ export async function registerRoutes(
     const userEmail = req.authEmail;
     
     // Only allow admin emails
-    const adminEmails = ["martin@gofullscale.co", "tamara@gofullscale.co", "ben@muselabs.ai", "chu@gofullscale.co", "remiguyton@gmail.com"];
+    const adminEmails = ["martin@gofullscale.co", "tamara@gofullscale.co", "ben@muselabs.ai", "chu@gofullscale.co", "remiguyton@gmail.com", "scottmmills@outlook.com", "juanroviraesteve@gmail.com"];
     if (!adminEmails.includes(userEmail)) {
       return res.status(403).json({ error: "Admin only endpoint" });
     }
@@ -4002,7 +4053,7 @@ export async function registerRoutes(
     }
 
     // Only allow updates for admin-owned videos
-    const adminEmailsList = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com'];
+    const adminEmailsList = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
     if (!adminEmailsList.includes(video.userId)) {
       return res.status(403).json({ error: "Can only update admin-owned videos" });
     }
@@ -4181,7 +4232,7 @@ export async function registerRoutes(
   // Batch extract thumbnails for all videos with local files (admin only)
   app.post("/api/thumbnails/extract-all", isFlexibleAuthenticated, async (req: any, res) => {
     // Admin only - batch operation
-    const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com'];
+    const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
     if (!adminEmails.includes(req.authEmail || '')) {
       return res.status(403).json({ error: "Admin only endpoint" });
     }
@@ -5076,7 +5127,7 @@ export async function registerRoutes(
     const authEmail = req.authEmail;
     
     // Admin only
-    const adminEmails = ["martin@gofullscale.co", "tamara@gofullscale.co", "ben@muselabs.ai", "chu@gofullscale.co", "remiguyton@gmail.com"];
+    const adminEmails = ["martin@gofullscale.co", "tamara@gofullscale.co", "ben@muselabs.ai", "chu@gofullscale.co", "remiguyton@gmail.com", "scottmmills@outlook.com", "juanroviraesteve@gmail.com"];
     if (!adminEmails.includes(authEmail)) {
       return res.status(403).json({ error: "Admin access required" });
     }
@@ -5137,7 +5188,7 @@ export async function registerRoutes(
     const authEmail = req.authEmail;
     
     // Admin only
-    const adminEmails = ["martin@gofullscale.co", "tamara@gofullscale.co", "ben@muselabs.ai", "chu@gofullscale.co", "remiguyton@gmail.com"];
+    const adminEmails = ["martin@gofullscale.co", "tamara@gofullscale.co", "ben@muselabs.ai", "chu@gofullscale.co", "remiguyton@gmail.com", "scottmmills@outlook.com", "juanroviraesteve@gmail.com"];
     if (!adminEmails.includes(authEmail)) {
       return res.status(403).json({ error: "Admin access required" });
     }
@@ -5727,7 +5778,7 @@ export async function registerRoutes(
   });
 
   // Admin emails that can switch between roles
-  const ADMIN_EMAILS = ["martin@gofullscale.co", "tamara@gofullscale.co", "ben@muselabs.ai", "chu@gofullscale.co", "remiguyton@gmail.com"];
+  const ADMIN_EMAILS = ["martin@gofullscale.co", "tamara@gofullscale.co", "ben@muselabs.ai", "chu@gofullscale.co", "remiguyton@gmail.com", "scottmmills@outlook.com", "juanroviraesteve@gmail.com"];
 
   // Get user type (creator or brand) for routing - supports admin role override
   // Supports: Google OAuth, Replit OIDC, Facebook session auth
