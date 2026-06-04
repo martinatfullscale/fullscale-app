@@ -552,29 +552,57 @@ export async function registerRoutes(
           ? `Whatever you find — broken UI, weird flows, confusing copy, slow pages — send it directly to me. Bug reports are the whole reason you're here.`
           : `Anything looks broken or weird, ping me directly. Welcome aboard.`;
 
-      // Sign-in instructions branch on whether a password was provisioned.
-      // If yes: tell them to use email+password (no Google required). If no:
-      // keep the original "sign in with Google" copy.
-      const signInLine = password
-        ? `Sign in at <a href="${loginUrl}" style="color: #059669; font-weight: 500;">${loginUrl}</a> with:<br/><br/>` +
-          `&nbsp;&nbsp;<strong>Email:</strong> ${email}<br/>` +
-          `&nbsp;&nbsp;<strong>Password:</strong> ${password}<br/><br/>` +
-          `(Save these somewhere — you can change the password from the account menu after you sign in.)`
-        : `Sign in at <a href="${loginUrl}" style="color: #059669; font-weight: 500;">${loginUrl}</a> with your Google account (${email}).`;
+      // Sign-in credentials block — boxed and obvious when password set,
+      // plain Google-OAuth line otherwise.
+      const credentialsBlock = password
+        ? `
+          <div style="margin: 20px 0; padding: 16px 20px; background: #f3f4f6; border-left: 4px solid #10b981; border-radius: 6px;">
+            <div style="font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; color: #6b7280; margin-bottom: 8px;">Your sign-in credentials</div>
+            <div style="line-height: 1.8;">
+              <strong>Sign in URL:</strong> <a href="${loginUrl}" style="color: #059669; font-weight: 500;">${loginUrl}</a><br/>
+              <strong>Email:</strong> ${email}<br/>
+              <strong>Password:</strong> <code style="background: #fff; padding: 2px 6px; border-radius: 4px; border: 1px solid #d1d5db;">${password}</code>
+            </div>
+            <div style="margin-top: 10px; font-size: 13px; color: #6b7280;">
+              <strong>Important:</strong> use the email+password login form on /auth, NOT the "Sign in with Google" button. Change your password from the account menu after first sign-in.
+            </div>
+          </div>
+        `
+        : `<p style="line-height: 1.55;">Sign in at <a href="${loginUrl}" style="color: #059669; font-weight: 500;">${loginUrl}</a> with your Google account (${email}).</p>`;
+
+      // Step-by-step navigation guide — included in every welcome email so
+      // recipients don't need a separate "how to use it" message. Tuned for
+      // co-builders/testers with admin access (role switcher + view-as).
+      const navigationGuide = `
+        <h3 style="margin: 32px 0 12px 0; font-size: 16px; font-weight: 600;">Once you're signed in</h3>
+        <ol style="line-height: 1.7; padding-left: 20px; margin: 0;">
+          <li style="margin-bottom: 10px;">
+            <strong>You'll land in the creator dashboard.</strong>
+            You have full admin access — the same view Martin sees.
+          </li>
+          <li style="margin-bottom: 10px;">
+            <strong>Switch between creator and brand views</strong> using the role switcher at the bottom of the sidebar. Use whichever matches what you're testing.
+          </li>
+          <li style="margin-bottom: 10px;">
+            <strong>To view Martin's library</strong> (for testing the remix engine and distribution): in either sidebar, scroll past the main nav to the <em>"Other Libraries"</em> section and click <strong>"Martin"</strong>. You'll see his actual library with an amber banner confirming you're viewing as him. Remix + distribution actions you run from there operate on his videos.
+          </li>
+          <li style="margin-bottom: 10px;">
+            <strong>Connect your own YouTube</strong> (optional) — your own library starts empty; you can connect a YouTube account from the Library page to import videos and run scans.
+          </li>
+          <li style="margin-bottom: 10px;">
+            <strong>Change your password</strong> from the account menu when you have a sec. Pick something only you know.
+          </li>
+        </ol>
+      `;
 
       const html = `
-        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto; padding: 24px; color: #111;">
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; color: #111;">
           <h2 style="margin: 0 0 16px 0; font-weight: 600;">Welcome to FullScale, ${firstName}.</h2>
-          <p style="line-height: 1.5;">${roleIntro}</p>
-          <p style="line-height: 1.5;">${signInLine}</p>
-          <p style="line-height: 1.5; margin-top: 24px;">A few quick notes:</p>
-          <ul style="line-height: 1.6; padding-left: 18px;">
-            <li><strong>Library</strong> — connect a YouTube account to import videos and run scans.</li>
-            <li><strong>Brand marketplace</strong> — browse creator content, drop products on detected surfaces, harmonize, save placements.</li>
-            <li><strong>Scene Analysis</strong> — open any video to see the surfaces our scan picked up; toggle approval per-surface to expose them to brands.</li>
-          </ul>
-          <p style="line-height: 1.5; margin-top: 24px;">${closing}</p>
-          <p style="line-height: 1.5; margin-top: 32px; color: #6b7280;">— Martin</p>
+          <p style="line-height: 1.55;">${roleIntro}</p>
+          ${credentialsBlock}
+          ${navigationGuide}
+          <p style="line-height: 1.55; margin-top: 28px;">${closing}</p>
+          <p style="line-height: 1.4; margin-top: 32px;"><strong>Martin</strong><br/><span style="color: #6b7280;">Founder, FullScale</span></p>
         </div>
       `;
 
