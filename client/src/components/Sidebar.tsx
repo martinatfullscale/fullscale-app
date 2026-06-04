@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, FolderOpen, Zap, DollarSign, LogOut, Settings, ArrowLeftRight, Globe, Wand2, Inbox } from "lucide-react";
+import { LayoutDashboard, FolderOpen, Zap, DollarSign, LogOut, Settings, ArrowLeftRight, Globe, Wand2, Inbox, Library as LibraryIcon } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
@@ -49,6 +49,19 @@ export function Sidebar() {
   });
   const inboxCount = inboxCountData?.count ?? 0;
 
+  // View-as options — admins get every user with library content, others
+  // get just the libraries they've been granted via LIBRARY_VIEW_GRANTS.
+  // Used to render the "Other Libraries" dropdown in the creator sidebar
+  // so admins can hop into another user's library to test remix engine /
+  // distribution against real content (e.g. Scott + Juan testing against
+  // Martin's library).
+  const { data: viewAsData } = useQuery<{
+    mode: string;
+    grants: Array<{ email: string; firstName: string | null; lastName: string | null; videoCount?: number }>;
+  }>({
+    queryKey: ["/api/me/view-as-options"],
+  });
+
   const links = [
     { href: "/", label: "Dashboard", icon: LayoutDashboard },
     { href: "/library", label: "My Library", icon: FolderOpen },
@@ -89,6 +102,36 @@ export function Sidebar() {
             </Link>
           );
         })}
+
+        {/* "Other Libraries" — view-as dropdown. Admins see every user with
+            content; non-admins with LIBRARY_VIEW_GRANTS entries see just
+            those granters. Hidden when empty. Each option links to
+            /library?as=<email> which the server gates via admin OR grant. */}
+        {viewAsData?.grants && viewAsData.grants.length > 0 && (
+          <div className="pt-4 mt-4 border-t border-border/40">
+            <div className="px-4 pb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60">
+              Other Libraries{viewAsData.mode === "admin-all" ? " (Admin)" : ""}
+            </div>
+            {/* Cap to 8 entries to keep the sidebar compact. If more exist,
+                they're reachable via /library?as=<email> direct URL. */}
+            {viewAsData.grants.slice(0, 8).map((g) => {
+              const friendly = [g.firstName, g.lastName].filter(Boolean).join(" ") || g.email;
+              const labelCount = typeof g.videoCount === "number" && g.videoCount > 0 ? ` (${g.videoCount})` : "";
+              return (
+                <a
+                  key={g.email}
+                  href={`/library?as=${encodeURIComponent(g.email)}`}
+                  className="sidebar-link"
+                  data-testid={`link-view-as-${g.email}`}
+                  title={g.email}
+                >
+                  <LibraryIcon className="w-5 h-5 stroke-2" />
+                  <span className="truncate">{friendly}{labelCount}</span>
+                </a>
+              );
+            })}
+          </div>
+        )}
 
         {/* Portfolio link */}
         <div className="pt-4 mt-4 border-t border-border/50">
