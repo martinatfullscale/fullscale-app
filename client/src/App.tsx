@@ -162,7 +162,17 @@ function Router() {
     if (userTypeData?.userType === "creator" && location === "/marketplace") {
       window.location.href = "/dashboard";
     }
-    if (userTypeData?.userType === "brand" && (location === "/dashboard" || location === "/library" || location === "/opportunities")) {
+    // Brand users get bounced off creator-side pages — UNLESS they're
+    // explicitly viewing another user's library via ?as=<email>. The
+    // server-side view-as check (admin OR LIBRARY_VIEW_GRANTS) gates the
+    // data; we just need to NOT redirect them away before the page renders.
+    const hasViewAsParam = typeof window !== "undefined" &&
+      new URLSearchParams(window.location.search).has("as");
+    if (
+      userTypeData?.userType === "brand" &&
+      (location === "/dashboard" || location === "/library" || location === "/opportunities") &&
+      !(location === "/library" && hasViewAsParam)
+    ) {
       window.location.href = "/marketplace";
     }
   }, [authStatus, userTypeData, location, setLocation]);
