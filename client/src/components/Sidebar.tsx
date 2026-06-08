@@ -77,7 +77,12 @@ export function Sidebar() {
         <img src={logoUrl} alt="FullScale" className="h-10 w-auto cursor-pointer" />
       </Link>
 
-      <nav className="flex-1 space-y-2">
+      {/* min-h-0 + overflow-y-auto: lets the nav scroll when the combined
+          height of links + "Other Libraries" + portfolio exceeds the
+          available space between the logo (top) and bottom buttons.
+          Without min-h-0 the flex-1 child won't actually shrink below
+          its content height in a flex column, so scroll never engages. */}
+      <nav className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1">
         {links.map((link) => {
           const Icon = link.icon;
           const isActive = location === link.href;

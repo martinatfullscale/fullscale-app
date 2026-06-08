@@ -117,6 +117,26 @@ const uploadMiddleware = multer({
 // /api/video-index/with-opportunities still honors it).
 const LIBRARY_VIEW_GRANTS: Record<string, string[]> = {};
 
+// -----------------------------------------------------------------------
+// SHOWCASE_LIBRARIES
+// -----------------------------------------------------------------------
+// Allowlist of library-owner emails to surface in the "Other Libraries"
+// sidebar dropdown for ADMINS. Without this filter the dropdown would
+// list every user with any content — including alt accounts, test users,
+// and waitlisted creators with thin libraries — none of which are
+// compelling for a co-builder testing remix/distribution.
+//
+// Only emails in this list appear in the dropdown for admins. The admin
+// can still view-as any user via direct URL (/library?as=<email>) — this
+// is purely a UI curation, not an authorization restriction.
+//
+// To feature another creator: add their email here.
+// Empty array → fall back to "all users with content" (legacy behavior).
+// -----------------------------------------------------------------------
+const SHOWCASE_LIBRARIES: string[] = [
+  "martin@gofullscale.co",
+];
+
 // Separate multer for image uploads (memory storage for compositing)
 const imageUpload = multer({
   storage: multer.memoryStorage(),
@@ -5373,9 +5393,14 @@ export async function registerRoutes(
           .groupBy(users.id, users.email, users.firstName, users.lastName)
           .orderBy(sql`COUNT(${videoIndexTable.id}) DESC`);
         // Hide the caller's own row (you don't view-as yourself) and
-        // libraries with zero videos (noise).
+        // libraries with zero videos (noise). Then apply SHOWCASE_LIBRARIES
+        // allowlist if non-empty — keeps the dropdown focused on featured
+        // libraries (e.g. just Martin's) rather than every account with
+        // any content. Admins can still view-as any user via direct URL.
+        const showcaseLower = SHOWCASE_LIBRARIES.map(e => e.toLowerCase());
         const grants = rows
           .filter(r => r.email && r.email.toLowerCase() !== callerEmail && r.videoCount > 0)
+          .filter(r => showcaseLower.length === 0 || showcaseLower.includes(r.email!.toLowerCase()))
           .map(r => ({
             email: r.email!,
             firstName: r.firstName,
