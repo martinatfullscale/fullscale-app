@@ -9,7 +9,12 @@ import { sql } from "drizzle-orm";
 import path from "path";
 import cookieParser from "cookie-parser";
 import { objectKeyFromServeUrl, getStorageStream } from "./lib/objectStorage";
-import { createRequire } from "module";
+// Static imports (not createRequire) so this resolves identically whether
+// esbuild bundles to ESM or CJS — the previous createRequire(import.meta.url)
+// approach silently no-ops in the production CJS bundle because import.meta
+// doesn't exist there.
+import ffmpegStaticPath from "ffmpeg-static";
+import ffprobeStatic from "ffprobe-static";
 // DISABLED: TensorFlow scanner replaced by scanner_v2.ts which uses Sharp
 // import { initializeScanWorker } from "./lib/scanWorker";
 
@@ -36,9 +41,8 @@ import { createRequire } from "module";
 // giving us a deterministic version in every environment.
 // -----------------------------------------------------------------------
 try {
-  const nodeRequire = createRequire(import.meta.url);
-  const ffmpegBin: string | null = nodeRequire("ffmpeg-static");
-  const ffprobeBin: string | undefined = nodeRequire("ffprobe-static")?.path;
+  const ffmpegBin = ffmpegStaticPath as unknown as string | null;
+  const ffprobeBin = (ffprobeStatic as { path?: string } | undefined)?.path;
   const extraDirs = [ffmpegBin, ffprobeBin]
     .filter((p): p is string => typeof p === "string" && p.length > 0)
     .map((p) => path.dirname(p));
