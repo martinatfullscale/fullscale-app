@@ -628,14 +628,14 @@ export async function registerRoutes(
 
       let emailResult: any = null;
       if (sendEmail && !dryRun) {
-        const { getResendClient } = await import("./lib/resend");
+        const { getResendClient, MAIL_FROM } = await import("./lib/resend");
         const r = await getResendClient();
         if (!r?.client) {
           emailResult = { sent: false, reason: "Resend client not available" };
         } else {
           try {
             const sent = await r.client.emails.send({
-              from: r.fromEmail || "FullScale <hello@gofullscale.co>",
+              from: MAIL_FROM.hello,
               to: email,
               subject,
               html,

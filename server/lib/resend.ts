@@ -3,6 +3,29 @@
 
 import { Resend } from 'resend';
 
+// -----------------------------------------------------------------------
+// Sender domain — env-driven so we can flip from gofullscale.co to
+// gofullscale.ai without a code change. Defaults to .co so nothing breaks
+// before gofullscale.ai is VERIFIED IN RESEND (DNS records). Resend
+// rejects sends from an unverified domain, so do NOT set MAIL_DOMAIN to
+// gofullscale.ai until Resend shows the domain green.
+//
+// To flip: set MAIL_DOMAIN=gofullscale.ai in the Replit deploy secrets +
+// redeploy. To revert: unset it (or set back to gofullscale.co).
+// -----------------------------------------------------------------------
+const MAIL_DOMAIN = process.env.MAIL_DOMAIN || 'gofullscale.co';
+/** Sender identities, all derived from MAIL_DOMAIN. */
+export const MAIL_FROM = {
+  noreply: `FullScale <noreply@${MAIL_DOMAIN}>`,
+  hello: `FullScale <hello@${MAIL_DOMAIN}>`,
+  martin: `Martin at FullScale <martin@${MAIL_DOMAIN}>`,
+  martinFrom: `Martin from FullScale <martin@${MAIL_DOMAIN}>`,
+  studio: `FullScale Studio <noreply@${MAIL_DOMAIN}>`,
+};
+/** Reply-to + admin notification recipient, also domain-driven. */
+export const MAIL_MARTIN_ADDRESS = `martin@${MAIL_DOMAIN}`;
+export const MAIL_HELLO_ADDRESS = `hello@${MAIL_DOMAIN}`;
+
 let connectionSettings: any;
 
 async function getCredentials() {
@@ -48,7 +71,7 @@ export async function sendWelcomeEmail(toEmail: string, firstName: string) {
     const { client, fromEmail } = await getResendClient();
     
     const result = await client.emails.send({
-      from: fromEmail || 'FullScale <noreply@gofullscale.co>',
+      from: MAIL_FROM.noreply,
       to: toEmail,
       subject: 'Welcome to FullScale!',
       html: `
@@ -90,7 +113,7 @@ export async function sendCohortInviteEmail(toEmail: string, firstName: string) 
     const { client, fromEmail } = await getResendClient();
     
     // Use verified gofullscale.co domain
-    const senderEmail = 'Martin from FullScale <martin@gofullscale.co>';
+    const senderEmail = MAIL_FROM.martinFrom;
     
     const result = await client.emails.send({
       from: senderEmail,
@@ -214,7 +237,7 @@ export async function sendStudioVideoReadyEmail(
     const videoUrl = `https://gofullscale.co/api/studio/videos/${videoId}/download`;
 
     const result = await client.emails.send({
-      from: fromEmail || 'FullScale Studio <noreply@gofullscale.co>',
+      from: MAIL_FROM.studio,
       to: toEmail,
       subject: `Your video "${videoTitle}" is ready!`,
       html: `
@@ -347,7 +370,7 @@ export async function sendBrandBriefNotification(args: {
 }) {
   const { brief, user } = args;
 
-  const teamEmail = "hello@gofullscale.co";
+  const teamEmail = MAIL_HELLO_ADDRESS;
   const subjectBrand = brief.brandName || "Unnamed Brand";
   const subjectIndustry = brief.industry || "—";
 
@@ -493,7 +516,7 @@ export async function sendBrandBriefNotification(args: {
     `;
 
     const result = await client.emails.send({
-      from: fromEmail || "FullScale <noreply@gofullscale.co>",
+      from: MAIL_FROM.noreply,
       to: teamEmail,
       subject: `[New brand brief] ${subjectBrand} — ${subjectIndustry}`,
       html,
@@ -517,10 +540,10 @@ export async function sendAdminNotification(userData: {
   try {
     const { client, fromEmail } = await getResendClient();
     
-    const adminEmail = 'martin@gofullscale.co';
+    const adminEmail = MAIL_MARTIN_ADDRESS;
     
     const result = await client.emails.send({
-      from: fromEmail || 'FullScale <noreply@gofullscale.co>',
+      from: MAIL_FROM.noreply,
       to: adminEmail,
       subject: `New FullScale Signup: ${userData.firstName} ${userData.lastName} (${userData.userType})`,
       html: `
@@ -586,8 +609,8 @@ export async function sendApprovalEmail(params: {
     //  - reply_to set explicitly as a belt-and-suspenders in case any
     //    relay rewrites the From.
     //  - Founder-voice copy, no bulleted feature dump.
-    const fromAddress = "Martin at FullScale <martin@gofullscale.co>";
-    const replyTo = "martin@gofullscale.co";
+    const fromAddress = MAIL_FROM.martin;
+    const replyTo = MAIL_MARTIN_ADDRESS;
     const loginUrl = "https://gofullscale.co/auth?mode=signup";
     const calendarUrl = "https://cal.com/martinatfullscale";
     const p = "margin: 0 0 16px 0; line-height: 1.55;";
@@ -652,8 +675,8 @@ export async function sendDemoSchedulingEmail(params: {
     const { client } = await getResendClient();
     if (!client) return { sent: false, reason: "Resend client not available" };
 
-    const fromAddress = "Martin at FullScale <martin@gofullscale.co>";
-    const replyTo = "martin@gofullscale.co";
+    const fromAddress = MAIL_FROM.martin;
+    const replyTo = MAIL_MARTIN_ADDRESS;
     const calendarUrl = "https://cal.com/martinatfullscale";
     const p = "margin: 0 0 16px 0; line-height: 1.55;";
     const link = "color: #10b981; font-weight: 500;";
