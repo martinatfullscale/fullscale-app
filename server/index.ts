@@ -9,8 +9,48 @@ import { sql } from "drizzle-orm";
 import path from "path";
 import cookieParser from "cookie-parser";
 import { objectKeyFromServeUrl, getStorageStream } from "./lib/objectStorage";
+import { createRequire } from "module";
 // DISABLED: TensorFlow scanner replaced by scanner_v2.ts which uses Sharp
 // import { initializeScanWorker } from "./lib/scanWorker";
+
+// -----------------------------------------------------------------------
+// FFMPEG/FFPROBE PATH BOOTSTRAP — must run before anything spawns a child
+// process.
+//
+// Production incident (2026-06-11, scan of video 91070): yt-dlp errored
+// "You have requested downloading the video partially, but ffmpeg is not
+// installed" on the deployed instance — the Replit DEPLOYMENT's PATH does
+// not include the workspace nix ffmpeg, even though `.replit` lists it.
+// Every media feature spawns bare `ffmpeg`/`ffprobe` from PATH (frame
+// extraction, scene index, thumbnails, transcript audio, video export,
+// yt-dlp trim/merge), so on production they all failed silently — this is
+// the common root cause behind "Scan Failed"/"No frames extracted" on
+// uploads and "Transcript not available after pipeline run" editorial
+// errors.
+//
+// Fix: ship ffmpeg + ffprobe as npm deps (ffmpeg-static / ffprobe-static)
+// and prepend their directories to PATH at boot. Child processes inherit
+// process.env, so every existing spawn("ffmpeg"), fluent-ffmpeg call, and
+// yt-dlp invocation finds them with zero per-call-site changes. Prepending
+// (not appending) means the bundled binaries win over any system ffmpeg,
+// giving us a deterministic version in every environment.
+// -----------------------------------------------------------------------
+try {
+  const nodeRequire = createRequire(import.meta.url);
+  const ffmpegBin: string | null = nodeRequire("ffmpeg-static");
+  const ffprobeBin: string | undefined = nodeRequire("ffprobe-static")?.path;
+  const extraDirs = [ffmpegBin, ffprobeBin]
+    .filter((p): p is string => typeof p === "string" && p.length > 0)
+    .map((p) => path.dirname(p));
+  if (extraDirs.length > 0) {
+    process.env.PATH = [...extraDirs, process.env.PATH ?? ""].join(path.delimiter);
+    console.log(`[Boot] ffmpeg/ffprobe PATH bootstrap: ${extraDirs.join(", ")}`);
+  } else {
+    console.warn("[Boot] ffmpeg-static/ffprobe-static resolved to no binaries — relying on system PATH");
+  }
+} catch (err: any) {
+  console.warn(`[Boot] ffmpeg PATH bootstrap failed (${err?.message}); relying on system PATH`);
+}
 
 const app = express();
 const httpServer = createServer(app);

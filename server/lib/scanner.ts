@@ -408,37 +408,47 @@ export async function getYoutubeVideoDuration(
   oauthToken?: string,
 ): Promise<number | null> {
   const ytDlpBin = await getYtDlpPath();
-  return new Promise((resolve) => {
-    const args = [
-      "--print", "%(duration)s",
-      "--skip-download",
-      "--no-warnings",
-      "--no-playlist",
-      "--extractor-args", "youtube:player_client=tv_embedded,mweb,web_safari,android_vr",
-    ];
-    if (oauthToken) {
-      args.push("--add-header", `Authorization:Bearer ${oauthToken}`);
-    }
-    applyYtDlpAuthArgs(args, "duration probe");
-    args.push(`https://www.youtube.com/watch?v=${youtubeId}`);
 
-    const proc = spawn(ytDlpBin, args);
-    let stdout = "";
-    let stderr = "";
-    proc.stdout.on("data", d => { stdout += d.toString(); });
-    proc.stderr.on("data", d => { stderr += d.toString(); });
-    const timer = setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} }, 30_000);
-    proc.on("close", (code) => {
-      clearTimeout(timer);
-      if (code !== 0) {
-        console.warn(`[Scanner] duration probe failed (exit ${code}): ${stderr.slice(-200)}`);
-        return resolve(null);
+  const runProbe = (useToken: boolean): Promise<number | null> =>
+    new Promise((resolve) => {
+      const args = [
+        "--print", "%(duration)s",
+        "--skip-download",
+        "--no-warnings",
+        "--no-playlist",
+        "--extractor-args", "youtube:player_client=tv_embedded,mweb,web_safari,android_vr",
+      ];
+      if (useToken && oauthToken) {
+        args.push("--add-header", `Authorization:Bearer ${oauthToken}`);
       }
-      const sec = parseInt(stdout.trim(), 10);
-      resolve(Number.isFinite(sec) && sec > 0 ? sec : null);
+      applyYtDlpAuthArgs(args, "duration probe");
+      args.push(`https://www.youtube.com/watch?v=${youtubeId}`);
+
+      const proc = spawn(ytDlpBin, args);
+      let stdout = "";
+      let stderr = "";
+      proc.stdout.on("data", d => { stdout += d.toString(); });
+      proc.stderr.on("data", d => { stderr += d.toString(); });
+      const timer = setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} }, 30_000);
+      proc.on("close", (code) => {
+        clearTimeout(timer);
+        if (code !== 0) {
+          console.warn(`[Scanner] duration probe${useToken ? " [OAuth]" : ""} failed (exit ${code}): ${stderr.slice(-200)}`);
+          return resolve(null);
+        }
+        const sec = parseInt(stdout.trim(), 10);
+        resolve(Number.isFinite(sec) && sec > 0 ? sec : null);
+      });
+      proc.on("error", () => { clearTimeout(timer); resolve(null); });
     });
-    proc.on("error", () => { clearTimeout(timer); resolve(null); });
-  });
+
+  // Anonymous first — the OAuth bearer header can degrade YouTube's format/
+  // metadata response (see downloadVideo cascade comment). Token retry only
+  // if anonymous comes back empty (e.g. bot-blocked or private video).
+  const anon = await runProbe(false);
+  if (anon !== null) return anon;
+  if (oauthToken) return runProbe(true);
+  return null;
 }
 
 async function downloadVideoWithYtDlp(
@@ -560,41 +570,47 @@ export async function downloadVideo(
   outputPath: string,
   opts: DownloadOpts = {},
 ): Promise<boolean> {
-  console.log(`[Scanner] Downloading video ${youtubeId}${opts.trimToSeconds ? ` (trim ${opts.trimToSeconds}s)` : ""}${opts.oauthToken ? " [OAuth]" : ""}...`);
+  console.log(`[Scanner] Downloading video ${youtubeId}${opts.trimToSeconds ? ` (trim ${opts.trimToSeconds}s)` : ""}${opts.oauthToken ? " [OAuth available]" : ""}...`);
 
-  // Try 1: yt-dlp with OAuth (if provided) and trim
-  const try1 = await downloadVideoWithYtDlp(youtubeId, outputPath, opts);
+  // Cascade order: ANONYMOUS first, OAuth as fallback. Flipped 2026-06-11
+  // based on production evidence (video 1AQcoTanaYg): requests carrying the
+  // creator's OAuth bearer token got a DEGRADED format list ("Requested
+  // format is not available") while the identical anonymous request listed
+  // formats fine and downloaded successfully. Anonymous also hasn't been
+  // bot-blocked from this deployment since the app's OAuth verification
+  // cleared. OAuth retries remain as the fallback for the day bot
+  // detection resurfaces.
+
+  // Try 1: anonymous + trim
+  const try1 = await downloadVideoWithYtDlp(youtubeId, outputPath, {
+    ...opts,
+    oauthToken: undefined,
+  });
   if (try1) return true;
 
-  // Try 2: yt-dlp WITHOUT OAuth + with trim. Some videos return a degraded
-  // (or empty) format set when the request includes the creator's token —
-  // depends on YouTube's per-video access flags. Anonymous can sometimes
-  // succeed where authenticated fails. Counterintuitive but real.
+  // Try 2: OAuth + trim — only useful when anonymous is bot-blocked.
   if (opts.oauthToken) {
-    console.log(`[Scanner] yt-dlp + OAuth failed; retrying anonymous...`);
-    const try2 = await downloadVideoWithYtDlp(youtubeId, outputPath, {
-      ...opts,
-      oauthToken: undefined,
-    });
+    console.log(`[Scanner] yt-dlp anonymous failed; retrying with OAuth token...`);
+    const try2 = await downloadVideoWithYtDlp(youtubeId, outputPath, opts);
     if (try2) return true;
   }
 
-  // Try 3: yt-dlp without trim (HLS-only videos can't be trimmed cleanly).
+  // Try 3: anonymous without trim (HLS-only videos can't be trimmed cleanly).
   if (opts.trimToSeconds) {
     console.log(`[Scanner] yt-dlp failed with trim; retrying full download (HLS fallback)...`);
     const try3 = await downloadVideoWithYtDlp(youtubeId, outputPath, {
       ...opts,
+      oauthToken: undefined,
       trimToSeconds: undefined,
       timeoutMs: opts.timeoutMs ? opts.timeoutMs * 2 : 6 * 60 * 1000,
     });
     if (try3) return true;
 
-    // Try 4: anonymous + no trim — last yt-dlp combination
+    // Try 4: OAuth + no trim — last yt-dlp combination
     if (opts.oauthToken) {
-      console.log(`[Scanner] yt-dlp full+OAuth failed; retrying anonymous full download...`);
+      console.log(`[Scanner] yt-dlp anonymous full failed; retrying OAuth full download...`);
       const try4 = await downloadVideoWithYtDlp(youtubeId, outputPath, {
         ...opts,
-        oauthToken: undefined,
         trimToSeconds: undefined,
         timeoutMs: opts.timeoutMs ? opts.timeoutMs * 2 : 6 * 60 * 1000,
       });
