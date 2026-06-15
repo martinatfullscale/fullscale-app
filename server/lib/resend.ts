@@ -4,27 +4,41 @@
 import { Resend } from 'resend';
 
 // -----------------------------------------------------------------------
-// Sender domain — env-driven so we can flip from gofullscale.co to
-// gofullscale.ai without a code change. Defaults to .co so nothing breaks
-// before gofullscale.ai is VERIFIED IN RESEND (DNS records). Resend
-// rejects sends from an unverified domain, so do NOT set MAIL_DOMAIN to
-// gofullscale.ai until Resend shows the domain green.
+// Email domains — split into SEND vs INBOX so the two halves of the
+// gofullscale.co → gofullscale.ai migration can move independently:
 //
-// To flip: set MAIL_DOMAIN=gofullscale.ai in the Replit deploy secrets +
-// redeploy. To revert: unset it (or set back to gofullscale.co).
+//   MAIL_FROM_DOMAIN  — the FROM address on outbound mail. Safe to flip to
+//     gofullscale.ai as soon as that domain is VERIFIED IN RESEND. Resend
+//     rejects sends from an unverified domain, so don't flip before then.
+//
+//   MAIL_INBOX_DOMAIN — the reply-to address + the internal notification
+//     recipients (martin@, hello@). These must point at a domain that can
+//     actually RECEIVE mail. Keep on gofullscale.co until the Google
+//     Workspace alias for gofullscale.ai is live, otherwise replies and
+//     admin notifications bounce.
+//
+// Both fall back to the single MAIL_DOMAIN var (and then .co) for
+// convenience. Typical staged rollout:
+//   1. Resend verifies .ai → set MAIL_FROM_DOMAIN=gofullscale.ai, redeploy
+//      (mail now sends FROM .ai; replies still land safely on .co)
+//   2. Workspace .ai alias live → set MAIL_INBOX_DOMAIN=gofullscale.ai
+//      (replies + notifications now land on .ai too — full cutover)
+// To revert either: unset the var.
 // -----------------------------------------------------------------------
-const MAIL_DOMAIN = process.env.MAIL_DOMAIN || 'gofullscale.co';
-/** Sender identities, all derived from MAIL_DOMAIN. */
+const MAIL_FROM_DOMAIN = process.env.MAIL_FROM_DOMAIN || process.env.MAIL_DOMAIN || 'gofullscale.co';
+const MAIL_INBOX_DOMAIN = process.env.MAIL_INBOX_DOMAIN || process.env.MAIL_DOMAIN || 'gofullscale.co';
+/** Sender identities, derived from MAIL_FROM_DOMAIN (Resend-verified). */
 export const MAIL_FROM = {
-  noreply: `FullScale <noreply@${MAIL_DOMAIN}>`,
-  hello: `FullScale <hello@${MAIL_DOMAIN}>`,
-  martin: `Martin at FullScale <martin@${MAIL_DOMAIN}>`,
-  martinFrom: `Martin from FullScale <martin@${MAIL_DOMAIN}>`,
-  studio: `FullScale Studio <noreply@${MAIL_DOMAIN}>`,
+  noreply: `FullScale <noreply@${MAIL_FROM_DOMAIN}>`,
+  hello: `FullScale <hello@${MAIL_FROM_DOMAIN}>`,
+  martin: `Martin at FullScale <martin@${MAIL_FROM_DOMAIN}>`,
+  martinFrom: `Martin from FullScale <martin@${MAIL_FROM_DOMAIN}>`,
+  studio: `FullScale Studio <noreply@${MAIL_FROM_DOMAIN}>`,
 };
-/** Reply-to + admin notification recipient, also domain-driven. */
-export const MAIL_MARTIN_ADDRESS = `martin@${MAIL_DOMAIN}`;
-export const MAIL_HELLO_ADDRESS = `hello@${MAIL_DOMAIN}`;
+/** Reply-to + admin notification recipients — derived from MAIL_INBOX_DOMAIN
+ *  (must be able to RECEIVE; lags MAIL_FROM_DOMAIN until Workspace is ready). */
+export const MAIL_MARTIN_ADDRESS = `martin@${MAIL_INBOX_DOMAIN}`;
+export const MAIL_HELLO_ADDRESS = `hello@${MAIL_INBOX_DOMAIN}`;
 
 let connectionSettings: any;
 
