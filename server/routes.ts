@@ -392,7 +392,10 @@ export async function registerRoutes(
   app.post("/api/admin/provision-test-creator", async (req: any, res) => {
     try {
       const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
-      const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email || req.query.admin_email;
+      // Session/OIDC only. The ?admin_email= query fallback was an unauthenticated
+      // admin bypass — any anonymous caller could pass a known admin email (all of
+      // which are in source) and reset the test account's password. Removed.
+      const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
       if (!callerEmail || !adminEmails.map((e: string) => e.toLowerCase()).includes(callerEmail.toLowerCase())) {
         return res.status(403).json({ error: "Admin access required" });
       }
