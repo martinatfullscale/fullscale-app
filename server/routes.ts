@@ -4192,6 +4192,13 @@ export async function registerRoutes(
     try {
       const result = await processVideoScan(videoId, true);
       console.log(`[Sync Scan] Scan complete for ${videoId}:`, result);
+      // Surface scan-level failures as non-2xx so the client stops treating a
+      // failed scan as success. Previously this always returned 200 with
+      // { success: true } even when result.success was false, so the modal
+      // showed "complete" over a scan that produced nothing.
+      if (!result.success) {
+        return res.status(422).json({ success: false, result, error: result.error || "Scan produced no surfaces" });
+      }
       res.json({ success: true, result });
     } catch (err: any) {
       console.error(`[Sync Scan] Scan failed for ${videoId}:`, err);

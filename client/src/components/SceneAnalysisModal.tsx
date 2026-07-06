@@ -263,8 +263,18 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
       });
 
       if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(`Scan failed (${res.status}): ${errText}`);
+        // Server now returns a JSON { error } on scan failure (incl. 422 when
+        // the scan ran but produced no usable source/surfaces). Surface the
+        // real, actionable message instead of raw response text.
+        let msg = `Scan failed (${res.status})`;
+        try {
+          const body = await res.json();
+          if (body?.error) msg = body.error;
+        } catch {
+          const t = await res.text().catch(() => "");
+          if (t) msg = t;
+        }
+        throw new Error(msg);
       }
 
       const scanResult = await res.json();

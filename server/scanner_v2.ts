@@ -29,6 +29,7 @@ import { downloadVideo as downloadYouTubeVideo, getYoutubeVideoDuration } from "
 import { downloadFacebookVideo, downloadInstagramVideo } from "./lib/socialDownloader";
 import { safeDecrypt } from "./lib/socialAnalytics";
 import { getFreshYoutubeTokenForUser } from "./lib/youtubeAuth";
+import { resolveYoutubeStreamUrl, resolveGraphStreamUrl, type StreamSource } from "./lib/streamResolver";
 import { buildSceneIndex, sceneIdForTimestamp, sampleMultiTimestampsPerScene, type SceneIndex } from "./lib/scenes/sceneIndex";
 
 // ============================================================================
@@ -734,6 +735,100 @@ async function extractFramesAtTimestamps(
   }
 
   console.log(`[Scanner V2] Scene-first extraction: ${out.frames.length}/${timestamps.length} frames at requested timestamps`);
+  return out;
+}
+
+/**
+ * Extract frames directly from a remote CDN URL via ffmpeg HTTP-range seeking —
+ * no full download, nothing written to disk except the sampled frame JPGs.
+ *
+ * This is the OAuth stream-and-scan path: for each timestamp, ffmpeg opens the
+ * URL, issues an HTTP range request to seek near that timestamp (`-ss` before
+ * `-i` = fast input seek), decodes one frame, and stops. For a well-indexed
+ * progressive mp4 that pulls only the bytes around each frame, not the whole
+ * video. `-reconnect*` flags make it resilient to the transient drops that CDN
+ * range reads occasionally hit.
+ */
+async function extractFramesFromUrl(
+  source: StreamSource,
+  outputDir: string,
+  timestamps: number[],
+): Promise<{ frames: string[]; timestamps: number[] }> {
+  const absoluteOutputDir = path.resolve(outputDir);
+  fs.mkdirSync(absoluteOutputDir, { recursive: true });
+
+  const out: { frames: string[]; timestamps: number[] } = { frames: [], timestamps: [] };
+  const headerArg = source.headers
+    ? Object.entries(source.headers).map(([k, v]) => `${k}: ${v}`).join("\r\n") + "\r\n"
+    : null;
+
+  let consecutiveFailures = 0;
+  for (let i = 0; i < timestamps.length; i++) {
+    const t = timestamps[i];
+    const outPath = path.join(absoluteOutputDir, `stream_frame_${i.toString().padStart(4, "0")}.jpg`);
+
+    const ok = await new Promise<boolean>((resolve) => {
+      const args = [
+        "-nostdin",
+        "-y",
+        "-loglevel", "error",
+        // Resilience for CDN range reads.
+        "-reconnect", "1",
+        "-reconnect_streamed", "1",
+        "-reconnect_delay_max", "5",
+      ];
+      if (headerArg) args.push("-headers", headerArg);
+      args.push(
+        "-ss", String(Math.max(0, t)),   // fast input seek — range-request to ~t
+        "-i", source.url,
+        "-an",
+        "-frames:v", "1",
+        "-pix_fmt", "yuvj420p",
+        "-vf", `scale='min(${CONFIG.FRAME_MAX_DIMENSION},iw)':'min(${CONFIG.FRAME_MAX_DIMENSION},ih)':force_original_aspect_ratio=decrease`,
+        "-q:v", "2",
+        outPath,
+      );
+      const ff = spawn("ffmpeg", args);
+      let stderr = "";
+      ff.stderr.on("data", (d) => { stderr += d.toString(); });
+      const tm = setTimeout(() => {
+        try { ff.kill("SIGKILL"); } catch {}
+        console.warn(`[Scanner V2] Stream extract t=${t}s timed out`);
+        resolve(false);
+      }, 60_000);
+      ff.on("close", (code) => {
+        clearTimeout(tm);
+        if (code === 0 && fs.existsSync(outPath)) {
+          resolve(true);
+        } else {
+          if (stderr) console.warn(`[Scanner V2] Stream extract t=${t}s failed: ${stderr.slice(-160)}`);
+          resolve(false);
+        }
+      });
+      ff.on("error", (err) => {
+        clearTimeout(tm);
+        console.warn(`[Scanner V2] Stream extract spawn error t=${t}s: ${err.message}`);
+        resolve(false);
+      });
+    });
+
+    if (ok) {
+      out.frames.push(outPath);
+      out.timestamps.push(t);
+      consecutiveFailures = 0;
+    } else {
+      consecutiveFailures += 1;
+      // If the first several seeks all fail, the URL is unusable (expired,
+      // DASH-only, geo-blocked). Bail early so we fall through to the download
+      // fallback instead of grinding through 24 timeouts.
+      if (consecutiveFailures >= 3 && out.frames.length === 0) {
+        console.warn(`[Scanner V2] Stream extraction: ${consecutiveFailures} consecutive failures with 0 frames — aborting stream path`);
+        break;
+      }
+    }
+  }
+
+  console.log(`[Scanner V2] Stream extraction: ${out.frames.length}/${timestamps.length} frames pulled from CDN URL`);
   return out;
 }
 
@@ -2470,9 +2565,21 @@ async function processVideoScanInner(
       };
     }
     
+    // Mark "Scanning" up front — BEFORE any download/stream resolution — so the
+    // library poll sees the transition immediately instead of clearing the
+    // spinner while a slow source resolution is still in flight. (A later
+    // updateVideoStatus("Scanning") is a harmless no-op re-write.)
+    await storage.updateVideoStatus(videoId, "Scanning");
+
     // LOCATE VIDEO FILE
     let videoPath: string | undefined;
-    
+
+    // OAuth stream-and-scan: frames pulled directly from a CDN URL without ever
+    // downloading the full video (see streamResolver.ts + extractFramesFromUrl).
+    // When this succeeds, we skip the local-file requirement entirely and feed
+    // these frames straight into detection.
+    let streamedFrames: { frames: string[]; timestamps: number[] } | null = null;
+
     if ((video as any).filePath?.startsWith('/storage/')) {
       try {
         const objectKey = (video as any).filePath.replace(/^\/storage\//, 'public/');
@@ -2529,7 +2636,69 @@ async function processVideoScanInner(
       return null;
     })();
 
-    if (!videoPath && (video as any).platform === "youtube" && looksLikeRealYouTubeId(video.youtubeId)) {
+    // ─── OAuth STREAM-AND-SCAN (primary path for imported videos) ───────────
+    // For YouTube/IG/FB imports (no local filePath), resolve a direct CDN URL
+    // via the creator's OAuth credentials and pull sample frames straight from
+    // it — no full download, no upload. This is the intended model: the source
+    // is never persisted. Falls through to the download fallbacks below only if
+    // URL resolution or streaming extraction fails.
+    const platform = (video as any).platform as string | undefined;
+    const isStreamableImport =
+      !videoPath &&
+      ((platform === "youtube" && looksLikeRealYouTubeId(video.youtubeId)) ||
+       ((platform === "instagram" || platform === "facebook") &&
+        (video.youtubeId.startsWith("instagram:") || video.youtubeId.startsWith("facebook:"))));
+
+    if (isStreamableImport) {
+      // Plan evenly-spaced sample timestamps across the (capped) duration.
+      // Budget is MAX_FRAMES_PER_VIDEO — for streaming we can't cheaply do
+      // scene-cut detection (that needs the whole file), so we sample uniformly.
+      const MAX_DURATION_SEC = 60 * 60;
+      const planStreamTimestamps = (durSec: number | null): number[] => {
+        if (durSec && durSec > 0) {
+          const eff = Math.min(durSec, MAX_DURATION_SEC);
+          const count = Math.max(1, Math.min(CONFIG.MAX_FRAMES_PER_VIDEO, Math.floor(eff / 2)));
+          const interval = eff / count;
+          return Array.from({ length: count }, (_, i) => Math.round((i + 0.5) * interval));
+        }
+        // Duration unknown (common for IG): sample the first ~72s at 3s spacing.
+        // Covers typical Reels end-to-end and the opening of long-form content.
+        return Array.from({ length: CONFIG.MAX_FRAMES_PER_VIDEO }, (_, i) => i * 3);
+      };
+
+      let source: StreamSource | null = null;
+      try {
+        if (platform === "youtube") {
+          const oauthToken = await getFreshYoutubeTokenForUser(video.userId).catch(() => null);
+          source = await resolveYoutubeStreamUrl(video.youtubeId, oauthToken || undefined);
+        } else {
+          const user = await storage.getUserById((video as any).userId);
+          const token = safeDecrypt(user?.facebookAccessToken);
+          if (!token) {
+            console.warn(`[Scanner V2] No Facebook token for user ${(video as any).userId} — cannot stream ${platform}`);
+          } else {
+            source = await resolveGraphStreamUrl(video.youtubeId, platform as "instagram" | "facebook", token);
+          }
+        }
+      } catch (e: any) {
+        console.warn(`[Scanner V2] Stream URL resolution threw: ${e?.message || e}`);
+      }
+
+      if (source) {
+        const timestamps = planStreamTimestamps(durationSec);
+        console.log(`[Scanner V2] Stream-and-scan: sampling ${timestamps.length} frames from ${platform} CDN URL (no download)`);
+        fs.mkdirSync(framesDir, { recursive: true });
+        const result = await extractFramesFromUrl(source, framesDir, timestamps);
+        if (result.frames.length > 0) {
+          streamedFrames = result;
+          console.log(`[Scanner V2] Stream-and-scan succeeded: ${result.frames.length} frames — skipping download`);
+        } else {
+          console.warn(`[Scanner V2] Stream-and-scan produced 0 frames — falling back to download`);
+        }
+      }
+    }
+
+    if (!videoPath && !streamedFrames && (video as any).platform === "youtube" && looksLikeRealYouTubeId(video.youtubeId)) {
       console.log(`[Scanner V2] No filePath; attempting YouTube download for ${video.youtubeId}`);
       fs.mkdirSync(tempDir, { recursive: true });
       const downloadPath = path.join(tempDir, `${video.youtubeId}.mp4`);
@@ -2605,7 +2774,7 @@ async function processVideoScanInner(
     // tempDir, and let the existing finally{} cleanup discard the bytes.
     // Same light-cloud model as the YouTube path above.
     const isFbOrIg =
-      !videoPath &&
+      !videoPath && !streamedFrames &&
       ((video as any).platform === "facebook" || (video as any).platform === "instagram") &&
       (video.youtubeId.startsWith("facebook:") || video.youtubeId.startsWith("instagram:"));
 
@@ -2637,108 +2806,102 @@ async function processVideoScanInner(
     console.log('[Scanner V2] DEBUG - LOCAL_ASSET_MAP keys:', Object.keys(LOCAL_ASSET_MAP));
     console.log('[Scanner V2] DEBUG - Resolved videoPath:', videoPath);
 
-    if (!videoPath || !fs.existsSync(videoPath)) {
-      console.error(`[Scanner V2] Video file not found: ${videoPath}`);
-      await storage.updateVideoStatus(videoId, "Pending Upload");
+    // No frames from streaming AND no local/downloaded file → genuine failure.
+    // Give a descriptive, actionable status instead of the ambiguous
+    // "Pending Upload" (which the UI rendered identically to "Pending Scan",
+    // making a failed scan look like nothing happened).
+    if (!streamedFrames && (!videoPath || !fs.existsSync(videoPath))) {
+      console.error(`[Scanner V2] No frames from stream and no video file: ${videoPath}`);
+      const platform = (video as any).platform as string | undefined;
+      const failStatus =
+        platform === "instagram" || platform === "facebook"
+          ? "Scan Failed — Reconnect Instagram/Facebook"
+          : platform === "youtube"
+          ? "Scan Failed — Source Unavailable"
+          : "Pending Upload";
+      await storage.updateVideoStatus(videoId, failStatus);
       return {
         success: false,
         videoId,
         surfacesDetected: 0,
-        error: "Video file not found. Upload required.",
+        error: streamedFrames === null && (platform === "youtube" || platform === "instagram" || platform === "facebook")
+          ? `Could not access ${platform} source. The connection may need to be re-authorized, or the video may be private/unavailable.`
+          : "Video file not found. Upload required.",
       };
     }
-    
-    const fileSizeMB = fs.statSync(videoPath).size / 1024 / 1024;
-    console.log(`[Scanner V2] Video file size: ${fileSizeMB.toFixed(2)}MB`);
 
-    // UPDATE STATUS — but DO NOT wipe existing surfaces here. Wipe happens at
-    // the end on successful scan completion, so a failed/aborted scan never
-    // destroys the creator's prior data. Snapshotted IDs from above will be
-    // deleted in the success path below (search "Replace prior surfaces").
-    await storage.updateVideoStatus(videoId, "Scanning");
-    
+    if (videoPath) {
+      const fileSizeMB = fs.statSync(videoPath).size / 1024 / 1024;
+      console.log(`[Scanner V2] Video file size: ${fileSizeMB.toFixed(2)}MB`);
+    }
+
     fs.mkdirSync(framesDir, { recursive: true });
 
-    // SCENE-FIRST: detect cuts and cluster shots into unique scenes BEFORE
-    // extracting frames. This lets us sample 1-2 frames per UNIQUE SCENE
-    // rather than uniformly across the timeline — Call Her Daddy with 60
-    // cuts but 2 unique scenes goes from 50 frames to 4 frames (~12x cost
-    // reduction on Gemini calls). Failure here is non-fatal — falls back
-    // to uniform extraction.
-    let sceneCuts: number[] = [];
-    let sceneIndex: SceneIndex | null = null;
-    try {
-      sceneCuts = await detectSceneCuts(videoPath);
-      await storage.updateVideoIndex(videoId, { sceneBoundaries: sceneCuts as any });
-      console.log(`[Scanner V2] Persisted ${sceneCuts.length} scene cut(s) to videoIndex.sceneBoundaries`);
-    } catch (sceneErr: any) {
-      console.warn(`[Scanner V2] Scene-cut detection failed (non-fatal):`, sceneErr?.message || sceneErr);
-    }
-
-    try {
-      sceneIndex = await buildSceneIndex(videoPath, sceneCuts);
-      if (sceneIndex) {
-        // The scene index build refines the ffmpeg cuts to frame-accurate
-        // timestamps. Persist the REFINED cuts to sceneBoundaries so the
-        // placement render filter (which reads videoIndex.sceneBoundaries)
-        // gates on the same exact timestamps the scanner used. Without this
-        // overwrite, sceneBoundaries holds the raw 1-2-frames-late ffmpeg
-        // values and products bleed past cuts before the filter catches up.
-        await storage.updateVideoIndex(videoId, {
-          sceneIndex: sceneIndex as any,
-          sceneBoundaries: sceneIndex.cuts as any,
-        });
-        console.log(`[Scanner V2] Persisted scene index: ${sceneIndex.sceneCount} unique scene(s) across ${sceneIndex.shots.length} shot(s); refined ${sceneIndex.cuts.length} cuts`);
-      }
-    } catch (sidxErr: any) {
-      console.warn(`[Scanner V2] Scene index build failed (non-fatal):`, sidxErr?.message || sidxErr);
-    }
-
-    // Choose extraction strategy.
-    //   Scene-first (preferred): N unique scenes → 1-3 frames each, capped
-    //   at MAX_FRAMES_PER_VIDEO. Each frame is tagged with its real
-    //   timestamp so sceneId lookup downstream is correct.
-    //   Uniform fallback: every N seconds (legacy behavior). Used when
-    //   sceneIndex couldn't be built or has no scenes.
     let frames: string[] = [];
     let frameTimestamps: number[] = [];
     let usedSceneFirst = false;
+    let sceneIndex: SceneIndex | null = null;
 
-    if (sceneIndex && sceneIndex.sceneCount > 0) {
-      // Aim for ~6 samples per scene if we can fit, capping total at the
-      // existing MAX_FRAMES_PER_VIDEO budget. Empirical tuning on Call
-      // Her Daddy (3 scenes × 3 frames = 9 frames → only 4 surfaces) —
-      // bumping to 6/scene catches different framing within each scene
-      // (host leans forward, host sits back, etc.) for ~2x surface yield
-      // without significantly more Gemini cost. So: 2 scenes → 12 frames.
-      // 4 scenes → 24 frames (hits cap). 24 scenes → 24 frames (1 each).
-      const desiredPerScene = Math.max(
-        1,
-        Math.min(6, Math.floor(CONFIG.MAX_FRAMES_PER_VIDEO / sceneIndex.sceneCount)),
-      );
-      const samples = sampleMultiTimestampsPerScene(sceneIndex, desiredPerScene);
-      // Hard-cap at the per-video budget to keep Gemini cost predictable.
-      const trimmed = samples.slice(0, CONFIG.MAX_FRAMES_PER_VIDEO);
-      console.log(`[Scanner V2] Scene-first extraction: ${trimmed.length} frames across ${sceneIndex.sceneCount} unique scene(s) (${desiredPerScene}/scene target)`);
-
-      const result = await extractFramesAtTimestamps(
-        videoPath,
-        framesDir,
-        trimmed.map(s => s.t),
-      );
-      if (result.frames.length > 0) {
-        frames = result.frames;
-        frameTimestamps = result.timestamps;
-        usedSceneFirst = true;
-      } else {
-        console.warn(`[Scanner V2] Scene-first extraction returned 0 frames — falling back to uniform`);
+    if (streamedFrames) {
+      // OAuth stream path: frames were already pulled from the CDN URL. We
+      // can't do scene-cut detection here (that reads the whole file, which
+      // we deliberately never downloaded), so we use the uniformly-sampled
+      // frames as-is. sceneBoundaries stays whatever a prior full scan set.
+      frames = streamedFrames.frames;
+      frameTimestamps = streamedFrames.timestamps;
+      console.log(`[Scanner V2] Using ${frames.length} streamed frames (uniform sampling; scene-cut detection skipped — no local file)`);
+    } else if (videoPath) {
+      // LOCAL/DOWNLOADED path — scene-first detection for denser, cheaper sampling.
+      // SCENE-FIRST: detect cuts and cluster shots into unique scenes BEFORE
+      // extracting frames. Sample 1-2 frames per UNIQUE SCENE rather than
+      // uniformly — a podcast with 60 cuts but 2 unique scenes goes from 50
+      // frames to ~4. Failure is non-fatal — falls back to uniform.
+      let sceneCuts: number[] = [];
+      try {
+        sceneCuts = await detectSceneCuts(videoPath);
+        await storage.updateVideoIndex(videoId, { sceneBoundaries: sceneCuts as any });
+        console.log(`[Scanner V2] Persisted ${sceneCuts.length} scene cut(s) to videoIndex.sceneBoundaries`);
+      } catch (sceneErr: any) {
+        console.warn(`[Scanner V2] Scene-cut detection failed (non-fatal):`, sceneErr?.message || sceneErr);
       }
-    }
 
-    if (!usedSceneFirst) {
-      console.log(`[Scanner V2] Extracting frames with plan: every ${scanPlan.intervalSeconds}s × ${scanPlan.maxFrames} frames`);
-      frames = await extractFrames(videoPath, framesDir, scanPlan);
-      frameTimestamps = frames.map((_, i) => i * scanPlan.intervalSeconds);
+      try {
+        sceneIndex = await buildSceneIndex(videoPath, sceneCuts);
+        if (sceneIndex) {
+          await storage.updateVideoIndex(videoId, {
+            sceneIndex: sceneIndex as any,
+            sceneBoundaries: sceneIndex.cuts as any,
+          });
+          console.log(`[Scanner V2] Persisted scene index: ${sceneIndex.sceneCount} unique scene(s) across ${sceneIndex.shots.length} shot(s); refined ${sceneIndex.cuts.length} cuts`);
+        }
+      } catch (sidxErr: any) {
+        console.warn(`[Scanner V2] Scene index build failed (non-fatal):`, sidxErr?.message || sidxErr);
+      }
+
+      if (sceneIndex && sceneIndex.sceneCount > 0) {
+        const desiredPerScene = Math.max(
+          1,
+          Math.min(6, Math.floor(CONFIG.MAX_FRAMES_PER_VIDEO / sceneIndex.sceneCount)),
+        );
+        const samples = sampleMultiTimestampsPerScene(sceneIndex, desiredPerScene);
+        const trimmed = samples.slice(0, CONFIG.MAX_FRAMES_PER_VIDEO);
+        console.log(`[Scanner V2] Scene-first extraction: ${trimmed.length} frames across ${sceneIndex.sceneCount} unique scene(s) (${desiredPerScene}/scene target)`);
+
+        const result = await extractFramesAtTimestamps(videoPath, framesDir, trimmed.map(s => s.t));
+        if (result.frames.length > 0) {
+          frames = result.frames;
+          frameTimestamps = result.timestamps;
+          usedSceneFirst = true;
+        } else {
+          console.warn(`[Scanner V2] Scene-first extraction returned 0 frames — falling back to uniform`);
+        }
+      }
+
+      if (!usedSceneFirst) {
+        console.log(`[Scanner V2] Extracting frames with plan: every ${scanPlan.intervalSeconds}s × ${scanPlan.maxFrames} frames`);
+        frames = await extractFrames(videoPath, framesDir, scanPlan);
+        frameTimestamps = frames.map((_, i) => i * scanPlan.intervalSeconds);
+      }
     }
 
     if (frames.length === 0) {

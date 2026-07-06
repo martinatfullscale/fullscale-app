@@ -388,7 +388,9 @@ function resolveCookiesFile(): string | null {
  *   flagged datacenter IP via a residential/mobile proxy. Most robust
  *   bot-detection bypass; pairs well with (or works without) cookies.
  */
-function applyYtDlpAuthArgs(args: string[], context: string): void {
+export const YT_MOBILE_SAFARI_USER_AGENT = MOBILE_SAFARI_USER_AGENT;
+
+export function applyYtDlpAuthArgs(args: string[], context: string): void {
   const cookies = resolveCookiesFile();
   if (cookies) {
     args.push("--cookies", cookies);
