@@ -30,7 +30,7 @@ import { downloadFacebookVideo, downloadInstagramVideo } from "./lib/socialDownl
 import { safeDecrypt } from "./lib/socialAnalytics";
 import { getFreshYoutubeTokenForUser } from "./lib/youtubeAuth";
 import { resolveYoutubeStreamUrl, resolveGraphStreamUrl, type StreamSource } from "./lib/streamResolver";
-import { buildSceneIndex, sceneIdForTimestamp, sampleMultiTimestampsPerScene, type SceneIndex } from "./lib/scenes/sceneIndex";
+import { buildSceneIndex, sceneIdForTimestamp, sampleMultiTimestampsPerScene, computeDHash, hammingDistance, type SceneIndex } from "./lib/scenes/sceneIndex";
 
 // ============================================================================
 // GEMINI AI CLIENT
@@ -830,6 +830,170 @@ async function extractFramesFromUrl(
 
   console.log(`[Scanner V2] Stream extraction: ${out.frames.length}/${timestamps.length} frames pulled from CDN URL`);
   return out;
+}
+
+/**
+ * Dense uniform frame extraction from a remote CDN URL in a SINGLE ffmpeg pass
+ * (fps filter). The stream flows through ffmpeg transiently — frames are kept,
+ * the video bytes are never saved to disk. This is far more efficient than N
+ * per-timestamp seeks when we want a dense grid (one process, sequential read),
+ * and dense sampling is what maximizes surface-detection recall: we want to SEE
+ * every distinct scene at least once so no placement surface is skipped.
+ */
+async function extractFramesUniformFromUrl(
+  source: StreamSource,
+  outputDir: string,
+  intervalSeconds: number,
+  maxFrames: number,
+): Promise<{ frames: string[]; timestamps: number[] }> {
+  const absoluteOutputDir = path.resolve(outputDir);
+  fs.mkdirSync(absoluteOutputDir, { recursive: true });
+  const outputPattern = path.join(absoluteOutputDir, "grid_%04d.jpg");
+  const headerArg = source.headers
+    ? Object.entries(source.headers).map(([k, v]) => `${k}: ${v}`).join("\r\n") + "\r\n"
+    : null;
+
+  return new Promise((resolve) => {
+    const args = [
+      "-nostdin",
+      "-y",
+      "-loglevel", "error",
+      "-reconnect", "1",
+      "-reconnect_streamed", "1",
+      "-reconnect_delay_max", "5",
+    ];
+    if (headerArg) args.push("-headers", headerArg);
+    args.push(
+      "-i", source.url,
+      "-an",
+      "-vsync", "vfr",
+      "-pix_fmt", "yuvj420p",
+      "-vf", `fps=1/${intervalSeconds},scale='min(${CONFIG.FRAME_MAX_DIMENSION},iw)':'min(${CONFIG.FRAME_MAX_DIMENSION},ih)':force_original_aspect_ratio=decrease`,
+      "-q:v", "2",
+      "-frames:v", String(maxFrames),
+      outputPattern,
+    );
+
+    const ff = spawn("ffmpeg", args);
+    let stderr = "";
+    ff.stderr.on("data", (d) => { stderr += d.toString(); });
+    const tm = setTimeout(() => {
+      try { ff.kill("SIGKILL"); } catch {}
+      console.warn(`[Scanner V2] Dense stream extraction timed out`);
+      // Resolve with whatever landed so far — a partial grid still scans.
+      resolve(collectGrid());
+    }, 8 * 60 * 1000);
+
+    const collectGrid = (): { frames: string[]; timestamps: number[] } => {
+      let files: string[] = [];
+      try {
+        files = fs.readdirSync(absoluteOutputDir).filter(f => f.startsWith("grid_") && f.endsWith(".jpg")).sort();
+      } catch { /* ignore */ }
+      const frames = files.map(f => path.join(absoluteOutputDir, f));
+      // fps=1/interval means frame i corresponds to ~i*interval seconds.
+      const timestamps = frames.map((_, i) => i * intervalSeconds);
+      return { frames, timestamps };
+    };
+
+    ff.on("close", (code) => {
+      clearTimeout(tm);
+      if (code !== 0 && stderr) {
+        console.warn(`[Scanner V2] Dense stream extraction ffmpeg code ${code}: ${stderr.slice(-200)}`);
+      }
+      resolve(collectGrid());
+    });
+    ff.on("error", (err) => {
+      clearTimeout(tm);
+      console.warn(`[Scanner V2] Dense stream extraction spawn error: ${err.message}`);
+      resolve(collectGrid());
+    });
+  });
+}
+
+/**
+ * Select a scene-complete, evenly-distributed subset of frames for detection.
+ *
+ * Detection recall depends on SEEING every distinct scene at least once — a
+ * surface only visible in one shot is missed if that shot is skipped. So we:
+ *   1. dHash every dense-grid candidate.
+ *   2. Segment into scenes: a new scene starts wherever the hash jumps
+ *      (hamming ≥ threshold vs the previous frame) — a cut or hard angle change.
+ *   3. Guarantee ≥1 detection frame per scene (the scene's midpoint), then
+ *      distribute any remaining budget to the LONGEST scenes (more samples where
+ *      more can change), capped at the Gemini budget.
+ * This gives even coverage across the whole timeline AND guarantees no scene is
+ * skipped — the two things that determine surface recall. Non-selected frames
+ * are deleted immediately to bound temp usage.
+ */
+async function selectDiverseFrames(
+  frames: string[],
+  timestamps: number[],
+  opts: { hashThreshold: number; budget: number },
+): Promise<{ frames: string[]; timestamps: number[] }> {
+  if (frames.length === 0) return { frames: [], timestamps: [] };
+
+  // 1. Hash every candidate (parallel-ish; computeDHash is I/O light).
+  const hashes: (string | null)[] = [];
+  for (let i = 0; i < frames.length; i++) {
+    try { hashes.push(await computeDHash(frames[i])); } catch { hashes.push(null); }
+  }
+
+  // 2. Segment into scenes by hash jumps. Each scene is a contiguous index range.
+  const scenes: Array<{ start: number; end: number }> = [];
+  let sceneStart = 0;
+  for (let i = 1; i < frames.length; i++) {
+    const prev = hashes[i - 1];
+    const cur = hashes[i];
+    const jump = prev === null || cur === null || hammingDistance(cur, prev) >= opts.hashThreshold;
+    if (jump) {
+      scenes.push({ start: sceneStart, end: i - 1 });
+      sceneStart = i;
+    }
+  }
+  scenes.push({ start: sceneStart, end: frames.length - 1 });
+
+  // 3. Allocate the budget. Every scene gets its midpoint. Remaining budget goes
+  //    to the longest scenes (by candidate count), one extra sample at a time.
+  const picks = new Set<number>();
+  const sceneLen = (s: { start: number; end: number }) => s.end - s.start + 1;
+  const midpoint = (s: { start: number; end: number }) => Math.floor((s.start + s.end) / 2);
+
+  for (const s of scenes) {
+    if (picks.size >= opts.budget) break;
+    picks.add(midpoint(s));
+  }
+
+  // Extra samples for long scenes, round-robin by descending length, until budget.
+  const byLenDesc = [...scenes].sort((a, b) => sceneLen(b) - sceneLen(a));
+  let added = true;
+  while (picks.size < opts.budget && added) {
+    added = false;
+    for (const s of byLenDesc) {
+      if (picks.size >= opts.budget) break;
+      // Spread additional picks evenly within the scene.
+      const len = sceneLen(s);
+      if (len <= 1) continue;
+      const existing = Array.from(picks).filter(idx => idx >= s.start && idx <= s.end).length;
+      const want = Math.min(len, existing + 1);
+      if (want <= existing) continue;
+      // place the (want)-th evenly-spaced index
+      const idx = s.start + Math.round(((existing) / want) * (len - 1));
+      if (!picks.has(idx)) { picks.add(idx); added = true; }
+    }
+  }
+
+  // 4. Materialize selection; unlink the rest.
+  const selectedIdx = Array.from(picks).sort((a, b) => a - b);
+  const selectedSet = new Set(selectedIdx);
+  for (let i = 0; i < frames.length; i++) {
+    if (!selectedSet.has(i)) safeUnlink(frames[i]);
+  }
+
+  console.log(`[Scanner V2] Scene-complete selection: ${scenes.length} scene(s) from ${frames.length} candidates → ${selectedIdx.length} detection frames (budget ${opts.budget})`);
+  return {
+    frames: selectedIdx.map(i => frames[i]),
+    timestamps: selectedIdx.map(i => timestamps[i]),
+  };
 }
 
 /**
@@ -2650,22 +2814,6 @@ async function processVideoScanInner(
         (video.youtubeId.startsWith("instagram:") || video.youtubeId.startsWith("facebook:"))));
 
     if (isStreamableImport) {
-      // Plan evenly-spaced sample timestamps across the (capped) duration.
-      // Budget is MAX_FRAMES_PER_VIDEO — for streaming we can't cheaply do
-      // scene-cut detection (that needs the whole file), so we sample uniformly.
-      const MAX_DURATION_SEC = 60 * 60;
-      const planStreamTimestamps = (durSec: number | null): number[] => {
-        if (durSec && durSec > 0) {
-          const eff = Math.min(durSec, MAX_DURATION_SEC);
-          const count = Math.max(1, Math.min(CONFIG.MAX_FRAMES_PER_VIDEO, Math.floor(eff / 2)));
-          const interval = eff / count;
-          return Array.from({ length: count }, (_, i) => Math.round((i + 0.5) * interval));
-        }
-        // Duration unknown (common for IG): sample the first ~72s at 3s spacing.
-        // Covers typical Reels end-to-end and the opening of long-form content.
-        return Array.from({ length: CONFIG.MAX_FRAMES_PER_VIDEO }, (_, i) => i * 3);
-      };
-
       let source: StreamSource | null = null;
       try {
         if (platform === "youtube") {
@@ -2685,15 +2833,43 @@ async function processVideoScanInner(
       }
 
       if (source) {
-        const timestamps = planStreamTimestamps(durationSec);
-        console.log(`[Scanner V2] Stream-and-scan: sampling ${timestamps.length} frames from ${platform} CDN URL (no download)`);
+        // DENSE-then-DIVERSE detection: pull a dense uniform grid in one
+        // streaming pass (interval GRID_INTERVAL), then perceptually dedup to a
+        // scene-diverse subset for Gemini. Dense grid = every scene is SEEN so
+        // no surface is skipped; dedup = Gemini budget spent on distinct
+        // scenes/angles, not near-identical frames. This is the OAuth
+        // detection model: the stream flows through ffmpeg transiently, nothing
+        // is persisted.
+        const MAX_DURATION_SEC = 60 * 60;
+        const GRID_CAP = 400;                     // hard ceiling on candidate frames
+        const eff = durationSec ? Math.min(durationSec, MAX_DURATION_SEC) : null;
+        // Interval adapts to duration so the candidate grid spans the WHOLE
+        // (capped) video without exceeding GRID_CAP: short clips get dense 2s
+        // sampling; a 1hr podcast gets ~9s sampling across all 60 min. dHash
+        // dedup below then trims to the scene-diverse detection set.
+        const gridInterval = eff ? Math.max(2, Math.ceil(eff / GRID_CAP)) : 2;
+        const gridMax = eff ? Math.min(GRID_CAP, Math.ceil(eff / gridInterval)) : 150;
+
+        console.log(`[Scanner V2] Stream-and-scan: dense grid every ${gridInterval}s (up to ${gridMax} candidates spanning ${eff ? (eff/60).toFixed(1)+'min' : 'unknown dur'}) from ${platform} CDN URL (no download)`);
         fs.mkdirSync(framesDir, { recursive: true });
-        const result = await extractFramesFromUrl(source, framesDir, timestamps);
-        if (result.frames.length > 0) {
-          streamedFrames = result;
-          console.log(`[Scanner V2] Stream-and-scan succeeded: ${result.frames.length} frames — skipping download`);
-        } else {
-          console.warn(`[Scanner V2] Stream-and-scan produced 0 frames — falling back to download`);
+        const grid = await extractFramesUniformFromUrl(source, framesDir, gridInterval, gridMax);
+
+        if (grid.frames.length > 0) {
+          // Detection budget: how many frames actually go to Gemini. Larger
+          // than the old fixed 24 — recall matters more than cost per the
+          // creator's directive that detection quality is paramount.
+          const detectionBudget = Math.max(CONFIG.MAX_FRAMES_PER_VIDEO, Math.min(60, grid.frames.length));
+          const selected = await selectDiverseFrames(grid.frames, grid.timestamps, {
+            hashThreshold: 10,       // dHash hamming ≥10/64 ≈ meaningfully different scene/angle
+            budget: detectionBudget,
+          });
+          if (selected.frames.length > 0) {
+            streamedFrames = selected;
+            console.log(`[Scanner V2] Stream-and-scan: ${grid.frames.length} candidates → ${selected.frames.length} diverse frames for detection — skipping download`);
+          }
+        }
+        if (!streamedFrames) {
+          console.warn(`[Scanner V2] Stream-and-scan produced 0 usable frames — falling back to download`);
         }
       }
     }

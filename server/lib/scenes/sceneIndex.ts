@@ -81,7 +81,7 @@ function clusterByHash(hashes: string[], threshold: number): number[] {
   return sceneId;
 }
 
-function hammingDistance(a: string, b: string): number {
+export function hammingDistance(a: string, b: string): number {
   if (a.length !== b.length) return Number.MAX_SAFE_INTEGER;
   let dist = 0;
   for (let i = 0; i < a.length; i++) {
