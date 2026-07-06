@@ -92,6 +92,14 @@ export function recencyMultiplier(ageDays: number | null | undefined): number {
   return 0.20;
 }
 
+/**
+ * Surfaces stamped "Filtered" were rejected by post-scan enrichment — they are
+ * not placement inventory and must never be listed to brands, quoted, or sold.
+ */
+export function isSellableSurface(s: { surfaceType?: string | null } | null | undefined): boolean {
+  return !!s && s.surfaceType !== "Filtered";
+}
+
 /** Surface multiplier — combines bbox area, surface type bonuses. */
 export interface SurfaceForPricing {
   surfaceType: string;

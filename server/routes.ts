@@ -16,6 +16,7 @@ import {
   formatImpressions,
   avgRecentViews,
   computeExpiresAt,
+  isSellableSurface,
   videoAgeDays as calcVideoAgeDays,
   type DurationTerm,
   CREATOR_TIER_MULTIPLIER,
@@ -7207,10 +7208,11 @@ export async function registerRoutes(
       // first arg is the id, so passing email-only would silently miss any
       // rows keyed off the UUID.
       const allCreatorVideos = await storage.getVideoIndex(userProfile?.id || email, email);
-      // Enrich each with surfaces
+      // Enrich each with surfaces (excluding enrichment-rejected "Filtered" ones —
+      // they are not placement inventory and shouldn't inflate public spot counts)
       const videos: any[] = [];
       for (const v of allCreatorVideos) {
-        const surfaces = await storage.getDetectedSurfaces(v.id);
+        const surfaces = (await storage.getDetectedSurfaces(v.id)).filter(isSellableSurface);
         videos.push({
           ...v,
           surfaces,
@@ -7939,13 +7941,21 @@ export async function registerRoutes(
       // Video age (prefer publishedAt, fall back to createdAt)
       const ageDays = calcVideoAgeDays(video.publishedAt, video.createdAt);
 
-      // Resolve surfaces (or use a placeholder if none specified — useful for "default quote")
+      // Resolve surfaces (or use a placeholder if none specified — useful for "default quote").
+      // Filtered surfaces were rejected by enrichment — they are not inventory.
       let surfaces: any[] = [];
       if (surfaceIds.length > 0) {
         const allSurfaces = clip
           ? await storage.getSurfacesInEditorialClip(clip.id)
           : await storage.getDetectedSurfaces(video.id);
-        surfaces = allSurfaces.filter((s: any) => surfaceIds.includes(s.id));
+        surfaces = allSurfaces.filter(
+          (s: any) => surfaceIds.includes(s.id) && isSellableSurface(s),
+        );
+        if (surfaces.length === 0) {
+          return res.status(400).json({
+            error: "Requested surface(s) are not available for placement",
+          });
+        }
       }
 
       // Quote each surface independently — bbox/type can vary, so price varies
@@ -8112,6 +8122,17 @@ export async function registerRoutes(
       const allSurfaces = clipForPricing
         ? await storage.getSurfacesInEditorialClip(clipForPricing.id)
         : await storage.getDetectedSurfaces(video.id);
+
+      // Validate ALL requested surfaces up front — before any row is created.
+      // Unknown IDs and enrichment-rejected ("Filtered") surfaces are not inventory.
+      for (const sid of surfaceIds) {
+        const surface = allSurfaces.find((s: any) => s.id === parseInt(sid));
+        if (!surface || !isSellableSurface(surface)) {
+          return res.status(400).json({
+            error: `Surface ${sid} is not available for placement`,
+          });
+        }
+      }
 
       const expiresAt = computeExpiresAt(durationTerm);
 
@@ -8431,10 +8452,11 @@ export async function registerRoutes(
       const clip = await storage.getEditorialClipById(clipId);
       if (!clip) return res.status(404).json({ error: "Clip not found" });
 
-      const [surfaces, video] = await Promise.all([
+      const [allClipSurfaces, video] = await Promise.all([
         storage.getSurfacesInEditorialClip(clipId),
         storage.getVideoById(clip.videoId),
       ]);
+      const surfaces = allClipSurfaces.filter(isSellableSurface);
 
       res.json({
         clip,
@@ -8455,7 +8477,7 @@ export async function registerRoutes(
     try {
       const clipId = parseInt(req.params.clipId);
       if (isNaN(clipId)) return res.status(400).json({ error: "Invalid clip ID" });
-      const surfaces = await storage.getSurfacesInEditorialClip(clipId);
+      const surfaces = (await storage.getSurfacesInEditorialClip(clipId)).filter(isSellableSurface);
       res.json({ surfaces, count: surfaces.length });
     } catch (err: any) {
       console.error("[API] /api/editorial-clips/:clipId/surfaces error:", err.message);
