@@ -93,11 +93,15 @@ export function recencyMultiplier(ageDays: number | null | undefined): number {
 }
 
 /**
- * Surfaces stamped "Filtered" were rejected by post-scan enrichment — they are
- * not placement inventory and must never be listed to brands, quoted, or sold.
+ * A surface is sellable inventory only if it survived post-scan filtering
+ * (surfaces stamped "Filtered" were rejected by enrichment or by the creator)
+ * AND the creator explicitly approved it. Surfaces default to unapproved —
+ * hidden from brands until approved, per the creator-controlled exposure model.
  */
-export function isSellableSurface(s: { surfaceType?: string | null } | null | undefined): boolean {
-  return !!s && s.surfaceType !== "Filtered";
+export function isSellableSurface(
+  s: { surfaceType?: string | null; creatorApproved?: boolean | null } | null | undefined,
+): boolean {
+  return !!s && s.surfaceType !== "Filtered" && s.creatorApproved === true;
 }
 
 /** Surface multiplier — combines bbox area, surface type bonuses. */

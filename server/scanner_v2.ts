@@ -2025,10 +2025,16 @@ function suggestBrands(sceneSetting: string, mood: string): string[] {
 async function enrichSurfacesWithContext(
   videoId: number,
   permanentFramesDir: string,
+  excludeIds?: Set<number>,
 ): Promise<void> {
   console.log(`[FullScale Edge Context] Starting post-scan enrichment for video ${videoId}`);
 
-  const surfaces = await storage.getDetectedSurfaces(videoId);
+  // Skip Filtered rows (machine- or creator-rejected — enrichment used to
+  // overwrite their surfaceType with a live refined type, silently
+  // resurrecting them) and prior-scan rows awaiting end-of-scan retirement.
+  const allRows = await storage.getDetectedSurfaces(videoId);
+  const surfaces = allRows.filter(s =>
+    s.surfaceType !== "Filtered" && !excludeIds?.has(s.id));
   if (surfaces.length === 0) {
     console.log("[FullScale Edge Context] No surfaces to enrich");
     return;
@@ -2373,10 +2379,14 @@ function computeMedianBBox(surfaces: SurfaceCluster['surfaces']): { x: number; y
  * consistent bounding box per group, and updates all surfaces to use it.
  * Also filters out phantom surfaces that are too small (<5% frame area).
  */
-async function normalizeSurfaceBoundingBoxes(videoId: number): Promise<void> {
+async function normalizeSurfaceBoundingBoxes(videoId: number, excludeIds?: Set<number>): Promise<void> {
   console.log(`[Normalize] Starting bounding box normalization for video ${videoId}`);
 
-  const surfaces = await storage.getDetectedSurfaces(videoId);
+  // excludeIds = the previous scan's rows (still active until end-of-scan
+  // retirement). Keep them out of clustering/dedupe so they can't compete
+  // with — or overwrite the bboxes of — this run's detections.
+  const allRows = await storage.getDetectedSurfaces(videoId);
+  const surfaces = excludeIds ? allRows.filter(s => !excludeIds.has(s.id)) : allRows;
   if (surfaces.length < 2) {
     console.log(`[Normalize] Only ${surfaces.length} surface(s), nothing to normalize`);
     return;
@@ -2501,11 +2511,18 @@ async function normalizeSurfaceBoundingBoxes(videoId: number): Promise<void> {
 async function groupSurfacesTemporally(
   videoId: number,
   intervalHint: number = CONFIG.FRAME_INTERVAL_SECONDS,
+  excludeIds?: Set<number>,
 ): Promise<void> {
   console.log(`[Temporal] Starting temporal grouping for video ${videoId} (interval hint: ${intervalHint}s)`);
 
   const surfaces = await storage.getDetectedSurfaces(videoId);
-  const validSurfaces = surfaces.filter(s => s.surfaceType !== "Filtered" && s.surfaceType !== "Potential Surface");
+  // excludeIds = the previous scan's rows. They're retired at end-of-scan, but
+  // until then they're still active in the DB — letting them into the track
+  // competition means old detections can outscore and delete the new scan's.
+  const validSurfaces = surfaces.filter(s =>
+    s.surfaceType !== "Filtered" &&
+    s.surfaceType !== "Potential Surface" &&
+    !excludeIds?.has(s.id));
 
   if (validSurfaces.length < 2) {
     console.log(`[Temporal] Only ${validSurfaces.length} valid surface(s), skipping temporal grouping`);
@@ -2604,15 +2621,29 @@ async function groupSurfacesTemporally(
     return { ...track, score, duration };
   }).sort((a, b) => b.score - a.score);
 
-  // Keep the best track PER surface type (not one global best). Previously
-  // this kept only the single best across all types, which deleted walls
-  // when a desk track scored higher (and vice versa). With the new "max 3
-  // surfaces per frame, walls + tables + windows" model, each distinct
-  // type should retain its best track. Result: one Wall track, one Coffee
-  // Table track, one Window track — not one of those, all gone.
+  // Keep the best track PER (surface type, scene). Keying by type alone kept
+  // ONE Wall track for the entire video — a 12-scene podcast where the wall
+  // appears in every scene lost all detections outside a single time window
+  // (walls found at 9.9s/13.1s were deleted because the 29-36s track was
+  // longer). Scenes come from the dHash scene index (recurring camera setups
+  // share a sceneId), so this keeps one clean track per type per camera
+  // setup while still deduping weak secondary tracks within a scene.
+  const trackSceneKey = (t: typeof scoredTracks[0]): string => {
+    // Dominant sceneId among the track's surfaces (tracks can straddle a cut)
+    const counts = new Map<number, number>();
+    for (const s of t.surfaces) {
+      const sid = (s as any).sceneId ?? 0;
+      counts.set(sid, (counts.get(sid) || 0) + 1);
+    }
+    let best = 0, bestCount = -1;
+    counts.forEach((count, sid) => {
+      if (count > bestCount) { bestCount = count; best = sid; }
+    });
+    return `${t.surfaceType.toLowerCase()}:scene${best}`;
+  };
   const bestPerType = new Map<string, typeof scoredTracks[0]>();
   for (const t of scoredTracks) {
-    const key = t.surfaceType.toLowerCase();
+    const key = trackSceneKey(t);
     const existing = bestPerType.get(key);
     if (!existing || t.score > existing.score) {
       bestPerType.set(key, t);
@@ -2631,21 +2662,21 @@ async function groupSurfacesTemporally(
     }
   }
 
-  // Filter out surfaces NOT in any winning per-type track. These are
-  // weaker secondary tracks of the same type as a winning one (e.g. a
-  // brief 2-frame wall detection in a different camera angle when the
-  // primary wall track has 11 frames).
+  // Filter out surfaces NOT in any winning (type, scene) track. These are
+  // weaker secondary tracks of the same type WITHIN THE SAME SCENE (e.g. a
+  // brief 2-frame wall detection when that scene's primary wall track has
+  // 5 frames). Same-type tracks in other scenes keep their own winners.
   for (const track of scoredTracks) {
     if (track.surfaces.every(s => keepIds.has(s.id))) continue; // entirely a winner
     for (const s of track.surfaces) {
       if (keepIds.has(s.id)) continue;
-      const winner = bestPerType.get(track.surfaceType.toLowerCase());
+      const winner = bestPerType.get(trackSceneKey(track));
       const winnerLabel = winner ? `${winner.surfaceType} (${winner.duration}s)` : "best track";
-      console.log(`[Temporal] Filtering surface ${s.id} (${track.surfaceType}, ${track.duration}s) — winning ${track.surfaceType} track is ${winnerLabel}`);
+      console.log(`[Temporal] Filtering surface ${s.id} (${track.surfaceType}, ${track.duration}s) — winning ${track.surfaceType} track in this scene is ${winnerLabel}`);
       try {
         await storage.updateDetectedSurface(s.id, {
           surfaceType: "Filtered",
-          sceneContext: `Removed: weaker ${track.surfaceType} track (${track.duration}s) — best is ${winnerLabel}`,
+          sceneContext: `Removed: weaker ${track.surfaceType} track (${track.duration}s) — best in scene is ${winnerLabel}`,
         });
       } catch (err) {
         console.warn(`[Temporal] Failed to filter surface ${s.id}:`, err);
@@ -2653,7 +2684,7 @@ async function groupSurfacesTemporally(
     }
   }
 
-  console.log(`[Temporal] Kept ${keepIds.size} surfaces across ${bestPerType.size} type-tracks, filtered ${validSurfaces.length - keepIds.size}`);
+  console.log(`[Temporal] Kept ${keepIds.size} surfaces across ${bestPerType.size} (type, scene) tracks, filtered ${validSurfaces.length - keepIds.size}`);
 }
 
 // ============================================================================
@@ -3238,17 +3269,21 @@ async function processVideoScanInner(
     }
 
     // POST-SCAN NORMALIZATION — Cluster similar surfaces and normalize bounding boxes
-    // This ensures consistent product placement across frames of the same camera angle
+    // This ensures consistent product placement across frames of the same camera angle.
+    // Prior-scan rows are excluded — they're retired at end-of-scan and must not
+    // compete with (or overwrite) this run's detections.
+    const priorIdExclusions = new Set(priorSurfaceIds);
     try {
-      await normalizeSurfaceBoundingBoxes(videoId);
+      await normalizeSurfaceBoundingBoxes(videoId, priorIdExclusions);
     } catch (normErr) {
       console.error(`[Scanner V2] Bounding box normalization failed (non-fatal):`, normErr);
     }
 
-    // TEMPORAL SURFACE GROUPING — Group consecutive surfaces into tracks
-    // Keep only the best track (longest duration, highest confidence) and mark others as Filtered
+    // TEMPORAL SURFACE GROUPING — Group consecutive surfaces into tracks.
+    // Keep the best track per (surface type, scene) and mark weaker same-scene
+    // duplicates as Filtered.
     try {
-      await groupSurfacesTemporally(videoId, scanPlan.intervalSeconds);
+      await groupSurfacesTemporally(videoId, scanPlan.intervalSeconds, priorIdExclusions);
     } catch (temporalErr) {
       console.error(`[Scanner V2] Temporal grouping failed (non-fatal):`, temporalErr);
     }
@@ -3303,7 +3338,7 @@ async function processVideoScanInner(
           } catch { /* try next candidate */ }
         }
       }
-      await enrichSurfacesWithContext(videoId, enrichmentDir);
+      await enrichSurfacesWithContext(videoId, enrichmentDir, priorIdExclusions);
     } catch (enrichErr) {
       console.error(`[Scanner V2] Scene context enrichment failed (non-fatal):`, enrichErr);
     }

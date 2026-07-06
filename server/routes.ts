@@ -5279,6 +5279,34 @@ export async function registerRoutes(
     res.json({ success: true, surfaceId, approved });
   });
 
+  // Creator rejects a bad detection (wrong label, overlapping duplicate, etc.).
+  // Soft-deletes by stamping surfaceType "Filtered" — the same sentinel every
+  // read path already excludes (surfaces endpoint, brand marketplace, counts).
+  // The original type is preserved in sceneContext for audit/un-reject tooling.
+  app.post("/api/surface/:id/reject", isFlexibleAuthenticated, async (req: any, res) => {
+    const surfaceId = parseInt(req.params.id);
+    if (isNaN(surfaceId)) return res.status(400).json({ error: "Invalid surface ID" });
+
+    const [surface] = await db
+      .select()
+      .from(detectedSurfaces)
+      .where(eq(detectedSurfaces.id, surfaceId))
+      .limit(1);
+    if (!surface) return res.status(404).json({ error: "Surface not found" });
+
+    const video = await storage.getVideoById(surface.videoId);
+    if (!video) return res.status(404).json({ error: "Parent video not found" });
+
+    const isOwner = video.userId === req.authUserId || video.userId === req.authEmail;
+    if (!isOwner) return res.status(403).json({ error: "Not authorized to edit this video's surfaces" });
+
+    await storage.updateDetectedSurface(surfaceId, {
+      surfaceType: "Filtered",
+      sceneContext: `Removed by creator (was ${surface.surfaceType})`,
+    });
+    res.json({ success: true, surfaceId, rejected: true });
+  });
+
   // Batch insert surfaces for a video (Admin only)
   // Used to copy scan results to production database
   app.post("/api/videos/:id/batch-insert-surfaces", isFlexibleAuthenticated, async (req: any, res) => {

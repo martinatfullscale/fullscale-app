@@ -10,6 +10,10 @@ import * as cocoSsd from "@tensorflow-models/coco-ssd";
 export interface Scene {
   id: string;
   timestamp: string;
+  /** Exact frame timestamp in seconds (float). The display `timestamp` label
+      is floor-truncated to M:SS, which collides when two sampled frames land
+      in the same second — use this for surface↔frame matching. */
+  rawTs?: number;
   imageUrl: string;
   surfaces: number;
   surfaceTypes: string[];
@@ -236,6 +240,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
         return {
           id: `scene-${videoId}-${idx}`,
           timestamp: `${Math.floor(Number(ts) / 60)}:${String(Math.floor(Number(ts) % 60)).padStart(2, '0')}`,
+          rawTs: Number(ts) || 0,
           imageUrl: normalizeFrameUrl(surfacesAtTime[0]?.frameUrl || surfacesAtTime[0]?.frame_url) || buildFrameUrl(ts),
           surfaces: surfacesAtTime.length,
           surfaceTypes: surfaceTypes as string[],
@@ -330,16 +335,19 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
     canvas.height = rect.height;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     
-    // Get current scene's timestamp (e.g., "00:05" -> 5)
+    // Get current scene's exact frame timestamp. Fall back to parsing the
+    // M:SS label for scenes built before rawTs existed (e.g. Library prop).
     const currentScene = localScenes[currentSceneIndex];
     const sceneTimestamp = currentScene?.timestamp || "00:00";
     const [mins, secs] = sceneTimestamp.split(":").map(Number);
-    const sceneSeconds = (mins || 0) * 60 + (secs || 0);
-    
-    // Filter surfaces for this timestamp (within 5 second window)
+    const sceneSeconds = currentScene?.rawTs ?? ((mins || 0) * 60 + (secs || 0));
+
+    // Draw ONLY surfaces detected on THIS frame. A wide window here overlaid
+    // other frames' surfaces onto the current image (floor boxes from a 0:34
+    // wide shot painted over a 0:29 close-up).
     const sceneSurfaces = dbSurfaces.filter(s => {
-      const surfaceTs = parseInt(s.timestamp) || 0;
-      return Math.abs(surfaceTs - sceneSeconds) <= 5;
+      const surfaceTs = parseFloat(s.timestamp) || 0;
+      return Math.abs(surfaceTs - sceneSeconds) < 0.75;
     });
     
     if (sceneSurfaces.length === 0) return;
@@ -529,15 +537,16 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
     PLACEMENT_SURFACES.includes(d.class.toLowerCase())
   );
   
-  // Get current scene's timestamp for filtering database surfaces
+  // Get current scene's exact frame timestamp for filtering database surfaces
   const sceneTimestamp = currentScene?.timestamp || "00:00";
   const [mins, secs] = sceneTimestamp.split(":").map(Number);
-  const sceneSeconds = (mins || 0) * 60 + (secs || 0);
-  
-  // Filter database surfaces for current timestamp (within 5 second window)
+  const sceneSeconds = currentScene?.rawTs ?? ((mins || 0) * 60 + (secs || 0));
+
+  // Only the surfaces detected on the displayed frame — keeps the sidebar
+  // count/types in lockstep with the boxes actually drawn on the image
   const currentDbSurfaces = dbSurfaces.filter(s => {
-    const surfaceTs = parseInt(s.timestamp) || 0;
-    return Math.abs(surfaceTs - sceneSeconds) <= 5;
+    const surfaceTs = parseFloat(s.timestamp) || 0;
+    return Math.abs(surfaceTs - sceneSeconds) < 0.75;
   });
   
   // Priority: Database surfaces (real scan) > TensorFlow live detections > NO FALLBACK (show empty state)
@@ -717,8 +726,13 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                     />
                   )}
 
-                  {/* Layer 2: Frame image (preferred when available — enables bounding box overlays) */}
+                  {/* Layer 2: Frame image (preferred when available — enables bounding box overlays).
+                      The wrapper shrink-wraps to the image so the absolutely-positioned canvas
+                      covers exactly the video content — NOT the container's letterbox bars.
+                      (Previously the canvas stretched across the full container, so normalized
+                      bbox coords spilled into the black bars on vertical video.) */}
                   {!showEmbedPlayer && (
+                    <div className="relative max-w-full">
                     <img
                       ref={imageRef}
                       key={`frame-${video?.id}-${currentSceneIndex}`}
@@ -752,6 +766,12 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                         }
                       }}
                     />
+                    <canvas
+                      ref={canvasRef}
+                      className="absolute inset-0 w-full h-full pointer-events-none"
+                      data-testid="canvas-detections"
+                    />
+                    </div>
                   )}
 
                   {/* Layer 3: Static fallback only if no video file AND frame failed */}
@@ -763,14 +783,6 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                         <p className="text-xs mt-1">{currentScene?.timestamp || '0:00'}</p>
                       </div>
                     </div>
-                  )}
-
-                  {!showEmbedPlayer && (
-                    <canvas
-                      ref={canvasRef}
-                      className="absolute inset-0 w-full h-full pointer-events-none"
-                      data-testid="canvas-detections"
-                    />
                   )}
                   
                   <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent pointer-events-none" />
@@ -1070,7 +1082,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                         <span className="text-sm font-medium text-white">
                           All detected surfaces ({dbSurfaces.length})
                         </span>
-                        <span className="text-xs text-muted-foreground">Approve to expose to brands</span>
+                        <span className="text-xs text-muted-foreground">Approve to expose to brands · ✕ removes bad detections</span>
                       </div>
                       <div className="max-h-80 overflow-y-auto p-2 space-y-1.5">
                         {sortedSurfaces.map((s) => {
@@ -1118,33 +1130,59 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                                 <span className="text-xs text-muted-foreground font-mono">{tsLabel}</span>
                                 <span className="text-xs text-muted-foreground">{confPct}%</span>
                               </div>
-                              <Button
-                                size="sm"
-                                variant={isApproved ? "default" : "secondary"}
-                                onClick={async (e) => {
-                                  e.stopPropagation();
-                                  const next = !isApproved;
-                                  setDbSurfaces(prev => prev.map(x =>
-                                    x.id === s.id ? { ...x, creatorApproved: next } : x
-                                  ));
-                                  try {
-                                    const res = await fetch(`/api/surface/${s.id}/approval`, {
-                                      method: "PATCH",
-                                      headers: { "Content-Type": "application/json" },
-                                      credentials: "include",
-                                      body: JSON.stringify({ approved: next }),
-                                    });
-                                    if (!res.ok) throw new Error("approval failed");
-                                  } catch {
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <Button
+                                  size="sm"
+                                  variant={isApproved ? "default" : "secondary"}
+                                  onClick={async (e) => {
+                                    e.stopPropagation();
+                                    const next = !isApproved;
                                     setDbSurfaces(prev => prev.map(x =>
-                                      x.id === s.id ? { ...x, creatorApproved: !next } : x
+                                      x.id === s.id ? { ...x, creatorApproved: next } : x
                                     ));
-                                  }
-                                }}
-                                data-testid={`button-approve-surface-${s.id}`}
-                              >
-                                {isApproved ? "Approved" : "Approve"}
-                              </Button>
+                                    try {
+                                      const res = await fetch(`/api/surface/${s.id}/approval`, {
+                                        method: "PATCH",
+                                        headers: { "Content-Type": "application/json" },
+                                        credentials: "include",
+                                        body: JSON.stringify({ approved: next }),
+                                      });
+                                      if (!res.ok) throw new Error("approval failed");
+                                    } catch {
+                                      setDbSurfaces(prev => prev.map(x =>
+                                        x.id === s.id ? { ...x, creatorApproved: !next } : x
+                                      ));
+                                    }
+                                  }}
+                                  data-testid={`button-approve-surface-${s.id}`}
+                                >
+                                  {isApproved ? "Approved" : "Approve"}
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-8 w-8 p-0 text-zinc-400 hover:text-red-400 hover:bg-red-500/10"
+                                  title="Reject — remove this detection (wrong label or duplicate)"
+                                  onClick={async (e) => {
+                                    e.stopPropagation();
+                                    const removed = s;
+                                    // Optimistic removal — scenes/counts rebuild from dbSurfaces
+                                    setDbSurfaces(prev => prev.filter(x => x.id !== s.id));
+                                    try {
+                                      const res = await fetch(`/api/surface/${s.id}/reject`, {
+                                        method: "POST",
+                                        credentials: "include",
+                                      });
+                                      if (!res.ok) throw new Error("reject failed");
+                                    } catch {
+                                      setDbSurfaces(prev => [...prev, removed]);
+                                    }
+                                  }}
+                                  data-testid={`button-reject-surface-${s.id}`}
+                                >
+                                  <X className="w-4 h-4" />
+                                </Button>
+                              </div>
                             </div>
                           );
                         })}
