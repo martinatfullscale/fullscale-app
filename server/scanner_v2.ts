@@ -201,12 +201,24 @@ interface GeminiSurfaceDetectionResult {
 const SURFACE_DETECTION_PROMPT = `You are analyzing a video frame to identify REAL, PHYSICAL surfaces where a brand could naturally place product or signage.
 
 CRITICAL FRAMING — READ FIRST:
-This task heavily rewards FALSE POSITIVES if you let it. Most frames in
-podcast / interview / vlog content do NOT contain a usable placement
-surface — the camera is on people, not on furniture. Your default
-posture should be: "no clear surface exists in this frame, return empty."
-Only flag a surface when you can confidently describe what it is, where
-it sits in 3D space, and what it's made of. When in doubt, return empty.
+This footage is almost entirely podcast / interview / talking-head content:
+one or two people seated in a studio or room, talking to camera. In this
+content there are almost ALWAYS two genuinely usable placement surfaces,
+and your job is to FIND them reliably — not to return empty:
+  A) The BACKDROP WALL behind / beside the speaker — the empty vertical
+     plane a sponsor banner, poster, or logo would hang on. This is the
+     single most valuable surface in podcast content. Look for it in EVERY
+     frame, including tight close-ups: there is almost always empty wall to
+     the LEFT and/or RIGHT of the person's head and shoulders.
+  B) The STUDIO DESK / TABLE in front of the speaker — the flat top where
+     the mic, water bottle, or notes sit. A prime horizontal surface.
+Your default posture is NOT "return empty." It is: "locate the backdrop
+wall and the desk, box the EMPTY part of each, and reject the person."
+The ONE thing you must never do is box a PERSON — their body, face, hair,
+lap, hands, clothing, or the chair they sit in (see the anti-hallucination
+rules below). Reject the person, not the room. Only return zero surfaces
+when the background is genuinely unusable (pure outdoor, total blur, or the
+person completely fills the frame edge to edge with no wall visible).
 
 BEFORE PICKING ANY SURFACE — describe the 3D layout:
 - What is in the foreground (person, microphone, hands)?
@@ -245,7 +257,11 @@ CRITICAL RULES:
 - Do NOT flag bridges, vehicles, or outdoor structures
 - Do NOT flag areas with heavy motion blur or out-of-focus regions
 - Do NOT flag surfaces blocked by people's bodies, hands, or large objects
-- If a person occupies >50% of the frame (close-up, bust shot), return surfaces_found: false UNLESS a clear surface is ALSO prominently visible SEPARATE from the person
+- Even in a close-up / bust shot where a person fills the center of the frame,
+  do NOT default to surfaces_found: false — look for the empty backdrop wall to
+  the LEFT and RIGHT of the person's head/shoulders and flag it as a vertical
+  "wall" surface. Return false only if the background is genuinely unusable
+  (pure outdoor, total blur, or the person covers the wall entirely)
 - If the frame is exterior/outdoor with no architectural features, return surfaces_found: false
 
 ANTI-HALLUCINATION RULES (CRITICAL — READ CAREFULLY):
@@ -330,6 +346,11 @@ FLOOR surface rules (use surface_type:"floor", orientation:"horizontal"):
 - Do NOT flag the floor BENEATH a person's feet — they're standing on it.
 - Do NOT flag floor that's mostly out of focus (depth-of-field background).
 - Outdoor ground (sidewalks, asphalt, grass) is NOT floor — those stay excluded.
+- IN SEATED / TALKING-HEAD CONTENT, floor is LOW priority and error-prone: a lap,
+  dark clothing, a shadow, or a letterbox/black bar is NOT floor. Only flag floor
+  if you see an unmistakable clean patch of real indoor floor in the LOWER THIRD of
+  the frame (box center y > 65). When unsure, drop the floor and return the
+  backdrop wall instead — the wall is almost always the better placement anyway.
 
 VERTICAL surface bounding box rules:
 - The box must cover only the EMPTY/UNOBSTRUCTED part of the wall/door/window
@@ -339,25 +360,29 @@ VERTICAL surface bounding box rules:
 - Box should be a substantial usable plane, not tiny patches between objects
 - The wall must be IN FOCUS — out-of-focus background walls are not placement surfaces
 
-PODCAST / INTERVIEW / TALKING-HEAD RULES (read carefully — we hallucinate here):
-- Most podcast frames have NO usable surface. Default to surfaces_found:false.
-- People sitting on COUCHES with no visible coffee table → no surface. Return empty.
-  Couch arm-rests are NOT desks. Couch cushions are NOT tables. The throw pillow
-  next to them is NOT a surface.
-- People sitting in CHAIRS with no visible side table → no surface. Return empty.
-  The chair arm is not a surface.
-- The wall/backdrop BEHIND the subject: only flag as "wall" if it is IN FOCUS,
-  large, mostly empty (no existing art/posters/shelves filling it), and clearly
-  intended as a backdrop. A blurred or partially-visible background wall is NOT
-  a placement surface.
-- The decorative art piece, mural, or painted backdrop behind the subject is NOT
-  a placement target — it's existing decor and a brand poster wouldn't go there.
-- A "studio_desk" requires you to actually SEE the flat horizontal desk top in
-  the frame. If you can only see the front edge / the side / the equipment on
-  it but not the top plane, return empty for that surface.
-- A coffee table in front of the couch counts ONLY if its TOP is clearly visible
-  (not occluded by people's legs / drinks already on it / the camera angle being
-  too low to see the top).
+PODCAST / INTERVIEW / TALKING-HEAD RULES (this is the primary content — get it right):
+- These frames almost ALWAYS have at least one usable surface: the backdrop wall
+  behind/beside the speaker. Find it. "Default to empty" is WRONG for this content.
+- BACKDROP WALL (highest-value surface): the vertical plane behind the speaker.
+  Flag it as surface_type:"wall", orientation:"vertical". Box the EMPTY region to
+  the LEFT or RIGHT of the speaker's head and shoulders — the box must NOT overlap
+  the person's head, face, or body. If wall is visible on both sides, pick the
+  larger/cleaner empty side. A softly-lit or lightly-textured studio backdrop
+  still counts — it does NOT have to be a pristine blank wall. Skip it only if it
+  is FULLY blocked by the person or completely out of focus.
+- A plain painted / curtained / panelled studio backdrop IS a valid placement wall
+  — that is exactly where sponsor signage goes. Only an EXISTING framed artwork or
+  a wall already packed with posters/shelves is off-limits, and then you place in
+  the empty area BESIDE it, not on it.
+- STUDIO DESK / TABLE in front of the speaker: flag as "studio_desk" or "table"
+  (horizontal) when the flat top plane is visible (where the mic / water bottle
+  rests). Box only the visible empty top — not the front edge, not the equipment.
+  If you can see only the front edge or the gear but not the top plane, skip it.
+- The COUCH / CHAIR the person sits IN is never a surface — arm-rests, cushions,
+  seat-backs, and throw pillows are all excluded — but the WALL behind that couch
+  still is, so return the wall.
+- A coffee/side table counts only if its flat TOP is clearly visible (not fully
+  occluded by legs, drinks already on it, or too low a camera angle).
 - If you cannot describe in one sentence "there is a [surface_type] at [location]
   made of [material]," then it is not a real surface and should not be flagged.
 
