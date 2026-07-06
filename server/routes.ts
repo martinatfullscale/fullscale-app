@@ -51,7 +51,7 @@ import { users, users as usersTable, allowedUsers as allowedUsersTable, videoInd
 import { eq, sql } from "drizzle-orm";
 import crypto from "crypto";
 import sharp from "sharp";
-import { uploadFileToStorage, uploadStreamToStorage, fileExistsInStorage, objectKeyFromServeUrl, getStorageStream } from "./lib/objectStorage";
+import { uploadFileToStorage, uploadStreamToStorage, fileExistsInStorage, objectKeyFromServeUrl, storageServeUrl, getStorageStream } from "./lib/objectStorage";
 import { runTranscriptPipeline } from "./lib/remix/transcriptPipeline";
 import { runEditorialAutoPipeline, renderSingleEditorialClip } from "./lib/remix/editorialAutoPipeline";
 import { analyzeEditorial } from "./lib/ai/claude-dense/editorialAnalyzer";
@@ -4102,6 +4102,68 @@ export async function registerRoutes(
 
   // Update video file path and thumbnail - for fixing database records
   // Only works for videos owned by admin emails
+  // Admin: audit + repair upload filePaths against Object Storage. Replit's
+  // deploy filesystem is ephemeral, so legacy uploads written to local disk
+  // vanish on redeploy while their bytes may still live in GCS under a
+  // derivable key. For each fullscale upload this checks candidate GCS keys,
+  // rewrites filePath to the durable "/storage/..." form when the object
+  // exists, and marks genuinely-missing ones with an honest status instead of
+  // leaving them to 404 silently. Idempotent; safe to run repeatedly.
+  app.post("/api/admin/backfill-storage-paths", isFlexibleAuthenticated, async (req: any, res) => {
+    if (!req.isAdmin) return res.status(403).json({ error: "Admin access required" });
+    const dryRun = req.query.dry === "1" || req.body?.dryRun === true;
+
+    try {
+      // Audit every video (admin-only endpoint). Import rows are skipped below.
+      const videos = await storage.getAllVideos();
+
+      const report = { scanned: 0, alreadyOk: 0, repaired: 0, missing: 0, skippedImports: 0, changes: [] as any[] };
+
+      for (const v of videos) {
+        // Only fullscale uploads have a durable-file expectation. IG/YT/FB
+        // imports legitimately have filePath = null (light-cloud) — skip them.
+        const fp = (v as any).filePath as string | null;
+        if (!fp) { report.skippedImports++; continue; }
+        report.scanned++;
+
+        // Candidate object keys, in priority order.
+        const base = fp.split("/").pop() || "";
+        const candidates = [
+          fp.startsWith("/storage/") ? objectKeyFromServeUrl(fp) : null,
+          fp.replace(/^\.?\/?public\//, "public/"),
+          `public/videos/${base}`,
+          `public/uploads/${base}`,
+        ].filter(Boolean) as string[];
+
+        let foundKey: string | null = null;
+        for (const key of candidates) {
+          try { if (await fileExistsInStorage(key)) { foundKey = key; break; } } catch { /* ignore */ }
+        }
+
+        if (foundKey) {
+          const durablePath = storageServeUrl(foundKey); // "/storage/..."
+          if (fp === durablePath) { report.alreadyOk++; continue; }
+          report.repaired++;
+          report.changes.push({ id: v.id, from: fp, to: durablePath, foundKey });
+          if (!dryRun) await storage.updateVideoIndex(v.id, { filePath: durablePath });
+        } else {
+          report.missing++;
+          report.changes.push({ id: v.id, from: fp, status: "Source Missing — Re-upload", triedKeys: candidates });
+          // Only mark uploads (not imports) and don't clobber an in-progress state.
+          if (!dryRun && (v as any).platform === "fullscale") {
+            await storage.updateVideoStatus(v.id, "Source Missing — Re-upload");
+          }
+        }
+      }
+
+      console.log(`[Backfill Storage] scanned=${report.scanned} ok=${report.alreadyOk} repaired=${report.repaired} missing=${report.missing}${dryRun ? " (DRY RUN)" : ""}`);
+      res.json({ success: true, dryRun, ...report });
+    } catch (err: any) {
+      console.error("[Backfill Storage] Error:", err);
+      res.status(500).json({ success: false, error: err.message || "Backfill failed" });
+    }
+  });
+
   app.post("/api/videos/:id/update-path", isFlexibleAuthenticated, async (req: any, res) => {
     // Was previously UNAUTHENTICATED — any anonymous caller could repoint
     // filePath/thumbnailUrl on admin-owned (flagship/showcase) videos:
@@ -5013,8 +5075,16 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Video file not found" });
       }
 
-      // Try Object Storage first (Replit)
-      const objectKey = video.filePath.replace(/^\.?\/?public\//, "public/");
+      // Try Object Storage first (Replit). Resolve the object key handling
+      // BOTH shapes: the new "/storage/..." serve URL (via objectKeyFromServeUrl)
+      // and the legacy "./public/..." / "public/..." path. The old code only
+      // stripped a /public/ prefix, so "/storage/videos/x.mp4" fell through to
+      // a GCS lookup for a key literally named "/storage/videos/x.mp4" (miss)
+      // and then 404'd — the durable file was there under "public/videos/x.mp4"
+      // the whole time.
+      const objectKey = video.filePath.startsWith("/storage/")
+        ? objectKeyFromServeUrl(video.filePath)
+        : video.filePath.replace(/^\.?\/?public\//, "public/");
       try {
         if (await fileExistsInStorage(objectKey)) {
           const { file, stream } = getStorageStream(objectKey);

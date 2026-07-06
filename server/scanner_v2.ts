@@ -3019,50 +3019,15 @@ async function processVideoScanInner(
       }
     }
     
-    // FALLBACK DETECTION - Add "Potential Surface" for videos with too few detections
-    if (totalSurfaces < CONFIG.MIN_SURFACES_BEFORE_FALLBACK && frames.length > 0) {
-      console.log(`[Scanner V2] Low surface count (${totalSurfaces}), adding fallback surfaces...`);
-      
-      // Find frames that didn't get surfaces and add potential surfaces.
-      // Scene-first sampling produces non-integer timestamps (e.g. 14.7s)
-      // so we round before set membership comparison — same key the
-      // fallback loop below uses for the frameUrl filename.
-      const framesWithSurfaces = new Set<number>();
-      const existingSurfaces = await storage.getDetectedSurfaces(videoId);
-      existingSurfaces.forEach(s => framesWithSurfaces.add(Math.round(parseFloat(String(s.timestamp)))));
-      
-      for (let i = 0; i < frames.length && totalSurfaces < CONFIG.MIN_SURFACES_BEFORE_FALLBACK + 2; i++) {
-        // Use real per-frame timestamp (scene-first or uniform) instead of
-        // recomputing from the loop index — uniform pre-existing behavior
-        // happens to match, scene-first uses non-uniform sampling so the
-        // reconstruction would be wrong without this.
-        const timestamp = frameTimestamps[i] ?? i * scanPlan.intervalSeconds;
-        const tsKey = Math.round(timestamp);
-        if (!framesWithSurfaces.has(tsKey)) {
-          const fallbackFrameFilename = `frame_${tsKey}s.jpg`;
+    // NOTE: The "Potential Surface" fallback that used to pad low-detection
+    // scans with synthetic bottom-of-frame boxes (confidence 0.15) was REMOVED.
+    // It produced fake placement targets brands could browse and bid on — a
+    // scan that genuinely found nothing (or where Gemini was unavailable) would
+    // still show "Ready (N Spots)" of junk. Surfaces must be REAL detections
+    // now. A zero-detection scan honestly reports zero. If detection quality is
+    // the concern, the fix is denser real detection (see keyframe densification),
+    // not synthetic surfaces.
 
-          const dbSurface = {
-            videoId,
-            timestamp: String(timestamp),
-            surfaceType: "Potential Surface",
-            confidence: String(CONFIG.FALLBACK_CONFIDENCE),
-            boundingBoxX: "0.05",
-            boundingBoxY: "0.6", // Bottom 40%
-            boundingBoxWidth: "0.9",
-            boundingBoxHeight: "0.35",
-            frameUrl: `/storage/uploads/frames/${videoId}/${fallbackFrameFilename}`,
-            surroundings: null,
-            sceneContext: "Fallback detection - potential placement area",
-            sceneId: sceneIndex ? sceneIdForTimestamp(sceneIndex, timestamp) : 0,
-          };
-
-          await storage.insertDetectedSurface(dbSurface);
-          console.log(`[Scanner V2] *** FALLBACK SURFACE at ${timestamp.toFixed(2)}s (confidence: ${(CONFIG.FALLBACK_CONFIDENCE * 100).toFixed(1)}%) ***`);
-          totalSurfaces++;
-        }
-      }
-    }
-    
     // PHASE 2A: CAPTURE SURFACE KEYFRAMES — Save raw per-frame bboxes for motion tracking
     // Must happen BEFORE normalization overwrites bboxes with the median
     try {
