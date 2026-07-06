@@ -1933,8 +1933,8 @@ export default function RemixEngine() {
                           credentials: "include",
                           body: JSON.stringify({
                             exportId: exportJobId,
-                            videoId: videoDetails?.id,
-                            title: videoDetails?.title || "Remixed Video",
+                            videoId: video?.id,
+                            title: video?.title || "Remixed Video",
                           }),
                         });
                         if (!res.ok) throw new Error("Failed to create share link");

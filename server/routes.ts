@@ -61,6 +61,7 @@ import {
   fetchYoutubeAudience,
   fetchFacebookPageAudience,
 } from "./lib/audienceFetcher";
+import { authLimiter, scanLimiter, uploadLimiter } from "./middleware/rateLimit";
 import { rankClips, deduplicateClips } from "./lib/remix/clipRanker";
 
 // Configure multer for video uploads (temp dir, then uploaded to Object Storage)
@@ -1398,7 +1399,7 @@ export async function registerRoutes(
 
   // Dev-only admin login bypass — skips Google OAuth for admin emails
   // Creates a real session so the entire app works (Library, Dashboard, etc.)
-  app.post("/api/auth/dev-login", async (req: any, res) => {
+  app.post("/api/auth/dev-login", authLimiter, async (req: any, res) => {
     const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
     const isDevelopment = process.env.NODE_ENV !== 'production';
 
@@ -1627,7 +1628,7 @@ export async function registerRoutes(
   });
 
   // Register new user with email/password
-  app.post("/api/auth/register", async (req, res) => {
+  app.post("/api/auth/register", authLimiter, async (req, res) => {
     try {
       const parsed = registerSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -1732,7 +1733,7 @@ export async function registerRoutes(
   });
 
   // Login with email/password
-  app.post("/api/auth/login", async (req, res) => {
+  app.post("/api/auth/login", authLimiter, async (req, res) => {
     try {
       const parsed = loginSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -1901,12 +1902,18 @@ export async function registerRoutes(
         req.isAdmin = true;
         return next();
       }
-      // Auto-pass in development when no auth is available (default to first admin)
-      const defaultAdmin = adminEmails[0];
-      req.authEmail = defaultAdmin;
-      req.authUserId = (await storage.getUserByEmail(defaultAdmin))?.id || 1;
-      req.isAdmin = true;
-      return next();
+      // Blanket auto-pass: authenticates ANY caller as the first admin with no
+      // credentials. This is the most dangerous bypass in the codebase — its
+      // only protection in prod is the esbuild NODE_ENV inlining (a single
+      // point of failure). Require an explicit ALLOW_DEV_AUTH=1 opt-in as a
+      // second, independent gate so it can never silently reopen.
+      if (process.env.ALLOW_DEV_AUTH === '1') {
+        const defaultAdmin = adminEmails[0];
+        req.authEmail = defaultAdmin;
+        req.authUserId = (await storage.getUserByEmail(defaultAdmin))?.id || 1;
+        req.isAdmin = true;
+        return next();
+      }
     }
 
     return res.status(401).json({ message: "Unauthorized - Please login" });
@@ -4015,7 +4022,7 @@ export async function registerRoutes(
   });
 
   // Trigger Cloud Scan for a specific video
-  app.post("/api/video-scan/:id", isFlexibleAuthenticated, async (req: any, res) => {
+  app.post("/api/video-scan/:id", scanLimiter, isFlexibleAuthenticated, async (req: any, res) => {
     console.log(`[BACKEND] ===== SCAN REQUEST RECEIVED =====`);
     console.log(`[BACKEND] Video ID from URL: ${req.params.id}`);
     console.log(`[BACKEND] User: ${req.authEmail || 'unknown'} (ID: ${req.authUserId})`);
@@ -4078,7 +4085,7 @@ export async function registerRoutes(
   });
 
   // Scan all pending videos for the user
-  app.post("/api/video-scan/batch", isFlexibleAuthenticated, async (req: any, res) => {
+  app.post("/api/video-scan/batch", scanLimiter, isFlexibleAuthenticated, async (req: any, res) => {
     const userId = req.authEmail;
     const limit = parseInt(req.query.limit as string) || 5;
 
@@ -4095,7 +4102,16 @@ export async function registerRoutes(
 
   // Update video file path and thumbnail - for fixing database records
   // Only works for videos owned by admin emails
-  app.post("/api/videos/:id/update-path", async (req, res) => {
+  app.post("/api/videos/:id/update-path", isFlexibleAuthenticated, async (req: any, res) => {
+    // Was previously UNAUTHENTICATED — any anonymous caller could repoint
+    // filePath/thumbnailUrl on admin-owned (flagship/showcase) videos:
+    // defacement, or point thumbnails at attacker images shown on public
+    // profiles. Now requires an authenticated admin, and validates the paths
+    // stay inside the app's own storage namespace.
+    if (!req.isAdmin) {
+      return res.status(403).json({ error: "Admin access required" });
+    }
+
     const videoId = parseInt(req.params.id);
     if (isNaN(videoId)) {
       return res.status(400).json({ error: "Invalid video ID" });
@@ -4106,15 +4122,20 @@ export async function registerRoutes(
       return res.status(400).json({ error: "Must provide filePath or thumbnailUrl" });
     }
 
+    // Constrain paths to the app's storage namespace so this can't be used to
+    // repoint media at an external URL or an arbitrary object key.
+    const isSafePath = (p: string) =>
+      typeof p === "string" && (p.startsWith("/storage/") || p.startsWith("/public/") || p.startsWith("public/"));
+    if (filePath && !isSafePath(filePath)) {
+      return res.status(400).json({ error: "filePath must be within the storage namespace" });
+    }
+    if (thumbnailUrl && !isSafePath(thumbnailUrl)) {
+      return res.status(400).json({ error: "thumbnailUrl must be within the storage namespace" });
+    }
+
     const video = await storage.getVideoById(videoId);
     if (!video) {
       return res.status(404).json({ error: "Video not found" });
-    }
-
-    // Only allow updates for admin-owned videos
-    const adminEmailsList = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
-    if (!adminEmailsList.includes(video.userId)) {
-      return res.status(403).json({ error: "Can only update admin-owned videos" });
     }
 
     try {
@@ -4150,7 +4171,7 @@ export async function registerRoutes(
   // /api/video-scan and the public profile fix): match either authUserId
   // or authEmail. Any authenticated user can synchronously scan their
   // own video regardless of which import path created it.
-  app.post("/api/admin-scan/:id", isFlexibleAuthenticated, async (req: any, res) => {
+  app.post("/api/admin-scan/:id", scanLimiter, isFlexibleAuthenticated, async (req: any, res) => {
     const videoId = parseInt(req.params.id);
     if (isNaN(videoId)) {
       return res.status(400).json({ error: "Invalid video ID" });
@@ -4611,7 +4632,7 @@ export async function registerRoutes(
   // file to /tmp first — that path stalled at ~80% on Replit deploy when /tmp
   // filled up (source cache + frame extraction + multer all share /tmp), and
   // the resulting TCP backpressure froze the browser upload progress.
-  app.post("/api/upload", isFlexibleAuthenticated, async (req: any, res) => {
+  app.post("/api/upload", uploadLimiter, isFlexibleAuthenticated, async (req: any, res) => {
     const uploadStartedAt = Date.now();
     // Phase timestamps for end-to-end timing diagnostics. User has been
     // reporting "upload takes forever on small files" — these markers let
@@ -5692,7 +5713,7 @@ export async function registerRoutes(
         return res.status(400).json({ error: `Bid is in '${bid.status}' state and cannot be linked to a placement` });
       }
 
-      const placement = await storage.getPlacement(placementId);
+      const placement = await storage.getPlacementById(placementId);
       if (!placement) return res.status(404).json({ error: "Placement not found" });
 
       // Auto-create a shared link for the brand to review
@@ -8718,11 +8739,34 @@ export async function registerRoutes(
   });
 
   // Update a placement
+  // Ownership check for a placement: the creator who owns the underlying
+  // video, the user who created the placement, or an admin. Prevents the
+  // cross-tenant IDOR where any logged-in user could rewrite/delete any
+  // placement by iterating integer IDs.
+  async function authorizePlacement(placementId: number, req: any): Promise<{ ok: boolean; status: number }> {
+    const placement = await storage.getPlacementById(placementId);
+    if (!placement) return { ok: false, status: 404 };
+    if (req.isAdmin) return { ok: true, status: 200 };
+    if (placement.createdBy && placement.createdBy === req.authEmail) {
+      return { ok: true, status: 200 };
+    }
+    const video = placement.videoId ? await storage.getVideoById(placement.videoId) : null;
+    if (video && (video.userId === req.authUserId || video.userId === req.authEmail)) {
+      return { ok: true, status: 200 };
+    }
+    return { ok: false, status: 403 };
+  }
+
   app.patch("/api/placements/:id", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const placementId = parseInt(req.params.id);
       if (isNaN(placementId)) {
         return res.status(400).json({ error: "Invalid placement ID" });
+      }
+
+      const auth = await authorizePlacement(placementId, req);
+      if (!auth.ok) {
+        return res.status(auth.status).json({ error: auth.status === 404 ? "Placement not found" : "Not authorized to modify this placement" });
       }
 
       // Defensive validation for keyframes — incomplete entries break the
@@ -8765,6 +8809,11 @@ export async function registerRoutes(
       const placementId = parseInt(req.params.id);
       if (isNaN(placementId)) {
         return res.status(400).json({ error: "Invalid placement ID" });
+      }
+
+      const auth = await authorizePlacement(placementId, req);
+      if (!auth.ok) {
+        return res.status(auth.status).json({ error: auth.status === 404 ? "Placement not found" : "Not authorized to delete this placement" });
       }
 
       const deleted = await storage.deletePlacement(placementId);
@@ -9798,7 +9847,7 @@ export async function registerRoutes(
       }
 
       // Get surface and scene analysis data
-      const surfaces = await storage.getSurfacesForVideo(videoId);
+      const surfaces = await storage.getSurfacesForVideo(videoId); // DEAD-BROKEN endpoint (product-asset/composite-preview) — see CODE_REVIEW; tracked for removal/rewrite
       const surface = surfaces.find((s: any) => s.id === surfaceId);
       if (!surface) return res.status(404).json({ error: "Surface not found" });
 
@@ -9871,7 +9920,7 @@ export async function registerRoutes(
       const asset = assets.find((a: any) => a.id === assetId);
       if (!asset || !asset.assetPath) return res.status(404).json({ error: "Asset not found" });
 
-      const surfaces = await storage.getSurfacesForVideo(videoId);
+      const surfaces = await storage.getSurfacesForVideo(videoId); // DEAD-BROKEN endpoint (product-asset/composite-preview) — see CODE_REVIEW; tracked for removal/rewrite
       const surface = surfaces.find((s: any) => s.id === surfaceId);
       if (!surface) return res.status(404).json({ error: "Surface not found" });
 
@@ -9946,7 +9995,7 @@ export async function registerRoutes(
         return res.status(400).json({ error: "surfaceId and brandProductId are required" });
       }
 
-      const surfaces = await storage.getSurfacesForVideo(videoId);
+      const surfaces = await storage.getSurfacesForVideo(videoId); // DEAD-BROKEN endpoint (product-asset/composite-preview) — see CODE_REVIEW; tracked for removal/rewrite
       const surface = surfaces.find((s: any) => s.id === surfaceId);
       if (!surface) return res.status(404).json({ error: "Surface not found" });
 
@@ -10022,7 +10071,7 @@ export async function registerRoutes(
       const videoId = parseInt(req.params.videoId);
       const scanMode = req.body.scanMode || "standard";
 
-      const surfaces = await storage.getSurfacesForVideo(videoId);
+      const surfaces = await storage.getSurfacesForVideo(videoId); // DEAD-BROKEN endpoint (product-asset/composite-preview) — see CODE_REVIEW; tracked for removal/rewrite
       const allAnalyses = await storage.getSceneAnalysisByVideo(videoId);
 
       if (allAnalyses.length === 0) {

@@ -101,12 +101,18 @@ function Router() {
   const { isAuthenticated: isGoogleAuthenticated, isLoading: isLoadingGoogleAuth } = useHybridMode();
   const [location, setLocation] = useLocation();
 
-  // Admin email bypass for dev/testing (same list as Library.tsx)
+  // Admin email bypass for LOCAL DEV ONLY. In production this was a URL-param
+  // auth bypass: ?admin_email=<known admin> set isAuthenticated=true with no
+  // session, exposing an authenticated-looking (but broken) shell and leaking
+  // the admin list in the bundle. Gated behind a non-production hostname so it
+  // works for local dev and is dead on gofullscale.co. (Server data-gating
+  // already holds regardless; this just closes the client-side shell.)
+  const isDevHost = window.location.hostname !== "gofullscale.co";
   const ADMIN_EMAILS = ['martin@gofullscale.co', 'martin@whtwrks.com', 'martincekechukwu@gmail.com'];
   const urlParams = new URLSearchParams(window.location.search);
   const adminEmailFromUrl = urlParams.get('admin_email') || '';
-  const isAdminBypass = ADMIN_EMAILS.includes(adminEmailFromUrl);
-  
+  const isAdminBypass = isDevHost && ADMIN_EMAILS.includes(adminEmailFromUrl);
+
   const isAuthenticated = !!user || isGoogleAuthenticated || isAdminBypass;
 
   useEffect(() => {
