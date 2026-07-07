@@ -333,6 +333,41 @@ async function refreshAccessToken(refreshToken: string): Promise<{ access_token:
   }
 }
 
+// videoIndex.userId and brandPlacementAssignments.creatorUserId are mixed-key
+// columns: newer rows store users.id, legacy rows store the creator's email.
+// Resolve either form to the canonical user so per-creator lookups (video
+// library, YouTube connection) and ownership checks see the whole identity.
+async function resolveCreatorIdentity(
+  rawUserId: string,
+): Promise<{ userId: string; email?: string }> {
+  const byId = await storage.getUserById(rawUserId).catch(() => undefined);
+  if (byId) return { userId: byId.id, email: byId.email ?? undefined };
+  if (rawUserId.includes("@")) {
+    const byEmail = await storage.getUserByEmail(rawUserId).catch(() => undefined);
+    if (byEmail) return { userId: byEmail.id, email: byEmail.email ?? undefined };
+    return { userId: rawUserId, email: rawUserId };
+  }
+  return { userId: rawUserId };
+}
+
+// Ownership check for rows whose creatorUserId may be a users.id or a legacy
+// email. True when the stored key and the authenticated user are the same
+// creator. Deliberately never consults the session-asserted email
+// (req.authEmail) — registration doesn't verify email ownership, so only the
+// server-recorded users row of the authenticated id is trusted.
+async function isSameCreator(
+  storedUserId: string,
+  authUserId: string,
+): Promise<boolean> {
+  if (storedUserId === authUserId) return true;
+  const identity = await resolveCreatorIdentity(storedUserId);
+  if (identity.userId === authUserId) return true;
+  // Stored key is an email with no users row — compare against the
+  // authenticated user's recorded email.
+  const authUser = await storage.getUserById(authUserId).catch(() => undefined);
+  return !!(authUser?.email && storedUserId.toLowerCase() === authUser.email.toLowerCase());
+}
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
@@ -7955,11 +7990,20 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Provide editorialClipId or videoId" });
       }
 
-      // Creator stats: follower count from YouTube connection + recent avg views
-      const creatorConn = await storage.getYoutubeConnection(video.userId).catch(() => null);
+      // Creator stats: follower count from YouTube connection + recent avg views.
+      // video.userId may be a users.id or a legacy email key — resolve the full
+      // identity so tier/avg-views compute from the creator's whole library.
+      const creatorIdentity = await resolveCreatorIdentity(video.userId);
+      const creatorConn =
+        (await storage.getYoutubeConnection(creatorIdentity.userId).catch(() => null)) ??
+        (creatorIdentity.userId !== video.userId
+          ? await storage.getYoutubeConnection(video.userId).catch(() => null)
+          : null);
       const creatorFollowers = creatorConn?.subscriberCount ?? null;
+      // Raw key first (getVideoIndex self-resolves either form and matches
+      // {raw, users.id, email}) so unnormalized legacy rows stay in the set.
       const creatorVideos = await storage
-        .getVideoIndex(video.userId)
+        .getVideoIndex(video.userId, creatorIdentity.email)
         .catch(() => [] as any[]);
       const creatorAvgViews = avgRecentViews(
         creatorVideos.map((v: any) => ({ viewCount: v.viewCount, createdAt: v.createdAt })),
@@ -8096,10 +8140,13 @@ export async function registerRoutes(
         resolvedVideoId = parseInt(videoId);
       }
 
-      // Verify video exists and capture creator's userId
+      // Verify video exists and resolve the creator's canonical identity.
+      // video.userId may be a users.id or a legacy email key; new placement
+      // rows store the canonical id (inbox reads are alias-aware either way).
       const video = await storage.getVideoById(resolvedVideoId);
       if (!video) return res.status(404).json({ error: "Video not found" });
-      const creatorUserId = video.userId;
+      const creatorIdentity = await resolveCreatorIdentity(video.userId);
+      const creatorUserId = creatorIdentity.userId;
 
       // Verify brand owns the product
       const product = await storage.getBrandProduct(parseInt(brandProductId));
@@ -8136,10 +8183,19 @@ export async function registerRoutes(
         });
       }
 
-      // Gather pricing inputs (creator stats + video age) — fetched once, reused per surface
-      const creatorConn = await storage.getYoutubeConnection(video.userId).catch(() => null);
+      // Gather pricing inputs (creator stats + video age) — fetched once, reused
+      // per surface. Same dual-key resolution as the quote endpoint so the
+      // charged price matches the quoted price.
+      const creatorConn =
+        (await storage.getYoutubeConnection(creatorIdentity.userId).catch(() => null)) ??
+        (creatorIdentity.userId !== video.userId
+          ? await storage.getYoutubeConnection(video.userId).catch(() => null)
+          : null);
       const creatorFollowers = creatorConn?.subscriberCount ?? null;
-      const creatorVideos = await storage.getVideoIndex(video.userId).catch(() => [] as any[]);
+      // Raw key first — same superset lookup as the quote endpoint.
+      const creatorVideos = await storage
+        .getVideoIndex(video.userId, creatorIdentity.email)
+        .catch(() => [] as any[]);
       const creatorAvgViews = avgRecentViews(
         creatorVideos.map((v: any) => ({ viewCount: v.viewCount, createdAt: v.createdAt })),
         10,
@@ -8351,7 +8407,7 @@ export async function registerRoutes(
 
       const placement = await storage.getBrandPlacementById(id);
       if (!placement) return res.status(404).json({ error: "Placement not found" });
-      if (placement.creatorUserId !== creatorUserId) {
+      if (!(await isSameCreator(placement.creatorUserId, creatorUserId))) {
         return res.status(403).json({ error: "Not authorized to approve this placement" });
       }
       if (placement.status !== "pending_creator_review") {
@@ -8393,7 +8449,7 @@ export async function registerRoutes(
 
       const placement = await storage.getBrandPlacementById(id);
       if (!placement) return res.status(404).json({ error: "Placement not found" });
-      if (placement.creatorUserId !== creatorUserId) {
+      if (!(await isSameCreator(placement.creatorUserId, creatorUserId))) {
         return res.status(403).json({ error: "Not authorized to reject this placement" });
       }
       if (placement.status !== "pending_creator_review") {

@@ -651,13 +651,19 @@ export class DatabaseStorage implements IStorage {
 
   async getVideoIndex(userId: string, authEmail?: string): Promise<VideoIndex[]> {
     console.log(`[Storage.getVideoIndex] Looking up user by ID: ${userId}, authEmail: ${authEmail}`);
-    // First, try to get user by ID to also check by email
-    const user = await this.getUserById(userId);
+    // videoIndex.userId is a mixed-key column: newer rows store users.id, legacy
+    // rows store the creator's email. Resolve the user from either form so the
+    // match set always carries both identifiers.
+    let user = await this.getUserById(userId);
+    if (!user && userId.includes("@")) {
+      user = await this.getUserByEmail(userId);
+    }
     const userEmail = user?.email;
     console.log(`[Storage.getVideoIndex] User found: ${!!user}, email: ${userEmail}`);
 
     // Collect all possible userId values to match against
     const matchValues = new Set<string>([userId]);
+    if (user?.id) matchValues.add(user.id);
     if (userEmail) matchValues.add(userEmail);
     if (authEmail) matchValues.add(authEmail);
 
