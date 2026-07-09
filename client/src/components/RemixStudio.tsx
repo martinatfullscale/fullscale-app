@@ -122,7 +122,15 @@ const STATUS_CONFIG: Record<string, { color: string; icon: any; label: string }>
   step_7_score: { color: "bg-yellow-500", icon: BarChart3, label: "Scoring quality" },
   completed: { color: "bg-green-500", icon: CheckCircle, label: "Complete" },
   failed: { color: "bg-red-500", icon: AlertCircle, label: "Failed" },
+  cancelled: { color: "bg-gray-500", icon: AlertCircle, label: "Cancelled" },
 };
+
+// A job in any of these states is finished — nothing is running on the server.
+// "cancelled" MUST be here: without it a cancelled job reads as still-active and
+// permanently disables the Auto-Remix tab for that video.
+const TERMINAL_STATUSES = ["completed", "failed", "cancelled"];
+const isTerminalStatus = (status?: string | null) =>
+  !!status && TERMINAL_STATUSES.includes(status);
 
 export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps) {
   const { toast } = useToast();
@@ -291,7 +299,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
               return [...prev, ...newClips];
             });
           }
-          if (data.job.status === "completed" || data.job.status === "failed") {
+          if (isTerminalStatus(data.job.status)) {
             setActiveJobId(null);
             clearInterval(interval);
             await loadData(); // Refresh all data
@@ -505,9 +513,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
 
   if (!open) return null;
 
-  const activeJob = jobs.find(j =>
-    j.status !== "completed" && j.status !== "failed"
-  );
+  const activeJob = jobs.find(j => !isTerminalStatus(j.status));
   const isProcessing = !!activeJob || !!activeJobId;
 
   return (
@@ -794,16 +800,16 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
             )}
 
             {/* Past Jobs */}
-            {jobs.filter(j => j.status === "completed" || j.status === "failed").length > 0 && (
+            {jobs.filter(j => isTerminalStatus(j.status)).length > 0 && (
               <div>
                 <h3 className="text-sm font-semibold text-gray-300 mb-3 flex items-center gap-2">
                   <Clock className="w-4 h-4" /> Past Jobs
                 </h3>
                 <div className="space-y-2">
-                  {jobs.filter(j => j.status === "completed" || j.status === "failed").map(job => (
+                  {jobs.filter(j => isTerminalStatus(j.status)).map(job => (
                     <div key={job.id} className="bg-gray-800/50 rounded-lg p-3 flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        <Badge className={`${job.status === "completed" ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
+                        <Badge className={`${job.status === "completed" ? "bg-green-500/20 text-green-400" : job.status === "cancelled" ? "bg-gray-500/20 text-gray-400" : "bg-red-500/20 text-red-400"}`}>
                           {job.status}
                         </Badge>
                         <span className="text-sm text-gray-400">

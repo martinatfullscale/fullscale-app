@@ -368,10 +368,33 @@ async function isSameCreator(
   return !!(authUser?.email && storedUserId.toLowerCase() === authUser.email.toLowerCase());
 }
 
+// remixJobs.userId is a legacy `integer` column, but users.id is a varchar UUID.
+// parseInt(uuid) is NaN → collapsed every user to 1 (cross-user job visibility).
+// Until the column is migrated to varchar (Tier 3), derive a STABLE positive
+// integer from the user id so jobs stay attributable and don't all share id 1.
+// Legacy numeric ids pass through unchanged so existing rows still match.
+function stableUserIntId(raw: unknown): number {
+  const s = raw == null ? "" : String(raw);
+  if (s === "") return 1;
+  const n = Number(s);
+  if (Number.isInteger(n) && n > 0) return n;
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return Math.abs(h) || 1;
+}
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
+  // On boot, fail any remix job left mid-flight by a previous process (Replit
+  // redeploys often). Without this the row sits in a step_N status forever and
+  // the client treats it as active, permanently disabling Auto-Remix for that
+  // video. Runs once per server start; safe if there are no stale rows.
+  storage
+    .failInterruptedRemixJobs()
+    .then((n) => { if (n > 0) console.log(`[Startup] Marked ${n} interrupted remix job(s) as failed`); })
+    .catch((err) => console.error("[Startup] failInterruptedRemixJobs error:", err?.message || err));
   
   // Import session setup separately - this MUST succeed for OAuth to work
   const { getSession } = await import("./replit_integrations/auth/replitAuth");
@@ -10916,9 +10939,9 @@ export async function registerRoutes(
   app.post("/api/remix/:videoId/start", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const videoId = parseInt(req.params.videoId);
-      // authUserId can be an email string or numeric ID — ensure we have a numeric userId
-      const rawUserId = req.authUserId || req.user?.id || 1;
-      const userId = typeof rawUserId === "number" ? rawUserId : parseInt(rawUserId) || 1;
+      // authUserId is a varchar UUID/email; map it to a stable integer for the
+      // legacy remixJobs.userId column (see stableUserIntId).
+      const userId = stableUserIntId(req.authUserId ?? req.user?.id);
       const config = req.body || {};
 
       // Validate video exists
@@ -11026,7 +11049,8 @@ export async function registerRoutes(
   app.get("/api/remix/video/:videoId/jobs", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const videoId = parseInt(req.params.videoId);
-      const userId = req.user?.id || 1;
+      // Match the same stable-int mapping used when the job was created.
+      const userId = stableUserIntId(req.authUserId ?? req.user?.id);
       const jobs = await storage.getRemixJobsByUser(userId);
       const videoJobs = jobs.filter(j => j.videoId === videoId);
       res.json(videoJobs);
@@ -11160,18 +11184,25 @@ export async function registerRoutes(
         message: "Re-render started",
       });
 
-      // Run in background after response
-      reRenderClip(clipId, modifications).catch(async (err) => {
-        console.error(`[Re-Render] Background re-render for clip ${clipId} failed:`, err);
+      // Run in background after response. reRenderClip RESOLVES with
+      // { success:false, error } on mainline failures (it does not throw), so a
+      // .catch alone would miss them — inspect the resolved result too.
+      const recordFailure = async (reason: string) => {
+        console.error(`[Re-Render] Background re-render for clip ${clipId} failed: ${reason}`);
         try {
           const clip = await storage.getClipById(clipId);
           if (clip?.remixJobId) {
-            await storage.updateRemixJobStatus(clip.remixJobId, "failed", `Re-render failed: ${err.message || "unknown"}`);
+            await storage.updateRemixJobStatus(clip.remixJobId, "failed", `Re-render failed: ${reason}`);
           }
         } catch (dbErr) {
           console.error(`[Re-Render] Failed to update job status for clip ${clipId}:`, dbErr);
         }
-      });
+      };
+      reRenderClip(clipId, modifications)
+        .then((result) => {
+          if (!result?.success) recordFailure(result?.error || "unknown");
+        })
+        .catch((err) => recordFailure(err?.message || "unknown"));
     } catch (err: any) {
       console.error("[Re-Render Route] Error:", err.message);
       res.status(500).json({ error: err.message || "Re-render failed" });

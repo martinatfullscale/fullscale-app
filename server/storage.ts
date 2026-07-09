@@ -205,6 +205,7 @@ export interface IStorage {
   createRemixJob(data: InsertRemixJob): Promise<RemixJob>;
   getRemixJob(jobId: number): Promise<RemixJob | undefined>;
   getRemixJobsByUser(userId: number): Promise<RemixJob[]>;
+  failInterruptedRemixJobs(): Promise<number>;
   updateRemixJobStatus(jobId: number, status: string, errorMessage?: string): Promise<RemixJob | undefined>;
   // Generated clip methods
   createGeneratedClip(data: InsertGeneratedClip): Promise<GeneratedClip>;
@@ -1547,6 +1548,21 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(remixJobs)
       .where(eq(remixJobs.userId, userId))
       .orderBy(desc(remixJobs.createdAt));
+  }
+
+  async failInterruptedRemixJobs(): Promise<number> {
+    // Any job not in a terminal state at startup was left mid-flight by a
+    // previous process (crash/redeploy). Its in-memory pipeline is gone, so it
+    // will never progress — mark it failed so the UI unblocks.
+    const result = await db.update(remixJobs)
+      .set({ status: "failed", errorMessage: "Interrupted by server restart", completedAt: new Date() })
+      .where(and(
+        ne(remixJobs.status, "completed"),
+        ne(remixJobs.status, "failed"),
+        ne(remixJobs.status, "cancelled"),
+      ))
+      .returning({ id: remixJobs.id });
+    return result.length;
   }
 
   async updateRemixJobStatus(jobId: number, status: string, errorMessage?: string): Promise<RemixJob | undefined> {

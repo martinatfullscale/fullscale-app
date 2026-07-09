@@ -421,10 +421,23 @@ export async function runEditorialAutoPipeline(
       throw new Error(`All ${savedClips.length} clip renders failed`);
     }
 
-    const finalStatus = renderedCount >= AUTO_PIPELINE_CONFIG.minClipCount ? "ready" : "ready"; // accept partial
-    await storage.updateVideoEditorialStatus(videoId, finalStatus, {
+    // A partial batch is still usable, so we ship it as "ready" rather than
+    // discarding good clips — but we no longer silently claim a healthy batch.
+    // When the count is below the minimum, record why so the state is honest and
+    // measurable (true enforcement/retry to reach the target is a follow-up).
+    const belowTarget = renderedCount < AUTO_PIPELINE_CONFIG.minClipCount;
+    const notes: string[] = [];
+    if (belowTarget) {
+      notes.push(`Only ${renderedCount}/${AUTO_PIPELINE_CONFIG.minClipCount} target clips rendered`);
+      console.warn(
+        `[EditorialAuto] ⚠️  Video ${videoId} below target batch: ` +
+          `${renderedCount}/${AUTO_PIPELINE_CONFIG.minClipCount} clips`
+      );
+    }
+    if (renderErrors.length > 0) notes.push(`${renderErrors.length} render failures`);
+    await storage.updateVideoEditorialStatus(videoId, "ready", {
       clipCount: renderedCount,
-      error: renderErrors.length > 0 ? `${renderErrors.length} render failures` : null,
+      error: notes.length > 0 ? notes.join("; ") : null,
     });
 
     const durationMs = Date.now() - start;
