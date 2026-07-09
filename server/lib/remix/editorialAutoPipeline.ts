@@ -29,6 +29,7 @@ import { analyzeEditorial } from "../ai/claude-dense/editorialAnalyzer";
 import { rankClips, deduplicateClips } from "./clipRanker";
 import { PLATFORM_CONFIGS } from "./clipDetector";
 import { detectFacesInClip, computeCropTrajectory, buildCropFilterExpr, getVideoSize } from "./faceTracker";
+import { withRenderSlot } from "./renderQueue";
 import { downloadToTempFile, uploadFileToStorage, objectKeyFromServeUrl } from "../objectStorage";
 
 // ── Configuration ──────────────────────────────────────────────────
@@ -1056,7 +1057,16 @@ const RENDER_CONFIG = {
  *
  * Without overlays, uses the simple -vf path (lower overhead).
  */
-async function runFFmpegRender(opts: RenderOptions): Promise<void> {
+function runFFmpegRender(opts: RenderOptions): Promise<void> {
+  // Gated by the global render queue so editorial batch renders can't stack
+  // unbounded ffmpeg encodes on top of user-initiated remix renders.
+  return withRenderSlot(
+    `editorialRender(${opts.outputPath.split("/").pop()})`,
+    () => runFFmpegRenderUngated(opts),
+  );
+}
+
+async function runFFmpegRenderUngated(opts: RenderOptions): Promise<void> {
   const { videoPath, startTime, duration, vf, fps, outputPath, brandOverlays, srcWidth, srcHeight } = opts;
 
   const hasOverlays = brandOverlays && brandOverlays.length > 0;

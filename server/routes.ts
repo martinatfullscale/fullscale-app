@@ -380,7 +380,9 @@ function stableUserIntId(raw: unknown): number {
   if (Number.isInteger(n) && n > 0) return n;
   let h = 5381;
   for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
-  return Math.abs(h) || 1;
+  // % INT_MAX guards the one value (h === -2^31) where Math.abs exceeds the
+  // int4 column range; || 1 covers the zero cases.
+  return (Math.abs(h) % 2147483647) || 1;
 }
 
 export async function registerRoutes(
@@ -10958,6 +10960,17 @@ export async function registerRoutes(
         }
       }
 
+      // One pipeline per video at a time — a second concurrent run would fight
+      // the first over temp scopes and double the render load for no benefit.
+      const activeJob = await storage.getActiveRemixJobForVideo(videoId);
+      if (activeJob) {
+        return res.status(409).json({
+          error: "A remix job is already running for this video",
+          activeJobId: activeJob.id,
+          status: activeJob.status,
+        });
+      }
+
       // Start the remix pipeline in the background
       const { runRemixPipeline } = await import("./lib/remix/remixOrchestrator");
 
@@ -11275,8 +11288,9 @@ export async function registerRoutes(
   app.post("/api/remix/:videoId/stitch", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const videoId = parseInt(req.params.videoId);
-      const rawUserId = req.authUserId || req.user?.id || 1;
-      const userId = typeof rawUserId === "number" ? rawUserId : parseInt(rawUserId) || 1;
+      // Same stable-int mapping as the start/list routes (parseInt on a UUID
+      // collapsed every stitch job to userId=1).
+      const userId = stableUserIntId(req.authUserId ?? req.user?.id);
 
       // Validate video exists
       const video = await storage.getVideoById(videoId);

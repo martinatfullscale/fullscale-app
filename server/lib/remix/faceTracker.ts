@@ -288,7 +288,6 @@ export function computeCropTrajectory(
   // Compute raw crop center for each frame
   const rawCenters: { time: number; cx: number; snap: boolean }[] = [];
   let lastKnownCx = srcW / 2;
-  let firstAssignment = true;
 
   for (const frame of frames) {
     let cx: number;
@@ -332,7 +331,6 @@ export function computeCropTrajectory(
     // Continuity reference for the multi-face "closest to last" tie-break only.
     // Snap/cut detection is deferred to a second pass that can see the future.
     lastKnownCx = cx;
-    firstAssignment = false;
     rawCenters.push({ time: frame.time, cx, snap: false });
   }
 
@@ -351,9 +349,13 @@ export function computeCropTrajectory(
   // no longer exempt one-off jumps from smoothing.
   const points = rawCenters.map((r, i) => {
     const prev = i > 0 ? cleaned[i - 1] : cleaned[i];
-    const next = i < cleaned.length - 1 ? cleaned[i + 1] : cleaned[i];
     const jumped = i > 0 && Math.abs(cleaned[i] - prev) > snapThreshold;
-    const sustained = Math.abs(cleaned[i] - next) <= snapThreshold;
+    // A jump is a real cut only if the new position HOLDS on the next sample.
+    // The final sample has no next sample to confirm with, so it can never be a
+    // snap — an unconfirmable jump there is far more likely a stray detection
+    // (which endpoint spike-rejection also guards) than a sub-0.5s final shot.
+    const sustained =
+      i < cleaned.length - 1 && Math.abs(cleaned[i] - cleaned[i + 1]) <= snapThreshold;
     const snap = jumped && sustained;
     if (snap) {
       console.log(`[FaceTracker] Scene cut at t=${r.time.toFixed(1)}s (jump ${Math.abs(cleaned[i] - prev).toFixed(0)}px)`);
@@ -369,12 +371,26 @@ export function computeCropTrajectory(
   // reading as a perpetually floating camera. Snap points force an immediate move.
   const stabilized = applyDeadband(smoothed, points.map((p) => p.snap), srcW);
 
-  // Convert centers to crop X coordinates, clamped to source bounds
-  const keyframes: CropKeyframe[] = points.map((r, i) => {
-    let cropX = Math.round(stabilized[i] - effectiveCropW / 2);
-    cropX = Math.max(0, Math.min(srcW - effectiveCropW, cropX));
-    return { time: r.time, cropX, cropY: 0 };
-  });
+  // Convert centers to crop X coordinates, clamped to source bounds.
+  // At each snap, first emit a HOLD keyframe (previous position, 1ms before the
+  // cut): the render-side lerp interpolates between every adjacent keyframe
+  // pair, so without the hold a "snap" still rendered as a 0.5s whip-pan across
+  // the cut. Hold-then-jump makes the crop change hands frame-accurately.
+  const SNAP_HOLD_EPS = 0.001;
+  const toCropX = (cx: number) =>
+    Math.max(0, Math.min(srcW - effectiveCropW, Math.round(cx - effectiveCropW / 2)));
+  const keyframes: CropKeyframe[] = [];
+  for (let i = 0; i < points.length; i++) {
+    const cropX = toCropX(stabilized[i]);
+    if (points[i].snap && keyframes.length > 0) {
+      const prevKf = keyframes[keyframes.length - 1];
+      const holdTime = points[i].time - SNAP_HOLD_EPS;
+      if (holdTime > prevKf.time) {
+        keyframes.push({ time: holdTime, cropX: prevKf.cropX, cropY: 0 });
+      }
+    }
+    keyframes.push({ time: points[i].time, cropX, cropY: 0 });
+  }
 
   return { frames: keyframes, cropW: effectiveCropW, cropH };
 }
@@ -402,6 +418,20 @@ function rejectCenterSpikes(centers: number[], threshold: number): number[] {
       out[i] = (prev + next) / 2;
     }
   }
+  // Endpoints have only one neighbour, so the window test above can't protect
+  // them — yet a stray detection on the first/last sample would otherwise hold
+  // a wrong framing for the clip's opening/closing 0.5s (and the last sample
+  // can't be confirmed as a cut at all). Reject an endpoint that deviates from
+  // its neighbour while the two samples beyond it agree with each other.
+  if (Math.abs(centers[0] - centers[1]) > threshold && Math.abs(centers[1] - centers[2]) <= threshold) {
+    out[0] = centers[1];
+  }
+  if (
+    Math.abs(centers[n - 1] - centers[n - 2]) > threshold &&
+    Math.abs(centers[n - 2] - centers[n - 3]) <= threshold
+  ) {
+    out[n - 1] = centers[n - 2];
+  }
   return out;
 }
 
@@ -416,6 +446,10 @@ function rejectCenterSpikes(centers: number[], threshold: number): number[] {
  */
 function applyDeadband(values: number[], snaps: boolean[], srcW: number): number[] {
   const DEADBAND = srcW * 0.03; // ~3% of frame width
+  // Slow re-centering inside the band: without it, the follower settles a full
+  // DEADBAND (~9% of a 9:16 crop) off-center after every pan. 0.08/sample moves
+  // <5px per 0.5s on a 1080p source — imperceptible, converges in a few seconds.
+  const RECENTER_ALPHA = 0.08;
   const out = new Array<number>(values.length);
   let held = values.length > 0 ? values[0] : 0;
   for (let i = 0; i < values.length; i++) {
@@ -426,8 +460,9 @@ function applyDeadband(values: number[], snaps: boolean[], srcW: number): number
       held = values[i] - DEADBAND;
     } else if (d < -DEADBAND) {
       held = values[i] + DEADBAND;
+    } else {
+      held += d * RECENTER_ALPHA;
     }
-    // else: within the band — freeze.
     out[i] = held;
   }
   return out;

@@ -21,6 +21,7 @@ import type { ClipCandidate, PlatformConfig, PLATFORM_CONFIGS } from "./clipDete
 import type { CameraMotionData, CumulativeTransform } from "./motionTracker";
 import { detectFacesInClip, computeCropTrajectory, buildCropFilterExpr, getVideoSize } from "./faceTracker";
 import type { CropTrajectory } from "./faceTracker";
+import { withRenderSlot } from "./renderQueue";
 
 export interface ClipGeneratorInput {
   /** Source video path */
@@ -101,8 +102,17 @@ const CLIP_CONFIG = {
 
 /**
  * Generate a single clip from a source video.
+ * Gated by the global render queue — frame extraction, face detection, and the
+ * x264 encode are all CPU-heavy, so only MAX_CONCURRENT_RENDERS run at once.
  */
-export async function generateClip(input: ClipGeneratorInput): Promise<ClipGeneratorOutput> {
+export function generateClip(input: ClipGeneratorInput): Promise<ClipGeneratorOutput> {
+  return withRenderSlot(
+    `generateClip(job ${input.jobId}, video ${input.videoId})`,
+    () => generateClipUngated(input),
+  );
+}
+
+async function generateClipUngated(input: ClipGeneratorInput): Promise<ClipGeneratorOutput> {
   const {
     videoPath, videoId, clip, platformConfig, placements,
     captionsEnabled, captionSegments, outputDir, jobId
@@ -424,26 +434,27 @@ async function generateWithPlacements(
     const totalFrames = frames.length;
     const clipDuration = clip.duration;
 
-    // The crop trajectory was computed from ffprobe's coded dimensions, but the
-    // extracted JPEGs have auto-rotation applied — so a rotated/anamorphic source
-    // can yield frames whose real dimensions differ, which would make sharp's
-    // .extract() throw and abort the whole clip. Verify against the actual first
-    // frame; on any mismatch, fall back to letterboxing (no crash, correct output
-    // for the common non-rotated case which is the vast majority).
-    if (reframe && totalFrames > 0) {
+    // Read the ACTUAL first-frame dimensions. Two uses: (1) the crop trajectory
+    // was computed from ffprobe's coded dimensions, but extracted JPEGs have
+    // auto-rotation applied — on mismatch, sharp's .extract() would throw and
+    // abort the clip, so we fall back to letterboxing; (2) the letterbox
+    // fallback needs the real dims to map placement coords into the displayed
+    // image region instead of the full canvas (black bars).
+    let frameDims: { width: number; height: number } | null = null;
+    if (totalFrames > 0) {
       try {
         const meta = await sharp(path.join(framesDir, frames[0])).metadata();
-        if (meta.width !== reframe.srcW || meta.height !== reframe.srcH) {
-          console.warn(
-            `[ClipGenerator] Frame dims ${meta.width}x${meta.height} differ from probed ${reframe.srcW}x${reframe.srcH} ` +
-              `(rotation/anamorphic?) — disabling smart reframe for this clip, letterboxing instead`
-          );
-          reframe = null;
-        }
+        if (meta.width && meta.height) frameDims = { width: meta.width, height: meta.height };
       } catch (err: any) {
-        console.warn(`[ClipGenerator] Could not read frame metadata (${err.message}) — disabling smart reframe`);
-        reframe = null;
+        console.warn(`[ClipGenerator] Could not read frame metadata (${err.message})`);
       }
+    }
+    if (reframe && (!frameDims || frameDims.width !== reframe.srcW || frameDims.height !== reframe.srcH)) {
+      console.warn(
+        `[ClipGenerator] Frame dims ${frameDims?.width}x${frameDims?.height} differ from probed ${reframe.srcW}x${reframe.srcH} ` +
+          `(rotation/anamorphic?) — disabling smart reframe for this clip, letterboxing instead`
+      );
+      reframe = null;
     }
 
     for (let i = 0; i < totalFrames; i++) {
@@ -465,7 +476,7 @@ async function generateWithPlacements(
 
       await compositeFrameWithPlacements(
         framePath, outputFrame, placements, currentTime, clipDuration, platformConfig,
-        i, cumulativeTransforms, motionRefPositions, motionData, reframeWindow
+        i, cumulativeTransforms, motionRefPositions, motionData, reframeWindow, frameDims
       );
     }
 
@@ -518,8 +529,16 @@ async function compositeFrameWithPlacements(
   cameraMotion?: CameraMotionData | null,
   // Portrait reframe window in SOURCE pixels (null = letterbox the source frame)
   reframeWindow?: { cropX: number; cropW: number; cropH: number; srcW: number; srcH: number } | null,
+  // Actual frame dimensions (for correct letterbox coordinate mapping)
+  frameDims?: { width: number; height: number } | null,
 ): Promise<void> {
   let pipeline = sharp(framePath);
+
+  // Letterbox geometry (contain fit): where the source image actually lands on
+  // the target canvas. Needed to map source-normalized placement coords when we
+  // are NOT smart-cropping — mapping them straight to canvas coords puts
+  // products on the black bars.
+  let letterbox: { offX: number; offY: number; dispW: number; dispH: number } | null = null;
 
   if (reframeWindow) {
     // Smart-crop the source frame to the target AR (no black bars), then scale.
@@ -533,6 +552,20 @@ async function compositeFrameWithPlacements(
       fit: "contain",
       background: { r: 0, g: 0, b: 0, alpha: 1 },
     });
+    if (frameDims && frameDims.width > 0 && frameDims.height > 0) {
+      const scale = Math.min(
+        config.targetWidth / frameDims.width,
+        config.targetHeight / frameDims.height,
+      );
+      const dispW = frameDims.width * scale;
+      const dispH = frameDims.height * scale;
+      letterbox = {
+        offX: (config.targetWidth - dispW) / 2,
+        offY: (config.targetHeight - dispH) / 2,
+        dispW,
+        dispH,
+      };
+    }
   }
 
   // Composite each placement
@@ -580,15 +613,24 @@ async function compositeFrameWithPlacements(
         py = Math.round(((bbox.y * srcH) / cropH) * config.targetHeight);
         pw = Math.round(((bbox.width * srcW) / cropW) * config.targetWidth);
         ph = Math.round(((bbox.height * srcH) / cropH) * config.targetHeight);
-        // Surface cropped entirely out of the reframed shot — don't composite it.
-        if (px + pw <= 0 || py + ph <= 0 || px >= config.targetWidth || py >= config.targetHeight) {
-          continue;
-        }
+      } else if (letterbox) {
+        // Map into the letterboxed image region, not the full canvas — the
+        // source only occupies [offX..offX+dispW] × [offY..offY+dispH].
+        px = Math.round(letterbox.offX + bbox.x * letterbox.dispW);
+        py = Math.round(letterbox.offY + bbox.y * letterbox.dispH);
+        pw = Math.round(bbox.width * letterbox.dispW);
+        ph = Math.round(bbox.height * letterbox.dispH);
       } else {
         px = Math.round(bbox.x * config.targetWidth);
         py = Math.round(bbox.y * config.targetHeight);
         pw = Math.round(bbox.width * config.targetWidth);
         ph = Math.round(bbox.height * config.targetHeight);
+      }
+
+      // Surface entirely outside the canvas (cropped out by the reframe, or a
+      // motion-tracked box that drifted off) — don't composite it.
+      if (px + pw <= 0 || py + ph <= 0 || px >= config.targetWidth || py >= config.targetHeight) {
+        continue;
       }
 
       // Resize product image
@@ -607,6 +649,27 @@ async function compositeFrameWithPlacements(
           }
           productBuffer = await sharp(data, { raw: { width: info.width, height: info.height, channels: 4 } }).png().toBuffer();
         }
+      }
+
+      // Clip the overlay to the visible canvas region. Two failure modes
+      // otherwise: (1) sharp THROWS if an overlay is larger than the canvas
+      // (a reframed wide surface easily is), killing the whole clip; (2) a
+      // product straddling the crop's left/top edge would be slid into frame by
+      // the left/top clamp instead of being edge-cropped, detaching it from its
+      // surface. Crop the buffer to the intersection instead.
+      const meta = await sharp(productBuffer).metadata();
+      const bufW = meta.width ?? pw;
+      const bufH = meta.height ?? ph;
+      const cropLeft = Math.max(0, -px);
+      const cropTop = Math.max(0, -py);
+      const visW = Math.min(bufW - cropLeft, config.targetWidth - Math.max(0, px));
+      const visH = Math.min(bufH - cropTop, config.targetHeight - Math.max(0, py));
+      if (visW <= 0 || visH <= 0) continue;
+      if (cropLeft > 0 || cropTop > 0 || visW < bufW || visH < bufH) {
+        productBuffer = await sharp(productBuffer)
+          .extract({ left: cropLeft, top: cropTop, width: visW, height: visH })
+          .png()
+          .toBuffer();
       }
 
       composites.push({
@@ -919,24 +982,27 @@ function interpolatePlacement(
 /**
  * Escape caption text for an FFmpeg drawtext `text='...'` value.
  *
- * FFmpeg is spawned directly (no shell), but the filtergraph parser has TWO
- * nested layers: an outer pass that honours single quotes (protecting the `,`
- * filter-chain separator) and an inner per-filter pass that splits options on
- * `:` — and by then the quotes are gone, so a colon inside text='...' still
- * splits the options and aborts the graph. So all three escapes are needed, in
- * this exact order:
- *   1. literal backslashes → `\\` (for drawtext's own unescape pass)
- *   2. literal colons → `\:` (survives the inner option split; added AFTER (1)
- *      so its backslash is not doubled)
- *   3. literal single quotes → `'\''` (close quote, emit escaped quote, reopen)
- * The original bug was doing (1) LAST, which re-doubled the backslashes added by
- * the colon/quote escapes and broke any caption containing an apostrophe or colon.
+ * FFmpeg is spawned directly (no shell), but the value still passes through TWO
+ * quote/backslash-aware unescape passes — the graph tokenizer, then the
+ * per-filter option splitter (which splits on `:` AFTER the outer quotes are
+ * gone). drawtext's own text-expansion pass would be a THIRD, so the filter is
+ * built with `expansion=none` (we use no %{...} features), which also makes a
+ * literal `%` safe. Escapes, in this exact order (empirically pixel-verified
+ * against ffmpeg 6.0 and 8.0):
+ *   1. literal backslashes → `\\` (one doubling per surviving unescape level)
+ *   2. literal colons → `\:` (survives the option split; added AFTER (1) so its
+ *      backslash is not re-doubled)
+ *   3. literal single quotes → the bytes  '\\\''  — close the level-1 quote,
+ *      emit `\\` + `\'` (level 1 reduces them to `\'`, level 2 to a literal,
+ *      non-quoting `'`), reopen the quote. The single-level `'\''` idiom is NOT
+ *      enough here: level 1 collapses it to a bare `'`, which flips level 2
+ *      into quote mode and silently swallows every following option.
  */
 function escapeDrawtext(text: string): string {
   return text
     .replace(/\\/g, "\\\\")
     .replace(/:/g, "\\:")
-    .replace(/'/g, "'\\''");
+    .replace(/'/g, "'\\\\\\''");
 }
 
 /**
@@ -952,7 +1018,7 @@ function buildCaptionFilter(segments: CaptionSegment[], config: PlatformConfig):
   const parts = segments.map(seg => {
     const escapedText = escapeDrawtext(seg.text);
 
-    return `drawtext=text='${escapedText}':fontsize=${fontSize}:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=${yPos}:enable='between(t,${seg.startTime},${seg.endTime})'`;
+    return `drawtext=text='${escapedText}':expansion=none:fontsize=${fontSize}:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=${yPos}:enable='between(t,${seg.startTime},${seg.endTime})'`;
   });
 
   return parts.join(",");

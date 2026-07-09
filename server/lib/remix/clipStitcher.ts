@@ -13,6 +13,7 @@ import * as path from "path";
 import * as fs from "fs";
 import type { PlatformConfig } from "./clipDetector";
 import type { CaptionSegment } from "./clipGenerator";
+import { withRenderSlot } from "./renderQueue";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -70,7 +71,16 @@ const STITCH_CONFIG = {
  * - If all transitions are "cut": Use FFmpeg concat demuxer (fast)
  * - If any transitions are "crossfade": Use filter_complex with xfade (quality)
  */
-export async function stitchSegments(input: StitchInput): Promise<StitchOutput> {
+export function stitchSegments(input: StitchInput): Promise<StitchOutput> {
+  // Gated by the global render queue — a stitch runs N segment extractions plus
+  // a concat/xfade encode, the heaviest single render in the app.
+  return withRenderSlot(
+    `stitchSegments(video ${input.videoId}, ${input.segments.length} segments)`,
+    () => stitchSegmentsUngated(input),
+  );
+}
+
+async function stitchSegmentsUngated(input: StitchInput): Promise<StitchOutput> {
   const {
     videoPath, videoId, segments, platformConfig,
     captionsEnabled, captionSegments, outputDir, planId,
@@ -337,17 +347,19 @@ async function stitchWithXfade(
 
 /**
  * Escape caption text for an FFmpeg drawtext `text='...'` value.
- * The filtergraph parser has two nested layers: the outer honours single quotes
- * (protecting `,`), the inner splits options on `:` AFTER quotes are stripped —
- * so colons still need escaping. Order: double backslashes first, then escape
- * colons, then the `'\''` close-emit-reopen idiom for quotes. (Kept in sync with
- * clipGenerator.escapeDrawtext.)
+ * The value passes two quote/backslash-aware unescape passes (graph tokenizer,
+ * then the option splitter that splits on `:` after quotes are stripped), and
+ * the filter uses `expansion=none` to disable drawtext's third expansion pass.
+ * Order: double backslashes, escape colons, then quotes via the two-level
+ * close/`\\`+`\'`/reopen idiom — the single-level `'\''` collapses at level 1
+ * and silently swallows the remaining options. (Kept in sync with
+ * clipGenerator.escapeDrawtext — see the full derivation there.)
  */
 function escapeDrawtext(text: string): string {
   return text
     .replace(/\\/g, "\\\\")
     .replace(/:/g, "\\:")
-    .replace(/'/g, "'\\''");
+    .replace(/'/g, "'\\\\\\''");
 }
 
 async function burnCaptions(
@@ -364,7 +376,7 @@ async function burnCaptions(
   const drawTextParts = captionSegments.map(seg => {
     const escapedText = escapeDrawtext(seg.text);
 
-    return `drawtext=text='${escapedText}':fontsize=${fontSize}:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=${yPos}:enable='between(t,${seg.startTime},${seg.endTime})'`;
+    return `drawtext=text='${escapedText}':expansion=none:fontsize=${fontSize}:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=${yPos}:enable='between(t,${seg.startTime},${seg.endTime})'`;
   });
 
   const args = [

@@ -205,6 +205,7 @@ export interface IStorage {
   createRemixJob(data: InsertRemixJob): Promise<RemixJob>;
   getRemixJob(jobId: number): Promise<RemixJob | undefined>;
   getRemixJobsByUser(userId: number): Promise<RemixJob[]>;
+  getActiveRemixJobForVideo(videoId: number): Promise<RemixJob | undefined>;
   failInterruptedRemixJobs(): Promise<number>;
   updateRemixJobStatus(jobId: number, status: string, errorMessage?: string): Promise<RemixJob | undefined>;
   // Generated clip methods
@@ -1550,22 +1551,59 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(remixJobs.createdAt));
   }
 
+  async getActiveRemixJobForVideo(videoId: number): Promise<RemixJob | undefined> {
+    // "Active" = any non-terminal status (queued or step_N). Used to prevent a
+    // second concurrent pipeline for the same video.
+    const [result] = await db.select().from(remixJobs)
+      .where(and(
+        eq(remixJobs.videoId, videoId),
+        ne(remixJobs.status, "completed"),
+        ne(remixJobs.status, "failed"),
+        ne(remixJobs.status, "cancelled"),
+      ))
+      .orderBy(desc(remixJobs.createdAt))
+      .limit(1);
+    return result;
+  }
+
   async failInterruptedRemixJobs(): Promise<number> {
     // Any job not in a terminal state at startup was left mid-flight by a
     // previous process (crash/redeploy). Its in-memory pipeline is gone, so it
     // will never progress — mark it failed so the UI unblocks.
+    // NOTE: SQL `<>` is NULL-hostile — a NULL status would slip past the ne()
+    // chain, so it is matched explicitly (no writer inserts NULL today, but a
+    // NULL row would otherwise be an unsweepable permanently-"active" brick).
     const result = await db.update(remixJobs)
       .set({ status: "failed", errorMessage: "Interrupted by server restart", completedAt: new Date() })
-      .where(and(
-        ne(remixJobs.status, "completed"),
-        ne(remixJobs.status, "failed"),
-        ne(remixJobs.status, "cancelled"),
+      .where(or(
+        and(
+          ne(remixJobs.status, "completed"),
+          ne(remixJobs.status, "failed"),
+          ne(remixJobs.status, "cancelled"),
+        ),
+        sql`${remixJobs.status} IS NULL`,
       ))
       .returning({ id: remixJobs.id });
     return result.length;
   }
 
   async updateRemixJobStatus(jobId: number, status: string, errorMessage?: string): Promise<RemixJob | undefined> {
+    // Terminal states are (almost) sticky. During a redeploy the old and new
+    // processes overlap (reusePort): the new process's startup sweep may mark a
+    // job "failed" while the old process is still rendering it — its next
+    // step_N write must NOT resurrect the row into a live-looking status the
+    // client would poll forever. Sole allowed terminal→terminal transition:
+    // failed → completed (the old process actually finishing is the truth).
+    const TERMINAL = ["completed", "failed", "cancelled"];
+    const [current] = await db.select({ status: remixJobs.status }).from(remixJobs)
+      .where(eq(remixJobs.id, jobId));
+    if (current && TERMINAL.includes(current.status ?? "")) {
+      const allowed = current.status === "failed" && status === "completed";
+      if (!allowed && current.status !== status) {
+        console.warn(`[Storage] Ignoring remix job ${jobId} status ${current.status} → ${status} (terminal state is sticky)`);
+        return undefined;
+      }
+    }
     const updates: any = { status };
     if (errorMessage) updates.errorMessage = errorMessage;
     // Set completedAt on any terminal state. Historical note: this used to check

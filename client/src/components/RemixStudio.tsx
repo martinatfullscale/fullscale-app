@@ -762,6 +762,10 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
                         });
                       } catch {}
                       setActiveJobId(null);
+                      // Refresh so the jobs array picks up the terminal
+                      // "cancelled" status — otherwise the stale non-terminal
+                      // snapshot keeps activeJob truthy until remount.
+                      await loadData();
                     }}
                     className="text-xs text-blue-300/70 hover:text-red-400 border border-blue-500/30 hover:border-red-500/50 rounded px-2 py-0.5 transition-colors"
                     data-testid="button-remix-cancel"

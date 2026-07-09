@@ -144,8 +144,14 @@ async function checkCancelled(jobId: number): Promise<void> {
     if (job?.status === "cancelled") {
       throw new Error("CANCELLED_BY_USER");
     }
+    // "failed" can be written externally (startup sweep during an overlapping
+    // redeploy). Terminal statuses are sticky, so keeping rendering would burn
+    // CPU on a job whose status can never be updated — abort at the checkpoint.
+    if (job?.status === "failed") {
+      throw new Error("JOB_MARKED_FAILED_EXTERNALLY");
+    }
   } catch (err: any) {
-    if (err.message === "CANCELLED_BY_USER") throw err;
+    if (err.message === "CANCELLED_BY_USER" || err.message === "JOB_MARKED_FAILED_EXTERNALLY") throw err;
     // DB errors — don't block the pipeline
   }
 }
