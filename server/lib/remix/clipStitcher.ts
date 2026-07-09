@@ -337,14 +337,16 @@ async function stitchWithXfade(
 
 /**
  * Escape caption text for an FFmpeg drawtext `text='...'` value.
- * FFmpeg is spawned without a shell, so only the filtergraph/drawtext layer
- * matters: `:` and `,` are protected by the surrounding single quotes and must
- * not be escaped; backslashes are doubled FIRST, then literal quotes use the
- * `'\''` close-emit-reopen idiom. (Kept in sync with clipGenerator.escapeDrawtext.)
+ * The filtergraph parser has two nested layers: the outer honours single quotes
+ * (protecting `,`), the inner splits options on `:` AFTER quotes are stripped —
+ * so colons still need escaping. Order: double backslashes first, then escape
+ * colons, then the `'\''` close-emit-reopen idiom for quotes. (Kept in sync with
+ * clipGenerator.escapeDrawtext.)
  */
 function escapeDrawtext(text: string): string {
   return text
     .replace(/\\/g, "\\\\")
+    .replace(/:/g, "\\:")
     .replace(/'/g, "'\\''");
 }
 

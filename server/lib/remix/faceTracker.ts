@@ -406,19 +406,28 @@ function rejectCenterSpikes(centers: number[], threshold: number): number[] {
 }
 
 /**
- * Hold the crop center fixed until it drifts past a small deadband, then catch
- * up. This removes the constant sub-threshold float of the virtual camera while
- * still following real movement. At a snap (true scene cut) the hold is released
- * so the crop jumps to the new shot immediately.
+ * Deadband follower: hold the crop center fixed while the target stays within a
+ * small band (kills the constant sub-threshold float / jitter), but once the
+ * target moves beyond the band, track it CONTINUOUSLY — lagging by exactly the
+ * deadband — so a genuine slow pan stays smooth instead of stair-stepping.
+ * (Latching `held` straight to the target only when it crosses the band would
+ * quantize a real pan into visible ~deadband-sized steps.) A snap (true scene
+ * cut) releases the hold so the crop jumps to the new shot immediately.
  */
 function applyDeadband(values: number[], snaps: boolean[], srcW: number): number[] {
   const DEADBAND = srcW * 0.03; // ~3% of frame width
   const out = new Array<number>(values.length);
   let held = values.length > 0 ? values[0] : 0;
   for (let i = 0; i < values.length; i++) {
-    if (snaps[i] || Math.abs(values[i] - held) > DEADBAND) {
+    const d = values[i] - held;
+    if (snaps[i]) {
       held = values[i];
+    } else if (d > DEADBAND) {
+      held = values[i] - DEADBAND;
+    } else if (d < -DEADBAND) {
+      held = values[i] + DEADBAND;
     }
+    // else: within the band — freeze.
     out[i] = held;
   }
   return out;

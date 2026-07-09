@@ -424,6 +424,28 @@ async function generateWithPlacements(
     const totalFrames = frames.length;
     const clipDuration = clip.duration;
 
+    // The crop trajectory was computed from ffprobe's coded dimensions, but the
+    // extracted JPEGs have auto-rotation applied — so a rotated/anamorphic source
+    // can yield frames whose real dimensions differ, which would make sharp's
+    // .extract() throw and abort the whole clip. Verify against the actual first
+    // frame; on any mismatch, fall back to letterboxing (no crash, correct output
+    // for the common non-rotated case which is the vast majority).
+    if (reframe && totalFrames > 0) {
+      try {
+        const meta = await sharp(path.join(framesDir, frames[0])).metadata();
+        if (meta.width !== reframe.srcW || meta.height !== reframe.srcH) {
+          console.warn(
+            `[ClipGenerator] Frame dims ${meta.width}x${meta.height} differ from probed ${reframe.srcW}x${reframe.srcH} ` +
+              `(rotation/anamorphic?) — disabling smart reframe for this clip, letterboxing instead`
+          );
+          reframe = null;
+        }
+      } catch (err: any) {
+        console.warn(`[ClipGenerator] Could not read frame metadata (${err.message}) — disabling smart reframe`);
+        reframe = null;
+      }
+    }
+
     for (let i = 0; i < totalFrames; i++) {
       const framePath = path.join(framesDir, frames[i]);
       const outputFrame = path.join(compositedDir, frames[i]);
@@ -897,20 +919,23 @@ function interpolatePlacement(
 /**
  * Escape caption text for an FFmpeg drawtext `text='...'` value.
  *
- * FFmpeg is spawned directly (no shell), so there is exactly one parsing layer:
- * the filtergraph/drawtext parser. The value is wrapped in single quotes, which
- * already protect `:` and `,`, so those must NOT be escaped (the previous code's
- * `\:` inserted a stray backslash). Two things do need handling, in this order:
- *   1. literal backslashes → `\\` (consumed by drawtext's own unescape)
- *   2. literal single quotes → `'\''` (close quote, emit escaped quote, reopen) —
- *      the standard idiom for a quote inside an FFmpeg single-quoted value.
- * Doing (1) before (2) is essential; the old code doubled backslashes LAST,
- * corrupting the quote/colon escapes it had just added and breaking any caption
- * containing an apostrophe or colon.
+ * FFmpeg is spawned directly (no shell), but the filtergraph parser has TWO
+ * nested layers: an outer pass that honours single quotes (protecting the `,`
+ * filter-chain separator) and an inner per-filter pass that splits options on
+ * `:` — and by then the quotes are gone, so a colon inside text='...' still
+ * splits the options and aborts the graph. So all three escapes are needed, in
+ * this exact order:
+ *   1. literal backslashes → `\\` (for drawtext's own unescape pass)
+ *   2. literal colons → `\:` (survives the inner option split; added AFTER (1)
+ *      so its backslash is not doubled)
+ *   3. literal single quotes → `'\''` (close quote, emit escaped quote, reopen)
+ * The original bug was doing (1) LAST, which re-doubled the backslashes added by
+ * the colon/quote escapes and broke any caption containing an apostrophe or colon.
  */
 function escapeDrawtext(text: string): string {
   return text
     .replace(/\\/g, "\\\\")
+    .replace(/:/g, "\\:")
     .replace(/'/g, "'\\''");
 }
 
