@@ -20,6 +20,7 @@ import { storage } from "../../storage";
 import type { ClipCandidate, PlatformConfig, PLATFORM_CONFIGS } from "./clipDetector";
 import type { CameraMotionData, CumulativeTransform } from "./motionTracker";
 import { detectFacesInClip, computeCropTrajectory, buildCropFilterExpr, getVideoSize } from "./faceTracker";
+import type { CropTrajectory } from "./faceTracker";
 
 export interface ClipGeneratorInput {
   /** Source video path */
@@ -218,21 +219,29 @@ async function generateCleanClip(
   await runFFmpeg(args);
 }
 
+/** A computed portrait reframe: the crop trajectory plus the source dimensions
+ * it is expressed in. Shared by the clean-clip filter path and the placement
+ * frame-composite path so both reframe identically. */
+interface ReframeData {
+  trajectory: CropTrajectory;
+  srcW: number;
+  srcH: number;
+}
+
 /**
- * Build a smart crop filter using face detection.
- * Returns a crop filter string, or null to fall back to center crop.
+ * Compute a crop trajectory for reframing a clip to the target aspect ratio.
+ * Runs face detection (with a hard timeout + fallback) when enabled and faces
+ * are found; otherwise returns a static center-crop trajectory (which still
+ * fills the target with no black bars). Returns null only on hard failure.
  */
-async function buildSmartCropFilter(
+async function detectCropTrajectory(
   videoPath: string,
   clip: ClipCandidate,
   config: PlatformConfig,
   faceTracking?: { enabled: boolean; sampleIntervalSec?: number }
-): Promise<string | null> {
+): Promise<ReframeData | null> {
   try {
-    // Get source video dimensions
     const srcSize = await getVideoSize(videoPath);
-
-    // Compute crop dimensions for target AR
     const targetAR = config.targetWidth / config.targetHeight;
     const cropW = Math.min(Math.round(srcSize.height * targetAR), srcSize.width);
     const cropH = srcSize.height;
@@ -275,19 +284,64 @@ async function buildSmartCropFilter(
           frames, srcSize.width, srcSize.height,
           config.targetWidth, config.targetHeight
         );
-        return buildCropFilterExpr(trajectory);
+        return { trajectory, srcW: srcSize.width, srcH: srcSize.height };
       }
 
       console.log("[ClipGenerator] No faces detected — using center crop");
     }
 
-    // Center crop fallback
+    // Static center-crop trajectory (fills the frame, no black bars)
     const centerX = Math.round((srcSize.width - cropW) / 2);
-    return `crop=${cropW}:${cropH}:${centerX}:0`;
+    return {
+      trajectory: { frames: [{ time: 0, cropX: centerX, cropY: 0 }], cropW, cropH },
+      srcW: srcSize.width,
+      srcH: srcSize.height,
+    };
   } catch (err: any) {
-    console.warn(`[ClipGenerator] Smart crop failed: ${err.message} — using center crop`);
+    console.warn(`[ClipGenerator] Crop trajectory failed: ${err.message}`);
     return null;
   }
+}
+
+/**
+ * Build a smart crop filter using face detection.
+ * Returns a crop filter string, or null to fall back to center crop.
+ */
+async function buildSmartCropFilter(
+  videoPath: string,
+  clip: ClipCandidate,
+  config: PlatformConfig,
+  faceTracking?: { enabled: boolean; sampleIntervalSec?: number }
+): Promise<string | null> {
+  const reframe = await detectCropTrajectory(videoPath, clip, config, faceTracking);
+  if (!reframe) return null;
+  const { trajectory } = reframe;
+  // A single static keyframe → a constant crop expression (same as the old
+  // center-crop fallback string). Multiple keyframes → a time-varying pan.
+  if (trajectory.frames.length <= 1) {
+    const f = trajectory.frames[0];
+    return `crop=${trajectory.cropW}:${trajectory.cropH}:${f ? f.cropX : 0}:0`;
+  }
+  return buildCropFilterExpr(trajectory);
+}
+
+/** Linearly interpolate the crop-X of a trajectory at a clip-relative time. */
+function cropXAtTime(trajectory: CropTrajectory, t: number): number {
+  const f = trajectory.frames;
+  if (f.length === 0) return 0;
+  if (f.length === 1 || t <= f[0].time) return f[0].cropX;
+  const last = f[f.length - 1];
+  if (t >= last.time) return last.cropX;
+  for (let i = 1; i < f.length; i++) {
+    if (t <= f[i].time) {
+      const a = f[i - 1];
+      const b = f[i];
+      const span = b.time - a.time;
+      const frac = span > 0 ? (t - a.time) / span : 0;
+      return Math.round(a.cropX + (b.cropX - a.cropX) * frac);
+    }
+  }
+  return last.cropX;
 }
 
 /**
@@ -304,6 +358,20 @@ async function generateWithPlacements(
 
   // Clear the keyframe stabilization cache for this new clip
   clearStabilizationCache();
+
+  // Portrait targets must be reframed (smart crop) before compositing — otherwise
+  // the source frame is letterboxed into 9:16 with black bars AND the product
+  // overlays (whose coordinates are normalized to the SOURCE frame) land in the
+  // wrong place. Compute the crop trajectory once, then crop + map coords per frame.
+  const [arW, arH] = platformConfig.aspectRatio.split(":").map(Number);
+  const isPortrait = arW / arH < 1;
+  let reframe: ReframeData | null = null;
+  if (isPortrait) {
+    reframe = await detectCropTrajectory(videoPath, clip, platformConfig, input.faceTracking);
+    if (reframe) {
+      console.log(`[ClipGenerator] Reframing ${placements.length} placement clip(s) to ${platformConfig.aspectRatio} (crop ${reframe.trajectory.cropW}x${reframe.trajectory.cropH})`);
+    }
+  }
 
   fs.mkdirSync(framesDir, { recursive: true });
   fs.mkdirSync(compositedDir, { recursive: true });
@@ -362,9 +430,20 @@ async function generateWithPlacements(
       // Current time in seconds relative to clip start
       const currentTime = totalFrames > 1 ? (i / (totalFrames - 1)) * clipDuration : 0;
 
+      // Per-frame crop window for portrait reframing (null = letterbox fallback)
+      const reframeWindow = reframe
+        ? {
+            cropX: cropXAtTime(reframe.trajectory, currentTime),
+            cropW: reframe.trajectory.cropW,
+            cropH: reframe.trajectory.cropH,
+            srcW: reframe.srcW,
+            srcH: reframe.srcH,
+          }
+        : null;
+
       await compositeFrameWithPlacements(
         framePath, outputFrame, placements, currentTime, clipDuration, platformConfig,
-        i, cumulativeTransforms, motionRefPositions, motionData
+        i, cumulativeTransforms, motionRefPositions, motionData, reframeWindow
       );
     }
 
@@ -415,17 +494,24 @@ async function compositeFrameWithPlacements(
   cumulativeTransforms?: CumulativeTransform[] | null,
   motionRefPositions?: Map<number, { x: number; y: number; width: number; height: number }> | null,
   cameraMotion?: CameraMotionData | null,
+  // Portrait reframe window in SOURCE pixels (null = letterbox the source frame)
+  reframeWindow?: { cropX: number; cropW: number; cropH: number; srcW: number; srcH: number } | null,
 ): Promise<void> {
   let pipeline = sharp(framePath);
 
-  // Resize for target platform
-  const [arW, arH] = config.aspectRatio.split(":").map(Number);
-  const targetAR = arW / arH;
-
-  pipeline = pipeline.resize(config.targetWidth, config.targetHeight, {
-    fit: "contain",
-    background: { r: 0, g: 0, b: 0, alpha: 1 },
-  });
+  if (reframeWindow) {
+    // Smart-crop the source frame to the target AR (no black bars), then scale.
+    const left = Math.max(0, Math.min(reframeWindow.srcW - reframeWindow.cropW, reframeWindow.cropX));
+    pipeline = pipeline
+      .extract({ left, top: 0, width: reframeWindow.cropW, height: reframeWindow.cropH })
+      .resize(config.targetWidth, config.targetHeight);
+  } else {
+    // No reframe (landscape, or reframe unavailable) — letterbox into target
+    pipeline = pipeline.resize(config.targetWidth, config.targetHeight, {
+      fit: "contain",
+      background: { r: 0, g: 0, b: 0, alpha: 1 },
+    });
+  }
 
   // Composite each placement
   const composites: sharp.OverlayOptions[] = [];
@@ -463,11 +549,25 @@ async function compositeFrameWithPlacements(
         bbox = interpolatePlacement(placement, currentTime, clipDuration);
       }
 
-      // Convert normalized coords to pixel coords
-      const px = Math.round(bbox.x * config.targetWidth);
-      const py = Math.round(bbox.y * config.targetHeight);
-      const pw = Math.round(bbox.width * config.targetWidth);
-      const ph = Math.round(bbox.height * config.targetHeight);
+      // Convert normalized (source-frame) coords to target pixel coords.
+      let px: number, py: number, pw: number, ph: number;
+      if (reframeWindow) {
+        // Map through the crop window: source px → crop-relative → target px.
+        const { cropX, cropW, cropH, srcW, srcH } = reframeWindow;
+        px = Math.round(((bbox.x * srcW - cropX) / cropW) * config.targetWidth);
+        py = Math.round(((bbox.y * srcH) / cropH) * config.targetHeight);
+        pw = Math.round(((bbox.width * srcW) / cropW) * config.targetWidth);
+        ph = Math.round(((bbox.height * srcH) / cropH) * config.targetHeight);
+        // Surface cropped entirely out of the reframed shot — don't composite it.
+        if (px + pw <= 0 || py + ph <= 0 || px >= config.targetWidth || py >= config.targetHeight) {
+          continue;
+        }
+      } else {
+        px = Math.round(bbox.x * config.targetWidth);
+        py = Math.round(bbox.y * config.targetHeight);
+        pw = Math.round(bbox.width * config.targetWidth);
+        ph = Math.round(bbox.height * config.targetHeight);
+      }
 
       // Resize product image
       let productBuffer = await sharp(placement.productImagePath)
@@ -795,6 +895,26 @@ function interpolatePlacement(
 }
 
 /**
+ * Escape caption text for an FFmpeg drawtext `text='...'` value.
+ *
+ * FFmpeg is spawned directly (no shell), so there is exactly one parsing layer:
+ * the filtergraph/drawtext parser. The value is wrapped in single quotes, which
+ * already protect `:` and `,`, so those must NOT be escaped (the previous code's
+ * `\:` inserted a stray backslash). Two things do need handling, in this order:
+ *   1. literal backslashes → `\\` (consumed by drawtext's own unescape)
+ *   2. literal single quotes → `'\''` (close quote, emit escaped quote, reopen) —
+ *      the standard idiom for a quote inside an FFmpeg single-quoted value.
+ * Doing (1) before (2) is essential; the old code doubled backslashes LAST,
+ * corrupting the quote/colon escapes it had just added and breaking any caption
+ * containing an apostrophe or colon.
+ */
+function escapeDrawtext(text: string): string {
+  return text
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "'\\''");
+}
+
+/**
  * Build FFmpeg drawtext filter for caption segments.
  */
 function buildCaptionFilter(segments: CaptionSegment[], config: PlatformConfig): string | null {
@@ -805,10 +925,7 @@ function buildCaptionFilter(segments: CaptionSegment[], config: PlatformConfig):
   const yPos = Math.round(config.targetHeight * 0.82);
 
   const parts = segments.map(seg => {
-    const escapedText = seg.text
-      .replace(/'/g, "\\'")
-      .replace(/:/g, "\\:")
-      .replace(/\\/g, "\\\\");
+    const escapedText = escapeDrawtext(seg.text);
 
     return `drawtext=text='${escapedText}':fontsize=${fontSize}:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=${yPos}:enable='between(t,${seg.startTime},${seg.endTime})'`;
   });

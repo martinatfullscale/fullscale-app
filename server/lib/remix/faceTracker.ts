@@ -329,29 +329,99 @@ export function computeCropTrajectory(
       }
     }
 
-    // Detect scene cut: if cx jumps more than threshold, flag as snap point
-    const snap = !firstAssignment && Math.abs(cx - lastKnownCx) > snapThreshold;
-    if (snap) {
-      console.log(`[FaceTracker] Scene cut detected at t=${frame.time.toFixed(1)}s (jump ${Math.abs(cx - lastKnownCx).toFixed(0)}px)`);
-    }
-
+    // Continuity reference for the multi-face "closest to last" tie-break only.
+    // Snap/cut detection is deferred to a second pass that can see the future.
     lastKnownCx = cx;
     firstAssignment = false;
-    rawCenters.push({ time: frame.time, cx, snap });
+    rawCenters.push({ time: frame.time, cx, snap: false });
   }
 
+  // ── Reject single-frame detection spikes ──
+  // A false detection (or a person briefly leaving frame) can throw cx far off
+  // for one sample and back. Replacing isolated spikes with their neighbours'
+  // midpoint stops the crop lurching to a non-focus point and snapping back —
+  // the root cause of the "camera wildly moving to things that aren't the focus"
+  // artifact. Genuine cuts survive: at a real cut the sample AGREES with the next
+  // one (new position), so the neighbours disagree and it is not treated as a spike.
+  const cleaned = rejectCenterSpikes(rawCenters.map((r) => r.cx), snapThreshold);
+
+  // ── Flag genuine (sustained) scene cuts ──
+  // A large jump is a real cut only if the NEW position holds on the next sample.
+  // If it reverts, it was an outlier (already smoothed above), not a cut — so we
+  // no longer exempt one-off jumps from smoothing.
+  const points = rawCenters.map((r, i) => {
+    const prev = i > 0 ? cleaned[i - 1] : cleaned[i];
+    const next = i < cleaned.length - 1 ? cleaned[i + 1] : cleaned[i];
+    const jumped = i > 0 && Math.abs(cleaned[i] - prev) > snapThreshold;
+    const sustained = Math.abs(cleaned[i] - next) <= snapThreshold;
+    const snap = jumped && sustained;
+    if (snap) {
+      console.log(`[FaceTracker] Scene cut at t=${r.time.toFixed(1)}s (jump ${Math.abs(cleaned[i] - prev).toFixed(0)}px)`);
+    }
+    return { time: r.time, cx: cleaned[i], snap };
+  });
+
   // Apply snap-aware smoothing: smooth within segments, but hard-cut at scene boundaries
-  const smoothed = smoothWithSnaps(rawCenters);
+  const smoothed = smoothWithSnaps(points);
+
+  // ── Deadband: hold the camera still until it drifts past a small threshold ──
+  // Without this the crop re-targets on every 0.5s sample and never settles,
+  // reading as a perpetually floating camera. Snap points force an immediate move.
+  const stabilized = applyDeadband(smoothed, points.map((p) => p.snap), srcW);
 
   // Convert centers to crop X coordinates, clamped to source bounds
-  const keyframes: CropKeyframe[] = rawCenters.map((r, i) => {
-    const cx = smoothed[i];
-    let cropX = Math.round(cx - effectiveCropW / 2);
+  const keyframes: CropKeyframe[] = points.map((r, i) => {
+    let cropX = Math.round(stabilized[i] - effectiveCropW / 2);
     cropX = Math.max(0, Math.min(srcW - effectiveCropW, cropX));
     return { time: r.time, cropX, cropY: 0 };
   });
 
   return { frames: keyframes, cropW: effectiveCropW, cropH };
+}
+
+/**
+ * Replace isolated single-frame spikes in a center series with the midpoint of
+ * their neighbours. A point is a spike when it deviates from BOTH neighbours by
+ * more than `threshold` while those neighbours agree with each other (i.e. the
+ * excursion is one sample wide and reverts). Genuine scene cuts are preserved
+ * because at a cut the point agrees with the following sample, so the neighbours
+ * straddle the cut and do not agree.
+ */
+function rejectCenterSpikes(centers: number[], threshold: number): number[] {
+  const n = centers.length;
+  if (n < 3) return centers.slice();
+  const out = centers.slice();
+  for (let i = 1; i < n - 1; i++) {
+    const prev = centers[i - 1];
+    const cur = centers[i];
+    const next = centers[i + 1];
+    const deviatesFromPrev = Math.abs(cur - prev) > threshold;
+    const deviatesFromNext = Math.abs(cur - next) > threshold;
+    const neighboursAgree = Math.abs(prev - next) <= threshold;
+    if (deviatesFromPrev && deviatesFromNext && neighboursAgree) {
+      out[i] = (prev + next) / 2;
+    }
+  }
+  return out;
+}
+
+/**
+ * Hold the crop center fixed until it drifts past a small deadband, then catch
+ * up. This removes the constant sub-threshold float of the virtual camera while
+ * still following real movement. At a snap (true scene cut) the hold is released
+ * so the crop jumps to the new shot immediately.
+ */
+function applyDeadband(values: number[], snaps: boolean[], srcW: number): number[] {
+  const DEADBAND = srcW * 0.03; // ~3% of frame width
+  const out = new Array<number>(values.length);
+  let held = values.length > 0 ? values[0] : 0;
+  for (let i = 0; i < values.length; i++) {
+    if (snaps[i] || Math.abs(values[i] - held) > DEADBAND) {
+      held = values[i];
+    }
+    out[i] = held;
+  }
+  return out;
 }
 
 /**

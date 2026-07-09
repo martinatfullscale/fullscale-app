@@ -335,6 +335,19 @@ async function stitchWithXfade(
 
 // ── Caption Burn-in (post-stitch) ──────────────────────────────────
 
+/**
+ * Escape caption text for an FFmpeg drawtext `text='...'` value.
+ * FFmpeg is spawned without a shell, so only the filtergraph/drawtext layer
+ * matters: `:` and `,` are protected by the surrounding single quotes and must
+ * not be escaped; backslashes are doubled FIRST, then literal quotes use the
+ * `'\''` close-emit-reopen idiom. (Kept in sync with clipGenerator.escapeDrawtext.)
+ */
+function escapeDrawtext(text: string): string {
+  return text
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "'\\''");
+}
+
 async function burnCaptions(
   inputPath: string,
   captionSegments: CaptionSegment[],
@@ -347,10 +360,7 @@ async function burnCaptions(
   const yPos = Math.round(config.targetHeight * 0.82);
 
   const drawTextParts = captionSegments.map(seg => {
-    const escapedText = seg.text
-      .replace(/'/g, "\\'")
-      .replace(/:/g, "\\:")
-      .replace(/\\/g, "\\\\");
+    const escapedText = escapeDrawtext(seg.text);
 
     return `drawtext=text='${escapedText}':fontsize=${fontSize}:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=${yPos}:enable='between(t,${seg.startTime},${seg.endTime})'`;
   });
