@@ -1007,8 +1007,14 @@ function escapeDrawtext(text: string): string {
 
 /**
  * Build FFmpeg drawtext filter for caption segments.
+ * Exported for other render paths (editorial pipeline) so caption burn-in and
+ * its escaping stay in ONE place. Param is the structural subset actually
+ * read, so callers without a full PlatformConfig can use it.
  */
-function buildCaptionFilter(segments: CaptionSegment[], config: PlatformConfig): string | null {
+export function buildCaptionFilter(
+  segments: CaptionSegment[],
+  config: { aspectRatio: string; targetHeight: number },
+): string | null {
   if (segments.length === 0) return null;
 
   // Position captions in the lower third

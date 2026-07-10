@@ -110,6 +110,16 @@ async function detectFacesInClipInner(
     sampleTimes.push(t);
   }
 
+  // Process samples coarse-to-fine (whole-clip passes at increasing density)
+  // instead of sequentially from t=0. With a soft deadline, sequential order
+  // meant a cutoff left the clip's TAIL completely untracked — observed in
+  // prod as "42/60 samples" = the last ~30% of a 58s clip had no data, so the
+  // crop froze wherever it was (wrong person on screen when the speaker
+  // switched late in the clip). Coarse-to-fine makes any prefix of the work
+  // span the full duration at reduced density. Results are time-sorted on
+  // return, so downstream trajectory math is unaffected.
+  const orderedTimes = coarseToFineOrder(sampleTimes);
+
   const tmpDir = path.join(os.tmpdir(), `facetrack-${Date.now()}`);
   fs.mkdirSync(tmpDir, { recursive: true });
 
@@ -119,16 +129,16 @@ async function detectFacesInClipInner(
     // Extract frames in parallel
     const results: FaceDetectionFrame[] = [];
 
-    for (let i = 0; i < sampleTimes.length; i += DETECTION_BATCH_SIZE) {
+    for (let i = 0; i < orderedTimes.length; i += DETECTION_BATCH_SIZE) {
       // Soft deadline check — return partial results rather than throwing
       if (deadlineMs && Date.now() - started > deadlineMs) {
         console.warn(
-          `[FaceTracker] Soft deadline hit (${deadlineMs}ms) with ${results.length}/${sampleTimes.length} samples — using partial`
+          `[FaceTracker] Soft deadline hit (${deadlineMs}ms) with ${results.length}/${orderedTimes.length} samples — using partial (full-duration coverage, reduced density)`
         );
         break;
       }
 
-      const batch = sampleTimes.slice(i, i + DETECTION_BATCH_SIZE);
+      const batch = orderedTimes.slice(i, i + DETECTION_BATCH_SIZE);
       const batchResults = await Promise.all(
         batch.map(async (clipTime) => {
           const absTime = startTime + clipTime;
@@ -156,6 +166,30 @@ async function detectFacesInClipInner(
       fs.rmSync(tmpDir, { recursive: true, force: true });
     } catch {}
   }
+}
+
+/**
+ * Reorder sample times so processing covers the whole clip first at coarse
+ * granularity, then progressively fills in: endpoints, then midpoints, then
+ * finer strides. Any prefix of the output spans the full input range.
+ */
+function coarseToFineOrder(times: number[]): number[] {
+  const n = times.length;
+  if (n <= 2) return times.slice();
+  const picked = new Array<boolean>(n).fill(false);
+  const out: number[] = [];
+  let stride = n - 1;
+  while (true) {
+    for (let i = 0; i < n; i += stride) {
+      if (!picked[i]) {
+        picked[i] = true;
+        out.push(times[i]);
+      }
+    }
+    if (stride === 1) break;
+    stride = Math.max(1, Math.floor(stride / 2));
+  }
+  return out;
 }
 
 /**

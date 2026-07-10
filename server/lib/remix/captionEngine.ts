@@ -85,8 +85,11 @@ export async function generateCaptions(input: CaptionInput): Promise<CaptionOutp
 /**
  * Generate captions from transcript segments with accurate word-level timing.
  * Groups words into display-friendly segments of 4-8 words each.
+ * Exported for render paths (editorial pipeline) that need the DETERMINISTIC
+ * transcript path only — generateCaptions falls through to a Claude call when
+ * transcript parsing yields nothing, which render loops must never do.
  */
-function generateTranscriptCaptions(input: CaptionInput): CaptionOutput {
+export function generateTranscriptCaptions(input: CaptionInput): CaptionOutput {
   const segments: CaptionSegment[] = [];
   const { clipStart, duration, transcriptSegments } = input;
 

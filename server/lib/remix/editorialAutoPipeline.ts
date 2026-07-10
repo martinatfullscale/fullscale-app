@@ -30,6 +30,8 @@ import { rankClips, deduplicateClips } from "./clipRanker";
 import { PLATFORM_CONFIGS } from "./clipDetector";
 import { detectFacesInClip, computeCropTrajectory, buildCropFilterExpr, getVideoSize } from "./faceTracker";
 import { withRenderSlot } from "./renderQueue";
+import { generateTranscriptCaptions } from "./captionEngine";
+import { buildCaptionFilter } from "./clipGenerator";
 import { downloadToTempFile, uploadFileToStorage, objectKeyFromServeUrl } from "../objectStorage";
 
 // ── Configuration ──────────────────────────────────────────────────
@@ -307,6 +309,14 @@ export async function runEditorialAutoPipeline(
         const outputPath = path.join(renderOutputDir, outputFilename);
         const thumbPath = outputPath.replace(".mp4", "_thumb.jpg");
 
+        // Burned-in captions from the transcript (both render branches)
+        const captionFilter = buildEditorialCaptionFilter(
+          transcript.segments as any[],
+          clip.clipStart,
+          clip.duration,
+          platformConfig,
+        );
+
         if (needsReframe) {
           // ── Smart Reframe: face-tracking punch-in zoom ──────────
           // Detect faces → compute smooth crop trajectory → crop+scale (no black bars)
@@ -349,6 +359,7 @@ export async function runEditorialAutoPipeline(
             vf,
             fps: platformConfig.targetFps,
             outputPath,
+            captionFilter,
           });
         } else {
           // ── Same aspect ratio or portrait source — simple scale ──
@@ -361,6 +372,7 @@ export async function runEditorialAutoPipeline(
             vf,
             fps: platformConfig.targetFps,
             outputPath,
+            captionFilter,
           });
         }
 
@@ -550,6 +562,14 @@ async function renderClipsOnly(
         const outputPath = path.join(renderOutputDir, outputFilename);
         const thumbPath = outputPath.replace(".mp4", "_thumb.jpg");
 
+        // Burned-in captions from the transcript (both render branches)
+        const captionFilter = buildEditorialCaptionFilter(
+          speakerSegments,
+          clip.clipStart,
+          clip.duration,
+          platformConfig,
+        );
+
         if (needsReframe) {
           console.log(`[EditorialAuto:Resume]   Face tracking clip ${clip.id} (${clip.duration.toFixed(1)}s)...`);
           const faceFrames = await Promise.race([
@@ -579,6 +599,7 @@ async function renderClipsOnly(
             vf,
             fps: platformConfig.targetFps,
             outputPath,
+            captionFilter,
           });
         } else {
           const vf = `scale=${platformConfig.targetWidth}:${platformConfig.targetHeight}:force_original_aspect_ratio=decrease,pad=${platformConfig.targetWidth}:${platformConfig.targetHeight}:(ow-iw)/2:(oh-ih)/2:black`;
@@ -589,6 +610,7 @@ async function renderClipsOnly(
             vf,
             fps: platformConfig.targetFps,
             outputPath,
+            captionFilter,
           });
         }
 
@@ -798,6 +820,17 @@ export async function renderSingleEditorialClip(videoId: number, clipId: number)
       console.log(`[RenderSingle] Compositing ${brandOverlays.length} brand placement(s) onto clip ${clip.id}`);
     }
 
+    // Transcript serves both speaker-aware crop tracking and caption burn-in,
+    // so fetch it before the branch (previously only the reframe branch had it).
+    const transcriptRecord = await storage.getVideoTranscript(videoId);
+    const speakerSegments = transcriptRecord?.segments as any[] | undefined;
+    const captionFilter = buildEditorialCaptionFilter(
+      speakerSegments,
+      clip.clipStart,
+      clip.duration,
+      platformConfig,
+    );
+
     if (needsReframe) {
       const faceFrames = await Promise.race([
         // Soft 90s deadline returns partial samples; hard 150s timeout is a safety net
@@ -806,10 +839,6 @@ export async function renderSingleEditorialClip(videoId: number, clipId: number)
           setTimeout(() => reject(new Error("Face detection timeout")), 150000)
         ),
       ]).catch(() => []);
-
-      // Fetch transcript for speaker-aware crop tracking
-      const transcriptRecord = await storage.getVideoTranscript(videoId);
-      const speakerSegments = transcriptRecord?.segments as any[] | undefined;
 
       const trajectory = computeCropTrajectory(
         faceFrames,
@@ -834,6 +863,7 @@ export async function renderSingleEditorialClip(videoId: number, clipId: number)
         srcWidth: srcSize.width,
         srcHeight: srcSize.height,
         brandOverlays,
+        captionFilter,
       });
     } else {
       const vf = `scale=${platformConfig.targetWidth}:${platformConfig.targetHeight}:force_original_aspect_ratio=decrease,pad=${platformConfig.targetWidth}:${platformConfig.targetHeight}:(ow-iw)/2:(oh-ih)/2:black`;
@@ -847,6 +877,7 @@ export async function renderSingleEditorialClip(videoId: number, clipId: number)
         srcWidth: srcSize.width,
         srcHeight: srcSize.height,
         brandOverlays,
+        captionFilter,
       });
     }
 
@@ -1037,6 +1068,41 @@ interface RenderOptions {
   srcHeight?: number;
   /** Brand product overlays composited onto the source video before vf is applied */
   brandOverlays?: BrandOverlay[];
+  /** Pre-built caption drawtext filter — appended after the vf chain */
+  captionFilter?: string | null;
+}
+
+/**
+ * Build the burned-in caption filter for an editorial clip from the video's
+ * persisted transcript. Uses ONLY the deterministic word-timing path (never a
+ * Claude call — this runs inside the render loop). Returns null when the clip
+ * range has no transcript content; render proceeds uncaptioned.
+ */
+function buildEditorialCaptionFilter(
+  transcriptSegments: any[] | null | undefined,
+  clipStart: number,
+  clipDuration: number,
+  platformConfig: { aspectRatio: string; targetHeight: number },
+): string | null {
+  try {
+    if (!transcriptSegments || transcriptSegments.length === 0) return null;
+    const result = generateTranscriptCaptions({
+      clipStart,
+      clipEnd: clipStart + clipDuration,
+      duration: clipDuration,
+      narrativeContext: "",
+      emotionalTone: "",
+      brandNames: [],
+      style: "highlight",
+      transcriptSegments: transcriptSegments as any,
+    });
+    if (result.segments.length === 0) return null;
+    console.log(`[EditorialAuto]   Captions: ${result.segments.length} segment(s) will be burned in`);
+    return buildCaptionFilter(result.segments, platformConfig);
+  } catch (err: any) {
+    console.warn(`[EditorialAuto]   Caption build failed (non-fatal): ${err?.message || err}`);
+    return null;
+  }
 }
 
 const RENDER_CONFIG = {
@@ -1067,7 +1133,11 @@ function runFFmpegRender(opts: RenderOptions): Promise<void> {
 }
 
 async function runFFmpegRenderUngated(opts: RenderOptions): Promise<void> {
-  const { videoPath, startTime, duration, vf, fps, outputPath, brandOverlays, srcWidth, srcHeight } = opts;
+  const { videoPath, startTime, duration, fps, outputPath, brandOverlays, srcWidth, srcHeight, captionFilter } = opts;
+  // Captions burn in after the crop/scale chain so coordinates are in target
+  // pixels; drawtext is a linear filter, so appending works in both the plain
+  // -vf path and inside the filter_complex chain segment.
+  const vf = captionFilter ? `${opts.vf},${captionFilter}` : opts.vf;
 
   const hasOverlays = brandOverlays && brandOverlays.length > 0;
 
