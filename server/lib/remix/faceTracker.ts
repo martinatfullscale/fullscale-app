@@ -340,14 +340,26 @@ export function computeCropTrajectory(
   const SNAP_JUMP_FRACTION = 0.20;
   const snapThreshold = srcW * SNAP_JUMP_FRACTION;
 
+  // Ignore speaker turns shorter than this when deciding camera moves — a
+  // brief "mm-hm" interjection must not whip the crop across a two-shot and
+  // back. Dropped turns leave findActiveSpeaker undefined for that span, so
+  // the camera simply holds.
+  const MIN_SPEAKER_TURN_SEC = 1.5;
+  const stableSpeakerSegments = speakerSegments?.filter(
+    (s) => !s.speaker || s.end - s.start >= MIN_SPEAKER_TURN_SEC,
+  );
+
   // Compute raw crop center for each frame
   const rawCenters: { time: number; cx: number; snap: boolean }[] = [];
   let lastKnownCx = srcW / 2;
+  let lastActiveSpeaker: string | undefined;
 
   for (const frame of frames) {
     let cx: number;
     const absTime = clipStartTime + frame.time;
-    const activeSpeaker = speakerSegments ? findActiveSpeaker(speakerSegments, absTime) : undefined;
+    const activeSpeaker = stableSpeakerSegments
+      ? findActiveSpeaker(stableSpeakerSegments, absTime)
+      : undefined;
 
     if (frame.faces.length === 0) {
       // No faces detected in this frame — prefer speaker's known position if available
@@ -373,9 +385,27 @@ export function computeCropTrajectory(
           Math.abs(a.cx - speakerCx) < Math.abs(b.cx - speakerCx) ? a : b
         );
         cx = closest.cx;
+      } else if (
+        activeSpeaker &&
+        lastActiveSpeaker &&
+        activeSpeaker !== lastActiveSpeaker
+      ) {
+        // Speaker CHANGED but we have no anchor for the new speaker (anchors
+        // only get learned from solo shots, and centered solo shots often
+        // teach nothing about who sits where in the wide shot). In a
+        // conversation, the new speaker is almost never the face we're
+        // already holding — cut to the face farthest from the current
+        // position. Even from a wrong start, this locks into correct
+        // alternation after one turn; the previous behavior (closest-to-last)
+        // NEVER switched during a wide shot, which parked the camera on a
+        // silent listener for entire segments.
+        const farthest = allFaces.reduce((a, b) =>
+          Math.abs(a.cx - lastKnownCx) > Math.abs(b.cx - lastKnownCx) ? a : b
+        );
+        cx = farthest.cx;
       } else {
-        // No speaker info — pick the face closest to where we last were
-        // (maintains continuity; prevents jumping between hosts arbitrarily)
+        // Same speaker (or no speaker info) — stay with the face closest to
+        // where we last were (continuity; prevents arbitrary host-hopping)
         const closestToLast = allFaces.reduce((a, b) =>
           Math.abs(a.cx - lastKnownCx) < Math.abs(b.cx - lastKnownCx) ? a : b
         );
@@ -386,6 +416,7 @@ export function computeCropTrajectory(
     // Continuity reference for the multi-face "closest to last" tie-break only.
     // Snap/cut detection is deferred to a second pass that can see the future.
     lastKnownCx = cx;
+    if (activeSpeaker) lastActiveSpeaker = activeSpeaker;
     rawCenters.push({ time: frame.time, cx, snap: false });
   }
 
