@@ -314,6 +314,27 @@ export function computeCropTrajectory(
   // ── Build speaker → face position map ──
   const speakerPositions = buildSpeakerPositionMap(frames, speakerSegments, clipStartTime, srcW);
 
+  // Diagnostic: make the tracking regime visible in render logs. Three cases:
+  //   no segments        → no transcript passed (wiring problem)
+  //   no speaker labels  → transcript wasn't diarized (Whisper, or pre-Deepgram
+  //                        transcript) — voice-following CANNOT work
+  //   labels, 0 learned  → diarized but no solo shots to anchor who sits where
+  //                        (known limitation on static two-shots)
+  if (!speakerSegments || speakerSegments.length === 0) {
+    console.log(`[FaceTracker] No transcript segments — voice-following disabled (nearest-face tracking only)`);
+  } else {
+    const labels = new Set(
+      speakerSegments.map((s) => s.speaker).filter((sp): sp is string => !!sp),
+    );
+    if (labels.size === 0) {
+      console.log(`[FaceTracker] Transcript has NO speaker labels (non-diarized STT) — voice-following disabled`);
+    } else {
+      console.log(
+        `[FaceTracker] Speaker tracking: ${labels.size} speaker(s) in transcript, anchor positions learned for ${speakerPositions.size}`,
+      );
+    }
+  }
+
   // Threshold: if a face/speaker jumps more than this fraction of the frame width,
   // treat it as a scene cut and snap (don't smooth through the cut).
   const SNAP_JUMP_FRACTION = 0.20;
