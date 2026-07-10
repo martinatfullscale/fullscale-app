@@ -5518,41 +5518,61 @@ export async function registerRoutes(
 
     console.log(`[VideoIndex] Fetching videos for userId: ${userId}, authEmail: ${authEmail}${viewingAs ? " (view-as)" : ""}`);
 
-    const videos = await storage.getVideoIndex(userId, authEmail);
-    console.log(`[VideoIndex] Found ${videos.length} videos for user`);
-    
-    const videosWithCounts = await Promise.all(
-      videos.map(async (video) => {
-        const count = await storage.getSurfaceCountByVideo(video.id);
-        let fileExists = false;
-        if (video.filePath) {
-          try {
-            if (video.filePath.startsWith('/storage/')) {
-              // Object Storage file — check async
-              const objectKey = objectKeyFromServeUrl(video.filePath);
-              fileExists = await fileExistsInStorage(objectKey);
-            } else {
-              fileExists = fs.existsSync(video.filePath);
-            }
-          } catch {
-            fileExists = false;
-          }
-        }
-        return { ...video, adOpportunities: count, fileExists };
-      })
-    );
+    // The whole handler is wrapped: this endpoint previously had NO catch, so
+    // a single pool-timeout inside the per-video work became an UNHANDLED
+    // rejection (observed in prod while a render had the CPU).
+    try {
+      const videos = await storage.getVideoIndex(userId, authEmail);
+      console.log(`[VideoIndex] Found ${videos.length} videos for user`);
 
-    res.json({
-      videos: videosWithCounts,
-      total: videosWithCounts.length,
-      // Echo whose library this actually represents (null = your own).
-      // Client uses this to render the "Viewing as X" banner so admins
-      // can't accidentally lose track of whose library they're looking at.
-      viewingAs,
-    });
-    // Background self-heal for IG/FB thumbnails (signed CDN URLs that expire).
-    // Per-user 1h cooldown — see socialThumbnailAutoRefresh.ts.
-    maybeRefreshSocialThumbnailsInBackground(userId);
+      // One batched count query (was one query per video — 80 parallel
+      // acquisitions against a 10-connection pool).
+      const counts = await storage.getSurfaceCountsForVideos(videos.map((v) => v.id));
+
+      // File-existence checks hit Object Storage — bound the concurrency so 80
+      // videos don't mean 80 simultaneous GCS calls.
+      const fileCheckLimit = pLimit(8);
+      const videosWithCounts = await Promise.all(
+        videos.map((video) =>
+          fileCheckLimit(async () => {
+            let fileExists = false;
+            if (video.filePath) {
+              try {
+                if (video.filePath.startsWith('/storage/')) {
+                  // Object Storage file — check async
+                  const objectKey = objectKeyFromServeUrl(video.filePath);
+                  fileExists = await fileExistsInStorage(objectKey);
+                } else {
+                  fileExists = fs.existsSync(video.filePath);
+                }
+              } catch {
+                fileExists = false;
+              }
+            }
+            // Strip the scan internals (per-shot dHash arrays, cut lists) — no
+            // consumer of this endpoint reads them, and they ballooned the
+            // response to ~500KB / 17s under load.
+            const { sceneIndex, sceneBoundaries, ...slim } = video as any;
+            return { ...slim, adOpportunities: counts.get(video.id) || 0, fileExists };
+          }),
+        ),
+      );
+
+      res.json({
+        videos: videosWithCounts,
+        total: videosWithCounts.length,
+        // Echo whose library this actually represents (null = your own).
+        // Client uses this to render the "Viewing as X" banner so admins
+        // can't accidentally lose track of whose library they're looking at.
+        viewingAs,
+      });
+      // Background self-heal for IG/FB thumbnails (signed CDN URLs that expire).
+      // Per-user 1h cooldown — see socialThumbnailAutoRefresh.ts.
+      maybeRefreshSocialThumbnailsInBackground(userId);
+    } catch (err: any) {
+      console.error("[VideoIndex] with-opportunities error:", err?.message || err);
+      res.status(500).json({ error: err?.message || "Failed to load video index" });
+    }
   });
 
   // Per-caller endpoint: what view-as options does this user have? Powers

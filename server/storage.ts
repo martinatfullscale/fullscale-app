@@ -151,6 +151,7 @@ export interface IStorage {
   updateDetectedSurface(surfaceId: number, updates: { surfaceType?: string; sceneContext?: string; surroundings?: string[]; boundingBoxX?: string; boundingBoxY?: string; boundingBoxWidth?: string; boundingBoxHeight?: string }): Promise<void>;
   getDetectedSurfaces(videoId: number): Promise<DetectedSurface[]>;
   getSurfaceCountByVideo(videoId: number): Promise<number>;
+  getSurfaceCountsForVideos(videoIds: number[]): Promise<Map<number, number>>;
   clearDetectedSurfaces(videoId: number): Promise<void>;
   getVideosWithOpportunities(userId: string): Promise<VideoWithOpportunities[]>;
   getAllVideosWithOpportunities(): Promise<VideoWithOpportunities[]>;
@@ -689,13 +690,10 @@ export class DatabaseStorage implements IStorage {
     // Deduplicate by normalized title — keeps the entry with the most surfaces (best scan)
     // This handles duplicate uploads, re-imports, and mixed youtubeId formats
     const seen = new Map<string, VideoIndex>();
-    const surfaceCounts = new Map<number, number>();
 
-    // Pre-fetch surface counts for smarter dedup (keep the best-scanned version)
-    for (const video of videos) {
-      const count = await this.getSurfaceCountByVideo(video.id);
-      surfaceCounts.set(video.id, count);
-    }
+    // Pre-fetch surface counts for smarter dedup (keep the best-scanned
+    // version) — one batched GROUP BY, not a query per video.
+    const surfaceCounts = await this.getSurfaceCountsForVideos(videos.map((v) => v.id));
 
     for (const video of videos) {
       const dedupeKey = video.title.toLowerCase().replace(/[_\s-]+/g, ' ').trim();
@@ -930,6 +928,31 @@ export class DatabaseStorage implements IStorage {
       .from(detectedSurfaces)
       .where(eq(detectedSurfaces.videoId, videoId))
       .orderBy(detectedSurfaces.timestamp);
+  }
+
+  async getSurfaceCountsForVideos(videoIds: number[]): Promise<Map<number, number>> {
+    // Batched form of getSurfaceCountByVideo (same Filtered exclusion): ONE
+    // GROUP BY instead of a query per video. The per-video version called in a
+    // loop over ~80 videos exhausted the 10-connection pool whenever a render
+    // had the CPU — observed in prod as "timeout exceeded when trying to
+    // connect" unhandled rejections and 17s library responses.
+    const counts = new Map<number, number>();
+    if (videoIds.length === 0) return counts;
+    const rows = await db
+      .select({
+        videoId: detectedSurfaces.videoId,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(detectedSurfaces)
+      .where(
+        and(
+          inArray(detectedSurfaces.videoId, videoIds),
+          ne(detectedSurfaces.surfaceType, "Filtered"),
+        ),
+      )
+      .groupBy(detectedSurfaces.videoId);
+    for (const r of rows) counts.set(r.videoId, Number(r.count));
+    return counts;
   }
 
   async getSurfaceCountByVideo(videoId: number): Promise<number> {
