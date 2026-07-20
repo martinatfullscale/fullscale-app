@@ -110,8 +110,23 @@ export async function runEditorialAutoPipeline(
   if (!video) {
     return { ...emptyResult, error: "Video not found", durationMs: Date.now() - start };
   }
-  if (!video.filePath) {
-    return { ...emptyResult, error: "Video has no filePath", durationMs: Date.now() - start };
+  if (!video.filePath && !video.youtubeId) {
+    return { ...emptyResult, error: "Video has no source (no file and no platform id)", durationMs: Date.now() - start };
+  }
+
+  // Resolve a usable source path ONCE. Light-cloud imports (YouTube/IG/FB)
+  // have no filePath — pull via the shared source cache (OAuth-capable,
+  // TTL'd, deduplicated; same machinery playback uses). Downstream stages
+  // (audio extraction, render) pass local paths through unchanged.
+  let sourceFilePath: string = video.filePath as string;
+  if (!sourceFilePath) {
+    try {
+      const { getSourcePath } = await import("../sourceCache");
+      sourceFilePath = await getSourcePath(video as any);
+      console.log(`[EditorialAuto] Pulled platform source for video ${videoId}: ${sourceFilePath}`);
+    } catch (dlErr: any) {
+      return { ...emptyResult, error: `Source download failed: ${dlErr?.message || dlErr}`, durationMs: Date.now() - start };
+    }
   }
 
   // Idempotency: if already ready and we have rendered clips, skip (unless force/resume)
@@ -175,7 +190,7 @@ export async function runEditorialAutoPipeline(
       };
     } else {
       console.log(`[EditorialAuto] Resume mode: rendering ${unrendered.length} of ${existing.length} pending clips`);
-      return await renderClipsOnly(videoId, video.filePath, unrendered, start);
+      return await renderClipsOnly(videoId, sourceFilePath, unrendered, start);
     }
   }
 
@@ -186,7 +201,7 @@ export async function runEditorialAutoPipeline(
     // ── 1. Transcript ────────────────────────────────────────────
     await storage.updateVideoEditorialStatus(videoId, "transcribing", { error: null });
 
-    const transcript = await ensureTranscript(videoId, video.filePath);
+    const transcript = await ensureTranscript(videoId, sourceFilePath);
     if (!transcript || !transcript.segments || transcript.segments.length === 0) {
       throw new Error("Transcript not available after pipeline run");
     }
@@ -267,7 +282,7 @@ export async function runEditorialAutoPipeline(
     });
 
     // Resolve source video to local path once (reused for all clips)
-    const resolved = await resolveSourceVideo(video.filePath, videoId);
+    const resolved = await resolveSourceVideo(sourceFilePath, videoId);
     videoLocalPath = resolved.localPath;
     tempScopeDir = resolved.tempScopeDir;
 
@@ -785,7 +800,15 @@ async function resolveSourceVideo(
  */
 export async function renderSingleEditorialClip(videoId: number, clipId: number): Promise<void> {
   const video = await storage.getVideoById(videoId);
-  if (!video || !video.filePath) throw new Error("Video not found or has no filePath");
+  if (!video || (!video.filePath && !video.youtubeId)) throw new Error("Video not found or has no source");
+
+  // Light-cloud imports: pull the source via the shared cache (see the
+  // batch pipeline's identical resolution above).
+  let singleSourcePath: string = video.filePath as string;
+  if (!singleSourcePath) {
+    const { getSourcePath } = await import("../sourceCache");
+    singleSourcePath = await getSourcePath(video as any);
+  }
 
   const existing = await storage.getEditorialClipsByVideo(videoId);
   const clip = existing.find((c) => c.id === clipId);
@@ -799,7 +822,7 @@ export async function renderSingleEditorialClip(videoId: number, clipId: number)
   fs.mkdirSync(renderOutputDir, { recursive: true });
 
   try {
-    const resolved = await resolveSourceVideo(video.filePath, videoId);
+    const resolved = await resolveSourceVideo(singleSourcePath, videoId);
     videoLocalPath = resolved.localPath;
     tempScopeDir = resolved.tempScopeDir;
 

@@ -182,13 +182,22 @@ export async function runRemixPipeline(
   try {
     // Get video info
     const video = await storage.getVideoById(videoId);
-    if (!video || !video.filePath) {
-      throw new Error("Video not found or no file path");
+    if (!video || (!video.filePath && !video.youtubeId)) {
+      throw new Error("Video not found or has no source");
+    }
+
+    // Light-cloud imports (YouTube/IG/FB) have no filePath — pull via the
+    // shared source cache (OAuth-capable, TTL'd) the same way playback does.
+    let sourceFilePath: string = video.filePath as string;
+    if (!sourceFilePath) {
+      const { getSourcePath } = await import("../sourceCache");
+      sourceFilePath = await getSourcePath(video as any);
+      console.log(`[Remix] Pulled platform source for video ${videoId}: ${sourceFilePath}`);
     }
 
     // Resolve video path (handles Object Storage download if needed).
     // Scope the temp path with this job's ID so concurrent remix jobs never collide.
-    const resolved = await resolveVideoPath(video.filePath, `job-${jobId}`);
+    const resolved = await resolveVideoPath(sourceFilePath, `job-${jobId}`);
     const videoPath = resolved.localPath;
     if (resolved.tempScopeDir) tempScopeDir = resolved.tempScopeDir;
 
@@ -900,8 +909,24 @@ export async function reRenderClip(
     };
   }
 
-  // Resolve video path
-  const filePath = video.filePath;
+  // Resolve video path — pull light-cloud imports via the source cache.
+  let filePath = video.filePath;
+  if (!filePath && video.youtubeId) {
+    try {
+      const { getSourcePath } = await import("../sourceCache");
+      filePath = await getSourcePath(video as any);
+    } catch (dlErr: any) {
+      return {
+        jobId: 0,
+        success: false,
+        clipsGenerated: 0,
+        clipsPublishReady: 0,
+        clipsNeedReview: 0,
+        clips: [],
+        error: `Source download failed: ${dlErr?.message || dlErr}`,
+      };
+    }
+  }
   if (!filePath) {
     return {
       jobId: 0,
@@ -910,7 +935,7 @@ export async function reRenderClip(
       clipsPublishReady: 0,
       clipsNeedReview: 0,
       clips: [],
-      error: "Video has no file path",
+      error: "Video has no source",
     };
   }
 

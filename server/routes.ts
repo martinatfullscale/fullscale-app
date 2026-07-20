@@ -10778,7 +10778,7 @@ export async function registerRoutes(
 
       const video = await storage.getVideoById(videoId);
       if (!video) return res.status(404).json({ error: "Video not found" });
-      if (!video.filePath) return res.status(400).json({ error: "Video has no filePath" });
+      if (!video.filePath && !video.youtubeId) return res.status(400).json({ error: "Video has no source — upload a file or import it from a connected platform" });
 
       // Insert a new editorial clip record with pending render status
       const duration = clipEnd - clipStart;
@@ -10869,7 +10869,7 @@ export async function registerRoutes(
 
       const video = await storage.getVideoById(videoId);
       if (!video) return res.status(404).json({ error: "Video not found" });
-      if (!video.filePath) return res.status(400).json({ error: "Video has no filePath" });
+      if (!video.filePath && !video.youtubeId) return res.status(400).json({ error: "Video has no source — upload a file or import it from a connected platform" });
 
       // Fire-and-forget — respond immediately
       res.json({
@@ -10907,7 +10907,7 @@ export async function registerRoutes(
 
       const video = await storage.getVideoById(videoId);
       if (!video) return res.status(404).json({ error: "Video not found" });
-      if (!video.filePath) return res.status(400).json({ error: "Video has no filePath" });
+      if (!video.filePath && !video.youtubeId) return res.status(400).json({ error: "Video has no source — upload a file or import it from a connected platform" });
 
       const existingClips = await storage.getEditorialClipsByVideo(videoId);
       if (existingClips.length === 0) {
