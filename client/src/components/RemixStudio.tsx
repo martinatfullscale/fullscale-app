@@ -160,8 +160,9 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
   const [copilotClipId, setCopilotClipId] = useState<number | undefined>(undefined);
 
   // Load existing jobs, clips, and stitch plans
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (): Promise<GeneratedClip[]> => {
     setIsLoading(true);
+    let loadedClips: GeneratedClip[] = [];
     try {
       const [jobsRes, clipsRes, stitchRes] = await Promise.all([
         fetch(`/api/remix/video/${videoId}/jobs`, { credentials: "include" }),
@@ -170,7 +171,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
       ]);
       if (jobsRes.ok) setJobs(await jobsRes.json());
       if (clipsRes.ok) {
-        const loadedClips = await clipsRes.json();
+        loadedClips = await clipsRes.json();
         setClips(loadedClips);
         // Auto-set copilot clip ID to latest clip if not already set
         if (loadedClips.length > 0) {
@@ -182,7 +183,23 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
       console.error("Failed to load remix data:", err);
     }
     setIsLoading(false);
+    return loadedClips;
   }, [videoId]);
+
+  // Re-renders run in the background and usually outlast a single fixed
+  // wait — reload on a backoff schedule and retarget the copilot to the
+  // newest clip once it lands.
+  const scheduleReloads = useCallback(() => {
+    const delays = [3000, 8000, 15000, 30000];
+    delays.forEach((ms, i) => {
+      setTimeout(async () => {
+        const loaded = await loadData();
+        if (i === delays.length - 1 && loaded.length > 0) {
+          setCopilotClipId(loaded[loaded.length - 1].id);
+        }
+      }, ms);
+    });
+  }, [loadData]);
 
   // Handle co-pilot suggestion application (Phase 4)
   const handleApplySuggestion = useCallback((suggestion: any) => {
@@ -207,7 +224,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
         }).then((res) => {
           if (res.ok) {
             toast({ title: "Re-rendering", description: "Clip is being re-rendered with suggested changes" });
-            setTimeout(loadData, 3000);
+            scheduleReloads();
           } else {
             toast({ title: "Re-render failed", description: "Could not apply suggestion. Try again.", variant: "destructive" });
           }
@@ -230,7 +247,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
         }).then((res) => {
           if (res.ok) {
             toast({ title: "Re-rendering", description: `Applying ${data.suggestedStyle} caption style` });
-            setTimeout(loadData, 3000);
+            scheduleReloads();
           } else {
             toast({ title: "Re-render failed", description: "Could not apply caption style. Try again.", variant: "destructive" });
           }
@@ -252,7 +269,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
         }).then((res) => {
           if (res.ok) {
             toast({ title: "Re-rendering", description: `Re-targeting clip for ${data.betterPlatform}` });
-            setTimeout(loadData, 3000);
+            scheduleReloads();
           } else {
             toast({ title: "Re-render failed", description: "Could not switch platform. Try again.", variant: "destructive" });
           }
@@ -260,18 +277,73 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
         break;
       }
       case "add_placement": {
-        toast({
-          title: "Placement suggestion",
-          description: data.productName
-            ? `${data.productName} can be placed on surface #${data.surfaceId} at ${data.placementTimestamp?.toFixed(1) || 0}s`
-            : suggestion.reason,
-        });
+        if (!data?.surfaceId || !data?.productId) {
+          toast({ title: "Placement suggestion", description: suggestion.reason || "Suggestion lacks a surface/product to auto-apply" });
+          break;
+        }
+        (async () => {
+          try {
+            const catRes = await fetch("/api/brand-products/catalog", { credentials: "include" });
+            const catalog = catRes.ok ? await catRes.json() : [];
+            const product = (catalog || []).find((p: any) => p.id === data.productId);
+            if (!product?.imageUrl) {
+              toast({ title: "Cannot apply placement", description: `Product #${data.productId} has no image in the catalog`, variant: "destructive" });
+              return;
+            }
+            const res = await fetch("/api/placements", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              credentials: "include",
+              body: JSON.stringify({
+                videoId,
+                surfaceId: data.surfaceId,
+                productId: data.productId,
+                productImageUrl: product.imageUrl,
+                transform: { offsetX: 0, offsetY: 0, scale: 1, rotation: 0, flipH: false },
+                blend: { opacity: 100, blendMode: "source-over", shadowEnabled: true, shadowBlur: 12, shadowOffsetX: 0, shadowOffsetY: 8, shadowColor: "rgba(0,0,0,0.5)", featherRadius: 2, brightness: 0, contrast: 0 },
+              }),
+            });
+            if (res.ok) {
+              toast({ title: "Placement saved", description: `${data.productName || "Product"} placed on surface #${data.surfaceId} — fine-tune in the Placement editor` });
+            } else {
+              const err = await res.json().catch(() => ({}));
+              toast({ title: "Placement failed", description: err.error || "Could not save placement", variant: "destructive" });
+            }
+          } catch {
+            toast({ title: "Placement failed", description: "Network error", variant: "destructive" });
+          }
+        })();
+        break;
+      }
+      case "generate_asset": {
+        const surfaceId = data?.targetSurface;
+        const productId = data?.productId;
+        if (!surfaceId || !productId) {
+          toast({ title: "Asset suggestion", description: `${suggestion.reason} (needs a target surface + product to auto-generate)` });
+          break;
+        }
+        toast({ title: "Generating asset", description: "AI asset generation started — this can take ~30s" });
+        fetch("/api/generate/product-asset", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ videoId, surfaceId, brandProductId: productId }),
+        })
+          .then(async (res) => {
+            if (res.ok) {
+              toast({ title: "Asset generated", description: "Product asset created for the target surface" });
+            } else {
+              const err = await res.json().catch(() => ({}));
+              toast({ title: "Asset generation failed", description: err.error || "Generation failed", variant: "destructive" });
+            }
+          })
+          .catch(() => toast({ title: "Asset generation failed", description: "Network error", variant: "destructive" }));
         break;
       }
       default:
         toast({ title: "Suggestion noted", description: suggestion.reason });
     }
-  }, [copilotClipId, toast, loadData]);
+  }, [copilotClipId, toast, loadData, scheduleReloads, videoId]);
 
   useEffect(() => {
     if (open) loadData();
@@ -794,6 +866,8 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
                     <ClipCard
                       key={clip.id}
                       clip={clip}
+                      isSelected={copilotClipId === clip.id}
+                      onSelect={() => setCopilotClipId(clip.id)}
                       onApprove={() => approveClip(clip.id)}
                       onReject={() => rejectClip(clip.id)}
                       onReRender={reRenderClip}
@@ -1017,6 +1091,12 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
             <RemixCopilot
               videoId={videoId}
               clipId={copilotClipId}
+              clipLabel={(() => {
+                const target = clips.find(c => c.id === copilotClipId);
+                if (!target) return undefined;
+                const platform = target.platformTarget || "clip";
+                return `Clip #${target.id} · ${platform} · ${(target.clipStart ?? 0).toFixed(0)}–${(target.clipEnd ?? 0).toFixed(0)}s`;
+              })()}
               open={true}
               onClose={() => {}}
               onApplySuggestion={handleApplySuggestion}
@@ -1239,11 +1319,15 @@ function HighlightReelCard({ plan, onDelete }: { plan: StitchPlan; onDelete?: (p
 
 function ClipCard({
   clip,
+  isSelected,
+  onSelect,
   onApprove,
   onReject,
   onReRender,
 }: {
   clip: GeneratedClip;
+  isSelected?: boolean;
+  onSelect?: () => void;
   onApprove: () => void;
   onReject: () => void;
   onReRender?: (clipId: number, mods: any) => void;
@@ -1311,8 +1395,17 @@ function ClipCard({
     <motion.div
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      className="bg-gray-800/60 rounded-xl border border-gray-700/50 overflow-hidden"
+      onClick={onSelect}
+      className={`bg-gray-800/60 rounded-xl border overflow-hidden relative ${onSelect ? "cursor-pointer" : ""} ${
+        isSelected ? "border-violet-500 ring-1 ring-violet-500/50" : "border-gray-700/50"
+      }`}
+      data-testid={`clip-card-${clip.id}`}
     >
+      {isSelected && (
+        <div className="absolute top-2 right-2 z-10 flex items-center gap-1 px-2 py-0.5 rounded-full bg-violet-600 text-white text-[10px] font-medium shadow">
+          <Sparkles className="w-3 h-3" /> Copilot target
+        </div>
+      )}
       {/* Video Player / Thumbnail area */}
       {clipSrc && showPlayer ? (
         <div className="relative bg-black aspect-video">

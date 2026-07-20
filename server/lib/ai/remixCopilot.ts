@@ -80,6 +80,9 @@ export interface GenerateAssetData {
   prompt: string;
   assetType: "product_shot" | "transition_card" | "outro_card" | "b_roll";
   targetSurface?: number;
+  /** Brand product id from the catalog when the asset features a product —
+   *  required for the client to auto-apply via /api/generate/product-asset */
+  productId?: number | null;
 }
 
 export interface StitchData {
@@ -390,7 +393,7 @@ SUGGESTION DATA SCHEMAS:
 For "trim": { "type": "trim", "newStart": number, "newEnd": number, "trimDelta": { "startDelta": number, "endDelta": number } }
 For "hook_improvement": { "type": "hook_improvement", "alternativeStart": number, "hookLine": "the transcript text" }
 For "add_placement": { "type": "add_placement", "surfaceId": number, "productId": number, "productName": "string", "placementTimestamp": number }
-For "generate_asset": { "type": "generate_asset", "prompt": "image generation prompt", "assetType": "product_shot|transition_card|outro_card|b_roll", "targetSurface": number|null }
+For "generate_asset": { "type": "generate_asset", "prompt": "image generation prompt", "assetType": "product_shot|transition_card|outro_card|b_roll", "targetSurface": number|null, "productId": number|null (id from BRAND CATALOG when the asset features a product — include it whenever possible so the suggestion can be applied in one click) }
 For "stitch": { "type": "stitch", "additionalSegments": [{ "start": number, "end": number, "reason": "why" }], "suggestedTransition": "cut|crossfade|branded_wipe" }
 For "caption_edit": { "type": "caption_edit", "suggestedStyle": "highlight|brand_callout|narrative", "keyMoments": [{ "time": number, "text": "string" }] }
 For "platform_switch": { "type": "platform_switch", "currentPlatform": "string", "betterPlatform": "string", "platformReasons": ["reason1"] }

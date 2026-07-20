@@ -10053,7 +10053,7 @@ export async function registerRoutes(
   // ─── Image Generation (Seeddance 2.0) ───────────────────────────
 
   // POST /api/generate/product-asset — Generate a product asset for a surface
-  app.post("/api/generate/product-asset", isAuthenticated, async (req: any, res) => {
+  app.post("/api/generate/product-asset", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const { videoId, surfaceId, brandProductId } = req.body;
       if (!videoId || !surfaceId || !brandProductId) {
@@ -10061,7 +10061,15 @@ export async function registerRoutes(
       }
 
       // Get surface and scene analysis data
-      const surfaces = await storage.getSurfacesForVideo(videoId); // DEAD-BROKEN endpoint (product-asset/composite-preview) — see CODE_REVIEW; tracked for removal/rewrite
+      // detectedSurfaces stores bounding boxes as boundingBox* decimal strings;
+      // this block's shape math expects bbox* numbers.
+      const surfaces = (await storage.getDetectedSurfaces(videoId)).map((s: any) => ({
+        ...s,
+        bboxX: parseFloat(String(s.boundingBoxX ?? 0)) || 0,
+        bboxY: parseFloat(String(s.boundingBoxY ?? 0)) || 0,
+        bboxWidth: parseFloat(String(s.boundingBoxWidth ?? 0.2)) || 0.2,
+        bboxHeight: parseFloat(String(s.boundingBoxHeight ?? 0.2)) || 0.2,
+      }));
       const surface = surfaces.find((s: any) => s.id === surfaceId);
       if (!surface) return res.status(404).json({ error: "Surface not found" });
 
@@ -10134,7 +10142,15 @@ export async function registerRoutes(
       const asset = assets.find((a: any) => a.id === assetId);
       if (!asset || !asset.assetPath) return res.status(404).json({ error: "Asset not found" });
 
-      const surfaces = await storage.getSurfacesForVideo(videoId); // DEAD-BROKEN endpoint (product-asset/composite-preview) — see CODE_REVIEW; tracked for removal/rewrite
+      // detectedSurfaces stores bounding boxes as boundingBox* decimal strings;
+      // this block's shape math expects bbox* numbers.
+      const surfaces = (await storage.getDetectedSurfaces(videoId)).map((s: any) => ({
+        ...s,
+        bboxX: parseFloat(String(s.boundingBoxX ?? 0)) || 0,
+        bboxY: parseFloat(String(s.boundingBoxY ?? 0)) || 0,
+        bboxWidth: parseFloat(String(s.boundingBoxWidth ?? 0.2)) || 0.2,
+        bboxHeight: parseFloat(String(s.boundingBoxHeight ?? 0.2)) || 0.2,
+      }));
       const surface = surfaces.find((s: any) => s.id === surfaceId);
       if (!surface) return res.status(404).json({ error: "Surface not found" });
 
@@ -10209,7 +10225,15 @@ export async function registerRoutes(
         return res.status(400).json({ error: "surfaceId and brandProductId are required" });
       }
 
-      const surfaces = await storage.getSurfacesForVideo(videoId); // DEAD-BROKEN endpoint (product-asset/composite-preview) — see CODE_REVIEW; tracked for removal/rewrite
+      // detectedSurfaces stores bounding boxes as boundingBox* decimal strings;
+      // this block's shape math expects bbox* numbers.
+      const surfaces = (await storage.getDetectedSurfaces(videoId)).map((s: any) => ({
+        ...s,
+        bboxX: parseFloat(String(s.boundingBoxX ?? 0)) || 0,
+        bboxY: parseFloat(String(s.boundingBoxY ?? 0)) || 0,
+        bboxWidth: parseFloat(String(s.boundingBoxWidth ?? 0.2)) || 0.2,
+        bboxHeight: parseFloat(String(s.boundingBoxHeight ?? 0.2)) || 0.2,
+      }));
       const surface = surfaces.find((s: any) => s.id === surfaceId);
       if (!surface) return res.status(404).json({ error: "Surface not found" });
 
@@ -10285,7 +10309,15 @@ export async function registerRoutes(
       const videoId = parseInt(req.params.videoId);
       const scanMode = req.body.scanMode || "standard";
 
-      const surfaces = await storage.getSurfacesForVideo(videoId); // DEAD-BROKEN endpoint (product-asset/composite-preview) — see CODE_REVIEW; tracked for removal/rewrite
+      // detectedSurfaces stores bounding boxes as boundingBox* decimal strings;
+      // this block's shape math expects bbox* numbers.
+      const surfaces = (await storage.getDetectedSurfaces(videoId)).map((s: any) => ({
+        ...s,
+        bboxX: parseFloat(String(s.boundingBoxX ?? 0)) || 0,
+        bboxY: parseFloat(String(s.boundingBoxY ?? 0)) || 0,
+        bboxWidth: parseFloat(String(s.boundingBoxWidth ?? 0.2)) || 0.2,
+        bboxHeight: parseFloat(String(s.boundingBoxHeight ?? 0.2)) || 0.2,
+      }));
       const allAnalyses = await storage.getSceneAnalysisByVideo(videoId);
 
       if (allAnalyses.length === 0) {
