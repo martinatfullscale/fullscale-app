@@ -889,12 +889,6 @@ export default function Dashboard() {
                 >
                   Upload Manual Asset
                 </Button>
-                <Button variant="outline" className="w-full justify-start" data-testid="button-configure-webhooks">
-                  Configure Webhooks
-                </Button>
-                <Button variant="outline" className="w-full justify-start" data-testid="button-view-api-docs">
-                  View API Documentation
-                </Button>
                 <p className="text-[11px] text-muted-foreground/80 leading-relaxed pt-2">
                   <a
                     href="/privacy"

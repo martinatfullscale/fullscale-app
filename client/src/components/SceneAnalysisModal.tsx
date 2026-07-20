@@ -1202,13 +1202,6 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                   </Button>
                 )}
 
-                <Button
-                  className="w-full mt-2"
-                  variant="outline"
-                  data-testid="button-view-opportunities"
-                >
-                  View Ad Opportunities
-                </Button>
               </div>
             </div>
           </motion.div>

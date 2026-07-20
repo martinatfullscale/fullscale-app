@@ -49,6 +49,14 @@ export function TopBar() {
 
   const currentRole = userTypeData?.viewRole || "creator";
 
+  // Real pending-placement count drives the bell dot (the dot used to be
+  // a hardcoded always-on span with no click handler).
+  const { data: inboxCountData } = useQuery<{ count: number }>({
+    queryKey: ["/api/creator/placements/inbox/count"],
+    refetchInterval: 60_000,
+  });
+  const inboxCount = inboxCountData?.count ?? 0;
+
   const handleSwitch = () => {
     const newRole = currentRole === "brand" ? "creator" : "brand";
     switchRoleMutation.mutate(newRole);
@@ -92,9 +100,16 @@ export function TopBar() {
           </Button>
         )}
 
-        <button className="relative p-2 rounded-full hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors">
+        <button
+          onClick={() => setLocation(currentRole === "brand" ? "/brand/placements" : "/inbox")}
+          className="relative p-2 rounded-full hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"
+          data-testid="button-notifications-bell"
+          aria-label="Placement inbox"
+        >
           <Bell className="w-5 h-5" />
-          <span className="absolute top-2 right-2.5 w-2 h-2 bg-primary rounded-full ring-2 ring-background"></span>
+          {inboxCount > 0 && (
+            <span className="absolute top-2 right-2.5 w-2 h-2 bg-primary rounded-full ring-2 ring-background"></span>
+          )}
         </button>
 
         <div className="flex items-center gap-3 pl-6 border-l border-border">

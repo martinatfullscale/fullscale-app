@@ -387,11 +387,12 @@ export default function BrandMarketplace() {
     return "Creator";
   };
 
-  // Merge real featured creators from API with dummy placeholders — 2 rows of 4 (8 total)
+  // Real featured creators only for signed-in brands — fabricated
+  // placeholder people are strictly pitch-mode demo dressing.
   const apiFeaturedCreators = featuredCreatorsData?.creators || [];
   const featuredCreators = [
     ...apiFeaturedCreators,
-    ...DUMMY_FEATURED_CREATORS.filter(d => !apiFeaturedCreators.some(a => a.slug === d.slug)),
+    ...(isPitchMode ? DUMMY_FEATURED_CREATORS.filter(d => !apiFeaturedCreators.some(a => a.slug === d.slug)) : []),
   ].slice(0, 8);
 
   const buyMutation = useMutation({

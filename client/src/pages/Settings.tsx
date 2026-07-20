@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { TopBar } from "@/components/TopBar";
 import { User, CreditCard, Bell, CheckCircle, ExternalLink, Save, Link2, Loader2, ChevronDown, RefreshCw, Trash2, Star, Mic, Globe } from "lucide-react";
 import { SiInstagram, SiFacebook, SiX, SiTiktok, SiYoutube, SiTwitch, SiLinkedin } from "react-icons/si";
@@ -95,11 +95,30 @@ export default function Settings() {
     email: "martin@creators.com",
   });
 
-  const [notifications, setNotifications] = useState({
-    newBrandOffer: true,
-    videoAnalysisComplete: true,
-    weeklyRevenueReport: false,
+  const [notifications, setNotifications] = useState(() => {
+    const defaults = { newBrandOffer: true, videoAnalysisComplete: true, weeklyRevenueReport: false };
+    try {
+      const saved = localStorage.getItem("fs-notification-prefs");
+      if (saved) return { ...defaults, ...JSON.parse(saved) };
+    } catch { /* corrupted prefs fall back to defaults */ }
+    return defaults;
   });
+
+  // Real pending payouts: the creator's 70% share of approved placements.
+  // (The old Payouts tab showed a hardcoded $4,250 balance and a fake
+  // connected Chase account to every real user.)
+  const { data: approvedPlacements } = useQuery<{ placements: Array<{ creatorPayoutCents?: number | null }> }>({
+    queryKey: ["/api/creator/placements/inbox", "creator_approved", "payouts"],
+    queryFn: async () => {
+      const res = await fetch("/api/creator/placements/inbox?status=creator_approved", { credentials: "include" });
+      if (!res.ok) return { placements: [] };
+      return res.json();
+    },
+    enabled: activeTab === "payouts",
+  });
+  const pendingPayoutCents = (approvedPlacements?.placements ?? []).reduce(
+    (sum, p) => sum + (p.creatorPayoutCents || 0), 0
+  );
 
   // Creator profile state
   const [creatorProfile, setCreatorProfile] = useState({
@@ -556,10 +575,14 @@ export default function Settings() {
   };
 
   const handleSave = () => {
-    toast({
-      title: "Settings Saved",
-      description: "Your preferences have been updated successfully.",
-    });
+    // Preferences persist per-device until a server-side prefs store exists.
+    // The old handler saved nothing and claimed success.
+    try {
+      localStorage.setItem("fs-notification-prefs", JSON.stringify(notifications));
+      toast({ title: "Preferences saved", description: "Notification preferences saved on this device." });
+    } catch {
+      toast({ title: "Save failed", description: "Could not persist preferences in this browser.", variant: "destructive" });
+    }
   };
 
   const [isClearingLibrary, setIsClearingLibrary] = useState(false);
@@ -651,10 +674,8 @@ export default function Settings() {
                     </AvatarFallback>
                   </Avatar>
                   <div>
-                    <Button variant="outline" size="sm" data-testid="button-change-avatar">
-                      Change Avatar
-                    </Button>
-                    <p className="text-xs text-muted-foreground mt-2">JPG, PNG up to 2MB</p>
+                    <p className="text-sm text-white font-medium">Profile picture</p>
+                    <p className="text-xs text-muted-foreground mt-1">Synced from your Google account</p>
                   </div>
                 </div>
 
@@ -1260,11 +1281,16 @@ export default function Settings() {
                   <div className="bg-gradient-to-br from-emerald-500/10 to-emerald-500/5 rounded-xl p-6 border border-emerald-500/20 mb-6">
                     <div className="flex flex-wrap items-center justify-between gap-4">
                       <div>
-                        <p className="text-sm text-emerald-400/80 font-mono uppercase tracking-wider mb-1">Current Balance</p>
-                        <p className="text-4xl font-bold text-emerald-400" data-testid="text-balance">$4,250.00</p>
+                        <p className="text-sm text-emerald-400/80 font-mono uppercase tracking-wider mb-1">Pending Payouts</p>
+                        <p className="text-4xl font-bold text-emerald-400" data-testid="text-balance">
+                          ${(pendingPayoutCents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </p>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Your 70% share of approved brand placements
+                        </p>
                       </div>
-                      <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30">
-                        Ready for Payout
+                      <Badge className="bg-amber-500/20 text-amber-400 border-amber-500/30">
+                        Accruing
                       </Badge>
                     </div>
                   </div>
@@ -1273,7 +1299,7 @@ export default function Settings() {
                     <h3 className="text-lg font-semibold text-white mb-4">Stripe Connect</h3>
                     
                     <div className="bg-black/30 rounded-lg p-4 border border-white/5">
-                      <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
+                      <div className="flex flex-wrap items-center justify-between gap-4">
                         <div className="flex items-center gap-3">
                           <div className="w-10 h-10 bg-[#635BFF]/20 rounded-lg flex items-center justify-center">
                             <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none">
@@ -1281,19 +1307,16 @@ export default function Settings() {
                             </svg>
                           </div>
                           <div>
-                            <p className="text-white font-medium">Stripe Account</p>
-                            <p className="text-sm text-muted-foreground">Chase Bank ****8829</p>
+                            <p className="text-white font-medium">Stripe Connect</p>
+                            <p className="text-sm text-muted-foreground">
+                              Payout onboarding isn't live yet — accrued payouts will transfer once it is.
+                            </p>
                           </div>
                         </div>
-                        <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30">
-                          <CheckCircle className="w-3 h-3 mr-1" />
-                          Connected
+                        <Badge className="bg-gray-500/20 text-gray-400 border-gray-500/30">
+                          Coming soon
                         </Badge>
                       </div>
-                      <Button variant="outline" className="gap-2" data-testid="button-manage-stripe">
-                        <ExternalLink className="w-4 h-4" />
-                        Manage Payouts on Stripe
-                      </Button>
                     </div>
                   </div>
                 </div>
