@@ -377,17 +377,7 @@ async function isSameCreator(
 // Until the column is migrated to varchar (Tier 3), derive a STABLE positive
 // integer from the user id so jobs stay attributable and don't all share id 1.
 // Legacy numeric ids pass through unchanged so existing rows still match.
-function stableUserIntId(raw: unknown): number {
-  const s = raw == null ? "" : String(raw);
-  if (s === "") return 1;
-  const n = Number(s);
-  if (Number.isInteger(n) && n > 0) return n;
-  let h = 5381;
-  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
-  // % INT_MAX guards the one value (h === -2^31) where Math.abs exceeds the
-  // int4 column range; || 1 covers the zero cases.
-  return (Math.abs(h) % 2147483647) || 1;
-}
+import { stableUserIntId } from "./lib/stableUserId";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -427,6 +417,15 @@ export async function registerRoutes(
   try {
     await setupPlatformAuth(app);
     console.log("[Routes] Platform Auth setup completed");
+
+    // Distribution publishing token sources (TikTok, X, LinkedIn OAuth).
+    // Non-fatal: each flow self-disables when its client creds are unset.
+    try {
+      const { registerDistributionOAuthRoutes } = await import("./lib/distribution/platformConnect");
+      registerDistributionOAuthRoutes(app);
+    } catch (connectErr) {
+      console.error("[Routes] Distribution OAuth routes failed to register:", connectErr);
+    }
   } catch (platformError) {
     console.error("[Routes] Platform Auth setup failed (non-fatal):", platformError);
   }
@@ -11968,6 +11967,64 @@ export async function registerRoutes(
     }
   });
 
+  // POST /api/distribution/profiles/from-instagram — Provision an Instagram
+  // Reels publishing profile from the caller's existing Facebook connection.
+  // Requires a linked IG Business account and the instagram_content_publish
+  // scope (users connected before that scope was added must reconnect FB).
+  // The stored token is exchanged for a long-lived (~60 day) one; publishers
+  // additionally re-read the user's current FB token at publish time via
+  // metadata.igUserKey.
+  app.post("/api/distribution/profiles/from-instagram", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const user = await storage.getUserByEmail(req.authEmail);
+      if (!user?.facebookAccessToken) {
+        return res.status(404).json({ error: "No Facebook connection found — connect Facebook/Instagram in Settings first" });
+      }
+      if (!user.instagramBusinessId) {
+        return res.status(404).json({ error: "No Instagram Business account linked to your Facebook Pages — link one in Meta Business Suite, then re-sync" });
+      }
+
+      const { decrypt } = await import("./encryption");
+      let igToken = decrypt(user.facebookAccessToken);
+
+      // Exchange for a long-lived token so scheduled posts outlive the
+      // short-lived login token. Best-effort: the short token still works
+      // for ~1-2h if the exchange fails.
+      if (process.env.FACEBOOK_APP_ID && process.env.FACEBOOK_APP_SECRET) {
+        try {
+          const ex = await fetch(
+            `https://graph.facebook.com/v19.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${process.env.FACEBOOK_APP_ID}&client_secret=${process.env.FACEBOOK_APP_SECRET}&fb_exchange_token=${encodeURIComponent(igToken)}`
+          );
+          if (ex.ok) {
+            const exData = await ex.json();
+            if (exData.access_token) igToken = exData.access_token;
+          }
+        } catch { /* keep short-lived token */ }
+      }
+
+      const userId = stableUserIntId(req.authUserId ?? req.user?.id);
+      const platform = req.body?.platform === "instagram" ? "instagram" : "instagram_reels";
+      const profileData = {
+        accountName: user.instagramHandle || null,
+        accountId: user.instagramBusinessId,
+        accessToken: igToken,
+        refreshToken: null,
+        tokenExpiresAt: null,
+        isActive: true,
+        metadata: { igUserKey: req.authEmail },
+      };
+
+      const existing = (await storage.getDistributionProfiles(userId)).find(p => p.platform === platform);
+      const profile = existing
+        ? await storage.updateDistributionProfile(existing.id, profileData)
+        : await storage.createDistributionProfile({ userId, platform, ...profileData });
+
+      res.json({ ...profile, accessToken: "••••••", refreshToken: undefined });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to provision Instagram profile" });
+    }
+  });
+
   // PUT /api/distribution/profiles/:id — Update a profile
   app.put("/api/distribution/profiles/:id", isFlexibleAuthenticated, async (req: any, res) => {
     try {
@@ -12055,13 +12112,20 @@ export async function registerRoutes(
 
       // Publish
       const { publishToPlaftorm } = await import("./lib/distribution/platformPublisher");
+      const publishMetadata: Record<string, any> = { ...(profile.metadata as Record<string, any> || {}) };
+      // Instagram's API pulls the video from a public URL instead of
+      // accepting an upload — point it at the clip's public export path.
+      if (profile.platform.startsWith("instagram") && !publishMetadata.publicVideoUrl && clip.exportPath) {
+        const base = (process.env.PUBLIC_BASE_URL || process.env.BASE_URL || "https://gofullscale.co").replace(/\/$/, "");
+        publishMetadata.publicVideoUrl = `${base}${clip.exportPath.startsWith("/") ? "" : "/"}${clip.exportPath}`;
+      }
       const result = await publishToPlaftorm(profile.platform, {
         clipPath,
         caption: finalCaption,
         hashtags: finalHashtags,
         accessToken: publishToken,
         accountId: profile.accountId || "",
-        metadata: profile.metadata as Record<string, any> || {},
+        metadata: publishMetadata,
       });
 
       if (result.success) {

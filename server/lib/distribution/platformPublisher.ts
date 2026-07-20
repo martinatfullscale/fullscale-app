@@ -267,9 +267,13 @@ class InstagramAdapter implements PlatformAdapter {
 
   async publish(input: PublishInput): Promise<PublishResult> {
     try {
-      // Instagram requires a publicly accessible URL for the video
-      // In production, this would upload to a CDN first
-      // For now, return the metadata needed for manual posting
+      // Instagram's Graph API pulls the video from a URL rather than
+      // accepting an upload — the clip must be publicly reachable.
+      // Publishers inject metadata.publicVideoUrl from the clip's public
+      // exportPath before calling this adapter.
+      if (!input.metadata?.publicVideoUrl) {
+        return { success: false, platformPostId: null, postUrl: null, error: "Instagram requires a publicly hosted video URL (metadata.publicVideoUrl)" };
+      }
       const caption = [input.caption, "", input.hashtags.map(h => `#${h}`).join(" ")].join("\n").trim();
 
       // Step 1: Create container
@@ -297,7 +301,26 @@ class InstagramAdapter implements PlatformAdapter {
       const containerData = await containerRes.json();
       const containerId = containerData.id;
 
-      // Step 2: Publish container
+      // Step 2: Wait for the container to finish processing. Reels
+      // containers ingest the video asynchronously; publishing before
+      // status FINISHED fails with "Media ID is not available".
+      let containerReady = false;
+      for (let attempt = 0; attempt < 18; attempt++) {
+        const statusRes = await fetch(
+          `${this.baseUrl}/${containerId}?fields=status_code&access_token=${input.accessToken}`
+        );
+        const statusData = await statusRes.json();
+        if (statusData.status_code === "FINISHED") { containerReady = true; break; }
+        if (statusData.status_code === "ERROR") {
+          return { success: false, platformPostId: null, postUrl: null, error: "Instagram container processing failed" };
+        }
+        await new Promise(r => setTimeout(r, 5000));
+      }
+      if (!containerReady) {
+        return { success: false, platformPostId: null, postUrl: null, error: "Instagram container not ready after 90s" };
+      }
+
+      // Step 3: Publish container
       const publishRes = await fetch(
         `${this.baseUrl}/${input.accountId}/media_publish`,
         {
@@ -594,15 +617,24 @@ export function getSupportedPlatforms(): string[] {
 }
 
 /**
- * Resolve the access token to publish with. YouTube access tokens expire
- * after ~1 hour, so a token stored on the profile at connect time is stale
- * by the time a scheduled post fires — prefer a freshly refreshed token
- * from the creator's YouTube connection (pointed to by
- * profile.metadata.youtubeUserId) and fall back to the stored token.
+ * Resolve the access token to publish with, at publish time. Stored tokens
+ * are typically stale by the time a scheduled post fires, so each platform
+ * resolves from its live source where possible:
+ * - youtube*   → fresh token from the creator's YouTube connection
+ *                (profile.metadata.youtubeUserId), auto-refreshed
+ * - instagram* → the user's current Facebook token (metadata.igUserKey),
+ *                decrypted from the users row the FB Login flow maintains
+ * - tiktok / twitter → refresh-token grant when near/past expiry
+ *                (rotated tokens are persisted back to the profile)
+ * - linkedin   → stored token only (no self-serve refresh; ~60-day life)
+ * Falls back to the stored profile token in every case.
  */
 export async function resolvePublishAccessToken(profile: {
+  id?: number;
   platform: string;
   accessToken: string | null;
+  refreshToken?: string | null;
+  tokenExpiresAt?: Date | string | null;
   metadata?: Record<string, any> | null;
 }): Promise<string | null> {
   if (profile.platform.startsWith("youtube")) {
@@ -613,6 +645,36 @@ export async function resolvePublishAccessToken(profile: {
       if (fresh) return fresh;
     }
   }
+
+  if (profile.platform.startsWith("instagram")) {
+    const igUserKey = profile.metadata?.igUserKey;
+    if (igUserKey) {
+      try {
+        const { storage } = await import("../../storage");
+        const { decrypt } = await import("../../encryption");
+        const user = await storage.getUserByEmail(String(igUserKey));
+        if (user?.facebookAccessToken) {
+          const tok = decrypt(user.facebookAccessToken);
+          if (tok) return tok;
+        }
+      } catch (err: any) {
+        console.error("[Publisher] Instagram token resolution failed, using stored token:", err.message);
+      }
+    }
+  }
+
+  if ((profile.platform === "tiktok" || profile.platform === "twitter") && profile.id) {
+    const expiresAt = profile.tokenExpiresAt ? new Date(profile.tokenExpiresAt).getTime() : null;
+    const nearExpiry = expiresAt !== null && expiresAt < Date.now() + 60_000;
+    if (nearExpiry && profile.refreshToken) {
+      const { refreshTikTokToken, refreshTwitterToken } = await import("./platformConnect");
+      const fresh = profile.platform === "tiktok"
+        ? await refreshTikTokToken(profile as { id: number; refreshToken: string })
+        : await refreshTwitterToken(profile as { id: number; refreshToken: string });
+      if (fresh) return fresh;
+    }
+  }
+
   return profile.accessToken || null;
 }
 

@@ -211,13 +211,20 @@ export async function processScheduledPosts(): Promise<number> {
         }
 
         // Publish
+        const publishMetadata: Record<string, any> = { ...(profile.metadata as Record<string, any> || {}) };
+        // Instagram's API pulls the video from a public URL instead of
+        // accepting an upload — point it at the clip's public export path.
+        if (schedule.platform.startsWith("instagram") && !publishMetadata.publicVideoUrl && clip.exportPath) {
+          const base = (process.env.PUBLIC_BASE_URL || process.env.BASE_URL || "https://gofullscale.co").replace(/\/$/, "");
+          publishMetadata.publicVideoUrl = `${base}${clip.exportPath.startsWith("/") ? "" : "/"}${clip.exportPath}`;
+        }
         const result = await publishToPlaftorm(schedule.platform, {
           clipPath,
           caption,
           hashtags,
           accessToken,
           accountId: profile.accountId || "",
-          metadata: profile.metadata as Record<string, any> || {},
+          metadata: publishMetadata,
         });
 
         if (result.success) {

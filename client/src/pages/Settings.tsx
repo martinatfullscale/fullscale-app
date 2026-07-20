@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { TopBar } from "@/components/TopBar";
 import { User, CreditCard, Bell, CheckCircle, ExternalLink, Save, Link2, Loader2, ChevronDown, RefreshCw, Trash2, Star, Mic, Globe } from "lucide-react";
-import { SiInstagram, SiFacebook, SiX, SiTiktok, SiYoutube, SiTwitch } from "react-icons/si";
+import { SiInstagram, SiFacebook, SiX, SiTiktok, SiYoutube, SiTwitch, SiLinkedin } from "react-icons/si";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -71,6 +71,7 @@ const initialSocialConnections: SocialConnection[] = [
   { id: "x", name: "X (Twitter)", icon: SiX, color: "#000000", bgColor: "bg-black", status: "disconnected" },
   { id: "tiktok", name: "TikTok", icon: SiTiktok, color: "#000000", bgColor: "bg-gradient-to-br from-[#00F2EA] to-[#FF0050]", status: "disconnected" },
   { id: "youtube", name: "YouTube", icon: SiYoutube, color: "#FF0000", bgColor: "bg-[#FF0000]", status: "disconnected" },
+  { id: "linkedin", name: "LinkedIn", icon: SiLinkedin, color: "#0A66C2", bgColor: "bg-[#0A66C2]", status: "disconnected" },
 ];
 
 export default function Settings() {
@@ -242,13 +243,27 @@ export default function Settings() {
   useEffect(() => {
     async function fetchPlatformStatus() {
       try {
-        // Fetch platform auth status (Twitch, Facebook, Instagram)
-        const [platformResponse, youtubeResponse] = await Promise.all([
+        // Fetch platform auth status (Twitch, Facebook, Instagram) plus
+        // distribution publishing profiles (TikTok, X, LinkedIn)
+        const [platformResponse, youtubeResponse, distributionResponse] = await Promise.all([
           fetch("/api/platform-auth/status", { credentials: "include" }),
           fetch("/api/youtube/videos", { credentials: "include" }),
+          fetch("/api/distribution/profiles", { credentials: "include" }),
         ]);
-        
+
         let updates: Partial<Record<string, Partial<SocialConnection>>> = {};
+
+        // TikTok / X / LinkedIn connect via distribution profiles
+        if (distributionResponse.ok) {
+          const profiles: Array<{ platform: string; accountName?: string | null; isActive?: boolean | null }> =
+            await distributionResponse.json();
+          for (const [connId, platform] of [["tiktok", "tiktok"], ["x", "twitter"], ["linkedin", "linkedin"]] as const) {
+            const match = (profiles || []).find(p => p.platform === platform && p.isActive !== false);
+            updates[connId] = match
+              ? { status: "connected" as const, handle: match.accountName || undefined }
+              : { status: "disconnected" as const, handle: undefined, followers: undefined };
+          }
+        }
         
         if (platformResponse.ok) {
           const data: PlatformAuthStatus = await platformResponse.json();
@@ -431,6 +446,18 @@ export default function Settings() {
           endpoint = "/api/auth/twitch";
         } else if (id === "youtube") {
           endpoint = "/api/auth/youtube";
+        } else if (id === "tiktok" || id === "x" || id === "linkedin") {
+          // These connect via distribution profiles — delete the profile row
+          const platform = id === "x" ? "twitter" : id;
+          const profRes = await fetch("/api/distribution/profiles", { credentials: "include" });
+          if (profRes.ok) {
+            const profiles = await profRes.json();
+            const match = (profiles || []).find((p: any) => p.platform === platform);
+            if (match) {
+              const delRes = await fetch(`/api/distribution/profiles/${match.id}`, { method: "DELETE", credentials: "include" });
+              if (!delRes.ok) throw new Error("Failed to disconnect");
+            }
+          }
         }
 
         if (endpoint) {
@@ -507,20 +534,25 @@ export default function Settings() {
       return;
     }
 
-    // Simulated connection for other platforms (TikTok, X)
-    setSocialConnections((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, status: "connecting" as const } : c))
-    );
+    // Real OAuth flows for distribution publishing platforms
+    if (id === "tiktok") {
+      window.location.href = "/auth/tiktok";
+      return;
+    }
+    if (id === "x") {
+      window.location.href = "/auth/twitter";
+      return;
+    }
+    if (id === "linkedin") {
+      window.location.href = "/auth/linkedin";
+      return;
+    }
 
-    setTimeout(() => {
-      setSocialConnections((prev) =>
-        prev.map((c) => (c.id === id ? { ...c, status: "connected" as const } : c))
-      );
-      toast({
-        title: `${connection.name} Connected`,
-        description: `Successfully connected your ${connection.name} account!`,
-      });
-    }, 1500);
+    toast({
+      title: `${connection.name} not available`,
+      description: "This platform connection isn't supported yet.",
+      variant: "destructive",
+    });
   };
 
   const handleSave = () => {

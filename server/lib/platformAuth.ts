@@ -786,6 +786,7 @@ export async function setupPlatformAuth(app: Express) {
           "pages_read_engagement",      // Page insights + IG Business Account discovery
           "instagram_basic",            // IG profile + media metadata [App Review]
           "instagram_manage_insights",  // IG analytics (impressions, reach, plays) [App Review]
+          "instagram_content_publish",  // Publish Reels via distribution scheduler [App Review]
         ],
       })(req, res, next);
     });
