@@ -3807,10 +3807,19 @@ export async function registerRoutes(
     return surfaces;
   }
 
-  // Public demo endpoint - returns STATIC demo videos + real videos with local files
-  // Shows Local File badge for videos that have actual local files
-  app.get("/api/demo/videos", async (req, res) => {
+  // Public demo endpoint - returns STATIC demo videos; admins additionally
+  // get real videos with local files (with a Local File badge) for pitch demos.
+  // Real library rows carry cross-user titles/emails/file paths and must never
+  // reach an unauthenticated caller.
+  app.get("/api/demo/videos", async (req: any, res) => {
     try {
+      const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
+      const { isAdminEmail } = await import("./lib/adminEmails");
+      if (!isAdminEmail(callerEmail)) {
+        const staticOnly = STATIC_DEMO_VIDEOS.map((v: any) => ({ ...v, fileExists: false, file_exists: false }));
+        return res.json({ videos: staticOnly, total: staticOnly.length });
+      }
+
       // Get real videos that have local files to show "Local File" badge
       const allRealVideos = await storage.getAllVideos();
       const localVideos = await Promise.all(
