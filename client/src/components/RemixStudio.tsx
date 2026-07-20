@@ -144,6 +144,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
   // Config state
   const [platforms, setPlatforms] = useState<string[]>(["tiktok", "youtube_shorts"]);
   const [maxClips, setMaxClips] = useState(5);
+  const [remixKeywords, setRemixKeywords] = useState("");
   const [captionsEnabled, setCaptionsEnabled] = useState(true);
   const [showConfig, setShowConfig] = useState(false);
   const [activeTab, setActiveTab] = useState<"editorial" | "auto" | "highlight">("editorial");
@@ -395,6 +396,8 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
           platformTargets: platforms,
           maxClips,
           captionsEnabled,
+          editorialMode: true,
+          ...(remixKeywords.trim() ? { keywords: remixKeywords.trim() } : {}),
         }),
       });
       if (!res.ok) {
@@ -756,6 +759,23 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
                         );
                       })}
                     </div>
+                  </div>
+
+                  {/* Theme / keywords — steers the AI toward specific storylines */}
+                  <div>
+                    <label className="text-xs text-gray-400 mb-1 block">Theme or keywords (optional)</label>
+                    <input
+                      type="text"
+                      value={remixKeywords}
+                      onChange={(e) => setRemixKeywords(e.target.value)}
+                      placeholder="e.g. money advice, the childhood story, funniest moments"
+                      maxLength={200}
+                      data-testid="remix-keywords-input"
+                      className="w-full bg-gray-700 text-white text-sm rounded-lg px-3 py-2 border border-gray-600 placeholder:text-gray-500 focus:border-purple-500 focus:outline-none"
+                    />
+                    <p className="text-[11px] text-gray-500 mt-1">
+                      The AI finds beats in the transcript matching your theme and builds clips around them. Leave blank for the best overall moments.
+                    </p>
                   </div>
 
                   {/* Max clips */}

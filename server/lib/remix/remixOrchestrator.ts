@@ -41,6 +41,9 @@ export interface RemixConfig {
   clipRange?: { start: number; end: number };
   /** When true, use editorial intelligence pipeline instead of legacy per-frame detection */
   editorialMode?: boolean;
+  /** Theme/keywords the user is chasing — steers editorial analysis toward
+   *  matching transcript beats (passed to analyzeEditorial as `query`) */
+  keywords?: string;
   /** Enable face-tracking smart reframing for portrait clips (default: true) */
   faceTrackingEnabled?: boolean;
 }
@@ -276,6 +279,7 @@ export async function runRemixPipeline(
           dominantColor: b.dominantColor,
         })),
         maxClips: mergedConfig.maxClips,
+        query: mergedConfig.keywords,
       });
 
       if (editorialMoments.length === 0) {

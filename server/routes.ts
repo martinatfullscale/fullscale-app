@@ -10986,9 +10986,11 @@ export async function registerRoutes(
       const video = await storage.getVideoById(videoId);
       if (!video) return res.status(404).json({ error: "Video not found" });
 
-      // For editorial mode with clipRange, we don't require scene analyses
-      // For legacy mode, check for scene analyses
-      const isEditorial = !!config.clipRange || config.editorialMode;
+      // Editorial mode is the DEFAULT: the Claude editorial path picks
+      // narrative moments from the transcript instead of the legacy
+      // per-frame clipDetector. Legacy is explicit opt-out only
+      // (editorialMode: false).
+      const isEditorial = !!config.clipRange || config.editorialMode !== false;
       if (!isEditorial) {
         const analyses = await storage.getSceneAnalysisByVideo(videoId);
         if (analyses.length === 0) {
@@ -11020,6 +11022,9 @@ export async function registerRoutes(
         captionStyle: config.captionStyle || "highlight",
         clipRange: config.clipRange || undefined,
         editorialMode: isEditorial,
+        keywords: typeof config.keywords === "string" && config.keywords.trim()
+          ? config.keywords.trim().slice(0, 500)
+          : undefined,
       };
 
       // Return the job ID immediately, process async.
