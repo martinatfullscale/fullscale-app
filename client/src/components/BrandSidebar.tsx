@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { Search, Briefcase, Package, Bookmark, LogOut, ArrowLeftRight, Film, Library as LibraryIcon } from "lucide-react";
+import { Search, Briefcase, Package, Bookmark, LogOut, ArrowLeftRight, Film, Send, Library as LibraryIcon } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
@@ -53,6 +53,7 @@ export function BrandSidebar() {
   const links = [
     { href: "/marketplace", label: "Discovery", icon: Search },
     { href: "/brand/clips", label: "Browse Clips", icon: Film },
+    { href: "/brand/placements", label: "Requests", icon: Send },
     { href: "/campaigns", label: "My Campaigns", icon: Briefcase },
     { href: "/brand-products", label: "Product Catalog", icon: Package },
     { href: "/saved-placements", label: "Saved Placements", icon: Bookmark },

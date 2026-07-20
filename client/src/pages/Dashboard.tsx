@@ -83,6 +83,72 @@ const demoCampaigns = [
   { brand: "Coca-Cola", content: "Summer Vlog", status: "Pending", amount: "$3,100", statusColor: "bg-yellow-500/20 text-yellow-400" },
 ];
 
+// Real brand-placement campaigns for the creator (replaces the pitch-mode
+// demo table in real mode — previously real users had no campaigns surface
+// on the dashboard at all; the data lived only in /inbox).
+function RealBrandCampaigns() {
+  const { data: pending } = useQuery<{ placements: any[] }>({
+    queryKey: ["/api/creator/placements/inbox", "pending_creator_review"],
+    queryFn: async () => {
+      const res = await fetch("/api/creator/placements/inbox?status=pending_creator_review", { credentials: "include" });
+      if (!res.ok) return { placements: [] };
+      return res.json();
+    },
+    refetchInterval: 30_000,
+  });
+  const { data: approved } = useQuery<{ placements: any[] }>({
+    queryKey: ["/api/creator/placements/inbox", "creator_approved"],
+    queryFn: async () => {
+      const res = await fetch("/api/creator/placements/inbox?status=creator_approved", { credentials: "include" });
+      if (!res.ok) return { placements: [] };
+      return res.json();
+    },
+    refetchInterval: 60_000,
+  });
+
+  const rows = [
+    ...(pending?.placements ?? []).map((p: any) => ({ ...p, _kind: "pending" })),
+    ...(approved?.placements ?? []).map((p: any) => ({ ...p, _kind: "active" })),
+  ].slice(0, 6);
+
+  if (rows.length === 0) return null;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: 0.3 }}
+      className="bg-white/5 rounded-xl border border-white/5 overflow-hidden"
+    >
+      <div className="px-6 py-4 border-b border-white/5 flex items-center justify-between">
+        <p className="text-sm font-semibold text-white">Brand Campaigns</p>
+        <a href="/inbox" className="text-xs text-primary hover:underline">Open inbox →</a>
+      </div>
+      <div className="divide-y divide-white/5">
+        {rows.map((p: any) => (
+          <div key={`${p._kind}-${p.id}`} className="px-6 py-4 flex flex-wrap items-center justify-between gap-3" data-testid={`row-real-campaign-${p.id}`}>
+            <div className="flex items-center gap-3 min-w-0">
+              <span className="font-semibold text-white truncate">{p.product?.name || `Product #${p.brandProductId}`}</span>
+              <span className="text-muted-foreground text-sm truncate">{p.video?.title || `Video #${p.videoId}`}</span>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                p._kind === "pending" ? "bg-amber-500/15 text-amber-400" : "bg-emerald-500/15 text-emerald-400"
+              }`}>
+                {p._kind === "pending" ? "Needs review" : "Active"}
+              </span>
+              <span className="font-semibold text-white">
+                {p.creatorPayoutCents ? `$${(p.creatorPayoutCents / 100).toFixed(2)}` : ""}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </motion.div>
+  );
+}
+
+
 const chartData = [
   { month: "Aug", height: "45%", revenue: "$8.2k" },
   { month: "Sep", height: "72%", revenue: "$12.4k" },
@@ -741,13 +807,16 @@ export default function Dashboard() {
                 </motion.div>
               </>
             ) : (
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.2 }}
-              >
-                <AnalyticsOverview />
-              </motion.div>
+              <>
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.2 }}
+                >
+                  <AnalyticsOverview />
+                </motion.div>
+                <RealBrandCampaigns />
+              </>
             )}
           </div>
 

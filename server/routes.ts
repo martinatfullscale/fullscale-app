@@ -8343,7 +8343,26 @@ export async function registerRoutes(
       const brandUserId = req.authUserId;
       const status = typeof req.query.status === "string" ? req.query.status : undefined;
       const placements = await storage.getBrandPlacements(brandUserId, status);
-      res.json({ placements, count: placements.length });
+
+      // Hydrate with product + video summaries (mirrors the creator inbox)
+      // so the brand tracking UI doesn't need N round-trips.
+      const hydrated = await Promise.all(
+        placements.map(async (p) => {
+          const [product, video] = await Promise.all([
+            storage.getBrandProduct(p.brandProductId),
+            storage.getVideoById(p.videoId),
+          ]);
+          return {
+            ...p,
+            product: product
+              ? { id: product.id, name: product.name, imageUrl: product.imageUrl, thumbnailUrl: product.thumbnailUrl, category: product.category }
+              : null,
+            video: video ? { id: video.id, title: video.title, thumbnailUrl: video.thumbnailUrl } : null,
+          };
+        })
+      );
+
+      res.json({ placements: hydrated, count: hydrated.length });
     } catch (err: any) {
       console.error("[API] /api/brand/placements GET error:", err.message);
       res.status(500).json({ error: err.message || "Failed to list placements" });
