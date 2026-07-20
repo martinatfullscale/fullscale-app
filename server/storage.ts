@@ -215,6 +215,7 @@ export interface IStorage {
   getUnreadNotificationCount(userId: string): Promise<number>;
   markNotificationRead(id: number, userId: string): Promise<boolean>;
   markAllNotificationsRead(userId: string): Promise<number>;
+  markPlacementNotificationsRead(placementId: number): Promise<void>;
   claimSchedule(scheduleId: number): Promise<boolean>;
   cancelOrphanedLegacySchedules(): Promise<number>;
   updateRemixJobStatus(jobId: number, status: string, errorMessage?: string): Promise<RemixJob | undefined>;
@@ -1687,6 +1688,22 @@ export class DatabaseStorage implements IStorage {
     return result.length > 0;
   }
 
+  async markPlacementNotificationsRead(placementId: number): Promise<void> {
+    // Acting on a placement (approve/reject) consumes its request
+    // notification — matches both the batched placementIds array and the
+    // legacy single placementId shape.
+    try {
+      await db.update(notifications)
+        .set({ readAt: new Date() })
+        .where(and(
+          sql`${notifications.readAt} IS NULL`,
+          sql`((${notifications.metadata} -> 'placementIds') @> ${JSON.stringify([placementId])}::jsonb OR (${notifications.metadata} ->> 'placementId')::int = ${placementId})`,
+        ));
+    } catch (err: any) {
+      console.warn("[Storage] markPlacementNotificationsRead failed (non-fatal):", err?.message);
+    }
+  }
+
   async markAllNotificationsRead(userId: string): Promise<number> {
     const aliases = await this.notificationAliases(userId);
     const result = await db.update(notifications)
@@ -1927,6 +1944,17 @@ export class DatabaseStorage implements IStorage {
         ),
       )
       .orderBy(detectedSurfaces.timestamp);
+
+    // Assembled clips: the envelope query above includes un-played gaps —
+    // only surfaces inside an actual beat exist in the rendered clip, and
+    // only those may be shown/sold to brands as placement inventory.
+    const segs = clip.segments as Array<{ start: number; end: number }> | null;
+    if (segs && segs.length > 0) {
+      return rows.filter((s) => {
+        const t = parseFloat(String(s.timestamp));
+        return segs.some((seg) => t >= seg.start && t <= seg.end);
+      });
+    }
     return rows;
   }
 

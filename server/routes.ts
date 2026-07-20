@@ -8313,18 +8313,23 @@ export async function registerRoutes(
           chargeStatus: "pending",
         });
 
-        storage.createNotification({
-          userId: creatorUserId,
-          type: "placement_request",
-          title: "New brand placement request",
-          body: message ? `Message from the brand: ${String(message).slice(0, 200)}` : "A brand wants to place a product in one of your clips.",
-          linkPath: "/inbox",
-          metadata: { placementId: row.id, videoId: resolvedVideoId },
-        });
         created.push(row);
         totalFeeCents += breakdown.placementFeeCents;
         totalCreatorCents += breakdown.creatorPayoutCents;
         totalPlatformCents += breakdown.platformTakeCents;
+      }
+
+      // One notification per REQUEST (not per surface) — a multi-surface
+      // request previously spammed the creator with N identical rows.
+      if (created.length > 0) {
+        storage.createNotification({
+          userId: creatorUserId,
+          type: "placement_request",
+          title: created.length > 1 ? `New brand placement request (${created.length} surfaces)` : "New brand placement request",
+          body: message ? `Message from the brand: ${String(message).slice(0, 200)}` : "A brand wants to place a product in one of your clips.",
+          linkPath: "/inbox",
+          metadata: { placementIds: created.map((r: any) => r.id), videoId: resolvedVideoId },
+        });
       }
 
       console.log(
@@ -8525,6 +8530,7 @@ export async function registerRoutes(
         return res.status(400).json({ error: `Cannot approve a ${placement.status} placement` });
       }
       const updated = await storage.updateBrandPlacementStatus(id, "creator_approved");
+      storage.markPlacementNotificationsRead(id);
       console.log(`[BrandPlacement] Creator ${creatorUserId} APPROVED placement ${id}`);
       storage.createNotification({
         userId: placement.brandUserId,
@@ -8576,6 +8582,7 @@ export async function registerRoutes(
       }
       const reason = typeof req.body?.reason === "string" ? req.body.reason : undefined;
       const updated = await storage.updateBrandPlacementStatus(id, "creator_rejected", { rejectionReason: reason });
+      storage.markPlacementNotificationsRead(id);
       storage.createNotification({
         userId: placement.brandUserId,
         type: "placement_rejected",
@@ -10833,24 +10840,36 @@ export async function registerRoutes(
     try {
       const videoId = parseInt(req.params.videoId);
       if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
-      const { clipStart, clipEnd, suggestedTitle, topicTags, reasoning, scores, compositeScore } = req.body || {};
+      const { clipStart, clipEnd, suggestedTitle, topicTags, reasoning, scores, compositeScore, segments } = req.body || {};
 
       if (typeof clipStart !== "number" || typeof clipEnd !== "number" || clipEnd <= clipStart) {
         return res.status(400).json({ error: "Valid clipStart and clipEnd required" });
+      }
+
+      // Assembled search results carry beats; validate the same way the
+      // analyzer parser does (2-4 well-formed beats) or ignore them.
+      let validSegments: Array<{ start: number; end: number; role?: string }> | null = null;
+      if (Array.isArray(segments) && segments.length >= 2 && segments.length <= 4) {
+        const ok = segments.every((s: any) => typeof s?.start === "number" && typeof s?.end === "number" && s.end > s.start);
+        if (ok) validSegments = segments.map((s: any) => ({ start: s.start, end: s.end, role: typeof s.role === "string" ? s.role : undefined }));
       }
 
       const video = await storage.getVideoById(videoId);
       if (!video) return res.status(404).json({ error: "Video not found" });
       if (!video.filePath && !video.youtubeId) return res.status(400).json({ error: "Video has no source — upload a file or import it from a connected platform" });
 
-      // Insert a new editorial clip record with pending render status
-      const duration = clipEnd - clipStart;
+      // Insert a new editorial clip record with pending render status.
+      // Assembled clips play sum-of-beats, not the envelope.
+      const duration = validSegments
+        ? validSegments.reduce((sum, s) => sum + (s.end - s.start), 0)
+        : clipEnd - clipStart;
       const [newClip] = await db.insert(editorialClips).values({
         videoId,
-        userId: 0,
+        userId: stableUserIntId(req.authUserId ?? req.user?.id),
         clipStart,
         clipEnd,
         duration,
+        segments: validSegments,
         editorialScore: compositeScore || 0.7,
         surfaceScore: 0,
         brandMatchScore: 0,

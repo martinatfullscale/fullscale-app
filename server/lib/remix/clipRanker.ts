@@ -71,8 +71,17 @@ export interface RankedClip {
 function findOverlappingSurfaces(
   clipStart: number,
   clipEnd: number,
-  surfaces: DetectedSurfaceCompact[]
+  surfaces: DetectedSurfaceCompact[],
+  segments?: Array<{ start: number; end: number }>,
 ): DetectedSurfaceCompact[] {
+  // Assembled clips: only surfaces inside a PLAYED beat count. The envelope
+  // [clipStart, clipEnd] spans un-played gaps — a surface there would be
+  // sold to brands as placement inventory the rendered clip never shows.
+  if (segments && segments.length > 0) {
+    return surfaces.filter((s) =>
+      segments.some((seg) => s.timestamp >= seg.start && s.timestamp <= seg.end)
+    );
+  }
   return surfaces.filter(
     (s) => s.timestamp >= clipStart && s.timestamp <= clipEnd
   );
@@ -126,11 +135,7 @@ export function rankClips(
     .filter((m) => m.compositeScore >= SCORING_CONFIG.minCompositeScore)
     .map((moment) => {
       // 1. Find surfaces visible during this clip's time range
-      const overlappingSurfaces = findOverlappingSurfaces(
-        moment.clipStart,
-        moment.clipEnd,
-        surfaces
-      );
+      const overlappingSurfaces = findOverlappingSurfaces(moment.clipStart, moment.clipEnd, surfaces, moment.segments);
 
       // 2. Find brand matches for overlapping surfaces
       const relevantBrandMatches = findRelevantBrandMatches(
@@ -238,11 +243,20 @@ export function deduplicateClips(
 
   const kept: RankedClip[] = [];
 
+  // Overlap is computed over PLAYABLE intervals (an assembled clip's beats,
+  // not its envelope) — envelope math falsely deduped any clip that sat
+  // inside another clip's beat gap despite sharing zero content.
+  const playable = (c: RankedClip): Array<{ start: number; end: number }> =>
+    c.segments && c.segments.length > 0 ? c.segments : [{ start: c.clipStart, end: c.clipEnd }];
+
   for (const clip of clips) {
     const hasOverlap = kept.some((existing) => {
-      const overlapStart = Math.max(clip.clipStart, existing.clipStart);
-      const overlapEnd = Math.min(clip.clipEnd, existing.clipEnd);
-      const overlap = Math.max(0, overlapEnd - overlapStart);
+      let overlap = 0;
+      for (const a of playable(clip)) {
+        for (const b of playable(existing)) {
+          overlap += Math.max(0, Math.min(a.end, b.end) - Math.max(a.start, b.start));
+        }
+      }
       const shorter = Math.min(clip.duration, existing.duration);
       return shorter > 0 && overlap / shorter > overlapThreshold;
     });

@@ -178,6 +178,7 @@ export async function runRemixPipeline(
   console.log(`[Remix] Video: ${videoId}, Platforms: ${mergedConfig.platformTargets.join(", ")}, Max clips: ${mergedConfig.maxClips}`);
 
   let tempScopeDir: string | null = null;
+  let sourcePinDir: string | null = null;
 
   try {
     // Get video info
@@ -190,9 +191,12 @@ export async function runRemixPipeline(
     // shared source cache (OAuth-capable, TTL'd) the same way playback does.
     let sourceFilePath: string = video.filePath as string;
     if (!sourceFilePath) {
-      const { getSourcePath } = await import("../sourceCache");
-      sourceFilePath = await getSourcePath(video as any);
-      console.log(`[Remix] Pulled platform source for video ${videoId}: ${sourceFilePath}`);
+      // Pin (hard link) so the playback cache sweeper can't unlink the
+      // source under this multi-minute job; cleaned with tempScopeDir below.
+      const { getPinnedSourcePath } = await import("../sourceCache");
+      sourcePinDir = path.join("/tmp/remix-videos", `job-${jobId}-pin`);
+      sourceFilePath = await getPinnedSourcePath(video as any, sourcePinDir);
+      console.log(`[Remix] Pulled + pinned platform source for video ${videoId}: ${sourceFilePath}`);
     }
 
     // Resolve video path (handles Object Storage download if needed).
@@ -849,6 +853,7 @@ export async function runRemixPipeline(
     // recursive:true, force:true) means it's idempotent and tolerates missing files,
     // and it cleans up any intermediate temp files the pipeline may have written into
     // the scope directory, not just the downloaded source video.
+    if (sourcePinDir) { try { fs.rmSync(sourcePinDir, { recursive: true, force: true }); } catch { /* ignore */ } }
     if (tempScopeDir) {
       try {
         fs.rmSync(tempScopeDir, { recursive: true, force: true });
@@ -911,10 +916,12 @@ export async function reRenderClip(
 
   // Resolve video path — pull light-cloud imports via the source cache.
   let filePath = video.filePath;
+  let rerenderPinDir: string | null = null;
   if (!filePath && video.youtubeId) {
     try {
-      const { getSourcePath } = await import("../sourceCache");
-      filePath = await getSourcePath(video as any);
+      const { getPinnedSourcePath } = await import("../sourceCache");
+      rerenderPinDir = path.join("/tmp/remix-videos", `rerender-${clipId}-pin-${Date.now()}`);
+      filePath = await getPinnedSourcePath(video as any, rerenderPinDir);
     } catch (dlErr: any) {
       return {
         jobId: 0,
@@ -1262,6 +1269,7 @@ export async function reRenderClip(
       error: err.message,
     };
   } finally {
+    if (rerenderPinDir) { try { fs.rmSync(rerenderPinDir, { recursive: true, force: true }); } catch { /* non-fatal */ } }
     if (tempScopeDir) {
       try {
         fs.rmSync(tempScopeDir, { recursive: true, force: true });

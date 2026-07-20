@@ -114,20 +114,24 @@ export async function runEditorialAutoPipeline(
     return { ...emptyResult, error: "Video has no source (no file and no platform id)", durationMs: Date.now() - start };
   }
 
-  // Resolve a usable source path ONCE. Light-cloud imports (YouTube/IG/FB)
-  // have no filePath — pull via the shared source cache (OAuth-capable,
-  // TTL'd, deduplicated; same machinery playback uses). Downstream stages
-  // (audio extraction, render) pass local paths through unchanged.
-  let sourceFilePath: string = video.filePath as string;
-  if (!sourceFilePath) {
-    try {
-      const { getSourcePath } = await import("../sourceCache");
-      sourceFilePath = await getSourcePath(video as any);
-      console.log(`[EditorialAuto] Pulled platform source for video ${videoId}: ${sourceFilePath}`);
-    } catch (dlErr: any) {
-      return { ...emptyResult, error: `Source download failed: ${dlErr?.message || dlErr}`, durationMs: Date.now() - start };
-    }
-  }
+  // Lazy PINNED source resolution. Light-cloud imports (YouTube/IG/FB) have
+  // no filePath — pull via the shared source cache and hard-link into a
+  // job-scoped pin dir so the cache sweeper (1h TTL / 500MB size cap) can't
+  // unlink the file mid-pipeline. Resolution is deferred until AFTER the
+  // idempotency/in-flight guards so a skipped run never downloads anything,
+  // and callers write an in-flight status before awaiting the download.
+  let sourcePinDir: string | null = null;
+  const resolvePinnedSource = async (): Promise<string> => {
+    if (video.filePath) return video.filePath as string;
+    const { getPinnedSourcePath } = await import("../sourceCache");
+    sourcePinDir = path.join("/tmp/editorial-source", `pin-${videoId}-${Date.now()}`);
+    const p = await getPinnedSourcePath(video as any, sourcePinDir);
+    console.log(`[EditorialAuto] Pulled + pinned platform source for video ${videoId}: ${p}`);
+    return p;
+  };
+  const cleanupPin = () => {
+    if (sourcePinDir) { try { fs.rmSync(sourcePinDir, { recursive: true, force: true }); } catch { /* ignore */ } }
+  };
 
   // Idempotency: if already ready and we have rendered clips, skip (unless force/resume)
   if (!force && !resume && video.editorialStatus === "ready") {
@@ -190,7 +194,18 @@ export async function runEditorialAutoPipeline(
       };
     } else {
       console.log(`[EditorialAuto] Resume mode: rendering ${unrendered.length} of ${existing.length} pending clips`);
-      return await renderClipsOnly(videoId, sourceFilePath, unrendered, start);
+      try {
+        // In-flight status BEFORE the (possibly minutes-long) import download
+        // so concurrent triggers hit the guard instead of double-running.
+        await storage.updateVideoEditorialStatus(videoId, "rendering", { error: null });
+        const resumeSource = await resolvePinnedSource();
+        return await renderClipsOnly(videoId, resumeSource, unrendered, start);
+      } catch (resumeErr: any) {
+        await storage.updateVideoEditorialStatus(videoId, "failed", { error: `Source download failed: ${resumeErr?.message || resumeErr}` }).catch(() => {});
+        return { ...emptyResult, error: `Source download failed: ${resumeErr?.message || resumeErr}`, durationMs: Date.now() - start };
+      } finally {
+        cleanupPin();
+      }
     }
   }
 
@@ -200,6 +215,9 @@ export async function runEditorialAutoPipeline(
   try {
     // ── 1. Transcript ────────────────────────────────────────────
     await storage.updateVideoEditorialStatus(videoId, "transcribing", { error: null });
+
+    // Import download happens here — after guards, with in-flight status set.
+    const sourceFilePath = await resolvePinnedSource();
 
     const transcript = await ensureTranscript(videoId, sourceFilePath);
     if (!transcript || !transcript.segments || transcript.segments.length === 0) {
@@ -277,7 +295,13 @@ export async function runEditorialAutoPipeline(
     // a transcript that can't yield 10 distinct stories shouldn't loop.
     const CLIP_FLOOR = Math.min(10, targetClipCount);
     if (rankedClips.length < CLIP_FLOOR) {
-      const covered = rankedClips.map((c) => ({ start: c.clipStart, end: c.clipEnd }));
+      // Cover PLAYED ranges only — an assembled clip's envelope would
+      // blacklist the whole span including gaps full of unused material.
+      const covered = rankedClips.flatMap((c) =>
+        c.segments && c.segments.length > 0
+          ? c.segments.map((s) => ({ start: s.start, end: s.end }))
+          : [{ start: c.clipStart, end: c.clipEnd }]
+      );
       console.log(`[EditorialAuto] Only ${rankedClips.length}/${CLIP_FLOOR} clips after dedupe — retrying for more (excluding covered ranges)`);
       try {
         const extraMoments = await analyzeEditorial({
@@ -480,6 +504,7 @@ export async function runEditorialAutoPipeline(
     };
   } finally {
     // Clean up downloaded source video
+    cleanupPin();
     if (videoLocalPath && tempScopeDir) {
       try {
         fs.rmSync(tempScopeDir, { recursive: true, force: true });
@@ -855,11 +880,8 @@ function validClipSegments(clip: any): Array<{ start: number; end: number; role?
 export async function renderEditorialClipOutput(clip: any, outputPath: string, ctx: EditorialRenderCtx): Promise<void> {
   const segs = validClipSegments(clip);
 
-  // Brand-overlay renders stay contiguous until overlay timing is remapped
-  // per beat — correctness over assembly for paid placements.
-  if (!segs || (ctx.brandOverlays && ctx.brandOverlays.length > 0)) {
-    const end = segs ? clip.clipEnd : clip.clipStart + clip.duration;
-    await renderEditorialRange(clip.clipStart, end, outputPath, ctx);
+  if (!segs) {
+    await renderEditorialRange(clip.clipStart, clip.clipStart + clip.duration, outputPath, ctx);
     return;
   }
 
@@ -888,12 +910,14 @@ export async function renderSingleEditorialClip(videoId: number, clipId: number)
   const video = await storage.getVideoById(videoId);
   if (!video || (!video.filePath && !video.youtubeId)) throw new Error("Video not found or has no source");
 
-  // Light-cloud imports: pull the source via the shared cache (see the
-  // batch pipeline's identical resolution above).
+  // Light-cloud imports: pull + pin the source (hard link survives the
+  // cache sweeper) — cleaned up in this function's cleanup below.
   let singleSourcePath: string = video.filePath as string;
+  let singlePinDir: string | null = null;
   if (!singleSourcePath) {
-    const { getSourcePath } = await import("../sourceCache");
-    singleSourcePath = await getSourcePath(video as any);
+    const { getPinnedSourcePath } = await import("../sourceCache");
+    singlePinDir = path.join("/tmp/editorial-source", `pin-single-${clipId}-${Date.now()}`);
+    singleSourcePath = await getPinnedSourcePath(video as any, singlePinDir);
   }
 
   const existing = await storage.getEditorialClipsByVideo(videoId);
@@ -970,6 +994,7 @@ export async function renderSingleEditorialClip(videoId: number, clipId: number)
 
     console.log(`[RenderSingle] ✓ Rendered clip ${clip.id} → ${mp4Url}`);
   } finally {
+    if (singlePinDir) { try { fs.rmSync(singlePinDir, { recursive: true, force: true }); } catch {} }
     try { fs.rmSync(renderOutputDir, { recursive: true, force: true }); } catch {}
     if (tempScopeDir) {
       try { fs.rmSync(tempScopeDir, { recursive: true, force: true }); } catch {}

@@ -684,6 +684,16 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
                 videoId={videoId}
                 mode="remix"
                 onGenerateClip={(clip) => {
+                  if (Array.isArray((clip as any).segments) && (clip as any).segments.length > 1) {
+                    // clipRange would extract the contiguous ENVELOPE — for an
+                    // assembled clip that includes the cut-out tangent. The
+                    // auto-pipeline already rendered the assembled version.
+                    toast({
+                      title: "Already assembled",
+                      description: "This is a multi-beat narrative clip — its rendered version is in the clip list. Per-platform re-targeting for assembled clips is coming.",
+                    });
+                    return;
+                  }
                   toast({
                     title: "Generating clip",
                     description: `"${clip.suggestedTitle}" (${clip.clipStart.toFixed(1)}s - ${clip.clipEnd.toFixed(1)}s)`,

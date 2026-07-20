@@ -240,7 +240,7 @@ function parseEditorialResponse(text: string): EditorialAnalysisOutput[] {
         }
         return true;
       })
-      .map((item) => {
+      .map((item): EditorialAnalysisOutput | null => {
         // Validate and clamp scores
         const validatedScores = validateScores({
           hookStrength: item.scores?.hookStrength,
@@ -269,7 +269,11 @@ function parseEditorialResponse(text: string): EditorialAnalysisOutput[] {
               role: typeof s.role === "string" ? s.role : undefined,
             }));
           } else {
-            console.warn("[EditorialAnalyzer] Dropping malformed segments — using contiguous range");
+            // The envelope of a malformed assembled item is NOT a playable
+            // range (it can span minutes of unrelated material) — drop the
+            // whole item rather than degrade to it.
+            console.warn("[EditorialAnalyzer] Dropping item with malformed segments (envelope is not a playable range)");
+            return null;
           }
         }
 
@@ -285,7 +289,8 @@ function parseEditorialResponse(text: string): EditorialAnalysisOutput[] {
           topicTags: Array.isArray(item.topicTags) ? item.topicTags : [],
           reasoning: item.reasoning || "",
         };
-      });
+      })
+      .filter((item): item is EditorialAnalysisOutput => item !== null);
   } catch (err) {
     console.error("[EditorialAnalyzer] Failed to parse response:", err);
     console.error("[EditorialAnalyzer] Raw text that failed to parse:", text.substring(0, 1000));

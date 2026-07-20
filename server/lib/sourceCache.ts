@@ -150,6 +150,29 @@ export async function getSourcePath(video: VideoIndex): Promise<string> {
   }
 }
 
+/**
+ * Resolve a source AND pin it for a long-running job. The playback cache is
+ * sweep-managed (1h TTL + 500MB oldest-first size cap), so a render pipeline
+ * holding the raw cache path can have the file unlinked mid-run. Pinning
+ * hard-links the cache file into the caller's job-scoped dir — the inode
+ * survives the sweeper's unlink — with a copy fallback across filesystems.
+ * Callers own pinDir cleanup (their existing temp-scope teardown).
+ */
+export async function getPinnedSourcePath(video: VideoIndex, pinDir: string): Promise<string> {
+  const cached = await getSourcePath(video);
+  if (!cached.startsWith(CACHE_DIR)) return cached; // local file / non-swept path — nothing to pin
+  fs.mkdirSync(pinDir, { recursive: true });
+  const pinned = path.join(pinDir, path.basename(cached));
+  if (!fs.existsSync(pinned)) {
+    try {
+      fs.linkSync(cached, pinned);
+    } catch {
+      fs.copyFileSync(cached, pinned);
+    }
+  }
+  return pinned;
+}
+
 function sweep() {
   if (!fs.existsSync(CACHE_DIR)) return;
 

@@ -273,7 +273,9 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
       setSearchResults(
         (data.clips || []).map((c: any) => ({
           ...c,
-          duration: c.clipEnd - c.clipStart,
+          duration: Array.isArray(c.segments) && c.segments.length > 1
+            ? c.segments.reduce((sum: number, s: any) => sum + (s.end - s.start), 0)
+            : c.clipEnd - c.clipStart,
           editorialScore: c.compositeScore ?? 0,
           surfaceScore: 0,
           brandMatchScore: 0,
@@ -1004,7 +1006,9 @@ function EditorialClipCard({
             <div className="flex items-center gap-2 mt-1 flex-wrap">
               <span className="text-xs text-gray-400">
                 <Clock className="w-3 h-3 inline mr-0.5" />
-                {formatTime(clip.clipStart)} - {formatTime(clip.clipEnd)}
+                {Array.isArray((clip as any).segments) && (clip as any).segments.length > 1
+                  ? `Assembled · ${(clip as any).segments.length} beats`
+                  : `${formatTime(clip.clipStart)} - ${formatTime(clip.clipEnd)}`}
               </span>
               <span className="text-xs text-gray-500">({clip.duration.toFixed(0)}s)</span>
               <Badge className={`${tierBadge.className} text-xs border`}>
@@ -1183,6 +1187,9 @@ function SearchResultCard({
         body: JSON.stringify({
           clipStart: clip.clipStart,
           clipEnd: clip.clipEnd,
+          // Assembled search results carry beats — without them the server
+          // renders the whole contiguous envelope including the tangent.
+          segments: (clip as any).segments,
           suggestedTitle: clip.suggestedTitle,
           topicTags: clip.topicTags,
           reasoning: clip.reasoning,
@@ -1213,7 +1220,9 @@ function SearchResultCard({
         <div className="flex items-center gap-2 mt-0.5 flex-wrap">
           <span className="text-xs text-gray-400">
             <Clock className="w-3 h-3 inline mr-0.5" />
-            {formatTime(clip.clipStart)} - {formatTime(clip.clipEnd)}
+            {Array.isArray((clip as any).segments) && (clip as any).segments.length > 1
+              ? `Assembled · ${(clip as any).segments.length} beats`
+              : `${formatTime(clip.clipStart)} - ${formatTime(clip.clipEnd)}`}
           </span>
           <span className="text-xs text-gray-500">({clip.duration.toFixed(0)}s)</span>
           <span className={`text-xs ${getViralColor(clip.finalScore)}`}>{viralPct}% viral</span>
