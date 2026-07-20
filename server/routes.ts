@@ -52,7 +52,7 @@ import { users, users as usersTable, allowedUsers as allowedUsersTable, videoInd
 import { eq, sql } from "drizzle-orm";
 import crypto from "crypto";
 import sharp from "sharp";
-import { uploadFileToStorage, uploadStreamToStorage, fileExistsInStorage, objectKeyFromServeUrl, storageServeUrl, getStorageStream } from "./lib/objectStorage";
+import { uploadFileToStorage, uploadStreamToStorage, fileExistsInStorage, objectKeyFromServeUrl, storageServeUrl, getStorageStream, downloadToTempFile } from "./lib/objectStorage";
 import { runTranscriptPipeline } from "./lib/remix/transcriptPipeline";
 import { runEditorialAutoPipeline, renderSingleEditorialClip } from "./lib/remix/editorialAutoPipeline";
 import type { CaptionSegment } from "./lib/remix/clipGenerator";
@@ -392,10 +392,19 @@ export async function registerRoutes(
     .failInterruptedRemixJobs()
     .then((n) => { if (n > 0) console.log(`[Startup] Marked ${n} interrupted remix job(s) as failed`); })
     .catch((err) => console.error("[Startup] failInterruptedRemixJobs error:", err?.message || err));
+  // Deferred past the Replit reusePort deploy-overlap window so an old
+  // process actively stitching doesn't get its plan falsely failed (its own
+  // terminal write lands first; the sweep then only catches true orphans).
+  setTimeout(() => {
+    storage
+      .failInterruptedStitchPlans()
+      .then((n) => { if (n > 0) console.log(`[Startup] Marked ${n} interrupted stitch plan(s) as failed`); })
+      .catch((err) => console.error("[Startup] failInterruptedStitchPlans error:", err?.message || err));
+  }, 5 * 60 * 1000);
   storage
-    .failInterruptedStitchPlans()
-    .then((n) => { if (n > 0) console.log(`[Startup] Marked ${n} interrupted stitch plan(s) as failed`); })
-    .catch((err) => console.error("[Startup] failInterruptedStitchPlans error:", err?.message || err));
+    .cancelOrphanedLegacySchedules()
+    .then((n) => { if (n > 0) console.log(`[Startup] Cancelled ${n} orphaned legacy schedule(s) (pre-identity-fix userId=1)`); })
+    .catch((err) => console.error("[Startup] cancelOrphanedLegacySchedules error:", err?.message || err));
   
   // Import session setup separately - this MUST succeed for OAuth to work
   const { getSession } = await import("./replit_integrations/auth/replitAuth");
@@ -9545,24 +9554,11 @@ export async function registerRoutes(
 
       const userId = req.authUserId || req.googleUser?.email || "anonymous";
 
-      // Prefer the harmonized composite when the creator harmonized this
-      // placement. Exports previously always composited the raw product
-      // image — harmonizedImageUrl was persisted on save but never read by
-      // any render path.
-      try {
-        const saved = await storage.getPlacementsForVideo(videoId);
-        for (const p of placements) {
-          const match = (saved || []).find(
-            (sp: any) => sp.isHarmonized && sp.harmonizedImageUrl && sp.productImageUrl === p.productImageUrl
-          );
-          if (match) {
-            console.log(`[Video Export] Using harmonized image for "${p.surfaceType}"`);
-            p.productImageUrl = match.harmonizedImageUrl;
-          }
-        }
-      } catch (harmErr: any) {
-        console.warn(`[Video Export] Harmonized-image lookup failed (non-fatal): ${harmErr?.message}`);
-      }
+      // NOTE: harmonizedImageUrl is deliberately NOT substituted here — it
+      // stores a full-scene composite frame (scene + product), not a product
+      // cutout, so overlaying it into the surface bbox would stamp the whole
+      // scene into the video. Harmonized-look-in-exports needs a bbox-cropped
+      // product composite keyed by surfaceId before it can be wired.
 
       // Create export job in DB
       const exportJob = await storage.createVideoExport({
@@ -10120,9 +10116,10 @@ export async function registerRoutes(
       const analysis = analyses[0];
       if (!analysis) return res.status(404).json({ error: "No scene analysis for this surface. Run analysis first." });
 
-      // Get brand product
-      const items = await storage.getMonetizationItems();
-      const brandProduct = items.find((i: any) => i.id === brandProductId);
+      // Get brand product — ids come from the brand_products catalog (the
+      // copilot's BRAND CATALOG context), NOT monetization_items; resolving
+      // against the wrong table 404'd or picked an unrelated row.
+      const brandProduct = await storage.getBrandProduct(parseInt(brandProductId));
       if (!brandProduct) return res.status(404).json({ error: "Brand product not found" });
 
       const { generateProductAsset } = await import("./lib/ai/image-gen/assetGenerator");
@@ -11039,6 +11036,19 @@ export async function registerRoutes(
         if (analyses.length === 0) {
           return res.status(400).json({ error: "No scene analyses found. Run Claude Dense analysis first via Narrative Insights." });
         }
+      } else if (!config.clipRange) {
+        // Editorial mode needs a transcript; without one the orchestrator
+        // falls back to the legacy path, which needs scene analyses. If the
+        // video has neither, fail fast with an actionable 400 instead of a
+        // 200 followed by an async job failure.
+        const vt = await storage.getVideoTranscript(videoId);
+        const hasTranscript = vt?.status === "completed" && vt.segments;
+        if (!hasTranscript) {
+          const analyses = await storage.getSceneAnalysisByVideo(videoId);
+          if (analyses.length === 0) {
+            return res.status(400).json({ error: "No transcript or scene analysis available yet. Wait for transcription to finish (or run analysis via Narrative Insights), then retry." });
+          }
+        }
       }
 
       // One pipeline per video at a time — a second concurrent run would fight
@@ -11489,11 +11499,22 @@ export async function registerRoutes(
               if (vt?.status === "completed" && Array.isArray(vt.segments)) {
                 const { generateTranscriptCaptions } = await import("./lib/remix/captionEngine");
                 const out: CaptionSegment[] = [];
+                // When ANY junction crossfades, clipStitcher renders the
+                // whole reel through its xfade chain, where 'cut' junctions
+                // become 0.1s micro-fades that still consume output time.
+                // All-cut reels use the concat demuxer (true zero overlap).
+                const reelHasCrossfade = stitchSegs.some((s: any, i: number) => i > 0 && s.transitionIn !== "cut");
                 let outputOffset = 0;
+                let segIndex = 0;
                 for (const seg of stitchSegs) {
                   // A crossfade overlaps this segment's entry with the tail
                   // of the previous one — its content starts that much early.
-                  const overlap = seg.transitionIn === "cut" ? 0 : (seg.transitionDuration ?? 0.5);
+                  const overlap = segIndex === 0
+                    ? 0
+                    : seg.transitionIn === "cut"
+                      ? (reelHasCrossfade ? 0.1 : 0)
+                      : (seg.transitionDuration ?? 0.5);
+                  segIndex++;
                   outputOffset -= overlap;
                   const segTranscript = (vt.segments as any[]).filter(
                     (t: any) => t.start >= seg.start - 0.5 && t.start <= seg.end
@@ -12013,6 +12034,17 @@ export async function registerRoutes(
 
       if (!platform) return res.status(400).json({ error: "platform is required" });
 
+      // Strip token-resolution pointers from client-supplied metadata:
+      // resolvePublishAccessToken mints LIVE tokens from
+      // metadata.youtubeUserId / metadata.igUserKey, so only the
+      // server-side from-youtube/from-instagram provisioning routes (which
+      // set them from the authenticated session) may populate them.
+      const safeMetadata = metadata && typeof metadata === "object" ? { ...metadata } : null;
+      if (safeMetadata) {
+        delete safeMetadata.youtubeUserId;
+        delete safeMetadata.igUserKey;
+      }
+
       const profile = await storage.createDistributionProfile({
         userId,
         platform,
@@ -12022,7 +12054,7 @@ export async function registerRoutes(
         refreshToken: refreshToken || null,
         tokenExpiresAt: tokenExpiresAt ? new Date(tokenExpiresAt) : null,
         isActive: true,
-        metadata: metadata || null,
+        metadata: safeMetadata,
       });
 
       res.json({ ...profile, accessToken: "••••••", refreshToken: undefined });
@@ -12138,7 +12170,32 @@ export async function registerRoutes(
       if (existing.userId !== stableUserIntId(req.authUserId ?? req.user?.id)) {
         return res.status(403).json({ error: "Not your profile" });
       }
-      const updated = await storage.updateDistributionProfile(id, req.body);
+
+      // Allowlist: raw req.body pass-through allowed mass assignment of
+      // userId/platform/accessToken (credential injection on an owned
+      // profile → confused-deputy publishing). Metadata merges over the
+      // existing object but can never override the server-set
+      // token-resolution pointers.
+      const updates: Record<string, any> = {};
+      if (typeof req.body?.accountName === "string") updates.accountName = req.body.accountName;
+      if (typeof req.body?.isActive === "boolean") updates.isActive = req.body.isActive;
+      if (req.body?.metadata && typeof req.body.metadata === "object") {
+        const incoming = { ...req.body.metadata };
+        delete incoming.youtubeUserId;
+        delete incoming.igUserKey;
+        const existingMeta = (existing.metadata as Record<string, any>) || {};
+        updates.metadata = {
+          ...existingMeta,
+          ...incoming,
+          ...(existingMeta.youtubeUserId !== undefined ? { youtubeUserId: existingMeta.youtubeUserId } : {}),
+          ...(existingMeta.igUserKey !== undefined ? { igUserKey: existingMeta.igUserKey } : {}),
+        };
+      }
+      if (Object.keys(updates).length === 0) {
+        return res.status(400).json({ error: "No updatable fields (accountName, isActive, metadata)" });
+      }
+
+      const updated = await storage.updateDistributionProfile(id, updates);
       if (!updated) return res.status(404).json({ error: "Profile not found" });
       res.json({ ...updated, accessToken: "••••••", refreshToken: undefined });
     } catch (err: any) {
@@ -12176,6 +12233,13 @@ export async function registerRoutes(
       if (!profile) {
         return res.status(404).json({ error: "Distribution profile not found" });
       }
+      // Ownership: profile ids are sequential ints — without this check any
+      // signed-in user could publish through another user's connected
+      // account (the token resolver mints a LIVE token for the profile's
+      // platform connection).
+      if (profile.userId !== stableUserIntId(req.authUserId ?? req.user?.id)) {
+        return res.status(403).json({ error: "Not your profile" });
+      }
       const { resolvePublishAccessToken } = await import("./lib/distribution/platformPublisher");
       const publishToken = await resolvePublishAccessToken(profile);
       if (!publishToken) {
@@ -12188,9 +12252,18 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Clip not found or not exported" });
       }
 
-      const clipPath = path.join(process.cwd(), "public", clip.exportPath.replace(/^\//, ""));
-      if (!fs.existsSync(clipPath)) {
-        return res.status(404).json({ error: "Clip file not found on disk" });
+      // Mainline remix clips live in Object Storage (/storage/...) with the
+      // local file deleted after upload — materialize to temp before publish.
+      let clipPath: string;
+      let tempPublishDir: string | null = null;
+      if (clip.exportPath.startsWith("/storage/")) {
+        tempPublishDir = path.join("/tmp/remix-videos", `publish-now-${clipId}`);
+        clipPath = await downloadToTempFile(objectKeyFromServeUrl(clip.exportPath), tempPublishDir);
+      } else {
+        clipPath = path.join(process.cwd(), "public", clip.exportPath.replace(/^\//, ""));
+        if (!fs.existsSync(clipPath)) {
+          return res.status(404).json({ error: "Clip file not found on disk" });
+        }
       }
 
       // Format caption if not provided
@@ -12232,6 +12305,10 @@ export async function registerRoutes(
         metadata: publishMetadata,
       });
 
+      if (tempPublishDir) {
+        try { fs.rmSync(tempPublishDir, { recursive: true, force: true }); } catch {}
+      }
+
       if (result.success) {
         const post = await storage.createPublishedPost({
           clipId,
@@ -12243,9 +12320,9 @@ export async function registerRoutes(
           caption: finalCaption,
           hashtags: finalHashtags,
           publishedAt: new Date(),
-          status: "published",
+          status: result.dryRun ? "dry_run" : "published",
         });
-        res.json({ success: true, post, postUrl: result.postUrl });
+        res.json({ success: true, post, postUrl: result.postUrl, dryRun: !!result.dryRun });
       } else {
         const post = await storage.createPublishedPost({
           clipId,
@@ -12277,6 +12354,11 @@ export async function registerRoutes(
         return res.status(400).json({ error: "clipId, profileId, and scheduledFor are required" });
       }
 
+      const targetProfile = await storage.getDistributionProfile(parseInt(profileId));
+      if (!targetProfile || targetProfile.userId !== userId) {
+        return res.status(403).json({ error: "Not your distribution profile" });
+      }
+
       const { schedulePost } = await import("./lib/distribution/scheduler");
       const schedule = await schedulePost({
         userId,
@@ -12302,6 +12384,14 @@ export async function registerRoutes(
 
       if (!clipId || !platformProfiles || !baseTime) {
         return res.status(400).json({ error: "clipId, platformProfiles, and baseTime are required" });
+      }
+
+      // Every referenced profile must belong to the caller.
+      for (const pp of platformProfiles) {
+        const prof = await storage.getDistributionProfile(parseInt(pp?.profileId));
+        if (!prof || prof.userId !== userId) {
+          return res.status(403).json({ error: `Not your distribution profile: ${pp?.profileId}` });
+        }
       }
 
       const { batchSchedule } = await import("./lib/distribution/scheduler");
@@ -12336,7 +12426,10 @@ export async function registerRoutes(
   app.delete("/api/distribution/schedules/:id", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const id = parseInt(req.params.id);
-      await storage.cancelSchedule(id);
+      // Ownership-scoped: cancels nothing unless the schedule belongs to
+      // the caller (ids are sequential ints — anyone could guess them).
+      const cancelled = await storage.cancelSchedule(id, stableUserIntId(req.authUserId ?? req.user?.id));
+      if (!cancelled) return res.status(404).json({ error: "Schedule not found" });
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "Cancel failed" });

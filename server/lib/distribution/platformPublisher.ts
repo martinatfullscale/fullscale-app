@@ -39,6 +39,8 @@ export interface PublishResult {
   /** Public URL of the post */
   postUrl: string | null;
   error?: string;
+  /** True when PUBLISH_DRY_RUN short-circuited before the platform API */
+  dryRun?: boolean;
 }
 
 export interface PlatformAdapter {
@@ -647,6 +649,11 @@ export async function resolvePublishAccessToken(profile: {
   }
 
   if (profile.platform.startsWith("instagram")) {
+    // Prefer the profile's stored token: from-instagram provisioning
+    // exchanges it for a ~60-day long-lived token, while the users-row
+    // Facebook token is the raw short-lived login token (~1-2h) — it's
+    // only a fallback for profiles provisioned before the exchange.
+    if (profile.accessToken) return profile.accessToken;
     const igUserKey = profile.metadata?.igUserKey;
     if (igUserKey) {
       try {
@@ -658,7 +665,7 @@ export async function resolvePublishAccessToken(profile: {
           if (tok) return tok;
         }
       } catch (err: any) {
-        console.error("[Publisher] Instagram token resolution failed, using stored token:", err.message);
+        console.error("[Publisher] Instagram token resolution failed:", err.message);
       }
     }
   }
@@ -705,7 +712,7 @@ export async function publishToPlaftorm(
       tokenSuffix: input.accessToken ? input.accessToken.slice(-4) : null,
       metadata: input.metadata || {},
     })}`);
-    return { success: true, platformPostId: `dryrun-${Date.now()}`, postUrl: null };
+    return { success: true, platformPostId: `dryrun-${Date.now()}`, postUrl: null, dryRun: true } as PublishResult & { dryRun: true };
   }
 
   console.log(`[Publisher] Publishing to ${platform}...`);

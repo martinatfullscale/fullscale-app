@@ -209,6 +209,8 @@ export interface IStorage {
   getActiveRemixJobForVideo(videoId: number): Promise<RemixJob | undefined>;
   failInterruptedRemixJobs(): Promise<number>;
   failInterruptedStitchPlans(): Promise<number>;
+  claimSchedule(scheduleId: number): Promise<boolean>;
+  cancelOrphanedLegacySchedules(): Promise<number>;
   updateRemixJobStatus(jobId: number, status: string, errorMessage?: string): Promise<RemixJob | undefined>;
   // Generated clip methods
   createGeneratedClip(data: InsertGeneratedClip): Promise<GeneratedClip>;
@@ -279,7 +281,7 @@ export interface IStorage {
   getSchedulesByUser(userId: number): Promise<PublishingSchedule[]>;
   getPendingSchedules(): Promise<PublishingSchedule[]>;
   updateScheduleStatus(scheduleId: number, status: string, postId?: number, errorMessage?: string): Promise<PublishingSchedule | undefined>;
-  cancelSchedule(scheduleId: number): Promise<void>;
+  cancelSchedule(scheduleId: number, userId?: number): Promise<boolean>;
 
   // Video transcript methods
   createVideoTranscript(data: InsertVideoTranscript): Promise<VideoTranscript>;
@@ -2102,10 +2104,44 @@ export class DatabaseStorage implements IStorage {
     return result;
   }
 
-  async cancelSchedule(scheduleId: number): Promise<void> {
-    await db.update(publishingSchedules)
+  async cancelSchedule(scheduleId: number, userId?: number): Promise<boolean> {
+    // When userId is provided the cancel is ownership-scoped — a caller can
+    // only cancel their own schedule (returns false on someone else's id).
+    const conditions = [eq(publishingSchedules.id, scheduleId)];
+    if (userId !== undefined) conditions.push(eq(publishingSchedules.userId, userId));
+    const result = await db.update(publishingSchedules)
       .set({ status: "cancelled" })
-      .where(eq(publishingSchedules.id, scheduleId));
+      .where(and(...conditions))
+      .returning({ id: publishingSchedules.id });
+    return result.length > 0;
+  }
+
+  async claimSchedule(scheduleId: number): Promise<boolean> {
+    // Atomic compare-and-set claim: only one process wins the row even when
+    // two schedulers overlap (Replit reusePort redeploy overlap). Without
+    // this, both processes read the same pending list and double-publish.
+    const result = await db.update(publishingSchedules)
+      .set({ status: "processing" })
+      .where(and(
+        eq(publishingSchedules.id, scheduleId),
+        eq(publishingSchedules.status, "pending"),
+      ))
+      .returning({ id: publishingSchedules.id });
+    return result.length > 0;
+  }
+
+  async cancelOrphanedLegacySchedules(): Promise<number> {
+    // Pre-stableUserIntId rows were all keyed userId=1 (the old
+    // `req.user?.id || 1` fallback) — no real user maps to them now, so a
+    // pending one would fire posts nobody can see or cancel.
+    const result = await db.update(publishingSchedules)
+      .set({ status: "cancelled", errorMessage: "Orphaned legacy schedule (pre-identity-fix userId=1)" })
+      .where(and(
+        eq(publishingSchedules.userId, 1),
+        eq(publishingSchedules.status, "pending"),
+      ))
+      .returning({ id: publishingSchedules.id });
+    return result.length;
   }
 
   // ─── Video Transcript Methods ──────────────────────────────────

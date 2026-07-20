@@ -139,8 +139,9 @@ export async function processScheduledPosts(): Promise<number> {
     // A post that came due while the scheduler was down shouldn't fire hours
     // or days late — silently publishing stale content is worse than a missed
     // slot. Anything past the grace window is marked failed instead.
-    const misfireGraceMs =
-      (parseInt(process.env.SCHEDULER_MISFIRE_GRACE_HOURS || "24", 10) || 24) * 60 * 60 * 1000;
+    const rawGrace = Number(process.env.SCHEDULER_MISFIRE_GRACE_HOURS);
+    const graceHours = Number.isFinite(rawGrace) && rawGrace >= 0 ? rawGrace : 24;
+    const misfireGraceMs = graceHours * 60 * 60 * 1000;
 
     for (const schedule of pendingSchedules) {
       try {
@@ -154,7 +155,11 @@ export async function processScheduledPosts(): Promise<number> {
           continue;
         }
 
-        await storage.updateScheduleStatus(schedule.id, "processing");
+        // Atomic claim: only one process wins the row. During Replit
+        // redeploys old+new processes overlap (reusePort) and both read the
+        // same pending list — without this CAS both would publish the post.
+        const claimed = await storage.claimSchedule(schedule.id);
+        if (!claimed) continue;
 
         // Get the clip
         const { db } = await import("../../db");
@@ -171,6 +176,13 @@ export async function processScheduledPosts(): Promise<number> {
         const profile = await storage.getDistributionProfile(schedule.profileId);
         if (!profile) {
           await storage.updateScheduleStatus(schedule.id, "failed", undefined, "Distribution profile not found");
+          continue;
+        }
+        // Defense-in-depth: a schedule must publish through its own owner's
+        // profile. Route-level checks enforce this at creation; this guard
+        // catches rows created before those checks (or via any missed path).
+        if (profile.userId !== schedule.userId) {
+          await storage.updateScheduleStatus(schedule.id, "failed", undefined, "Schedule/profile owner mismatch");
           continue;
         }
 
@@ -203,11 +215,23 @@ export async function processScheduledPosts(): Promise<number> {
           hashtags = formatted.hashtags;
         }
 
-        // Resolve clip path
-        const clipPath = path.join(process.cwd(), "public", clip.exportPath.replace(/^\//, ""));
-        if (!fs.existsSync(clipPath)) {
-          await storage.updateScheduleStatus(schedule.id, "failed", undefined, "Clip file not found on disk");
-          continue;
+        // Resolve clip path. Mainline remix clips live in Object Storage
+        // (exportPath = /storage/...) with the local file deleted after
+        // upload — materialize those to a temp file first; without this,
+        // every scheduled publish of a storage-hosted clip failed with
+        // "Clip file not found on disk".
+        let clipPath: string;
+        let tempClipDir: string | null = null;
+        if (clip.exportPath.startsWith("/storage/")) {
+          const { downloadToTempFile, objectKeyFromServeUrl } = await import("../objectStorage");
+          tempClipDir = path.join("/tmp/remix-videos", `publish-${schedule.id}`);
+          clipPath = await downloadToTempFile(objectKeyFromServeUrl(clip.exportPath), tempClipDir);
+        } else {
+          clipPath = path.join(process.cwd(), "public", clip.exportPath.replace(/^\//, ""));
+          if (!fs.existsSync(clipPath)) {
+            await storage.updateScheduleStatus(schedule.id, "failed", undefined, "Clip file not found on disk");
+            continue;
+          }
         }
 
         // Publish
@@ -227,8 +251,13 @@ export async function processScheduledPosts(): Promise<number> {
           metadata: publishMetadata,
         });
 
+        if (tempClipDir) {
+          try { fs.rmSync(tempClipDir, { recursive: true, force: true }); } catch {}
+        }
+
         if (result.success) {
-          // Create published post record
+          // Create published post record. Dry runs are labeled so they never
+          // masquerade as real published posts in analytics/UI.
           const post = await storage.createPublishedPost({
             clipId: schedule.clipId,
             videoId: clip.videoId,
@@ -239,7 +268,7 @@ export async function processScheduledPosts(): Promise<number> {
             caption,
             hashtags,
             publishedAt: new Date(),
-            status: "published",
+            status: (result as any).dryRun ? "dry_run" : "published",
           });
 
           await storage.updateScheduleStatus(schedule.id, "completed", post.id);

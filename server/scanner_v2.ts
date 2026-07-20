@@ -3502,7 +3502,9 @@ async function processVideoScanInner(
     // scans, batch scans, sync scans, and uploads all get clips without a
     // user click. Skips cleanly when clips are already rendered.
     try {
-      if (video.filePath) {
+      const editorialState = (video as any).editorialStatus;
+      const editorialFresh = !editorialState || editorialState === "pending";
+      if (video.filePath && editorialFresh) {
         console.log(`[Scanner V2] Auto-triggering editorial pipeline for video ${videoId}...`);
         // Dynamic imports to avoid circular dependency with the remix module
         const { runEditorialAutoPipeline } = await import("./lib/remix/editorialAutoPipeline");
@@ -3517,8 +3519,14 @@ async function processVideoScanInner(
             }
           })
           .catch((err) => console.warn(`[Scanner V2] Editorial auto-pipeline error for ${videoId} (non-fatal):`, err?.message || err));
-      } else {
+      } else if (!video.filePath) {
         console.log(`[Scanner V2] No file path for video ${videoId}, skipping editorial auto-pipeline`);
+      } else {
+        // ready/failed/analyzing states never auto-rerun on rescans — a
+        // failed pipeline would otherwise burn a full Claude+Whisper+render
+        // cycle on EVERY scan. Retries go through the explicit
+        // editorial-auto force/resume endpoints.
+        console.log(`[Scanner V2] Editorial status '${editorialState}' for video ${videoId} — not auto-rerunning`);
       }
     } catch (editorialErr) {
       console.warn(`[Scanner V2] Editorial auto-trigger setup failed (non-fatal):`, editorialErr);

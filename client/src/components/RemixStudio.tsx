@@ -192,11 +192,19 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
   // newest clip once it lands.
   const scheduleReloads = useCallback(() => {
     const delays = [3000, 8000, 15000, 30000];
+    // The clips endpoint returns newest-first, so "newest" = max id, and we
+    // only retarget when a clip NEWER than the first reload's newest appears
+    // — otherwise a manual click-to-select made in the interim would be
+    // stomped 30s later.
+    let baselineMaxId: number | null = null;
     delays.forEach((ms, i) => {
       setTimeout(async () => {
         const loaded = await loadData();
-        if (i === delays.length - 1 && loaded.length > 0) {
-          setCopilotClipId(loaded[loaded.length - 1].id);
+        const maxId = loaded.reduce((m, c) => Math.max(m, c.id), 0);
+        if (i === 0) {
+          baselineMaxId = maxId;
+        } else if (i === delays.length - 1 && baselineMaxId !== null && maxId > baselineMaxId) {
+          setCopilotClipId(maxId);
         }
       }, ms);
     });

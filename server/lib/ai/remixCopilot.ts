@@ -693,6 +693,12 @@ function validateSuggestion(raw: any, ctx: CopilotSessionContext): CopilotSugges
           prompt: typeof data.prompt === "string" ? data.prompt : "Generate a product image",
           assetType,
           targetSurface: typeof data.targetSurface === "number" ? data.targetSurface : undefined,
+          // Only pass ids that exist in the session's brand catalog — the
+          // client one-click-applies this against /api/generate/product-asset.
+          productId:
+            typeof data.productId === "number" && ctx.brandCatalog.some((b) => b.id === data.productId)
+              ? data.productId
+              : undefined,
         },
       };
     }
