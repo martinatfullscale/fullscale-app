@@ -13,6 +13,7 @@
  */
 
 import { spawn } from "child_process";
+import { withRenderSlot } from "./remix/renderQueue";
 import * as fs from "fs";
 import * as path from "path";
 import sharp from "sharp";
@@ -903,6 +904,21 @@ async function compositeFrame(
  * Main export pipeline — runs asynchronously
  */
 export async function processVideoExport(
+  exportId: number,
+  videoPath: string,
+  placements: ExportPlacementData[],
+  exportCtx: ExportContext = { canvasWidth: 640, canvasHeight: 360 },
+): Promise<void> {
+  // Whole-video re-encodes are the heaviest renders in the app; run them
+  // through the shared render queue so concurrent exports can't stack with
+  // clip renders and starve the box (the queue was built for exactly this,
+  // but this module bypassed it).
+  return withRenderSlot(`export:${exportId}`, () =>
+    processVideoExportInner(exportId, videoPath, placements, exportCtx),
+  );
+}
+
+async function processVideoExportInner(
   exportId: number,
   videoPath: string,
   placements: ExportPlacementData[],

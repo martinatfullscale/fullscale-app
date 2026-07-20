@@ -55,6 +55,7 @@ import sharp from "sharp";
 import { uploadFileToStorage, uploadStreamToStorage, fileExistsInStorage, objectKeyFromServeUrl, storageServeUrl, getStorageStream } from "./lib/objectStorage";
 import { runTranscriptPipeline } from "./lib/remix/transcriptPipeline";
 import { runEditorialAutoPipeline, renderSingleEditorialClip } from "./lib/remix/editorialAutoPipeline";
+import type { CaptionSegment } from "./lib/remix/clipGenerator";
 import { analyzeEditorial } from "./lib/ai/claude-dense/editorialAnalyzer";
 import { categorizeVideos } from "./lib/ai/categorize";
 import {
@@ -391,6 +392,10 @@ export async function registerRoutes(
     .failInterruptedRemixJobs()
     .then((n) => { if (n > 0) console.log(`[Startup] Marked ${n} interrupted remix job(s) as failed`); })
     .catch((err) => console.error("[Startup] failInterruptedRemixJobs error:", err?.message || err));
+  storage
+    .failInterruptedStitchPlans()
+    .then((n) => { if (n > 0) console.log(`[Startup] Marked ${n} interrupted stitch plan(s) as failed`); })
+    .catch((err) => console.error("[Startup] failInterruptedStitchPlans error:", err?.message || err));
   
   // Import session setup separately - this MUST succeed for OAuth to work
   const { getSession } = await import("./replit_integrations/auth/replitAuth");
@@ -9521,6 +9526,25 @@ export async function registerRoutes(
 
       const userId = req.authUserId || req.googleUser?.email || "anonymous";
 
+      // Prefer the harmonized composite when the creator harmonized this
+      // placement. Exports previously always composited the raw product
+      // image — harmonizedImageUrl was persisted on save but never read by
+      // any render path.
+      try {
+        const saved = await storage.getPlacementsForVideo(videoId);
+        for (const p of placements) {
+          const match = (saved || []).find(
+            (sp: any) => sp.isHarmonized && sp.harmonizedImageUrl && sp.productImageUrl === p.productImageUrl
+          );
+          if (match) {
+            console.log(`[Video Export] Using harmonized image for "${p.surfaceType}"`);
+            p.productImageUrl = match.harmonizedImageUrl;
+          }
+        }
+      } catch (harmErr: any) {
+        console.warn(`[Video Export] Harmonized-image lookup failed (non-fatal): ${harmErr?.message}`);
+      }
+
       // Create export job in DB
       const exportJob = await storage.createVideoExport({
         videoId,
@@ -11435,12 +11459,64 @@ export async function registerRoutes(
               transitionDuration: 0.5,
             }));
 
+          // Build caption segments from the transcript, remapped to the
+          // stitched output's timeline. Without this, captionsEnabled was a
+          // silent no-op — clipStitcher only burns captions when a caller
+          // passes captionSegments, and none ever did.
+          let stitchCaptions: CaptionSegment[] | undefined = undefined;
+          if (captionsEnabled) {
+            try {
+              const vt = await storage.getVideoTranscript(videoId);
+              if (vt?.status === "completed" && Array.isArray(vt.segments)) {
+                const { generateTranscriptCaptions } = await import("./lib/remix/captionEngine");
+                const out: CaptionSegment[] = [];
+                let outputOffset = 0;
+                for (const seg of stitchSegs) {
+                  // A crossfade overlaps this segment's entry with the tail
+                  // of the previous one — its content starts that much early.
+                  const overlap = seg.transitionIn === "cut" ? 0 : (seg.transitionDuration ?? 0.5);
+                  outputOffset -= overlap;
+                  const segTranscript = (vt.segments as any[]).filter(
+                    (t: any) => t.start >= seg.start - 0.5 && t.start <= seg.end
+                  );
+                  if (segTranscript.length > 0) {
+                    const res = generateTranscriptCaptions({
+                      clipStart: seg.start,
+                      clipEnd: seg.end,
+                      duration: seg.end - seg.start,
+                      narrativeContext: "",
+                      emotionalTone: "neutral",
+                      brandNames: [],
+                      style: "highlight",
+                      transcriptSegments: segTranscript,
+                    });
+                    for (const c of res.segments) {
+                      out.push({
+                        ...c,
+                        startTime: Math.max(0, c.startTime + outputOffset),
+                        endTime: Math.max(0, c.endTime + outputOffset),
+                      });
+                    }
+                  }
+                  outputOffset += seg.end - seg.start;
+                }
+                if (out.length > 0) stitchCaptions = out;
+                console.log(`[Stitch] Built ${out.length} caption segments across ${stitchSegs.length} stitch segments`);
+              } else {
+                console.log(`[Stitch] No completed transcript for video ${videoId} — stitching without captions`);
+              }
+            } catch (capErr: any) {
+              console.warn(`[Stitch] Caption build failed (non-fatal): ${capErr?.message}`);
+            }
+          }
+
           const result = await stitchSegments({
             videoPath,
             videoId,
             segments: stitchSegs,
             platformConfig,
             captionsEnabled,
+            captionSegments: stitchCaptions,
             outputDir,
             planId: plan.id,
           });

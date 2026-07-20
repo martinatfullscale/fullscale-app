@@ -208,6 +208,7 @@ export interface IStorage {
   getRemixJobsByUser(userId: number): Promise<RemixJob[]>;
   getActiveRemixJobForVideo(videoId: number): Promise<RemixJob | undefined>;
   failInterruptedRemixJobs(): Promise<number>;
+  failInterruptedStitchPlans(): Promise<number>;
   updateRemixJobStatus(jobId: number, status: string, errorMessage?: string): Promise<RemixJob | undefined>;
   // Generated clip methods
   createGeneratedClip(data: InsertGeneratedClip): Promise<GeneratedClip>;
@@ -1607,6 +1608,18 @@ export class DatabaseStorage implements IStorage {
         sql`${remixJobs.status} IS NULL`,
       ))
       .returning({ id: remixJobs.id });
+    return result.length;
+  }
+
+  async failInterruptedStitchPlans(): Promise<number> {
+    // Same restart-sweep as remix jobs, for highlight-reel stitch plans: a
+    // plan left 'generating' by a dead process never progresses, and the UI
+    // polls it forever. The stitch flow creates its remixJob row only after
+    // success, so the remix-job sweep can't catch these.
+    const result = await db.update(stitchPlans)
+      .set({ status: "failed", errorMessage: "Interrupted by server restart" })
+      .where(eq(stitchPlans.status, "generating"))
+      .returning({ id: stitchPlans.id });
     return result.length;
   }
 
