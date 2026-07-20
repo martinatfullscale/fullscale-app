@@ -756,6 +756,9 @@ export const editorialClips = pgTable('editorial_clips', {
   surfaces: jsonb('surfaces'),
   brandMatches: jsonb('brand_matches'),
   editPoints: jsonb('edit_points').$type<{ start: number; end: number; adjustments: string[] }>(),
+  // Assembled-narrative beats (hook→body→payoff) in NARRATIVE order; null for
+  // single-range clips. Times are source-video seconds; duration = sum of beats.
+  segments: jsonb('segments').$type<Array<{ start: number; end: number; role?: string }>>(),
   suggestedTitle: varchar('suggested_title', { length: 300 }),
   topicTags: jsonb('topic_tags').$type<string[]>(),
   reasoning: text('reasoning'),

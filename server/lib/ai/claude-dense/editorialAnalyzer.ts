@@ -43,6 +43,7 @@ export interface EditorialAnalysisInput {
 interface ClaudeEditorialResponse {
   clipStart: number;
   clipEnd: number;
+  segments?: Array<{ start: number; end: number; role?: string }>;
   scores: {
     hookStrength: number;
     narrativeCompleteness: number;
@@ -151,6 +152,7 @@ SEARCH FOCUS: The user is specifically looking for clips about "${query}". PRIOR
 3. For each moment, specify:
    - clipStart: Exact start timestamp in seconds (clean entry point, 0.5-1.0s before the hook statement begins, never mid-word)
    - clipEnd: Exact end timestamp in seconds (clean exit, 0.5-1.0s after final word, end on completed thought or punchline, never on "um"/"uh"/"so"/"and")
+   - segments (OPTIONAL — assembled narrative): when the STRONGEST version of this story spans non-contiguous parts of the transcript (e.g. the hook statement and its payoff are separated by a tangent), assemble 2-4 segments in NARRATIVE order instead of one long range. Each segment is { "start": seconds, "end": seconds, "role": "hook"|"body"|"payoff" }. Rules: every segment cuts on clean sentence boundaries (same entry/exit rules as above); combined duration 15-60s; segments may come from any part of the source but MUST be listed in the order they should play; when segments are provided, set clipStart/clipEnd to the min start / max end across segments. Use a single contiguous clipStart/clipEnd when the story is already contiguous — do NOT force segmentation.
    - surfacesInRange: Array of surface IDs visible during this clip's timerange
    - compatibleBrands: Array of brand product IDs that contextually fit this moment, with reasoning for each match
    - suggestedTitle: Scroll-stopping title under 60 characters
@@ -183,6 +185,22 @@ Return as JSON array sorted by composite score descending. No markdown, no code 
     "suggestedTitle": "I Was $50K in Debt at 25",
     "topicTags": ["personal finance", "debt", "motivation"],
     "reasoning": "Host shares vulnerable personal finance story with clear emotional arc..."
+  },
+  {
+    "clipStart": 210.0,
+    "clipEnd": 512.4,
+    "segments": [
+      { "start": 480.2, "end": 495.0, "role": "hook" },
+      { "start": 210.0, "end": 231.5, "role": "body" },
+      { "start": 500.1, "end": 512.4, "role": "payoff" }
+    ],
+    "scores": { "hookStrength": 0.92, "narrativeCompleteness": 0.9, "emotionalArc": 0.85, "speakerClarity": 0.9, "replayability": 0.9, "culturalRelevance": 0.75 },
+    "compositeScore": 0.87,
+    "surfacesInRange": [12],
+    "compatibleBrands": [],
+    "suggestedTitle": "The Advice That Changed Everything",
+    "topicTags": ["career", "mentorship"],
+    "reasoning": "The tease of the outcome makes the hook, the earlier setup is the body, and the resolution lands as payoff — assembled, this plays as one complete story."
   }
 ]`;
 }
@@ -229,9 +247,31 @@ function parseEditorialResponse(text: string): EditorialAnalysisOutput[] {
           replayability: item.scores?.replayability,
         });
 
+        // Validate assembled-narrative segments: 2-4 beats, each well-formed,
+        // total 10-90s. Invalid segment sets degrade to the contiguous range.
+        let segments: Array<{ start: number; end: number; role?: string }> | undefined = undefined;
+        if (Array.isArray(item.segments) && item.segments.length >= 2 && item.segments.length <= 4) {
+          const wellFormed = item.segments.every(
+            (s) => typeof s?.start === "number" && typeof s?.end === "number" && s.end > s.start
+          );
+          const total = wellFormed
+            ? item.segments.reduce((sum, s) => sum + (s.end - s.start), 0)
+            : 0;
+          if (wellFormed && total >= 10 && total <= 90) {
+            segments = item.segments.map((s) => ({
+              start: s.start,
+              end: s.end,
+              role: typeof s.role === "string" ? s.role : undefined,
+            }));
+          } else {
+            console.warn("[EditorialAnalyzer] Dropping malformed segments — using contiguous range");
+          }
+        }
+
         return {
-          clipStart: item.clipStart,
-          clipEnd: item.clipEnd,
+          clipStart: segments ? Math.min(...segments.map((s) => s.start)) : item.clipStart,
+          clipEnd: segments ? Math.max(...segments.map((s) => s.end)) : item.clipEnd,
+          segments,
           scores: validatedScores,
           compositeScore: item.compositeScore ?? calculateCompositeScore(validatedScores),
           surfacesInRange: Array.isArray(item.surfacesInRange) ? item.surfacesInRange : [],

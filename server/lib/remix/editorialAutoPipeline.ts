@@ -324,72 +324,16 @@ export async function runEditorialAutoPipeline(
         const outputPath = path.join(renderOutputDir, outputFilename);
         const thumbPath = outputPath.replace(".mp4", "_thumb.jpg");
 
-        // Burned-in captions from the transcript (both render branches)
-        const captionFilter = buildEditorialCaptionFilter(
-          transcript.segments as any[],
-          clip.clipStart,
-          clip.duration,
+        // Assembled multi-beat narrative or single range — both go through
+        // the shared quality path (face tracking + transcript captions).
+        await renderEditorialClipOutput(clip, outputPath, {
+          videoLocalPath,
           platformConfig,
-        );
-
-        if (needsReframe) {
-          // ── Smart Reframe: face-tracking punch-in zoom ──────────
-          // Detect faces → compute smooth crop trajectory → crop+scale (no black bars)
-          console.log(`[EditorialAuto]   Face tracking clip ${clip.id} (${clip.duration.toFixed(1)}s)...`);
-
-          const faceFrames = await Promise.race([
-            // Sample every 0.5s to catch scene cuts quickly (was 1.0s).
-            // Soft deadline 90s → returns partial samples if hit; hard timeout 150s as safety net.
-            detectFacesInClip(videoLocalPath, clip.clipStart, clip.duration, 0.5, 90000),
-            new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error("Face detection timeout")), 150000)
-            ),
-          ]).catch(() => {
-            console.warn(`[EditorialAuto]   Face detection timed out — using center crop`);
-            return [] as Awaited<ReturnType<typeof detectFacesInClip>>;
-          });
-
-          const trajectory = computeCropTrajectory(
-            faceFrames,
-            srcSize.width,
-            srcSize.height,
-            platformConfig.targetWidth,
-            platformConfig.targetHeight,
-            {
-              speakerSegments: transcript.segments as any,
-              clipStartTime: clip.clipStart,
-            }
-          );
-
-          const cropFilter = buildCropFilterExpr(trajectory);
-          const scaleFilter = `scale=${platformConfig.targetWidth}:${platformConfig.targetHeight}`;
-          const vf = `${cropFilter},${scaleFilter}`;
-
-          console.log(`[EditorialAuto]   Rendering ${clip.duration.toFixed(1)}s with smart reframe + speaker tracking (crop ${trajectory.cropW}x${trajectory.cropH}, ${faceFrames.length} face samples)`);
-
-          await runFFmpegRender({
-            videoPath: videoLocalPath,
-            startTime: clip.clipStart,
-            duration: clip.duration,
-            vf,
-            fps: platformConfig.targetFps,
-            outputPath,
-            captionFilter,
-          });
-        } else {
-          // ── Same aspect ratio or portrait source — simple scale ──
-          const vf = `scale=${platformConfig.targetWidth}:${platformConfig.targetHeight}:force_original_aspect_ratio=decrease,pad=${platformConfig.targetWidth}:${platformConfig.targetHeight}:(ow-iw)/2:(oh-ih)/2:black`;
-
-          await runFFmpegRender({
-            videoPath: videoLocalPath,
-            startTime: clip.clipStart,
-            duration: clip.duration,
-            vf,
-            fps: platformConfig.targetFps,
-            outputPath,
-            captionFilter,
-          });
-        }
+          srcSize,
+          needsReframe,
+          speakerSegments: transcript.segments as any[],
+          logTag: "EditorialAuto",
+        });
 
         if (!fs.existsSync(outputPath)) {
           throw new Error("FFmpeg produced no output file");
@@ -577,57 +521,14 @@ async function renderClipsOnly(
         const outputPath = path.join(renderOutputDir, outputFilename);
         const thumbPath = outputPath.replace(".mp4", "_thumb.jpg");
 
-        // Burned-in captions from the transcript (both render branches)
-        const captionFilter = buildEditorialCaptionFilter(
-          speakerSegments,
-          clip.clipStart,
-          clip.duration,
+        await renderEditorialClipOutput(clip, outputPath, {
+          videoLocalPath,
           platformConfig,
-        );
-
-        if (needsReframe) {
-          console.log(`[EditorialAuto:Resume]   Face tracking clip ${clip.id} (${clip.duration.toFixed(1)}s)...`);
-          const faceFrames = await Promise.race([
-            detectFacesInClip(videoLocalPath, clip.clipStart, clip.duration, 0.5, 90000),
-            new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error("Face detection timeout")), 150000)
-            ),
-          ]).catch(() => {
-            console.warn(`[EditorialAuto:Resume]   Face detection timed out — using center crop`);
-            return [] as Awaited<ReturnType<typeof detectFacesInClip>>;
-          });
-
-          const trajectory = computeCropTrajectory(
-            faceFrames,
-            srcSize.width,
-            srcSize.height,
-            platformConfig.targetWidth,
-            platformConfig.targetHeight,
-            { speakerSegments, clipStartTime: clip.clipStart }
-          );
-
-          const vf = `${buildCropFilterExpr(trajectory)},scale=${platformConfig.targetWidth}:${platformConfig.targetHeight}`;
-          await runFFmpegRender({
-            videoPath: videoLocalPath,
-            startTime: clip.clipStart,
-            duration: clip.duration,
-            vf,
-            fps: platformConfig.targetFps,
-            outputPath,
-            captionFilter,
-          });
-        } else {
-          const vf = `scale=${platformConfig.targetWidth}:${platformConfig.targetHeight}:force_original_aspect_ratio=decrease,pad=${platformConfig.targetWidth}:${platformConfig.targetHeight}:(ow-iw)/2:(oh-ih)/2:black`;
-          await runFFmpegRender({
-            videoPath: videoLocalPath,
-            startTime: clip.clipStart,
-            duration: clip.duration,
-            vf,
-            fps: platformConfig.targetFps,
-            outputPath,
-            captionFilter,
-          });
-        }
+          srcSize,
+          needsReframe,
+          speakerSegments,
+          logTag: "EditorialAuto:Resume",
+        });
 
         if (!fs.existsSync(outputPath)) throw new Error("FFmpeg produced no output file");
 
@@ -792,6 +693,149 @@ async function resolveSourceVideo(
   return { localPath: filePath, tempScopeDir: null };
 }
 
+// ── Assembled-narrative rendering ─────────────────────────────────
+//
+// A clip may carry `segments` — 2-4 non-contiguous beats in NARRATIVE order
+// (hook → body → payoff) chosen by the editorial analyzer. Each beat renders
+// through the full quality path (face-tracked reframe + transcript captions
+// with beat-local timing), then the parts are losslessly concatenated. This
+// is what makes clips assembled stories instead of time-range splices.
+
+interface EditorialRenderCtx {
+  videoLocalPath: string;
+  platformConfig: { targetWidth: number; targetHeight: number; targetFps: number; aspectRatio: string };
+  srcSize: { width: number; height: number };
+  needsReframe: boolean;
+  speakerSegments: any[] | undefined;
+  brandOverlays?: BrandOverlay[];
+  logTag: string;
+}
+
+async function renderEditorialRange(
+  rangeStart: number,
+  rangeEnd: number,
+  outputPath: string,
+  ctx: EditorialRenderCtx,
+): Promise<void> {
+  const duration = rangeEnd - rangeStart;
+  const captionFilter = buildEditorialCaptionFilter(
+    ctx.speakerSegments,
+    rangeStart,
+    duration,
+    ctx.platformConfig as any,
+  );
+
+  if (ctx.needsReframe) {
+    console.log(`[${ctx.logTag}]   Face tracking ${rangeStart.toFixed(1)}–${rangeEnd.toFixed(1)}s...`);
+    const faceFrames = await Promise.race([
+      detectFacesInClip(ctx.videoLocalPath, rangeStart, duration, 0.5, 90000),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("Face detection timeout")), 150000)
+      ),
+    ]).catch(() => {
+      console.warn(`[${ctx.logTag}]   Face detection timed out — using center crop`);
+      return [] as Awaited<ReturnType<typeof detectFacesInClip>>;
+    });
+
+    const trajectory = computeCropTrajectory(
+      faceFrames,
+      ctx.srcSize.width,
+      ctx.srcSize.height,
+      ctx.platformConfig.targetWidth,
+      ctx.platformConfig.targetHeight,
+      { speakerSegments: ctx.speakerSegments as any, clipStartTime: rangeStart }
+    );
+
+    const vf = `${buildCropFilterExpr(trajectory)},scale=${ctx.platformConfig.targetWidth}:${ctx.platformConfig.targetHeight}`;
+    await runFFmpegRender({
+      videoPath: ctx.videoLocalPath,
+      startTime: rangeStart,
+      duration,
+      vf,
+      fps: ctx.platformConfig.targetFps,
+      outputPath,
+      srcWidth: ctx.srcSize.width,
+      srcHeight: ctx.srcSize.height,
+      brandOverlays: ctx.brandOverlays,
+      captionFilter,
+    });
+  } else {
+    const vf = `scale=${ctx.platformConfig.targetWidth}:${ctx.platformConfig.targetHeight}:force_original_aspect_ratio=decrease,pad=${ctx.platformConfig.targetWidth}:${ctx.platformConfig.targetHeight}:(ow-iw)/2:(oh-ih)/2:black`;
+    await runFFmpegRender({
+      videoPath: ctx.videoLocalPath,
+      startTime: rangeStart,
+      duration,
+      vf,
+      fps: ctx.platformConfig.targetFps,
+      outputPath,
+      srcWidth: ctx.srcSize.width,
+      srcHeight: ctx.srcSize.height,
+      brandOverlays: ctx.brandOverlays,
+      captionFilter,
+    });
+  }
+}
+
+/** Lossless concat of same-codec parts (all rendered with identical settings). */
+async function concatMp4Parts(partPaths: string[], outputPath: string): Promise<void> {
+  const listPath = `${outputPath}.concat.txt`;
+  fs.writeFileSync(listPath, partPaths.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join("\n"));
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const proc = spawn("ffmpeg", [
+        "-y", "-hide_banner", "-loglevel", "error",
+        "-f", "concat", "-safe", "0", "-i", listPath,
+        "-c", "copy", outputPath,
+      ]);
+      let stderr = "";
+      proc.stderr?.on("data", (d) => { stderr += String(d); });
+      const killer = setTimeout(() => proc.kill("SIGKILL"), 120000);
+      proc.on("close", (code) => {
+        clearTimeout(killer);
+        if (code === 0) resolve();
+        else reject(new Error(`concat failed (${code}): ${stderr.slice(0, 300)}`));
+      });
+      proc.on("error", reject);
+    });
+  } finally {
+    try { fs.unlinkSync(listPath); } catch { /* ignore */ }
+  }
+}
+
+function validClipSegments(clip: any): Array<{ start: number; end: number; role?: string }> | null {
+  const segs = clip?.segments;
+  if (!Array.isArray(segs) || segs.length < 2) return null;
+  const ok = segs.every((s: any) => typeof s?.start === "number" && typeof s?.end === "number" && s.end > s.start);
+  return ok ? segs : null;
+}
+
+/** Render a clip — assembled multi-beat when it carries segments, single range otherwise. */
+export async function renderEditorialClipOutput(clip: any, outputPath: string, ctx: EditorialRenderCtx): Promise<void> {
+  const segs = validClipSegments(clip);
+
+  // Brand-overlay renders stay contiguous until overlay timing is remapped
+  // per beat — correctness over assembly for paid placements.
+  if (!segs || (ctx.brandOverlays && ctx.brandOverlays.length > 0)) {
+    const end = segs ? clip.clipEnd : clip.clipStart + clip.duration;
+    await renderEditorialRange(clip.clipStart, end, outputPath, ctx);
+    return;
+  }
+
+  console.log(`[${ctx.logTag}]   Assembling ${segs.length}-beat narrative (${segs.map((s) => s.role || "beat").join(" → ")})`);
+  const parts: string[] = [];
+  try {
+    for (let i = 0; i < segs.length; i++) {
+      const partPath = outputPath.replace(/\.mp4$/, `_part${i}.mp4`);
+      await renderEditorialRange(segs[i].start, segs[i].end, partPath, ctx);
+      if (!fs.existsSync(partPath)) throw new Error(`Beat ${i + 1}/${segs.length} produced no output`);
+      parts.push(partPath);
+    }
+    await concatMp4Parts(parts, outputPath);
+  } finally {
+    for (const p of parts) { try { fs.unlinkSync(p); } catch { /* ignore */ } }
+  }
+}
+
 // ── Single Clip Render (for search results / manual adds) ─────────
 
 /**
@@ -847,62 +891,15 @@ export async function renderSingleEditorialClip(videoId: number, clipId: number)
     // so fetch it before the branch (previously only the reframe branch had it).
     const transcriptRecord = await storage.getVideoTranscript(videoId);
     const speakerSegments = transcriptRecord?.segments as any[] | undefined;
-    const captionFilter = buildEditorialCaptionFilter(
-      speakerSegments,
-      clip.clipStart,
-      clip.duration,
+    await renderEditorialClipOutput(clip, outputPath, {
+      videoLocalPath,
       platformConfig,
-    );
-
-    if (needsReframe) {
-      const faceFrames = await Promise.race([
-        // Soft 90s deadline returns partial samples; hard 150s timeout is a safety net
-        detectFacesInClip(videoLocalPath, clip.clipStart, clip.duration, 0.5, 90000),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("Face detection timeout")), 150000)
-        ),
-      ]).catch(() => []);
-
-      const trajectory = computeCropTrajectory(
-        faceFrames,
-        srcSize.width,
-        srcSize.height,
-        platformConfig.targetWidth,
-        platformConfig.targetHeight,
-        {
-          speakerSegments,
-          clipStartTime: clip.clipStart,
-        }
-      );
-
-      const vf = `${buildCropFilterExpr(trajectory)},scale=${platformConfig.targetWidth}:${platformConfig.targetHeight}`;
-      await runFFmpegRender({
-        videoPath: videoLocalPath,
-        startTime: clip.clipStart,
-        duration: clip.duration,
-        vf,
-        fps: platformConfig.targetFps,
-        outputPath,
-        srcWidth: srcSize.width,
-        srcHeight: srcSize.height,
-        brandOverlays,
-        captionFilter,
-      });
-    } else {
-      const vf = `scale=${platformConfig.targetWidth}:${platformConfig.targetHeight}:force_original_aspect_ratio=decrease,pad=${platformConfig.targetWidth}:${platformConfig.targetHeight}:(ow-iw)/2:(oh-ih)/2:black`;
-      await runFFmpegRender({
-        videoPath: videoLocalPath,
-        startTime: clip.clipStart,
-        duration: clip.duration,
-        vf,
-        fps: platformConfig.targetFps,
-        outputPath,
-        srcWidth: srcSize.width,
-        srcHeight: srcSize.height,
-        brandOverlays,
-        captionFilter,
-      });
-    }
+      srcSize,
+      needsReframe,
+      speakerSegments,
+      brandOverlays,
+      logTag: "EditorialAuto:Single",
+    });
 
     if (!fs.existsSync(outputPath)) throw new Error("FFmpeg produced no output");
 

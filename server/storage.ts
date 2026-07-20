@@ -1769,6 +1769,7 @@ export class DatabaseStorage implements IStorage {
       surfaces: clip.surfaces ?? null,
       brandMatches: clip.brandMatches ?? null,
       editPoints: clip.editPoints ?? null,
+      segments: clip.segments ?? null,
       suggestedTitle: clip.suggestedTitle ?? null,
       topicTags: clip.topicTags ?? null,
       reasoning: clip.reasoning ?? null,

@@ -43,6 +43,8 @@ export interface BrandMatchCompact {
 export interface RankedClip {
   clipStart: number;                    // Refined start (after edit point refinement)
   clipEnd: number;                      // Refined end
+  /** Assembled-narrative beats in narrative order; undefined for contiguous clips */
+  segments?: Array<{ start: number; end: number; role?: string }>;
   duration: number;
   editorialScore: number;              // From Claude Dense rubric (0-1)
   surfaceScore: number;                // From surface detection overlap (0-1)
@@ -152,12 +154,16 @@ export function rankClips(
         }))
       );
 
-      // 5. Refine edit points using transcript
-      const editPoints = refineEditPoints(
-        { start: moment.clipStart, end: moment.clipEnd },
-        transcript,
-        EDIT_POINT_RULES
-      );
+      // 5. Refine edit points using transcript. Assembled clips skip
+      // refinement — their envelope isn't a playable range, and the
+      // analyzer already cuts each beat on sentence boundaries.
+      const editPoints = moment.segments
+        ? { start: moment.clipStart, end: moment.clipEnd, adjustments: [] as string[] }
+        : refineEditPoints(
+            { start: moment.clipStart, end: moment.clipEnd },
+            transcript,
+            EDIT_POINT_RULES
+          );
 
       // 6. Calculate final score
       const finalScore = Math.min(1, adjustedScore + brandBonus);
@@ -166,7 +172,11 @@ export function rankClips(
       return {
         clipStart: editPoints.start,
         clipEnd: editPoints.end,
-        duration: editPoints.end - editPoints.start,
+        segments: moment.segments,
+        // Assembled clips play sum-of-beats, not envelope
+        duration: moment.segments
+          ? moment.segments.reduce((sum, s) => sum + (s.end - s.start), 0)
+          : editPoints.end - editPoints.start,
         editorialScore: moment.compositeScore,
         surfaceScore,
         brandMatchScore: brandBonus * 10, // Normalize to 0-1 range for display

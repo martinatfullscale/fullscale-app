@@ -54,6 +54,10 @@ export interface ScoredClipMoment {
 export interface EditorialAnalysisOutput {
   clipStart: number;
   clipEnd: number;
+  /** Assembled-narrative beats (hook→body→payoff) in NARRATIVE order when
+   *  the story spans non-contiguous transcript ranges; absent for
+   *  contiguous clips. Times are source-video seconds. */
+  segments?: Array<{ start: number; end: number; role?: string }>;
   scores: RubricScores;
   compositeScore: number;
   surfacesInRange: number[];
