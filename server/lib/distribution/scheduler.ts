@@ -12,7 +12,7 @@
  */
 
 import { storage } from "../../storage";
-import { publishToPlaftorm, type PublishInput } from "./platformPublisher";
+import { publishToPlaftorm, resolvePublishAccessToken, type PublishInput } from "./platformPublisher";
 import { formatCaption } from "./captionFormatter";
 import * as path from "path";
 import * as fs from "fs";
@@ -169,8 +169,16 @@ export async function processScheduledPosts(): Promise<number> {
 
         // Get the distribution profile
         const profile = await storage.getDistributionProfile(schedule.profileId);
-        if (!profile || !profile.accessToken) {
-          await storage.updateScheduleStatus(schedule.id, "failed", undefined, "Distribution profile not found or no access token");
+        if (!profile) {
+          await storage.updateScheduleStatus(schedule.id, "failed", undefined, "Distribution profile not found");
+          continue;
+        }
+
+        // Resolve the token at publish time — the one stored on the profile
+        // is typically expired by now (YouTube tokens live ~1 hour).
+        const accessToken = await resolvePublishAccessToken(profile);
+        if (!accessToken) {
+          await storage.updateScheduleStatus(schedule.id, "failed", undefined, "No usable access token for profile");
           continue;
         }
 
@@ -207,7 +215,7 @@ export async function processScheduledPosts(): Promise<number> {
           clipPath,
           caption,
           hashtags,
-          accessToken: profile.accessToken,
+          accessToken,
           accountId: profile.accountId || "",
           metadata: profile.metadata as Record<string, any> || {},
         });

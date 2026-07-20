@@ -258,6 +258,10 @@ async function getGoogleUserInfo(accessToken: string): Promise<{ email: string; 
 const YOUTUBE_SCOPES = [
   "https://www.googleapis.com/auth/youtube.readonly",
   "https://www.googleapis.com/auth/yt-analytics.readonly",
+  // Publishing (distribution scheduler). Tokens granted before this scope
+  // was added can read but not upload — the creator must reconnect YouTube
+  // once to re-consent before scheduled publishing works for them.
+  "https://www.googleapis.com/auth/youtube.upload",
 ];
 
 function getYoutubeAuthUrl(redirectUri: string): string {
@@ -11882,9 +11886,9 @@ export async function registerRoutes(
   // Distribution Profiles (connected social accounts)
 
   // GET /api/distribution/profiles — List user's connected platforms
-  app.get("/api/distribution/profiles", isAuthenticated, async (req: any, res) => {
+  app.get("/api/distribution/profiles", isFlexibleAuthenticated, async (req: any, res) => {
     try {
-      const userId = req.user?.id || 1;
+      const userId = stableUserIntId(req.authUserId ?? req.user?.id);
       const profiles = await storage.getDistributionProfiles(userId);
       // Strip sensitive tokens from response
       const safe = profiles.map(p => ({
@@ -11899,9 +11903,9 @@ export async function registerRoutes(
   });
 
   // POST /api/distribution/profiles — Connect a platform
-  app.post("/api/distribution/profiles", isAuthenticated, async (req: any, res) => {
+  app.post("/api/distribution/profiles", isFlexibleAuthenticated, async (req: any, res) => {
     try {
-      const userId = req.user?.id || 1;
+      const userId = stableUserIntId(req.authUserId ?? req.user?.id);
       const { platform, accountName, accountId, accessToken, refreshToken, tokenExpiresAt, metadata } = req.body;
 
       if (!platform) return res.status(400).json({ error: "platform is required" });
@@ -11924,10 +11928,55 @@ export async function registerRoutes(
     }
   });
 
+  // POST /api/distribution/profiles/from-youtube — Provision a YouTube
+  // publishing profile from the caller's existing YouTube connection.
+  // The stored token is only a bootstrap: publishers re-resolve a fresh
+  // token from the connection at publish time (YouTube tokens expire
+  // hourly, so anything stored at connect time is stale by then).
+  // Defaults to private uploads until explicitly switched.
+  app.post("/api/distribution/profiles/from-youtube", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const connection = await storage.getYoutubeConnection(req.authEmail);
+      if (!connection) {
+        return res.status(404).json({ error: "No YouTube connection found — connect YouTube in Settings first" });
+      }
+
+      const allowedPrivacy = ["public", "unlisted", "private"];
+      const privacyStatus = allowedPrivacy.includes(req.body?.privacyStatus) ? req.body.privacyStatus : "private";
+      const platform = req.body?.platform === "youtube" ? "youtube" : "youtube_shorts";
+      const userId = stableUserIntId(req.authUserId ?? req.user?.id);
+      const metadata = { youtubeUserId: connection.userId, privacyStatus };
+
+      const profileData = {
+        accountName: connection.channelTitle || null,
+        accountId: connection.channelId || null,
+        accessToken: connection.accessToken,
+        refreshToken: connection.refreshToken || null,
+        tokenExpiresAt: connection.expiresAt || null,
+        isActive: true,
+        metadata,
+      };
+
+      const existing = (await storage.getDistributionProfiles(userId)).find(p => p.platform === platform);
+      const profile = existing
+        ? await storage.updateDistributionProfile(existing.id, profileData)
+        : await storage.createDistributionProfile({ userId, platform, ...profileData });
+
+      res.json({ ...profile, accessToken: "••••••", refreshToken: undefined });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to provision YouTube profile" });
+    }
+  });
+
   // PUT /api/distribution/profiles/:id — Update a profile
-  app.put("/api/distribution/profiles/:id", isAuthenticated, async (req: any, res) => {
+  app.put("/api/distribution/profiles/:id", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const id = parseInt(req.params.id);
+      const existing = await storage.getDistributionProfile(id);
+      if (!existing) return res.status(404).json({ error: "Profile not found" });
+      if (existing.userId !== stableUserIntId(req.authUserId ?? req.user?.id)) {
+        return res.status(403).json({ error: "Not your profile" });
+      }
       const updated = await storage.updateDistributionProfile(id, req.body);
       if (!updated) return res.status(404).json({ error: "Profile not found" });
       res.json({ ...updated, accessToken: "••••••", refreshToken: undefined });
@@ -11937,9 +11986,14 @@ export async function registerRoutes(
   });
 
   // DELETE /api/distribution/profiles/:id — Disconnect a platform
-  app.delete("/api/distribution/profiles/:id", isAuthenticated, async (req: any, res) => {
+  app.delete("/api/distribution/profiles/:id", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const id = parseInt(req.params.id);
+      const existing = await storage.getDistributionProfile(id);
+      if (!existing) return res.status(404).json({ error: "Profile not found" });
+      if (existing.userId !== stableUserIntId(req.authUserId ?? req.user?.id)) {
+        return res.status(403).json({ error: "Not your profile" });
+      }
       await storage.deleteDistributionProfile(id);
       res.json({ success: true });
     } catch (err: any) {
@@ -11950,7 +12004,7 @@ export async function registerRoutes(
   // Publishing
 
   // POST /api/distribution/publish — Publish a clip to a platform
-  app.post("/api/distribution/publish", isAuthenticated, async (req: any, res) => {
+  app.post("/api/distribution/publish", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const { clipId, profileId, caption, hashtags } = req.body;
       if (!clipId || !profileId) {
@@ -11958,8 +12012,13 @@ export async function registerRoutes(
       }
 
       const profile = await storage.getDistributionProfile(profileId);
-      if (!profile || !profile.accessToken) {
-        return res.status(404).json({ error: "Distribution profile not found or no access token" });
+      if (!profile) {
+        return res.status(404).json({ error: "Distribution profile not found" });
+      }
+      const { resolvePublishAccessToken } = await import("./lib/distribution/platformPublisher");
+      const publishToken = await resolvePublishAccessToken(profile);
+      if (!publishToken) {
+        return res.status(404).json({ error: "No usable access token for this profile" });
       }
 
       // Find clip
@@ -12000,7 +12059,7 @@ export async function registerRoutes(
         clipPath,
         caption: finalCaption,
         hashtags: finalHashtags,
-        accessToken: profile.accessToken,
+        accessToken: publishToken,
         accountId: profile.accountId || "",
         metadata: profile.metadata as Record<string, any> || {},
       });
@@ -12041,9 +12100,9 @@ export async function registerRoutes(
   // Scheduling
 
   // POST /api/distribution/schedule — Schedule a clip for future publishing
-  app.post("/api/distribution/schedule", isAuthenticated, async (req: any, res) => {
+  app.post("/api/distribution/schedule", isFlexibleAuthenticated, async (req: any, res) => {
     try {
-      const userId = req.user?.id || 1;
+      const userId = stableUserIntId(req.authUserId ?? req.user?.id);
       const { clipId, profileId, platform, scheduledFor, caption, hashtags } = req.body;
 
       if (!clipId || !profileId || !scheduledFor) {
@@ -12068,9 +12127,9 @@ export async function registerRoutes(
   });
 
   // POST /api/distribution/schedule/batch — Schedule across multiple platforms
-  app.post("/api/distribution/schedule/batch", isAuthenticated, async (req: any, res) => {
+  app.post("/api/distribution/schedule/batch", isFlexibleAuthenticated, async (req: any, res) => {
     try {
-      const userId = req.user?.id || 1;
+      const userId = stableUserIntId(req.authUserId ?? req.user?.id);
       const { clipId, platformProfiles, baseTime, staggerMinutes, caption, hashtags } = req.body;
 
       if (!clipId || !platformProfiles || !baseTime) {
@@ -12095,9 +12154,9 @@ export async function registerRoutes(
   });
 
   // GET /api/distribution/schedules — List user's scheduled posts
-  app.get("/api/distribution/schedules", isAuthenticated, async (req: any, res) => {
+  app.get("/api/distribution/schedules", isFlexibleAuthenticated, async (req: any, res) => {
     try {
-      const userId = req.user?.id || 1;
+      const userId = stableUserIntId(req.authUserId ?? req.user?.id);
       const schedules = await storage.getSchedulesByUser(userId);
       res.json(schedules);
     } catch (err: any) {
@@ -12106,7 +12165,7 @@ export async function registerRoutes(
   });
 
   // DELETE /api/distribution/schedules/:id — Cancel a scheduled post
-  app.delete("/api/distribution/schedules/:id", isAuthenticated, async (req: any, res) => {
+  app.delete("/api/distribution/schedules/:id", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const id = parseInt(req.params.id);
       await storage.cancelSchedule(id);
@@ -12119,7 +12178,7 @@ export async function registerRoutes(
   // Caption Formatting
 
   // POST /api/distribution/format-caption — Generate platform-specific caption
-  app.post("/api/distribution/format-caption", isAuthenticated, async (req: any, res) => {
+  app.post("/api/distribution/format-caption", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const { platform, clipId, brandNames, customCaption } = req.body;
       if (!platform) return res.status(400).json({ error: "platform is required" });
@@ -12384,7 +12443,7 @@ export async function registerRoutes(
   });
 
   // GET /api/distribution/analytics/video/:videoId — Get aggregate analytics for a video
-  app.get("/api/distribution/analytics/video/:videoId", isAuthenticated, async (req: any, res) => {
+  app.get("/api/distribution/analytics/video/:videoId", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const videoId = parseInt(req.params.videoId);
       const { computeAggregateMetrics } = await import("./lib/distribution/analyticsCollector");
@@ -12396,7 +12455,7 @@ export async function registerRoutes(
   });
 
   // POST /api/distribution/analytics/video/:videoId/refresh — Refresh analytics from platforms
-  app.post("/api/distribution/analytics/video/:videoId/refresh", isAuthenticated, async (req: any, res) => {
+  app.post("/api/distribution/analytics/video/:videoId/refresh", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const videoId = parseInt(req.params.videoId);
       const { collectVideoAnalytics, computeAggregateMetrics } = await import("./lib/distribution/analyticsCollector");
@@ -12410,7 +12469,7 @@ export async function registerRoutes(
   });
 
   // GET /api/distribution/analytics/clip/:clipId — Get analytics for a specific clip
-  app.get("/api/distribution/analytics/clip/:clipId", isAuthenticated, async (req: any, res) => {
+  app.get("/api/distribution/analytics/clip/:clipId", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const clipId = parseInt(req.params.clipId);
       const analytics = await storage.getAnalyticsByClip(clipId);
@@ -12423,7 +12482,7 @@ export async function registerRoutes(
   // Published Posts
 
   // GET /api/distribution/posts/video/:videoId — List published posts for a video
-  app.get("/api/distribution/posts/video/:videoId", isAuthenticated, async (req: any, res) => {
+  app.get("/api/distribution/posts/video/:videoId", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const videoId = parseInt(req.params.videoId);
       const posts = await storage.getPublishedPostsByVideo(videoId);
@@ -12434,7 +12493,7 @@ export async function registerRoutes(
   });
 
   // POST /api/distribution/suggest-time — Get optimal posting time for a platform
-  app.post("/api/distribution/suggest-time", isAuthenticated, async (req: any, res) => {
+  app.post("/api/distribution/suggest-time", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const { platform, timezone } = req.body;
       if (!platform) return res.status(400).json({ error: "platform is required" });

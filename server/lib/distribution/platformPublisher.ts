@@ -72,7 +72,11 @@ class TikTokAdapter implements PlatformAdapter {
           },
           post_info: {
             title: input.caption.slice(0, 150),
-            privacy_level: "PUBLIC_TO_EVERYONE",
+            // Overridable per profile (metadata.privacyLevel); SELF_ONLY
+            // posts are visible only to the creator — the safe test mode.
+            privacy_level: ["PUBLIC_TO_EVERYONE", "MUTUAL_FOLLOW_FRIENDS", "FOLLOWER_OF_CREATOR", "SELF_ONLY"].includes(input.metadata?.privacyLevel)
+              ? input.metadata!.privacyLevel
+              : "PUBLIC_TO_EVERYONE",
             disable_duet: false,
             disable_stitch: false,
             disable_comment: false,
@@ -175,7 +179,11 @@ class YouTubeAdapter implements PlatformAdapter {
               categoryId: "22", // People & Blogs
             },
             status: {
-              privacyStatus: "public",
+              // Overridable per profile (metadata.privacyStatus) so tests
+              // and cautious creators can land uploads as private/unlisted.
+              privacyStatus: ["public", "unlisted", "private"].includes(input.metadata?.privacyStatus)
+                ? input.metadata!.privacyStatus
+                : "public",
               selfDeclaredMadeForKids: false,
               madeForKids: false,
             },
@@ -586,6 +594,29 @@ export function getSupportedPlatforms(): string[] {
 }
 
 /**
+ * Resolve the access token to publish with. YouTube access tokens expire
+ * after ~1 hour, so a token stored on the profile at connect time is stale
+ * by the time a scheduled post fires — prefer a freshly refreshed token
+ * from the creator's YouTube connection (pointed to by
+ * profile.metadata.youtubeUserId) and fall back to the stored token.
+ */
+export async function resolvePublishAccessToken(profile: {
+  platform: string;
+  accessToken: string | null;
+  metadata?: Record<string, any> | null;
+}): Promise<string | null> {
+  if (profile.platform.startsWith("youtube")) {
+    const ytUserId = profile.metadata?.youtubeUserId;
+    if (ytUserId) {
+      const { getFreshYoutubeTokenForUser } = await import("../youtubeAuth");
+      const fresh = await getFreshYoutubeTokenForUser(String(ytUserId));
+      if (fresh) return fresh;
+    }
+  }
+  return profile.accessToken || null;
+}
+
+/**
  * Publish a clip to a platform using the appropriate adapter.
  */
 export async function publishToPlaftorm(
@@ -595,6 +626,24 @@ export async function publishToPlaftorm(
   const adapter = getAdapter(platform);
   if (!adapter) {
     return { success: false, platformPostId: null, postUrl: null, error: `Unsupported platform: ${platform}` };
+  }
+
+  // PUBLISH_DRY_RUN=true exercises the whole pipeline — schedule pickup,
+  // clip resolution, caption formatting, status transitions — but stops
+  // here and logs what would have been sent instead of calling the
+  // platform API.
+  if (process.env.PUBLISH_DRY_RUN === "true") {
+    const clipBytes = fs.existsSync(input.clipPath) ? fs.statSync(input.clipPath).size : -1;
+    console.log(`[Publisher] DRY RUN — would publish to ${platform}: ${JSON.stringify({
+      clipPath: input.clipPath,
+      clipBytes,
+      caption: input.caption.slice(0, 120),
+      hashtagCount: input.hashtags.length,
+      accountId: input.accountId,
+      tokenSuffix: input.accessToken ? input.accessToken.slice(-4) : null,
+      metadata: input.metadata || {},
+    })}`);
+    return { success: true, platformPostId: `dryrun-${Date.now()}`, postUrl: null };
   }
 
   console.log(`[Publisher] Publishing to ${platform}...`);
