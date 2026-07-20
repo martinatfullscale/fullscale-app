@@ -331,6 +331,26 @@ export type InsertBrandProduct = z.infer<typeof insertBrandProductSchema>;
 // Constraint: only ONE active (pending or approved) assignment per surface_id. Enforced at
 // app layer in storage.createBrandPlacement(). A second brand requesting the same surface
 // gets a 409 Conflict until the first is rejected/withdrawn.
+// ── Notifications ─────────────────────────────────────────────────
+// In-app notification rows. userId stores the recipient's identity key AS
+// KNOWN AT EMIT TIME (users.id UUID or legacy email — the dual-ID reality);
+// reads expand aliases the same way the placement inbox does.
+export const notifications = pgTable("notifications", {
+  id: serial("id").primaryKey(),
+  userId: varchar("user_id").notNull(),
+  type: varchar("type", { length: 40 }).notNull(), // placement_request | placement_approved | placement_rejected | placement_withdrawn | editorial_ready
+  title: varchar("title", { length: 200 }).notNull(),
+  body: text("body"),
+  linkPath: varchar("link_path", { length: 300 }),  // in-app route the notification opens
+  metadata: jsonb("metadata").$type<Record<string, any>>(),
+  readAt: timestamp("read_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertNotificationSchema = createInsertSchema(notifications).omit({ id: true, createdAt: true });
+export type Notification = typeof notifications.$inferSelect;
+export type InsertNotification = z.infer<typeof insertNotificationSchema>;
+
 export const brandPlacementAssignments = pgTable("brand_placement_assignments", {
   id: serial("id").primaryKey(),
   brandUserId: varchar("brand_user_id").notNull(),       // Brand who requested placement

@@ -8312,6 +8312,15 @@ export async function registerRoutes(
           expiresAt,
           chargeStatus: "pending",
         });
+
+        storage.createNotification({
+          userId: creatorUserId,
+          type: "placement_request",
+          title: "New brand placement request",
+          body: message ? `Message from the brand: ${String(message).slice(0, 200)}` : "A brand wants to place a product in one of your clips.",
+          linkPath: "/inbox",
+          metadata: { placementId: row.id, videoId: resolvedVideoId },
+        });
         created.push(row);
         totalFeeCents += breakdown.placementFeeCents;
         totalCreatorCents += breakdown.creatorPayoutCents;
@@ -8394,6 +8403,14 @@ export async function registerRoutes(
         return res.status(400).json({ error: `Cannot withdraw a ${placement.status} placement` });
       }
       const updated = await storage.updateBrandPlacementStatus(id, "brand_withdrawn");
+      storage.createNotification({
+        userId: placement.creatorUserId,
+        type: "placement_withdrawn",
+        title: "Placement request withdrawn",
+        body: "A brand withdrew its placement request.",
+        linkPath: "/inbox",
+        metadata: { placementId: id },
+      });
       res.json({ placement: updated });
     } catch (err: any) {
       console.error("[API] /api/brand/placements/:id/withdraw error:", err.message);
@@ -8402,6 +8419,36 @@ export async function registerRoutes(
   });
 
   // GET /api/creator/placements/inbox — Creator's pending placement requests.
+  // ── Notifications ────────────────────────────────────────────────
+  app.get("/api/notifications", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const items = await storage.getNotificationsForUser(req.authUserId);
+      const unread = await storage.getUnreadNotificationCount(req.authUserId);
+      res.json({ notifications: items, unread });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to load notifications" });
+    }
+  });
+
+  app.post("/api/notifications/:id/read", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const ok = await storage.markNotificationRead(parseInt(req.params.id), req.authUserId);
+      if (!ok) return res.status(404).json({ error: "Notification not found" });
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to mark read" });
+    }
+  });
+
+  app.post("/api/notifications/read-all", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const n = await storage.markAllNotificationsRead(req.authUserId);
+      res.json({ success: true, marked: n });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to mark all read" });
+    }
+  });
+
   app.get("/api/creator/placements/inbox", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const creatorUserId = req.authUserId;
@@ -8479,6 +8526,14 @@ export async function registerRoutes(
       }
       const updated = await storage.updateBrandPlacementStatus(id, "creator_approved");
       console.log(`[BrandPlacement] Creator ${creatorUserId} APPROVED placement ${id}`);
+      storage.createNotification({
+        userId: placement.brandUserId,
+        type: "placement_approved",
+        title: "Placement approved",
+        body: "The creator approved your placement — the clip is being re-rendered with your product.",
+        linkPath: "/brand/placements",
+        metadata: { placementId: id },
+      });
 
       // Fire-and-forget re-render of the targeted clip so the brand product
       // appears in the output. If targeted at a video without a specific clip,
@@ -8521,6 +8576,14 @@ export async function registerRoutes(
       }
       const reason = typeof req.body?.reason === "string" ? req.body.reason : undefined;
       const updated = await storage.updateBrandPlacementStatus(id, "creator_rejected", { rejectionReason: reason });
+      storage.createNotification({
+        userId: placement.brandUserId,
+        type: "placement_rejected",
+        title: "Placement declined",
+        body: reason ? `Creator: ${String(reason).slice(0, 200)}` : "The creator declined this placement request.",
+        linkPath: "/brand/placements",
+        metadata: { placementId: id },
+      });
       console.log(`[BrandPlacement] Creator ${creatorUserId} REJECTED placement ${id} (reason: ${reason || "none"})`);
       res.json({ placement: updated });
     } catch (err: any) {

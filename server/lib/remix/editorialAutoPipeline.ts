@@ -443,6 +443,17 @@ export async function runEditorialAutoPipeline(
       error: notes.length > 0 ? notes.join("; ") : null,
     });
 
+    // In-app heads-up for the creator (best-effort; video.userId is the
+    // creator's identity key — the int userId param is display-only).
+    storage.createNotification({
+      userId: String(video.userId),
+      type: "editorial_ready",
+      title: "Your clips are ready",
+      body: `${renderedCount} editorial clip${renderedCount === 1 ? "" : "s"} rendered for "${(video.title || "your video").slice(0, 80)}".`,
+      linkPath: "/library",
+      metadata: { videoId, clipCount: renderedCount },
+    });
+
     const durationMs = Date.now() - start;
     console.log(
       `[EditorialAuto] ✅ Complete for video ${videoId}: ` +

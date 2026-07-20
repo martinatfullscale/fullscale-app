@@ -8,6 +8,7 @@ import {
   detectedSurfaces,
   brandProducts,
   brandPlacementAssignments,
+  notifications,
   savedPlacements,
   videoExports,
   sharedLinks,
@@ -209,6 +210,11 @@ export interface IStorage {
   getActiveRemixJobForVideo(videoId: number): Promise<RemixJob | undefined>;
   failInterruptedRemixJobs(): Promise<number>;
   failInterruptedStitchPlans(): Promise<number>;
+  createNotification(data: { userId: string; type: string; title: string; body?: string | null; linkPath?: string | null; metadata?: Record<string, any> | null }): Promise<void>;
+  getNotificationsForUser(userId: string, limit?: number): Promise<any[]>;
+  getUnreadNotificationCount(userId: string): Promise<number>;
+  markNotificationRead(id: number, userId: string): Promise<boolean>;
+  markAllNotificationsRead(userId: string): Promise<number>;
   claimSchedule(scheduleId: number): Promise<boolean>;
   cancelOrphanedLegacySchedules(): Promise<number>;
   updateRemixJobStatus(jobId: number, status: string, errorMessage?: string): Promise<RemixJob | undefined>;
@@ -1622,6 +1628,71 @@ export class DatabaseStorage implements IStorage {
       .set({ status: "failed", errorMessage: "Interrupted by server restart" })
       .where(eq(stitchPlans.status, "generating"))
       .returning({ id: stitchPlans.id });
+    return result.length;
+  }
+
+  // ── Notifications ────────────────────────────────────────────────
+
+  /** Expand a user key to its dual-ID aliases (users.id UUID + email). */
+  private async notificationAliases(userId: string): Promise<string[]> {
+    const aliases = [userId];
+    try {
+      const user = await this.getUserById(userId);
+      if (user?.email && user.email !== userId) aliases.push(user.email);
+      if (!user) {
+        const byEmail = await this.getUserByEmail(userId);
+        if (byEmail?.id && byEmail.id !== userId) aliases.push(byEmail.id);
+      }
+    } catch { /* fall back to the raw key */ }
+    return aliases;
+  }
+
+  async createNotification(data: { userId: string; type: string; title: string; body?: string | null; linkPath?: string | null; metadata?: Record<string, any> | null }): Promise<void> {
+    try {
+      await db.insert(notifications).values({
+        userId: data.userId,
+        type: data.type,
+        title: data.title,
+        body: data.body ?? null,
+        linkPath: data.linkPath ?? null,
+        metadata: data.metadata ?? null,
+      });
+    } catch (err: any) {
+      // Notifications are best-effort — never fail the emitting flow.
+      console.warn("[Storage] createNotification failed (non-fatal):", err?.message);
+    }
+  }
+
+  async getNotificationsForUser(userId: string, limit: number = 30): Promise<any[]> {
+    const aliases = await this.notificationAliases(userId);
+    return db.select().from(notifications)
+      .where(inArray(notifications.userId, aliases))
+      .orderBy(desc(notifications.createdAt))
+      .limit(limit);
+  }
+
+  async getUnreadNotificationCount(userId: string): Promise<number> {
+    const aliases = await this.notificationAliases(userId);
+    const rows = await db.select({ count: sql<number>`count(*)` }).from(notifications)
+      .where(and(inArray(notifications.userId, aliases), sql`${notifications.readAt} IS NULL`));
+    return Number(rows[0]?.count || 0);
+  }
+
+  async markNotificationRead(id: number, userId: string): Promise<boolean> {
+    const aliases = await this.notificationAliases(userId);
+    const result = await db.update(notifications)
+      .set({ readAt: new Date() })
+      .where(and(eq(notifications.id, id), inArray(notifications.userId, aliases)))
+      .returning({ id: notifications.id });
+    return result.length > 0;
+  }
+
+  async markAllNotificationsRead(userId: string): Promise<number> {
+    const aliases = await this.notificationAliases(userId);
+    const result = await db.update(notifications)
+      .set({ readAt: new Date() })
+      .where(and(inArray(notifications.userId, aliases), sql`${notifications.readAt} IS NULL`))
+      .returning({ id: notifications.id });
     return result.length;
   }
 
