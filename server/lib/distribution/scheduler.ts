@@ -136,13 +136,27 @@ export async function processScheduledPosts(): Promise<number> {
 
     console.log(`[Scheduler] Processing ${pendingSchedules.length} pending scheduled posts...`);
 
+    // A post that came due while the scheduler was down shouldn't fire hours
+    // or days late — silently publishing stale content is worse than a missed
+    // slot. Anything past the grace window is marked failed instead.
+    const misfireGraceMs =
+      (parseInt(process.env.SCHEDULER_MISFIRE_GRACE_HOURS || "24", 10) || 24) * 60 * 60 * 1000;
+
     for (const schedule of pendingSchedules) {
       try {
+        if (Date.now() - new Date(schedule.scheduledFor).getTime() > misfireGraceMs) {
+          await storage.updateScheduleStatus(
+            schedule.id,
+            "failed",
+            undefined,
+            "Missed scheduling window (scheduler offline past grace period)",
+          );
+          continue;
+        }
+
         await storage.updateScheduleStatus(schedule.id, "processing");
 
         // Get the clip
-        const clips = await storage.getClipsByVideo(0); // Need to find clip by ID
-        // Use the direct import approach like routes.ts findClipById
         const { db } = await import("../../db");
         const { generatedClips } = await import("../../../shared/schema");
         const { eq } = await import("drizzle-orm");
@@ -233,6 +247,19 @@ export async function processScheduledPosts(): Promise<number> {
 }
 
 let schedulerInterval: ReturnType<typeof setInterval> | null = null;
+let tickInFlight = false;
+
+function runTick() {
+  if (tickInFlight) return; // previous run still publishing — don't overlap
+  tickInFlight = true;
+  processScheduledPosts()
+    .catch(err => {
+      console.error("[Scheduler] Interval error:", err);
+    })
+    .finally(() => {
+      tickInFlight = false;
+    });
+}
 
 /**
  * Start the scheduler daemon (checks every 60 seconds).
@@ -244,11 +271,10 @@ export function startScheduler(intervalMs: number = 60000) {
   }
 
   console.log(`[Scheduler] Starting with ${intervalMs}ms interval`);
-  schedulerInterval = setInterval(() => {
-    processScheduledPosts().catch(err => {
-      console.error("[Scheduler] Interval error:", err);
-    });
-  }, intervalMs);
+  schedulerInterval = setInterval(runTick, intervalMs);
+  // Immediate first pass so posts that came due during a restart publish
+  // promptly (bounded by the misfire grace window) instead of waiting a tick.
+  runTick();
 }
 
 /**

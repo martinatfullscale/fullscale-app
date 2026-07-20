@@ -404,7 +404,21 @@ app.use((req, res, next) => {
       } catch (dbError) {
         log(`Database seeding warning: ${dbError}`);
       }
-      
+
+      // Publishing scheduler — fires user-scheduled posts when due (60s poll).
+      // Kill switch: SCHEDULER_ENABLED=false.
+      if (process.env.SCHEDULER_ENABLED !== "false") {
+        try {
+          const { startScheduler } = await import("./lib/distribution/scheduler");
+          startScheduler();
+          log("Publishing scheduler started");
+        } catch (schedulerError) {
+          log(`Publishing scheduler failed to start: ${schedulerError}`);
+        }
+      } else {
+        log("Publishing scheduler disabled via SCHEDULER_ENABLED=false");
+      }
+
       // DISABLED: TensorFlow scanner replaced by scanner_v2.ts which uses Sharp
       // try {
       //   log("Initializing TensorFlow scan worker...");
