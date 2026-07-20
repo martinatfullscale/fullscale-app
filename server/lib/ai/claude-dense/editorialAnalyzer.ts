@@ -38,6 +38,8 @@ export interface EditorialAnalysisInput {
   maxClips?: number;
   /** Optional search query — when provided, Claude prioritizes clips matching this topic/keyword */
   query?: string;
+  /** Ranges already covered by selected clips — retry rounds must find DIFFERENT moments */
+  excludeRanges?: Array<{ start: number; end: number }>;
 }
 
 interface ClaudeEditorialResponse {
@@ -94,7 +96,8 @@ function buildEditorialAnalysisPrompt(
   surfaces: EditorialAnalysisInput["surfaces"],
   brandCatalog: EditorialAnalysisInput["brandCatalog"],
   maxClips: number = 10,
-  query?: string
+  query?: string,
+  excludeRanges?: Array<{ start: number; end: number }>
 ): string {
   // Prepare compact transcript representation
   const compactTranscript = transcript.map((seg) => ({
@@ -164,7 +167,9 @@ SEARCH FOCUS: The user is specifically looking for clips about "${query}". PRIOR
    - The topic naturally aligns with an available brand product
    - The emotional tone matches the brand's positioning
 
-Return as JSON array sorted by composite score descending. No markdown, no code fences, just the raw JSON array:
+${excludeRanges && excludeRanges.length > 0 ? `IMPORTANT — ALREADY COVERED: these time ranges are already selected as clips. Do NOT select moments that overlap them; find DIFFERENT moments elsewhere in the transcript: ${excludeRanges.map((r) => `${r.start.toFixed(0)}s-${r.end.toFixed(0)}s`).join(", ")}.
+
+` : ""}Return as JSON array sorted by composite score descending. No markdown, no code fences, just the raw JSON array:
 [
   {
     "clipStart": 142.5,
@@ -301,7 +306,7 @@ function parseEditorialResponse(text: string): EditorialAnalysisOutput[] {
 export async function analyzeEditorial(
   input: EditorialAnalysisInput
 ): Promise<EditorialAnalysisOutput[]> {
-  const { videoId, transcript, surfaces, brandCatalog, maxClips = 10, query } = input;
+  const { videoId, transcript, surfaces, brandCatalog, maxClips = 10, query, excludeRanges } = input;
 
   if (!transcript || transcript.length === 0) {
     console.warn(`[EditorialAnalyzer] No transcript for video ${videoId}`);
@@ -317,7 +322,7 @@ export async function analyzeEditorial(
   try {
     const client = getClient();
 
-    const prompt = buildEditorialAnalysisPrompt(transcript, surfaces, brandCatalog, maxClips, query);
+    const prompt = buildEditorialAnalysisPrompt(transcript, surfaces, brandCatalog, maxClips, query, excludeRanges);
 
     const timeoutPromise = new Promise<null>((_, reject) => {
       setTimeout(() => reject(new Error("Editorial analysis timeout")), EDITORIAL_CONFIG.timeout);

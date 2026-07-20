@@ -214,27 +214,45 @@ export async function runEditorialAutoPipeline(
     const brandProducts = await storage.getAllBrandProducts();
     const brandMatches = await storage.getBrandMatchesByVideo(videoId);
 
+    const surfacesForAnalysis = surfaces.map((s) => ({
+      id: s.id,
+      timestamp: parseFloat(String(s.timestamp)),
+      surfaceType: s.surfaceType,
+      confidence: parseFloat(String(s.confidence)),
+      boundingBox: {
+        x: parseFloat(String(s.boundingBoxX)),
+        y: parseFloat(String(s.boundingBoxY)),
+        width: parseFloat(String(s.boundingBoxWidth)),
+        height: parseFloat(String(s.boundingBoxHeight)),
+      },
+    }));
+    const catalogForAnalysis = brandProducts.map((b) => ({
+      id: b.id,
+      name: b.name,
+      category: b.category,
+      dominantColor: b.dominantColor,
+    }));
+    const surfacesForRanker = surfaces.map((s) => ({
+      id: s.id,
+      videoId: s.videoId,
+      timestamp: parseFloat(String(s.timestamp)),
+      surfaceType: s.surfaceType,
+      confidence: parseFloat(String(s.confidence)),
+    }));
+    const matchesForRanker = brandMatches.map((bm) => ({
+      id: bm.id,
+      sceneAnalysisId: bm.sceneAnalysisId,
+      brandProductId: bm.brandProductId,
+      compatibilityScore: bm.compatibilityScore ?? 0,
+      reasoning: bm.reasoning ?? "",
+      suggestedPlacementStyle: bm.suggestedPlacementStyle ?? undefined,
+    }));
+
     const editorialMoments = await analyzeEditorial({
       videoId,
       transcript: transcript.segments as any,
-      surfaces: surfaces.map((s) => ({
-        id: s.id,
-        timestamp: parseFloat(String(s.timestamp)),
-        surfaceType: s.surfaceType,
-        confidence: parseFloat(String(s.confidence)),
-        boundingBox: {
-          x: parseFloat(String(s.boundingBoxX)),
-          y: parseFloat(String(s.boundingBoxY)),
-          width: parseFloat(String(s.boundingBoxWidth)),
-          height: parseFloat(String(s.boundingBoxHeight)),
-        },
-      })),
-      brandCatalog: brandProducts.map((b) => ({
-        id: b.id,
-        name: b.name,
-        category: b.category,
-        dominantColor: b.dominantColor,
-      })),
+      surfaces: surfacesForAnalysis,
+      brandCatalog: catalogForAnalysis,
       maxClips: targetClipCount,
     });
 
@@ -244,32 +262,45 @@ export async function runEditorialAutoPipeline(
     console.log(`[EditorialAuto] Found ${editorialMoments.length} editorial moments`);
 
     // Rank + dedupe
-    const rankedClips = deduplicateClips(
-      rankClips(
-        editorialMoments,
-        surfaces.map((s) => ({
-          id: s.id,
-          videoId: s.videoId,
-          timestamp: parseFloat(String(s.timestamp)),
-          surfaceType: s.surfaceType,
-          confidence: parseFloat(String(s.confidence)),
-        })),
-        brandMatches.map((bm) => ({
-          id: bm.id,
-          sceneAnalysisId: bm.sceneAnalysisId,
-          brandProductId: bm.brandProductId,
-          compatibilityScore: bm.compatibilityScore ?? 0,
-          reasoning: bm.reasoning ?? "",
-          suggestedPlacementStyle: bm.suggestedPlacementStyle ?? undefined,
-        })),
-        transcript.segments as any,
-        targetClipCount
-      )
+    let rankedClips = deduplicateClips(
+      rankClips(editorialMoments, surfacesForRanker, matchesForRanker, transcript.segments as any, targetClipCount)
     );
 
     if (rankedClips.length === 0) {
       throw new Error("No clips passed the minimum score threshold");
     }
+
+    // ── ≥10 enforcement: one retry round for thin batches ────────
+    // Score filtering + overlap dedupe can shrink the batch well below the
+    // promised floor. Ask the analyzer once more for DIFFERENT moments
+    // (excluding covered ranges), merge, and re-rank. One round only —
+    // a transcript that can't yield 10 distinct stories shouldn't loop.
+    const CLIP_FLOOR = Math.min(10, targetClipCount);
+    if (rankedClips.length < CLIP_FLOOR) {
+      const covered = rankedClips.map((c) => ({ start: c.clipStart, end: c.clipEnd }));
+      console.log(`[EditorialAuto] Only ${rankedClips.length}/${CLIP_FLOOR} clips after dedupe — retrying for more (excluding covered ranges)`);
+      try {
+        const extraMoments = await analyzeEditorial({
+          videoId,
+          transcript: transcript.segments as any,
+          surfaces: surfacesForAnalysis,
+          brandCatalog: catalogForAnalysis,
+          maxClips: CLIP_FLOOR - rankedClips.length + 2,
+          excludeRanges: covered,
+        });
+        if (extraMoments.length > 0) {
+          const extraRanked = rankClips(extraMoments, surfacesForRanker, matchesForRanker, transcript.segments as any, targetClipCount);
+          // Existing clips first so dedupe keeps them on overlap
+          rankedClips = deduplicateClips([...rankedClips, ...extraRanked])
+            .sort((a, b) => b.finalScore - a.finalScore)
+            .slice(0, targetClipCount);
+          console.log(`[EditorialAuto] Retry round added ${rankedClips.length - covered.length} clip(s) → ${rankedClips.length} total`);
+        }
+      } catch (retryErr: any) {
+        console.warn(`[EditorialAuto] Retry round failed (non-fatal): ${retryErr?.message || retryErr}`);
+      }
+    }
+
     console.log(`[EditorialAuto] Ranked ${rankedClips.length} final clips`);
 
     // Persist clip metadata (this replaces any existing clips for this video)
