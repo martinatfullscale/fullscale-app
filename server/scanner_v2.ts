@@ -3495,50 +3495,33 @@ async function processVideoScanInner(
     console.log(`[Scanner V2] ========== SCAN COMPLETE ==========`);
     console.log(`[Scanner V2] Video ID: ${videoId}, Surfaces: ${totalSurfaces}, Gemini: ${geminiKeyPresent ? 'YES' : 'NO'}`);
 
-    // AUTO-TRIGGER TRANSCRIPTION — kick off transcript pipeline in background after scan
-    // This ensures editorial clips are ready when the creator opens the video
+    // AUTO-TRIGGER EDITORIAL PIPELINE — after every successful scan, run the
+    // full editorial auto-pipeline in the background. It ensures the
+    // transcript itself (ensureTranscript is idempotent and race-aware),
+    // then analyzes, ranks, and renders clips. Single choke point: manual
+    // scans, batch scans, sync scans, and uploads all get clips without a
+    // user click. Skips cleanly when clips are already rendered.
     try {
-      const existingTranscript = await storage.getVideoTranscript(videoId);
-      if (!existingTranscript && video.filePath) {
-        console.log(`[Scanner V2] Auto-triggering transcription for video ${videoId}...`);
-        // Dynamic import to avoid circular dependency — transcriptPipeline.ts is in remix module
-        const { runTranscriptPipeline } = await import("./lib/remix/transcriptPipeline");
+      if (video.filePath) {
+        console.log(`[Scanner V2] Auto-triggering editorial pipeline for video ${videoId}...`);
+        // Dynamic imports to avoid circular dependency with the remix module
+        const { runEditorialAutoPipeline } = await import("./lib/remix/editorialAutoPipeline");
+        const { stableUserIntId } = await import("./lib/stableUserId");
 
-        // Create initial transcript record
-        const transcript = await storage.createVideoTranscript({
-          videoId,
-          provider: "deepgram",
-          language: "en",
-          status: "processing",
-        });
-
-        // Run in background — don't block scan completion
-        runTranscriptPipeline({ videoId, filePath: video.filePath, language: "en" })
-          .then(async (result) => {
-            await storage.updateVideoTranscript(transcript.id, {
-              segments: result.segments,
-              fullText: result.fullText,
-              speakerMap: result.speakerMap ?? null,
-              wordCount: result.wordCount,
-              segmentCount: result.segmentCount,
-              audioDuration: result.audioDuration ?? null,
-              processingTimeMs: result.totalProcessingTimeMs ?? null,
-              provider: result.provider,
-              status: "completed",
-            });
-            console.log(`[Scanner V2] Auto-transcription completed for video ${videoId}: ${result.wordCount} words`);
+        runEditorialAutoPipeline(videoId, stableUserIntId(video.userId))
+          .then((r) => {
+            if (r.success) {
+              console.log(`[Scanner V2] Editorial auto-pipeline for ${videoId}: ${r.clipsRendered}/${r.clipsGenerated} rendered (${r.status})`);
+            } else {
+              console.warn(`[Scanner V2] Editorial auto-pipeline for ${videoId} failed (non-fatal): ${r.error}`);
+            }
           })
-          .catch(async (err) => {
-            console.warn(`[Scanner V2] Auto-transcription failed for video ${videoId} (non-fatal):`, err.message);
-            await storage.updateVideoTranscriptStatus(transcript.id, "failed", err.message);
-          });
-      } else if (!video.filePath) {
-        console.log(`[Scanner V2] No file path for video ${videoId}, skipping auto-transcription`);
+          .catch((err) => console.warn(`[Scanner V2] Editorial auto-pipeline error for ${videoId} (non-fatal):`, err?.message || err));
       } else {
-        console.log(`[Scanner V2] Transcript already exists for video ${videoId}, skipping auto-transcription`);
+        console.log(`[Scanner V2] No file path for video ${videoId}, skipping editorial auto-pipeline`);
       }
-    } catch (transcriptErr) {
-      console.warn(`[Scanner V2] Auto-transcription setup failed (non-fatal):`, transcriptErr);
+    } catch (editorialErr) {
+      console.warn(`[Scanner V2] Editorial auto-trigger setup failed (non-fatal):`, editorialErr);
     }
 
     return {

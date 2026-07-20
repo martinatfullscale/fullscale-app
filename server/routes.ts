@@ -4627,14 +4627,9 @@ export async function registerRoutes(
       extractThumbnailForVideo(video.id)
         .then(thumbUrl => { if (thumbUrl) console.log(`[upload/chunked/finalize] Thumbnail: ${thumbUrl}`); })
         .catch(() => {});
+      // Editorial pipeline auto-fires from scanner_v2 on scan completion.
       processVideoScan(video.id, true).then(result => {
         console.log(`[upload/chunked/finalize] Auto-scan complete for ${video.id}: ${result.surfacesDetected} surfaces`);
-        runEditorialAutoPipeline(video.id, 0)
-          .then(r => {
-            if (r.success) console.log(`[upload/chunked/finalize] Editorial: ${r.clipsRendered}/${r.clipsGenerated} in ${(r.durationMs / 1000).toFixed(1)}s`);
-            else console.warn(`[upload/chunked/finalize] Editorial failed: ${r.error}`);
-          })
-          .catch(err => console.error(`[upload/chunked/finalize] Editorial error:`, err?.message || err));
       }).catch(err => console.error(`[upload/chunked/finalize] Auto-scan failed:`, err?.message));
     } catch (err: any) {
       console.error("[upload/chunked/:id/finalize] error:", err?.message || err);
@@ -4731,20 +4726,10 @@ export async function registerRoutes(
         .then(thumbUrl => { if (thumbUrl) console.log(`[UPLOAD/complete] Thumbnail extracted for ${video.id}: ${thumbUrl}`); })
         .catch(() => {});
 
-      // Fire scan + editorial pipeline (same as traditional upload)
+      // Fire scan; the editorial pipeline auto-fires from scanner_v2 on
+      // scan completion.
       processVideoScan(video.id, true).then(result => {
         console.log(`[UPLOAD/complete] Auto-scan complete for ${video.id}: ${result.surfacesDetected} surfaces`);
-
-        const pipelineUserId = 0;
-        runEditorialAutoPipeline(video.id, pipelineUserId)
-          .then(r => {
-            if (r.success) {
-              console.log(`[UPLOAD/complete] Editorial auto-pipeline: ${r.clipsRendered}/${r.clipsGenerated} rendered`);
-            } else {
-              console.warn(`[UPLOAD/complete] Editorial auto-pipeline failed: ${r.error}`);
-            }
-          })
-          .catch(err => console.error(`[UPLOAD/complete] Editorial error:`, err?.message));
       }).catch(err => {
         console.error(`[UPLOAD/complete] Auto-scan failed for ${video.id}:`, err.message);
       });
@@ -5009,20 +4994,9 @@ export async function registerRoutes(
           console.warn(`[UPLOAD] Failed to set editorial pending: ${e?.message}`)
         );
 
+        // Editorial pipeline auto-fires from scanner_v2 on scan completion.
         processVideoScan(video.id, true).then(result => {
           console.log(`[UPLOAD] Auto-scan complete for ${video.id}: ${result.surfacesDetected} surfaces`);
-          const pipelineUserId = 0;
-          runEditorialAutoPipeline(video.id, pipelineUserId)
-            .then(r => {
-              if (r.success) {
-                console.log(`[UPLOAD] Editorial auto-pipeline: ${r.clipsRendered}/${r.clipsGenerated} rendered in ${(r.durationMs / 1000).toFixed(1)}s`);
-              } else {
-                console.warn(`[UPLOAD] Editorial auto-pipeline failed for ${video.id}: ${r.error}`);
-              }
-            })
-            .catch(err => {
-              console.error(`[UPLOAD] Editorial auto-pipeline error for ${video.id}:`, err?.message || err);
-            });
         }).catch(err => {
           console.error(`[UPLOAD] Auto-scan failed for ${video.id}:`, err.message);
         });
@@ -10832,7 +10806,7 @@ export async function registerRoutes(
         status: "pending",
       });
 
-      const pipelineUserId = 0;
+      const pipelineUserId = stableUserIntId(video.userId);
       runEditorialAutoPipeline(videoId, pipelineUserId, { force: Boolean(force) })
         .then(r => {
           if (r.success) {
@@ -10887,9 +10861,7 @@ export async function registerRoutes(
         alreadyRendered: existingClips.length - unrendered.length,
       });
 
-      // Match the pattern from editorial-auto: pipeline takes a numeric placeholder.
-      // userId on the videoIndex row is a string, so we fall back to 0 like the auto endpoint.
-      const pipelineUserId = 0;
+      const pipelineUserId = stableUserIntId(video.userId);
       runEditorialAutoPipeline(videoId, pipelineUserId, { resume: true })
         .then(r => {
           if (r.success) {
