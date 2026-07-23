@@ -31,6 +31,7 @@ import { safeDecrypt } from "./lib/socialAnalytics";
 import { getFreshYoutubeTokenForUser } from "./lib/youtubeAuth";
 import { resolveYoutubeStreamUrl, resolveGraphStreamUrl, type StreamSource } from "./lib/streamResolver";
 import { buildSceneIndex, sceneIdForTimestamp, sampleMultiTimestampsPerScene, computeDHash, hammingDistance, type SceneIndex } from "./lib/scenes/sceneIndex";
+import { buildSceneConsensus, type FrameDetection } from "./lib/scenes/surfaceConsensus";
 
 // ============================================================================
 // GEMINI AI CLIENT
@@ -212,8 +213,13 @@ and your job is to FIND them reliably — not to return empty:
      the LEFT and/or RIGHT of the person's head and shoulders.
   B) The STUDIO DESK / TABLE in front of the speaker — the flat top where
      the mic, water bottle, or notes sit. A prime horizontal surface.
-Your default posture is NOT "return empty." It is: "locate the backdrop
-wall and the desk, box the EMPTY part of each, and reject the person."
+Your default posture is NOT "return empty." It is: "inventory the ROOM."
+Locate the backdrop wall and the desk first, then sweep the rest of the
+set: the FLOOR area, side tables, coffee tables, shelves, counters, rugs,
+and clearly EMPTY couch/sofa sections (seat or armrest with no person on
+or adjacent to them). A typical furnished studio/podcast set has 4-6 real
+placement surfaces — walls, floor, and multiple furniture tops. Box the
+EMPTY part of each, and reject the person.
 The ONE thing you must never do is box a PERSON — their body, face, hair,
 lap, hands, clothing, or the chair they sit in (see the anti-hallucination
 rules below). Reject the person, not the room. Only return zero surfaces
@@ -229,7 +235,7 @@ This 3D understanding is required to avoid the most common error: treating
 a flat-looking 2D region as a horizontal surface when it's actually a
 wall, a curtain, a couch back, or empty space.
 
-TASK: Find UP TO 4 of the best placement surfaces visible in the frame.
+TASK: Find UP TO 8 of the best placement surfaces visible in the frame.
 Surfaces fall into two distinct categories with different placement use cases:
 
   1. HORIZONTAL surfaces (orientation: "horizontal") — flat surfaces where physical objects can sit.
@@ -245,9 +251,11 @@ Surfaces fall into two distinct categories with different placement use cases:
 Return them ranked by suitability. Quality > quantity — if only one surface is genuinely usable, return only one. If none, return zero. Never inflate to hit 2.
 
 CRITICAL RULES:
-- Maximum 4 surfaces total across both orientations (was 2; bumped to capture
-  complex scenes that have shelves AND tables AND floor AND walls all visible).
-  Still: quality > quantity. If only 2 are genuinely usable, return only 2.
+- Maximum 8 surfaces total across both orientations — furnished sets have
+  walls AND floor AND several furniture tops all visible at once, and each
+  is real inventory. Still: quality > quantity. Every returned surface must
+  individually pass the verification rules; if only 2 are genuinely usable,
+  return only 2. Never invent surfaces to fill the budget.
 - Only detect REAL physical surfaces that exist in the 3D scene
 - Each surface must occupy at least 5% of total frame area
 - Each surface must have CLEAR visual separation from people in the frame
@@ -436,7 +444,7 @@ CONFIDENCE GUIDANCE:
 For each surface, provide:
 - **location**: bounding box {x, y, width, height} in percentages (0-100)
 - **orientation**: "horizontal" or "vertical"
-- **surface_type**: desk, table, shelf, counter, nightstand, coffee_table, studio_desk, floor, wall, door, window
+- **surface_type**: desk, table, shelf, counter, nightstand, side_table, coffee_table, studio_desk, floor, rug, couch, wall, door, window
 - **confidence**: 0.0 to 1.0 (see guidance above)
 - **reasoning**: brief explanation
 - **lighting_direction**: "left", "right", "top", "top-left", "top-right", "ambient"
@@ -954,8 +962,8 @@ async function selectDiverseFrames(
   frames: string[],
   timestamps: number[],
   opts: { hashThreshold: number; budget: number },
-): Promise<{ frames: string[]; timestamps: number[] }> {
-  if (frames.length === 0) return { frames: [], timestamps: [] };
+): Promise<{ frames: string[]; timestamps: number[]; segmentIds: number[] }> {
+  if (frames.length === 0) return { frames: [], timestamps: [], segmentIds: [] };
 
   // 1. Hash every candidate (parallel-ish; computeDHash is I/O light).
   const hashes: (string | null)[] = [];
@@ -1015,9 +1023,20 @@ async function selectDiverseFrames(
   }
 
   console.log(`[Scanner V2] Scene-complete selection: ${scenes.length} scene(s) from ${frames.length} candidates → ${selectedIdx.length} detection frames (budget ${opts.budget})`);
+  // Segment id per selected frame — the dHash scene segmentation computed
+  // above, previously thrown away. The streamed path (no local file → no
+  // sceneIndex) uses these as consensus groups so cross-scene detections
+  // never vote for each other.
+  const segmentOf = (idx: number): number => {
+    for (let s = 0; s < scenes.length; s++) {
+      if (idx >= scenes[s].start && idx <= scenes[s].end) return s;
+    }
+    return 0;
+  };
   return {
     frames: selectedIdx.map(i => frames[i]),
     timestamps: selectedIdx.map(i => timestamps[i]),
+    segmentIds: selectedIdx.map(segmentOf),
   };
 }
 
@@ -1593,7 +1612,10 @@ async function analyzeFrameWithGemini(
     // legitimately occupy the upper frame and span large vertical areas.
     const allSurfaces: DetectedSurface[] = parsed.surfaces
       .map(correctMislabel)
-      .filter((s: GeminiDetectedSurface) => s.confidence >= 0.75)
+      // 0.60 (was 0.75): per-frame precision is now enforced by the
+      // per-scene consensus vote + verification pass downstream — a lower
+      // gate here feeds the vote more recall without shipping noise.
+      .filter((s: GeminiDetectedSurface) => s.confidence >= 0.60)
       .filter((s: GeminiDetectedSurface) => {
         const orientation = s.orientation || inferOrientation(s.surface_type);
         if (orientation === "vertical") {
@@ -1679,7 +1701,7 @@ async function analyzeFrameWithGemini(
         cameraAngle: s.camera_angle || undefined,
       }))
       .sort((a: DetectedSurface, b: DetectedSurface) => b.confidence - a.confidence)
-      .slice(0, 4); // Max 4 surfaces per frame (was 2) — recall complex scenes
+      .slice(0, 8); // Max 8 surfaces per frame — full room inventory; consensus prunes
                     // (shelves + tables + floor + wall) without dropping real
                     // surfaces. Per-frame dedup + cluster IoU still merge
                     // duplicates of the same physical surface downstream.
@@ -2220,6 +2242,67 @@ interface SurfaceCluster {
 
 // Normalize surface type synonyms to a canonical name
 // e.g., "Studio_desk", "studio_desk", "desk", "table" all → "Table"
+// ── AUTH 2b: per-scene model verification ─────────────────────────
+// Second opinion on consensus survivors: show Gemini the scene's
+// best-supported frame plus the candidate boxes and ask it to confirm each
+// one is really the named surface, at that location, and not covering a
+// person. Fail-open: any API/parse failure keeps the consensus result
+// (consensus already filtered — verification only ever REMOVES).
+async function verifySceneSurfaces(
+  framePath: string,
+  candidates: Array<{ surfaceType: string; bbox: { x: number; y: number; width: number; height: number } }>,
+): Promise<Set<number> | null> {
+  try {
+    if (!fs.existsSync(framePath) || candidates.length === 0) return null;
+    const base64Image = fs.readFileSync(framePath).toString("base64");
+    const list = candidates
+      .map((c, i) => `${i}: ${c.surfaceType} at x=${(c.bbox.x * 100).toFixed(0)}% y=${(c.bbox.y * 100).toFixed(0)}% w=${(c.bbox.width * 100).toFixed(0)}% h=${(c.bbox.height * 100).toFixed(0)}%`)
+      .join("\n");
+    const prompt = `You are auditing candidate surface detections for product placement. The attached image is one frame of the scene. Candidates (bbox as percent of frame, origin top-left):\n${list}\n\nFor EACH candidate index, answer keep=true ONLY if ALL of these hold:\n- the named surface type is genuinely visible at that box location\n- the label is correct (a floor region is not a "wall"; a couch back is not a "table")\n- the box does NOT primarily cover a person, their clothing, or the chair they sit in\nReturn STRICT JSON only, no markdown fences: {"verdicts":[{"index":0,"keep":true,"reason":"short"}]} with exactly one verdict per candidate.`;
+
+    const timeoutPromise = new Promise<null>((resolve) => {
+      setTimeout(() => resolve(null), CONFIG.GEMINI_TIMEOUT_MS);
+    });
+    const response = await Promise.race([
+      ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [{
+          role: "user",
+          parts: [
+            { text: prompt },
+            { inlineData: { mimeType: "image/jpeg", data: base64Image } },
+          ],
+        }],
+      }),
+      timeoutPromise,
+    ]);
+    if (!response) return null;
+
+    const textContent = (response as any).candidates?.[0]?.content?.parts?.[0];
+    if (!textContent || !("text" in textContent) || !textContent.text) return null;
+
+    let jsonStr = String(textContent.text).trim();
+    if (jsonStr.startsWith("```json")) jsonStr = jsonStr.slice(7);
+    else if (jsonStr.startsWith("```")) jsonStr = jsonStr.slice(3);
+    if (jsonStr.endsWith("```")) jsonStr = jsonStr.slice(0, -3);
+    const parsed = JSON.parse(jsonStr.trim());
+    if (!Array.isArray(parsed?.verdicts)) return null;
+
+    const keep = new Set<number>();
+    for (const v of parsed.verdicts) {
+      if (typeof v?.index === "number" && v.keep === true) keep.add(v.index);
+    }
+    // A verify pass that rejects EVERYTHING is more likely a bad model
+    // response than an empty room (consensus already required multi-frame
+    // agreement) — fail open in that case.
+    if (keep.size === 0) return null;
+    return keep;
+  } catch (err: any) {
+    console.warn(`[Scanner V2] Scene verification failed (fail-open):`, err?.message || err);
+    return null;
+  }
+}
+
 const SURFACE_TYPE_SYNONYMS: Record<string, string> = {
   desk: "Table",
   table: "Table",
@@ -2233,6 +2316,10 @@ const SURFACE_TYPE_SYNONYMS: Record<string, string> = {
   nightstand: "Nightstand",
   side_table: "Nightstand",
   coffee_table: "Coffee Table",
+  couch: "Couch",
+  sofa: "Couch",
+  rug: "Rug",
+  carpet: "Rug",
 };
 
 function canonicalSurfaceType(type: string): string {
@@ -2798,7 +2885,7 @@ async function processVideoScanInner(
     // downloading the full video (see streamResolver.ts + extractFramesFromUrl).
     // When this succeeds, we skip the local-file requirement entirely and feed
     // these frames straight into detection.
-    let streamedFrames: { frames: string[]; timestamps: number[] } | null = null;
+    let streamedFrames: { frames: string[]; timestamps: number[]; segmentIds: number[] } | null = null;
 
     if ((video as any).filePath?.startsWith('/storage/')) {
       try {
@@ -3071,6 +3158,8 @@ async function processVideoScanInner(
 
     let frames: string[] = [];
     let frameTimestamps: number[] = [];
+    // Streamed path: dHash segment id per frame (consensus grouping when no sceneIndex exists)
+    let streamSegmentIds: number[] | null = null;
     let usedSceneFirst = false;
     let sceneIndex: SceneIndex | null = null;
 
@@ -3081,6 +3170,7 @@ async function processVideoScanInner(
       // frames as-is. sceneBoundaries stays whatever a prior full scan set.
       frames = streamedFrames.frames;
       frameTimestamps = streamedFrames.timestamps;
+      streamSegmentIds = streamedFrames.segmentIds;
       console.log(`[Scanner V2] Using ${frames.length} streamed frames (uniform sampling; scene-cut detection skipped — no local file)`);
     } else if (videoPath) {
       // LOCAL/DOWNLOADED path — scene-first detection for denser, cheaper sampling.
@@ -3111,12 +3201,17 @@ async function processVideoScanInner(
       }
 
       if (sceneIndex && sceneIndex.sceneCount > 0) {
+        // ≥2 frames per scene ALWAYS — the consensus vote needs at least two
+        // independent samples of a scene to confirm a surface ("double
+        // authentication"). Budget grows to 36 frames to keep 2/scene
+        // feasible for multi-scene episodes.
+        const SCENE_FIRST_BUDGET = 36;
         const desiredPerScene = Math.max(
-          1,
-          Math.min(6, Math.floor(CONFIG.MAX_FRAMES_PER_VIDEO / sceneIndex.sceneCount)),
+          2,
+          Math.min(6, Math.floor(SCENE_FIRST_BUDGET / sceneIndex.sceneCount)),
         );
         const samples = sampleMultiTimestampsPerScene(sceneIndex, desiredPerScene);
-        const trimmed = samples.slice(0, CONFIG.MAX_FRAMES_PER_VIDEO);
+        const trimmed = samples.slice(0, SCENE_FIRST_BUDGET);
         console.log(`[Scanner V2] Scene-first extraction: ${trimmed.length} frames across ${sceneIndex.sceneCount} unique scene(s) (${desiredPerScene}/scene target)`);
 
         const result = await extractFramesAtTimestamps(videoPath, framesDir, trimmed.map(s => s.t));
@@ -3158,96 +3253,177 @@ async function processVideoScanInner(
       console.warn(`[Scanner V2] ⚠️  AI_INTEGRATIONS_GEMINI_API_KEY not set. Surface detection will be limited. Set this env var for accurate AI-powered scanning.`);
     }
 
+    // ── Phase A: analyze every frame; buffer results per scene ────
+    // Detections are NOT inserted per-frame anymore. They buffer here and
+    // must survive the per-scene consensus vote (AUTH 1: >=2 frames agree)
+    // + position priors (AUTH 2) + a model verification pass (AUTH 2b)
+    // before any row is written. This is what makes detections consistent
+    // across a scene instead of one frame's hallucination becoming truth.
+    interface BufferedFrameAnalysis {
+      framePath: string;
+      timestamp: number;
+      frameUrl: string;
+      sceneKey: number;
+      surfaces: DetectedSurface[];
+      viaGemini: boolean;
+    }
+    const bufferedAnalyses: BufferedFrameAnalysis[] = [];
+
     for (let i = 0; i < frames.length; i++) {
       const framePath = frames[i];
       // Real timestamp at this frame — scene-first sets this to the
       // representative shot midpoint per scene; uniform fallback uses
       // i × intervalSeconds. sceneId lookup downstream needs the real t.
       const timestamp = frameTimestamps[i] ?? i * scanPlan.intervalSeconds;
-      // Round to int seconds for filename uniqueness without colliding
-      // (multiple scene-first samples can land between integer seconds).
       const tsKey = Math.round(timestamp);
 
+      console.log(`[Scanner V2] Processing frame ${i + 1}/${frames.length} (${timestamp.toFixed(2)}s)...`);
+
+      // Save ALL valid frames to permanent directory for thumbnail strip
+      const frameFilename = `frame_${tsKey}s.jpg`;
       try {
-        console.log(`[Scanner V2] Processing frame ${i + 1}/${frames.length} (${timestamp.toFixed(2)}s)...`);
-
-        // Save ALL valid frames to permanent directory for thumbnail strip
-        const frameFilename = `frame_${tsKey}s.jpg`;
-
-        try {
-          const frameSize = fs.statSync(framePath).size;
-          if (frameSize > 5000) {
-            const objectKey = `public/uploads/frames/${videoId}/${frameFilename}`;
-            await uploadFileToStorage(framePath, objectKey);
-          } else {
-            console.warn(`[Scanner V2] Skipping tiny frame ${frameFilename} (${frameSize} bytes)`);
-          }
-        } catch (copyErr) {
-          console.error(`[Scanner V2] Failed to upload frame to storage:`, copyErr);
-        }
-
-        // Use Gemini AI or edge detection based on config
-        // Falls back to edge detection if Gemini API key is missing
-        const useGemini = CONFIG.DETECTION_METHOD === 'gemini'
-          && process.env.AI_INTEGRATIONS_GEMINI_API_KEY
-          && process.env.AI_INTEGRATIONS_GEMINI_API_KEY !== 'dummy-key';
-
-        let analysis: FrameAnalysisResult;
-        if (useGemini) {
-          analysis = await analyzeFrameWithGeminiRetry(framePath, timestamp, isVertical);
-          // Only fall back to edge if Gemini API actually failed (not if it just found no surfaces)
-          // If aiAnalyzed=true, Gemini worked fine — it just said "no surfaces here"
-          if (!analysis.aiAnalyzed && !analysis.hasSurface) {
-            console.warn(`[Scanner V2] ⚠️  Gemini API FAILED for frame ${timestamp}s (aiAnalyzed=false). This likely means the API request failed (wrong base URL, auth error, or timeout). Falling back to edge detection...`);
-            analysis = await analyzeFrameForSurfaces(framePath, timestamp, isVertical);
-          }
+        const frameSize = fs.statSync(framePath).size;
+        if (frameSize > 5000) {
+          const objectKey = `public/uploads/frames/${videoId}/${frameFilename}`;
+          await uploadFileToStorage(framePath, objectKey);
         } else {
-          if (i === 0) console.log(`[Scanner V2] Gemini API key not configured, using edge detection fallback`);
+          console.warn(`[Scanner V2] Skipping tiny frame ${frameFilename} (${frameSize} bytes)`);
+        }
+      } catch (copyErr) {
+        console.error(`[Scanner V2] Failed to upload frame to storage:`, copyErr);
+      }
+
+      // Use Gemini AI or edge detection based on config
+      // Falls back to edge detection if Gemini API key is missing
+      const useGemini = CONFIG.DETECTION_METHOD === 'gemini'
+        && process.env.AI_INTEGRATIONS_GEMINI_API_KEY
+        && process.env.AI_INTEGRATIONS_GEMINI_API_KEY !== 'dummy-key';
+
+      let analysis: FrameAnalysisResult;
+      if (useGemini) {
+        analysis = await analyzeFrameWithGeminiRetry(framePath, timestamp, isVertical);
+        // Only fall back to edge if Gemini API actually failed (not if it just found no surfaces)
+        // If aiAnalyzed=true, Gemini worked fine — it just said "no surfaces here"
+        if (!analysis.aiAnalyzed && !analysis.hasSurface) {
+          console.warn(`[Scanner V2] ⚠️  Gemini API FAILED for frame ${timestamp}s (aiAnalyzed=false). This likely means the API request failed (wrong base URL, auth error, or timeout). Falling back to edge detection...`);
           analysis = await analyzeFrameForSurfaces(framePath, timestamp, isVertical);
         }
+      } else {
+        if (i === 0) console.log(`[Scanner V2] Gemini API key not configured, using edge detection fallback`);
+        analysis = await analyzeFrameForSurfaces(framePath, timestamp, isVertical);
+      }
 
-        if (analysis.hasSurface && analysis.surfaces.length > 0) {
-          const frameUrl = `/storage/uploads/frames/${videoId}/${frameFilename}`;
+      if (analysis.hasSurface && analysis.surfaces.length > 0) {
+        // Consensus group: real scene cluster when a sceneIndex exists;
+        // dHash grid segment on the streamed path; single bucket otherwise.
+        const sceneKey = sceneIndex
+          ? sceneIdForTimestamp(sceneIndex, timestamp)
+          : (streamSegmentIds?.[i] ?? 0);
+        bufferedAnalyses.push({
+          framePath,
+          timestamp,
+          frameUrl: `/storage/uploads/frames/${videoId}/${frameFilename}`,
+          sceneKey,
+          surfaces: analysis.surfaces,
+          viaGemini: Boolean(useGemini) && analysis.aiAnalyzed === true,
+        });
+      }
+      // NOTE: temp frames are intentionally KEPT here — the verification
+      // pass re-reads the best frame per scene. The outer finally removes
+      // the whole tempDir. (~36 frames ≈ a few MB.)
+    }
 
-          // Resolve sceneId for this timestamp once per frame (all surfaces
-          // in this frame share the same scene). Falls back to scene 0 when
-          // no index was built (degenerate single-scene video).
-          const sceneIdForFrame = sceneIndex
-            ? sceneIdForTimestamp(sceneIndex, timestamp)
-            : 0;
+    // ── Phase B: per-scene consensus vote (AUTH 1 + AUTH 2) ───────
+    // ── Phase C: model verification per scene (AUTH 2b) ───────────
+    // ── Phase D: insert survivors only ────────────────────────────
+    const framesByScene = new Map<number, BufferedFrameAnalysis[]>();
+    for (const bf of bufferedAnalyses) {
+      const arr = framesByScene.get(bf.sceneKey) ?? [];
+      arr.push(bf);
+      framesByScene.set(bf.sceneKey, arr);
+    }
 
-          for (const surface of analysis.surfaces) {
-            const dbSurface: InsertDetectedSurface = {
-              videoId,
-              timestamp: timestamp.toString(),
-              surfaceType: surface.surfaceType,
-              orientation: surface.orientation || null,
-              confidence: surface.confidence.toString(),
-              boundingBoxX: surface.boundingBox.x.toString(),
-              boundingBoxY: surface.boundingBox.y.toString(),
-              boundingBoxWidth: surface.boundingBox.width.toString(),
-              boundingBoxHeight: surface.boundingBox.height.toString(),
-              frameUrl,
-              // Lighting & camera data from Gemini AI
-              lightingDirection: surface.lightingDirection || null,
-              lightingIntensity: surface.lightingIntensity != null ? surface.lightingIntensity.toString() : null,
-              cameraAngle: surface.cameraAngle || null,
-              // Scene cluster — same physical set across cuts gets same ID,
-              // unlocks placement continuity in the frontend.
-              sceneId: sceneIdForFrame,
-              // creatorApproved defaults to false in schema — surfaces hidden from
-              // brands until creator explicitly approves via UI toggle
-            };
+    for (const [sceneKey, sceneFrames] of Array.from(framesByScene.entries())) {
+      const consensusInput: FrameDetection[] = sceneFrames.map((bf) => ({
+        frameT: bf.timestamp,
+        surfaces: bf.surfaces.map((s) => ({
+          surfaceType: s.surfaceType,
+          confidence: s.confidence,
+          bbox: s.boundingBox,
+          ref: s,
+        })),
+      }));
 
-            const inserted = await storage.insertDetectedSurface(dbSurface);
-            console.log(`[Scanner V2] *** SURFACE FOUND: ${surface.surfaceType} at ${timestamp}s scene=${sceneIdForFrame} (confidence: ${(surface.confidence * 100).toFixed(1)}%, id: ${inserted.id}) ***`);
-            totalSurfaces++;
-          }
+      const { surfaces: consensusSurfaces, rejected } = buildSceneConsensus(consensusInput, {
+        normalizeType: canonicalSurfaceType,
+      });
+      if (rejected.length > 0) {
+        console.log(
+          `[Scanner V2] Scene ${sceneKey}: consensus rejected ${rejected.length} detection(s) — ` +
+          rejected.map((r) => `${r.surfaceType}@${r.frameT.toFixed(0)}s:${r.reason}`).join(", ")
+        );
+      }
+      if (consensusSurfaces.length === 0) continue;
+
+      // AUTH 2b: second model opinion on the scene's best-supported frame.
+      let approved = consensusSurfaces;
+      if (sceneFrames.some((f) => f.viaGemini)) {
+        const frameSupport = new Map<number, number>();
+        for (const cs of consensusSurfaces) {
+          for (const t of cs.supportTimestamps) frameSupport.set(t, (frameSupport.get(t) ?? 0) + 1);
         }
+        const bestT = Array.from(frameSupport.entries()).sort((a, b) => b[1] - a[1])[0]?.[0];
+        const bestFrame = sceneFrames.find((f) => f.timestamp === bestT) ?? sceneFrames[0];
+        const keep = await verifySceneSurfaces(
+          bestFrame.framePath,
+          consensusSurfaces.map((cs) => ({ surfaceType: cs.surfaceType, bbox: cs.bbox })),
+        );
+        if (keep) {
+          const dropped = consensusSurfaces.filter((_, idx) => !keep.has(idx));
+          if (dropped.length > 0) {
+            console.log(`[Scanner V2] Scene ${sceneKey}: verification rejected ${dropped.map((d) => d.surfaceType).join(", ")}`);
+          }
+          approved = consensusSurfaces.filter((_, idx) => keep.has(idx));
+        }
+      }
 
-      } finally {
-        // CRITICAL: Always delete the temp frame after processing
-        safeUnlink(framePath);
+      // Insert one row PER SUPPORTING FRAME with that frame's own bbox —
+      // keyframe density is a rendering contract downstream (videoExporter
+      // fades products across keyframe gaps; remix densifies sparse tracks).
+      for (const cs of approved) {
+        for (const member of cs.members) {
+          const surface = member.ref as DetectedSurface;
+          const bf = sceneFrames.find((f) => f.timestamp === member.frameT);
+          if (!surface || !bf) continue;
+          const sceneIdForFrame = sceneIndex ? sceneIdForTimestamp(sceneIndex, member.frameT) : 0;
+          const dbSurface: InsertDetectedSurface = {
+            videoId,
+            timestamp: member.frameT.toString(),
+            surfaceType: surface.surfaceType,
+            orientation: surface.orientation || null,
+            // Vote-weighted consensus confidence — full-agreement surfaces
+            // keep their score, bare-majority ones are discounted.
+            confidence: cs.confidence.toString(),
+            boundingBoxX: member.bbox.x.toString(),
+            boundingBoxY: member.bbox.y.toString(),
+            boundingBoxWidth: member.bbox.width.toString(),
+            boundingBoxHeight: member.bbox.height.toString(),
+            frameUrl: bf.frameUrl,
+            // Lighting & camera data from Gemini AI
+            lightingDirection: surface.lightingDirection || null,
+            lightingIntensity: surface.lightingIntensity != null ? surface.lightingIntensity.toString() : null,
+            cameraAngle: surface.cameraAngle || null,
+            // Scene cluster — same physical set across cuts gets same ID,
+            // unlocks placement continuity in the frontend.
+            sceneId: sceneIdForFrame,
+            // creatorApproved defaults to false in schema — surfaces hidden from
+            // brands until creator explicitly approves via UI toggle
+          };
+
+          const inserted = await storage.insertDetectedSurface(dbSurface);
+          console.log(`[Scanner V2] *** SURFACE CONFIRMED: ${surface.surfaceType} at ${member.frameT.toFixed(1)}s scene=${sceneKey} (votes ${cs.votes}/${cs.framesAnalyzed}, conf ${(cs.confidence * 100).toFixed(1)}%, id: ${inserted.id}) ***`);
+          totalSurfaces++;
+        }
       }
     }
     
