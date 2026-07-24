@@ -28,7 +28,22 @@ const AUTO_REEL = {
   platformKey: "tiktok" as const,
 };
 
+// The plan-existence guard and the plan INSERT are separated by a
+// minutes-long Claude call — without an in-flight marker, two editorial
+// completions in that window would both pass the empty check and render
+// two near-identical reels (single-instance deploy, so a Set suffices).
+const inFlightAutoReels = new Set<number>();
+
 export async function autoGenerateHighlightReel(videoId: number, userId: number): Promise<void> {
+  if (inFlightAutoReels.has(videoId)) {
+    console.log(`[HighlightAuto] Reel generation already in flight for video ${videoId}, skipping`);
+    return;
+  }
+  inFlightAutoReels.add(videoId);
+  // Hoisted so the outer catch can mark the plan failed — otherwise a throw
+  // after createStitchPlan leaves a perpetual 'generating' spinner until the
+  // next restart's failInterruptedStitchPlans sweep.
+  let planId: number | null = null;
   try {
     // ── Guards ────────────────────────────────────────────────────
     const existingPlans = await storage.getStitchPlansByVideo(videoId);
@@ -48,6 +63,18 @@ export async function autoGenerateHighlightReel(videoId: number, userId: number)
     // ── Narrative arc ─────────────────────────────────────────────
     const { analyzeNarrativeThread } = await import("../ai/claude-dense/editorialAnalyzer");
     const surfaces = await storage.getDetectedSurfaces(videoId);
+    // brandCatalog is REQUIRED by the analyzer's prompt builder (no default
+    // — omitting it throws inside its try/catch and the reel silently never
+    // generates). Same mapping as the manual narrative-thread route.
+    let brandCatalog: Array<{ id: number; name: string; category: string | null; dominantColor: string | null }> = [];
+    try {
+      brandCatalog = (await storage.getAllBrandProducts()).map((b) => ({
+        id: b.id,
+        name: b.name,
+        category: b.category || null,
+        dominantColor: null,
+      }));
+    } catch { /* catalog is advisory — analyze without it */ }
     const thread = await analyzeNarrativeThread({
       videoId,
       transcript: transcript.segments as any[],
@@ -63,14 +90,23 @@ export async function autoGenerateHighlightReel(videoId: number, userId: number)
           height: parseFloat(String(s.boundingBoxHeight)) || 0,
         },
       })),
+      brandCatalog,
       targetDuration: AUTO_REEL.targetDuration,
       segmentCount: AUTO_REEL.segmentCount,
-    } as any);
+    });
     if (!thread || !Array.isArray((thread as any).segments) || (thread as any).segments.length < 2) {
       console.log(`[HighlightAuto] No usable narrative thread for video ${videoId}`);
       return;
     }
     const segments: any[] = (thread as any).segments;
+
+    // Re-check after the slow analysis: a concurrent completion (force
+    // re-run, resume) may have created a plan while Claude was thinking.
+    const plansNow = await storage.getStitchPlansByVideo(videoId);
+    if (plansNow.length > 0) {
+      console.log(`[HighlightAuto] Plan appeared during analysis for video ${videoId}, skipping`);
+      return;
+    }
 
     // ── Plan record ───────────────────────────────────────────────
     const plan = await storage.createStitchPlan({
@@ -89,6 +125,7 @@ export async function autoGenerateHighlightReel(videoId: number, userId: number)
         enabled: true,
       })),
     } as any);
+    planId = plan.id;
 
     // ── Source resolution (light-cloud aware) ─────────────────────
     let videoPath: string;
@@ -119,38 +156,29 @@ export async function autoGenerateHighlightReel(videoId: number, userId: number)
         transitionDuration: 0.5,
       }));
 
-      // Captions remapped to the output timeline (same math as the manual
-      // stitch route, incl. the 0.1s micro-fade cuts consume in xfade mode)
-      let captionSegments: CaptionSegment[] | undefined = undefined;
+      // Per-segment caption groups (times relative to each segment's start).
+      // clipStitcher remaps them onto the output timeline of whichever stitch
+      // mode actually renders — card splices vs xfade differ by 1.3s/junction.
+      let captionsBySegment: CaptionSegment[][] | undefined = undefined;
       try {
-        const reelHasCrossfade = stitchSegs.some((s, i) => i > 0 && s.transitionIn !== "cut");
-        const out: CaptionSegment[] = [];
-        let offset = 0;
-        for (let i = 0; i < stitchSegs.length; i++) {
-          const seg = stitchSegs[i];
-          const overlap = i === 0 ? 0 : seg.transitionIn === "cut" ? (reelHasCrossfade ? 0.1 : 0) : 0.5;
-          offset -= overlap;
+        const groups: CaptionSegment[][] = stitchSegs.map((seg) => {
           const segTranscript = (transcript.segments as any[]).filter(
             (t: any) => t.start >= seg.start - 0.5 && t.start <= seg.end,
           );
-          if (segTranscript.length > 0) {
-            const res = generateTranscriptCaptions({
-              clipStart: seg.start,
-              clipEnd: seg.end,
-              duration: seg.end - seg.start,
-              narrativeContext: "",
-              emotionalTone: "neutral",
-              brandNames: [],
-              style: "highlight",
-              transcriptSegments: segTranscript,
-            });
-            for (const c of res.segments) {
-              out.push({ ...c, startTime: Math.max(0, c.startTime + offset), endTime: Math.max(0, c.endTime + offset) });
-            }
-          }
-          offset += seg.end - seg.start;
-        }
-        if (out.length > 0) captionSegments = out;
+          if (segTranscript.length === 0) return [];
+          const res = generateTranscriptCaptions({
+            clipStart: seg.start,
+            clipEnd: seg.end,
+            duration: seg.end - seg.start,
+            narrativeContext: "",
+            emotionalTone: "neutral",
+            brandNames: [],
+            style: "highlight",
+            transcriptSegments: segTranscript,
+          });
+          return res.segments;
+        });
+        if (groups.some((g) => g.length > 0)) captionsBySegment = groups;
       } catch { /* captions optional */ }
 
       // Brand product for card wipes
@@ -173,7 +201,7 @@ export async function autoGenerateHighlightReel(videoId: number, userId: number)
         segments: stitchSegs,
         platformConfig,
         captionsEnabled: true,
-        captionSegments,
+        captionsBySegment,
         outputDir,
         planId: plan.id,
         brandProduct,
@@ -212,5 +240,14 @@ export async function autoGenerateHighlightReel(videoId: number, userId: number)
     }
   } catch (err: any) {
     console.warn(`[HighlightAuto] Reel generation failed for video ${videoId} (non-fatal):`, err?.message || err);
+    if (planId != null) {
+      // Mirror the manual route's catch: an honest 'failed' beats an
+      // eternal spinner the guard then treats as existing work.
+      await storage
+        .updateStitchPlanStatus(planId, "failed", { errorMessage: err?.message || "Auto reel generation failed" })
+        .catch(() => { /* best-effort */ });
+    }
+  } finally {
+    inFlightAutoReels.delete(videoId);
   }
 }

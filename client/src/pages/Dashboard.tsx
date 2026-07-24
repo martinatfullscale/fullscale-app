@@ -606,6 +606,11 @@ export default function Dashboard() {
   // the connect flow just toasted and the user had to find the import
   // button themselves.
   const [importChoiceOpen, setImportChoiceOpen] = useState(false);
+  // The OAuth callback appends youtube_connected on EVERY round-trip,
+  // reconnects included — and "Import all" resets already-scanned videos to
+  // "Pending Scan". Defer the dialog until the library query settles and only
+  // prompt when it's actually empty (first connect).
+  const [importChoicePending, setImportChoicePending] = useState(false);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -616,7 +621,7 @@ export default function Dashboard() {
       queryClient.invalidateQueries({ queryKey: ["/api/auth/youtube/status"] });
       queryClient.invalidateQueries({ queryKey: ["/api/youtube/channel"] });
       queryClient.invalidateQueries({ queryKey: ["/api/youtube/videos"] });
-      setImportChoiceOpen(true);
+      setImportChoicePending(true);
     }
     if (params.get("youtube_error")) {
       const errorMsg = decodeURIComponent(params.get("youtube_error") || "An error occurred.");
@@ -625,6 +630,21 @@ export default function Dashboard() {
       window.history.replaceState({}, "", "/dashboard");
     }
   }, [toast, queryClient]);
+
+  useEffect(() => {
+    // videoIndexData === undefined means the query hasn't RUN yet (it stays
+    // disabled until youtubeStatus resolves, and a disabled query reports
+    // isLoading=false in react-query v5) — deciding then would re-open the
+    // dialog on every reconnect. Wait for a real response; an empty library
+    // comes back as {videos: []}, not undefined.
+    if (!importChoicePending || isLoadingVideoIndex || videoIndexData === undefined) return;
+    setImportChoicePending(false);
+    if ((videoIndexData.videos || []).length === 0) {
+      setImportChoiceOpen(true);
+    }
+    // Non-empty library: a reconnect — the Sync button covers deliberate
+    // re-imports without prompting a destructive default.
+  }, [importChoicePending, isLoadingVideoIndex, videoIndexData]);
 
   const handleConnect = () => {
     // If not logged in via Google OAuth, redirect to Google login first

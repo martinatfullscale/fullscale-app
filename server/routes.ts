@@ -9766,12 +9766,41 @@ export async function registerRoutes(
       // the surface box.)
       try {
         const saved = await storage.getPlacementsForVideo(videoId);
+        // The composite is ANCHOR-SPECIFIC (rendered at one surface's frame —
+        // different bbox = different render, see the save route's comment), so
+        // the match must be keyed by surface, never by product image alone:
+        // the same product placed on two surfaces would otherwise get one
+        // surface's composite cropped at the other's bbox — plain background.
+        const exportSurfaces = await storage.getDetectedSurfaces(videoId);
+        const surfaceBboxPct = new Map<number, { x: number; y: number; w: number; h: number }>();
+        for (const s of exportSurfaces as any[]) {
+          const sx = parseFloat(String(s.boundingBoxX)) || 0;
+          const sy = parseFloat(String(s.boundingBoxY)) || 0;
+          const sw = parseFloat(String(s.boundingBoxWidth)) || 0;
+          const sh = parseFloat(String(s.boundingBoxHeight)) || 0;
+          const k = sx <= 1 && sy <= 1 && sw <= 1 && sh <= 1 ? 100 : 1; // normalized → percent
+          surfaceBboxPct.set(s.id, { x: sx * k, y: sy * k, w: sw * k, h: sh * k });
+        }
+        const bboxIoU = (a: { x: number; y: number; w: number; h: number }, b: { x: number; y: number; w: number; h: number }) => {
+          const ix = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x));
+          const iy = Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+          const inter = ix * iy;
+          const union = a.w * a.h + b.w * b.h - inter;
+          return union > 0 ? inter / union : 0;
+        };
         for (const p of placements) {
           const bbox = p.keyframes?.[0]?.bbox; // {x,y,w,h} in 0-100 percent
           if (!bbox) continue;
-          const match = (saved || []).find(
-            (sp: any) => sp.isHarmonized && sp.harmonizedImageUrl && sp.productImageUrl === p.productImageUrl
-          );
+          const match = (saved || []).find((sp: any) => {
+            if (!sp.isHarmonized || !sp.harmonizedImageUrl || sp.productImageUrl !== p.productImageUrl) return false;
+            // Exact surface identity when the client sends it…
+            if (p.surfaceId != null) return sp.surfaceId === p.surfaceId;
+            // …else require the saved placement's anchor-surface bbox to
+            // substantially coincide with this placement's bbox. No match →
+            // no substitution (raw product export beats a wrong-scene patch).
+            const anchor = surfaceBboxPct.get(sp.surfaceId);
+            return !!anchor && bboxIoU(anchor, bbox) >= 0.3;
+          });
           if (!match) continue;
           try {
             // Load the composite (storage-served or absolute URL)
@@ -9810,6 +9839,10 @@ export async function registerRoutes(
             // the harmonized shadow; doubling it looks wrong).
             p.productAspectRatio = width / height;
             p.transform = { offsetX: 0, offsetY: 0, scale: 1, rotation: 0, flipH: false };
+            // The crop's background pixels only align at the exact bbox it
+            // was cut from — motion-track medians would draw it offset and
+            // letterboxed. Pin the exporter to the keyframe bbox.
+            p.motionTrackData = null;
             if (p.blend) {
               p.blend = { ...p.blend, shadowEnabled: false, featherRadius: 0, brightness: 0, contrast: 0 };
             }
@@ -11818,60 +11851,36 @@ export async function registerRoutes(
               transitionDuration: 0.5,
             }));
 
-          // Build caption segments from the transcript, remapped to the
-          // stitched output's timeline. Without this, captionsEnabled was a
-          // silent no-op — clipStitcher only burns captions when a caller
-          // passes captionSegments, and none ever did.
-          let stitchCaptions: CaptionSegment[] | undefined = undefined;
+          // Build caption groups per stitch segment (times relative to each
+          // segment's start). The output-timeline remap happens INSIDE
+          // clipStitcher, which alone knows whether the reel rendered via
+          // xfade, plain concat, or branded-card splices (cards add 0.8s per
+          // wipe junction — a pre-remapped xfade timeline would drift).
+          let stitchCaptionGroups: CaptionSegment[][] | undefined = undefined;
           if (captionsEnabled) {
             try {
               const vt = await storage.getVideoTranscript(videoId);
               if (vt?.status === "completed" && Array.isArray(vt.segments)) {
                 const { generateTranscriptCaptions } = await import("./lib/remix/captionEngine");
-                const out: CaptionSegment[] = [];
-                // When ANY junction crossfades, clipStitcher renders the
-                // whole reel through its xfade chain, where 'cut' junctions
-                // become 0.1s micro-fades that still consume output time.
-                // All-cut reels use the concat demuxer (true zero overlap).
-                const reelHasCrossfade = stitchSegs.some((s: any, i: number) => i > 0 && s.transitionIn !== "cut");
-                let outputOffset = 0;
-                let segIndex = 0;
-                for (const seg of stitchSegs) {
-                  // A crossfade overlaps this segment's entry with the tail
-                  // of the previous one — its content starts that much early.
-                  const overlap = segIndex === 0
-                    ? 0
-                    : seg.transitionIn === "cut"
-                      ? (reelHasCrossfade ? 0.1 : 0)
-                      : (seg.transitionDuration ?? 0.5);
-                  segIndex++;
-                  outputOffset -= overlap;
+                const groups: CaptionSegment[][] = stitchSegs.map((seg: any) => {
                   const segTranscript = (vt.segments as any[]).filter(
                     (t: any) => t.start >= seg.start - 0.5 && t.start <= seg.end
                   );
-                  if (segTranscript.length > 0) {
-                    const res = generateTranscriptCaptions({
-                      clipStart: seg.start,
-                      clipEnd: seg.end,
-                      duration: seg.end - seg.start,
-                      narrativeContext: "",
-                      emotionalTone: "neutral",
-                      brandNames: [],
-                      style: "highlight",
-                      transcriptSegments: segTranscript,
-                    });
-                    for (const c of res.segments) {
-                      out.push({
-                        ...c,
-                        startTime: Math.max(0, c.startTime + outputOffset),
-                        endTime: Math.max(0, c.endTime + outputOffset),
-                      });
-                    }
-                  }
-                  outputOffset += seg.end - seg.start;
-                }
-                if (out.length > 0) stitchCaptions = out;
-                console.log(`[Stitch] Built ${out.length} caption segments across ${stitchSegs.length} stitch segments`);
+                  if (segTranscript.length === 0) return [];
+                  const cap = generateTranscriptCaptions({
+                    clipStart: seg.start,
+                    clipEnd: seg.end,
+                    duration: seg.end - seg.start,
+                    narrativeContext: "",
+                    emotionalTone: "neutral",
+                    brandNames: [],
+                    style: "highlight",
+                    transcriptSegments: segTranscript,
+                  });
+                  return cap.segments;
+                });
+                if (groups.some((g) => g.length > 0)) stitchCaptionGroups = groups;
+                console.log(`[Stitch] Built ${groups.reduce((n, g) => n + g.length, 0)} caption segments across ${stitchSegs.length} stitch segments`);
               } else {
                 console.log(`[Stitch] No completed transcript for video ${videoId} — stitching without captions`);
               }
@@ -11898,7 +11907,7 @@ export async function registerRoutes(
             segments: stitchSegs,
             platformConfig,
             captionsEnabled,
-            captionSegments: stitchCaptions,
+            captionsBySegment: stitchCaptionGroups,
             outputDir,
             planId: plan.id,
             brandProduct: stitchBrandProduct,

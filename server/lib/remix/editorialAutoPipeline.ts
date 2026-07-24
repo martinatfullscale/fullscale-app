@@ -185,6 +185,7 @@ export async function runEditorialAutoPipeline(
     } else if (unrendered.length === 0) {
       console.log(`[EditorialAuto] Resume requested but all ${existing.length} clips already rendered — marking ready`);
       await storage.updateVideoEditorialStatus(videoId, "ready", { clipCount: existing.length });
+      fireAutoReel(videoId, userId);
       return {
         ...emptyResult,
         success: true,
@@ -200,7 +201,7 @@ export async function runEditorialAutoPipeline(
         // so concurrent triggers hit the guard instead of double-running.
         await storage.updateVideoEditorialStatus(videoId, "rendering", { error: null });
         const resumeSource = await resolvePinnedSource();
-        return await renderClipsOnly(videoId, resumeSource, unrendered, start);
+        return await renderClipsOnly(videoId, resumeSource, unrendered, start, userId);
       } catch (resumeErr: any) {
         await storage.updateVideoEditorialStatus(videoId, "failed", { error: `Source download failed: ${resumeErr?.message || resumeErr}` }).catch(() => {});
         return { ...emptyResult, error: `Source download failed: ${resumeErr?.message || resumeErr}`, durationMs: Date.now() - start };
@@ -477,9 +478,7 @@ export async function runEditorialAutoPipeline(
     // Auto highlight reel: once clips are ready, assemble the ~110s
     // narrative reel in the background (guards inside: transcript, >=3
     // rendered clips, no existing plan).
-    import("./highlightAuto")
-      .then(({ autoGenerateHighlightReel }) => autoGenerateHighlightReel(videoId, userId))
-      .catch((reelErr: any) => console.warn(`[EditorialAuto] Auto-reel failed (non-fatal):`, reelErr?.message || reelErr));
+    fireAutoReel(videoId, userId);
 
     // In-app heads-up for the creator (best-effort; video.userId is the
     // creator's identity key — the int userId param is display-only).
@@ -536,11 +535,23 @@ export async function runEditorialAutoPipeline(
  *
  * Caller must have verified the clips exist in DB and at least one is unrendered.
  */
+/**
+ * Fire-and-forget auto highlight reel. Shared by every completion path —
+ * the main pipeline, resume mode, and the all-rendered short-circuit — so
+ * redeploy-recovered videos get the reel too, not just clean first runs.
+ */
+function fireAutoReel(videoId: number, userId: number): void {
+  import("./highlightAuto")
+    .then(({ autoGenerateHighlightReel }) => autoGenerateHighlightReel(videoId, userId))
+    .catch((reelErr: any) => console.warn(`[EditorialAuto] Auto-reel failed (non-fatal):`, reelErr?.message || reelErr));
+}
+
 async function renderClipsOnly(
   videoId: number,
   filePath: string,
   clipsToRender: Array<Awaited<ReturnType<typeof storage.getEditorialClipsByVideo>>[number]>,
-  start: number
+  start: number,
+  userId: number
 ): Promise<EditorialAutoPipelineResult> {
   const emptyResult: EditorialAutoPipelineResult = {
     success: false,
@@ -659,6 +670,8 @@ async function renderClipsOnly(
       clipCount: renderedCount,
       error: renderErrors.length > 0 ? `${renderErrors.length} render failures (resume)` : null,
     });
+
+    fireAutoReel(videoId, userId);
 
     const durationMs = Date.now() - start;
     console.log(

@@ -233,6 +233,18 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
         return;
       }
       if (type === "trim" || type === "hook_improvement") {
+        // Assembled clips: clipStart/clipEnd is the source ENVELOPE (min/max
+        // across non-contiguous beats) and the copilot only sees envelope
+        // times — posting them as a contiguous range would render the whole
+        // span including the material the assembly cut out. Same guard as
+        // onGenerateClip below.
+        if (Array.isArray(eClip.segments) && eClip.segments.length > 1) {
+          toast({
+            title: "Assembled clip",
+            description: "Trim suggestions can't be applied to a multi-beat narrative clip yet — use platform re-targeting, or generate a fresh cut from search.",
+          });
+          return;
+        }
         const newStart = type === "trim" ? data.newStart : data.alternativeStart;
         const newEnd = type === "trim" ? data.newEnd : eClip.clipEnd;
         if (typeof newStart !== "number" || typeof newEnd !== "number" || newEnd <= newStart) {
@@ -252,9 +264,16 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
             scores: eClip.scores || null,
             compositeScore: eClip.finalScore || 0.7,
           }),
-        }).then((res) => {
+        }).then(async (res) => {
           if (res.ok) {
-            toast({ title: "New cut rendering", description: "A new editorial clip with the suggested bounds is rendering — it will appear in the list." });
+            // Retarget the copilot to the NEW clip — otherwise "tighten it
+            // more" keeps re-cutting from the original bounds.
+            const json = await res.json().catch(() => null);
+            if (json?.clip?.id) {
+              setCopilotClipId(json.clip.id);
+              setCopilotEditorialClip(json.clip);
+            }
+            toast({ title: "New cut rendering", description: "A new editorial clip with the suggested bounds is rendering — the copilot now targets it." });
             setEditorialRefreshKey((k) => k + 1);
           } else {
             toast({ title: "Apply failed", description: "Could not create the new cut", variant: "destructive" });
@@ -273,6 +292,12 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
         }).then((res) => {
           if (res.ok) {
             toast({ title: `Re-rendering as ${aspect}`, description: `Re-targeting for ${target}` });
+            setEditorialRefreshKey((k) => k + 1);
+          } else if (res.status === 404) {
+            // Re-analysis deletes and re-mints clip rows — the target is gone.
+            setCopilotClipId(undefined);
+            setCopilotEditorialClip(null);
+            toast({ title: "Clip no longer exists", description: "It was replaced (e.g. by re-analysis). Pick a new copilot target from the list.", variant: "destructive" });
             setEditorialRefreshKey((k) => k + 1);
           } else {
             toast({ title: "Re-render failed", description: "Try again when the clip finishes rendering", variant: "destructive" });
@@ -1480,6 +1505,10 @@ function TrimTimeline({
   const beginDrag = (mode: "start" | "end" | "move") => (e: React.PointerEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    // Capture the pointer so the drag survives leaving the window, and end on
+    // pointercancel too — a scroll-stolen touch otherwise leaks the window
+    // listeners and the selection keeps tracking a pointer that's gone.
+    try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); } catch { /* unsupported */ }
     dragRef.current = { mode, grabOffset: timeAt(e.clientX) - start };
     const onMove = (ev: PointerEvent) => {
       const d = dragRef.current;
@@ -1500,9 +1529,11 @@ function TrimTimeline({
       dragRef.current = null;
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
   };
 
   // Tick marks every ~10s, denser for short windows
@@ -1516,7 +1547,7 @@ function TrimTimeline({
         <span className="text-[10px] text-gray-500">Drag handles to trim · drag middle to move</span>
         <span className="text-[10px] text-purple-300 font-medium">{(end - start).toFixed(1)}s selected</span>
       </div>
-      <div ref={barRef} className="relative h-9 rounded-md bg-gray-900/80 border border-gray-700/60 overflow-hidden cursor-crosshair">
+      <div ref={barRef} className="relative h-9 rounded-md bg-gray-900/80 border border-gray-700/60 overflow-hidden cursor-crosshair touch-none">
         {/* Original clip range (ghost) */}
         <div
           className="absolute top-0 bottom-0 bg-gray-600/20 pointer-events-none"

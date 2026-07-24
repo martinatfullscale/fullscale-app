@@ -1977,6 +1977,10 @@ export default function PlacementPreviewModal({
 
     const placementData = [{
       surfaceType,
+      // Anchor surface identity — the server keys harmonized-composite
+      // substitution on this (product image alone is ambiguous when the
+      // same product sits on two surfaces).
+      surfaceId: selectedSurface.id,
       productImageUrl: productImage,
       transform,
       blend,

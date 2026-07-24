@@ -31,6 +31,15 @@ export interface StitchInput {
   platformConfig: PlatformConfig;
   captionsEnabled: boolean;
   captionSegments?: CaptionSegment[]; // timestamps relative to final output start
+  /**
+   * Preferred over captionSegments: one caption group per stitch segment,
+   * index-aligned with `segments`, timestamps relative to that SEGMENT's
+   * start. The stitcher remaps them onto the output timeline of whichever
+   * stitch mode actually renders — callers can't know that up front, because
+   * branded-card availability is decided here at render time (a pre-remapped
+   * xfade timeline drifts 1.3s per junction when the card path runs).
+   */
+  captionsBySegment?: Array<CaptionSegment[] | undefined>;
   outputDir: string;
   planId: number;
   /** Brand product for transition card generation (Phase 3) */
@@ -60,6 +69,12 @@ const STITCH_CONFIG = {
   THUMBNAIL_WIDTH: 360,
   FFMPEG_TIMEOUT_MS: 600000, // 10 minutes — stitching is heavier
   DEFAULT_CROSSFADE_DURATION: 0.5,
+  CARD_DURATION_SEC: 0.8, // branded interstitial length — caption remap depends on it
+  // All concat parts must share these audio params for -c copy to hold —
+  // the card is synthesized at this rate, so segments must be forced to it
+  // (sources are commonly 48kHz/mono, which would corrupt the copied stream).
+  AUDIO_SAMPLE_RATE: "44100",
+  AUDIO_CHANNELS: "2",
 };
 
 // ── Main Stitch Function ───────────────────────────────────────────
@@ -153,10 +168,23 @@ async function stitchSegmentsUngated(input: StitchInput): Promise<StitchOutput> 
       return { ...emptyResult, error: "Stitched output not created" };
     }
 
+    // Captions: remap per-segment groups onto the timeline of the mode that
+    // ACTUALLY rendered (card splices add time, xfades consume it) — falling
+    // back to caller-flattened captionSegments for legacy callers.
+    let effectiveCaptions = captionSegments;
+    if (input.captionsBySegment && input.captionsBySegment.some((g) => g && g.length > 0)) {
+      const mode: StitchMode = segments.length > 1 && hasBrandedWipe && cardVideoPath
+        ? "card"
+        : segments.length > 1 && hasCrossfade
+          ? "xfade"
+          : "concat";
+      effectiveCaptions = remapCaptionsForMode(segments, input.captionsBySegment, mode);
+    }
+
     // Apply caption burn-in if needed (post-stitch)
-    if (captionsEnabled && captionSegments && captionSegments.length > 0) {
+    if (captionsEnabled && effectiveCaptions && effectiveCaptions.length > 0) {
       const captionedPath = outputPath.replace(".mp4", "_captioned.mp4");
-      await burnCaptions(outputPath, captionSegments, platformConfig, captionedPath);
+      await burnCaptions(outputPath, effectiveCaptions, platformConfig, captionedPath);
       if (fs.existsSync(captionedPath)) {
         fs.unlinkSync(outputPath);
         fs.renameSync(captionedPath, outputPath);
@@ -204,12 +232,12 @@ async function renderCardVideo(
   cardImagePath: string,
   config: PlatformConfig,
   outputPath: string,
-  durationSec: number = 0.8,
+  durationSec: number = STITCH_CONFIG.CARD_DURATION_SEC,
 ): Promise<void> {
   const args = [
     "-nostdin", "-y",
     "-loop", "1", "-i", cardImagePath,
-    "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+    "-f", "lavfi", "-i", `anullsrc=r=${STITCH_CONFIG.AUDIO_SAMPLE_RATE}:cl=stereo`,
     "-t", durationSec.toString(),
     "-vf", `scale=${config.targetWidth}:${config.targetHeight}:force_original_aspect_ratio=decrease,pad=${config.targetWidth}:${config.targetHeight}:(ow-iw)/2:(oh-ih)/2:black,format=yuv420p,fade=t=in:st=0:d=0.15,fade=t=out:st=${(durationSec - 0.15).toFixed(2)}:d=0.15`,
     "-r", config.targetFps.toString(),
@@ -277,6 +305,7 @@ async function extractSegment(
     "-preset", STITCH_CONFIG.PRESET,
     "-crf", STITCH_CONFIG.CRF.toString(),
     "-c:a", "aac", "-b:a", STITCH_CONFIG.AUDIO_BITRATE,
+    "-ar", STITCH_CONFIG.AUDIO_SAMPLE_RATE, "-ac", STITCH_CONFIG.AUDIO_CHANNELS,
     "-shortest",
     "-movflags", "+faststart",
     outputPath,
@@ -409,6 +438,42 @@ async function stitchWithXfade(
   ];
 
   await runFFmpeg(args, STITCH_CONFIG.FFMPEG_TIMEOUT_MS);
+}
+
+// ── Caption Remap (mode-aware) ─────────────────────────────────────
+
+type StitchMode = "card" | "concat" | "xfade";
+
+/**
+ * Remap per-segment captions (times relative to each segment's start) onto
+ * the OUTPUT timeline of the mode actually rendered:
+ * - card:   hard-cut concat; each branded_wipe junction ADDS a card's length.
+ * - xfade:  crossfades overlap 0.5s; cuts render as 0.1s micro-fades.
+ * - concat: true zero-overlap cuts (also single-segment) — plain offsets.
+ */
+function remapCaptionsForMode(
+  segments: StitchSegment[],
+  captionsBySegment: Array<CaptionSegment[] | undefined>,
+  mode: StitchMode,
+): CaptionSegment[] {
+  const out: CaptionSegment[] = [];
+  let offset = 0;
+  for (let i = 0; i < segments.length; i++) {
+    if (i > 0) {
+      if (mode === "card") {
+        if (segments[i].transitionIn === "branded_wipe") offset += STITCH_CONFIG.CARD_DURATION_SEC;
+      } else if (mode === "xfade") {
+        offset -= segments[i].transitionIn === "cut"
+          ? 0.1
+          : (segments[i].transitionDuration ?? STITCH_CONFIG.DEFAULT_CROSSFADE_DURATION);
+      }
+    }
+    for (const c of captionsBySegment[i] || []) {
+      out.push({ ...c, startTime: Math.max(0, c.startTime + offset), endTime: Math.max(0, c.endTime + offset) });
+    }
+    offset += segments[i].end - segments[i].start;
+  }
+  return out;
 }
 
 // ── Caption Burn-in (post-stitch) ──────────────────────────────────

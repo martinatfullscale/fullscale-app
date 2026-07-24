@@ -613,12 +613,30 @@ export class DatabaseStorage implements IStorage {
     return newBid;
   }
 
+  /**
+   * Resolve every identifier form (users.id + email) for a mixed-key identity
+   * column match. Mirrors getVideoIndex's dual-form lookup: the boot sweep
+   * (normalizeLegacyIdentityKeys) rewrites email-keyed rows to users.id, so
+   * exact-email readers would silently return nothing post-sweep without this.
+   */
+  private async identityMatchValues(userId: string): Promise<string[]> {
+    const matchValues = new Set<string>([userId]);
+    try {
+      let user = await this.getUserById(userId);
+      if (!user && userId.includes("@")) user = await this.getUserByEmail(userId);
+      if (user?.id) matchValues.add(user.id);
+      if (user?.email) matchValues.add(user.email);
+    } catch { /* fall back to the raw value */ }
+    return Array.from(matchValues);
+  }
+
   async getActiveBidsForCreator(creatorUserId: string): Promise<MonetizationItem[]> {
+    const ids = await this.identityMatchValues(creatorUserId);
     return await db
       .select()
       .from(monetizationItems)
       .where(and(
-        eq(monetizationItems.creatorUserId, creatorUserId),
+        inArray(monetizationItems.creatorUserId, ids),
         eq(monetizationItems.status, "pending")
       ));
   }
@@ -745,11 +763,15 @@ export class DatabaseStorage implements IStorage {
   }
 
   async upsertVideoIndex(video: InsertVideoIndex): Promise<VideoIndex> {
+    // Alias-aware existence check: the indexer still writes email keys while
+    // the boot sweep converges rows to users.id — an exact-email match would
+    // miss the normalized row and INSERT a duplicate on every refresh.
+    const ids = await this.identityMatchValues(video.userId);
     const [existing] = await db
       .select()
       .from(videoIndex)
       .where(and(
-        eq(videoIndex.userId, video.userId),
+        inArray(videoIndex.userId, ids),
         eq(videoIndex.youtubeId, video.youtubeId)
       ));
     
@@ -863,11 +885,12 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getPendingVideos(userId: string, limit: number = 10): Promise<VideoIndex[]> {
+    const ids = await this.identityMatchValues(userId);
     return await db
       .select()
       .from(videoIndex)
       .where(and(
-        eq(videoIndex.userId, userId),
+        inArray(videoIndex.userId, ids),
         eq(videoIndex.status, "Pending Scan")
       ))
       .orderBy(desc(videoIndex.priorityScore))
@@ -992,28 +1015,14 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getVideosWithOpportunities(userId: string): Promise<VideoWithOpportunities[]> {
-    // First, try to get user by ID to also check by email
-    const user = await this.getUserById(userId);
-    const userEmail = user?.email;
-    
-    // Query videos matching either the user ID or the user's email
-    let videos;
-    if (userEmail && userEmail !== userId) {
-      videos = await db
-        .select()
-        .from(videoIndex)
-        .where(or(
-          eq(videoIndex.userId, userId),
-          eq(videoIndex.userId, userEmail)
-        ))
-        .orderBy(desc(videoIndex.priorityScore));
-    } else {
-      videos = await db
-        .select()
-        .from(videoIndex)
-        .where(eq(videoIndex.userId, userId))
-        .orderBy(desc(videoIndex.priorityScore));
-    }
+    // Dual-form match: callers pass either users.id or an email, and rows may
+    // hold either form (the boot sweep converges them to users.id over time).
+    const ids = await this.identityMatchValues(userId);
+    const videos = await db
+      .select()
+      .from(videoIndex)
+      .where(inArray(videoIndex.userId, ids))
+      .orderBy(desc(videoIndex.priorityScore));
     
     const results: VideoWithOpportunities[] = [];
     
@@ -1097,12 +1106,13 @@ export class DatabaseStorage implements IStorage {
 
   async getVideosWithSurfacesPublic(userEmail: string): Promise<any[]> {
     // Get ready videos for a creator by email (for public profile page)
+    const ids = await this.identityMatchValues(userEmail);
     const videos = await db
       .select()
       .from(videoIndex)
       .where(
         and(
-          eq(videoIndex.userId, userEmail),
+          inArray(videoIndex.userId, ids),
           or(
             eq(videoIndex.status, "Ready"),
             eq(videoIndex.status, "Scan Complete"),
@@ -2253,14 +2263,33 @@ export class DatabaseStorage implements IStorage {
     // design, consumers fully alias-aware — normalizing would duplicate
     // rows on reconnect) and int-keyed tables (stableUserIntId domain).
     const results: Record<string, number> = {};
-    const sweeps: Array<[string, string, string]> = [
-      ["video_index", "user_id", "videoIndex.userId"],
-      ["brand_placement_assignments", "creator_user_id", "placements.creatorUserId"],
-      ["brand_placement_assignments", "brand_user_id", "placements.brandUserId"],
-      ["monetization_items", "creator_user_id", "monetizationItems.creatorUserId"],
-      ["social_accounts", "user_id", "socialAccounts.userId"],
+    // brand_products must convert in lockstep with placements.brandUserId:
+    // the delegated-product flow compares brandProducts.userId to
+    // placement.brandUserId directly — converting one side only breaks it.
+    const sweeps: Array<{ table: string; column: string; label: string; guard?: string }> = [
+      { table: "video_index", column: "user_id", label: "videoIndex.userId" },
+      { table: "brand_placement_assignments", column: "creator_user_id", label: "placements.creatorUserId" },
+      { table: "brand_placement_assignments", column: "brand_user_id", label: "placements.brandUserId" },
+      { table: "monetization_items", column: "creator_user_id", label: "monetizationItems.creatorUserId" },
+      { table: "brand_products", column: "user_id", label: "brandProducts.userId" },
+      {
+        table: "social_accounts", column: "user_id", label: "socialAccounts.userId",
+        // A user who reconnected post-dual-ID already has a users.id-keyed
+        // twin for the same platform account; converting the email row would
+        // violate idx_social_accounts_unique and roll back the WHOLE
+        // statement (every user's rows) on every boot. Skip rows whose
+        // converged form already exists — the twin holds the fresher token
+        // and the email row stays covered by the alias lookups.
+        guard: `AND NOT EXISTS (
+            SELECT 1 FROM social_accounts s2
+            WHERE s2.user_id = u.id
+              AND s2.platform = t.platform
+              AND s2.account_type = t.account_type
+              AND s2.platform_account_id = t.platform_account_id
+          )`,
+      },
     ];
-    for (const [table, column, label] of sweeps) {
+    for (const { table, column, label, guard } of sweeps) {
       try {
         const res: any = await db.execute(sql`
           UPDATE ${sql.raw(`"${table}"`)} t
@@ -2268,6 +2297,7 @@ export class DatabaseStorage implements IStorage {
           FROM users u
           WHERE t.${sql.raw(`"${column}"`)} LIKE '%@%'
             AND lower(t.${sql.raw(`"${column}"`)}) = lower(u.email)
+            ${sql.raw(guard || "")}
         `);
         const count = Number(res?.rowCount ?? 0);
         results[label] = count;
