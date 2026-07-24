@@ -9748,11 +9748,70 @@ export async function registerRoutes(
 
       const userId = req.authUserId || req.googleUser?.email || "anonymous";
 
-      // NOTE: harmonizedImageUrl is deliberately NOT substituted here — it
-      // stores a full-scene composite frame (scene + product), not a product
-      // cutout, so overlaying it into the surface bbox would stamp the whole
-      // scene into the video. Harmonized-look-in-exports needs a bbox-cropped
-      // product composite keyed by surfaceId before it can be wired.
+      // Harmonized exports, done properly this time: harmonizedImageUrl is a
+      // FULL-SCENE composite, so we crop it to the placement's bbox region —
+      // the crop contains the harmonized product + its cast shadow — and use
+      // THAT as the overlay image. Composited back into the same bbox the
+      // geometry aligns pixel-for-pixel. (A naive substitution of the whole
+      // composite was reverted in review: it stamped the entire scene into
+      // the surface box.)
+      try {
+        const saved = await storage.getPlacementsForVideo(videoId);
+        for (const p of placements) {
+          const bbox = p.keyframes?.[0]?.bbox; // {x,y,w,h} in 0-100 percent
+          if (!bbox) continue;
+          const match = (saved || []).find(
+            (sp: any) => sp.isHarmonized && sp.harmonizedImageUrl && sp.productImageUrl === p.productImageUrl
+          );
+          if (!match) continue;
+          try {
+            // Load the composite (storage-served or absolute URL)
+            let compositeBuf: Buffer | null = null;
+            const hUrl: string = match.harmonizedImageUrl!;  // guarded by the find() predicate
+            if (hUrl.startsWith("/storage/")) {
+              const { downloadToTempFile } = await import("./lib/objectStorage");
+              const local = await downloadToTempFile(objectKeyFromServeUrl(hUrl), "/tmp/harmonized-crops");
+              compositeBuf = fs.readFileSync(local);
+              try { fs.unlinkSync(local); } catch { /* ignore */ }
+            } else if (/^https?:/.test(hUrl)) {
+              const resp = await fetch(hUrl);
+              if (resp.ok) compositeBuf = Buffer.from(await resp.arrayBuffer());
+            }
+            if (!compositeBuf) continue;
+
+            const meta = await sharp(compositeBuf).metadata();
+            if (!meta.width || !meta.height) continue;
+            const left = Math.max(0, Math.round((bbox.x / 100) * meta.width));
+            const top = Math.max(0, Math.round((bbox.y / 100) * meta.height));
+            const width = Math.min(meta.width - left, Math.max(8, Math.round((bbox.w / 100) * meta.width)));
+            const height = Math.min(meta.height - top, Math.max(8, Math.round((bbox.h / 100) * meta.height)));
+            if (width < 8 || height < 8) continue;
+
+            const cropBuf = await sharp(compositeBuf).extract({ left, top, width, height }).png().toBuffer();
+            const cropPath = `/tmp/harmonized-crops/crop-${videoId}-${p.keyframes[0].timestamp ?? 0}-${left}x${top}.png`;
+            fs.mkdirSync("/tmp/harmonized-crops", { recursive: true });
+            fs.writeFileSync(cropPath, cropBuf);
+            const cropKey = `public/exports/harmonized-crops/v${videoId}-${left}x${top}-${width}x${height}.png`;
+            const cropUrl = await uploadFileToStorage(cropPath, cropKey);
+            try { fs.unlinkSync(cropPath); } catch { /* ignore */ }
+
+            p.productImageUrl = cropUrl;
+            // The crop's aspect IS the bbox aspect — force exact fill, and
+            // kill client-side shadow/feather (the composite already carries
+            // the harmonized shadow; doubling it looks wrong).
+            p.productAspectRatio = width / height;
+            p.transform = { offsetX: 0, offsetY: 0, scale: 1, rotation: 0, flipH: false };
+            if (p.blend) {
+              p.blend = { ...p.blend, shadowEnabled: false, featherRadius: 0, brightness: 0, contrast: 0 };
+            }
+            console.log(`[Video Export] Harmonized crop substituted for "${p.surfaceType}" (${width}x${height})`);
+          } catch (cropErr: any) {
+            console.warn(`[Video Export] Harmonized crop failed for "${p.surfaceType}" (using raw product): ${cropErr?.message}`);
+          }
+        }
+      } catch (harmErr: any) {
+        console.warn(`[Video Export] Harmonized lookup failed (non-fatal): ${harmErr?.message}`);
+      }
 
       // Create export job in DB
       const exportJob = await storage.createVideoExport({
