@@ -38,6 +38,8 @@ interface CopilotMessage {
 interface RemixCopilotProps {
   videoId: number;
   clipId?: number;
+  /** Which store the target lives in — remix generatedClips (default) or editorialClips */
+  clipType?: "remix" | "editorial";
   /** Human-readable label for the targeted clip, shown in the header */
   clipLabel?: string;
   open: boolean;
@@ -87,6 +89,7 @@ const SUGGESTION_LABELS: Record<string, string> = {
 export default function RemixCopilot({
   videoId,
   clipId,
+  clipType,
   clipLabel,
   open,
   onClose,
@@ -155,6 +158,7 @@ export default function RemixCopilot({
           trigger,
           userMessage: userMessage.trim() || undefined,
           clipId: clipId || undefined,
+          clipType: clipType || undefined,
         }),
       });
 

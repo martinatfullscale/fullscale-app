@@ -89,6 +89,8 @@ export interface EditorialClipsProps {
   mode: "creator" | "brand" | "remix";
   onGenerateClip?: (clip: RankedClip) => void;
   onBuyPlacement?: (clip: RankedClip) => void;
+  /** Remix-tab: make this clip the AI copilot's target */
+  onSelectForCopilot?: (clip: RankedClip) => void;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -144,7 +146,7 @@ function ScoreBar({ label, value, icon: Icon }: { label: string; value: number; 
 
 // ── Main Component ─────────────────────────────────────────────────
 
-export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPlacement }: EditorialClipsProps) {
+export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPlacement, onSelectForCopilot }: EditorialClipsProps) {
   const { toast } = useToast();
 
   const [transcriptStatus, setTranscriptStatus] = useState<TranscriptStatus>({ status: "none" });
@@ -845,6 +847,7 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
                   isExpanded={expandedClip === idx}
                   onToggleExpand={() => setExpandedClip(expandedClip === idx ? null : idx)}
                   onGenerate={onGenerateClip ? () => onGenerateClip(clip) : undefined}
+                  onCopilot={onSelectForCopilot ? () => onSelectForCopilot(clip) : undefined}
                   onBuy={onBuyPlacement ? () => onBuyPlacement(clip) : undefined}
                   onPlay={clip.exportPath ? () => setPlayingClip(clip) : undefined}
                   onRerenderAspect={(clip as any).id ? async (aspect) => {
@@ -961,6 +964,7 @@ function EditorialClipCard({
   onGenerate,
   onBuy,
   onPlay,
+  onCopilot,
   onRerenderAspect,
 }: {
   clip: RankedClip;
@@ -971,6 +975,7 @@ function EditorialClipCard({
   onGenerate?: () => void;
   onBuy?: () => void;
   onPlay?: () => void;
+  onCopilot?: () => void;
   onRerenderAspect?: (aspect: "9:16" | "16:9") => void;
 }) {
   const viralPct = Math.round(clip.finalScore * 100);
@@ -1110,6 +1115,19 @@ function EditorialClipCard({
                   );
                 })}
               </div>
+            )}
+            {mode === "remix" && onCopilot && (
+              <Button
+                size="sm"
+                onClick={onCopilot}
+                variant="ghost"
+                className="text-violet-300 hover:text-violet-200 text-xs"
+                title="Make this clip the AI copilot's target"
+                data-testid={`button-copilot-${(clip as any).id ?? rank}`}
+              >
+                <Sparkles className="w-3 h-3 mr-1" />
+                Copilot
+              </Button>
             )}
             {mode === "remix" && onGenerate && (
               <Button

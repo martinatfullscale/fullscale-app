@@ -159,6 +159,11 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
 
   // AI Co-Pilot state (Phase 4)
   const [copilotClipId, setCopilotClipId] = useState<number | undefined>(undefined);
+  // Which store the target lives in; editorial targets carry the full row
+  // (Apply actions need its bounds since RemixStudio doesn't hold that list)
+  const [copilotClipType, setCopilotClipType] = useState<"remix" | "editorial">("remix");
+  const [copilotEditorialClip, setCopilotEditorialClip] = useState<any | null>(null);
+  const [editorialRefreshKey, setEditorialRefreshKey] = useState(0);
 
   // Load existing jobs, clips, and stitch plans
   const loadData = useCallback(async (): Promise<GeneratedClip[]> => {
@@ -176,7 +181,10 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
         setClips(loadedClips);
         // Auto-set copilot clip ID to latest clip if not already set
         if (loadedClips.length > 0) {
-          setCopilotClipId(prev => prev ?? loadedClips[loadedClips.length - 1].id);
+          setCopilotClipId(prev => {
+            if (prev == null) setCopilotClipType("remix");
+            return prev ?? loadedClips[loadedClips.length - 1].id;
+          });
         }
       }
       if (stitchRes.ok) setStitchPlans(await stitchRes.json());
@@ -213,6 +221,70 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
   // Handle co-pilot suggestion application (Phase 4)
   const handleApplySuggestion = useCallback((suggestion: any) => {
     const { type, data } = suggestion;
+
+    // Editorial-tab targets: Apply maps to editorial equivalents. Trim and
+    // hook create a NEW rendered editorial clip at the suggested bounds;
+    // platform_switch re-renders in the mapped aspect. Video-scoped actions
+    // (add_placement, generate_asset) fall through to the shared cases.
+    if (copilotClipType === "editorial" && ["trim", "hook_improvement", "caption_edit", "platform_switch"].includes(type)) {
+      const eClip = copilotEditorialClip;
+      if (!eClip) {
+        toast({ title: "No editorial clip selected", description: "Select an editorial clip first.", variant: "destructive" });
+        return;
+      }
+      if (type === "trim" || type === "hook_improvement") {
+        const newStart = type === "trim" ? data.newStart : data.alternativeStart;
+        const newEnd = type === "trim" ? data.newEnd : eClip.clipEnd;
+        if (typeof newStart !== "number" || typeof newEnd !== "number" || newEnd <= newStart) {
+          toast({ title: "Cannot apply", description: "Suggestion has no usable time range", variant: "destructive" });
+          return;
+        }
+        fetch(`/api/videos/${videoId}/editorial-clip/render`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            clipStart: newStart,
+            clipEnd: newEnd,
+            suggestedTitle: `${eClip.suggestedTitle || "Clip"} (${type === "trim" ? "trimmed" : "new hook"})`,
+            topicTags: eClip.topicTags || [],
+            reasoning: suggestion.reason,
+            scores: eClip.scores || null,
+            compositeScore: eClip.finalScore || 0.7,
+          }),
+        }).then((res) => {
+          if (res.ok) {
+            toast({ title: "New cut rendering", description: "A new editorial clip with the suggested bounds is rendering — it will appear in the list." });
+            setEditorialRefreshKey((k) => k + 1);
+          } else {
+            toast({ title: "Apply failed", description: "Could not create the new cut", variant: "destructive" });
+          }
+        });
+        return;
+      }
+      if (type === "platform_switch") {
+        const target = String(data.betterPlatform || "");
+        const aspect = ["youtube", "twitter", "linkedin"].includes(target) ? "16:9" : "9:16";
+        fetch(`/api/editorial-clips/${eClip.id}/rerender`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ aspect }),
+        }).then((res) => {
+          if (res.ok) {
+            toast({ title: `Re-rendering as ${aspect}`, description: `Re-targeting for ${target}` });
+            setEditorialRefreshKey((k) => k + 1);
+          } else {
+            toast({ title: "Re-render failed", description: "Try again when the clip finishes rendering", variant: "destructive" });
+          }
+        });
+        return;
+      }
+      // caption_edit: editorial renders always burn the karaoke style
+      toast({ title: "Captions on editorial clips", description: "Editorial clips use the word-highlight caption style automatically; style variants apply to Auto-Remix clips." });
+      return;
+    }
+
     switch (type) {
       case "trim":
       case "hook_improvement": {
@@ -352,7 +424,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
       default:
         toast({ title: "Suggestion noted", description: suggestion.reason });
     }
-  }, [copilotClipId, toast, loadData, scheduleReloads, videoId]);
+  }, [copilotClipId, copilotClipType, copilotEditorialClip, toast, loadData, scheduleReloads, videoId]);
 
   useEffect(() => {
     if (open) loadData();
@@ -682,7 +754,18 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
               </p>
               <EditorialClips
                 videoId={videoId}
+                key={editorialRefreshKey}
                 mode="remix"
+                onSelectForCopilot={(clip: any) => {
+                  if (!clip?.id) {
+                    toast({ title: "Clip not saved yet", description: "Only saved clips can be copilot targets." });
+                    return;
+                  }
+                  setCopilotClipId(clip.id);
+                  setCopilotClipType("editorial");
+                  setCopilotEditorialClip(clip);
+                  toast({ title: "Copilot target set", description: `"${clip.suggestedTitle || `Clip #${clip.id}`}" — ask the copilot or apply its suggestions.` });
+                }}
                 onGenerateClip={(clip) => {
                   if (Array.isArray((clip as any).segments) && (clip as any).segments.length > 1) {
                     // clipRange would extract the contiguous ENVELOPE — for an
@@ -905,7 +988,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
                       key={clip.id}
                       clip={clip}
                       isSelected={copilotClipId === clip.id}
-                      onSelect={() => setCopilotClipId(clip.id)}
+                      onSelect={() => { setCopilotClipId(clip.id); setCopilotClipType("remix"); setCopilotEditorialClip(null); }}
                       onApprove={() => approveClip(clip.id)}
                       onReject={() => rejectClip(clip.id)}
                       onReRender={reRenderClip}
@@ -1129,7 +1212,12 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
             <RemixCopilot
               videoId={videoId}
               clipId={copilotClipId}
+              clipType={copilotClipType}
               clipLabel={(() => {
+                if (copilotClipType === "editorial") {
+                  const e = copilotEditorialClip;
+                  return e ? `Editorial · ${e.suggestedTitle || `#${e.id}`}` : undefined;
+                }
                 const target = clips.find(c => c.id === copilotClipId);
                 if (!target) return undefined;
                 const platform = target.platformTarget || "clip";

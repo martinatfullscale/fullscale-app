@@ -11971,7 +11971,7 @@ export async function registerRoutes(
   app.post("/api/remix/:videoId/copilot/ask", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const videoId = parseInt(req.params.videoId);
-      const { trigger, userMessage, clipId } = req.body;
+      const { trigger, userMessage, clipId, clipType } = req.body;
 
       if (!trigger || !["post_generation", "post_trim", "low_score", "user_question"].includes(trigger)) {
         return res.status(400).json({ error: "Invalid trigger. Must be one of: post_generation, post_trim, low_score, user_question" });
@@ -12007,9 +12007,26 @@ export async function registerRoutes(
         category: b.category || null,
       }));
 
-      // Load current clip if specified
+      // Load current clip if specified. clipType "editorial" targets an
+      // editorialClips row (the Editorial tab); default is a remix
+      // generatedClips row — previously the copilot could only see those.
       let currentClip: any = undefined;
-      if (clipId) {
+      if (clipId && clipType === "editorial") {
+        const eClip = await storage.getEditorialClipById(parseInt(clipId));
+        if (eClip && eClip.videoId === videoId) {
+          currentClip = {
+            clipId: eClip.id,
+            start: eClip.clipStart ?? 0,
+            end: eClip.clipEnd ?? 0,
+            duration: eClip.duration ?? 0,
+            platform: (eClip as any).aspectRatio === "16:9" ? "youtube" : "tiktok",
+            qualityScore: (eClip as any).qualityScore ?? eClip.finalScore ?? 0,
+            placements: [],
+            captions: undefined,
+            exportPath: eClip.exportPath || undefined,
+          };
+        }
+      } else if (clipId) {
         const clip = await storage.getClipById(parseInt(clipId));
         if (clip) {
           currentClip = {
