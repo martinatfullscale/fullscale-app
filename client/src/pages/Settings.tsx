@@ -110,7 +110,7 @@ export default function Settings() {
   const { data: approvedPlacements } = useQuery<{ placements: Array<{ creatorPayoutCents?: number | null }> }>({
     queryKey: ["/api/creator/placements/inbox", "creator_approved", "payouts"],
     queryFn: async () => {
-      const res = await fetch("/api/creator/placements/inbox?status=creator_approved", { credentials: "include" });
+      const res = await fetch("/api/creator/placements/inbox?status=creator_approved,pending_brand_review,brand_approved", { credentials: "include" });
       if (!res.ok) return { placements: [] };
       return res.json();
     },

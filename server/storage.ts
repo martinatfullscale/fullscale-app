@@ -1192,7 +1192,7 @@ export class DatabaseStorage implements IStorage {
    * Statuses considered "active" — they hold a surface lock and prevent other
    * brands from requesting the same surface.
    */
-  private readonly ACTIVE_PLACEMENT_STATUSES = ["pending_creator_review", "creator_approved"] as const;
+  private readonly ACTIVE_PLACEMENT_STATUSES = ["pending_creator_review", "creator_approved", "pending_brand_review", "brand_approved"] as const;
 
   /**
    * Returns the active assignment for a surface, if any.
@@ -1205,10 +1205,7 @@ export class DatabaseStorage implements IStorage {
       .where(
         and(
           eq(brandPlacementAssignments.surfaceId, surfaceId),
-          or(
-            eq(brandPlacementAssignments.status, "pending_creator_review"),
-            eq(brandPlacementAssignments.status, "creator_approved"),
-          ),
+          inArray(brandPlacementAssignments.status, [...this.ACTIVE_PLACEMENT_STATUSES]),
         ),
       )
       .limit(1);
@@ -1269,13 +1266,16 @@ export class DatabaseStorage implements IStorage {
     const aliases = [creatorUserId];
     if (user?.email && user.email !== creatorUserId) aliases.push(user.email);
 
+    // status accepts a comma-separated list — "active" placements span
+    // creator_approved, pending_brand_review, and brand_approved.
+    const statuses = status.split(",").map((s) => s.trim()).filter(Boolean);
     return await db
       .select()
       .from(brandPlacementAssignments)
       .where(
         and(
           inArray(brandPlacementAssignments.creatorUserId, aliases),
-          eq(brandPlacementAssignments.status, status),
+          inArray(brandPlacementAssignments.status, statuses),
         ),
       )
       .orderBy(desc(brandPlacementAssignments.createdAt));
@@ -1292,7 +1292,9 @@ export class DatabaseStorage implements IStorage {
       .where(
         and(
           eq(brandPlacementAssignments.videoId, videoId),
-          eq(brandPlacementAssignments.status, "creator_approved"),
+          // Overlays render from creator approval onward — through brand
+          // review and after final brand approval.
+          inArray(brandPlacementAssignments.status, ["creator_approved", "pending_brand_review", "brand_approved"]),
         ),
       );
   }
@@ -1311,7 +1313,7 @@ export class DatabaseStorage implements IStorage {
    */
   async updateBrandPlacementStatus(
     id: number,
-    status: "creator_approved" | "creator_rejected" | "brand_withdrawn" | "expired",
+    status: "creator_approved" | "creator_rejected" | "brand_withdrawn" | "expired" | "pending_brand_review" | "brand_approved",
     opts: { rejectionReason?: string } = {},
   ): Promise<BrandPlacementAssignment | undefined> {
     const patch: Record<string, any> = {

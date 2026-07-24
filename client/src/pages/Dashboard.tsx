@@ -99,7 +99,7 @@ function RealBrandCampaigns() {
   const { data: approved } = useQuery<{ placements: any[] }>({
     queryKey: ["/api/creator/placements/inbox", "creator_approved"],
     queryFn: async () => {
-      const res = await fetch("/api/creator/placements/inbox?status=creator_approved", { credentials: "include" });
+      const res = await fetch("/api/creator/placements/inbox?status=creator_approved,pending_brand_review,brand_approved", { credentials: "include" });
       if (!res.ok) return { placements: [] };
       return res.json();
     },

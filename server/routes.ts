@@ -8371,9 +8371,10 @@ export async function registerRoutes(
       // so the brand tracking UI doesn't need N round-trips.
       const hydrated = await Promise.all(
         placements.map(async (p) => {
-          const [product, video] = await Promise.all([
+          const [product, video, clip] = await Promise.all([
             storage.getBrandProduct(p.brandProductId),
             storage.getVideoById(p.videoId),
+            p.editorialClipId ? storage.getEditorialClipById(p.editorialClipId) : Promise.resolve(null),
           ]);
           return {
             ...p,
@@ -8381,6 +8382,10 @@ export async function registerRoutes(
               ? { id: product.id, name: product.name, imageUrl: product.imageUrl, thumbnailUrl: product.thumbnailUrl, category: product.category }
               : null,
             video: video ? { id: video.id, title: video.title, thumbnailUrl: video.thumbnailUrl } : null,
+            // The baked render — what the brand reviews at the final gate
+            clip: clip
+              ? { id: clip.id, exportPath: clip.exportPath, thumbnailPath: (clip as any).thumbnailPath ?? null, renderStatus: clip.renderStatus, suggestedTitle: clip.suggestedTitle }
+              : null,
           };
         })
       );
@@ -8404,7 +8409,7 @@ export async function registerRoutes(
       if (placement.brandUserId !== brandUserId) {
         return res.status(403).json({ error: "Not authorized to withdraw this placement" });
       }
-      if (!["pending_creator_review", "creator_approved"].includes(placement.status)) {
+      if (!["pending_creator_review", "creator_approved", "pending_brand_review"].includes(placement.status)) {
         return res.status(400).json({ error: `Cannot withdraw a ${placement.status} placement` });
       }
       const updated = await storage.updateBrandPlacementStatus(id, "brand_withdrawn");
@@ -8511,6 +8516,42 @@ export async function registerRoutes(
     }
   });
 
+  // POST /api/brand/placements/:id/approve — the BRAND's final gate: after
+  // the creator approves and the clip re-renders with the product, the brand
+  // reviews the baked render and signs off. Only then is the placement
+  // publish-ready (and publishing itself still requires the creator).
+  app.post("/api/brand/placements/:id/approve", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const brandUserId = req.authUserId;
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ error: "Invalid placement ID" });
+
+      const placement = await storage.getBrandPlacementById(id);
+      if (!placement) return res.status(404).json({ error: "Placement not found" });
+      if (placement.brandUserId !== brandUserId) {
+        return res.status(403).json({ error: "Not authorized to approve this placement" });
+      }
+      if (placement.status !== "pending_brand_review") {
+        return res.status(400).json({ error: `Placement is ${placement.status} — only pending_brand_review placements can be brand-approved` });
+      }
+
+      const updated = await storage.updateBrandPlacementStatus(id, "brand_approved");
+      console.log(`[BrandPlacement] Brand ${brandUserId} FINAL-APPROVED placement ${id}`);
+      storage.createNotification({
+        userId: placement.creatorUserId,
+        type: "placement_final_approved",
+        title: "Brand approved the final render",
+        body: "The brand signed off on the finished clip — this placement is ready for launch.",
+        linkPath: "/inbox",
+        metadata: { placementId: id },
+      });
+      res.json({ placement: updated });
+    } catch (err: any) {
+      console.error("[API] /api/brand/placements/:id/approve error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to approve placement" });
+    }
+  });
+
   // POST /api/creator/placements/:id/approve — Creator approves the placement.
   // On approval, fire-and-forget a re-render of the targeted clip so the brand
   // product appears in the rendered output. The render reads approved placements
@@ -8548,8 +8589,20 @@ export async function registerRoutes(
         const clipId = placement.editorialClipId;
         const videoId = placement.videoId;
         renderSingleEditorialClip(videoId, clipId)
-          .then(() => {
+          .then(async () => {
             console.log(`[BrandPlacement] ✓ Re-rendered clip ${clipId} with approved placement ${id}`);
+            // Second gate of the A1 lifecycle: the baked render now goes to
+            // the BRAND for final review. Nothing is publish-ready until
+            // both parties have approved.
+            await storage.updateBrandPlacementStatus(id, "pending_brand_review");
+            storage.createNotification({
+              userId: placement.brandUserId,
+              type: "placement_render_ready",
+              title: "Render ready for your review",
+              body: "The clip has been re-rendered with your product — review and approve the final cut.",
+              linkPath: "/brand/placements",
+              metadata: { placementId: id, clipId },
+            });
           })
           .catch((err: any) => {
             console.error(`[BrandPlacement] ✗ Re-render failed for clip ${clipId}:`, err?.message || err);

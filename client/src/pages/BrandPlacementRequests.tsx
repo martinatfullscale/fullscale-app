@@ -26,11 +26,14 @@ interface HydratedPlacement {
   reviewedAt: string | null;
   product: { id: number; name: string; imageUrl: string | null; thumbnailUrl: string | null; category: string | null } | null;
   video: { id: number; title: string; thumbnailUrl: string | null } | null;
+  clip: { id: number; exportPath: string | null; thumbnailPath: string | null; renderStatus: string | null; suggestedTitle: string | null } | null;
 }
 
 const STATUS_META: Record<string, { label: string; className: string; icon: any }> = {
   pending_creator_review: { label: "Awaiting creator", className: "bg-amber-500/15 text-amber-400 border-amber-500/30", icon: Clock },
-  creator_approved: { label: "Approved", className: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30", icon: CheckCircle2 },
+  creator_approved: { label: "Rendering", className: "bg-sky-500/15 text-sky-400 border-sky-500/30", icon: Loader2 },
+  pending_brand_review: { label: "Review the render", className: "bg-violet-500/15 text-violet-400 border-violet-500/30", icon: Clock },
+  brand_approved: { label: "Approved — ready for launch", className: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30", icon: CheckCircle2 },
   creator_rejected: { label: "Declined", className: "bg-red-500/15 text-red-400 border-red-500/30", icon: XCircle },
   brand_withdrawn: { label: "Withdrawn", className: "bg-gray-500/15 text-gray-400 border-gray-500/30", icon: Ban },
   expired: { label: "Expired", className: "bg-gray-500/15 text-gray-400 border-gray-500/30", icon: Hourglass },
@@ -53,6 +56,27 @@ export default function BrandPlacementRequests() {
       return res.json();
     },
     refetchInterval: 30_000,
+  });
+
+  const approveMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await fetch(`/api/brand/placements/${id}/approve`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Approve failed");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Placement approved", description: "The creator has been notified — this placement is ready for launch." });
+      queryClient.invalidateQueries({ queryKey: ["/api/brand/placements"] });
+    },
+    onError: (err: any) => {
+      toast({ title: "Approve failed", description: err.message, variant: "destructive" });
+    },
   });
 
   const withdrawMutation = useMutation({
@@ -110,7 +134,7 @@ export default function BrandPlacementRequests() {
           {placements.map((p, idx) => {
             const meta = STATUS_META[p.status] || { label: p.status, className: "bg-gray-500/15 text-gray-400 border-gray-500/30", icon: Clock };
             const StatusIcon = meta.icon;
-            const canWithdraw = p.status === "pending_creator_review" || p.status === "creator_approved";
+            const canWithdraw = p.status === "pending_creator_review" || p.status === "creator_approved" || p.status === "pending_brand_review";
             const productImg = p.product?.thumbnailUrl || p.product?.imageUrl;
             return (
               <motion.div
@@ -147,6 +171,32 @@ export default function BrandPlacementRequests() {
                 <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-medium ${meta.className}`}>
                   <StatusIcon className="w-3.5 h-3.5" /> {meta.label}
                 </span>
+
+                {p.status === "pending_brand_review" && p.clip?.exportPath && (
+                  <div className="w-full mt-2 flex flex-col sm:flex-row items-start gap-3" data-testid={`render-review-${p.id}`}>
+                    <video
+                      src={p.clip.exportPath}
+                      poster={p.clip.thumbnailPath || undefined}
+                      controls
+                      preload="metadata"
+                      className="w-full sm:w-56 rounded-lg bg-black aspect-[9/16] object-contain"
+                    />
+                    <div className="flex flex-col gap-2">
+                      <p className="text-sm text-muted-foreground max-w-xs">
+                        This is the final cut with your product baked in. Approve it to mark the placement ready for launch.
+                      </p>
+                      <Button
+                        size="sm"
+                        disabled={approveMutation.isPending}
+                        onClick={() => approveMutation.mutate(p.id)}
+                        data-testid={`approve-render-${p.id}`}
+                        className="bg-emerald-600 hover:bg-emerald-500 text-white w-fit"
+                      >
+                        {approveMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "Approve final render"}
+                      </Button>
+                    </div>
+                  </div>
+                )}
 
                 {canWithdraw && (
                   <Button
