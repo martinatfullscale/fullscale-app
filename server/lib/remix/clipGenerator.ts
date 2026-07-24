@@ -13,6 +13,7 @@
  */
 
 import { spawn } from "child_process";
+import { buildAssSubtitles, escapeAssFilterPath } from "./captionStyler";
 import * as fs from "fs";
 import * as path from "path";
 import sharp from "sharp";
@@ -36,6 +37,8 @@ export interface ClipGeneratorInput {
   placements: ClipPlacement[];
   /** Enable captions overlay */
   captionsEnabled: boolean;
+  /** Caption visual style (ASS karaoke styling); defaults to "highlight" */
+  captionStyle?: string;
   /** Caption data if available */
   captionSegments?: CaptionSegment[];
   /** Output directory */
@@ -77,6 +80,10 @@ export interface CaptionSegment {
   text: string;
   startTime: number; // relative to clip start
   endTime: number;   // relative to clip start
+  /** Word-level timing (clip-relative) — powers karaoke/word-highlight
+   *  styling. Absent for AI-generated (non-transcript) captions, which
+   *  degrade to plain per-segment display. */
+  words?: Array<{ word: string; start: number; end: number }>;
 }
 
 export interface ClipGeneratorOutput {
@@ -133,7 +140,7 @@ async function generateClipUngated(input: ClipGeneratorInput): Promise<ClipGener
       await generateWithPlacements(input, clipPath);
     } else {
       // Simple path: direct FFmpeg clip extraction + reformat
-      await generateCleanClip(videoPath, clip, platformConfig, captionsEnabled, captionSegments, clipPath, input.faceTracking);
+      await generateCleanClip(videoPath, clip, platformConfig, captionsEnabled, captionSegments, clipPath, input.faceTracking, input.captionStyle);
     }
 
     // Verify output exists
@@ -175,7 +182,8 @@ async function generateCleanClip(
   captionsEnabled: boolean,
   captionSegments: CaptionSegment[] | undefined,
   outputPath: string,
-  faceTracking?: { enabled: boolean; sampleIntervalSec?: number }
+  faceTracking?: { enabled: boolean; sampleIntervalSec?: number },
+  captionStyle?: string,
 ): Promise<void> {
   const args = [
     "-nostdin", "-y",
@@ -210,23 +218,55 @@ async function generateCleanClip(
     filters.push(`pad=${config.targetWidth}:${config.targetHeight}:(ow-iw)/2:(oh-ih)/2:black`);
   }
 
-  // Burn-in captions if enabled and segments provided
+  // Burn-in captions if enabled and segments provided. Preferred path is
+  // ASS/libass (word-timed karaoke styling); the legacy drawtext filter is
+  // the fallback so a styling failure never costs the clip.
+  const baseFilters = [...filters];
+  let assPath: string | null = null;
   if (captionsEnabled && captionSegments && captionSegments.length > 0) {
-    const subtitleFilter = buildCaptionFilter(captionSegments, config);
-    if (subtitleFilter) filters.push(subtitleFilter);
+    const assContent = buildAssSubtitles(captionSegments, captionStyle ?? "highlight", config);
+    if (assContent) {
+      assPath = `${outputPath}.captions.ass`;
+      try {
+        fs.writeFileSync(assPath, assContent);
+        filters.push(`ass='${escapeAssFilterPath(assPath)}'`);
+      } catch {
+        assPath = null;
+      }
+    }
+    if (!assPath) {
+      const subtitleFilter = buildCaptionFilter(captionSegments, config);
+      if (subtitleFilter) filters.push(subtitleFilter);
+    }
   }
 
-  args.push("-vf", filters.join(","));
-  args.push("-r", config.targetFps.toString());
-  args.push("-c:v", "libx264", "-pix_fmt", "yuv420p");
-  args.push("-preset", CLIP_CONFIG.PRESET);
-  args.push("-crf", CLIP_CONFIG.CRF.toString());
-  args.push("-c:a", "aac", "-b:a", CLIP_CONFIG.AUDIO_BITRATE);
-  args.push("-shortest");
-  args.push("-movflags", "+faststart");
-  args.push(outputPath);
+  const encodeArgs = (vf: string[]): string[] => [
+    ...args,
+    "-vf", vf.join(","),
+    "-r", config.targetFps.toString(),
+    "-c:v", "libx264", "-pix_fmt", "yuv420p",
+    "-preset", CLIP_CONFIG.PRESET,
+    "-crf", CLIP_CONFIG.CRF.toString(),
+    "-c:a", "aac", "-b:a", CLIP_CONFIG.AUDIO_BITRATE,
+    "-shortest",
+    "-movflags", "+faststart",
+    outputPath,
+  ];
 
-  await runFFmpeg(args);
+  try {
+    await runFFmpeg(encodeArgs(filters));
+  } catch (err) {
+    if (!assPath) throw err;
+    // ASS render failed (missing fonts / libass quirk) — retry with the
+    // legacy drawtext captions rather than shipping no clip.
+    console.warn(`[ClipGen] ASS caption render failed — retrying with drawtext fallback`);
+    const fallbackFilters = [...baseFilters];
+    const subtitleFilter = buildCaptionFilter(captionSegments!, config);
+    if (subtitleFilter) fallbackFilters.push(subtitleFilter);
+    await runFFmpeg(encodeArgs(fallbackFilters));
+  } finally {
+    if (assPath) { try { fs.unlinkSync(assPath); } catch { /* ignore */ } }
+  }
 }
 
 /** A computed portrait reframe: the crop trajectory plus the source dimensions

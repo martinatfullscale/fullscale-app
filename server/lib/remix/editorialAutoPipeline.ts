@@ -31,6 +31,7 @@ import { PLATFORM_CONFIGS } from "./clipDetector";
 import { detectFacesInClip, computeCropTrajectory, buildCropFilterExpr, getVideoSize } from "./faceTracker";
 import { withRenderSlot } from "./renderQueue";
 import { generateTranscriptCaptions } from "./captionEngine";
+import { buildAssSubtitles, escapeAssFilterPath } from "./captionStyler";
 import { buildCaptionFilter } from "./clipGenerator";
 import { downloadToTempFile, uploadFileToStorage, objectKeyFromServeUrl } from "../objectStorage";
 
@@ -797,12 +798,24 @@ async function renderEditorialRange(
   ctx: EditorialRenderCtx,
 ): Promise<void> {
   const duration = rangeEnd - rangeStart;
-  const captionFilter = buildEditorialCaptionFilter(
+  const captions = buildEditorialCaptions(
     ctx.speakerSegments,
     rangeStart,
     duration,
     ctx.platformConfig as any,
   );
+  // Preferred: ASS karaoke styling; the legacy drawtext filter is retried
+  // automatically by runFFmpegRender if the ASS pass fails.
+  let captionAssPath: string | null = null;
+  if (captions.ass) {
+    captionAssPath = `${outputPath}.captions.ass`;
+    try {
+      fs.writeFileSync(captionAssPath, captions.ass);
+    } catch {
+      captionAssPath = null;
+    }
+  }
+  const captionFilter = captions.drawtext;
 
   if (ctx.needsReframe) {
     console.log(`[${ctx.logTag}]   Face tracking ${rangeStart.toFixed(1)}–${rangeEnd.toFixed(1)}s...`);
@@ -837,6 +850,7 @@ async function renderEditorialRange(
       srcHeight: ctx.srcSize.height,
       brandOverlays: ctx.brandOverlays,
       captionFilter,
+      captionAssPath,
     });
   } else {
     const vf = `scale=${ctx.platformConfig.targetWidth}:${ctx.platformConfig.targetHeight}:force_original_aspect_ratio=decrease,pad=${ctx.platformConfig.targetWidth}:${ctx.platformConfig.targetHeight}:(ow-iw)/2:(oh-ih)/2:black`;
@@ -851,6 +865,7 @@ async function renderEditorialRange(
       srcHeight: ctx.srcSize.height,
       brandOverlays: ctx.brandOverlays,
       captionFilter,
+      captionAssPath,
     });
   }
 }
@@ -933,8 +948,16 @@ function validClipSegments(clip: any): Array<{ start: number; end: number; role?
 export async function renderEditorialClipOutput(clip: any, outputPath: string, ctx: EditorialRenderCtx): Promise<void> {
   const segs = validClipSegments(clip);
 
+  const cleanupAss = (base: string) => {
+    try { fs.unlinkSync(`${base}.captions.ass`); } catch { /* ignore */ }
+  };
+
   if (!segs) {
-    await renderEditorialRange(clip.clipStart, clip.clipStart + clip.duration, outputPath, ctx);
+    try {
+      await renderEditorialRange(clip.clipStart, clip.clipStart + clip.duration, outputPath, ctx);
+    } finally {
+      cleanupAss(outputPath);
+    }
     return;
   }
 
@@ -943,7 +966,11 @@ export async function renderEditorialClipOutput(clip: any, outputPath: string, c
   try {
     for (let i = 0; i < segs.length; i++) {
       const partPath = outputPath.replace(/\.mp4$/, `_part${i}.mp4`);
-      await renderEditorialRange(segs[i].start, segs[i].end, partPath, ctx);
+      try {
+        await renderEditorialRange(segs[i].start, segs[i].end, partPath, ctx);
+      } finally {
+        cleanupAss(partPath);
+      }
       if (!fs.existsSync(partPath)) throw new Error(`Beat ${i + 1}/${segs.length} produced no output`);
       parts.push(partPath);
     }
@@ -1217,8 +1244,10 @@ interface RenderOptions {
   srcHeight?: number;
   /** Brand product overlays composited onto the source video before vf is applied */
   brandOverlays?: BrandOverlay[];
-  /** Pre-built caption drawtext filter — appended after the vf chain */
+  /** Pre-built caption drawtext filter — fallback when ASS fails */
   captionFilter?: string | null;
+  /** Path to an .ass subtitle file — preferred (karaoke word styling) */
+  captionAssPath?: string | null;
 }
 
 /**
@@ -1227,14 +1256,14 @@ interface RenderOptions {
  * Claude call — this runs inside the render loop). Returns null when the clip
  * range has no transcript content; render proceeds uncaptioned.
  */
-function buildEditorialCaptionFilter(
+function buildEditorialCaptions(
   transcriptSegments: any[] | null | undefined,
   clipStart: number,
   clipDuration: number,
-  platformConfig: { aspectRatio: string; targetHeight: number },
-): string | null {
+  platformConfig: { aspectRatio: string; targetHeight: number; targetWidth: number },
+): { drawtext: string | null; ass: string | null } {
   try {
-    if (!transcriptSegments || transcriptSegments.length === 0) return null;
+    if (!transcriptSegments || transcriptSegments.length === 0) return { drawtext: null, ass: null };
     const result = generateTranscriptCaptions({
       clipStart,
       clipEnd: clipStart + clipDuration,
@@ -1245,12 +1274,17 @@ function buildEditorialCaptionFilter(
       style: "highlight",
       transcriptSegments: transcriptSegments as any,
     });
-    if (result.segments.length === 0) return null;
+    if (result.segments.length === 0) return { drawtext: null, ass: null };
     console.log(`[EditorialAuto]   Captions: ${result.segments.length} segment(s) will be burned in`);
-    return buildCaptionFilter(result.segments, platformConfig);
+    return {
+      drawtext: buildCaptionFilter(result.segments, platformConfig),
+      // Word-timed karaoke styling; falls back to drawtext when the ASS
+      // render fails at the ffmpeg level.
+      ass: buildAssSubtitles(result.segments, "highlight", platformConfig as any),
+    };
   } catch (err: any) {
     console.warn(`[EditorialAuto]   Caption build failed (non-fatal): ${err?.message || err}`);
-    return null;
+    return { drawtext: null, ass: null };
   }
 }
 
@@ -1277,16 +1311,31 @@ function runFFmpegRender(opts: RenderOptions): Promise<void> {
   // unbounded ffmpeg encodes on top of user-initiated remix renders.
   return withRenderSlot(
     `editorialRender(${opts.outputPath.split("/").pop()})`,
-    () => runFFmpegRenderUngated(opts),
+    async () => {
+      try {
+        await runFFmpegRenderUngated(opts);
+      } catch (err) {
+        // ASS caption pass failed (missing fonts / libass quirk on the
+        // host) — styling must never cost a clip. Retry once with the
+        // legacy drawtext captions.
+        if (!opts.captionAssPath) throw err;
+        console.warn(`[EditorialAuto] ASS caption render failed — retrying with drawtext fallback`);
+        await runFFmpegRenderUngated({ ...opts, captionAssPath: null });
+      }
+    },
   );
 }
 
 async function runFFmpegRenderUngated(opts: RenderOptions): Promise<void> {
-  const { videoPath, startTime, duration, fps, outputPath, brandOverlays, srcWidth, srcHeight, captionFilter } = opts;
+  const { videoPath, startTime, duration, fps, outputPath, brandOverlays, srcWidth, srcHeight, captionFilter, captionAssPath } = opts;
   // Captions burn in after the crop/scale chain so coordinates are in target
-  // pixels; drawtext is a linear filter, so appending works in both the plain
-  // -vf path and inside the filter_complex chain segment.
-  const vf = captionFilter ? `${opts.vf},${captionFilter}` : opts.vf;
+  // pixels. ASS (libass, word-timed karaoke styling) is preferred; the
+  // legacy drawtext filter is the fallback. Both are linear filters, so
+  // appending works in the plain -vf path and the filter_complex segment.
+  const captionChain = captionAssPath
+    ? `ass='${escapeAssFilterPath(captionAssPath)}'`
+    : captionFilter;
+  const vf = captionChain ? `${opts.vf},${captionChain}` : opts.vf;
 
   const hasOverlays = brandOverlays && brandOverlays.length > 0;
 

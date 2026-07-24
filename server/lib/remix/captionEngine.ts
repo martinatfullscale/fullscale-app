@@ -151,6 +151,8 @@ export function generateTranscriptCaptions(input: CaptionInput): CaptionOutput {
       text,
       startTime,
       endTime: Math.max(endTime, startTime + 1),
+      // Word timing preserved for karaoke/word-highlight caption styles
+      words: chunk.map((w) => ({ word: w.word, start: w.start, end: w.end })),
     });
   }
 
