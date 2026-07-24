@@ -191,6 +191,8 @@ export interface IStorage {
   // Shared link methods
   createSharedLink(data: InsertSharedLink): Promise<SharedLink>;
   getSharedLinkBySlug(slug: string): Promise<SharedLink | undefined>;
+  getSharedLinkByBrandPlacement(brandPlacementId: number): Promise<SharedLink | undefined>;
+  getSharedLinkById(id: number): Promise<SharedLink | undefined>;
   incrementSharedLinkViews(slug: string): Promise<void>;
   getSharedLinksByUser(email: string): Promise<SharedLink[]>;
   deactivateSharedLink(id: number): Promise<void>;
@@ -1510,6 +1512,26 @@ export class DatabaseStorage implements IStorage {
       .select()
       .from(sharedLinks)
       .where(eq(sharedLinks.slug, slug));
+    return result;
+  }
+
+  async getSharedLinkByBrandPlacement(brandPlacementId: number): Promise<SharedLink | undefined> {
+    // Any status — callers must check isActive. A deliberately deactivated
+    // release link must BLOCK re-minting, not be silently replaced.
+    const [result] = await db
+      .select()
+      .from(sharedLinks)
+      .where(eq(sharedLinks.brandPlacementId, brandPlacementId))
+      .orderBy(desc(sharedLinks.createdAt))
+      .limit(1);
+    return result;
+  }
+
+  async getSharedLinkById(id: number): Promise<SharedLink | undefined> {
+    const [result] = await db
+      .select()
+      .from(sharedLinks)
+      .where(eq(sharedLinks.id, id));
     return result;
   }
 

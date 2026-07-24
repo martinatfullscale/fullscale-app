@@ -88,6 +88,7 @@ const demoCampaigns = [
 // demo table in real mode — previously real users had no campaigns surface
 // on the dashboard at all; the data lived only in /inbox).
 function RealBrandCampaigns() {
+  const { toast } = useToast();
   const { data: pending } = useQuery<{ placements: any[] }>({
     queryKey: ["/api/creator/placements/inbox", "pending_creator_review"],
     queryFn: async () => {
@@ -136,8 +137,32 @@ function RealBrandCampaigns() {
               <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
                 p._kind === "pending" ? "bg-amber-500/15 text-amber-400" : "bg-emerald-500/15 text-emerald-400"
               }`}>
-                {p._kind === "pending" ? "Needs review" : "Active"}
+                {p._kind === "pending" ? "Needs review" : p.status === "brand_approved" ? "Live" : "Active"}
               </span>
+              {p.status === "brand_approved" && (
+                <button
+                  className="text-xs text-primary hover:underline inline-flex items-center gap-1"
+                  data-testid={`release-link-${p.id}`}
+                  onClick={async () => {
+                    // Open synchronously so Safari doesn't popup-block the
+                    // navigation that follows the awaited fetch.
+                    const w = window.open("about:blank", "_blank");
+                    if (w) w.opener = null;
+                    try {
+                      const res = await fetch(`/api/placements/${p.id}/release-link`, { credentials: "include" });
+                      if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || "Unavailable");
+                      const rel = await res.json();
+                      if (w) w.location.href = rel.url;
+                      else window.open(rel.url, "_blank", "noopener");
+                    } catch (err: any) {
+                      w?.close();
+                      toast({ title: "Release page unavailable", description: err.message, variant: "destructive" });
+                    }
+                  }}
+                >
+                  <ExternalLink className="w-3 h-3" /> Release page
+                </button>
+              )}
               <span className="font-semibold text-white">
                 {p.creatorPayoutCents ? `$${(p.creatorPayoutCents / 100).toFixed(2)}` : ""}
               </span>

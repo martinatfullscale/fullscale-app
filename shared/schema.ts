@@ -1,4 +1,5 @@
 import { pgTable, text, serial, timestamp, boolean, varchar, integer, numeric, uniqueIndex, index, jsonb, real, uuid, bigint } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -503,6 +504,10 @@ export const sharedLinks = pgTable("shared_links", {
   slug: varchar("slug").notNull().unique(), // 8-char unique slug for URL (e.g., /s/abc12345)
   placementId: integer("placement_id"), // Reference to saved_placements.id (optional)
   exportId: integer("export_id"), // Reference to video_exports.id (optional)
+  // A1 release pages: links a brand placement's FINAL approved render.
+  // Minted at brand_approved; the public page plays the baked clip with
+  // creator/brand credits and a download. One link per placement.
+  brandPlacementId: integer("brand_placement_id"), // Reference to brand_placement_assignments.id (optional)
   videoId: integer("video_id").notNull(), // Reference to video_index.id
   createdBy: varchar("created_by").notNull(), // Email of user who created the share link
   title: text("title"), // Optional custom title for the shared content
@@ -510,7 +515,13 @@ export const sharedLinks = pgTable("shared_links", {
   isActive: boolean("is_active").notNull().default(true), // Can be deactivated
   expiresAt: timestamp("expires_at"), // Optional expiration date
   createdAt: timestamp("created_at").defaultNow(),
-});
+}, (table) => ({
+  // One release link per placement — makes the lazy mint race-safe (the
+  // loser of a concurrent mint re-reads the winner instead of duplicating).
+  uniqueBrandPlacement: uniqueIndex("idx_shared_links_brand_placement")
+    .on(table.brandPlacementId)
+    .where(sql`brand_placement_id IS NOT NULL`),
+}));
 
 export const insertSharedLinkSchema = createInsertSchema(sharedLinks).omit({
   id: true,

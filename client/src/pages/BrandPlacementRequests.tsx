@@ -10,9 +10,19 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
-import { Loader2, Send, Clock, CheckCircle2, XCircle, Ban, Hourglass, Package } from "lucide-react";
+import { Loader2, Send, Clock, CheckCircle2, XCircle, Ban, Hourglass, Package, ExternalLink, Link2, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
+
+/** Resolve (lazily minting) the public release page for a brand-approved placement. */
+export async function fetchReleaseLink(placementId: number): Promise<{ url: string; downloadUrl: string | null }> {
+  const res = await fetch(`/api/placements/${placementId}/release-link`, { credentials: "include" });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || "Failed to resolve release link");
+  }
+  return res.json();
+}
 
 interface HydratedPlacement {
   id: number;
@@ -70,8 +80,15 @@ export default function BrandPlacementRequests() {
       }
       return res.json();
     },
-    onSuccess: () => {
-      toast({ title: "Placement approved", description: "The creator has been notified — this placement is ready for launch." });
+    onSuccess: (data: any) => {
+      if (data?.releaseUrl) {
+        toast({
+          title: "Placement approved — release page live",
+          description: `Public page: ${window.location.origin}${data.releaseUrl}`,
+        });
+      } else {
+        toast({ title: "Placement approved", description: "The creator has been notified — this placement is ready for launch." });
+      }
       queryClient.invalidateQueries({ queryKey: ["/api/brand/placements"] });
     },
     onError: (err: any) => {
@@ -199,6 +216,55 @@ export default function BrandPlacementRequests() {
                         {approveMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "Approve final render"}
                       </Button>
                     </div>
+                  </div>
+                )}
+
+                {p.status === "brand_approved" && (
+                  <div className="w-full mt-2 flex flex-wrap items-center gap-2" data-testid={`release-actions-${p.id}`}>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/10"
+                      onClick={async () => {
+                        // Open synchronously so Safari doesn't popup-block the
+                        // navigation that follows the awaited fetch.
+                        const w = window.open("about:blank", "_blank");
+                        if (w) w.opener = null;
+                        try {
+                          const rel = await fetchReleaseLink(p.id);
+                          if (w) w.location.href = rel.url;
+                          else window.open(rel.url, "_blank", "noopener");
+                        } catch (err: any) {
+                          w?.close();
+                          toast({ title: "Release page unavailable", description: err.message, variant: "destructive" });
+                        }
+                      }}
+                    >
+                      <ExternalLink className="w-3.5 h-3.5 mr-1" /> View release page
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="text-gray-300 border-white/15 hover:bg-white/10"
+                      onClick={async () => {
+                        try {
+                          const rel = await fetchReleaseLink(p.id);
+                          await navigator.clipboard.writeText(`${window.location.origin}${rel.url}`);
+                          toast({ title: "Release link copied" });
+                        } catch (err: any) {
+                          toast({ title: "Copy failed", description: err.message, variant: "destructive" });
+                        }
+                      }}
+                    >
+                      <Link2 className="w-3.5 h-3.5 mr-1" /> Copy link
+                    </Button>
+                    {p.clip?.exportPath && (
+                      <a href={p.clip.exportPath} download>
+                        <Button size="sm" variant="outline" className="text-gray-300 border-white/15 hover:bg-white/10">
+                          <Download className="w-3.5 h-3.5 mr-1" /> Download render
+                        </Button>
+                      </a>
+                    )}
                   </div>
                 )}
 

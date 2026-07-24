@@ -196,6 +196,60 @@ function generateSlug(): string {
   return slug;
 }
 
+/**
+ * A1 publish target: every brand-approved placement gets a public release
+ * page at /s/<slug> playing the baked render with creator/brand credits and
+ * a download. Idempotent — one active link per placement, minted at
+ * brand-approval and lazily by the release-link endpoint (which also covers
+ * placements approved before this shipped).
+ */
+/** Thrown when a release link exists but was deliberately deactivated. */
+export class ReleaseLinkDeactivatedError extends Error {
+  constructor() { super("The release link for this placement was deactivated"); }
+}
+
+async function ensurePlacementReleaseLink(placement: {
+  id: number; videoId: number; creatorUserId: string; brandProductId: number | null;
+}): Promise<{ slug: string; url: string }> {
+  const existing = await storage.getSharedLinkByBrandPlacement(placement.id);
+  if (existing?.isActive) return { slug: existing.slug, url: `/s/${existing.slug}` };
+  if (existing) throw new ReleaseLinkDeactivatedError(); // deliberate takedown — don't resurrect
+  let title: string | null = null;
+  let createdBy = String(placement.creatorUserId);
+  try {
+    const [video, product] = await Promise.all([
+      storage.getVideoById(placement.videoId),
+      placement.brandProductId != null ? storage.getBrandProduct(placement.brandProductId) : Promise.resolve(undefined),
+    ]);
+    title = product?.name && video?.title ? `${product.name} × ${video.title}` : (video?.title ?? null);
+    // createdBy is an email column everywhere else (getSharedLinksByUser
+    // matches on it) — resolve the creator's email rather than storing a uuid.
+    let cu = await storage.getUserById(createdBy);
+    if (!cu && createdBy.includes("@")) cu = await storage.getUserByEmail(createdBy);
+    if (cu?.email) createdBy = cu.email;
+  } catch { /* cosmetic fields */ }
+  try {
+    const link = await storage.createSharedLink({
+      slug: generateSlug(),
+      placementId: null,
+      exportId: null,
+      brandPlacementId: placement.id,
+      videoId: placement.videoId,
+      createdBy,
+      title,
+      isActive: true,
+      expiresAt: null,
+    });
+    return { slug: link.slug, url: `/s/${link.slug}` };
+  } catch (insertErr) {
+    // idx_shared_links_brand_placement: a concurrent mint won the race —
+    // serve the winner's link instead of failing.
+    const winner = await storage.getSharedLinkByBrandPlacement(placement.id);
+    if (winner?.isActive) return { slug: winner.slug, url: `/s/${winner.slug}` };
+    throw insertErr;
+  }
+}
+
 // Database-backed OAuth state storage (survives server restarts)
 async function saveOAuthState(state: string): Promise<void> {
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
@@ -8549,20 +8603,68 @@ export async function registerRoutes(
         return res.status(400).json({ error: `Placement is ${placement.status} — only pending_brand_review placements can be brand-approved` });
       }
 
-      const updated = await storage.updateBrandPlacementStatus(id, "brand_approved");
+      // CAS so a double-click (or a concurrent withdraw) can't approve twice
+      // — the loser sees the row already transitioned and stops here.
+      const updated = await storage.updateBrandPlacementStatus(id, "brand_approved", { expectedCurrentStatus: "pending_brand_review" });
+      if (!updated) {
+        return res.status(409).json({ error: "Placement was updated by another action — refresh and try again" });
+      }
       console.log(`[BrandPlacement] Brand ${brandUserId} FINAL-APPROVED placement ${id}`);
+
+      // A1 publish: mint the public release page for the approved render.
+      let releaseUrl: string | null = null;
+      try {
+        releaseUrl = (await ensurePlacementReleaseLink(placement)).url;
+      } catch (relErr: any) {
+        console.warn(`[BrandPlacement] Release-link mint failed (non-fatal): ${relErr?.message}`);
+      }
+
       storage.createNotification({
         userId: placement.creatorUserId,
         type: "placement_final_approved",
         title: "Brand approved the final render",
-        body: "The brand signed off on the finished clip — this placement is ready for launch.",
+        body: releaseUrl
+          ? "The brand signed off on the finished clip — your public release page is live."
+          : "The brand signed off on the finished clip — this placement is ready for launch.",
         linkPath: "/inbox",
-        metadata: { placementId: id },
+        metadata: { placementId: id, releaseUrl },
       });
-      res.json({ placement: updated });
+      res.json({ placement: updated, releaseUrl });
     } catch (err: any) {
       console.error("[API] /api/brand/placements/:id/approve error:", err.message);
       res.status(500).json({ error: err.message || "Failed to approve placement" });
+    }
+  });
+
+  // GET /api/placements/:id/release-link — the public release page for a
+  // brand-approved placement (either party). Mints lazily, so placements
+  // approved before release pages existed get one on first ask. Also returns
+  // the raw render URL for the Download button.
+  app.get("/api/placements/:id/release-link", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ error: "Invalid placement ID" });
+      const placement = await storage.getBrandPlacementById(id);
+      if (!placement) return res.status(404).json({ error: "Placement not found" });
+      const isBrand = String(placement.brandUserId) === String(req.authUserId);
+      const isCreator = await isSameCreator(String(placement.creatorUserId), req.authUserId);
+      if (!isBrand && !isCreator) return res.status(403).json({ error: "Not your placement" });
+      if (placement.status !== "brand_approved") {
+        return res.status(409).json({ error: "Release pages exist only after the brand approves the final render" });
+      }
+      const rel = await ensurePlacementReleaseLink(placement);
+      let downloadUrl: string | null = null;
+      if (placement.editorialClipId) {
+        const clip = await storage.getEditorialClipById(placement.editorialClipId);
+        downloadUrl = clip?.exportPath || null;
+      }
+      res.json({ ...rel, downloadUrl });
+    } catch (err: any) {
+      if (err instanceof ReleaseLinkDeactivatedError) {
+        return res.status(410).json({ error: err.message });
+      }
+      console.error("[API] /api/placements/:id/release-link error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to resolve release link" });
     }
   });
 
@@ -9995,10 +10097,8 @@ export async function registerRoutes(
         return res.status(410).json({ error: "This share link has expired" });
       }
 
-      // Increment view count
-      await storage.incrementSharedLinkViews(slug);
-
-      // Fetch associated data
+      // Fetch associated data (view count increments AFTER all the ways
+      // this request can 404/410 — dead links shouldn't keep counting)
       const video = await storage.getVideoById(link.videoId);
       if (!video) return res.status(404).json({ error: "Video not found" });
 
@@ -10012,12 +10112,60 @@ export async function registerRoutes(
         exportData = await storage.getVideoExport(link.exportId);
       }
 
+      // A1 release pages: a link minted at brand-approval carries the
+      // placement's FINAL baked render + credits. Withdrawn/reverted
+      // placements 410 rather than serving a stale render.
+      let release: any = null;
+      if (link.brandPlacementId) {
+        const bp = await storage.getBrandPlacementById(link.brandPlacementId);
+        if (!bp || bp.status !== "brand_approved") {
+          return res.status(410).json({ error: "This release is no longer available" });
+        }
+        let clip: any = null;
+        if (bp.editorialClipId) {
+          try { clip = await storage.getEditorialClipById(bp.editorialClipId); } catch { /* optional */ }
+        }
+        let product: any = null;
+        if (bp.brandProductId != null) {
+          try { product = await storage.getBrandProduct(bp.brandProductId); } catch { /* optional */ }
+        }
+        const displayName = async (userId: string): Promise<string | null> => {
+          try {
+            let u = await storage.getUserById(userId);
+            if (!u && userId.includes("@")) u = await storage.getUserByEmail(userId);
+            if (!u) return null;
+            // Real names only — this JSON is PUBLIC; never fall back to the
+            // login email (that would print user emails on the release page).
+            return [u.firstName, u.lastName].filter(Boolean).join(" ").trim() || null;
+          } catch { return null; }
+        };
+        release = {
+          placementId: bp.id,
+          clipUrl: clip?.exportPath || null,
+          thumbnailUrl: clip?.thumbnailPath || video.thumbnailUrl || null,
+          clipTitle: clip?.suggestedTitle || null,
+          aspectRatio: clip?.aspectRatio || null,
+          duration: clip?.duration ?? null,
+          product: product ? {
+            name: product.name,
+            category: product.category ?? null,
+            imageUrl: product.thumbnailUrl || product.imageUrl || null,
+          } : null,
+          creatorName: await displayName(String(bp.creatorUserId)),
+          brandName: await displayName(String(bp.brandUserId)),
+          approvedAt: bp.updatedAt ?? null,
+        };
+      }
+
       // Get surfaces for the video
       const surfaces = await storage.getDetectedSurfaces(link.videoId);
+
+      await storage.incrementSharedLinkViews(slug);
 
       res.json({
         slug: link.slug,
         title: link.title || video.title,
+        release,
         createdBy: link.createdBy,
         viewCount: (link.viewCount || 0) + 1,
         createdAt: link.createdAt,
@@ -10077,6 +10225,25 @@ export async function registerRoutes(
     try {
       const id = parseInt(req.params.id);
       if (isNaN(id)) return res.status(400).json({ error: "Invalid share link ID" });
+
+      // Ownership: only the link's creator — or, for release links, either
+      // placement party — may deactivate. (Was unauthenticated-IDOR before:
+      // any logged-in user could kill any share link by id.)
+      const link = await storage.getSharedLinkById(id);
+      if (!link) return res.status(404).json({ error: "Share link not found" });
+      const requesterKeys = [req.authEmail, req.authUserId, req.googleUser?.email]
+        .filter(Boolean)
+        .map((v: string) => String(v).toLowerCase());
+      let allowed = requesterKeys.includes(String(link.createdBy || "").toLowerCase());
+      if (!allowed && link.brandPlacementId) {
+        const bp = await storage.getBrandPlacementById(link.brandPlacementId);
+        if (bp) {
+          allowed =
+            String(bp.brandUserId) === String(req.authUserId) ||
+            (await isSameCreator(String(bp.creatorUserId), req.authUserId));
+        }
+      }
+      if (!allowed) return res.status(403).json({ error: "Not your share link" });
 
       await storage.deactivateSharedLink(id);
       res.json({ success: true });
