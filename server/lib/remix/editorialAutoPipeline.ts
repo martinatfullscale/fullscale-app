@@ -411,6 +411,11 @@ export async function runEditorialAutoPipeline(
           thumbUrl = await uploadFileToStorage(thumbPath, thumbObjectKey);
         }
 
+        const qualityScore = await scoreRenderedEditorialClip(
+          clip, outputPath, thumbPath, AUTO_PIPELINE_CONFIG.platformKey,
+          (transcript.segments as any[])?.length > 0, 0,
+        );
+
         // Clean up local files
         try { fs.unlinkSync(outputPath); } catch {}
         try { fs.unlinkSync(thumbPath); } catch {}
@@ -421,6 +426,7 @@ export async function runEditorialAutoPipeline(
           aspectRatio: platformConfig.aspectRatio,
           renderStatus: "rendered",
           renderError: null,
+          qualityScore,
         });
 
         renderedCount += 1;
@@ -612,6 +618,11 @@ async function renderClipsOnly(
           thumbUrl = await uploadFileToStorage(thumbPath, thumbObjectKey);
         }
 
+        const qualityScore = await scoreRenderedEditorialClip(
+          clip, outputPath, thumbPath, AUTO_PIPELINE_CONFIG.platformKey,
+          (speakerSegments?.length ?? 0) > 0, 0,
+        );
+
         try { fs.unlinkSync(outputPath); } catch {}
         try { fs.unlinkSync(thumbPath); } catch {}
 
@@ -621,6 +632,7 @@ async function renderClipsOnly(
           aspectRatio: platformConfig.aspectRatio,
           renderStatus: "rendered",
           renderError: null,
+          qualityScore,
         });
 
         renderedCount += 1;
@@ -843,6 +855,47 @@ async function renderEditorialRange(
   }
 }
 
+/** Post-render quality scoring — same rubric the remix flow uses.
+ *  Non-fatal: a scoring failure never blocks a rendered clip. */
+async function scoreRenderedEditorialClip(
+  clip: any,
+  outputPath: string,
+  thumbPath: string,
+  platformKey: string,
+  hasCaptions: boolean,
+  placementCount: number,
+): Promise<number | null> {
+  try {
+    const fileSize = fs.existsSync(outputPath) ? fs.statSync(outputPath).size : 0;
+    const { scoreClipQuality } = await import("./qualityScorer");
+    const result = await scoreClipQuality({
+      thumbnailPath: fs.existsSync(thumbPath) ? thumbPath : null,
+      clip: {
+        startTime: clip.clipStart,
+        endTime: clip.clipEnd,
+        duration: clip.duration,
+        score: clip.finalScore ?? 0.7,
+        sceneAnalysisIds: [],
+        surfaceIds: [],
+        brandProductIds: [],
+        primaryTone: clip.monetizationTier ?? "organic",
+        narrativeSummary: clip.suggestedTitle ?? "",
+        platform: platformKey,
+      } as any,
+      platform: platformKey,
+      actualDuration: clip.duration,
+      placementCount,
+      hasCaptions,
+      fileSize,
+      editorialScore: clip.editorialScore ?? clip.finalScore ?? undefined,
+    });
+    return result.overallScore;
+  } catch (err: any) {
+    console.warn(`[EditorialAuto] Quality scoring failed (non-fatal): ${err?.message || err}`);
+    return null;
+  }
+}
+
 /** Lossless concat of same-codec parts (all rendered with identical settings). */
 async function concatMp4Parts(partPaths: string[], outputPath: string): Promise<void> {
   const listPath = `${outputPath}.concat.txt`;
@@ -981,6 +1034,11 @@ export async function renderSingleEditorialClip(videoId: number, clipId: number)
       thumbUrl = await uploadFileToStorage(thumbPath, thumbObjectKey);
     }
 
+    const qualityScore = await scoreRenderedEditorialClip(
+      clip, outputPath, thumbPath, AUTO_PIPELINE_CONFIG.platformKey,
+      (speakerSegments?.length ?? 0) > 0, brandOverlays?.length ?? 0,
+    );
+
     try { fs.unlinkSync(outputPath); } catch {}
     try { fs.unlinkSync(thumbPath); } catch {}
 
@@ -990,6 +1048,7 @@ export async function renderSingleEditorialClip(videoId: number, clipId: number)
       aspectRatio: platformConfig.aspectRatio,
       renderStatus: "rendered",
       renderError: null,
+      qualityScore,
     });
 
     console.log(`[RenderSingle] ✓ Rendered clip ${clip.id} → ${mp4Url}`);

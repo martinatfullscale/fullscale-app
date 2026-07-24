@@ -244,6 +244,7 @@ export interface IStorage {
       aspectRatio?: string | null;
       renderStatus?: "pending" | "rendering" | "rendered" | "failed";
       renderError?: string | null;
+      qualityScore?: number | null;
     }
   ): Promise<EditorialClip | undefined>;
   // Editorial pipeline status (videoIndex)
@@ -1975,9 +1976,12 @@ export class DatabaseStorage implements IStorage {
       aspectRatio?: string | null;
       renderStatus?: "pending" | "rendering" | "rendered" | "failed";
       renderError?: string | null;
+      /** Post-render quality rubric score (0-1); null = scoring failed */
+      qualityScore?: number | null;
     }
   ): Promise<EditorialClip | undefined> {
     const patch: Record<string, any> = {};
+    if (updates.qualityScore !== undefined && updates.qualityScore !== null) patch.qualityScore = updates.qualityScore;
     if (updates.exportPath !== undefined) patch.exportPath = updates.exportPath;
     if (updates.thumbnailPath !== undefined) patch.thumbnailPath = updates.thumbnailPath;
     if (updates.aspectRatio !== undefined) patch.aspectRatio = updates.aspectRatio;
