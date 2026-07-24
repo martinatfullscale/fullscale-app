@@ -218,6 +218,7 @@ export interface IStorage {
   markPlacementNotificationsRead(placementId: number): Promise<void>;
   claimSchedule(scheduleId: number): Promise<boolean>;
   cancelOrphanedLegacySchedules(): Promise<number>;
+  normalizeLegacyIdentityKeys(): Promise<Record<string, number>>;
   updateRemixJobStatus(jobId: number, status: string, errorMessage?: string): Promise<RemixJob | undefined>;
   // Generated clip methods
   createGeneratedClip(data: InsertGeneratedClip): Promise<GeneratedClip>;
@@ -2239,6 +2240,44 @@ export class DatabaseStorage implements IStorage {
       ))
       .returning({ id: publishingSchedules.id });
     return result.length > 0;
+  }
+
+  async normalizeLegacyIdentityKeys(): Promise<Record<string, number>> {
+    // Dual-ID root migration, applied as an idempotent boot sweep: rewrite
+    // email-keyed identity columns to users.id wherever a users row exists.
+    // Rows whose email has no users row stay email-keyed and remain covered
+    // by the alias lookups (isSameCreator / getVideoIndex match sets), which
+    // are deliberately KEPT as a safety net. Writers that still produce
+    // email keys (YouTube indexer, some auth fallbacks) converge on the
+    // next boot. Excluded on purpose: youtube_connections (email-keyed by
+    // design, consumers fully alias-aware — normalizing would duplicate
+    // rows on reconnect) and int-keyed tables (stableUserIntId domain).
+    const results: Record<string, number> = {};
+    const sweeps: Array<[string, string, string]> = [
+      ["video_index", "user_id", "videoIndex.userId"],
+      ["brand_placement_assignments", "creator_user_id", "placements.creatorUserId"],
+      ["brand_placement_assignments", "brand_user_id", "placements.brandUserId"],
+      ["monetization_items", "creator_user_id", "monetizationItems.creatorUserId"],
+      ["social_accounts", "user_id", "socialAccounts.userId"],
+    ];
+    for (const [table, column, label] of sweeps) {
+      try {
+        const res: any = await db.execute(sql`
+          UPDATE ${sql.raw(`"${table}"`)} t
+          SET ${sql.raw(`"${column}"`)} = u.id
+          FROM users u
+          WHERE t.${sql.raw(`"${column}"`)} LIKE '%@%'
+            AND lower(t.${sql.raw(`"${column}"`)}) = lower(u.email)
+        `);
+        const count = Number(res?.rowCount ?? 0);
+        results[label] = count;
+        if (count > 0) console.log(`[IdentityMigration] ${label}: normalized ${count} row(s) to users.id`);
+      } catch (err: any) {
+        console.warn(`[IdentityMigration] ${label} sweep failed (non-fatal):`, err?.message);
+        results[label] = -1;
+      }
+    }
+    return results;
   }
 
   async cancelOrphanedLegacySchedules(): Promise<number> {

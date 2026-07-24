@@ -401,6 +401,15 @@ export async function registerRoutes(
       .then((n) => { if (n > 0) console.log(`[Startup] Marked ${n} interrupted stitch plan(s) as failed`); })
       .catch((err) => console.error("[Startup] failInterruptedStitchPlans error:", err?.message || err));
   }, 5 * 60 * 1000);
+  // Dual-ID root migration: converge email-keyed rows onto users.id.
+  // Idempotent; alias lookups stay as the safety net for unconverged rows.
+  storage
+    .normalizeLegacyIdentityKeys()
+    .then((res) => {
+      const total = Object.values(res).filter((n) => n > 0).reduce((a, b) => a + b, 0);
+      if (total > 0) console.log(`[Startup] Identity migration normalized ${total} row(s)`);
+    })
+    .catch((err) => console.error("[Startup] normalizeLegacyIdentityKeys error:", err?.message || err));
   storage
     .cancelOrphanedLegacySchedules()
     .then((n) => { if (n > 0) console.log(`[Startup] Cancelled ${n} orphaned legacy schedule(s) (pre-identity-fix userId=1)`); })
@@ -2271,7 +2280,7 @@ export async function registerRoutes(
       if (!account) return res.status(404).json({ error: "Social account not found" });
 
       // Ownership check — match either auth id or email
-      if (account.userId !== authUserId && account.userId !== authEmail) {
+      if (!(await isSameCreator(String(account.userId), authUserId))) {
         return res.status(403).json({ error: "Not authorized to refresh this account" });
       }
 
@@ -2811,7 +2820,7 @@ export async function registerRoutes(
       if (!video) return res.status(404).json({ error: "Video not found" });
 
       const userId = req.authEmail || req.authUserId;
-      if (video.userId !== userId && !req.isAdmin) {
+      if (!(await isSameCreator(String(video.userId), req.authUserId)) && !req.isAdmin) {
         return res.status(403).json({ error: "Not authorized to delete this video" });
       }
 
@@ -2847,7 +2856,7 @@ export async function registerRoutes(
       if (!video) return res.status(404).json({ error: "Video not found" });
 
       const userId = req.authEmail || req.authUserId;
-      if (video.userId !== userId && !req.isAdmin) {
+      if (!(await isSameCreator(String(video.userId), req.authUserId)) && !req.isAdmin) {
         return res.status(403).json({ error: "Not authorized" });
       }
 
@@ -2871,7 +2880,7 @@ export async function registerRoutes(
       if (!video.deletedAt) return res.status(400).json({ error: "Video must be in trash first" });
 
       const userId = req.authEmail || req.authUserId;
-      if (video.userId !== userId && !req.isAdmin) {
+      if (!(await isSameCreator(String(video.userId), req.authUserId)) && !req.isAdmin) {
         return res.status(403).json({ error: "Not authorized" });
       }
 
@@ -2909,7 +2918,7 @@ export async function registerRoutes(
       // Dual-id ownership check: videos can be keyed by either email (file
       // uploads) or UUID (IG/FB imports). Match either to allow edits across
       // both paths.
-      const isOwner = video.userId === req.authUserId || video.userId === req.authEmail;
+      const isOwner = await isSameCreator(String(video.userId), req.authUserId);
       if (!isOwner) {
         return res.status(403).json({ error: "Not authorized to update this video" });
       }
@@ -3443,7 +3452,7 @@ export async function registerRoutes(
     const video = await storage.getVideoById(surface.videoId);
     if (!video) return res.status(404).json({ error: "Parent video not found" });
 
-    const isOwner = video.userId === req.authUserId || video.userId === req.authEmail;
+    const isOwner = await isSameCreator(String(video.userId), req.authUserId);
     if (!isOwner) return res.status(403).json({ error: "Not authorized" });
 
     // Resolve the scene frame. Prefer the surface.frameUrl (saved by the
@@ -3608,7 +3617,7 @@ export async function registerRoutes(
     const video = await storage.getVideoById(videoId);
     if (!video) return res.status(404).json({ error: "Video not found" });
 
-    const isOwner = video.userId === req.authUserId || video.userId === req.authEmail;
+    const isOwner = await isSameCreator(String(video.userId), req.authUserId);
     if (!isOwner) return res.status(403).json({ error: "Not authorized" });
 
     let sourcePath: string;
@@ -4130,7 +4139,7 @@ export async function registerRoutes(
     console.log(`[BACKEND] Video userId: ${video.userId}, auth userId: ${req.authUserId}, auth email: ${req.authEmail}`);
 
     // Check ownership - allow if video userId matches auth userId OR auth email
-    const isOwner = video.userId === req.authUserId || video.userId === req.authEmail;
+    const isOwner = await isSameCreator(String(video.userId), req.authUserId);
     if (!isOwner) {
       console.log(`[BACKEND] ERROR: Unauthorized - video belongs to ${video.userId}`);
       return res.status(403).json({ error: "Unauthorized" });
@@ -4331,7 +4340,7 @@ export async function registerRoutes(
       return res.status(404).json({ error: "Video not found" });
     }
 
-    const isOwner = video.userId === req.authUserId || video.userId === req.authEmail;
+    const isOwner = await isSameCreator(String(video.userId), req.authUserId);
     if (!isOwner) {
       return res.status(403).json({ error: "Not authorized to scan this video" });
     }
@@ -5332,7 +5341,7 @@ export async function registerRoutes(
     const video = await storage.getVideoById(surface.videoId);
     if (!video) return res.status(404).json({ error: "Parent video not found" });
 
-    const isOwner = video.userId === req.authUserId || video.userId === req.authEmail;
+    const isOwner = await isSameCreator(String(video.userId), req.authUserId);
     if (!isOwner) return res.status(403).json({ error: "Not authorized to edit this video's surfaces" });
 
     await storage.updateSurfaceApproval(surfaceId, approved);
@@ -5357,7 +5366,7 @@ export async function registerRoutes(
     const video = await storage.getVideoById(surface.videoId);
     if (!video) return res.status(404).json({ error: "Parent video not found" });
 
-    const isOwner = video.userId === req.authUserId || video.userId === req.authEmail;
+    const isOwner = await isSameCreator(String(video.userId), req.authUserId);
     if (!isOwner) return res.status(403).json({ error: "Not authorized to edit this video's surfaces" });
 
     await storage.updateDetectedSurface(surfaceId, {
@@ -9192,7 +9201,7 @@ export async function registerRoutes(
       return { ok: true, status: 200 };
     }
     const video = placement.videoId ? await storage.getVideoById(placement.videoId) : null;
-    if (video && (video.userId === req.authUserId || video.userId === req.authEmail)) {
+    if (video && (await isSameCreator(String(video.userId), req.authUserId))) {
       return { ok: true, status: 200 };
     }
     return { ok: false, status: 403 };
