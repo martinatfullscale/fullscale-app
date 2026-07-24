@@ -8631,9 +8631,13 @@ export async function registerRoutes(
           .then(async () => {
             console.log(`[BrandPlacement] ✓ Re-rendered clip ${clipId} with approved placement ${id}`);
             // Second gate of the A1 lifecycle: the baked render now goes to
-            // the BRAND for final review. Nothing is publish-ready until
-            // both parties have approved.
-            await storage.updateBrandPlacementStatus(id, "pending_brand_review");
+            // the BRAND for final review. Compare-and-set so a withdrawal
+            // (or expiry) during the render window is never reversed.
+            const advanced = await storage.updateBrandPlacementStatus(id, "pending_brand_review", { expectedCurrentStatus: "creator_approved" });
+            if (!advanced) {
+              console.log(`[BrandPlacement] Placement ${id} left creator_approved during render — not advancing`);
+              return;
+            }
             storage.createNotification({
               userId: placement.brandUserId,
               type: "placement_render_ready",
@@ -8643,11 +8647,39 @@ export async function registerRoutes(
               metadata: { placementId: id, clipId },
             });
           })
-          .catch((err: any) => {
+          .catch(async (err: any) => {
             console.error(`[BrandPlacement] ✗ Re-render failed for clip ${clipId}:`, err?.message || err);
+            // Don't strand the lifecycle silently: mark the clip failed and
+            // tell the creator. Re-rendering the clip (aspect chips /
+            // library) advances the placement when it succeeds.
+            await storage.updateEditorialClipRender(clipId, { renderStatus: "failed", renderError: err?.message || "Placement re-render failed" }).catch(() => {});
+            storage.createNotification({
+              userId: placement.creatorUserId,
+              type: "placement_render_failed",
+              title: "Placement render failed",
+              body: "The clip re-render with the brand's product failed — re-render the clip from your library to continue the approval.",
+              linkPath: "/library",
+              metadata: { placementId: id, clipId },
+            });
           });
       } else {
-        console.log(`[BrandPlacement] Placement ${id} has no clip target — skipping auto-rerender`);
+        // Video-targeted placements (legacy mode, no per-clip render) go
+        // straight to brand review — previously they could NEVER reach the
+        // brand gate and displayed as perpetually "Rendering".
+        console.log(`[BrandPlacement] Placement ${id} has no clip target — advancing directly to brand review`);
+        storage.updateBrandPlacementStatus(id, "pending_brand_review", { expectedCurrentStatus: "creator_approved" })
+          .then((advanced) => {
+            if (!advanced) return;
+            storage.createNotification({
+              userId: placement.brandUserId,
+              type: "placement_render_ready",
+              title: "Placement ready for your review",
+              body: "The creator approved your placement — review and give final approval.",
+              linkPath: "/brand/placements",
+              metadata: { placementId: id },
+            });
+          })
+          .catch(() => {});
       }
 
       res.json({ placement: updated, rerenderScheduled: !!placement.editorialClipId });
@@ -10941,6 +10973,10 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Not your clip" });
       }
 
+      if (clip.renderStatus === "rendering") {
+        return res.status(409).json({ error: "Clip is already rendering — try again when it finishes" });
+      }
+
       const aspect = req.body?.aspect === "16:9" ? "16:9" : "9:16";
       const platformKey = aspect === "16:9" ? "youtube" : "tiktok";
 
@@ -10948,7 +10984,27 @@ export async function registerRoutes(
       res.json({ message: "Re-render started", clipId, aspect });
 
       renderSingleEditorialClip(clip.videoId, clipId, { platformKey: platformKey as any })
-        .then(() => console.log(`[API] Editorial clip ${clipId} re-rendered as ${aspect}`))
+        .then(async () => {
+          console.log(`[API] Editorial clip ${clipId} re-rendered as ${aspect}`);
+          // A successful re-render is also the RETRY path for placements
+          // stranded at creator_approved by an earlier render failure.
+          try {
+            const approved = await storage.getApprovedPlacementsForVideo(clip.videoId);
+            for (const pl of approved.filter((x) => x.editorialClipId === clipId && x.status === "creator_approved")) {
+              const advanced = await storage.updateBrandPlacementStatus(pl.id, "pending_brand_review", { expectedCurrentStatus: "creator_approved" });
+              if (advanced) {
+                storage.createNotification({
+                  userId: pl.brandUserId,
+                  type: "placement_render_ready",
+                  title: "Render ready for your review",
+                  body: "The clip has been re-rendered with your product — review and approve the final cut.",
+                  linkPath: "/brand/placements",
+                  metadata: { placementId: pl.id, clipId },
+                });
+              }
+            }
+          } catch { /* non-fatal */ }
+        })
         .catch(async (err: any) => {
           console.error(`[API] Editorial clip ${clipId} ${aspect} re-render failed:`, err?.message || err);
           await storage.updateEditorialClipRender(clipId, { renderStatus: "failed", renderError: err?.message || "Re-render failed" }).catch(() => {});

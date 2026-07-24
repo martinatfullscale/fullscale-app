@@ -172,18 +172,22 @@ export default function BrandPlacementRequests() {
                   <StatusIcon className="w-3.5 h-3.5" /> {meta.label}
                 </span>
 
-                {p.status === "pending_brand_review" && p.clip?.exportPath && (
+                {p.status === "pending_brand_review" && (
                   <div className="w-full mt-2 flex flex-col sm:flex-row items-start gap-3" data-testid={`render-review-${p.id}`}>
-                    <video
-                      src={p.clip.exportPath}
-                      poster={p.clip.thumbnailPath || undefined}
-                      controls
-                      preload="metadata"
-                      className="w-full sm:w-56 rounded-lg bg-black aspect-[9/16] object-contain"
-                    />
+                    {p.clip?.exportPath && (
+                      <video
+                        src={p.clip.exportPath}
+                        poster={p.clip.thumbnailPath || undefined}
+                        controls
+                        preload="metadata"
+                        className="w-full sm:w-56 rounded-lg bg-black aspect-[9/16] object-contain"
+                      />
+                    )}
                     <div className="flex flex-col gap-2">
                       <p className="text-sm text-muted-foreground max-w-xs">
-                        This is the final cut with your product baked in. Approve it to mark the placement ready for launch.
+                        {p.clip?.exportPath
+                          ? "This is the final cut with your product baked in. Approve it to mark the placement ready for launch."
+                          : "The creator approved this placement. Give final approval to mark it ready for launch."}
                       </p>
                       <Button
                         size="sm"

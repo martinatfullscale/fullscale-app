@@ -2260,23 +2260,43 @@ async function verifySceneSurfaces(
       .join("\n");
     const prompt = `You are auditing candidate surface detections for product placement. The attached image is one frame of the scene. Candidates (bbox as percent of frame, origin top-left):\n${list}\n\nFor EACH candidate index, answer keep=true ONLY if ALL of these hold:\n- the named surface type is genuinely visible at that box location\n- the label is correct (a floor region is not a "wall"; a couch back is not a "table")\n- the box does NOT primarily cover a person, their clothing, or the chair they sit in\nReturn STRICT JSON only, no markdown fences: {"verdicts":[{"index":0,"keep":true,"reason":"short"}]} with exactly one verdict per candidate.`;
 
-    const timeoutPromise = new Promise<null>((resolve) => {
-      setTimeout(() => resolve(null), CONFIG.GEMINI_TIMEOUT_MS);
-    });
-    const response = await Promise.race([
-      ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: [{
-          role: "user",
-          parts: [
-            { text: prompt },
-            { inlineData: { mimeType: "image/jpeg", data: base64Image } },
-          ],
-        }],
-      }),
-      timeoutPromise,
-    ]);
-    if (!response) return null;
+    // The verify call lands right after the detection burst — the most
+    // rate-limited moment of the scan. Small backoff loop for 429s.
+    let response: any = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const timeoutPromise = new Promise<null>((resolve) => {
+        setTimeout(() => resolve(null), CONFIG.GEMINI_TIMEOUT_MS);
+      });
+      try {
+        response = await Promise.race([
+          ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: [{
+              role: "user",
+              parts: [
+                { text: prompt },
+                { inlineData: { mimeType: "image/jpeg", data: base64Image } },
+              ],
+            }],
+          }),
+          timeoutPromise,
+        ]);
+        break;
+      } catch (callErr: any) {
+        const msg = String(callErr?.message || callErr);
+        if (/429|rate.?limit|quota|resource.?exhausted/i.test(msg) && attempt < 2) {
+          const backoff = 2000 * Math.pow(2, attempt);
+          console.warn(`[Scanner V2] Verify pass rate-limited — retrying in ${backoff / 1000}s`);
+          await new Promise((r) => setTimeout(r, backoff));
+          continue;
+        }
+        throw callErr;
+      }
+    }
+    if (!response) {
+      console.warn(`[Scanner V2] Verify pass timed out (fail-open)`);
+      return null;
+    }
 
     const textContent = (response as any).candidates?.[0]?.content?.parts?.[0];
     if (!textContent || !("text" in textContent) || !textContent.text) return null;
@@ -2289,13 +2309,23 @@ async function verifySceneSurfaces(
     if (!Array.isArray(parsed?.verdicts)) return null;
 
     const keep = new Set<number>();
+    let wellFormedVerdicts = 0;
     for (const v of parsed.verdicts) {
-      if (typeof v?.index === "number" && v.keep === true) keep.add(v.index);
+      if (typeof v?.index === "number" && typeof v?.keep === "boolean") {
+        wellFormedVerdicts++;
+        if (v.keep === true) keep.add(v.index);
+      }
     }
-    // A verify pass that rejects EVERYTHING is more likely a bad model
-    // response than an empty room (consensus already required multi-frame
-    // agreement) — fail open in that case.
-    if (keep.size === 0) return null;
+    // An all-reject is trusted only when the model explicitly returned a
+    // well-formed verdict for EVERY candidate (a deliberate judgment);
+    // partial/malformed responses fail open — consensus already filtered.
+    if (keep.size === 0 && wellFormedVerdicts < candidates.length) {
+      console.warn(`[Scanner V2] Verify pass returned ${wellFormedVerdicts}/${candidates.length} verdicts with none kept — fail-open`);
+      return null;
+    }
+    if (keep.size === 0) {
+      console.log(`[Scanner V2] Verify pass deliberately rejected all ${candidates.length} candidate(s)`);
+    }
     return keep;
   } catch (err: any) {
     console.warn(`[Scanner V2] Scene verification failed (fail-open):`, err?.message || err);
@@ -3313,9 +3343,13 @@ async function processVideoScanInner(
         analysis = await analyzeFrameForSurfaces(framePath, timestamp, isVertical);
       }
 
-      if (analysis.hasSurface && analysis.surfaces.length > 0) {
+      // Buffer EVERY analyzed frame — including zero-detection ones. The
+      // consensus vote divides by framesAnalyzed; counting only detection-
+      // bearing frames let a lone hallucination in an otherwise-empty scene
+      // pass as 1/1 "full support".
+      {
         // Consensus group: real scene cluster when a sceneIndex exists;
-        // dHash grid segment on the streamed path; single bucket otherwise.
+        // dHash segment ids otherwise (streamed grid or local fallback).
         const sceneKey = sceneIndex
           ? sceneIdForTimestamp(sceneIndex, timestamp)
           : (streamSegmentIds?.[i] ?? 0);
@@ -3324,13 +3358,34 @@ async function processVideoScanInner(
           timestamp,
           frameUrl: `/storage/uploads/frames/${videoId}/${frameFilename}`,
           sceneKey,
-          surfaces: analysis.surfaces,
+          surfaces: analysis.hasSurface ? analysis.surfaces : [],
           viaGemini: Boolean(useGemini) && analysis.aiAnalyzed === true,
         });
       }
       // NOTE: temp frames are intentionally KEPT here — the verification
       // pass re-reads the best frame per scene. The outer finally removes
       // the whole tempDir. (~36 frames ≈ a few MB.)
+    }
+
+    // Local fallback without a sceneIndex: segment frames by dHash jumps so
+    // consensus groups approximate scenes instead of collapsing the whole
+    // video into one bucket (which made cross-scene detections vote for
+    // each other and killed scene-unique surfaces as 'single_frame').
+    if (!sceneIndex && !streamSegmentIds && bufferedAnalyses.length > 1) {
+      try {
+        let seg = 0;
+        let prevHash: string | null = null;
+        for (const bf of bufferedAnalyses) {
+          const h = await computeDHash(bf.framePath).catch(() => null);
+          if (prevHash && h && hammingDistance(prevHash, h) >= 10) seg++;
+          if (prevHash && !h) seg++;
+          bf.sceneKey = seg;
+          prevHash = h;
+        }
+        console.log(`[Scanner V2] Local dHash segmentation: ${seg + 1} consensus group(s) across ${bufferedAnalyses.length} frames`);
+      } catch (segErr: any) {
+        console.warn(`[Scanner V2] Local segmentation failed (single bucket):`, segErr?.message);
+      }
     }
 
     // ── Phase B: per-scene consensus vote (AUTH 1 + AUTH 2) ───────

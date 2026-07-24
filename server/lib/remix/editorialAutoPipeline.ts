@@ -1021,7 +1021,10 @@ export async function renderSingleEditorialClip(
     tempScopeDir = resolved.tempScopeDir;
 
     const srcSize = await getVideoSize(videoLocalPath).catch(() => ({ width: 1920, height: 1080 }));
-    const platformKey = opts.platformKey ?? AUTO_PIPELINE_CONFIG.platformKey;
+    // Default to the clip's CURRENT aspect — a brand-approval re-render
+    // must not silently revert a clip the creator re-rendered as 16:9.
+    const platformKey = opts.platformKey
+      ?? ((clip as any).aspectRatio === "16:9" ? "youtube" : AUTO_PIPELINE_CONFIG.platformKey);
     const platformConfig = PLATFORM_CONFIGS[platformKey] ?? PLATFORM_CONFIGS[AUTO_PIPELINE_CONFIG.platformKey];
     const needsReframe = srcSize.width > srcSize.height && platformConfig.aspectRatio === "9:16";
 
@@ -1324,6 +1327,9 @@ function runFFmpegRender(opts: RenderOptions): Promise<void> {
         // host) — styling must never cost a clip. Retry once with the
         // legacy drawtext captions.
         if (!opts.captionAssPath) throw err;
+        // Timeouts are encode-capacity problems, not caption problems —
+        // a drawtext retry would just double the wall-time and mask them.
+        if (/timeout|timed out/i.test(String((err as any)?.message || err))) throw err;
         console.warn(`[EditorialAuto] ASS caption render failed — retrying with drawtext fallback`);
         await runFFmpegRenderUngated({ ...opts, captionAssPath: null });
       }

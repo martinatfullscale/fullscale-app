@@ -468,13 +468,30 @@ export function sampleMultiTimestampsPerScene(
     const sorted = [...shots].sort(
       (a, b) => (b.tEnd - b.tStart) - (a.tEnd - a.tStart),
     );
-    const top = sorted.slice(0, Math.max(1, perScene));
+    const want = Math.max(2, perScene); // consensus voting needs >=2 samples
+    const top = sorted.slice(0, want);
     for (const shot of top) {
       samples.push({
         sceneId,
         shotIdx: shot.shotIdx,
         t: shot.tStart + (shot.tEnd - shot.tStart) / 2,
       });
+    }
+    // Scenes with fewer shots than `want` (e.g. a single long shot) get
+    // extra points spread WITHIN the longest shot — a scene sampled once
+    // can't be cross-frame verified.
+    let deficit = want - top.length;
+    if (deficit > 0) {
+      const longest = sorted[0];
+      const len = longest.tEnd - longest.tStart;
+      // Midpoint is taken above; add 1/4 and 3/4 points (then 3/8, 5/8...)
+      const fractions = [0.25, 0.75, 0.375, 0.625, 0.125, 0.875];
+      for (const f of fractions) {
+        if (deficit <= 0) break;
+        if (len * Math.abs(f - 0.5) < 0.75) continue; // too close to midpoint on short shots
+        samples.push({ sceneId, shotIdx: longest.shotIdx, t: longest.tStart + len * f });
+        deficit--;
+      }
     }
   }
   return samples.sort((a, b) => a.t - b.t);

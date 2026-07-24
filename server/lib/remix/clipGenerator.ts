@@ -257,6 +257,7 @@ async function generateCleanClip(
     await runFFmpeg(encodeArgs(filters));
   } catch (err) {
     if (!assPath) throw err;
+    if (/timeout|timed out/i.test(String((err as any)?.message || err))) throw err;
     // ASS render failed (missing fonts / libass quirk) — retry with the
     // legacy drawtext captions rather than shipping no clip.
     console.warn(`[ClipGen] ASS caption render failed — retrying with drawtext fallback`);

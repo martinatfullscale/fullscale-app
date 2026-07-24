@@ -791,6 +791,9 @@ export const editorialClips = pgTable('editorial_clips', {
   renderStatus: varchar('render_status', { length: 20 }).default('pending'), // pending, rendering, rendered, failed
   renderError: text('render_error'),
   renderedAt: timestamp('rendered_at'),
+  // Post-render quality rubric score (0-1) — REAL column (a prior commit
+  // wrote this key without the column existing; drizzle silently dropped it)
+  qualityScore: real('quality_score'),
   createdAt: timestamp('created_at').defaultNow(),
 });
 

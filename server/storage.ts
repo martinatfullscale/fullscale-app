@@ -1315,7 +1315,7 @@ export class DatabaseStorage implements IStorage {
   async updateBrandPlacementStatus(
     id: number,
     status: "creator_approved" | "creator_rejected" | "brand_withdrawn" | "expired" | "pending_brand_review" | "brand_approved",
-    opts: { rejectionReason?: string; brandProductId?: number } = {},
+    opts: { rejectionReason?: string; brandProductId?: number; expectedCurrentStatus?: string } = {},
   ): Promise<BrandPlacementAssignment | undefined> {
     const patch: Record<string, any> = {
       status,
@@ -1333,7 +1333,9 @@ export class DatabaseStorage implements IStorage {
     const [row] = await db
       .update(brandPlacementAssignments)
       .set(patch)
-      .where(eq(brandPlacementAssignments.id, id))
+      .where(opts.expectedCurrentStatus
+          ? and(eq(brandPlacementAssignments.id, id), eq(brandPlacementAssignments.status, opts.expectedCurrentStatus))
+          : eq(brandPlacementAssignments.id, id))
       .returning();
     return row;
   }

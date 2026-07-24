@@ -89,21 +89,27 @@ interface PhraseWord {
  *  without word timing pass through as single phrases. */
 function toPhrases(segments: CaptionSegment[], wordsPerPhrase: number): Array<{ words: PhraseWord[]; start: number; end: number; text: string }> {
   const phrases: Array<{ words: PhraseWord[]; start: number; end: number; text: string }> = [];
-  for (const seg of segments) {
+  for (let si = 0; si < segments.length; si++) {
+    const seg = segments[si];
+    // Never hold a phrase past the next segment's first word — overlapping
+    // events render STACKED (two captions at once) during fast speech.
+    const nextSegStart = segments[si + 1]?.words?.[0]?.start ?? segments[si + 1]?.startTime ?? Infinity;
+    const clampEnd = (end: number, floor: number) => Math.max(floor, Math.min(end, nextSegStart));
     if (seg.words && seg.words.length > 0) {
       for (let i = 0; i < seg.words.length; i += wordsPerPhrase) {
         const chunk = seg.words.slice(i, i + wordsPerPhrase);
         const start = chunk[0].start;
         // Hold the phrase until the next chunk begins (or the segment ends)
         const next = seg.words[i + wordsPerPhrase];
-        const end = next ? next.start : Math.max(chunk[chunk.length - 1].end, start + 0.6);
-        phrases.push({ words: chunk, start, end, text: chunk.map((w) => w.word).join(" ") });
+        const lastWordEnd = chunk[chunk.length - 1].end;
+        const rawEnd = next ? next.start : Math.max(lastWordEnd, start + 0.6);
+        phrases.push({ words: chunk, start, end: clampEnd(rawEnd, lastWordEnd), text: chunk.map((w) => w.word).join(" ") });
       }
     } else {
       phrases.push({
         words: [],
         start: seg.startTime,
-        end: Math.max(seg.endTime, seg.startTime + 0.6),
+        end: clampEnd(Math.max(seg.endTime, seg.startTime + 0.6), seg.endTime),
         text: seg.text,
       });
     }
@@ -135,7 +141,7 @@ export function buildAssSubtitles(
     "ScriptType: v4.00+",
     `PlayResX: ${config.targetWidth}`,
     `PlayResY: ${config.targetHeight}`,
-    "WrapStyle: 2",
+    "WrapStyle: 0", // smart wrapping — long phrases break to a second line instead of clipping off-frame
     "ScaledBorderAndShadow: yes",
     "",
     "[V4+ Styles]",
@@ -173,7 +179,7 @@ export function buildAssSubtitles(
       const rendered = phrase.words
         .map((pw, i) =>
           i === wi
-            ? `{\\c${spec.accent}\\b1\\fscx108\\fscy108}${escapeAssText(pw.word)}{\\c${spec.primary}\\b0\\fscx100\\fscy100}`
+            ? `{\\c${spec.accent}\\fscx108\\fscy108}${escapeAssText(pw.word)}{\\c${spec.primary}\\fscx100\\fscy100}`
             : escapeAssText(pw.word),
         )
         .join(" ");
