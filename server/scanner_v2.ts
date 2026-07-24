@@ -2333,6 +2333,61 @@ async function verifySceneSurfaces(
   }
 }
 
+// ── Full-res bbox refinement (brand-commit re-scan) ────────────────
+// Scan-time detection ran on frames capped at FRAME_MAX_DIMENSION (1280).
+// When a brand commits and the placement renders, this refines the surface
+// bbox against a FULL-RESOLUTION frame for pixel-accurate compositing.
+// Fail-open: any error/implausible answer keeps the scan-time bbox.
+export async function refineSurfaceBBoxOnFrame(
+  framePath: string,
+  surfaceType: string,
+  bbox: { x: number; y: number; width: number; height: number },
+): Promise<{ x: number; y: number; width: number; height: number } | null> {
+  try {
+    if (!fs.existsSync(framePath)) return null;
+    if (!process.env.AI_INTEGRATIONS_GEMINI_API_KEY || process.env.AI_INTEGRATIONS_GEMINI_API_KEY === "dummy-key") return null;
+    const base64Image = fs.readFileSync(framePath).toString("base64");
+    const prompt = `This is a full-resolution video frame. A "${surfaceType}" surface was previously detected at approximately x=${(bbox.x * 100).toFixed(1)}%, y=${(bbox.y * 100).toFixed(1)}%, width=${(bbox.width * 100).toFixed(1)}%, height=${(bbox.height * 100).toFixed(1)}% (percent of frame, origin top-left). Return the PRECISE bounding box of the EMPTY placeable area of that exact surface — tightened to this higher-resolution frame. Respond with STRICT JSON only: {"x": number, "y": number, "width": number, "height": number} in percent 0-100, or {"not_visible": true} if that surface is not visible in this frame.`;
+
+    const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), CONFIG.GEMINI_TIMEOUT_MS));
+    const response = await Promise.race([
+      ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [{ role: "user", parts: [{ text: prompt }, { inlineData: { mimeType: "image/jpeg", data: base64Image } }] }],
+      }),
+      timeoutPromise,
+    ]);
+    if (!response) return null;
+    const part = (response as any).candidates?.[0]?.content?.parts?.[0];
+    if (!part || !("text" in part) || !part.text) return null;
+    let jsonStr = String(part.text).trim();
+    if (jsonStr.startsWith("```json")) jsonStr = jsonStr.slice(7);
+    else if (jsonStr.startsWith("```")) jsonStr = jsonStr.slice(3);
+    if (jsonStr.endsWith("```")) jsonStr = jsonStr.slice(0, -3);
+    const parsed = JSON.parse(jsonStr.trim());
+    if (parsed?.not_visible) return null;
+    const refined = {
+      x: Number(parsed.x) / 100,
+      y: Number(parsed.y) / 100,
+      width: Number(parsed.width) / 100,
+      height: Number(parsed.height) / 100,
+    };
+    if ([refined.x, refined.y, refined.width, refined.height].some((v) => !Number.isFinite(v) || v < 0 || v > 1)) return null;
+    if (refined.width <= 0.01 || refined.height <= 0.01) return null;
+    // Plausibility: the refinement must still be the SAME surface — reject
+    // answers that wandered elsewhere in the frame.
+    const iou = bboxIoU(refined, bbox);
+    if (iou < 0.2) {
+      console.warn(`[Scanner V2] BBox refinement wandered (IoU ${iou.toFixed(2)}) — keeping scan-time bbox`);
+      return null;
+    }
+    return refined;
+  } catch (err: any) {
+    console.warn(`[Scanner V2] BBox refinement failed (fail-open):`, err?.message || err);
+    return null;
+  }
+}
+
 const SURFACE_TYPE_SYNONYMS: Record<string, string> = {
   desk: "Table",
   table: "Table",

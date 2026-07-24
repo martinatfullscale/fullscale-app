@@ -1044,6 +1044,41 @@ export async function renderSingleEditorialClip(
     // legacy assignments). Build BrandOverlay objects with locally-downloaded
     // product images.
     const brandOverlays = await loadBrandOverlaysForClip(clip.id, videoId, renderOutputDir);
+
+  // Brand-commit full-res re-scan (architecture spec): scan-time boxes came
+  // from 1280px-capped frames — refine each overlay's bbox against a
+  // FULL-RESOLUTION frame at the surface's timestamp before compositing.
+  // Fail-open per overlay; capped at 3 refinements per render.
+  if (brandOverlays && brandOverlays.length > 0) {
+    try {
+      const { refineSurfaceBBoxOnFrame } = await import("../../scanner_v2");
+      const { execFile } = await import("child_process");
+      const { promisify } = await import("util");
+      const execFileP = promisify(execFile);
+      for (const ov of brandOverlays.slice(0, 3)) {
+        if (ov.surfaceTimestamp == null) continue;
+        const refFrame = path.join("/tmp", `bbox-refine-${clipId}-${Math.round(ov.surfaceTimestamp)}.jpg`);
+        try {
+          await execFileP("ffmpeg", [
+            "-nostdin", "-y", "-ss", String(ov.surfaceTimestamp), "-i", videoLocalPath,
+            "-frames:v", "1", "-q:v", "2", refFrame,
+          ], { timeout: 30000 });
+          const refined = await refineSurfaceBBoxOnFrame(refFrame, ov.surfaceType || "surface", {
+            x: ov.bboxX, y: ov.bboxY, width: ov.bboxWidth, height: ov.bboxHeight,
+          });
+          if (refined) {
+            console.log(`[RenderSingle] Full-res bbox refined: (${ov.bboxX.toFixed(3)},${ov.bboxY.toFixed(3)}) → (${refined.x.toFixed(3)},${refined.y.toFixed(3)})`);
+            ov.bboxX = refined.x; ov.bboxY = refined.y;
+            ov.bboxWidth = refined.width; ov.bboxHeight = refined.height;
+          }
+        } finally {
+          try { fs.unlinkSync(refFrame); } catch { /* ignore */ }
+        }
+      }
+    } catch (refineErr: any) {
+      console.warn(`[RenderSingle] BBox refinement skipped (non-fatal):`, refineErr?.message || refineErr);
+    }
+  }
     if (brandOverlays.length > 0) {
       console.log(`[RenderSingle] Compositing ${brandOverlays.length} brand placement(s) onto clip ${clip.id}`);
     }
@@ -1172,6 +1207,8 @@ async function loadBrandOverlaysForClip(
           bboxY: parseFloat(surface.boundingBoxY),
           bboxWidth: parseFloat(surface.boundingBoxWidth),
           bboxHeight: parseFloat(surface.boundingBoxHeight),
+          surfaceTimestamp: parseFloat(String(surface.timestamp)) || undefined,
+          surfaceType: surface.surfaceType || undefined,
         });
       } catch (err: any) {
         console.warn(`[BrandOverlay] Skipping placement ${placement.id}: ${err.message}`);
@@ -1244,6 +1281,11 @@ interface BrandOverlay {
   bboxHeight: number;
   /** Padding inside the bbox as a fraction (default 0.10 = 10% inset) */
   padding?: number;
+  /** Source timestamp of the detected surface — used for the full-res
+   *  bbox refinement pass at brand-commit render time */
+  surfaceTimestamp?: number;
+  /** Detected surface type (e.g. "Table") — improves refinement targeting */
+  surfaceType?: string;
 }
 
 interface RenderOptions {
