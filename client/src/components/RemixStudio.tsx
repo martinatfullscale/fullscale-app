@@ -567,7 +567,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ targetDuration: 90, segmentCount: 4 }),
+        body: JSON.stringify({ targetDuration: 110, segmentCount: 5 }),
       });
       if (!res.ok) {
         const err = await res.json();

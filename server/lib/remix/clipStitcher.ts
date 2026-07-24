@@ -102,8 +102,12 @@ async function stitchSegmentsUngated(input: StitchInput): Promise<StitchOutput> 
     const tempDir = path.join(outputDir, `temp_stitch_${Date.now()}`);
     fs.mkdirSync(tempDir, { recursive: true });
 
-    // Phase 3: Generate transition card placeholders for branded_wipe segments
+    // Branded wipes: generate the card image and render it into a short
+    // interstitial video matched to the segment encoding, then splice it
+    // between segments. Previously the card was generated and DISCARDED
+    // ('for now, falls back to crossfade').
     const hasBrandedWipe = segments.some((seg, i) => i > 0 && seg.transitionIn === "branded_wipe");
+    let cardVideoPath: string | null = null;
     if (hasBrandedWipe && input.brandProduct) {
       try {
         const { generateTransitionCard } = await import("../ai/image-gen/assetGenerator");
@@ -113,25 +117,29 @@ async function stitchSegmentsUngated(input: StitchInput): Promise<StitchOutput> 
           targetPlatform: platformConfig.name.toLowerCase(),
           style: "minimal",
         });
-        if (cardResult.success) {
-          console.log(`[ClipStitcher] Transition card generated: ${cardResult.assetPath}`);
-          // Note: When Seeddance API is live, this card MP4 will be inserted between segments.
-          // For now, branded_wipe falls back to crossfade with the placeholder recorded.
+        if (cardResult.success && cardResult.assetPath && fs.existsSync(cardResult.assetPath)) {
+          cardVideoPath = path.join(tempDir, "brand_card.mp4");
+          await renderCardVideo(cardResult.assetPath, platformConfig, cardVideoPath);
+          console.log(`[ClipStitcher] Branded transition card rendered: ${cardVideoPath}`);
         }
       } catch (err: any) {
-        console.warn(`[ClipStitcher] Transition card generation failed: ${err.message}`);
+        console.warn(`[ClipStitcher] Transition card generation failed (falling back to crossfade): ${err.message}`);
+        cardVideoPath = null;
       }
     }
 
-    // Determine if we need crossfade or can do simple concat
-    // branded_wipe falls back to crossfade until Seeddance transition cards produce real video
     const hasCrossfade = segments.some(
-      (seg, i) => i > 0 && (seg.transitionIn === "crossfade" || seg.transitionIn === "branded_wipe")
+      (seg, i) => i > 0 && (seg.transitionIn === "crossfade" || (seg.transitionIn === "branded_wipe" && !cardVideoPath))
     );
 
     if (segments.length === 1) {
       // Single segment — just extract it
       await extractSegment(videoPath, segments[0], platformConfig, outputPath);
+    } else if (hasBrandedWipe && cardVideoPath) {
+      // Real branded wipes: concat with the card spliced at wipe junctions.
+      // (Crossfade junctions render as cuts in this mode — the concat
+      // demuxer can't mix with xfade; the card IS the transition.)
+      await stitchWithBrandedCards(videoPath, segments, platformConfig, tempDir, outputPath, cardVideoPath);
     } else if (!hasCrossfade) {
       // All cuts — use fast concat demuxer
       await stitchWithConcatDemuxer(videoPath, segments, platformConfig, tempDir, outputPath);
@@ -188,6 +196,66 @@ async function stitchSegmentsUngated(input: StitchInput): Promise<StitchOutput> 
 }
 
 // ── Single Segment Extraction ──────────────────────────────────────
+
+/** Render a still card image into a short interstitial video whose encode
+ *  parameters exactly match extractSegment's output, so the concat demuxer
+ *  can -c copy the spliced sequence. */
+async function renderCardVideo(
+  cardImagePath: string,
+  config: PlatformConfig,
+  outputPath: string,
+  durationSec: number = 0.8,
+): Promise<void> {
+  const args = [
+    "-nostdin", "-y",
+    "-loop", "1", "-i", cardImagePath,
+    "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+    "-t", durationSec.toString(),
+    "-vf", `scale=${config.targetWidth}:${config.targetHeight}:force_original_aspect_ratio=decrease,pad=${config.targetWidth}:${config.targetHeight}:(ow-iw)/2:(oh-ih)/2:black,format=yuv420p,fade=t=in:st=0:d=0.15,fade=t=out:st=${(durationSec - 0.15).toFixed(2)}:d=0.15`,
+    "-r", config.targetFps.toString(),
+    "-c:v", "libx264", "-pix_fmt", "yuv420p",
+    "-preset", STITCH_CONFIG.PRESET,
+    "-crf", STITCH_CONFIG.CRF.toString(),
+    "-c:a", "aac", "-b:a", STITCH_CONFIG.AUDIO_BITRATE,
+    "-shortest",
+    "-movflags", "+faststart",
+    outputPath,
+  ];
+  await runFFmpeg(args);
+}
+
+/** Concat segments with the branded card spliced at every branded_wipe
+ *  junction. All parts share extractSegment's encoding so -c copy holds. */
+async function stitchWithBrandedCards(
+  videoPath: string,
+  segments: StitchSegment[],
+  config: PlatformConfig,
+  tempDir: string,
+  outputPath: string,
+  cardVideoPath: string,
+): Promise<void> {
+  console.log(`[ClipStitcher] Branded-card stitch: ${segments.length} segments`);
+  const parts: string[] = [];
+  for (let i = 0; i < segments.length; i++) {
+    if (i > 0 && segments[i].transitionIn === "branded_wipe") {
+      parts.push(cardVideoPath);
+    }
+    const segPath = path.join(tempDir, `seg_${i}.mp4`);
+    await extractSegment(videoPath, segments[i], config, segPath);
+    parts.push(segPath);
+  }
+
+  const concatListPath = path.join(tempDir, "concat_cards.txt");
+  fs.writeFileSync(concatListPath, parts.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join("\n"));
+  await runFFmpeg([
+    "-nostdin", "-y",
+    "-f", "concat", "-safe", "0",
+    "-i", concatListPath,
+    "-c", "copy",
+    "-movflags", "+faststart",
+    outputPath,
+  ]);
+}
 
 async function extractSegment(
   videoPath: string,

@@ -459,7 +459,7 @@ Here are the available brand products:
 ${JSON.stringify(compactBrands)}
 
 TASK:
-1. Identify exactly ${segmentCount} moments from this transcript that form a compelling narrative thread when placed in sequence. The total combined duration should be approximately ${targetDuration} seconds. Each segment should be 10-30 seconds long.
+1. Identify exactly ${segmentCount} moments from this transcript that form a compelling narrative thread when placed in sequence. The total combined duration should be approximately ${targetDuration} seconds. Each segment should be 15-30 seconds long.
 
 2. Each moment must serve a specific narrative role:
    - "hook": Opens with something attention-grabbing (bold claim, surprising fact, question). This MUST be the first segment.
@@ -615,7 +615,7 @@ export async function analyzeNarrativeThread(
     transcript,
     surfaces,
     brandCatalog,
-    targetDuration = 90,
+    targetDuration = 110,
     segmentCount = 4,
   } = input;
 

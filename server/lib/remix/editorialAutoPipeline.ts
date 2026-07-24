@@ -474,6 +474,13 @@ export async function runEditorialAutoPipeline(
       error: notes.length > 0 ? notes.join("; ") : null,
     });
 
+    // Auto highlight reel: once clips are ready, assemble the ~110s
+    // narrative reel in the background (guards inside: transcript, >=3
+    // rendered clips, no existing plan).
+    import("./highlightAuto")
+      .then(({ autoGenerateHighlightReel }) => autoGenerateHighlightReel(videoId, userId))
+      .catch((reelErr: any) => console.warn(`[EditorialAuto] Auto-reel failed (non-fatal):`, reelErr?.message || reelErr));
+
     // In-app heads-up for the creator (best-effort; video.userId is the
     // creator's identity key — the int userId param is display-only).
     storage.createNotification({

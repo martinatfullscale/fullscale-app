@@ -11601,7 +11601,7 @@ export async function registerRoutes(
 
       const { analyzeNarrativeThread } = await import("./lib/ai/claude-dense/editorialAnalyzer");
 
-      const targetDuration = req.body.targetDuration || 90;
+      const targetDuration = req.body.targetDuration || 110;
       const segmentCount = req.body.segmentCount || 4;
 
       const result = await analyzeNarrativeThread({
@@ -11812,6 +11812,18 @@ export async function registerRoutes(
             }
           }
 
+          // Brand product for branded_wipe cards — first approved placement
+          // with a product on this video (fail-soft: no product, no card).
+          let stitchBrandProduct: { id: number; name: string; category: string | null } | undefined = undefined;
+          try {
+            const approved = await storage.getApprovedPlacementsForVideo(videoId);
+            const withProduct = approved.find((p) => p.brandProductId != null);
+            if (withProduct?.brandProductId != null) {
+              const prod = await storage.getBrandProduct(withProduct.brandProductId);
+              if (prod) stitchBrandProduct = { id: prod.id, name: prod.name, category: prod.category ?? null };
+            }
+          } catch { /* card is optional */ }
+
           const result = await stitchSegments({
             videoPath,
             videoId,
@@ -11821,6 +11833,7 @@ export async function registerRoutes(
             captionSegments: stitchCaptions,
             outputDir,
             planId: plan.id,
+            brandProduct: stitchBrandProduct,
           });
 
           if (!result.success) {
