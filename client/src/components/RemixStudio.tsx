@@ -1443,6 +1443,122 @@ function HighlightReelCard({ plan, onDelete }: { plan: StitchPlan; onDelete?: (p
   );
 }
 
+/**
+ * TrimTimeline — visual trim editing (Timeline UI v1). A draggable range
+ * over a window of the source: grab the start/end handles or the body to
+ * move the whole selection. Fine-tuning stays on the ±0.5s steppers below.
+ */
+function TrimTimeline({
+  windowStart,
+  windowEnd,
+  start,
+  end,
+  originalStart,
+  originalEnd,
+  onChange,
+}: {
+  windowStart: number;
+  windowEnd: number;
+  start: number;
+  end: number;
+  originalStart: number;
+  originalEnd: number;
+  onChange: (start: number, end: number) => void;
+}) {
+  const barRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{ mode: "start" | "end" | "move"; grabOffset: number } | null>(null);
+
+  const span = Math.max(1, windowEnd - windowStart);
+  const pct = (t: number) => ((t - windowStart) / span) * 100;
+  const timeAt = (clientX: number) => {
+    const rect = barRef.current?.getBoundingClientRect();
+    if (!rect || rect.width === 0) return start;
+    const frac = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    return windowStart + frac * span;
+  };
+
+  const beginDrag = (mode: "start" | "end" | "move") => (e: React.PointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragRef.current = { mode, grabOffset: timeAt(e.clientX) - start };
+    const onMove = (ev: PointerEvent) => {
+      const d = dragRef.current;
+      if (!d) return;
+      const t = timeAt(ev.clientX);
+      if (d.mode === "start") {
+        onChange(Math.min(Math.max(windowStart, t), end - 1), end);
+      } else if (d.mode === "end") {
+        onChange(start, Math.max(Math.min(windowEnd, t), start + 1));
+      } else {
+        const dur = end - start;
+        let ns = t - d.grabOffset;
+        ns = Math.max(windowStart, Math.min(ns, windowEnd - dur));
+        onChange(ns, ns + dur);
+      }
+    };
+    const onUp = () => {
+      dragRef.current = null;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+
+  // Tick marks every ~10s, denser for short windows
+  const tickStep = span > 120 ? 30 : span > 40 ? 10 : 5;
+  const ticks: number[] = [];
+  for (let t = Math.ceil(windowStart / tickStep) * tickStep; t <= windowEnd; t += tickStep) ticks.push(t);
+
+  return (
+    <div className="select-none" data-testid="trim-timeline">
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-[10px] text-gray-500">Drag handles to trim · drag middle to move</span>
+        <span className="text-[10px] text-purple-300 font-medium">{(end - start).toFixed(1)}s selected</span>
+      </div>
+      <div ref={barRef} className="relative h-9 rounded-md bg-gray-900/80 border border-gray-700/60 overflow-hidden cursor-crosshair">
+        {/* Original clip range (ghost) */}
+        <div
+          className="absolute top-0 bottom-0 bg-gray-600/20 pointer-events-none"
+          style={{ left: `${pct(originalStart)}%`, width: `${Math.max(0, pct(originalEnd) - pct(originalStart))}%` }}
+        />
+        {/* Selection */}
+        <div
+          className="absolute top-0 bottom-0 bg-purple-500/30 border-x-2 border-purple-400 cursor-grab active:cursor-grabbing"
+          style={{ left: `${pct(start)}%`, width: `${Math.max(0.5, pct(end) - pct(start))}%` }}
+          onPointerDown={beginDrag("move")}
+        />
+        {/* Handles */}
+        <div
+          className="absolute top-0 bottom-0 w-3 -ml-1.5 cursor-ew-resize z-10 flex items-center justify-center"
+          style={{ left: `${pct(start)}%` }}
+          onPointerDown={beginDrag("start")}
+          data-testid="trim-handle-start"
+        >
+          <div className="w-1 h-5 rounded bg-purple-300" />
+        </div>
+        <div
+          className="absolute top-0 bottom-0 w-3 -ml-1.5 cursor-ew-resize z-10 flex items-center justify-center"
+          style={{ left: `${pct(end)}%` }}
+          onPointerDown={beginDrag("end")}
+          data-testid="trim-handle-end"
+        >
+          <div className="w-1 h-5 rounded bg-purple-300" />
+        </div>
+        {/* Ticks */}
+        {ticks.map((t) => (
+          <div key={t} className="absolute bottom-0 h-2 w-px bg-gray-600 pointer-events-none" style={{ left: `${pct(t)}%` }} />
+        ))}
+      </div>
+      <div className="flex justify-between text-[9px] text-gray-600 mt-0.5">
+        <span>{windowStart.toFixed(0)}s</span>
+        <span className="text-purple-300">{start.toFixed(1)}s → {end.toFixed(1)}s</span>
+        <span>{windowEnd.toFixed(0)}s</span>
+      </div>
+    </div>
+  );
+}
+
 function ClipCard({
   clip,
   isSelected,
@@ -1690,6 +1806,20 @@ function ClipCard({
             animate={{ height: "auto", opacity: 1 }}
             className="mt-3 pt-3 border-t border-gray-700/50 space-y-3"
           >
+            {/* Visual timeline trim (v1) — steppers below remain for fine-tuning */}
+            <TrimTimeline
+              windowStart={Math.max(0, clip.clipStart - 30)}
+              windowEnd={clip.clipEnd + 30}
+              start={editStart}
+              end={editEnd}
+              originalStart={clip.clipStart}
+              originalEnd={clip.clipEnd}
+              onChange={(ns, ne) => {
+                setEditStart(Math.round(ns * 10) / 10);
+                setEditEnd(Math.round(ne * 10) / 10);
+              }}
+            />
+
             {/* Trim controls */}
             <div className="flex items-center gap-3">
               <div className="flex-1">
