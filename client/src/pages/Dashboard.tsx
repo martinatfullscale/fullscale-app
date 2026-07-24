@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { UploadModal } from "@/components/UploadModal";
 import { YouTubeVideoPicker } from "@/components/YouTubeVideoPicker";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { AnalyticsOverview } from "@/components/AnalyticsOverview";
 import { SceneAnalysisModal, VideoWithScenes } from "@/components/SceneAnalysisModal";
 import { useLocation } from "wouter";
@@ -601,6 +602,11 @@ export default function Dashboard() {
     },
   });
 
+  // Post-connect import choice: "Import all" vs "Let me pick" — previously
+  // the connect flow just toasted and the user had to find the import
+  // button themselves.
+  const [importChoiceOpen, setImportChoiceOpen] = useState(false);
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get("youtube_connected") === "true") {
@@ -610,6 +616,7 @@ export default function Dashboard() {
       queryClient.invalidateQueries({ queryKey: ["/api/auth/youtube/status"] });
       queryClient.invalidateQueries({ queryKey: ["/api/youtube/channel"] });
       queryClient.invalidateQueries({ queryKey: ["/api/youtube/videos"] });
+      setImportChoiceOpen(true);
     }
     if (params.get("youtube_error")) {
       const errorMsg = decodeURIComponent(params.get("youtube_error") || "An error occurred.");
@@ -1258,6 +1265,39 @@ export default function Dashboard() {
         open={sceneModalOpen}
         onClose={() => setSceneModalOpen(false)}
       />
+
+      <Dialog open={importChoiceOpen} onOpenChange={setImportChoiceOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Bring in your videos</DialogTitle>
+            <DialogDescription>
+              We found your channel. Import everything recent, or hand-pick which videos FullScale should work with.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2 sm:gap-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setImportChoiceOpen(false);
+                setYoutubePickerOpen(true);
+              }}
+              data-testid="button-import-pick"
+            >
+              Let me pick
+            </Button>
+            <Button
+              onClick={() => {
+                setImportChoiceOpen(false);
+                syncYouTubeMutation.mutate();
+              }}
+              disabled={syncYouTubeMutation.isPending}
+              data-testid="button-import-all"
+            >
+              {syncYouTubeMutation.isPending ? "Importing…" : "Import all recent"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <YouTubeVideoPicker
         open={youtubePickerOpen}

@@ -574,6 +574,33 @@ export default function Settings() {
     });
   };
 
+  // Refresh follower counts + audience analytics from the platforms. The
+  // server endpoints existed but no UI ever called them — stats only
+  // updated at connect time or via cron.
+  const [isRefreshingStats, setIsRefreshingStats] = useState(false);
+  const handleRefreshStats = async () => {
+    setIsRefreshingStats(true);
+    try {
+      const [analyticsRes, accountsRes] = await Promise.all([
+        fetch("/api/analytics/refresh", { method: "POST", credentials: "include" }),
+        fetch("/api/social-accounts/refresh-all", { method: "POST", credentials: "include" }),
+      ]);
+      if (analyticsRes.ok || accountsRes.ok) {
+        toast({ title: "Stats refreshed", description: "Follower counts and audience data updated from the platforms." });
+        queryClient.invalidateQueries({ queryKey: ["/api/platform-auth/status"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/analytics/overview"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
+      } else {
+        const err = await analyticsRes.json().catch(() => ({}));
+        toast({ title: "Refresh failed", description: err.error || "Could not refresh stats", variant: "destructive" });
+      }
+    } catch {
+      toast({ title: "Refresh failed", description: "Network error", variant: "destructive" });
+    } finally {
+      setIsRefreshingStats(false);
+    }
+  };
+
   const handleSave = () => {
     // Preferences persist per-device until a server-side prefs store exists.
     // The old handler saved nothing and claimed success.
@@ -915,7 +942,20 @@ export default function Settings() {
                 animate={{ opacity: 1, x: 0 }}
                 className="bg-white/5 rounded-xl border border-white/5 p-6"
               >
-                <h2 className="text-xl font-semibold text-white mb-2">Social Integrations</h2>
+                <div className="flex items-center justify-between mb-2">
+                  <h2 className="text-xl font-semibold text-white">Social Integrations</h2>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleRefreshStats}
+                    disabled={isRefreshingStats}
+                    className="gap-1.5"
+                    data-testid="button-refresh-stats"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingStats ? "animate-spin" : ""}`} />
+                    {isRefreshingStats ? "Refreshing…" : "Refresh stats"}
+                  </Button>
+                </div>
                 <p className="text-muted-foreground text-sm mb-2">Connect your social accounts to unlock multi-platform monetization</p>
                 <div className="mb-6 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-200/90 leading-relaxed">
                   <span className="font-medium text-emerald-300">Your content stays yours.</span>{" "}
