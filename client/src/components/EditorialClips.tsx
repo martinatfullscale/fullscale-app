@@ -847,6 +847,21 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
                   onGenerate={onGenerateClip ? () => onGenerateClip(clip) : undefined}
                   onBuy={onBuyPlacement ? () => onBuyPlacement(clip) : undefined}
                   onPlay={clip.exportPath ? () => setPlayingClip(clip) : undefined}
+                  onRerenderAspect={(clip as any).id ? async (aspect) => {
+                    const res = await fetch(`/api/editorial-clips/${(clip as any).id}/rerender`, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      credentials: "include",
+                      body: JSON.stringify({ aspect }),
+                    });
+                    if (res.ok) {
+                      toast({ title: `Re-rendering as ${aspect}`, description: "The clip will refresh here when the new cut is ready." });
+                      await refetchClips();
+                    } else {
+                      const err = await res.json().catch(() => ({}));
+                      toast({ title: "Re-render failed", description: err.error || "Try again", variant: "destructive" });
+                    }
+                  } : undefined}
                 />
               ))}
             </AnimatePresence>
@@ -946,6 +961,7 @@ function EditorialClipCard({
   onGenerate,
   onBuy,
   onPlay,
+  onRerenderAspect,
 }: {
   clip: RankedClip;
   rank: number;
@@ -955,6 +971,7 @@ function EditorialClipCard({
   onGenerate?: () => void;
   onBuy?: () => void;
   onPlay?: () => void;
+  onRerenderAspect?: (aspect: "9:16" | "16:9") => void;
 }) {
   const viralPct = Math.round(clip.finalScore * 100);
   const tierBadge = getTierBadge(clip.monetizationTier);
@@ -1072,6 +1089,27 @@ function EditorialClipCard({
                 <Play className="w-3 h-3 mr-1 fill-white" />
                 Play
               </Button>
+            )}
+            {isRendered && onRerenderAspect && mode !== "brand" && (
+              <div className="flex items-center gap-1" data-testid={`aspect-picker-${(clip as any).id ?? rank}`}>
+                {(["9:16", "16:9"] as const).map((aspect) => {
+                  const active = ((clip as any).aspectRatio || "9:16") === aspect;
+                  return (
+                    <button
+                      key={aspect}
+                      onClick={() => !active && onRerenderAspect(aspect)}
+                      title={active ? `Current output is ${aspect}` : `Re-render as ${aspect}`}
+                      className={`px-1.5 py-0.5 rounded text-[10px] font-medium border transition-colors ${
+                        active
+                          ? "bg-purple-500/25 text-purple-300 border-purple-500/50 cursor-default"
+                          : "bg-gray-800 text-gray-400 border-gray-700 hover:border-gray-500 hover:text-gray-200"
+                      }`}
+                    >
+                      {aspect}
+                    </button>
+                  );
+                })}
+              </div>
             )}
             {mode === "remix" && onGenerate && (
               <Button

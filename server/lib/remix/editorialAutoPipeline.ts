@@ -986,7 +986,11 @@ export async function renderEditorialClipOutput(clip: any, outputPath: string, c
  * Render a single editorialClips row that's already in the DB.
  * Reuses the same face-tracking smart-reframe path as the auto-pipeline.
  */
-export async function renderSingleEditorialClip(videoId: number, clipId: number): Promise<void> {
+export async function renderSingleEditorialClip(
+  videoId: number,
+  clipId: number,
+  opts: { platformKey?: keyof typeof PLATFORM_CONFIGS } = {},
+): Promise<void> {
   const video = await storage.getVideoById(videoId);
   if (!video || (!video.filePath && !video.youtubeId)) throw new Error("Video not found or has no source");
 
@@ -1017,7 +1021,8 @@ export async function renderSingleEditorialClip(videoId: number, clipId: number)
     tempScopeDir = resolved.tempScopeDir;
 
     const srcSize = await getVideoSize(videoLocalPath).catch(() => ({ width: 1920, height: 1080 }));
-    const platformConfig = PLATFORM_CONFIGS[AUTO_PIPELINE_CONFIG.platformKey];
+    const platformKey = opts.platformKey ?? AUTO_PIPELINE_CONFIG.platformKey;
+    const platformConfig = PLATFORM_CONFIGS[platformKey] ?? PLATFORM_CONFIGS[AUTO_PIPELINE_CONFIG.platformKey];
     const needsReframe = srcSize.width > srcSize.height && platformConfig.aspectRatio === "9:16";
 
     const outputFilename = `editorial_${clip.id}_v${videoId}_${Date.now()}.mp4`;
@@ -1062,7 +1067,7 @@ export async function renderSingleEditorialClip(videoId: number, clipId: number)
     }
 
     const qualityScore = await scoreRenderedEditorialClip(
-      clip, outputPath, thumbPath, AUTO_PIPELINE_CONFIG.platformKey,
+      clip, outputPath, thumbPath, platformKey,
       (speakerSegments?.length ?? 0) > 0, brandOverlays?.length ?? 0,
     );
 

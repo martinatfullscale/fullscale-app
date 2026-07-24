@@ -10926,6 +10926,38 @@ export async function registerRoutes(
     }
   });
 
+  // POST /api/editorial-clips/:clipId/rerender — re-render an existing
+  // editorial clip in an explicitly chosen aspect (the backlog's 16:9 vs
+  // 9:16 output picker; batch default remains 9:16).
+  app.post("/api/editorial-clips/:clipId/rerender", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const clipId = parseInt(req.params.clipId);
+      if (isNaN(clipId)) return res.status(400).json({ error: "Invalid clip ID" });
+      const clip = await storage.getEditorialClipById(clipId);
+      if (!clip) return res.status(404).json({ error: "Clip not found" });
+      const video = await storage.getVideoById(clip.videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+      if (!(await isSameCreator(String(video.userId), req.authUserId))) {
+        return res.status(403).json({ error: "Not your clip" });
+      }
+
+      const aspect = req.body?.aspect === "16:9" ? "16:9" : "9:16";
+      const platformKey = aspect === "16:9" ? "youtube" : "tiktok";
+
+      await storage.updateEditorialClipRender(clipId, { renderStatus: "rendering", renderError: null });
+      res.json({ message: "Re-render started", clipId, aspect });
+
+      renderSingleEditorialClip(clip.videoId, clipId, { platformKey: platformKey as any })
+        .then(() => console.log(`[API] Editorial clip ${clipId} re-rendered as ${aspect}`))
+        .catch(async (err: any) => {
+          console.error(`[API] Editorial clip ${clipId} ${aspect} re-render failed:`, err?.message || err);
+          await storage.updateEditorialClipRender(clipId, { renderStatus: "failed", renderError: err?.message || "Re-render failed" }).catch(() => {});
+        });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Re-render failed" });
+    }
+  });
+
   // POST /api/videos/:videoId/editorial-clip/render — Render a single ad-hoc clip
   // (from search results or manual selection) and append to the editorialClips list
   app.post("/api/videos/:videoId/editorial-clip/render", isFlexibleAuthenticated, async (req: any, res) => {
