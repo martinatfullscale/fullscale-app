@@ -70,10 +70,11 @@ export default function PlacementInbox() {
   });
 
   const approveMutation = useMutation({
-    mutationFn: async (id: number) => {
-      await apiRequest("POST", `/api/creator/placements/${id}/approve`);
+    mutationFn: async ({ id, brandProductId }: { id: number; brandProductId?: number }) => {
+      await apiRequest("POST", `/api/creator/placements/${id}/approve`, brandProductId ? { brandProductId } : undefined);
     },
     onSuccess: () => {
+      setPickingFor(null);
       queryClient.invalidateQueries({ queryKey: ["/api/creator/placements/inbox"] });
       queryClient.invalidateQueries({ queryKey: ["/api/creator/placements/inbox/count"] });
       toast({ title: "Placement approved", description: "It will appear in your next remix render." });
@@ -81,6 +82,20 @@ export default function PlacementInbox() {
     onError: (err: any) => {
       toast({ title: "Approval failed", description: err?.message || "Try again", variant: "destructive" });
     },
+  });
+
+  // Delegated-choice placements (brandProductId null): the creator picks
+  // from THAT brand's catalog before approving.
+  const [pickingFor, setPickingFor] = useState<number | null>(null);
+  const [chosenProductId, setChosenProductId] = useState<number | null>(null);
+  const { data: brandCatalog, isLoading: catalogLoading } = useQuery<{ products: Array<{ id: number; name: string; imageUrl: string | null; thumbnailUrl: string | null; category: string | null }> }>({
+    queryKey: ["/api/creator/placements", pickingFor, "brand-products"],
+    queryFn: async () => {
+      const res = await fetch(`/api/creator/placements/${pickingFor}/brand-products`, { credentials: "include" });
+      if (!res.ok) return { products: [] };
+      return res.json();
+    },
+    enabled: pickingFor !== null,
   });
 
   const rejectMutation = useMutation({
@@ -252,13 +267,21 @@ export default function PlacementInbox() {
                   {/* Actions */}
                   <div className="flex md:flex-col gap-2 md:w-32">
                     <Button
-                      onClick={() => approveMutation.mutate(p.id)}
+                      onClick={() => {
+                        if ((p as any).brandProductId == null) {
+                          // Brand delegated the product choice — open the picker
+                          setChosenProductId(null);
+                          setPickingFor(p.id);
+                        } else {
+                          approveMutation.mutate({ id: p.id });
+                        }
+                      }}
                       disabled={approveMutation.isPending}
                       className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white"
                       data-testid={`button-approve-${p.id}`}
                     >
                       <CheckCircle2 className="w-4 h-4 mr-1.5" />
-                      Approve
+                      {(p as any).brandProductId == null ? "Choose product…" : "Approve"}
                     </Button>
                     <Button
                       onClick={() => setRejectingId(p.id)}
@@ -313,6 +336,64 @@ export default function PlacementInbox() {
             >
               <XCircle className="w-4 h-4 mr-1.5" />
               Reject placement
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delegated product picker — the brand asked the creator to choose */}
+      <Dialog open={pickingFor !== null} onOpenChange={(open) => !open && setPickingFor(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Pick the product for this placement</DialogTitle>
+            <DialogDescription>
+              This brand left the choice to you — pick which of their products goes in your clip.
+            </DialogDescription>
+          </DialogHeader>
+          {catalogLoading ? (
+            <div className="py-8 text-center text-sm text-muted-foreground">Loading the brand's catalog…</div>
+          ) : (brandCatalog?.products?.length ?? 0) === 0 ? (
+            <div className="py-8 text-center text-sm text-muted-foreground">This brand has no products in their catalog yet.</div>
+          ) : (
+            <div className="grid grid-cols-3 gap-3 max-h-72 overflow-y-auto py-1" data-testid="delegated-product-grid">
+              {brandCatalog!.products.map((prod) => (
+                <button
+                  key={prod.id}
+                  onClick={() => setChosenProductId(prod.id)}
+                  className={`rounded-lg border p-2 text-left transition-colors ${
+                    chosenProductId === prod.id
+                      ? "border-emerald-500 ring-1 ring-emerald-500/50 bg-emerald-500/10"
+                      : "border-border hover:border-muted-foreground/50"
+                  }`}
+                  data-testid={`delegated-product-${prod.id}`}
+                >
+                  {(prod.thumbnailUrl || prod.imageUrl) ? (
+                    <img
+                      src={prod.thumbnailUrl || prod.imageUrl || undefined}
+                      alt={prod.name}
+                      className="w-full aspect-square object-contain bg-white rounded mb-1.5"
+                    />
+                  ) : (
+                    <div className="w-full aspect-square bg-muted rounded mb-1.5" />
+                  )}
+                  <p className="text-xs font-medium truncate">{prod.name}</p>
+                  {prod.category && <p className="text-[10px] text-muted-foreground capitalize truncate">{prod.category}</p>}
+                </button>
+              ))}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setPickingFor(null)}>
+              Cancel
+            </Button>
+            <Button
+              className="bg-emerald-600 hover:bg-emerald-500 text-white"
+              disabled={!chosenProductId || approveMutation.isPending}
+              onClick={() => pickingFor && chosenProductId && approveMutation.mutate({ id: pickingFor, brandProductId: chosenProductId })}
+              data-testid="button-approve-with-product"
+            >
+              <CheckCircle2 className="w-4 h-4 mr-1.5" />
+              Approve with this product
             </Button>
           </DialogFooter>
         </DialogContent>

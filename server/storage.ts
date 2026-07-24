@@ -1314,12 +1314,15 @@ export class DatabaseStorage implements IStorage {
   async updateBrandPlacementStatus(
     id: number,
     status: "creator_approved" | "creator_rejected" | "brand_withdrawn" | "expired" | "pending_brand_review" | "brand_approved",
-    opts: { rejectionReason?: string } = {},
+    opts: { rejectionReason?: string; brandProductId?: number } = {},
   ): Promise<BrandPlacementAssignment | undefined> {
     const patch: Record<string, any> = {
       status,
       updatedAt: new Date(),
     };
+    // Delegated-choice placements: the creator's pick lands together with
+    // their approval.
+    if (opts.brandProductId !== undefined) patch.brandProductId = opts.brandProductId;
     if (status === "creator_approved" || status === "creator_rejected") {
       patch.reviewedAt = new Date();
     }

@@ -360,7 +360,7 @@ export const brandPlacementAssignments = pgTable("brand_placement_assignments", 
   // legacy assignments tied to source video, but new requests should always set it).
   // Brands browse rendered editorial clips and request placements on surfaces within them.
   editorialClipId: integer("editorial_clip_id"),         // FK to editorial_clips.id
-  brandProductId: integer("brand_product_id").notNull(), // FK to brand_products.id
+  brandProductId: integer("brand_product_id"), // FK to brand_products.id; NULL = brand delegated the choice — creator picks from the brand's catalog at approval time
   surfaceId: integer("surface_id").notNull(),            // FK to detected_surfaces.id
   // Status lifecycle:
   //   pending_creator_review (default) → creator_approved | creator_rejected | brand_withdrawn | expired

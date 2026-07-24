@@ -8158,11 +8158,14 @@ export async function registerRoutes(
   app.post("/api/brand/placements", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const brandUserId = req.authUserId;
-      const { editorialClipId, videoId, brandProductId, surfaceIds, message } = req.body || {};
+      const { editorialClipId, videoId, brandProductId, creatorChoosesProduct, surfaceIds, message } = req.body || {};
 
-      if (!brandProductId || !Array.isArray(surfaceIds) || surfaceIds.length === 0) {
+      // creatorChoosesProduct: the brand delegates the product choice — the
+      // creator picks from the brand's catalog when approving.
+      const delegated = creatorChoosesProduct === true && !brandProductId;
+      if ((!brandProductId && !delegated) || !Array.isArray(surfaceIds) || surfaceIds.length === 0) {
         return res.status(400).json({
-          error: "Missing required fields: brandProductId, surfaceIds (non-empty array)",
+          error: "Missing required fields: brandProductId (or creatorChoosesProduct: true), surfaceIds (non-empty array)",
         });
       }
       if (!editorialClipId && !videoId) {
@@ -8194,10 +8197,12 @@ export async function registerRoutes(
       const creatorUserId = creatorIdentity.userId;
 
       // Verify brand owns the product
-      const product = await storage.getBrandProduct(parseInt(brandProductId));
-      if (!product) return res.status(404).json({ error: "Brand product not found" });
-      if (product.userId !== brandUserId) {
-        return res.status(403).json({ error: "Not authorized to use this product" });
+      const product = delegated ? null : await storage.getBrandProduct(parseInt(brandProductId));
+      if (!delegated) {
+        if (!product) return res.status(404).json({ error: "Brand product not found" });
+        if (product.userId !== brandUserId) {
+          return res.status(403).json({ error: "Not authorized to use this product" });
+        }
       }
 
       // Admin-only override flags — zero out the fee or set bespoke price
@@ -8296,7 +8301,7 @@ export async function registerRoutes(
           creatorUserId,
           videoId: resolvedVideoId,
           editorialClipId: clipIdForRow,
-          brandProductId: parseInt(brandProductId),
+          brandProductId: delegated ? null : parseInt(brandProductId),
           surfaceId: parseInt(sid),
           status: "pending_creator_review",
           brandMessage: message || null,
@@ -8372,7 +8377,7 @@ export async function registerRoutes(
       const hydrated = await Promise.all(
         placements.map(async (p) => {
           const [product, video, clip] = await Promise.all([
-            storage.getBrandProduct(p.brandProductId),
+            p.brandProductId != null ? storage.getBrandProduct(p.brandProductId) : Promise.resolve(undefined),
             storage.getVideoById(p.videoId),
             p.editorialClipId ? storage.getEditorialClipById(p.editorialClipId) : Promise.resolve(null),
           ]);
@@ -8469,7 +8474,7 @@ export async function registerRoutes(
       const hydrated = await Promise.all(
         placements.map(async (p) => {
           const [product, video, surfaces] = await Promise.all([
-            storage.getBrandProduct(p.brandProductId),
+            p.brandProductId != null ? storage.getBrandProduct(p.brandProductId) : Promise.resolve(undefined),
             storage.getVideoById(p.videoId),
             storage.getDetectedSurfaces(p.videoId),
           ]);
@@ -8552,6 +8557,24 @@ export async function registerRoutes(
     }
   });
 
+  // GET /api/creator/placements/:id/brand-products — the requesting brand's
+  // catalog, for delegated-choice placements (creator picks the product).
+  app.get("/api/creator/placements/:id/brand-products", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ error: "Invalid placement ID" });
+      const placement = await storage.getBrandPlacementById(id);
+      if (!placement) return res.status(404).json({ error: "Placement not found" });
+      if (!(await isSameCreator(placement.creatorUserId, req.authUserId))) {
+        return res.status(403).json({ error: "Not your placement" });
+      }
+      const products = await storage.getBrandProducts(String(placement.brandUserId));
+      res.json({ products });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to load brand products" });
+    }
+  });
+
   // POST /api/creator/placements/:id/approve — Creator approves the placement.
   // On approval, fire-and-forget a re-render of the targeted clip so the brand
   // product appears in the rendered output. The render reads approved placements
@@ -8570,7 +8593,23 @@ export async function registerRoutes(
       if (placement.status !== "pending_creator_review") {
         return res.status(400).json({ error: `Cannot approve a ${placement.status} placement` });
       }
-      const updated = await storage.updateBrandPlacementStatus(id, "creator_approved");
+
+      // Delegated-choice placements: the creator must pick one of the
+      // BRAND's products as part of approving.
+      let chosenProductId: number | undefined = undefined;
+      if (placement.brandProductId == null) {
+        const bodyProductId = parseInt(req.body?.brandProductId);
+        if (!bodyProductId || isNaN(bodyProductId)) {
+          return res.status(400).json({ error: "This brand asked you to choose the product — pick one of their products to approve" });
+        }
+        const chosen = await storage.getBrandProduct(bodyProductId);
+        if (!chosen || String((chosen as any).userId) !== String(placement.brandUserId)) {
+          return res.status(400).json({ error: "Chosen product does not belong to the requesting brand" });
+        }
+        chosenProductId = bodyProductId;
+      }
+
+      const updated = await storage.updateBrandPlacementStatus(id, "creator_approved", chosenProductId !== undefined ? { brandProductId: chosenProductId } : {});
       storage.markPlacementNotificationsRead(id);
       console.log(`[BrandPlacement] Creator ${creatorUserId} APPROVED placement ${id}`);
       storage.createNotification({
@@ -8766,7 +8805,7 @@ export async function registerRoutes(
       const placements = await storage.getApprovedPlacementsForVideo(videoId);
       const hydrated = await Promise.all(
         placements.map(async (p) => {
-          const product = await storage.getBrandProduct(p.brandProductId);
+          const product = p.brandProductId != null ? await storage.getBrandProduct(p.brandProductId) : undefined;
           return {
             ...p,
             product: product

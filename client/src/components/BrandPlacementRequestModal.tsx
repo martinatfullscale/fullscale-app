@@ -89,6 +89,9 @@ export function BrandPlacementRequestModal({
   const queryClient = useQueryClient();
 
   const [selectedProductId, setSelectedProductId] = useState<string>("");
+  // "Let the creator choose" — send no product; the creator picks from our
+  // catalog when approving.
+  const [creatorChooses, setCreatorChooses] = useState(false);
   const [selectedSurfaceIds, setSelectedSurfaceIds] = useState<Set<number>>(new Set());
   const [message, setMessage] = useState("");
   const [conflictSurfaceIds, setConflictSurfaceIds] = useState<Set<number>>(new Set());
@@ -188,7 +191,8 @@ export function BrandPlacementRequestModal({
     mutationFn: async () => {
       const surfaceIds = Array.from(selectedSurfaceIds);
       const body: any = {
-        brandProductId: parseInt(selectedProductId),
+        brandProductId: creatorChooses ? null : parseInt(selectedProductId),
+        creatorChoosesProduct: creatorChooses || undefined,
         surfaceIds,
         message: message.trim() || undefined,
         durationTerm,
@@ -253,7 +257,7 @@ export function BrandPlacementRequestModal({
     }
   }
 
-  const canSubmit = selectedProductId && selectedSurfaceIds.size > 0 && !submitMutation.isPending;
+  const canSubmit = (creatorChooses || selectedProductId) && selectedSurfaceIds.size > 0 && !submitMutation.isPending;
   const selectedProduct = products.find((p) => p.id === parseInt(selectedProductId));
 
   return (
@@ -315,6 +319,17 @@ export function BrandPlacementRequestModal({
                 You haven't uploaded any products yet. Add one in <strong>Brand Products</strong> first.
               </div>
             ) : (
+              <>
+              <label className="flex items-center gap-2 mb-2 text-sm text-muted-foreground cursor-pointer" data-testid="creator-chooses-toggle">
+                <input
+                  type="checkbox"
+                  checked={creatorChooses}
+                  onChange={(e) => setCreatorChooses(e.target.checked)}
+                  className="accent-primary"
+                />
+                Let the creator choose the product (they pick from your catalog when approving)
+              </label>
+              {!creatorChooses && (
               <Select value={selectedProductId} onValueChange={setSelectedProductId}>
                 <SelectTrigger data-testid="select-product">
                   <SelectValue placeholder="Select a product from your catalog" />
@@ -337,6 +352,8 @@ export function BrandPlacementRequestModal({
                   ))}
                 </SelectContent>
               </Select>
+              )}
+              </>
             )}
             {selectedProduct && (
               <div className="flex items-center gap-3 rounded-md border border-border/50 bg-muted/30 p-2.5">

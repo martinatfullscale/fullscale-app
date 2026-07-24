@@ -1045,6 +1045,9 @@ async function loadBrandOverlaysForClip(
     const overlays: BrandOverlay[] = [];
     for (const placement of relevant) {
       try {
+        // Delegated-choice placements get their product at creator approval;
+        // a null here means pre-approval — nothing to composite yet.
+        if (placement.brandProductId == null) continue;
         const product = await storage.getBrandProduct(placement.brandProductId);
         if (!product || !product.imageUrl) {
           console.warn(`[BrandOverlay] Placement ${placement.id} has no product image — skipping`);
