@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, FolderOpen, Zap, DollarSign, LogOut, Settings, ArrowLeftRight, Globe, Wand2, Inbox, Library as LibraryIcon } from "lucide-react";
+import { LayoutDashboard, FolderOpen, Zap, DollarSign, LogOut, Settings, ArrowLeftRight, Globe, Wand2, Inbox, Library as LibraryIcon, BarChart3, Database } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
@@ -66,8 +66,10 @@ export function Sidebar() {
     { href: "/", label: "Dashboard", icon: LayoutDashboard },
     { href: "/library", label: "My Library", icon: FolderOpen },
     { href: "/inbox", label: "Inbox", icon: Inbox, badge: inboxCount },
+    { href: "/analytics", label: "Analytics", icon: BarChart3 },
     { href: "/opportunities", label: "Opportunities", icon: Zap },
     { href: "/earnings", label: "Earnings", icon: DollarSign },
+    ...(userTypeData?.isAdmin ? [{ href: "/admin/creators", label: "Creator Intel", icon: Database }] : []),
     { href: "/settings", label: "Settings", icon: Settings },
   ];
 

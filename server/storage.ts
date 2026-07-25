@@ -551,6 +551,16 @@ export class DatabaseStorage implements IStorage {
     await db.insert(socialInsightSnapshots).values(snapshot);
   }
 
+  /** Snapshot history for one account, newest first — the trend-chart feed. */
+  async getSocialInsightSnapshotsForAccount(socialAccountId: string, limit: number = 60): Promise<any[]> {
+    return await db
+      .select()
+      .from(socialInsightSnapshots)
+      .where(eq(socialInsightSnapshots.socialAccountId, socialAccountId))
+      .orderBy(desc(socialInsightSnapshots.capturedAt))
+      .limit(limit);
+  }
+
   // ── Meta data deletion (App Review compliance) ──
 
   async createDataDeletionRequest(req: InsertDataDeletionRequest): Promise<DataDeletionRequest> {

@@ -556,6 +556,8 @@ export const socialInsightSnapshots = pgTable("social_insight_snapshots", {
   capturedAt: timestamp("captured_at").defaultNow(),
 }, (table) => ({
   accountTimeIdx: index("idx_insight_snapshots_account_time").on(table.platformAccountId, table.capturedAt),
+  // The analytics endpoints filter by social_account_id + sort by captured_at
+  socialAcctTimeIdx: index("idx_insight_snapshots_socialacct_time").on(table.socialAccountId, table.capturedAt),
 }));
 export type SocialInsightSnapshot = typeof socialInsightSnapshots.$inferSelect;
 export const insertSocialInsightSnapshotSchema = createInsertSchema(socialInsightSnapshots).omit({ id: true, capturedAt: true });

@@ -32,6 +32,8 @@ import SavedPlacements from "@/pages/SavedPlacements";
 import PlacementInbox from "@/pages/PlacementInbox";
 import BrandClipsBrowser from "@/pages/BrandClipsBrowser";
 import BrandPlacementRequests from "@/pages/BrandPlacementRequests";
+import CreatorAnalytics from "@/pages/CreatorAnalytics";
+import AdminCreatorIntelligence from "@/pages/AdminCreatorIntelligence";
 import RemixEngine from "@/components/RemixEngine";
 import SharedView from "@/pages/SharedView";
 import ComingSoon from "@/pages/ComingSoon";
@@ -295,6 +297,8 @@ function Router() {
               <Route path="/brand-products" component={BrandProducts} />
               <Route path="/saved-placements" component={SavedPlacements} />
               <Route path="/inbox" component={PlacementInbox} />
+              <Route path="/analytics" component={CreatorAnalytics} />
+              <Route path="/admin/creators" component={AdminCreatorIntelligence} />
               <Route path="/brand/clips" component={BrandClipsBrowser} />
               <Route path="/brand/placements" component={BrandPlacementRequests} />
               <Route path="/settings" component={Settings} />
