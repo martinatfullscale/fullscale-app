@@ -86,7 +86,7 @@ async function resolvePageTokenForIg(
   userToken: string
 ): Promise<string | null> {
   const res = await fetchJson(
-    `https://graph.facebook.com/v18.0/me/accounts?fields=id,name,access_token,instagram_business_account&access_token=${userToken}`
+    `https://graph.facebook.com/v25.0/me/accounts?fields=id,name,access_token,instagram_business_account&access_token=${userToken}`
   );
   if (!res.ok) return null;
   const pages: any[] = res.data?.data || [];
@@ -114,7 +114,7 @@ export async function fetchInstagramAudience(
   const pageToken = await resolvePageTokenForIg(igBusinessId, userToken);
   const insightsToken = pageToken || userToken;
 
-  const insightsBase = `https://graph.facebook.com/v18.0/${igBusinessId}/insights`;
+  const insightsBase = `https://graph.facebook.com/v25.0/${igBusinessId}/insights`;
 
   // ── Demographics: 4 single-breakdown calls (combining → 500) ──
   const breakdownToOutKey: Record<string, "age" | "gender" | "country" | "city"> = {
@@ -338,7 +338,7 @@ export async function fetchFacebookPageAudience(
 
   // Direct Page fetch — followers_count is on the Page node itself,
   // no Insights call needed and no demographic API exists.
-  const url = `https://graph.facebook.com/v18.0/${pageId}?fields=id,name,followers_count,fan_count&access_token=${userToken}`;
+  const url = `https://graph.facebook.com/v25.0/${pageId}?fields=id,name,followers_count,fan_count&access_token=${userToken}`;
   const res = await fetchJson(url);
   if (res.ok && res.data?.id) {
     out.engagement = {

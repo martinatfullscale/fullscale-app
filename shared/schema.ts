@@ -523,6 +523,44 @@ export const sharedLinks = pgTable("shared_links", {
     .where(sql`brand_placement_id IS NOT NULL`),
 }));
 
+// ── Meta compliance + analytics history ────────────────────────────────────
+
+// Meta App Review requires a Data Deletion Request callback: when a user
+// removes the app on Facebook/Instagram, Meta POSTs a signed request and we
+// must delete their data and expose a human-readable status page.
+export const dataDeletionRequests = pgTable("data_deletion_requests", {
+  id: serial("id").primaryKey(),
+  platform: varchar("platform", { length: 20 }).notNull(),         // 'meta'
+  platformUserId: varchar("platform_user_id").notNull(),           // app-scoped FB user id from the signed request
+  confirmationCode: varchar("confirmation_code").notNull().unique(),
+  status: varchar("status", { length: 20 }).notNull().default("completed"), // completed | partial | failed
+  details: jsonb("details"),                                       // what was deleted (tables + row counts)
+  createdAt: timestamp("created_at").defaultNow(),
+});
+export type DataDeletionRequest = typeof dataDeletionRequests.$inferSelect;
+export const insertDataDeletionRequestSchema = createInsertSchema(dataDeletionRequests).omit({ id: true, createdAt: true });
+export type InsertDataDeletionRequest = z.infer<typeof insertDataDeletionRequestSchema>;
+
+// Meta retains account-level IG insights only ~90 days (stories 24h) — this
+// table is FullScale's own longitudinal record, appended by the snapshot job.
+export const socialInsightSnapshots = pgTable("social_insight_snapshots", {
+  id: serial("id").primaryKey(),
+  socialAccountId: uuid("social_account_id"),                      // FK to social_accounts.id (nullable: account may be deleted later)
+  userId: varchar("user_id").notNull(),
+  platform: varchar("platform", { length: 20 }).notNull(),         // 'instagram' | 'facebook'
+  platformAccountId: varchar("platform_account_id").notNull(),
+  followers: integer("followers"),
+  metrics: jsonb("metrics"),                                       // account-level insight values for the window
+  demographics: jsonb("demographics"),                             // follower/engaged-audience breakdowns
+  stories: jsonb("stories"),                                       // live-story insights captured this cycle (24h window)
+  capturedAt: timestamp("captured_at").defaultNow(),
+}, (table) => ({
+  accountTimeIdx: index("idx_insight_snapshots_account_time").on(table.platformAccountId, table.capturedAt),
+}));
+export type SocialInsightSnapshot = typeof socialInsightSnapshots.$inferSelect;
+export const insertSocialInsightSnapshotSchema = createInsertSchema(socialInsightSnapshots).omit({ id: true, capturedAt: true });
+export type InsertSocialInsightSnapshot = z.infer<typeof insertSocialInsightSnapshotSchema>;
+
 export const insertSharedLinkSchema = createInsertSchema(sharedLinks).omit({
   id: true,
   viewCount: true,

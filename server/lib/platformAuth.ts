@@ -40,7 +40,7 @@ interface FacebookPageData {
 async function fetchFacebookPageData(userAccessToken: string): Promise<FacebookPageData | null> {
   try {
     // Fetch Pages the user manages with fan_count (followers) and Instagram Business Account
-    const pagesUrl = `https://graph.facebook.com/v18.0/me/accounts?fields=id,name,fan_count,access_token,instagram_business_account&access_token=${userAccessToken}`;
+    const pagesUrl = `https://graph.facebook.com/v25.0/me/accounts?fields=id,name,fan_count,access_token,instagram_business_account&access_token=${userAccessToken}`;
     const pagesResponse = await fetch(pagesUrl);
     const pagesData = await pagesResponse.json();
     
@@ -64,7 +64,7 @@ async function fetchFacebookPageData(userAccessToken: string): Promise<FacebookP
     // If Instagram Business Account is connected, fetch its data
     if (page.instagram_business_account?.id) {
       const igId = page.instagram_business_account.id;
-      const igUrl = `https://graph.facebook.com/v18.0/${igId}?fields=username,followers_count&access_token=${page.access_token}`;
+      const igUrl = `https://graph.facebook.com/v25.0/${igId}?fields=username,followers_count&access_token=${page.access_token}`;
       const igResponse = await fetch(igUrl);
       const igData = await igResponse.json();
       
@@ -91,7 +91,7 @@ async function fetchFacebookPageData(userAccessToken: string): Promise<FacebookP
 export async function fetchFacebookPageVideos(pageId: string, accessToken: string): Promise<any[]> {
   try {
     // Include 'title' and 'name' fields - Facebook uses different fields for different video types
-    const url = `https://graph.facebook.com/v18.0/${pageId}/videos?fields=id,title,name,description,created_time,thumbnails,permalink_url,length,views,source&limit=50&access_token=${accessToken}`;
+    const url = `https://graph.facebook.com/v25.0/${pageId}/videos?fields=id,title,name,description,created_time,thumbnails,permalink_url,length,views,source&limit=50&access_token=${accessToken}`;
     const response = await fetch(url);
     const data = await response.json();
     
@@ -117,7 +117,7 @@ export async function fetchFacebookPageVideos(pageId: string, accessToken: strin
 export async function fetchPersonalProfileVideos(accessToken: string): Promise<any[]> {
   try {
     // Personal profile videos endpoint
-    const url = `https://graph.facebook.com/v18.0/me/videos?fields=id,title,description,created_time,thumbnails,permalink_url,length,views,source&type=uploaded&limit=50&access_token=${accessToken}`;
+    const url = `https://graph.facebook.com/v25.0/me/videos?fields=id,title,description,created_time,thumbnails,permalink_url,length,views,source&type=uploaded&limit=50&access_token=${accessToken}`;
     const response = await fetch(url);
     const data = await response.json();
     
@@ -137,7 +137,7 @@ export async function fetchPersonalProfileVideos(accessToken: string): Promise<a
 // Fetch Instagram Business media
 export async function fetchInstagramMedia(igUserId: string, accessToken: string): Promise<any[]> {
   try {
-    const url = `https://graph.facebook.com/v18.0/${igUserId}/media?fields=id,caption,media_type,media_url,thumbnail_url,timestamp,permalink&limit=50&access_token=${accessToken}`;
+    const url = `https://graph.facebook.com/v25.0/${igUserId}/media?fields=id,caption,media_type,media_url,thumbnail_url,timestamp,permalink&limit=50&access_token=${accessToken}`;
     const response = await fetch(url);
     const data = await response.json();
 
@@ -783,9 +783,10 @@ export async function setupPlatformAuth(app: Express) {
           "email",
           "public_profile",
           "pages_show_list",            // List of managed Pages
-          "pages_read_engagement",      // Page insights + IG Business Account discovery
+          "pages_read_engagement",      // Page content/followers + IG Business Account discovery
+          "read_insights",              // FB Page /insights edge (page views/reach/follows) [App Review]
           "instagram_basic",            // IG profile + media metadata [App Review]
-          "instagram_manage_insights",  // IG analytics (impressions, reach, plays) [App Review]
+          "instagram_manage_insights",  // IG analytics (views, reach, watch time, demographics) [App Review]
           "instagram_content_publish",  // Publish Reels via distribution scheduler [App Review]
         ],
       })(req, res, next);

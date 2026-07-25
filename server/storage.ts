@@ -98,6 +98,11 @@ import {
   socialAccounts,
   type SocialAccount,
   type InsertSocialAccount,
+  dataDeletionRequests,
+  type DataDeletionRequest,
+  type InsertDataDeletionRequest,
+  socialInsightSnapshots,
+  type InsertSocialInsightSnapshot,
 } from "@shared/schema";
 import { users, type User, type UpsertUser } from "@shared/models/auth";
 import { encrypt, decrypt } from "./encryption";
@@ -508,6 +513,89 @@ export class DatabaseStorage implements IStorage {
   async getSocialAccount(id: string): Promise<SocialAccount | undefined> {
     const [row] = await db.select().from(socialAccounts).where(eq(socialAccounts.id, id));
     return row ? this.decryptSocialAccount(row) : undefined;
+  }
+
+  /** All Meta accounts with a stored token — the snapshot job's work list. */
+  async getAllMetaSocialAccounts(): Promise<SocialAccount[]> {
+    const rows = await db
+      .select()
+      .from(socialAccounts)
+      .where(and(
+        inArray(socialAccounts.platform, ["instagram", "facebook"]),
+        sql`${socialAccounts.accessToken} IS NOT NULL`
+      ));
+    return rows.map(r => this.decryptSocialAccount(r));
+  }
+
+  async insertSocialInsightSnapshot(snapshot: InsertSocialInsightSnapshot): Promise<void> {
+    await db.insert(socialInsightSnapshots).values(snapshot);
+  }
+
+  // ── Meta data deletion (App Review compliance) ──
+
+  async createDataDeletionRequest(req: InsertDataDeletionRequest): Promise<DataDeletionRequest> {
+    const [row] = await db.insert(dataDeletionRequests).values(req).returning();
+    return row;
+  }
+
+  async getDataDeletionRequestByCode(code: string): Promise<DataDeletionRequest | undefined> {
+    const [row] = await db
+      .select()
+      .from(dataDeletionRequests)
+      .where(eq(dataDeletionRequests.confirmationCode, code));
+    return row;
+  }
+
+  /**
+   * Delete everything we hold that came from a Meta user's grant: their
+   * facebook/instagram social_accounts rows (+ insight snapshots for those
+   * accounts) and the Meta fields cached on the users row. The app-scoped
+   * FB user id arrives in Meta's signed deletion request and matches
+   * users.facebookId (stored at OAuth time).
+   */
+  async deleteMetaDataForFacebookUser(fbUserId: string): Promise<{ deleted: Record<string, number>; matchedUser: boolean }> {
+    const deleted: Record<string, number> = {};
+    const [user] = await db.select().from(users).where(eq(users.facebookId, fbUserId));
+
+    const ownerKeys = new Set<string>();
+    if (user?.id) ownerKeys.add(user.id);
+    if (user?.email) ownerKeys.add(user.email);
+
+    // Account rows for this user (or, absent a users row, any account keyed
+    // directly by the app-scoped id — defensive; normally page/ig ids differ).
+    const accountRows = ownerKeys.size > 0
+      ? await db.select().from(socialAccounts).where(and(
+          inArray(socialAccounts.userId, Array.from(ownerKeys)),
+          inArray(socialAccounts.platform, ["instagram", "facebook"]),
+        ))
+      : await db.select().from(socialAccounts).where(eq(socialAccounts.platformAccountId, fbUserId));
+
+    for (const acct of accountRows) {
+      const snaps: any = await db.delete(socialInsightSnapshots)
+        .where(eq(socialInsightSnapshots.socialAccountId, acct.id))
+        .returning({ id: socialInsightSnapshots.id });
+      deleted["social_insight_snapshots"] = (deleted["social_insight_snapshots"] || 0) + (snaps?.length || 0);
+      await db.delete(socialAccounts).where(eq(socialAccounts.id, acct.id));
+      deleted["social_accounts"] = (deleted["social_accounts"] || 0) + 1;
+    }
+
+    if (user) {
+      await db.update(users).set({
+        facebookId: null,
+        instagramId: null,
+        facebookPageId: null,
+        facebookPageName: null,
+        facebookFollowers: null,
+        facebookAccessToken: null,
+        instagramBusinessId: null,
+        instagramHandle: null,
+        instagramFollowers: null,
+        updatedAt: new Date(),
+      }).where(eq(users.id, user.id));
+      deleted["users.meta_fields"] = 1;
+    }
+
+    return { deleted, matchedUser: !!user };
   }
 
   async upsertSocialAccount(account: InsertSocialAccount): Promise<SocialAccount> {

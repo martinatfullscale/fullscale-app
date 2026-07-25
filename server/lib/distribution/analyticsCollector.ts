@@ -13,6 +13,7 @@
 
 import { storage } from "../../storage";
 import { getAdapter } from "./platformPublisher";
+import { GRAPH_API_VERSION } from "../socialAnalytics";
 import type { ClipAnalytics, PublishedPost } from "../../../shared/schema";
 
 export interface AggregateMetrics {
@@ -122,24 +123,35 @@ async function fetchInstagramAnalytics(
   accessToken: string
 ): Promise<Partial<ClipAnalytics>> {
   try {
-    const res = await fetch(
-      `https://graph.facebook.com/v19.0/${postId}/insights?metric=plays,likes,comments,shares,reach,saved&access_token=${accessToken}`
+    // `plays` and `impressions` were removed from ALL Graph API versions on
+    // 2025-04-21 — `views` is the unified replacement. Published clips are
+    // Reels, so also pull watch-time; if the media type doesn't support the
+    // Reels metrics the whole call errors, hence the base-set fallback.
+    const base = "views,likes,comments,shares,reach,saved";
+    let res = await fetch(
+      `https://graph.facebook.com/${GRAPH_API_VERSION}/${postId}/insights?metric=${base},ig_reels_avg_watch_time,ig_reels_video_view_total_time&access_token=${accessToken}`
     );
+    if (!res.ok) {
+      res = await fetch(
+        `https://graph.facebook.com/${GRAPH_API_VERSION}/${postId}/insights?metric=${base}&access_token=${accessToken}`
+      );
+    }
 
     if (!res.ok) return {};
     const data = await res.json();
     const metrics: Record<string, number> = {};
 
     for (const item of data.data || []) {
-      metrics[item.name] = item.values?.[0]?.value || 0;
+      metrics[item.name] = item.values?.[0]?.value ?? item.total_value?.value ?? 0;
     }
 
-    const views = metrics.plays || 0;
+    const views = metrics.views || 0;
     const likes = metrics.likes || 0;
     const comments = metrics.comments || 0;
     const shares = metrics.shares || 0;
     const saves = metrics.saved || 0;
     const reach = metrics.reach || 0;
+    const totalWatchMs = metrics.ig_reels_video_view_total_time || 0;
 
     return {
       views,
@@ -148,6 +160,11 @@ async function fetchInstagramAnalytics(
       shares,
       saves,
       reach,
+      impressions: views,
+      watchTimeSeconds: Math.round(totalWatchMs / 1000),
+      // completionRate from avg watch time needs the clip duration — the
+      // caller stores watchTimeSeconds; avg per view is derivable as
+      // watchTimeSeconds/views downstream.
       engagementRate: views > 0 ? (likes + comments + shares + saves) / views : 0,
     };
   } catch {

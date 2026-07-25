@@ -419,6 +419,18 @@ app.use((req, res, next) => {
         log("Publishing scheduler disabled via SCHEDULER_ENABLED=false");
       }
 
+      // Social insight snapshots — Meta only retains account insights ~90
+      // days (stories 24h); this 12h job appends them to our own table so
+      // creator history accumulates. Kill switch: SNAPSHOTS_ENABLED=false.
+      if (process.env.SNAPSHOTS_ENABLED !== "false") {
+        try {
+          const { startSocialSnapshotJob } = await import("./lib/socialSnapshots");
+          startSocialSnapshotJob();
+        } catch (snapErr) {
+          log(`Social snapshot job failed to start: ${snapErr}`);
+        }
+      }
+
       // DISABLED: TensorFlow scanner replaced by scanner_v2.ts which uses Sharp
       // try {
       //   log("Initializing TensorFlow scan worker...");

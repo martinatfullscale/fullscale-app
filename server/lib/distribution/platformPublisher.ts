@@ -265,7 +265,7 @@ class YouTubeAdapter implements PlatformAdapter {
 
 class InstagramAdapter implements PlatformAdapter {
   platform = "instagram";
-  private baseUrl = "https://graph.facebook.com/v19.0";
+  private baseUrl = "https://graph.facebook.com/v25.0";
 
   async publish(input: PublishInput): Promise<PublishResult> {
     try {

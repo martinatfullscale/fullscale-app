@@ -2145,7 +2145,7 @@ export async function registerRoutes(
         // Fetch each Page's metadata (name, follower count, linked IG)
         for (const pageId of derivedPageIds) {
           try {
-            const pageRes = await fetch(`https://graph.facebook.com/v18.0/${pageId}?fields=id,name,followers_count,fan_count,instagram_business_account&access_token=${decryptedFbToken}`);
+            const pageRes = await fetch(`https://graph.facebook.com/v25.0/${pageId}?fields=id,name,followers_count,fan_count,instagram_business_account&access_token=${decryptedFbToken}`);
             const pageData = await pageRes.json();
             if (pageData?.id) {
               pageMetadataById[pageId] = {
@@ -2184,7 +2184,7 @@ export async function registerRoutes(
           displayName: meta?.name || user.facebookPageName || null,
           followers: meta?.followers_count ?? user.facebookFollowers ?? 0,
           accessToken: decryptedFbToken,
-          scopes: ["email", "public_profile", "pages_show_list", "pages_read_engagement", "instagram_basic", "instagram_manage_insights"],
+          scopes: ["email", "public_profile", "pages_show_list", "pages_read_engagement", "read_insights", "instagram_basic", "instagram_manage_insights"],
         });
         created.push(`facebook/business/${fbAccount.platformAccountId}`);
       }
@@ -2200,7 +2200,7 @@ export async function registerRoutes(
         let igFollowers: number | null = user.instagramFollowers ?? null;
         if (decryptedFbToken) {
           try {
-            const igRes = await fetch(`https://graph.facebook.com/v18.0/${igId}?fields=username,followers_count&access_token=${decryptedFbToken}`);
+            const igRes = await fetch(`https://graph.facebook.com/v25.0/${igId}?fields=username,followers_count&access_token=${decryptedFbToken}`);
             const igData = await igRes.json();
             if (igData?.username) igHandle = `@${igData.username}`;
             if (typeof igData?.followers_count === "number") igFollowers = igData.followers_count;
@@ -6397,7 +6397,7 @@ export async function registerRoutes(
             
             // Update user with first Page data
             if (pageIds.length > 0) {
-              const firstPageUrl = `https://graph.facebook.com/v18.0/${pageIds[0]}?fields=id,name,fan_count,instagram_business_account&access_token=${accessToken}`;
+              const firstPageUrl = `https://graph.facebook.com/v25.0/${pageIds[0]}?fields=id,name,fan_count,instagram_business_account&access_token=${accessToken}`;
               const firstPageResponse = await fetch(firstPageUrl);
               const firstPageData = await firstPageResponse.json();
               
@@ -6411,7 +6411,7 @@ export async function registerRoutes(
                 // Check for Instagram Business Account
                 if (firstPageData.instagram_business_account?.id) {
                   const igId = firstPageData.instagram_business_account.id;
-                  const igUrl = `https://graph.facebook.com/v18.0/${igId}?fields=username,followers_count&access_token=${accessToken}`;
+                  const igUrl = `https://graph.facebook.com/v25.0/${igId}?fields=username,followers_count&access_token=${accessToken}`;
                   const igResponse = await fetch(igUrl);
                   const igData = await igResponse.json();
                   
@@ -6455,7 +6455,7 @@ export async function registerRoutes(
           }
           
           for (const pId of pageIds) {
-            const pageUrl = `https://graph.facebook.com/v18.0/${pId}?fields=instagram_business_account&access_token=${accessToken}`;
+            const pageUrl = `https://graph.facebook.com/v25.0/${pId}?fields=instagram_business_account&access_token=${accessToken}`;
             const pageResponse = await fetch(pageUrl);
             const pageData = await pageResponse.json();
             
@@ -6464,7 +6464,7 @@ export async function registerRoutes(
               console.log(`[Sync] Found Instagram Business Account ${igId} on Page ${pId}`);
               
               // Fetch Instagram username and update user
-              const igUrl = `https://graph.facebook.com/v18.0/${igId}?fields=username,followers_count&access_token=${accessToken}`;
+              const igUrl = `https://graph.facebook.com/v25.0/${igId}?fields=username,followers_count&access_token=${accessToken}`;
               const igResponse = await fetch(igUrl);
               const igData = await igResponse.json();
               
@@ -6557,7 +6557,7 @@ export async function registerRoutes(
       
       // Add personal profile as an option
       try {
-        const meUrl = `https://graph.facebook.com/v18.0/me?fields=id,name,picture&access_token=${accessToken}`;
+        const meUrl = `https://graph.facebook.com/v25.0/me?fields=id,name,picture&access_token=${accessToken}`;
         const meResponse = await fetch(meUrl);
         const meData = await meResponse.json();
         
@@ -6576,7 +6576,7 @@ export async function registerRoutes(
       // Add managed Pages
       try {
         // First try /me/accounts
-        const pagesUrl = `https://graph.facebook.com/v18.0/me/accounts?fields=id,name,fan_count,picture,instagram_business_account&access_token=${accessToken}`;
+        const pagesUrl = `https://graph.facebook.com/v25.0/me/accounts?fields=id,name,fan_count,picture,instagram_business_account&access_token=${accessToken}`;
         console.log("[Sources] Fetching Pages from:", pagesUrl.replace(accessToken!, '[TOKEN]'));
         const pagesResponse = await fetch(pagesUrl);
         const pagesData = await pagesResponse.json();
@@ -6605,7 +6605,7 @@ export async function registerRoutes(
               // Fetch each Page directly using the user access token
               for (const pageId of pagesScope.target_ids) {
                 try {
-                  const pageUrl = `https://graph.facebook.com/v18.0/${pageId}?fields=id,name,fan_count,picture,instagram_business_account&access_token=${accessToken}`;
+                  const pageUrl = `https://graph.facebook.com/v25.0/${pageId}?fields=id,name,fan_count,picture,instagram_business_account&access_token=${accessToken}`;
                   const pageResponse = await fetch(pageUrl);
                   const pageData = await pageResponse.json();
                   
@@ -6630,7 +6630,7 @@ export async function registerRoutes(
             // Fetch Instagram Business Account details if linked
             if (page.instagram_business_account?.id) {
               try {
-                const igUrl = `https://graph.facebook.com/v18.0/${page.instagram_business_account.id}?fields=username,followers_count,profile_picture_url&access_token=${accessToken}`;
+                const igUrl = `https://graph.facebook.com/v25.0/${page.instagram_business_account.id}?fields=username,followers_count,profile_picture_url&access_token=${accessToken}`;
                 const igResponse = await fetch(igUrl);
                 const igData = await igResponse.json();
                 
@@ -6706,7 +6706,7 @@ export async function registerRoutes(
       const debugData = await debugResponse.json();
       
       // Get /me/accounts response
-      const accountsUrl = `https://graph.facebook.com/v18.0/me/accounts?fields=id,name,fan_count,access_token&access_token=${accessToken}`;
+      const accountsUrl = `https://graph.facebook.com/v25.0/me/accounts?fields=id,name,fan_count,access_token&access_token=${accessToken}`;
       const accountsResponse = await fetch(accountsUrl);
       const accountsData = await accountsResponse.json();
       
@@ -6717,14 +6717,14 @@ export async function registerRoutes(
         if (pagesScope?.target_ids) {
           for (const pageId of pagesScope.target_ids) {
             try {
-              const pageUrl = `https://graph.facebook.com/v18.0/${pageId}?fields=id,name,fan_count,instagram_business_account&access_token=${accessToken}`;
+              const pageUrl = `https://graph.facebook.com/v25.0/${pageId}?fields=id,name,fan_count,instagram_business_account&access_token=${accessToken}`;
               const pageResponse = await fetch(pageUrl);
               const pageData = await pageResponse.json();
               
               // Try to get videos from this page
               let videos: any = null;
               try {
-                const videosUrl = `https://graph.facebook.com/v18.0/${pageId}/videos?fields=id,title,description&limit=5&access_token=${accessToken}`;
+                const videosUrl = `https://graph.facebook.com/v25.0/${pageId}/videos?fields=id,title,description&limit=5&access_token=${accessToken}`;
                 const videosResponse = await fetch(videosUrl);
                 videos = await videosResponse.json();
               } catch (e) {}
@@ -10055,6 +10055,73 @@ export async function registerRoutes(
 
   // ── SHARED LINKS ──
 
+  // ── Meta Data Deletion Callback (App Review prerequisite) ──────────────
+  // Registered in the Meta App Dashboard as the Data Deletion Request URL.
+  // Meta POSTs form-encoded { signed_request } when a user removes the app;
+  // we must delete their data and answer { url, confirmation_code } where
+  // url is a human-readable status page.
+  app.post("/api/meta/data-deletion", async (req: any, res) => {
+    try {
+      const appSecret = process.env.FACEBOOK_APP_SECRET;
+      if (!appSecret) return res.status(500).json({ error: "Deletion callback not configured" });
+      const signedRequest = req.body?.signed_request;
+      if (!signedRequest || typeof signedRequest !== "string") {
+        return res.status(400).json({ error: "signed_request required" });
+      }
+
+      const [encodedSig, payload] = signedRequest.split(".", 2);
+      if (!encodedSig || !payload) return res.status(400).json({ error: "Malformed signed_request" });
+      const fromB64Url = (s: string) => Buffer.from(s.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+      const sig = fromB64Url(encodedSig);
+      const expected = crypto.createHmac("sha256", appSecret).update(payload).digest();
+      if (sig.length !== expected.length || !crypto.timingSafeEqual(sig, expected)) {
+        return res.status(400).json({ error: "Invalid signature" });
+      }
+      const data = JSON.parse(fromB64Url(payload).toString("utf8"));
+      const fbUserId = String(data?.user_id || "");
+      if (!fbUserId) return res.status(400).json({ error: "No user_id in signed_request" });
+
+      const result = await storage.deleteMetaDataForFacebookUser(fbUserId);
+      const confirmationCode = `fs-del-${crypto.randomBytes(6).toString("hex")}`;
+      await storage.createDataDeletionRequest({
+        platform: "meta",
+        platformUserId: fbUserId,
+        confirmationCode,
+        status: "completed",
+        details: result.deleted,
+      });
+      console.log(`[MetaDeletion] Deleted data for FB user ${fbUserId}:`, result.deleted);
+
+      const statusUrl = `${req.protocol}://${req.get("host")}/deletion-status/${confirmationCode}`;
+      res.json({ url: statusUrl, confirmation_code: confirmationCode });
+    } catch (err: any) {
+      console.error("[MetaDeletion] Callback error:", err.message);
+      res.status(500).json({ error: "Deletion request failed" });
+    }
+  });
+
+  // Human-readable deletion status page (public; linked from the callback response)
+  app.get("/deletion-status/:code", async (req: any, res) => {
+    try {
+      const row = await storage.getDataDeletionRequestByCode(req.params.code);
+      const body = row
+        ? `<h1>Data Deletion — ${row.status === "completed" ? "Complete" : row.status}</h1>
+           <p>Confirmation code: <code>${row.confirmationCode}</code></p>
+           <p>All data FullScale held from your Meta account grant (connected accounts,
+           cached profile fields, and analytics snapshots) was deleted on
+           ${row.createdAt ? new Date(row.createdAt).toUTCString() : "record date unavailable"}.</p>`
+        : `<h1>Deletion request not found</h1><p>No deletion request matches this confirmation code.</p>`;
+      res.status(row ? 200 : 404).type("html").send(
+        `<!doctype html><html><head><title>FullScale — Data Deletion Status</title>
+         <meta name="viewport" content="width=device-width, initial-scale=1"/>
+         <style>body{font-family:system-ui,sans-serif;max-width:600px;margin:80px auto;padding:0 20px;color:#222}code{background:#f4f4f4;padding:2px 6px;border-radius:4px}</style>
+         </head><body>${body}</body></html>`
+      );
+    } catch (err: any) {
+      res.status(500).type("html").send("<h1>Status lookup failed</h1>");
+    }
+  });
+
   // Create a shareable link for a placement or export
   app.post("/api/share", isFlexibleAuthenticated, async (req: any, res) => {
     try {
@@ -12665,7 +12732,7 @@ export async function registerRoutes(
       if (process.env.FACEBOOK_APP_ID && process.env.FACEBOOK_APP_SECRET) {
         try {
           const ex = await fetch(
-            `https://graph.facebook.com/v19.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${process.env.FACEBOOK_APP_ID}&client_secret=${process.env.FACEBOOK_APP_SECRET}&fb_exchange_token=${encodeURIComponent(igToken)}`
+            `https://graph.facebook.com/v25.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${process.env.FACEBOOK_APP_ID}&client_secret=${process.env.FACEBOOK_APP_SECRET}&fb_exchange_token=${encodeURIComponent(igToken)}`
           );
           if (ex.ok) {
             const exData = await ex.json();

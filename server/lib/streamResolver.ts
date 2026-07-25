@@ -109,7 +109,7 @@ export async function resolveGraphStreamUrl(
 ): Promise<StreamSource | null> {
   const id = mediaId.replace(/^(instagram|facebook):/, "");
   const field = platform === "facebook" ? "source" : "media_url";
-  const url = `https://graph.facebook.com/v18.0/${id}?fields=${field},media_type&access_token=${encodeURIComponent(token)}`;
+  const url = `https://graph.facebook.com/v25.0/${id}?fields=${field},media_type&access_token=${encodeURIComponent(token)}`;
   try {
     const r = await fetch(url);
     const data = await r.json();
