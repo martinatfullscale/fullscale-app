@@ -2111,7 +2111,7 @@ export async function registerRoutes(
       let derivedPageIds: string[] = [];
       let derivedIgIds: string[] = [];
       let decryptedFbToken: string | null = null;
-      let pageMetadataById: Record<string, { name?: string; followers_count?: number; instagram_business_account?: { id: string } }> = {};
+      let pageMetadataById: Record<string, { name?: string; followers_count?: number; accessToken?: string; instagram_business_account?: { id: string } }> = {};
 
       if (user.facebookAccessToken) {
         try {
@@ -2142,15 +2142,18 @@ export async function registerRoutes(
           skipped.fbTokenDebug = err?.message || "token debug failed";
         }
 
-        // Fetch each Page's metadata (name, follower count, linked IG)
+        // Fetch each Page's metadata (name, follower count, linked IG, and
+        // the PAGE access token — the Page /insights edge rejects user
+        // tokens, so the facebook row must carry the page token).
         for (const pageId of derivedPageIds) {
           try {
-            const pageRes = await fetch(`https://graph.facebook.com/v25.0/${pageId}?fields=id,name,followers_count,fan_count,instagram_business_account&access_token=${decryptedFbToken}`);
+            const pageRes = await fetch(`https://graph.facebook.com/v25.0/${pageId}?fields=id,name,followers_count,fan_count,access_token,instagram_business_account&access_token=${decryptedFbToken}`);
             const pageData = await pageRes.json();
             if (pageData?.id) {
               pageMetadataById[pageId] = {
                 name: pageData.name,
                 followers_count: pageData.followers_count ?? pageData.fan_count,
+                accessToken: pageData.access_token,
                 instagram_business_account: pageData.instagram_business_account,
               };
               // The IG account linked to this Page may not be in granular_scopes
@@ -2183,7 +2186,9 @@ export async function registerRoutes(
           handle: meta?.name || user.facebookPageName || null,
           displayName: meta?.name || user.facebookPageName || null,
           followers: meta?.followers_count ?? user.facebookFollowers ?? 0,
-          accessToken: decryptedFbToken,
+          // Page token when we have it (needed for Page /insights); user
+          // token only as a last resort so the row isn't tokenless.
+          accessToken: meta?.accessToken || decryptedFbToken,
           scopes: ["email", "public_profile", "pages_show_list", "pages_read_engagement", "read_insights", "instagram_basic", "instagram_manage_insights"],
         });
         created.push(`facebook/business/${fbAccount.platformAccountId}`);
@@ -6395,12 +6400,15 @@ export async function registerRoutes(
               }
             }
             
-            // Update user with first Page data
-            if (pageIds.length > 0) {
+            // Update user with first Page data — ONLY if the creator hasn't
+            // explicitly confirmed a Page yet. Once they've picked one via
+            // the connect dialog, a background sync must not silently
+            // overwrite their choice with whatever Page happens to be first.
+            if (pageIds.length > 0 && !user.facebookPageId) {
               const firstPageUrl = `https://graph.facebook.com/v25.0/${pageIds[0]}?fields=id,name,fan_count,instagram_business_account&access_token=${accessToken}`;
               const firstPageResponse = await fetch(firstPageUrl);
               const firstPageData = await firstPageResponse.json();
-              
+
               if (firstPageData.id) {
                 const updateData: Record<string, any> = {
                   facebookPageId: firstPageData.id,

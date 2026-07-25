@@ -912,7 +912,10 @@ export async function setupPlatformAuth(app: Express) {
           
           console.log("[PlatformAuth] Session saved, redirecting to /dashboard");
           console.log("[PlatformAuth] ========== END FACEBOOK CALLBACK ==========");
-          return res.redirect("/dashboard");
+          // facebook_connected triggers the Page-confirmation dialog: the
+          // creator explicitly picks WHICH managed Page (and its linked IG
+          // account) to connect — pages_show_list's allowed usage, shown.
+          return res.redirect("/dashboard?facebook_connected=true");
         });
       });
     })(req, res, next);
@@ -1049,6 +1052,155 @@ export async function setupPlatformAuth(app: Express) {
     }
   });
 
+  // ── Page selection (creator confirms which Page to connect) ────────────
+  // pages_show_list's allowed usage is literally "show a person the list of
+  // Pages they manage and verify that a person manages a Page" — these two
+  // endpoints implement exactly that: list the managed Pages (with linked IG
+  // accounts) after OAuth, and commit the one the creator confirms.
+
+  /** Resolve the logged-in user row + their decrypted FB USER token. */
+  async function resolveFacebookUser(req: any): Promise<{ user: any; userToken: string } | { error: string; status: number }> {
+    const email = req.session?.googleUser?.email || req.session?.pendingGoogleUser?.email || req.user?.claims?.email;
+    const sessionUserId = req.session?.userId;
+    let user: any = null;
+    if (email) {
+      user = await db.query.users.findFirst({ where: eq(users.email, email) });
+    }
+    if (!user && sessionUserId) {
+      user = await db.query.users.findFirst({ where: eq(users.id, sessionUserId) });
+    }
+    if (!user) return { error: "Not authenticated", status: 401 };
+    let userToken: string | null = null;
+    if (user.facebookAccessToken) {
+      try { userToken = decrypt(user.facebookAccessToken); } catch { userToken = null; }
+    }
+    // Session token from the just-completed OAuth is the freshest fallback.
+    if (!userToken && req.session?.facebookProfile?.accessToken) {
+      userToken = req.session.facebookProfile.accessToken;
+    }
+    if (!userToken) return { error: "Facebook not connected — connect Facebook first", status: 400 };
+    return { user, userToken };
+  }
+
+  /** Fetch the user's managed Pages with linked IG accounts (server-side). */
+  async function fetchManagedPages(userToken: string): Promise<any[]> {
+    const url = `https://graph.facebook.com/v25.0/me/accounts?fields=id,name,fan_count,picture{url},access_token,instagram_business_account{id,username,followers_count,profile_picture_url}&limit=25&access_token=${encodeURIComponent(userToken)}`;
+    const res = await fetch(url);
+    const data: any = await res.json();
+    if (data.error) throw new Error(data.error.message || "Failed to list Pages");
+    return data.data ?? [];
+  }
+
+  // List the creator's managed Pages — NO tokens in the response.
+  app.get("/api/facebook/pages", async (req: any, res) => {
+    try {
+      const resolved = await resolveFacebookUser(req);
+      if ("error" in resolved) return res.status(resolved.status).json({ error: resolved.error });
+      const pages = await fetchManagedPages(resolved.userToken);
+      res.json({
+        currentPageId: resolved.user.facebookPageId ?? null,
+        pages: pages.map((p: any) => ({
+          pageId: p.id,
+          name: p.name,
+          followers: p.fan_count ?? 0,
+          pictureUrl: p.picture?.data?.url ?? null,
+          instagram: p.instagram_business_account
+            ? {
+                id: p.instagram_business_account.id,
+                handle: p.instagram_business_account.username ? `@${p.instagram_business_account.username}` : null,
+                followers: p.instagram_business_account.followers_count ?? 0,
+                pictureUrl: p.instagram_business_account.profile_picture_url ?? null,
+              }
+            : null,
+        })),
+      });
+    } catch (err: any) {
+      console.error("[PlatformAuth] /api/facebook/pages error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to list Pages" });
+    }
+  });
+
+  // Commit the confirmed Page. The pageId is re-verified server-side by a
+  // direct GET on the Page with the caller's token — a creator can only
+  // connect a Page they manage, and this works past the 25-Page list cap.
+  app.post("/api/facebook/select-page", async (req: any, res) => {
+    try {
+      const resolved = await resolveFacebookUser(req);
+      if ("error" in resolved) return res.status(resolved.status).json({ error: resolved.error });
+      const { user, userToken } = resolved;
+      const pageId = String(req.body?.pageId || "");
+      if (!pageId) return res.status(400).json({ error: "pageId required" });
+
+      // Direct verify: fetch THIS page with the user token. Non-managed
+      // pages error or omit access_token, so a stranger's page can't pass.
+      const vRes = await fetch(`https://graph.facebook.com/v25.0/${encodeURIComponent(pageId)}?fields=id,name,fan_count,picture{url},access_token,instagram_business_account{id,username,followers_count,profile_picture_url}&access_token=${encodeURIComponent(userToken)}`);
+      const page: any = await vRes.json();
+      if (page?.error || !page?.id || !page?.access_token) {
+        return res.status(403).json({ error: "You don't manage that Page" });
+      }
+
+      const ig = page.instagram_business_account ?? null;
+      const pageToken: string = page.access_token; // page token: required by the Page /insights edge
+
+      await db.update(users).set({
+        facebookPageId: page.id,
+        facebookPageName: page.name,
+        facebookFollowers: page.fan_count ?? 0,
+        instagramBusinessId: ig?.id ?? null,
+        instagramHandle: ig?.username ? `@${ig.username}` : null,
+        instagramFollowers: ig?.followers_count ?? 0,
+        updatedAt: new Date(),
+      }).where(eq(users.id, user.id));
+
+      // Mirror into social_accounts so analytics + snapshots pick them up.
+      // Replace any previously-selected Page/IG rows for this user so the
+      // snapshot cron doesn't keep polling a Page they've switched away from.
+      const { storage } = await import("../storage");
+      await storage.replaceMetaSocialAccounts(user.id);
+
+      const scopes = ["pages_show_list", "pages_read_engagement", "read_insights", "instagram_basic", "instagram_manage_insights"];
+      // FB row → PAGE token (Page /insights rejects user tokens).
+      await storage.upsertSocialAccount({
+        userId: user.id,
+        platform: "facebook",
+        accountType: "business",
+        platformAccountId: page.id,
+        handle: page.name,
+        displayName: page.name,
+        avatarUrl: page.picture?.data?.url ?? null,
+        followers: page.fan_count ?? 0,
+        accessToken: pageToken,
+        scopes,
+      });
+      if (ig?.id) {
+        // IG row → USER token: the IG-insights consumers (backfill,
+        // refresh-analytics, snapshot job) all read with the user token.
+        await storage.upsertSocialAccount({
+          userId: user.id,
+          platform: "instagram",
+          accountType: "business",
+          platformAccountId: ig.id,
+          handle: ig.username ? `@${ig.username}` : null,
+          displayName: ig.username ? `@${ig.username}` : null,
+          avatarUrl: ig.profile_picture_url ?? null,
+          followers: ig.followers_count ?? 0,
+          accessToken: userToken,
+          scopes,
+        });
+      }
+
+      console.log(`[PlatformAuth] User ${user.id} confirmed Page ${page.id} (${page.name})${ig ? ` + IG ${ig.username}` : ""}`);
+      res.json({
+        success: true,
+        page: { pageId: page.id, name: page.name, followers: page.fan_count ?? 0 },
+        instagram: ig ? { id: ig.id, handle: ig.username ? `@${ig.username}` : null, followers: ig.followers_count ?? 0 } : null,
+      });
+    } catch (err: any) {
+      console.error("[PlatformAuth] /api/facebook/select-page error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to connect Page" });
+    }
+  });
+
   // NOTE: Facebook debug endpoints (test-fb-update, facebook-session,
   // fb-insights-test) were REMOVED for security. They decrypted and returned
   // users' Facebook/Instagram access tokens in the HTTP response and were
@@ -1089,11 +1241,22 @@ export async function setupPlatformAuth(app: Express) {
         instagramHandle: null,
         instagramFollowers: null,
       }).where(eq(users.id, user.id));
-      
+
+      // Remove the mirrored social_accounts rows (+ their snapshots) so the
+      // analytics job stops polling, and drop the session token fallback so
+      // the Page endpoints don't keep working post-disconnect.
+      try {
+        const { storage } = await import("../storage");
+        await storage.replaceMetaSocialAccounts(user.id);
+      } catch (e: any) {
+        console.warn("[Facebook Disconnect] social_accounts cleanup failed:", e?.message);
+      }
+
       // Clear session data
       if (req.session?.facebookProfile) {
         delete req.session.facebookProfile;
       }
+      req.session.facebookConnected = false;
       
       console.log("[Facebook Disconnect] Cleared Facebook/Instagram data for:", userEmail);
       res.json({ success: true });

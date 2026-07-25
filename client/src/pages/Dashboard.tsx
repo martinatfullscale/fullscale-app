@@ -637,6 +637,49 @@ export default function Dashboard() {
   // prompt when it's actually empty (first connect).
   const [importChoicePending, setImportChoicePending] = useState(false);
 
+  // Facebook post-connect: the creator confirms WHICH managed Page (and its
+  // linked Instagram account) to connect — never auto-picked.
+  const [pageSelectOpen, setPageSelectOpen] = useState(false);
+  const [selectedPageId, setSelectedPageId] = useState<string | null>(null);
+  const { data: fbPages, isLoading: fbPagesLoading, isError: fbPagesError, error: fbPagesErrorObj } = useQuery<{
+    currentPageId: string | null;
+    pages: Array<{ pageId: string; name: string; followers: number; pictureUrl: string | null; instagram: { id: string; handle: string | null; followers: number; pictureUrl: string | null } | null }>;
+  }>({
+    queryKey: ["/api/facebook/pages"],
+    queryFn: async () => {
+      const res = await fetch("/api/facebook/pages", { credentials: "include" });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || "Failed to list Pages");
+      return res.json();
+    },
+    enabled: pageSelectOpen,
+  });
+  const confirmPageMutation = useMutation({
+    mutationFn: async (pageId: string) => {
+      const res = await fetch("/api/facebook/select-page", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ pageId }),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || "Failed to connect Page");
+      return res.json();
+    },
+    onSuccess: (data: any) => {
+      setPageSelectOpen(false);
+      toast({
+        title: `Connected: ${data.page?.name || "Page"}`,
+        description: data.instagram?.handle
+          ? `Linked Instagram ${data.instagram.handle} is connected too — analytics will start flowing.`
+          : "Page connected. No linked Instagram professional account was found on this Page.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/platform-auth/status"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
+    },
+    onError: (err: any) => {
+      toast({ title: "Couldn't connect Page", description: err.message, variant: "destructive" });
+    },
+  });
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get("youtube_connected") === "true") {
@@ -647,6 +690,10 @@ export default function Dashboard() {
       queryClient.invalidateQueries({ queryKey: ["/api/youtube/channel"] });
       queryClient.invalidateQueries({ queryKey: ["/api/youtube/videos"] });
       setImportChoicePending(true);
+    }
+    if (params.get("facebook_connected") === "true") {
+      window.history.replaceState({}, "", "/dashboard");
+      setPageSelectOpen(true);
     }
     if (params.get("youtube_error")) {
       const errorMsg = decodeURIComponent(params.get("youtube_error") || "An error occurred.");
@@ -1353,6 +1400,84 @@ export default function Dashboard() {
           setYoutubePickerOpen(false);
         }}
       />
+
+      {/* Facebook Page confirmation — the creator picks which managed Page
+          (and its linked IG account) to connect. Never auto-selected. */}
+      <Dialog open={pageSelectOpen} onOpenChange={setPageSelectOpen}>
+        <DialogContent data-testid="dialog-page-select">
+          <DialogHeader>
+            <DialogTitle>Choose the Page to connect</DialogTitle>
+            <DialogDescription>
+              These are the Facebook Pages you manage. Pick the one linked to the
+              Instagram account you create with — FullScale will use it for your
+              analytics and publishing.
+            </DialogDescription>
+          </DialogHeader>
+
+          {fbPagesLoading ? (
+            <div className="py-8 text-center text-sm text-muted-foreground">Loading your Pages…</div>
+          ) : fbPagesError ? (
+            <div className="py-6 text-sm text-red-400">
+              Couldn't load your Pages{(fbPagesErrorObj as any)?.message ? `: ${(fbPagesErrorObj as any).message}` : "."}
+              {" "}Reconnect Facebook and try again.
+            </div>
+          ) : !fbPages || fbPages.pages.length === 0 ? (
+            <div className="py-6 text-sm text-muted-foreground">
+              No managed Facebook Pages were found on this account. FullScale needs a
+              Page linked to an Instagram professional (Business or Creator) account —
+              create or link one on Facebook, then reconnect.
+            </div>
+          ) : (
+            <div className="space-y-2 max-h-72 overflow-y-auto">
+              {fbPages.pages.map((p) => {
+                const chosen = (selectedPageId ?? fbPages.currentPageId ?? fbPages.pages[0]?.pageId) === p.pageId;
+                return (
+                  <button
+                    key={p.pageId}
+                    onClick={() => setSelectedPageId(p.pageId)}
+                    data-testid={`page-option-${p.pageId}`}
+                    className={`w-full flex items-center gap-3 rounded-lg border p-3 text-left transition-colors ${
+                      chosen ? "border-primary bg-primary/10" : "border-white/10 hover:bg-white/5"
+                    }`}
+                  >
+                    {p.pictureUrl ? (
+                      <img src={p.pictureUrl} alt="" className="w-10 h-10 rounded-full object-cover" />
+                    ) : (
+                      <div className="w-10 h-10 rounded-full bg-white/10" />
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-sm truncate">{p.name}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {p.followers.toLocaleString()} followers
+                        {p.instagram?.handle
+                          ? ` · linked to ${p.instagram.handle} (${p.instagram.followers.toLocaleString()})`
+                          : " · no linked Instagram account"}
+                      </p>
+                    </div>
+                    {chosen && <CheckCircle className="w-4 h-4 text-primary shrink-0" />}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          <DialogFooter className="gap-2 sm:gap-2">
+            <Button variant="outline" onClick={() => setPageSelectOpen(false)} data-testid="button-page-cancel">
+              Not now
+            </Button>
+            <Button
+              disabled={confirmPageMutation.isPending || fbPagesLoading || !fbPages || fbPages.pages.length === 0}
+              onClick={() => {
+                const pageId = selectedPageId ?? fbPages?.currentPageId ?? fbPages?.pages[0]?.pageId;
+                if (pageId) confirmPageMutation.mutate(pageId);
+              }}
+              data-testid="button-page-confirm"
+            >
+              {confirmPageMutation.isPending ? "Connecting…" : "Connect this Page"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

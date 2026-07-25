@@ -515,6 +515,26 @@ export class DatabaseStorage implements IStorage {
     return row ? this.decryptSocialAccount(row) : undefined;
   }
 
+  /** Remove a user's facebook/instagram social_accounts (+ their snapshots)
+   *  — called before writing a freshly-confirmed Page so switching Pages
+   *  doesn't leave stale rows the snapshot cron keeps polling. */
+  async replaceMetaSocialAccounts(userId: string): Promise<void> {
+    const rows = await db
+      .select({ id: socialAccounts.id })
+      .from(socialAccounts)
+      .where(and(
+        eq(socialAccounts.userId, userId),
+        inArray(socialAccounts.platform, ["instagram", "facebook"]),
+      ));
+    for (const r of rows) {
+      await db.delete(socialInsightSnapshots).where(eq(socialInsightSnapshots.socialAccountId, r.id));
+    }
+    await db.delete(socialAccounts).where(and(
+      eq(socialAccounts.userId, userId),
+      inArray(socialAccounts.platform, ["instagram", "facebook"]),
+    ));
+  }
+
   /** All Meta accounts with a stored token — the snapshot job's work list. */
   async getAllMetaSocialAccounts(): Promise<SocialAccount[]> {
     const rows = await db
