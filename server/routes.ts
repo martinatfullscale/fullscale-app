@@ -13193,62 +13193,116 @@ export async function registerRoutes(
     }
   });
 
-  // GET /api/analytics/social — the creator-facing analytics surface.
-  // Everything the connected Meta accounts expose, rendered for the account
-  // OWNER: latest account-level insights, snapshot history (our own
-  // longitudinal record — Meta only keeps ~90 days), demographics, live
-  // recent-media performance, and captured story metrics. This is the view
-  // the instagram_manage_insights / read_insights App Review screencasts show.
+  // Shared assembly for a Meta account's analytics payload. Two consumers
+  // with deliberately different depth:
+  //   - /api/analytics/social (creator): OVERVIEW tier — the value surface
+  //     the App Review screencasts show (KPIs, trends, audience snapshot,
+  //     top posts).
+  //   - /api/admin/creator-intelligence/:userId (operator): FULL tier —
+  //     every breakdown, complete media table, stories, history.
+  const assembleAccountAnalytics = async (acct: any, mediaCount: number) => {
+    const withTimeout = <T,>(p: Promise<T | null>, ms: number): Promise<T | null> =>
+      Promise.race([p.catch(() => null), new Promise<null>((r) => setTimeout(() => r(null), ms))]);
+    const snapshots = await storage.getSocialInsightSnapshotsForAccount(acct.id, 60);
+    const latest = snapshots[0] ?? null;
+    // Chronological series for trend charts
+    const series = [...snapshots].reverse().map((s: any) => ({
+      capturedAt: s.capturedAt,
+      followers: s.followers ?? null,
+      views: (s.metrics as any)?.views ?? (s.metrics as any)?.page_media_view ?? 0,
+      reach: (s.metrics as any)?.reach ?? (s.metrics as any)?.page_total_media_view_unique ?? 0,
+      interactions: (s.metrics as any)?.total_interactions ?? (s.metrics as any)?.page_post_engagements ?? 0,
+    }));
+
+    // Live recent-media performance (best-effort; token may be stale).
+    // Bounded: the fan-out is ~2 Graph calls per media with no native timeout.
+    let recentMedia: any[] = [];
+    let liveFollowers: number | null = null;
+    if (acct.platform === "instagram" && acct.accessToken && mediaCount > 0) {
+      const live = await withTimeout(fetchInstagramAnalytics(acct.platformAccountId, acct.accessToken, mediaCount), 8000);
+      if (live) {
+        recentMedia = live.recentMedia;
+        liveFollowers = live.followers;
+      }
+    }
+
+    return {
+      id: acct.id,
+      platform: acct.platform,
+      handle: acct.handle,
+      displayName: acct.displayName,
+      avatarUrl: acct.avatarUrl,
+      followers: liveFollowers ?? acct.followers ?? latest?.followers ?? 0,
+      lastCapturedAt: latest?.capturedAt ?? null,
+      metrics: latest?.metrics ?? {},
+      demographics: latest?.demographics ?? acct.audienceData ?? {},
+      stories: latest?.stories ?? [],
+      series,
+      recentMedia,
+    };
+  };
+
+  // GET /api/analytics/social — the creator-facing analytics OVERVIEW.
+  // Follower count, core engagement KPIs, trends, an audience snapshot, and
+  // top recent posts — the creator-value surface the instagram_manage_insights
+  // / read_insights App Review screencasts show. The exhaustive drill-down
+  // deliberately lives on the admin side, not here.
   app.get("/api/analytics/social", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const accounts = await storage.getSocialAccountsByUser(req.authUserId, req.authEmail);
       const metaAccounts = accounts.filter((a) => a.platform === "instagram" || a.platform === "facebook");
-      // The live media fetch fans out ~25 Graph calls per IG account with no
-      // native timeout — bound it so a slow Graph API can't hang the page.
-      const withTimeout = <T,>(p: Promise<T | null>, ms: number): Promise<T | null> =>
-        Promise.race([p.catch(() => null), new Promise<null>((r) => setTimeout(() => r(null), ms))]);
-      const out = await Promise.all(metaAccounts.map(async (acct) => {
-        const snapshots = await storage.getSocialInsightSnapshotsForAccount(acct.id, 60);
-        const latest = snapshots[0] ?? null;
-        // Chronological series for trend charts
-        const series = [...snapshots].reverse().map((s: any) => ({
-          capturedAt: s.capturedAt,
-          followers: s.followers ?? null,
-          views: (s.metrics as any)?.views ?? (s.metrics as any)?.page_media_view ?? 0,
-          reach: (s.metrics as any)?.reach ?? (s.metrics as any)?.page_total_media_view_unique ?? 0,
-          interactions: (s.metrics as any)?.total_interactions ?? (s.metrics as any)?.page_post_engagements ?? 0,
-        }));
-
-        // Live recent-media performance (best-effort; token may be stale)
-        let recentMedia: any[] = [];
-        let liveFollowers: number | null = null;
-        if (acct.platform === "instagram" && acct.accessToken) {
-          const live = await withTimeout(fetchInstagramAnalytics(acct.platformAccountId, acct.accessToken, 10), 8000);
-          if (live) {
-            recentMedia = live.recentMedia;
-            liveFollowers = live.followers;
-          }
-        }
-
-        return {
-          id: acct.id,
-          platform: acct.platform,
-          handle: acct.handle,
-          displayName: acct.displayName,
-          avatarUrl: acct.avatarUrl,
-          followers: liveFollowers ?? acct.followers ?? latest?.followers ?? 0,
-          lastCapturedAt: latest?.capturedAt ?? null,
-          metrics: latest?.metrics ?? {},
-          demographics: latest?.demographics ?? acct.audienceData ?? {},
-          stories: latest?.stories ?? [],
-          series,
-          recentMedia,
-        };
-      }));
+      const out = await Promise.all(metaAccounts.map((acct) => assembleAccountAnalytics(acct, 6)));
       res.json({ accounts: out });
     } catch (err: any) {
       console.error("[API] /api/analytics/social error:", err.message);
       res.status(500).json({ error: "Failed to load social analytics" });
+    }
+  });
+
+  // GET /api/admin/creator-intelligence/:userId — FULL-depth drill-down on
+  // one creator for the FullScale operator: complete demographics breakdowns,
+  // full media tables with watch time, stories, snapshot history, placements.
+  // Admin-gated. Used to deliver the marketplace service (brand matching,
+  // placement pricing) — never shown in Meta App Review screencasts.
+  app.get("/api/admin/creator-intelligence/:userId", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      if (!req.isAdmin) return res.status(403).json({ error: "Admin only" });
+      const targetId = String(req.params.userId || "");
+      if (!targetId) return res.status(400).json({ error: "userId required" });
+      let user = await storage.getUserById(targetId);
+      if (!user && targetId.includes("@")) user = await storage.getUserByEmail(targetId);
+      const accounts = await storage.getSocialAccountsByUser(user?.id ?? targetId, user?.email ?? undefined);
+      const metaAccounts = accounts.filter((a) => a.platform === "instagram" || a.platform === "facebook");
+      const out = await Promise.all(metaAccounts.map((acct) => assembleAccountAnalytics(acct, 12)));
+
+      let placements: any[] = [];
+      try {
+        placements = await storage.getCreatorPlacements(
+          user?.id ?? targetId,
+          "pending_creator_review,creator_approved,pending_brand_review,brand_approved,creator_rejected,brand_withdrawn",
+        );
+      } catch { /* best-effort */ }
+
+      res.json({
+        creator: {
+          userId: user?.id ?? targetId,
+          name: user ? [user.firstName, user.lastName].filter(Boolean).join(" ").trim() || user.email : targetId,
+          email: user?.email ?? null,
+        },
+        accounts: out,
+        placements: placements.map((p: any) => ({
+          id: p.id,
+          status: p.status,
+          videoId: p.videoId,
+          brandProductId: p.brandProductId,
+          placementFeeCents: p.placementFeeCents,
+          creatorPayoutCents: p.creatorPayoutCents,
+          createdAt: p.createdAt,
+        })),
+      });
+    } catch (err: any) {
+      console.error("[API] /api/admin/creator-intelligence/:userId error:", err.message);
+      res.status(500).json({ error: "Failed to load creator detail" });
     }
   });
 
