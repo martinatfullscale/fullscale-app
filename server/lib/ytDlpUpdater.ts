@@ -57,6 +57,13 @@ async function downloadLatest(): Promise<string> {
   return CACHE_PATH;
 }
 
+// The standalone yt-dlp_linux is a ~30MB PyInstaller bundle that cold-starts
+// an embedded Python interpreter; --version can take well over 5s on a small
+// instance's first run. A too-short timeout made the probe fail, which threw
+// away the FRESH binary and fell back to the stale system yt-dlp that can't
+// parse current YouTube ("Requested format is not available").
+const PROBE_TIMEOUT_MS = 30000;
+
 async function probeVersion(binPath: string): Promise<string | null> {
   return new Promise((resolve) => {
     let out = "";
@@ -82,10 +89,10 @@ async function probeVersion(binPath: string): Promise<string | null> {
       done(null);
     });
     setTimeout(() => {
-      console.warn(`[yt-dlp] probeVersion timeout for ${binPath} after 5s`);
+      console.warn(`[yt-dlp] probeVersion timeout for ${binPath} after ${PROBE_TIMEOUT_MS / 1000}s`);
       try { proc.kill(); } catch {}
       done(null);
-    }, 5000);
+    }, PROBE_TIMEOUT_MS);
   });
 }
 
@@ -100,15 +107,21 @@ export async function getYtDlpPath(): Promise<string> {
   if (updateInFlight) return updateInFlight;
 
   updateInFlight = (async () => {
+    // A large, present binary is trusted even if --version doesn't return in
+    // time: the system yt-dlp we'd otherwise fall back to is KNOWN too old to
+    // parse current YouTube, so a slow-but-real fresh binary always beats it.
+    const looksReal = () => {
+      try { return fs.statSync(CACHE_PATH).size > 10_000_000; } catch { return false; }
+    };
     try {
       if (!isFresh()) {
         await downloadLatest();
       }
       let version = await probeVersion(CACHE_PATH);
-      if (!version) {
-        // Probe failed on cached binary — could be stale cache from a
-        // previous bad download. Force re-download once and retry.
-        console.warn(`[yt-dlp] Cached binary failed probe; deleting and re-downloading...`);
+      if (!version && !looksReal()) {
+        // Only re-download when the cached file is missing/undersized (a
+        // corrupt partial) — not merely because the probe was slow.
+        console.warn(`[yt-dlp] Cached binary missing/undersized; re-downloading...`);
         try { fs.unlinkSync(CACHE_PATH); } catch {}
         await downloadLatest();
         version = await probeVersion(CACHE_PATH);
@@ -118,7 +131,14 @@ export async function getYtDlpPath(): Promise<string> {
         cachedPath = CACHE_PATH;
         return CACHE_PATH;
       }
-      throw new Error("Cached binary failed --version probe (twice)");
+      if (looksReal()) {
+        // Probe timed out but the binary is a full-size fresh download —
+        // trust it over the stale system binary.
+        console.warn(`[yt-dlp] Probe inconclusive but binary is full-size; using ${CACHE_PATH} anyway`);
+        cachedPath = CACHE_PATH;
+        return CACHE_PATH;
+      }
+      throw new Error("Fresh binary unusable (undersized and unprobeable)");
     } catch (err: any) {
       console.warn(`[yt-dlp] Update failed (${err.message}); falling back to system yt-dlp`);
       const sysVersion = await probeVersion("yt-dlp");

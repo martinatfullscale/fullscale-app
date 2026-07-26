@@ -8,6 +8,10 @@ import { storage } from "../storage";
 import type { VideoIndex, InsertDetectedSurface } from "@shared/schema";
 import ytdl from "@distube/ytdl-core";
 import { getYtDlpPath } from "./ytDlpUpdater";
+// Bundled ffmpeg for yt-dlp's post-processing (--download-sections trims).
+// The deployment's PATH ffmpeg segfaulted (exit -11) mid-download in
+// production; the ffmpeg-static build is the same binary our renders use.
+import ffmpegStaticPath from "ffmpeg-static";
 
 const MOBILE_SAFARI_USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1";
 const ANDROID_USER_AGENT = "com.google.android.youtube/19.09.3 (Linux; U; Android 14; SM-G998B) gzip";
@@ -501,6 +505,11 @@ async function downloadVideoWithYtDlp(
       "--progress",           // show download progress
       "--no-part",            // write straight to outputPath, no .part renames
     ];
+    // Use the bundled ffmpeg (known-good) for trims/merges instead of the
+    // PATH ffmpeg, which segfaulted (-11) in the deployment.
+    if (ffmpegStaticPath && fs.existsSync(ffmpegStaticPath)) {
+      args.push("--ffmpeg-location", ffmpegStaticPath);
+    }
     // Path B (OAuth): pass the creator's stored YouTube access token via
     // Authorization header. yt-dlp forwards extra headers on its requests
     // to YouTube — an authenticated user request bypasses bot-detection
