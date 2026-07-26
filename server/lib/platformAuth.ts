@@ -1091,12 +1091,46 @@ export async function setupPlatformAuth(app: Express) {
     return data.data ?? [];
   }
 
-  // List the creator's managed Pages — NO tokens in the response.
+  /** IG accounts the user shared with the app DIRECTLY (no Page asset) —
+   *  derived from the token's granular scopes. Common consent outcome: the
+   *  user checks IG accounts on Meta's Instagram screen but skips the Pages
+   *  screen, so /me/accounts is empty while IG access is fully granted. */
+  async function fetchDirectIgAccounts(userToken: string): Promise<any[]> {
+    try {
+      const dbgRes = await fetch(`https://graph.facebook.com/debug_token?input_token=${encodeURIComponent(userToken)}&access_token=${encodeURIComponent(userToken)}`);
+      const dbg: any = await dbgRes.json();
+      const igIds = new Set<string>();
+      for (const g of dbg?.data?.granular_scopes ?? []) {
+        if (g.scope === "instagram_basic" || g.scope === "instagram_manage_insights") {
+          for (const t of g.target_ids ?? []) igIds.add(String(t));
+        }
+      }
+      const out: any[] = [];
+      for (const igId of Array.from(igIds)) {
+        try {
+          const igRes = await fetch(`https://graph.facebook.com/v25.0/${igId}?fields=username,followers_count,profile_picture_url&access_token=${encodeURIComponent(userToken)}`);
+          const ig: any = await igRes.json();
+          if (ig?.username) {
+            out.push({ id: igId, handle: `@${ig.username}`, followers: ig.followers_count ?? 0, pictureUrl: ig.profile_picture_url ?? null });
+          }
+        } catch { /* skip account */ }
+      }
+      return out;
+    } catch {
+      return [];
+    }
+  }
+
+  // List the creator's managed Pages — NO tokens in the response. When no
+  // Pages were shared, fall back to directly-shared IG accounts so the
+  // connect flow doesn't dead-end (Page insights stay unavailable until a
+  // Page is actually shared, and the UI says so).
   app.get("/api/facebook/pages", async (req: any, res) => {
     try {
       const resolved = await resolveFacebookUser(req);
       if ("error" in resolved) return res.status(resolved.status).json({ error: resolved.error });
       const pages = await fetchManagedPages(resolved.userToken);
+      const igOnly = pages.length === 0 ? await fetchDirectIgAccounts(resolved.userToken) : [];
       res.json({
         currentPageId: resolved.user.facebookPageId ?? null,
         pages: pages.map((p: any) => ({
@@ -1113,6 +1147,7 @@ export async function setupPlatformAuth(app: Express) {
               }
             : null,
         })),
+        igOnly,
       });
     } catch (err: any) {
       console.error("[PlatformAuth] /api/facebook/pages error:", err.message);
@@ -1128,6 +1163,42 @@ export async function setupPlatformAuth(app: Express) {
       const resolved = await resolveFacebookUser(req);
       if ("error" in resolved) return res.status(resolved.status).json({ error: resolved.error });
       const { user, userToken } = resolved;
+
+      // Instagram-only connect: the user shared IG accounts but no Page.
+      // Verified against the token's own granular scopes — a stranger's IG
+      // id won't be among the target_ids of THIS user's grant.
+      const igAccountId = String(req.body?.igAccountId || "");
+      if (igAccountId) {
+        const direct = await fetchDirectIgAccounts(userToken);
+        const ig = direct.find((d) => String(d.id) === igAccountId);
+        if (!ig) return res.status(403).json({ error: "That Instagram account wasn't shared with FullScale" });
+
+        await db.update(users).set({
+          instagramBusinessId: ig.id,
+          instagramHandle: ig.handle,
+          instagramFollowers: ig.followers ?? 0,
+          updatedAt: new Date(),
+        }).where(eq(users.id, user.id));
+
+        const { storage } = await import("../storage");
+        await storage.replaceMetaSocialAccounts(user.id);
+        await storage.upsertSocialAccount({
+          userId: user.id,
+          platform: "instagram",
+          accountType: "business",
+          platformAccountId: ig.id,
+          handle: ig.handle,
+          displayName: ig.handle,
+          avatarUrl: ig.pictureUrl ?? null,
+          followers: ig.followers ?? 0,
+          accessToken: userToken,
+          scopes: ["instagram_basic", "instagram_manage_insights"],
+        });
+
+        console.log(`[PlatformAuth] User ${user.id} connected IG-only account ${ig.handle} (no Page shared)`);
+        return res.json({ success: true, page: null, instagram: { id: ig.id, handle: ig.handle, followers: ig.followers ?? 0 } });
+      }
+
       const pageId = String(req.body?.pageId || "");
       if (!pageId) return res.status(400).json({ error: "pageId required" });
 

@@ -644,6 +644,7 @@ export default function Dashboard() {
   const { data: fbPages, isLoading: fbPagesLoading, isError: fbPagesError, error: fbPagesErrorObj } = useQuery<{
     currentPageId: string | null;
     pages: Array<{ pageId: string; name: string; followers: number; pictureUrl: string | null; instagram: { id: string; handle: string | null; followers: number; pictureUrl: string | null } | null }>;
+    igOnly: Array<{ id: string; handle: string; followers: number; pictureUrl: string | null }>;
   }>({
     queryKey: ["/api/facebook/pages"],
     queryFn: async () => {
@@ -654,29 +655,31 @@ export default function Dashboard() {
     enabled: pageSelectOpen,
   });
   const confirmPageMutation = useMutation({
-    mutationFn: async (pageId: string) => {
+    mutationFn: async (target: { pageId?: string; igAccountId?: string }) => {
       const res = await fetch("/api/facebook/select-page", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ pageId }),
+        body: JSON.stringify(target),
       });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || "Failed to connect Page");
+      if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || "Failed to connect");
       return res.json();
     },
     onSuccess: (data: any) => {
       setPageSelectOpen(false);
       toast({
-        title: `Connected: ${data.page?.name || "Page"}`,
-        description: data.instagram?.handle
-          ? `Linked Instagram ${data.instagram.handle} is connected too — analytics will start flowing.`
-          : "Page connected. No linked Instagram professional account was found on this Page.",
+        title: data.page ? `Connected: ${data.page.name}` : `Connected: ${data.instagram?.handle || "Instagram"}`,
+        description: data.page
+          ? (data.instagram?.handle
+              ? `Linked Instagram ${data.instagram.handle} is connected too — analytics will start flowing.`
+              : "Page connected. No linked Instagram professional account was found on this Page.")
+          : "Instagram connected. Link a Facebook Page later to add Page-level analytics.",
       });
       queryClient.invalidateQueries({ queryKey: ["/api/platform-auth/status"] });
       queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
     },
     onError: (err: any) => {
-      toast({ title: "Couldn't connect Page", description: err.message, variant: "destructive" });
+      toast({ title: "Couldn't connect", description: err.message, variant: "destructive" });
     },
   });
 
@@ -1421,6 +1424,41 @@ export default function Dashboard() {
               Couldn't load your Pages{(fbPagesErrorObj as any)?.message ? `: ${(fbPagesErrorObj as any).message}` : "."}
               {" "}Reconnect Facebook and try again.
             </div>
+          ) : fbPages && fbPages.pages.length === 0 && (fbPages.igOnly?.length ?? 0) > 0 ? (
+            /* IG accounts shared, no Page assets — connect Instagram directly */
+            <div className="space-y-2">
+              <p className="text-xs text-amber-400/90 mb-1">
+                You shared Instagram accounts but no Facebook Page. You can connect
+                Instagram now — Page-level analytics stay off until you reconnect and
+                select a Page ("Edit previous settings" in Facebook's dialog).
+              </p>
+              {fbPages.igOnly.map((ig) => {
+                const chosen = (selectedPageId ?? fbPages.igOnly[0]?.id) === ig.id;
+                return (
+                  <button
+                    key={ig.id}
+                    onClick={() => setSelectedPageId(ig.id)}
+                    data-testid={`ig-option-${ig.id}`}
+                    className={`w-full flex items-center gap-3 rounded-lg border p-3 text-left transition-colors ${
+                      chosen ? "border-primary bg-primary/10" : "border-white/10 hover:bg-white/5"
+                    }`}
+                  >
+                    {ig.pictureUrl ? (
+                      <img src={ig.pictureUrl} alt="" className="w-10 h-10 rounded-full object-cover" />
+                    ) : (
+                      <div className="w-10 h-10 rounded-full bg-white/10" />
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-sm truncate">{ig.handle}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {ig.followers.toLocaleString()} followers · Instagram only
+                      </p>
+                    </div>
+                    {chosen && <CheckCircle className="w-4 h-4 text-primary shrink-0" />}
+                  </button>
+                );
+              })}
+            </div>
           ) : !fbPages || fbPages.pages.length === 0 ? (
             <div className="py-6 text-sm text-muted-foreground">
               No managed Facebook Pages were found on this account. FullScale needs a
@@ -1466,14 +1504,27 @@ export default function Dashboard() {
               Not now
             </Button>
             <Button
-              disabled={confirmPageMutation.isPending || fbPagesLoading || !fbPages || fbPages.pages.length === 0}
+              disabled={
+                confirmPageMutation.isPending || fbPagesLoading || !fbPages ||
+                (fbPages.pages.length === 0 && (fbPages.igOnly?.length ?? 0) === 0)
+              }
               onClick={() => {
-                const pageId = selectedPageId ?? fbPages?.currentPageId ?? fbPages?.pages[0]?.pageId;
-                if (pageId) confirmPageMutation.mutate(pageId);
+                if (!fbPages) return;
+                if (fbPages.pages.length > 0) {
+                  const pageId = selectedPageId ?? fbPages.currentPageId ?? fbPages.pages[0]?.pageId;
+                  if (pageId) confirmPageMutation.mutate({ pageId });
+                } else {
+                  const igAccountId = selectedPageId ?? fbPages.igOnly?.[0]?.id;
+                  if (igAccountId) confirmPageMutation.mutate({ igAccountId });
+                }
               }}
               data-testid="button-page-confirm"
             >
-              {confirmPageMutation.isPending ? "Connecting…" : "Connect this Page"}
+              {confirmPageMutation.isPending
+                ? "Connecting…"
+                : fbPages && fbPages.pages.length === 0 && (fbPages.igOnly?.length ?? 0) > 0
+                  ? "Connect Instagram"
+                  : "Connect this Page"}
             </Button>
           </DialogFooter>
         </DialogContent>
