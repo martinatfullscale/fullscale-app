@@ -27,6 +27,7 @@ import { GoogleGenAI } from "@google/genai";
 import { uploadFileToStorage, downloadToTempFile, storageServeUrl } from "./lib/objectStorage";
 import { downloadVideo as downloadYouTubeVideo, getYoutubeVideoDuration } from "./lib/scanner";
 import { downloadFacebookVideo, downloadInstagramVideo } from "./lib/socialDownloader";
+import { seedSourceCache } from "./lib/sourceCache";
 import { safeDecrypt } from "./lib/socialAnalytics";
 import { getFreshYoutubeTokenForUser } from "./lib/youtubeAuth";
 import { resolveYoutubeStreamUrl, resolveGraphStreamUrl, type StreamSource } from "./lib/streamResolver";
@@ -3377,6 +3378,15 @@ async function processVideoScanInner(
       if (ok && fs.existsSync(downloadPath)) {
         videoPath = downloadPath;
         console.log(`[Scanner V2] YouTube download succeeded: ${videoPath}`);
+        // Tee the pull into the playback/editorial cache so review playback
+        // and the editorial pipeline become cache hits instead of separate
+        // YouTube downloads from the same IP. Only when the trim window
+        // covers the whole video — a >1hr capped pull or an
+        // unknown-duration bounded pull is a truncated source and must
+        // never be served to the player.
+        if (probedDuration && probedDuration > 0 && probedDuration <= trimSec) {
+          seedSourceCache(videoId, downloadPath);
+        }
       } else {
         console.error(`[Scanner V2] YouTube download failed for ${video.youtubeId}`);
       }
@@ -3410,6 +3420,9 @@ async function processVideoScanInner(
         if (ok && fs.existsSync(downloadPath)) {
           videoPath = downloadPath;
           console.log(`[Scanner V2] ${platform} download succeeded: ${videoPath}`);
+          // Graph CDN downloads are always the full video — safe to tee
+          // into the playback/editorial cache unconditionally.
+          seedSourceCache(videoId, downloadPath);
         } else {
           console.error(`[Scanner V2] ${platform} download failed for ${video.youtubeId}`);
         }

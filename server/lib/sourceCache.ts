@@ -233,6 +233,40 @@ export async function getPinnedSourcePath(video: VideoIndex, pinDir: string): Pr
   return pinned;
 }
 
+/**
+ * Seed the cache with a source file another pipeline already downloaded —
+ * the scanner's full-video pull, most importantly. One platform download
+ * then serves scan + playback + editorial (each a cache hit) instead of
+ * every feature paying its own pull against the source platform's rate
+ * heuristics. Best-effort and never throws: hard-link (copy fallback)
+ * through a partial name and promote exactly like a download would; a
+ * fresh existing entry wins. Callers must only seed COMPLETE sources —
+ * a trimmed or capped pull would play back as a truncated video.
+ */
+export function seedSourceCache(videoId: number, sourceFile: string): boolean {
+  try {
+    const size = fs.statSync(sourceFile).size;
+    if (size === 0) return false;
+    const target = cachePath(videoId);
+    if (fs.existsSync(target) && isFresh(target)) return false;
+    fs.mkdirSync(CACHE_DIR, { recursive: true });
+    const temp = partialPath(videoId);
+    try {
+      // Same-tmpfs link is free, and the cache's inode survives the
+      // caller's temp-dir teardown; copy covers a split-filesystem layout.
+      fs.linkSync(sourceFile, temp);
+    } catch {
+      fs.copyFileSync(sourceFile, temp);
+    }
+    promotePartial(true, temp, target, `seed failed for video ${videoId}`);
+    console.log(`[Source Cache] Seeded video ${videoId} from an existing download (${(size / 1024 / 1024).toFixed(1)} MB)`);
+    return true;
+  } catch (e: any) {
+    console.warn(`[Source Cache] Seed skipped for video ${videoId}: ${e?.message}`);
+    return false;
+  }
+}
+
 function sweep() {
   if (!fs.existsSync(CACHE_DIR)) return;
 
