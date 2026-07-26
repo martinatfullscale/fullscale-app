@@ -7,6 +7,9 @@ import { videoIndex } from "@shared/schema";
 import { seed } from "./db/seed";
 import { sql } from "drizzle-orm";
 import path from "path";
+import fs from "fs";
+import os from "os";
+import { spawnSync } from "child_process";
 import cookieParser from "cookie-parser";
 import { objectKeyFromServeUrl, getStorageStream } from "./lib/objectStorage";
 // Static imports (not createRequire) so this resolves identically whether
@@ -54,6 +57,35 @@ try {
   }
 } catch (err: any) {
   console.warn(`[Boot] ffmpeg PATH bootstrap failed (${err?.message}); relying on system PATH`);
+}
+
+// Verify the bootstrap produced a runnable ffmpeg — loudly, at boot. If the
+// ffmpeg-static binary is missing from the deploy image, every bare
+// spawn("ffmpeg") silently falls back to whatever system ffmpeg the nix env
+// provides (the one that segfaults on --download-sections), and the failure
+// only surfaces as cryptic mid-scan errors hours later. A 1s -version probe
+// plus a PATH scan tells us immediately whether ffmpeg runs and which
+// directory's binary actually wins.
+try {
+  const resolvedFfmpeg = (process.env.PATH ?? "")
+    .split(path.delimiter)
+    .map((dir) => path.join(dir, "ffmpeg"))
+    .find((candidate) => {
+      try { fs.accessSync(candidate, fs.constants.X_OK); return true; } catch { return false; }
+    });
+  const probe = spawnSync("ffmpeg", ["-version"], { timeout: 1000, encoding: "utf8" });
+  if (probe.status === 0) {
+    const versionLine = (probe.stdout || "").split("\n")[0]?.trim() || "unknown version";
+    console.log(`[Boot] ffmpeg verified: ${versionLine} (resolved: ${resolvedFfmpeg ?? "unknown"})`);
+  } else {
+    console.error(
+      `[Boot] ffmpeg -version FAILED (status=${probe.status ?? "null"}, error=${probe.error?.message ?? "none"}, ` +
+      `resolved=${resolvedFfmpeg ?? "no executable ffmpeg on PATH"}) — every media feature (scans, thumbnails, ` +
+      `exports, yt-dlp trims) will fail; check that ffmpeg-static shipped in the deploy image`
+    );
+  }
+} catch (err: any) {
+  console.error(`[Boot] ffmpeg boot verification errored (${err?.message}) — media features may be broken`);
 }
 
 const app = express();
@@ -251,6 +283,73 @@ app.use((req, res, next) => {
   next();
 });
 
+// -----------------------------------------------------------------------
+// STALE TEMP-ARTIFACT JANITOR
+//
+// Scans, editorial pipelines, and remix renders stage large working copies
+// (up to a full ~1GB creator source each) in job-scoped temp dirs and
+// delete them in in-process finally blocks — a guarantee that only holds
+// while the process survives. On the Replit reserved VM /tmp persists
+// across restarts, so an OOM-kill or redeploy mid-job orphans the copy;
+// pin dirs are hard links, so sourceCache's own sweeper unlinking its
+// cache entry does NOT free those bytes. Enough orphans and the scanner's
+// 100MB disk preflight starts hard-failing every scan.
+//
+// This sweep removes stale entries from:
+//   - os.tmpdir() entries prefixed scan- (covers scan-v2- and the legacy
+//     scanner-v1 scan-<id>-<ts> dirs) / dense-scan- / detect-, after 2h
+//     (well past the longest legitimate scan; scans cap ~10min). Prefix-
+//     matched because tmpdir is shared with the yt-dlp binary cache,
+//     cookie jar, and fullscale-source-cache — none of which may ever be
+//     touched here; sourceCache runs its own sweeper.
+//   - everything under /tmp/storage-downloads, after 2h.
+//   - everything under the job-exclusive roots /tmp/editorial-source,
+//     /tmp/editorial-renders, /tmp/remix-videos, after 6h. These stage
+//     their files once at job start, so the top-level mtime is the job
+//     START time — and a many-clip render run (15-min-per-clip ffmpeg
+//     ceiling, no overall cap) can legitimately still be reading its
+//     staged source well past 2h.
+// -----------------------------------------------------------------------
+const TEMP_SWEEP_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+const TEMP_SWEEP_RENDER_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+const TEMP_SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+async function sweepStaleTempArtifacts(): Promise<void> {
+  const now = Date.now();
+  const removed: string[] = [];
+  const targets: Array<{ root: string; maxAgeMs: number; match: (name: string) => boolean }> = [
+    { root: os.tmpdir(), maxAgeMs: TEMP_SWEEP_MAX_AGE_MS, match: (n) => n.startsWith("scan-") || n.startsWith("dense-scan-") || n.startsWith("detect-") },
+    { root: "/tmp/editorial-source", maxAgeMs: TEMP_SWEEP_RENDER_MAX_AGE_MS, match: () => true },
+    { root: "/tmp/editorial-renders", maxAgeMs: TEMP_SWEEP_RENDER_MAX_AGE_MS, match: () => true },
+    { root: "/tmp/remix-videos", maxAgeMs: TEMP_SWEEP_RENDER_MAX_AGE_MS, match: () => true },
+    { root: "/tmp/storage-downloads", maxAgeMs: TEMP_SWEEP_MAX_AGE_MS, match: () => true },
+  ];
+  for (const { root, maxAgeMs, match } of targets) {
+    const cutoff = now - maxAgeMs;
+    let names: string[];
+    try {
+      names = await fs.promises.readdir(root);
+    } catch {
+      continue; // Root doesn't exist yet — nothing has been staged there
+    }
+    for (const name of names) {
+      if (!match(name)) continue;
+      const full = path.join(root, name);
+      try {
+        const stat = await fs.promises.stat(full);
+        if (stat.mtimeMs >= cutoff) continue; // Possibly a live job — leave it
+        await fs.promises.rm(full, { recursive: true, force: true });
+        removed.push(full);
+      } catch {
+        // Entry vanished mid-sweep (the job's own cleanup won the race) — fine
+      }
+    }
+  }
+  if (removed.length > 0) {
+    console.log(`[TempSweep] Removed ${removed.length} stale temp artifact(s): ${removed.join(", ")}`);
+  }
+}
+
 (async () => {
   try {
     log("Starting server initialization...");
@@ -440,6 +539,22 @@ app.use((req, res, next) => {
       //   log(`TensorFlow worker initialization warning: ${tfError}`);
       // }
     });
+
+    // Stale temp-artifact janitor (see sweepStaleTempArtifacts above).
+    // Deferred 60s so boot-critical I/O finishes first, then every 6h.
+    // unref'd so the timers never hold the process open.
+    const firstSweep = setTimeout(() => {
+      sweepStaleTempArtifacts().catch((err: any) =>
+        console.warn("[TempSweep] sweep failed (non-fatal):", err?.message || err)
+      );
+      const recurring = setInterval(() => {
+        sweepStaleTempArtifacts().catch((err: any) =>
+          console.warn("[TempSweep] sweep failed (non-fatal):", err?.message || err)
+        );
+      }, TEMP_SWEEP_INTERVAL_MS);
+      recurring.unref();
+    }, 60_000);
+    firstSweep.unref();
 
   } catch (error) {
     console.error("Failed to start server:", error);

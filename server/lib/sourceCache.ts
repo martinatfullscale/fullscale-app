@@ -31,16 +31,65 @@ import { getFreshYoutubeTokenForUser } from "./youtubeAuth";
 const CACHE_DIR = path.join(os.tmpdir(), "fullscale-source-cache");
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 const SWEEP_INTERVAL_MS = 15 * 60 * 1000; // every 15 min
-// Hard cap on total cache disk usage. Without this the cache could grow
+// Cap on total cache disk usage. Without this the cache could grow
 // unbounded inside the 1-hour TTL window and choke /tmp on Replit deploy
 // (small /tmp shared with multer disk writes, frame extraction, etc).
-// When usage exceeds the cap, the sweeper evicts oldest-first until under.
+// When usage exceeds the cap, the sweeper evicts oldest-first until under —
+// but files in active use are exempt (see the guards below), so the cap is
+// soft while viewers are mid-stream and hard again once they go idle.
 const CACHE_MAX_BYTES = 500 * 1024 * 1024; // 500 MB
+// Sweeper eviction guards (see sweep() pass 2). Playback hits touch mtime,
+// so a recently-touched file is either mid-stream to a viewer or a download
+// that just landed — evicting it converts a cache hit into a full re-pull.
+const ACTIVE_EVICT_GRACE_MS = 5 * 60 * 1000;
+// A single file larger than the whole cap can never bring pass 2 under the
+// cap; without a longer leash it would be evicted on every sweep for as long
+// as it exists. Let oversize files stay until they've been idle a while.
+const OVERSIZE_EVICT_IDLE_MS = 15 * 60 * 1000;
+// Playback pulls the FULL untrimmed video (no trimToSeconds), so the
+// scanner's scan-sized 3-minute default timeout is far too tight — a
+// long-form podcast at 720p takes well past that on Replit egress, and a
+// SIGKILL mid-pull just wastes the whole transfer. Generous flat ceiling;
+// the scanner's hard kill still bounds a truly hung download.
+const PLAYBACK_DOWNLOAD_TIMEOUT_MS = 15 * 60 * 1000;
 
 const inflight = new Map<number, Promise<string>>();
 
 function cachePath(videoId: number): string {
   return path.join(CACHE_DIR, `${videoId}.mp4`);
+}
+
+// Downloads never write the cache slot directly. They land at a partial name
+// in the same directory and get renamed in only after verified success —
+// isFresh() is mtime-only, so a half-written file AT the slot path would be
+// served as a healthy hit (and every retry would re-touch its mtime, keeping
+// the poisoned entry alive until TTL expiry). Orphaned partials from crashed
+// processes are GC'd by the sweeper's TTL pass like any other file.
+//
+// The ".mp4" must stay the FINAL extension: yt-dlp picks the merge container
+// for its bv*+ba rungs from the output filename's extension, so a name like
+// "<id>.mp4.partial-N" would make it write somewhere we're not looking.
+let partialSeq = 0;
+function partialPath(videoId: number): string {
+  return path.join(CACHE_DIR, `${videoId}.partial-${process.pid}-${++partialSeq}.mp4`);
+}
+
+// Verify a finished download and move it into the cache slot. Rename is
+// atomic within a directory, so the slot only ever holds complete files —
+// the mtime-only freshness check depends on that invariant.
+function promotePartial(ok: boolean, temp: string, target: string, failMsg: string): string {
+  let size = 0;
+  try {
+    size = fs.statSync(temp).size;
+  } catch {
+    // temp missing entirely — same as a failed download
+  }
+  if (!ok || size === 0) {
+    try { fs.unlinkSync(temp); } catch { /* already gone */ }
+    throw new Error(failMsg);
+  }
+  fs.renameSync(temp, target);
+  return target;
 }
 
 function isFresh(filePath: string): boolean {
@@ -71,19 +120,22 @@ export async function getSourcePath(video: VideoIndex): Promise<string> {
     const promise = (async () => {
       fs.mkdirSync(CACHE_DIR, { recursive: true });
       const objectKey = filePath.replace(/^\/storage\//, "public/");
-      const { downloadToTempFile } = await import("./objectStorage");
-      const downloaded = await downloadToTempFile(objectKey, CACHE_DIR);
-      // downloadToTempFile uses basename(objectKey) for the local file;
-      // copy/rename into our cache slot so isFresh + sweep work.
+      const { getStorageStream } = await import("./objectStorage");
+      // Not downloadToTempFile: it lands at basename(objectKey), a name
+      // shared by every video row referencing the same objectKey, so two
+      // concurrent pulls would write (and rename) the same inode, splicing
+      // bytes across videos. Pull through the File handle into this
+      // attempt's unique partial name and promote like every other branch.
+      const { file, stream } = getStorageStream(objectKey);
+      stream.destroy(); // only the File handle is needed here
+      const temp = partialPath(video.id);
       try {
-        if (downloaded !== target) {
-          fs.copyFileSync(downloaded, target);
-          try { fs.unlinkSync(downloaded); } catch { /* ignore */ }
-        }
-      } catch (e: any) {
-        console.warn(`[Source Cache] Could not normalize cache path for video ${video.id}:`, e?.message);
+        await file.download({ destination: temp });
+      } catch (e) {
+        try { fs.unlinkSync(temp); } catch { /* already gone */ }
+        throw e;
       }
-      return target;
+      return promotePartial(true, temp, target, `Object storage download empty for video ${video.id}`);
     })();
     inflight.set(video.id, promise);
     try {
@@ -100,6 +152,11 @@ export async function getSourcePath(video: VideoIndex): Promise<string> {
   }
 
   const target = cachePath(video.id);
+  // Fast path. A file at the slot is complete by construction — downloads
+  // land at a partial name and are renamed in only after verification — so
+  // fresh-by-mtime is sufficient to serve it. While a download is in
+  // flight nothing exists at the slot, and concurrent callers fall through
+  // here to join the inflight promise below instead of racing the writer.
   if (fs.existsSync(target) && isFresh(target)) {
     // Touch mtime to extend TTL on active playback.
     fs.utimesSync(target, new Date(), new Date());
@@ -122,9 +179,12 @@ export async function getSourcePath(video: VideoIndex): Promise<string> {
       // are critical — long, anonymous downloads are the most likely to
       // hit "Sign in to confirm you're not a bot."
       const oauthToken = await getFreshYoutubeTokenForUser(video.userId).catch(() => null);
-      const ok = await downloadYouTubeVideo(ytId, target, { oauthToken: oauthToken || undefined });
-      if (!ok || !fs.existsSync(target)) throw new Error(`YouTube download failed for ${ytId}`);
-      return target;
+      const temp = partialPath(video.id);
+      const ok = await downloadYouTubeVideo(ytId, temp, {
+        oauthToken: oauthToken || undefined,
+        timeoutMs: PLAYBACK_DOWNLOAD_TIMEOUT_MS,
+      });
+      return promotePartial(ok, temp, target, `YouTube download failed for ${ytId}`);
     }
 
     if ((platform === "instagram" || platform === "facebook") && ytId) {
@@ -132,11 +192,11 @@ export async function getSourcePath(video: VideoIndex): Promise<string> {
       const fbToken = safeDecrypt(user?.facebookAccessToken);
       if (!fbToken) throw new Error(`No Facebook token for user ${video.userId}`);
 
+      const temp = partialPath(video.id);
       const ok = platform === "facebook"
-        ? await downloadFacebookVideo(ytId, fbToken, target)
-        : await downloadInstagramVideo(ytId, fbToken, target);
-      if (!ok || !fs.existsSync(target)) throw new Error(`${platform} download failed for ${ytId}`);
-      return target;
+        ? await downloadFacebookVideo(ytId, fbToken, temp)
+        : await downloadInstagramVideo(ytId, fbToken, temp);
+      return promotePartial(ok, temp, target, `${platform} download failed for ${ytId}`);
     }
 
     throw new Error(`Cannot resolve source for video ${video.id} (platform=${platform})`);
@@ -207,8 +267,23 @@ function sweep() {
   let removedSize = 0;
   if (totalBytes > CACHE_MAX_BYTES) {
     survivors.sort((a, b) => a.mtimeMs - b.mtimeMs); // oldest first
+    const now = Date.now();
     for (const s of survivors) {
       if (totalBytes <= CACHE_MAX_BYTES) break;
+      const idleMs = now - s.mtimeMs;
+      // Skip anything touched within the grace window: playback hits touch
+      // mtime, so a fresh mtime means a viewer is actively range-streaming
+      // this file (or a download just finished writing it). Unlinking it
+      // mid-review forces an immediate full re-pull from the source
+      // platform — for YouTube that's another large authenticated download
+      // straight into their rate heuristics.
+      if (idleMs < ACTIVE_EVICT_GRACE_MS) continue;
+      // Oversize files (bigger than the entire cap) get a longer leash:
+      // eviction can never bring them under the cap, so without this an
+      // hour-long source would be evicted by every sweep and re-downloaded
+      // ~1.2 GB at a time for the whole review session. Evict only once
+      // idle; the TTL pass ages them out regardless.
+      if (s.size > CACHE_MAX_BYTES && idleMs < OVERSIZE_EVICT_IDLE_MS) continue;
       try {
         fs.unlinkSync(s.path);
         totalBytes -= s.size;

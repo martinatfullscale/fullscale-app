@@ -150,6 +150,7 @@ export interface IStorage {
   getVideosByYoutubeIds(youtubeIds: string[]): Promise<VideoIndex[]>;
   getPendingVideos(userId: string, limit?: number): Promise<VideoIndex[]>;
   updateVideoStatus(videoId: number, status: string): Promise<void>;
+  updateVideoStatusIfScanning(videoId: number, status: string): Promise<boolean>;
   updateVideoThumbnail(videoId: number, thumbnailUrl: string): Promise<void>;
   updateVideoIndex(videoId: number, updates: Partial<InsertVideoIndex>): Promise<void>;
   updateVideoMetadata(videoId: number, metadata: { sentiment?: string; culturalContext?: string }): Promise<void>;
@@ -1022,6 +1023,23 @@ export class DatabaseStorage implements IStorage {
       .update(videoIndex)
       .set({ status, updatedAt: new Date() })
       .where(eq(videoIndex.id, videoId));
+  }
+
+  // Atomic compare-and-set: write the status (and bump updatedAt) only if
+  // the row still says "Scanning". A cancel or stuck-scan sweep that landed
+  // first wins — the conditional UPDATE can never clobber it. Returns
+  // whether a row was updated. Calling with status "Scanning" is a pure
+  // heartbeat: it refreshes updatedAt without changing anything else.
+  async updateVideoStatusIfScanning(videoId: number, status: string): Promise<boolean> {
+    const result = await db
+      .update(videoIndex)
+      .set({ status, updatedAt: new Date() })
+      .where(and(
+        eq(videoIndex.id, videoId),
+        eq(videoIndex.status, "Scanning"),
+      ))
+      .returning({ id: videoIndex.id });
+    return result.length > 0;
   }
 
   async updateVideoThumbnail(videoId: number, thumbnailUrl: string): Promise<void> {

@@ -8,7 +8,8 @@
 // startup, cache to a writable path, and point our spawn calls at it.
 // The binary is a self-contained Python zip-app — no pip, no PATH editing.
 //
-// Falls back to the system "yt-dlp" if the download fails so the scanner
+// If the refresh fails, falls back to any intact cached binary already on
+// disk (whatever its age), then to the system "yt-dlp", so the scanner
 // never breaks worse than its previous baseline.
 
 import * as fs from "fs";
@@ -64,34 +65,43 @@ async function downloadLatest(): Promise<string> {
 // parse current YouTube ("Requested format is not available").
 const PROBE_TIMEOUT_MS = 30000;
 
-async function probeVersion(binPath: string): Promise<string | null> {
+// The caller needs to know WHY a probe failed, not just that it did. A
+// timeout means the binary spawned and is (slowly) running — recoverable.
+// A spawn error (ENOENT/ENOEXEC — wrong arch, missing dynamic loader) or an
+// instant non-zero exit (glibc mismatch, exit 127) means the binary can
+// never work here, no matter how many megabytes it weighs.
+type ProbeResult =
+  | { ok: true; version: string }
+  | { ok: false; reason: "timeout" | "spawn-error" | "exit" };
+
+async function probeVersion(binPath: string): Promise<ProbeResult> {
   return new Promise((resolve) => {
     let out = "";
     let err = "";
     let resolved = false;
-    const done = (val: string | null) => { if (!resolved) { resolved = true; resolve(val); } };
+    const done = (val: ProbeResult) => { if (!resolved) { resolved = true; resolve(val); } };
     let proc;
     try {
       proc = spawn(binPath, ["--version"]);
     } catch (e: any) {
       console.warn(`[yt-dlp] probeVersion spawn threw for ${binPath}: ${e.message}`);
-      return done(null);
+      return done({ ok: false, reason: "spawn-error" });
     }
     proc.stdout.on("data", d => { out += d.toString(); });
     proc.stderr.on("data", d => { err += d.toString(); });
     proc.on("close", code => {
-      if (code === 0) return done(out.trim());
+      if (code === 0) return done({ ok: true, version: out.trim() });
       console.warn(`[yt-dlp] probeVersion failed for ${binPath} (exit ${code}): ${err.trim().slice(0, 300) || "(no stderr)"}`);
-      done(null);
+      done({ ok: false, reason: "exit" });
     });
     proc.on("error", e => {
       console.warn(`[yt-dlp] probeVersion error for ${binPath}: ${e.message}`);
-      done(null);
+      done({ ok: false, reason: "spawn-error" });
     });
     setTimeout(() => {
       console.warn(`[yt-dlp] probeVersion timeout for ${binPath} after ${PROBE_TIMEOUT_MS / 1000}s`);
       try { proc.kill(); } catch {}
-      done(null);
+      done({ ok: false, reason: "timeout" });
     }, PROBE_TIMEOUT_MS);
   });
 }
@@ -102,6 +112,18 @@ async function probeVersion(binPath: string): Promise<string | null> {
  * "yt-dlp" on any failure.
  */
 export async function getYtDlpPath(): Promise<string> {
+  // DOWNLOAD_URL points at a Linux x86_64 ELF. On a macOS dev machine it
+  // downloads fine, chmods fine, and then can never exec — so skip the whole
+  // download dance off-Linux and use whatever yt-dlp is on PATH (brew keeps
+  // it current locally).
+  if (process.platform !== "linux") {
+    if (cachedPath !== "yt-dlp") {
+      console.log(`[yt-dlp] Non-Linux platform (${process.platform}); using system yt-dlp`);
+      cachedPath = "yt-dlp";
+    }
+    return "yt-dlp";
+  }
+
   if (cachedPath && isFresh()) return cachedPath;
 
   if (updateInFlight) return updateInFlight;
@@ -110,6 +132,9 @@ export async function getYtDlpPath(): Promise<string> {
     // A large, present binary is trusted even if --version doesn't return in
     // time: the system yt-dlp we'd otherwise fall back to is KNOWN too old to
     // parse current YouTube, so a slow-but-real fresh binary always beats it.
+    // That trust only applies to a TIMEOUT, though — a binary that spawns and
+    // dies instantly (exec-format error, glibc mismatch, exit 127) is dead
+    // regardless of size, and pinning it would kill every ladder rung at once.
     const looksReal = () => {
       try { return fs.statSync(CACHE_PATH).size > 10_000_000; } catch { return false; }
     };
@@ -117,33 +142,49 @@ export async function getYtDlpPath(): Promise<string> {
       if (!isFresh()) {
         await downloadLatest();
       }
-      let version = await probeVersion(CACHE_PATH);
-      if (!version && !looksReal()) {
-        // Only re-download when the cached file is missing/undersized (a
-        // corrupt partial) — not merely because the probe was slow.
-        console.warn(`[yt-dlp] Cached binary missing/undersized; re-downloading...`);
+      let probe = await probeVersion(CACHE_PATH);
+      if (!probe.ok && (probe.reason !== "timeout" || !looksReal())) {
+        // Either the file is missing/undersized (a corrupt partial), or it
+        // executed and failed / couldn't execute at all — size doesn't save
+        // it. One unlink + re-download, then re-probe. Only a slow probe on
+        // a full-size binary skips this.
+        console.warn(`[yt-dlp] Cached binary unusable (${probe.reason}); re-downloading...`);
         try { fs.unlinkSync(CACHE_PATH); } catch {}
         await downloadLatest();
-        version = await probeVersion(CACHE_PATH);
+        probe = await probeVersion(CACHE_PATH);
       }
-      if (version) {
-        console.log(`[yt-dlp] Using cached binary version ${version} at ${CACHE_PATH}`);
+      if (probe.ok) {
+        console.log(`[yt-dlp] Using cached binary version ${probe.version} at ${CACHE_PATH}`);
         cachedPath = CACHE_PATH;
         return CACHE_PATH;
       }
-      if (looksReal()) {
+      if (probe.reason === "timeout" && looksReal()) {
         // Probe timed out but the binary is a full-size fresh download —
         // trust it over the stale system binary.
-        console.warn(`[yt-dlp] Probe inconclusive but binary is full-size; using ${CACHE_PATH} anyway`);
+        console.warn(`[yt-dlp] Probe timed out but binary is full-size; using ${CACHE_PATH} anyway`);
         cachedPath = CACHE_PATH;
         return CACHE_PATH;
       }
-      throw new Error("Fresh binary unusable (undersized and unprobeable)");
+      throw new Error(`Fresh binary unusable (probe: ${probe.reason})`);
     } catch (err: any) {
+      // downloadLatest writes to .partial and only renames on success, so a
+      // failed refresh never corrupts what's already at CACHE_PATH. If an
+      // intact binary is sitting there — stale because GitHub 403/429'd the
+      // shared egress IP mid-refresh — it still beats the system binary by
+      // weeks of YouTube churn. Staleness is a reason to ATTEMPT a refresh,
+      // never to disqualify a cache that provably runs.
+      if (looksReal()) {
+        const staleProbe = await probeVersion(CACHE_PATH);
+        if (staleProbe.ok) {
+          console.warn(`[yt-dlp] Update failed (${err.message}); using stale cached binary version ${staleProbe.version}`);
+          cachedPath = CACHE_PATH;
+          return CACHE_PATH;
+        }
+      }
       console.warn(`[yt-dlp] Update failed (${err.message}); falling back to system yt-dlp`);
-      const sysVersion = await probeVersion("yt-dlp");
-      if (sysVersion) {
-        console.log(`[yt-dlp] Using system binary version ${sysVersion}`);
+      const sysProbe = await probeVersion("yt-dlp");
+      if (sysProbe.ok) {
+        console.log(`[yt-dlp] Using system binary version ${sysProbe.version}`);
       }
       cachedPath = "yt-dlp";
       return "yt-dlp";

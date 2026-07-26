@@ -470,12 +470,32 @@ export async function registerRoutes(
     .catch((err) => console.error("[Startup] cancelOrphanedLegacySchedules error:", err?.message || err));
   // Release videos stuck in "Scanning" by a crashed/redeployed process.
   // Deferred like the stitch sweep so an old process actively scanning
-  // through the deploy overlap isn't falsely failed.
+  // through the deploy overlap isn't falsely failed. One catch: after a
+  // crash + immediate Replit restart the orphan row is only ~5-15 min
+  // stale when this fires (updated_at is set at scan start; scans cap
+  // ~10 min), so the 30-min threshold skips it — hence the recurring
+  // sweep below, which picks it up once it ages past the threshold
+  // instead of leaving it "Scanning" until the next restart.
+  //
+  // Two different thresholds on purpose: at boot no in-process scan can
+  // be live, so 30 min (past deploy overlap) safely frees fresh orphans.
+  // The recurring sweep runs ALONGSIDE live scans, whose worst-case
+  // wall-clock (resolver retries + probe + dense grid + download ladder
+  // + ytdl-core fallback) can stretch to ~40-50 min between row writes,
+  // so it uses a 2h threshold — far above any legitimate scan, and the
+  // scanner's phase-boundary heartbeats keep updated_at fresh enough
+  // that 2h of staleness genuinely means a dead process.
   setTimeout(() => {
     storage
       .failStuckScans(30)
       .catch((err) => console.error("[Startup] failStuckScans error:", err?.message || err));
   }, 5 * 60 * 1000);
+  const stuckScanSweep = setInterval(() => {
+    storage
+      .failStuckScans(120)
+      .catch((err) => console.error("[Sweep] failStuckScans error:", err?.message || err));
+  }, 10 * 60 * 1000);
+  stuckScanSweep.unref();
   
   // Import session setup separately - this MUST succeed for OAuth to work
   const { getSession } = await import("./replit_integrations/auth/replitAuth");
@@ -3248,6 +3268,10 @@ export async function registerRoutes(
             thumbnailUrl: getYouTubeThumbnailWithFallback(videoId),
             platform: 'youtube',
             viewCount: stats?.viewCount ?? 0,
+            // ISO-8601 duration (e.g. "PT12M4S") from the stats batch above.
+            // The scanner sizes its frame grid off this — leaving it null
+            // forces a probe of the full stream before any frames extract.
+            duration: stats?.duration || undefined,
             status: 'Pending Scan',
             priorityScore: 50,
           });
@@ -3396,7 +3420,7 @@ export async function registerRoutes(
       const allItems: any[] = [];
       for (let i = 0; i < videoIds.length; i += 50) {
         const batch = videoIds.slice(i, i + 50);
-        const url = `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id=${batch.join(",")}`;
+        const url = `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&id=${batch.join(",")}`;
         const vidRes = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
         const vidData = await vidRes.json();
         for (const item of (vidData.items || [])) allItems.push(item);
@@ -3423,6 +3447,10 @@ export async function registerRoutes(
             thumbnailUrl: getYouTubeThumbnailWithFallback(item.id),
             platform: "youtube",
             viewCount: parseInt(item.statistics?.viewCount || "0"),
+            // ISO-8601 duration from the contentDetails part requested above
+            // — same reason as the sync path: the scanner needs it for grid
+            // sizing, and null means a full stream probe first.
+            duration: item.contentDetails?.duration || undefined,
             status: "Pending Scan",
             priorityScore: 50,
             category: cat.category,
@@ -3696,7 +3724,22 @@ export async function registerRoutes(
     }
 
     // Range request handling — required for <video> seeking and partial loads.
-    const stat = fs.statSync(sourcePath);
+    // Under cap pressure the cache sweeper can evict the file between
+    // getSourcePath returning and the stat — re-resolve once (fresh
+    // download/promote) and retry before giving up.
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(sourcePath);
+    } catch (statErr: any) {
+      if (statErr?.code !== "ENOENT") throw statErr;
+      try {
+        sourcePath = await getSourcePath(video);
+      } catch (err: any) {
+        console.error(`[Video Source] ${videoId}: ${err.message}`);
+        return res.status(502).json({ error: "Source unavailable", detail: err.message });
+      }
+      stat = fs.statSync(sourcePath);
+    }
     const fileSize = stat.size;
     const range = req.headers.range as string | undefined;
 

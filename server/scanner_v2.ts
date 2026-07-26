@@ -562,16 +562,26 @@ export function addToLocalAssetMap(videoId: string, filePath: string): void {
 // UTILITY FUNCTIONS
 // ============================================================================
 
-/** Parse ISO 8601 duration ("PT1H46M2S", "PT30M", "PT45S") to seconds.
- *  Returns null if the input isn't a valid ISO 8601 duration. YouTube's
- *  Data API returns durations in this format and we store them verbatim
- *  on video_index.duration. Supports: hours (H), minutes (M), seconds (S);
- *  ignores days/weeks since YT durations don't use them. */
+/** Parse a stored duration to seconds. Returns null if unparseable.
+ *  Accepts ISO 8601 ("PT1H46M2S", "PT30M", "PT45S" — YouTube Data API
+ *  format, stored verbatim on video_index.duration), plain numeric seconds
+ *  ("2760"), and colon clock formats ("46:03", "1:46:02" — the Facebook
+ *  Graph importer stores durations this way, and rejecting them silently
+ *  degraded every FB scan to the unknown-duration grid). Supports hours,
+ *  minutes, seconds; ignores days/weeks since none of our sources use them. */
 function parseIsoDuration(input: string | null | undefined): number | null {
   if (!input || typeof input !== "string") return null;
   // Plain seconds (already-numeric) — accept e.g. "2760"
   const numeric = Number(input);
   if (Number.isFinite(numeric) && numeric > 0) return numeric;
+  // Colon clock format: "M:SS" or "H:MM:SS"
+  const clock = input.match(/^(\d+):(\d{1,2})(?::(\d{1,2}))?$/);
+  if (clock) {
+    const total = clock[3] !== undefined
+      ? parseInt(clock[1], 10) * 3600 + parseInt(clock[2], 10) * 60 + parseInt(clock[3], 10)
+      : parseInt(clock[1], 10) * 60 + parseInt(clock[2], 10);
+    return total > 0 ? total : null;
+  }
   const m = input.match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?$/);
   if (!m) return null;
   const hours = parseInt(m[1] || "0", 10);
@@ -604,15 +614,22 @@ async function getAvailableDiskSpaceMB(): Promise<number> {
             }
           }
         }
-        resolve(1000);
+        // Fail open: an unparseable df must not block scans — the floor can
+        // exceed 1GB for long videos, so a finite guess here could veto a
+        // legitimate scan. Report Infinity, but say so: a scan that ENOSPCs
+        // after this passed is otherwise baffling.
+        console.warn(`[Scanner V2] df output unparseable — treating disk as sufficient (fail-open)`);
+        resolve(Number.POSITIVE_INFINITY);
       });
-      
+
       df.on("error", () => {
-        resolve(1000);
+        console.warn(`[Scanner V2] df failed to spawn — treating disk as sufficient (fail-open)`);
+        resolve(Number.POSITIVE_INFINITY);
       });
     });
   } catch {
-    return 1000;
+    console.warn(`[Scanner V2] Disk space check threw — treating disk as sufficient (fail-open)`);
+    return Number.POSITIVE_INFINITY;
   }
 }
 
@@ -636,6 +653,24 @@ function safeRmdir(dirPath: string): void {
   } catch (err) {
     console.error(`[Scanner V2] Failed to remove directory ${dirPath}:`, err);
   }
+}
+
+/**
+ * Compare-and-set terminal status write. The cancel-scan route flips status
+ * away from "Scanning" and returns success to the creator immediately, while
+ * the scan's post-processing phases keep running for minutes — an
+ * unconditional write at finalize would then stamp "Ready (N Spots)" over
+ * the cancel, silently un-cancelling it. The single conditional UPDATE in
+ * storage only writes while the row still says "Scanning", so a cancel (or
+ * stuck-scan sweep) that lands at any point wins. Returns whether the write
+ * happened.
+ */
+async function updateStatusIfStillScanning(videoId: number, status: string): Promise<boolean> {
+  const updated = await storage.updateVideoStatusIfScanning(videoId, status);
+  if (!updated) {
+    console.log(`[Scanner V2] Skipping status "${status}" for video ${videoId} — row is no longer "Scanning" (cancelled or swept mid-scan); preserving the current status`);
+  }
+  return updated;
 }
 
 async function getFrameMetadata(framePath: string): Promise<{ width: number; height: number; isVertical: boolean }> {
@@ -848,6 +883,9 @@ async function extractFramesFromUrl(
         "-reconnect_delay_max", "5",
       ];
       if (headerArg) args.push("-headers", headerArg);
+      // A proxy-resolved CDN URL is IP-locked to the proxy's egress — ffmpeg
+      // must fetch through the same proxy or googlevideo 403s every read.
+      if (source.httpProxy) args.push("-http_proxy", source.httpProxy);
       args.push(
         "-ss", String(Math.max(0, t)),   // fast input seek — range-request to ~t
         "-i", source.url,
@@ -915,7 +953,7 @@ async function extractFramesUniformFromUrl(
   outputDir: string,
   intervalSeconds: number,
   maxFrames: number,
-): Promise<{ frames: string[]; timestamps: number[] }> {
+): Promise<{ frames: string[]; timestamps: number[]; complete: boolean }> {
   const absoluteOutputDir = path.resolve(outputDir);
   fs.mkdirSync(absoluteOutputDir, { recursive: true });
   const outputPattern = path.join(absoluteOutputDir, "grid_%04d.jpg");
@@ -931,8 +969,19 @@ async function extractFramesUniformFromUrl(
       "-reconnect", "1",
       "-reconnect_streamed", "1",
       "-reconnect_delay_max", "5",
+      // The -reconnect family only fires on connection close/EOF. googlevideo
+      // sometimes throttles an OPEN socket to zero bytes (stale n-parameter
+      // descramble) — without an I/O timeout ffmpeg sits mute until the 8-min
+      // SIGKILL below. 30s of no bytes = abort (and reconnect) instead.
+      "-rw_timeout", "30000000",
+      // Mid-read in-band 403/5xx (CDN URL invalidated by SABR rotation) is
+      // fatal without this — it's an HTTP error, not a connection drop.
+      "-reconnect_on_http_error", "4xx,5xx",
     ];
     if (headerArg) args.push("-headers", headerArg);
+    // A proxy-resolved CDN URL is IP-locked to the proxy's egress — ffmpeg
+    // must fetch through the same proxy or googlevideo 403s every read.
+    if (source.httpProxy) args.push("-http_proxy", source.httpProxy);
     args.push(
       "-i", source.url,
       "-an",
@@ -950,19 +999,45 @@ async function extractFramesUniformFromUrl(
     const tm = setTimeout(() => {
       try { ff.kill("SIGKILL"); } catch {}
       console.warn(`[Scanner V2] Dense stream extraction timed out`);
-      // Resolve with whatever landed so far — a partial grid still scans.
-      resolve(collectGrid());
+      // Resolve with whatever landed so far — the caller's coverage gate
+      // decides whether a partial grid is usable or the download path runs.
+      resolve(collectGrid(true));
     }, 8 * 60 * 1000);
 
-    const collectGrid = (): { frames: string[]; timestamps: number[] } => {
+    // dirtyExit: ffmpeg was killed or died nonzero, so the highest-numbered
+    // grid file may have been truncated mid-write. A truncated JPEG can
+    // exceed the size floor below yet still crash sharp's decoder, and the
+    // dHash-null fallback treats it as its own scene — GUARANTEEING its
+    // selection for detection — so drop the tail file outright. A CLEAN
+    // exit means ffmpeg read the entire input (or hit the -frames:v cap),
+    // so the grid is complete no matter how few frames it holds — exposed
+    // as `complete` for the caller's coverage gate.
+    const collectGrid = (dirtyExit: boolean): { frames: string[]; timestamps: number[]; complete: boolean } => {
       let files: string[] = [];
       try {
-        files = fs.readdirSync(absoluteOutputDir).filter(f => f.startsWith("grid_") && f.endsWith(".jpg")).sort();
+        files = fs.readdirSync(absoluteOutputDir)
+          .filter(f => f.startsWith("grid_") && f.endsWith(".jpg"))
+          .filter(f => {
+            // Size floor: a SIGKILL mid-write leaves stub JPEGs that pass
+            // the filename glob; anything under 4KB isn't a decodable frame.
+            try { return fs.statSync(path.join(absoluteOutputDir, f)).size >= 4096; }
+            catch { return false; }
+          })
+          .sort();
       } catch { /* ignore */ }
+      if (dirtyExit && files.length > 0) {
+        const dropped = files.pop()!;
+        console.warn(`[Scanner V2] Dense grid: dropping tail file ${dropped} (ffmpeg exited dirty — possible mid-write truncation)`);
+      }
       const frames = files.map(f => path.join(absoluteOutputDir, f));
-      // fps=1/interval means frame i corresponds to ~i*interval seconds.
-      const timestamps = frames.map((_, i) => i * intervalSeconds);
-      return { frames, timestamps };
+      // image2 numbers from grid_0001 up, so file NNNN is ~ (NNNN-1)*interval
+      // seconds. Derive from the filename rather than the array index so a
+      // file dropped by the size floor doesn't shift every later timestamp.
+      const timestamps = files.map((f, i) => {
+        const seq = parseInt(f.match(/grid_(\d+)\.jpg$/)?.[1] ?? "", 10);
+        return (Number.isFinite(seq) && seq >= 1 ? seq - 1 : i) * intervalSeconds;
+      });
+      return { frames, timestamps, complete: !dirtyExit };
     };
 
     ff.on("close", (code) => {
@@ -970,12 +1045,12 @@ async function extractFramesUniformFromUrl(
       if (code !== 0 && stderr) {
         console.warn(`[Scanner V2] Dense stream extraction ffmpeg code ${code}: ${stderr.slice(-200)}`);
       }
-      resolve(collectGrid());
+      resolve(collectGrid(code !== 0));
     });
     ff.on("error", (err) => {
       clearTimeout(tm);
       console.warn(`[Scanner V2] Dense stream extraction spawn error: ${err.message}`);
-      resolve(collectGrid());
+      resolve(collectGrid(true));
     });
   });
 }
@@ -2942,22 +3017,52 @@ async function processVideoScanInner(
   // new surfaces we'll delete the snapshotted ones at the end. If the scan
   // fails or finds nothing, we leave the prior data alone — preserves the
   // creator's previous results across an error or a click-twice rescan.
+  // priorActiveCount tracks only the rows a brand can actually see: the raw
+  // snapshot includes every soft-deleted Filtered/"Potential Surface" row
+  // from all prior rescans (rescans never hard-delete), so using its length
+  // in a status string inflates monotonically — 4 active surfaces atop 130
+  // retired rows must revert to "Ready (4 Spots)", not "Ready (134 Spots)".
   let priorSurfaceIds: number[] = [];
+  let priorActiveCount = 0;
   try {
     const prior = await storage.getDetectedSurfaces(videoId);
     priorSurfaceIds = prior.map(s => s.id);
+    priorActiveCount = prior.filter(
+      s => s.surfaceType !== "Filtered" && s.surfaceType !== "Potential Surface"
+    ).length;
     if (priorSurfaceIds.length > 0) {
-      console.log(`[Scanner V2] Snapshotted ${priorSurfaceIds.length} existing surfaces — will replace only on successful scan`);
+      console.log(`[Scanner V2] Snapshotted ${priorSurfaceIds.length} existing surfaces (${priorActiveCount} active) — will replace only on successful scan`);
     }
   } catch (err: any) {
     console.warn(`[Scanner V2] Could not snapshot existing surfaces:`, err?.message || err);
   }
 
   try {
-    // PRE-FLIGHT CHECKS
+    const video = await storage.getVideoById(videoId);
+    if (!video) {
+      return { success: false, videoId, surfacesDetected: 0, error: "Video not found" };
+    }
+
+    console.log(`[Scanner V2] Video: ${video.title} (${video.youtubeId})`);
+
+    if (!forceRescan && video.status !== "Pending Scan") {
+      return {
+        success: false,
+        videoId,
+        surfacesDetected: 0,
+        error: `Video status is "${video.status}", not "Pending Scan"`,
+      };
+    }
+
+    // PRE-FLIGHT CHECKS — flat floor only. The stream path writes just a
+    // few hundred small JPEGs, so scaling this gate with duration would
+    // veto stream-only scans of long videos that never touch
+    // download-sized space. The duration-scaled requirement lives in the
+    // re-check right before the download fallback commits to its pull —
+    // the only phase that actually needs that much room.
     const availableMB = await getAvailableDiskSpaceMB();
-    console.log(`[Scanner V2] Available disk space: ${availableMB}MB`);
-    
+    console.log(`[Scanner V2] Available disk space: ${availableMB}MB (required: ${CONFIG.MIN_DISK_SPACE_MB}MB)`);
+
     if (availableMB < CONFIG.MIN_DISK_SPACE_MB) {
       console.error(`[Scanner V2] Insufficient disk space: ${availableMB}MB < ${CONFIG.MIN_DISK_SPACE_MB}MB required`);
       return {
@@ -2967,23 +3072,7 @@ async function processVideoScanInner(
         error: `Insufficient disk space: ${availableMB}MB available, ${CONFIG.MIN_DISK_SPACE_MB}MB required`,
       };
     }
-    
-    const video = await storage.getVideoById(videoId);
-    if (!video) {
-      return { success: false, videoId, surfacesDetected: 0, error: "Video not found" };
-    }
-    
-    console.log(`[Scanner V2] Video: ${video.title} (${video.youtubeId})`);
-    
-    if (!forceRescan && video.status !== "Pending Scan") {
-      return {
-        success: false,
-        videoId,
-        surfacesDetected: 0,
-        error: `Video status is "${video.status}", not "Pending Scan"`,
-      };
-    }
-    
+
     // Mark "Scanning" up front — BEFORE any download/stream resolution — so the
     // library poll sees the transition immediately instead of clearing the
     // spinner while a slow source resolution is still in flight. (A later
@@ -3055,6 +3144,12 @@ async function processVideoScanInner(
       return null;
     })();
 
+    // yt-dlp probe result, shared between the stream path and the download
+    // fallback — each probe spawns yt-dlp and can take tens of seconds, so
+    // a stream attempt that probes and then fails coverage must not force
+    // the fallback to probe the same video again.
+    let ytProbedDurationSec: number | null = null;
+
     // ─── OAuth STREAM-AND-SCAN (primary path for imported videos) ───────────
     // For YouTube/IG/FB imports (no local filePath), resolve a direct CDN URL
     // via the creator's OAuth credentials and pull sample frames straight from
@@ -3068,11 +3163,18 @@ async function processVideoScanInner(
        ((platform === "instagram" || platform === "facebook") &&
         (video.youtubeId.startsWith("instagram:") || video.youtubeId.startsWith("facebook:"))));
 
+    // Creator's YouTube OAuth token — shared by the stream-URL resolve, the
+    // duration probe, and the download fallback below (Path B: authenticated
+    // requests bypass anonymous bot detection). Fetched once per scan; null
+    // for non-YouTube sources and local files.
+    const oauthToken = !videoPath && platform === "youtube" && looksLikeRealYouTubeId(video.youtubeId)
+      ? await getFreshYoutubeTokenForUser(video.userId).catch(() => null)
+      : null;
+
     if (isStreamableImport) {
       let source: StreamSource | null = null;
       try {
         if (platform === "youtube") {
-          const oauthToken = await getFreshYoutubeTokenForUser(video.userId).catch(() => null);
           source = await resolveYoutubeStreamUrl(video.youtubeId, oauthToken || undefined);
         } else {
           const user = await storage.getUserById((video as any).userId);
@@ -3097,19 +3199,61 @@ async function processVideoScanInner(
         // is persisted.
         const MAX_DURATION_SEC = 60 * 60;
         const GRID_CAP = 400;                     // hard ceiling on candidate frames
-        const eff = durationSec ? Math.min(durationSec, MAX_DURATION_SEC) : null;
+        // The DB duration is often absent for imports (and unparseable
+        // formats parse to null) — mirror the download fallback and probe
+        // yt-dlp before sizing the grid blind. Sizing blind against a
+        // too-small grid silently caps coverage at the first few minutes
+        // of a video of unknown length.
+        let streamDurationSec = durationSec;
+        if (!streamDurationSec && platform === "youtube") {
+          ytProbedDurationSec = await getYoutubeVideoDuration(video.youtubeId, oauthToken || undefined);
+          streamDurationSec = ytProbedDurationSec;
+          if (streamDurationSec) {
+            console.log(`[Scanner V2] Duration from yt-dlp probe: ${streamDurationSec}s`);
+          }
+        }
+        const eff = streamDurationSec ? Math.min(streamDurationSec, MAX_DURATION_SEC) : null;
         // Interval adapts to duration so the candidate grid spans the WHOLE
         // (capped) video without exceeding GRID_CAP: short clips get dense 2s
         // sampling; a 1hr podcast gets ~9s sampling across all 60 min. dHash
-        // dedup below then trims to the scene-diverse detection set.
-        const gridInterval = eff ? Math.max(2, Math.ceil(eff / GRID_CAP)) : 2;
-        const gridMax = eff ? Math.min(GRID_CAP, Math.ceil(eff / gridInterval)) : 150;
+        // dedup below then trims to the scene-diverse detection set. Unknown
+        // duration sizes for the full 1-hour cap (9s × 400 = 3600s) — the
+        // extractor stops at end-of-stream anyway, so short videos just
+        // finish early, while a tighter blind grid would quietly scan only
+        // the head of a long one.
+        const gridInterval = eff ? Math.max(2, Math.ceil(eff / GRID_CAP)) : 9;
+        const gridMax = eff ? Math.min(GRID_CAP, Math.ceil(eff / gridInterval)) : GRID_CAP;
 
         console.log(`[Scanner V2] Stream-and-scan: dense grid every ${gridInterval}s (up to ${gridMax} candidates spanning ${eff ? (eff/60).toFixed(1)+'min' : 'unknown dur'}) from ${platform} CDN URL (no download)`);
         fs.mkdirSync(framesDir, { recursive: true });
         const grid = await extractFramesUniformFromUrl(source, framesDir, gridInterval, gridMax);
 
-        if (grid.frames.length > 0) {
+        // COVERAGE GATE: a truncated dense pass (CDN throttle, mid-stream
+        // 403, the extractor's 8-min SIGKILL cap) returns a partial grid of
+        // head-of-video frames. Accepting it marks the video scanned with
+        // the whole back half unseen AND suppresses the download fallback
+        // below (gated on !streamedFrames) — the worst kind of failure, an
+        // invisible one. A clean ffmpeg exit means the entire input was
+        // read (or the frame cap was hit), so the grid is complete no
+        // matter how few frames it holds — a fully-streamed short Reel
+        // with no stored duration is accepted here, not bounced to the
+        // download path. Truncated (dirty-exit) grids must span ≥70% of
+        // the (capped) duration; with unknown duration, a sane frame floor.
+        const coveredSec = grid.frames.length > 0
+          ? grid.timestamps[grid.timestamps.length - 1] + gridInterval
+          : 0;
+        const acceptReason = grid.frames.length === 0
+          ? null
+          : grid.complete
+          ? "clean ffmpeg exit (entire input read)"
+          : eff !== null && coveredSec >= 0.7 * eff
+          ? `covered ${coveredSec}s of ${eff}s (≥70%)`
+          : eff === null && grid.frames.length >= 10
+          ? `${grid.frames.length} frames meet the 10-frame floor (unknown duration)`
+          : null;
+
+        if (acceptReason) {
+          console.log(`[Scanner V2] Stream-and-scan: grid accepted — ${acceptReason}; ${grid.frames.length} frames spanning ~${coveredSec}s`);
           // Detection budget: how many frames actually go to Gemini. Larger
           // than the old fixed 24 — recall matters more than cost per the
           // creator's directive that detection quality is paramount.
@@ -3122,22 +3266,49 @@ async function processVideoScanInner(
             streamedFrames = selected;
             console.log(`[Scanner V2] Stream-and-scan: ${grid.frames.length} candidates → ${selected.frames.length} diverse frames for detection — skipping download`);
           }
+        } else if (grid.frames.length > 0) {
+          console.warn(
+            `[Scanner V2] Stream-and-scan: truncated dense grid covered only ${coveredSec}s of ` +
+            (eff !== null
+              ? `${eff}s (${grid.frames.length} frames, <70%)`
+              : `unknown duration (${grid.frames.length} frames, below 10-frame floor)`) +
+            ` — treating stream attempt as FAILED`
+          );
         }
         if (!streamedFrames) {
-          console.warn(`[Scanner V2] Stream-and-scan produced 0 usable frames — falling back to download`);
+          console.warn(`[Scanner V2] Stream-and-scan produced no usable frame set — falling back to download`);
+          // Purge the whole grid (including size-floor stubs the collector
+          // excluded from its return but left on disk): the download
+          // fallback's uniform extractor globs this same dir for *.jpg,
+          // and stale grid frames would mix into its results with wrong
+          // timestamps. Must run on EVERY unaccepted stream attempt — a
+          // stub-only grid has frames.length === 0 and would otherwise
+          // skip the purge entirely.
+          try {
+            for (const f of fs.readdirSync(framesDir)) {
+              if (f.startsWith("grid_") && f.endsWith(".jpg")) safeUnlink(path.join(framesDir, f));
+            }
+          } catch { /* best-effort cleanup */ }
         }
       }
     }
+
+    // Heartbeat: the stuck-scan sweep ages rows by updated_at, and the
+    // resolve/probe/stream phases above plus the download fallbacks below
+    // can legitimately run for tens of minutes with zero row writes.
+    // Refresh updated_at at each long-phase boundary via the CAS — status
+    // stays "Scanning", so a cancel that already flipped it is never
+    // clobbered and the write is a no-op.
+    await storage.updateVideoStatusIfScanning(videoId, "Scanning").catch(() => {});
 
     if (!videoPath && !streamedFrames && (video as any).platform === "youtube" && looksLikeRealYouTubeId(video.youtubeId)) {
       console.log(`[Scanner V2] No filePath; attempting YouTube download for ${video.youtubeId}`);
       fs.mkdirSync(tempDir, { recursive: true });
       const downloadPath = path.join(tempDir, `${video.youtubeId}.mp4`);
 
-      // Path B (OAuth): pass the creator's stored YouTube token so anonymous
-      // bot detection doesn't block long downloads. Falls back to anonymous
-      // if no token is available.
-      const oauthToken = await getFreshYoutubeTokenForUser(video.userId).catch(() => null);
+      // Path B (OAuth): the hoisted oauthToken above rides along on every
+      // request here so anonymous bot detection doesn't block long
+      // downloads. Falls back to anonymous if no token is available.
 
       // Plan adaptive sampling — duration-banded, NOT a fixed frame target.
       // Fixed-target was wrong: 75 frames on a 30-min video = every 24s,
@@ -3147,7 +3318,7 @@ async function processVideoScanInner(
       // content. Hard cap at 1 hour — anything longer scans only the
       // first hour (creator-confirmed: nothing >1hr in scope).
       const MAX_DURATION_SEC = 60 * 60; // 1 hour
-      let probedDuration = durationSec;
+      let probedDuration = durationSec ?? ytProbedDurationSec;
       if (!probedDuration) {
         probedDuration = await getYoutubeVideoDuration(video.youtubeId, oauthToken || undefined);
         if (probedDuration) {
@@ -3184,6 +3355,19 @@ async function processVideoScanInner(
       const plannedRange = scanPlan.intervalSeconds * scanPlan.maxFrames + 30;
       const cappedDuration = probedDuration ? Math.min(probedDuration, MAX_DURATION_SEC) : null;
       const trimSec = cappedDuration ? Math.min(cappedDuration, plannedRange) : plannedRange;
+
+      // Re-check disk right before committing to the pull — the scan
+      // preflight ran before the trim size was known, the stream attempt
+      // above may have written hundreds of frames since, and /tmp is shared
+      // with sourceCache, uploads, and the yt-dlp binary. Throwing (instead
+      // of letting yt-dlp ENOSPC mid-file) skips the whole retry ladder,
+      // whose later rungs drop the trim and pull strictly MORE bytes at
+      // the same full disk. ~0.4 MB/s covers ≤720p plus merge headroom.
+      const dlRequiredMB = Math.max(CONFIG.MIN_DISK_SPACE_MB, Math.ceil(trimSec * 0.4));
+      const dlAvailableMB = await getAvailableDiskSpaceMB();
+      if (dlAvailableMB < dlRequiredMB) {
+        throw new Error(`Insufficient disk space for source download: ${dlAvailableMB}MB available, ~${dlRequiredMB}MB needed for a ${trimSec}s pull`);
+      }
 
       const ok = await downloadYouTubeVideo(video.youtubeId, downloadPath, {
         trimToSeconds: trimSec,
@@ -3250,7 +3434,7 @@ async function processVideoScanInner(
           : platform === "youtube"
           ? "Scan Failed — Source Unavailable"
           : "Pending Upload";
-      await storage.updateVideoStatus(videoId, failStatus);
+      await updateStatusIfStillScanning(videoId, failStatus);
       return {
         success: false,
         videoId,
@@ -3344,11 +3528,16 @@ async function processVideoScanInner(
     }
 
     if (frames.length === 0) {
-      await storage.updateVideoStatus(videoId, "Scan Failed");
+      await updateStatusIfStillScanning(videoId, "Scan Failed");
       return { success: false, videoId, surfacesDetected: 0, error: "No frames extracted" };
     }
 
     console.log(`[Scanner V2] Using ${frames.length} frames (${usedSceneFirst ? "scene-first" : "uniform"})`);
+
+    // Heartbeat: frame extraction (stream or download+extract) may have
+    // eaten most of the sweep threshold — mark the row fresh before the
+    // per-frame detection loop starts.
+    await storage.updateVideoStatusIfScanning(videoId, "Scanning").catch(() => {});
 
     const { isVertical } = await getFrameMetadata(frames[0]);
     console.log(`[Scanner V2] Video orientation: ${isVertical ? "VERTICAL (9:16)" : "HORIZONTAL (16:9)"}`);
@@ -3464,6 +3653,24 @@ async function processVideoScanInner(
       // pass re-reads the best frame per scene. The outer finally removes
       // the whole tempDir. (~36 frames ≈ a few MB.)
     }
+
+    // Cooperative cancellation, part 2: the in-loop check above only fires
+    // every 3rd frame and only while frames remain, but Phases B-D below
+    // (consensus, model verification with 429 backoff, insertion,
+    // enrichment) can grind for minutes on their own. Honor a cancel that
+    // landed near the loop's end before committing to that work.
+    try {
+      const fresh = await storage.getVideoById(videoId);
+      if (fresh && fresh.status !== "Scanning") {
+        console.log(`[Scanner V2] Scan cancelled for video ${videoId} (status now "${fresh.status}") — aborting before consensus/verification`);
+        return { success: false, videoId, surfacesDetected: 0, error: "Scan cancelled" };
+      }
+    } catch { /* status check is best-effort */ }
+
+    // Heartbeat: consensus + model verification (with 429 backoff) can
+    // grind for minutes more — refresh updated_at so the sweep doesn't
+    // mistake a live verification phase for a stuck scan.
+    await storage.updateVideoStatusIfScanning(videoId, "Scanning").catch(() => {});
 
     // Local fallback without a sceneIndex: segment frames by dHash jumps so
     // consensus groups approximate scenes instead of collapsing the whole
@@ -3802,24 +4009,39 @@ async function processVideoScanInner(
       console.warn(`[Scanner V2] 0 surfaces found despite Gemini being available. The video may not contain clear flat surfaces, or ghost filters may be too aggressive.`);
     }
 
-    // Replace prior surfaces ONLY now — scan succeeded. If totalSurfaces > 0,
-    // delete the snapshotted prior IDs so the new surfaces stand alone. If
-    // totalSurfaces == 0, KEEP the prior data — a re-scan that finds nothing
-    // shouldn't wipe creator's earlier good results.
-    if (totalSurfaces > 0 && priorSurfaceIds.length > 0) {
-      try {
-        for (const id of priorSurfaceIds) {
-          await storage.updateDetectedSurface(id, { surfaceType: "Filtered", sceneContext: "Replaced by re-scan" });
-        }
-        console.log(`[Scanner V2] Marked ${priorSurfaceIds.length} prior surfaces as Filtered (replaced by ${totalSurfaces} new surfaces)`);
-      } catch (err: any) {
-        console.warn(`[Scanner V2] Failed to filter prior surfaces:`, err?.message || err);
-      }
-    } else if (totalSurfaces === 0 && priorSurfaceIds.length > 0) {
-      console.log(`[Scanner V2] Re-scan found 0 surfaces — keeping ${priorSurfaceIds.length} prior surfaces intact (re-scan didn't find replacements)`);
-    }
+    // Cancel compare-and-set: the cancel-scan route flips status away from
+    // "Scanning" and returns success immediately, while this function may
+    // still be minutes deep in post-processing. If the status changed under
+    // us, the creator cancelled — leave their prior surfaces untouched and
+    // do NOT stamp a terminal status over the cancel.
+    let cancelledMidScan = false;
+    try {
+      const freshAtFinalize = await storage.getVideoById(videoId);
+      cancelledMidScan = !!freshAtFinalize && freshAtFinalize.status !== "Scanning";
+    } catch { /* best-effort — the guarded write below re-checks */ }
 
-    await storage.updateVideoStatus(videoId, finalStatus);
+    if (cancelledMidScan) {
+      console.log(`[Scanner V2] Video ${videoId}: status changed during post-processing (cancelled) — keeping prior surfaces, skipping terminal status write`);
+    } else {
+      // Replace prior surfaces ONLY now — scan succeeded. If totalSurfaces > 0,
+      // delete the snapshotted prior IDs so the new surfaces stand alone. If
+      // totalSurfaces == 0, KEEP the prior data — a re-scan that finds nothing
+      // shouldn't wipe creator's earlier good results.
+      if (totalSurfaces > 0 && priorSurfaceIds.length > 0) {
+        try {
+          for (const id of priorSurfaceIds) {
+            await storage.updateDetectedSurface(id, { surfaceType: "Filtered", sceneContext: "Replaced by re-scan" });
+          }
+          console.log(`[Scanner V2] Marked ${priorSurfaceIds.length} prior surfaces as Filtered (replaced by ${totalSurfaces} new surfaces)`);
+        } catch (err: any) {
+          console.warn(`[Scanner V2] Failed to filter prior surfaces:`, err?.message || err);
+        }
+      } else if (totalSurfaces === 0 && priorSurfaceIds.length > 0) {
+        console.log(`[Scanner V2] Re-scan found 0 surfaces — keeping ${priorSurfaceIds.length} prior surfaces intact (re-scan didn't find replacements)`);
+      }
+
+      await updateStatusIfStillScanning(videoId, finalStatus);
+    }
 
     console.log(`[Scanner V2] ========== SCAN COMPLETE ==========`);
     console.log(`[Scanner V2] Video ID: ${videoId}, Surfaces: ${totalSurfaces}, Gemini: ${geminiKeyPresent ? 'YES' : 'NO'}`);
@@ -3833,7 +4055,14 @@ async function processVideoScanInner(
     try {
       const editorialState = (video as any).editorialStatus;
       const editorialFresh = !editorialState || editorialState === "pending";
-      if (video.filePath && editorialFresh) {
+      // Gate mirrors runEditorialAutoPipeline's own precondition (filePath
+      // OR youtubeId): light-cloud imports have no filePath and the
+      // pipeline resolves their source via the shared cache itself, so
+      // requiring a local file here would silently exclude exactly the
+      // platform-import videos the light-cloud model is built around.
+      if (cancelledMidScan) {
+        console.log(`[Scanner V2] Video ${videoId}: scan cancelled — skipping editorial auto-trigger`);
+      } else if ((video.filePath || video.youtubeId) && editorialFresh) {
         console.log(`[Scanner V2] Auto-triggering editorial pipeline for video ${videoId}...`);
         // Dynamic imports to avoid circular dependency with the remix module
         const { runEditorialAutoPipeline } = await import("./lib/remix/editorialAutoPipeline");
@@ -3848,8 +4077,8 @@ async function processVideoScanInner(
             }
           })
           .catch((err) => console.warn(`[Scanner V2] Editorial auto-pipeline error for ${videoId} (non-fatal):`, err?.message || err));
-      } else if (!video.filePath) {
-        console.log(`[Scanner V2] No file path for video ${videoId}, skipping editorial auto-pipeline`);
+      } else if (!video.filePath && !video.youtubeId) {
+        console.log(`[Scanner V2] No source for video ${videoId} (no file path and no platform id), skipping editorial auto-pipeline`);
       } else {
         // ready/failed/analyzing states never auto-rerun on rescans — a
         // failed pipeline would otherwise burn a full Claude+Whisper+render
@@ -3892,12 +4121,18 @@ async function processVideoScanInner(
     }
 
     try {
-      // If we had prior surfaces, status reverts to whatever Ready tier matches
-      // their count — otherwise mark Scan Failed.
-      if (priorSurfaceIds.length > 0) {
-        await storage.updateVideoStatus(videoId, `Ready (${priorSurfaceIds.length} Spots)`);
+      // If we had prior ACTIVE surfaces, status reverts to whatever Ready
+      // tier matches their count — otherwise mark Scan Failed. Must be the
+      // active count, not the raw snapshot length: the snapshot includes
+      // every soft-deleted Filtered/"Potential Surface" row from prior
+      // rescans, and a failed rescan advertising "Ready (134 Spots)" over
+      // 4 real surfaces is fiction the library count would contradict.
+      // Guarded write: a cancel followed by a late throw must not be
+      // un-cancelled by this revert — only write while still "Scanning".
+      if (priorActiveCount > 0) {
+        await updateStatusIfStillScanning(videoId, `Ready (${priorActiveCount} Spots)`);
       } else {
-        await storage.updateVideoStatus(videoId, "Scan Failed");
+        await updateStatusIfStillScanning(videoId, "Scan Failed");
       }
     } catch {
       // Ignore DB errors during error handling
@@ -3929,19 +4164,23 @@ async function processVideoScanInner(
  * @param endTime - Clip end time in seconds
  * @param surfaceIds - Which surfaces to track (only create keyframes for matching surfaces)
  * @param intervalSeconds - Frame interval (default 0.5s)
+ * @param sourcePath - Optional local source file to use directly. The remix
+ *   pipeline already holds a resolved+pinned copy of the source when it calls
+ *   this — passing it skips a redundant cache resolve.
  */
 export async function denseScanRange(
   videoId: number,
   startTime: number,
   endTime: number,
   surfaceIds: number[],
-  intervalSeconds: number = 0.5
+  intervalSeconds: number = 0.5,
+  sourcePath?: string
 ): Promise<{ keyframesCreated: number }> {
   console.log(`[DenseScan] Starting dense scan for video ${videoId}: ${startTime.toFixed(1)}s-${endTime.toFixed(1)}s @ ${intervalSeconds}s intervals`);
 
   const video = await storage.getVideoById(videoId);
-  if (!video || !(video as any).filePath) {
-    console.error(`[DenseScan] Video not found or no file path`);
+  if (!video || (!sourcePath && !(video as any).filePath && !video.youtubeId)) {
+    console.error(`[DenseScan] Video not found or no source (no file path or platform id)`);
     return { keyframesCreated: 0 };
   }
 
@@ -3951,13 +4190,29 @@ export async function denseScanRange(
 
   let videoPath: string | undefined;
   try {
-    // Resolve video path (Object Storage or local)
+    // Resolve video path: caller-supplied local file, Object Storage, local
+    // filePath, or — for light-cloud imports (YouTube/IG/FB) with no
+    // filePath at all — the shared source cache. Hard-requiring filePath
+    // here starved every light-cloud clip of dense motion-tracking
+    // keyframes: placements rendered static/jittery across camera motion
+    // while the identical flow on an uploaded video looked polished. The
+    // cache resolve is a hard-link cache hit when the remix pipeline
+    // already pulled this source; pinning into tempDir keeps the cache
+    // sweeper from unlinking it mid-scan, and the finally below releases
+    // the pin with the rest of tempDir.
     const filePath = (video as any).filePath;
-    if (filePath.startsWith("/storage/")) {
+    if (sourcePath) {
+      videoPath = sourcePath;
+    } else if (filePath?.startsWith("/storage/")) {
       const objectKey = filePath.replace(/^\/storage\//, "public/");
       videoPath = await downloadToTempFile(objectKey, tempDir);
-    } else {
+    } else if (filePath) {
       videoPath = path.resolve(process.cwd(), filePath);
+    } else {
+      // Dynamic import mirrors the remix pipeline's own usage and avoids a
+      // module cycle (sourceCache → lib/scanner ← this file).
+      const { getPinnedSourcePath } = await import("./lib/sourceCache");
+      videoPath = await getPinnedSourcePath(video as any, path.join(tempDir, "source-pin"));
     }
 
     if (!videoPath || !fs.existsSync(videoPath)) {
