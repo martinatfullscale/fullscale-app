@@ -249,13 +249,19 @@ function getVideoStatusInfo(video: IndexedVideo): { status: string; statusColor:
     };
   }
   
-  if (dbStatus === "indexed" || dbStatus === "scan failed" || dbStatus === "ready (0 spots)") {
+  // Whole scan-failure family (— Cancelled / — Interrupted / — Source
+  // Unavailable / — Reconnect …) maps to a retryable state so the creator
+  // can rescan instead of the row falling through to "Pending Scan".
+  if (dbStatus === "indexed" || dbStatus.startsWith("scan failed") || dbStatus === "ready (0 spots)") {
+    const failDetail = dbStatus.startsWith("scan failed —") || dbStatus.startsWith("scan failed -")
+      ? (video as any).status.split(/—|-/).slice(1).join("-").trim()
+      : "";
     return {
-      status: "No Surfaces - Retry",
+      status: failDetail ? `Scan Failed — Retry` : "No Surfaces - Retry",
       statusColor: "bg-amber-500/20 text-amber-400",
       statusDot: "bg-amber-500",
       aiStatus: "retry",
-      aiText: "0 Found - Retry"
+      aiText: failDetail || "0 Found - Retry"
     };
   }
   
@@ -1045,6 +1051,25 @@ export default function Library() {
     },
   });
 
+  // Escape hatch for stuck scans: flips "Scanning" to a failed state the
+  // creator can rescan from. A live scan aborts within a few frames; a dead
+  // one is simply released.
+  const cancelScanMutation = useMutation({
+    mutationFn: async (videoId: number) => {
+      const res = await fetch(`/api/videos/${videoId}/cancel-scan`, { method: "POST", credentials: "include" });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || "Cancel failed");
+      return res.json();
+    },
+    onSuccess: (_data, videoId) => {
+      setScanningVideoIds(prev => { const s = new Set(prev); s.delete(videoId); return s; });
+      toast({ title: "Scan cancelled", description: "The video is released — rescan whenever you like." });
+      queryClient.invalidateQueries({ queryKey: ["videos"] });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Couldn't cancel scan", description: error.message, variant: "destructive" });
+    },
+  });
+
   // Video Surface Scan for local files (uses scanner_v2 with Sharp edge detection)
   const tfScanMutation = useMutation({
     mutationFn: async (videoId: number) => {
@@ -1556,6 +1581,27 @@ export default function Library() {
                                 Scan Surfaces
                               </>
                             )}
+                          </Button>
+                        </div>
+                      )}
+                      {/* Cancel scan — escape hatch when a scan is running or stuck.
+                          Rendered for ALL platforms (stuck YouTube scans need it too). */}
+                      {(video.aiStatus === "scanning" || scanningVideoIds.has(video.id)) && (
+                        <div
+                          className="absolute bottom-2 right-2 z-20"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (video.id) cancelScanMutation.mutate(video.id);
+                          }}
+                        >
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="gap-1 h-7 px-2 border-red-500/40 text-red-300 hover:bg-red-500/10 bg-black/40 backdrop-blur-sm"
+                            data-testid={`button-cancel-scan-${video.id}`}
+                            disabled={cancelScanMutation.isPending}
+                          >
+                            <X className="w-3 h-3" /> Cancel scan
                           </Button>
                         </div>
                       )}

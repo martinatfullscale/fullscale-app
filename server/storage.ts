@@ -2392,6 +2392,24 @@ export class DatabaseStorage implements IStorage {
     return result.length > 0;
   }
 
+  /**
+   * Boot sweep: any video stuck in "Scanning" longer than the threshold is
+   * an orphan (scans hard-cap around 10 minutes; a crashed/redeployed
+   * process can never finish one). Flip to an honest failed state so the
+   * creator can rescan instead of staring at a frozen spinner forever.
+   */
+  async failStuckScans(staleMinutes: number = 30): Promise<number> {
+    const res: any = await db.execute(sql`
+      UPDATE video_index
+      SET status = 'Scan Failed — Interrupted', updated_at = NOW()
+      WHERE status = 'Scanning'
+        AND updated_at < NOW() - (${staleMinutes} * INTERVAL '1 minute')
+    `);
+    const count = Number(res?.rowCount ?? 0);
+    if (count > 0) console.log(`[Startup] failStuckScans: released ${count} stuck scan(s)`);
+    return count;
+  }
+
   async normalizeLegacyIdentityKeys(): Promise<Record<string, number>> {
     // Dual-ID root migration, applied as an idempotent boot sweep: rewrite
     // email-keyed identity columns to users.id wherever a users row exists.

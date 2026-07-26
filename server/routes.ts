@@ -468,6 +468,14 @@ export async function registerRoutes(
     .cancelOrphanedLegacySchedules()
     .then((n) => { if (n > 0) console.log(`[Startup] Cancelled ${n} orphaned legacy schedule(s) (pre-identity-fix userId=1)`); })
     .catch((err) => console.error("[Startup] cancelOrphanedLegacySchedules error:", err?.message || err));
+  // Release videos stuck in "Scanning" by a crashed/redeployed process.
+  // Deferred like the stitch sweep so an old process actively scanning
+  // through the deploy overlap isn't falsely failed.
+  setTimeout(() => {
+    storage
+      .failStuckScans(30)
+      .catch((err) => console.error("[Startup] failStuckScans error:", err?.message || err));
+  }, 5 * 60 * 1000);
   
   // Import session setup separately - this MUST succeed for OAuth to work
   const { getSession } = await import("./replit_integrations/auth/replitAuth");
@@ -8641,6 +8649,31 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("[API] /api/brand/placements/:id/approve error:", err.message);
       res.status(500).json({ error: err.message || "Failed to approve placement" });
+    }
+  });
+
+  // POST /api/videos/:videoId/cancel-scan — escape hatch for stuck scans.
+  // Flips "Scanning" to an honest failed state; a live scan notices the
+  // status change within a few frames (cooperative abort in scanner_v2)
+  // and stops; a dead one is simply released so the creator can rescan.
+  app.post("/api/videos/:videoId/cancel-scan", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+      if (!(await isSameCreator(String(video.userId), req.authUserId)) && !req.isAdmin) {
+        return res.status(403).json({ error: "Not your video" });
+      }
+      if (video.status !== "Scanning") {
+        return res.status(409).json({ error: `Video is not scanning (status: ${video.status})` });
+      }
+      await storage.updateVideoStatus(videoId, "Scan Failed — Cancelled");
+      console.log(`[API] Scan cancelled for video ${videoId} by ${req.authUserId}`);
+      res.json({ success: true, status: "Scan Failed — Cancelled" });
+    } catch (err: any) {
+      console.error("[API] cancel-scan error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to cancel scan" });
     }
   });
 

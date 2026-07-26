@@ -3389,6 +3389,21 @@ async function processVideoScanInner(
       const timestamp = frameTimestamps[i] ?? i * scanPlan.intervalSeconds;
       const tsKey = Math.round(timestamp);
 
+      // Cooperative cancellation: the cancel-scan route flips status away
+      // from "Scanning"; honor it within a few frames instead of grinding
+      // through the whole Gemini budget. Checked every 3rd frame to keep
+      // the DB chatter negligible.
+      if (i % 3 === 0) {
+        try {
+          const fresh = await storage.getVideoById(videoId);
+          if (fresh && fresh.status !== "Scanning") {
+            console.log(`[Scanner V2] Scan cancelled for video ${videoId} (status now "${fresh.status}") — aborting at frame ${i + 1}/${frames.length}`);
+            // temp dirs are cleaned by this function's finally block
+            return { success: false, videoId, surfacesDetected: 0, error: "Scan cancelled" };
+          }
+        } catch { /* status check is best-effort */ }
+      }
+
       console.log(`[Scanner V2] Processing frame ${i + 1}/${frames.length} (${timestamp.toFixed(2)}s)...`);
 
       // Save ALL valid frames to permanent directory for thumbnail strip
@@ -3408,8 +3423,9 @@ async function processVideoScanInner(
       // Use Gemini AI or edge detection based on config
       // Falls back to edge detection if Gemini API key is missing
       const useGemini = CONFIG.DETECTION_METHOD === 'gemini'
-        && process.env.AI_INTEGRATIONS_GEMINI_API_KEY
-        && process.env.AI_INTEGRATIONS_GEMINI_API_KEY !== 'dummy-key';
+        && ((process.env.AI_INTEGRATIONS_GEMINI_API_KEY
+              && process.env.AI_INTEGRATIONS_GEMINI_API_KEY !== 'dummy-key')
+            || !!aiDirect);
 
       let analysis: FrameAnalysisResult;
       if (useGemini) {
