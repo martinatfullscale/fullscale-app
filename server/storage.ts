@@ -154,8 +154,9 @@ export interface IStorage {
   updateVideoThumbnail(videoId: number, thumbnailUrl: string): Promise<void>;
   updateVideoIndex(videoId: number, updates: Partial<InsertVideoIndex>): Promise<void>;
   updateVideoMetadata(videoId: number, metadata: { sentiment?: string; culturalContext?: string }): Promise<void>;
+  getSceneInventory(videoId: number): Promise<unknown>;
   insertDetectedSurface(surface: InsertDetectedSurface): Promise<DetectedSurface>;
-  updateDetectedSurface(surfaceId: number, updates: { surfaceType?: string; sceneContext?: string; surroundings?: string[]; boundingBoxX?: string; boundingBoxY?: string; boundingBoxWidth?: string; boundingBoxHeight?: string }): Promise<void>;
+  updateDetectedSurface(surfaceId: number, updates: { surfaceType?: string; sceneContext?: string; surroundings?: string[]; boundingBoxX?: string; boundingBoxY?: string; boundingBoxWidth?: string; boundingBoxHeight?: string; surfaceGroupId?: string }): Promise<void>;
   getDetectedSurfaces(videoId: number): Promise<DetectedSurface[]>;
   getSurfaceCountByVideo(videoId: number): Promise<number>;
   getSurfaceCountsForVideos(videoIds: number[]): Promise<Map<number, number>>;
@@ -1063,6 +1064,18 @@ export class DatabaseStorage implements IStorage {
       .where(eq(videoIndex.id, videoId));
   }
 
+  // Fetch just the scene-block inventory without dragging the full video row
+  // (sceneIndex + sceneBoundaries blobs) across the wire. Null for videos
+  // scanned before surface grouping shipped, or not yet scanned at all —
+  // callers must fall back to the flat surface list in that case.
+  async getSceneInventory(videoId: number): Promise<unknown> {
+    const [row] = await db
+      .select({ sceneInventory: videoIndex.sceneInventory })
+      .from(videoIndex)
+      .where(eq(videoIndex.id, videoId));
+    return row?.sceneInventory ?? null;
+  }
+
   async insertDetectedSurface(surface: InsertDetectedSurface): Promise<DetectedSurface> {
     const [result] = await db
       .insert(detectedSurfaces)
@@ -1079,6 +1092,7 @@ export class DatabaseStorage implements IStorage {
     boundingBoxY?: string;
     boundingBoxWidth?: string;
     boundingBoxHeight?: string;
+    surfaceGroupId?: string;
   }): Promise<void> {
     await db
       .update(detectedSurfaces)
@@ -1104,17 +1118,23 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getSurfaceCountsForVideos(videoIds: number[]): Promise<Map<number, number>> {
-    // Batched form of getSurfaceCountByVideo (same Filtered exclusion): ONE
-    // GROUP BY instead of a query per video. The per-video version called in a
-    // loop over ~80 videos exhausted the 10-connection pool whenever a render
-    // had the CPU — observed in prod as "timeout exceeded when trying to
-    // connect" unhandled rejections and 17s library responses.
+    // Batched form of getSurfaceCountByVideo (same Filtered exclusion, same
+    // group-distinct semantics): ONE GROUP BY instead of a query per video.
+    // The per-video version called in a loop over ~80 videos exhausted the
+    // 10-connection pool whenever a render had the CPU — observed in prod as
+    // "timeout exceeded when trying to connect" unhandled rejections and 17s
+    // library responses.
     const counts = new Map<number, number>();
     if (videoIds.length === 0) return counts;
     const rows = await db
       .select({
         videoId: detectedSurfaces.videoId,
-        count: sql<number>`count(*)::int`,
+        // Count canonical surfaces, not per-frame rows — the scanner writes
+        // one row per supporting frame, so count(*) reports "12 Spots" for
+        // one desk seen in 12 frames. Rows from before grouping shipped have
+        // null surface_group_id; fall back to a (type, scene) composite so
+        // legacy scans keep a sane count instead of the inflated row count.
+        count: sql<number>`count(DISTINCT COALESCE(${detectedSurfaces.surfaceGroupId}, ${detectedSurfaces.surfaceType} || ':' || COALESCE(${detectedSurfaces.sceneId}, 0)::text))::int`,
       })
       .from(detectedSurfaces)
       .where(
@@ -1136,8 +1156,14 @@ export class DatabaseStorage implements IStorage {
     // 12 → 56 even though only 4 are actually active. User feedback:
     // "I think that each time I'm running a scan - it's just aggregating
     // the surfaces found".
-    const surfaces = await db
-      .select()
+    // Counts DISTINCT canonical surfaces (surface_group_id), not rows — the
+    // scanner writes one row per supporting frame, so a raw row count turns
+    // one desk seen in 12 frames into "12 Spots". Legacy rows predate group
+    // ids (null) and fall back to a (type, scene) composite.
+    const [row] = await db
+      .select({
+        count: sql<number>`count(DISTINCT COALESCE(${detectedSurfaces.surfaceGroupId}, ${detectedSurfaces.surfaceType} || ':' || COALESCE(${detectedSurfaces.sceneId}, 0)::text))::int`,
+      })
       .from(detectedSurfaces)
       .where(
         and(
@@ -1145,11 +1171,21 @@ export class DatabaseStorage implements IStorage {
           ne(detectedSurfaces.surfaceType, "Filtered"),
         ),
       );
-    return surfaces.length;
+    return Number(row?.count ?? 0);
   }
 
   async clearDetectedSurfaces(videoId: number): Promise<void> {
     await db.delete(detectedSurfaces).where(eq(detectedSurfaces.videoId, videoId));
+  }
+
+  // Non-Filtered surfaces for a video. "Filtered" rows are the scanner's
+  // soft-deletes (rescan snapshot/swap, temporal-grouping losers) — they must
+  // never appear in brand-facing surface lists or counts. Same exclusion the
+  // count methods apply; without it the library said "4 Spots" while the
+  // marketplace listed 56.
+  private async getActiveSurfaces(videoId: number): Promise<DetectedSurface[]> {
+    const surfaces = await this.getDetectedSurfaces(videoId);
+    return surfaces.filter((s) => s.surfaceType !== "Filtered");
   }
 
   async getVideosWithOpportunities(userId: string): Promise<VideoWithOpportunities[]> {
@@ -1165,7 +1201,7 @@ export class DatabaseStorage implements IStorage {
     const results: VideoWithOpportunities[] = [];
     
     for (const video of videos) {
-      const surfaces = await this.getDetectedSurfaces(video.id);
+      const surfaces = await this.getActiveSurfaces(video.id);
       if (surfaces.length > 0) {
         const contexts = this.deriveContexts(surfaces);
         results.push({
@@ -1189,7 +1225,7 @@ export class DatabaseStorage implements IStorage {
     const results: VideoWithOpportunities[] = [];
     
     for (const video of videos) {
-      const surfaces = await this.getDetectedSurfaces(video.id);
+      const surfaces = await this.getActiveSurfaces(video.id);
       if (surfaces.length > 0) {
         const contexts = this.deriveContexts(surfaces);
         results.push({
@@ -1227,7 +1263,7 @@ export class DatabaseStorage implements IStorage {
     const results: VideoWithOpportunities[] = [];
 
     for (const video of videos) {
-      const surfaces = await this.getDetectedSurfaces(video.id);
+      const surfaces = await this.getActiveSurfaces(video.id);
       // Only include videos that actually have surfaces
       if (surfaces.length === 0) continue;
       const contexts = this.deriveContexts(surfaces);
@@ -1263,7 +1299,7 @@ export class DatabaseStorage implements IStorage {
     const results: any[] = [];
     
     for (const video of videos) {
-      const surfaces = await this.getDetectedSurfaces(video.id);
+      const surfaces = await this.getActiveSurfaces(video.id);
       if (surfaces.length > 0) {
         results.push({
           ...video,

@@ -216,6 +216,24 @@ export const videoIndex = pgTable("video_index", {
   //   { shots: [{shotIdx, sceneId, tStart, tEnd, hash}], sceneCount, cuts }
   // Computed by sceneIndex.ts after sceneBoundaries; null until scan.
   sceneIndex: jsonb("scene_index"),
+  // Scene-block inventory — the rolled-up "what's in this episode" view built
+  // at scan finalize. Where sceneIndex maps every shot to its recurring scene
+  // class, this aggregates those classes into the sellable model: each scene
+  // lists its canonical physical surfaces ONCE, with occurrence counts and
+  // total screen time, instead of per-frame detection rows. Format:
+  //   { version: 1, source: "sceneIndex" | "grid",
+  //     scenes: [{ sceneId, label,            // "Scene A" by descending totalSec
+  //                occurrences, totalSec,     // shot count / Σ shot durations
+  //                surfaces: [{ groupId, surfaceType,
+  //                             bbox: {x,y,w,h},          // median, 0-1
+  //                             confidence, screenTimeSec, // = scene totalSec
+  //                             rowCount, representativeRowId,
+  //                             frameUrl }] }],
+  //     generatedAt }
+  // source="grid" marks streamed scans where the scene index was synthesized
+  // from dense-grid frame hashes rather than shot-midpoint keyframes. Null
+  // until a scan with surface grouping runs — consumers must handle null.
+  sceneInventory: jsonb("scene_inventory"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
@@ -259,6 +277,15 @@ export const detectedSurfaces = pgTable("detected_surfaces", {
   // on the coffee table at :08, it shows up at :46 too. Null for surfaces
   // detected before scene clustering shipped.
   sceneId: integer("scene_id"),
+  // Canonical physical-surface identity. The scanner writes one row per
+  // supporting frame of a consensus surface, so "the host's desk" spans many
+  // rows — every member row shares this id so downstream can group, count,
+  // and sell the desk as ONE surface instead of N frames. Format:
+  // "g{videoId}-{sceneKey}-{seq}" (e.g. "g91067-2-1"), stamped at insert and
+  // preserved through post-processing merges. Null for rows written before
+  // grouping shipped — consumers must fall back to a (surfaceType, sceneId)
+  // composite when null, never treat raw rows as distinct surfaces.
+  surfaceGroupId: text("surface_group_id"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

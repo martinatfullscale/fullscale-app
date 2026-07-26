@@ -54,6 +54,47 @@ interface DetectedSurface {
   boundingBoxY: string;
   boundingBoxWidth: string;
   boundingBoxHeight: string;
+  /** Canonical-surface identity stamped at scan time — every detection row
+      of the same physical surface shares one id. Null on legacy rows. */
+  surfaceGroupId?: string | null;
+}
+
+// Scene-block inventory from the video surfaces endpoint: recurring scene
+// classes with their canonical physical surfaces, occurrence counts and
+// screen time. Lets the brand pick "the desk in the wide shot" once instead
+// of choosing between 12 near-identical per-frame rows. Null for videos
+// scanned before the inventory existed and for clip-scoped fetches — the
+// picker falls back to the flat per-row list.
+interface SceneInventorySurface {
+  groupId: string;
+  surfaceType: string;
+  confidence: number;
+  screenTimeSec: number;
+  rowCount: number;
+  representativeRowId: number;
+  frameUrl: string | null;
+}
+
+interface SceneInventoryScene {
+  sceneId: number;
+  label: string;
+  occurrences: number;
+  totalSec: number;
+  surfaces: SceneInventorySurface[];
+}
+
+interface SceneInventory {
+  version: number;
+  source: "sceneIndex" | "grid";
+  scenes: SceneInventoryScene[];
+  generatedAt: string;
+}
+
+// Screen-time label for canonical-surface rows: "23.4 min" above a minute,
+// plain seconds below it.
+function formatScreenTime(totalSec: number): string {
+  if (!Number.isFinite(totalSec) || totalSec <= 0) return "0s";
+  return totalSec >= 60 ? `${(totalSec / 60).toFixed(1)} min` : `${Math.round(totalSec)}s`;
 }
 
 interface ActivePlacement {
@@ -108,11 +149,17 @@ export function BrandPlacementRequestModal({
     return productsData.products ?? [];
   }, [productsData]);
 
-  // Surfaces — clip-scoped if editorialClipId provided, else all surfaces in the video
+  // Surfaces — clip-scoped if editorialClipId provided, else all surfaces in
+  // the video. Video mode uses /api/video/:id/surfaces (singular — the plural
+  // path was never a registered route, so this branch used to 404 into the
+  // empty state); unauthenticated/brand requests get approved-only rows there,
+  // and the response carries the scene inventory when the scan produced one.
   const surfacesEndpoint = editorialClipId
     ? `/api/editorial-clips/${editorialClipId}/surfaces`
-    : `/api/videos/${videoId}/surfaces`;
-  const { data: surfacesData, isLoading: surfacesLoading } = useQuery<{ surfaces?: DetectedSurface[] } | DetectedSurface[]>({
+    : `/api/video/${videoId}/surfaces`;
+  const { data: surfacesData, isLoading: surfacesLoading } = useQuery<
+    { surfaces?: DetectedSurface[]; sceneInventory?: SceneInventory | null } | DetectedSurface[]
+  >({
     queryKey: [surfacesEndpoint],
     enabled: open && (editorialClipId !== undefined || videoId !== undefined),
   });
@@ -121,6 +168,67 @@ export function BrandPlacementRequestModal({
     if (Array.isArray(surfacesData)) return surfacesData;
     return surfacesData.surfaces ?? [];
   }, [surfacesData]);
+  const sceneInventory: SceneInventory | null = useMemo(() => {
+    if (!surfacesData || Array.isArray(surfacesData)) return null;
+    return surfacesData.sceneInventory ?? null;
+  }, [surfacesData]);
+
+  // Canonical-surface picker entries: one selectable row per physical
+  // surface, each backed by a representative detection row so the placement
+  // API keeps receiving plain surface ids. The canonical representative may
+  // be hidden from brands (its specific row not creator-approved yet) — the
+  // group's best visible member stands in so the surface stays requestable.
+  // Rows the inventory doesn't cover (legacy scans, groups with no visible
+  // rows left) surface below the groups as a flat tail.
+  const surfaceGroups = useMemo(() => {
+    const scenes = sceneInventory?.scenes ?? [];
+    if (scenes.length === 0 || surfaces.length === 0) return null;
+    const rowById = new Map(surfaces.map((s) => [s.id, s]));
+    const rowsByGroup = new Map<string, DetectedSurface[]>();
+    for (const s of surfaces) {
+      if (!s.surfaceGroupId) continue;
+      const list = rowsByGroup.get(s.surfaceGroupId);
+      if (list) list.push(s);
+      else rowsByGroup.set(s.surfaceGroupId, [s]);
+    }
+    const groups: Array<{
+      groupId: string;
+      surfaceType: string;
+      screenTimeSec: number;
+      occurrences: number;
+      sceneLabel: string;
+      representativeId: number;
+      memberRowIds: number[];
+    }> = [];
+    const coveredRowIds = new Set<number>();
+    for (const scene of scenes) {
+      for (const surf of scene.surfaces ?? []) {
+        const memberRows = rowsByGroup.get(surf.groupId) ?? [];
+        const rep =
+          rowById.get(surf.representativeRowId) ??
+          memberRows
+            .slice()
+            .sort((a, b) => (parseFloat(b.confidence) || 0) - (parseFloat(a.confidence) || 0))[0];
+        if (!rep) continue;
+        memberRows.forEach((r) => coveredRowIds.add(r.id));
+        coveredRowIds.add(rep.id);
+        // Claimed/conflict state must cover every member row: a placement may
+        // be anchored to any detection in the group, not just the current rep.
+        const memberRowIds = Array.from(new Set([rep.id, ...memberRows.map((r) => r.id)]));
+        groups.push({
+          groupId: surf.groupId,
+          surfaceType: surf.surfaceType,
+          screenTimeSec: surf.screenTimeSec,
+          occurrences: scene.occurrences,
+          sceneLabel: scene.label,
+          representativeId: rep.id,
+          memberRowIds,
+        });
+      }
+    }
+    if (groups.length === 0) return null;
+    return { groups, leftoverRows: surfaces.filter((s) => !coveredRowIds.has(s.id)) };
+  }, [sceneInventory, surfaces]);
 
   // Already-claimed surfaces on this video (so we can disable them).
   // Always video-scoped because surface IDs are global; even in clip-targeted mode
@@ -260,6 +368,56 @@ export function BrandPlacementRequestModal({
   const canSubmit = (creatorChooses || selectedProductId) && selectedSurfaceIds.size > 0 && !submitMutation.isPending;
   const selectedProduct = products.find((p) => p.id === parseInt(selectedProductId));
 
+  // Flat per-row picker entry — the legacy list, also used for detections
+  // the scene inventory doesn't cover.
+  const renderSurfaceRow = (s: DetectedSurface) => {
+    const isClaimed = claimedSurfaceIds.has(s.id);
+    const isConflict = conflictSurfaceIds.has(s.id);
+    const isSelected = selectedSurfaceIds.has(s.id);
+    const confidencePct = Math.round(parseFloat(s.confidence) * 100);
+    return (
+      <label
+        key={s.id}
+        className={`flex items-center gap-3 p-2 rounded cursor-pointer transition-colors ${
+          isClaimed
+            ? "opacity-50 cursor-not-allowed"
+            : isConflict
+            ? "bg-red-500/10 border border-red-500/30"
+            : isSelected
+            ? "bg-emerald-500/10 border border-emerald-500/30"
+            : "hover:bg-muted/50"
+        }`}
+        data-testid={`row-surface-${s.id}`}
+      >
+        <Checkbox
+          checked={isSelected}
+          disabled={isClaimed}
+          onCheckedChange={() => toggleSurface(s.id)}
+          data-testid={`checkbox-surface-${s.id}`}
+        />
+        <div className="flex-1 flex items-center gap-2">
+          <Badge variant="outline" className="text-xs">
+            {s.surfaceType}
+          </Badge>
+          <span className="text-xs text-muted-foreground">
+            @ {parseFloat(s.timestamp).toFixed(1)}s · {confidencePct}% conf
+          </span>
+          {isClaimed && (
+            <Badge variant="outline" className="text-xs border-amber-500/40 text-amber-400">
+              already taken
+            </Badge>
+          )}
+          {isConflict && (
+            <Badge variant="outline" className="text-xs border-red-500/40 text-red-400">
+              <AlertTriangle className="w-3 h-3 mr-1" />
+              conflict
+            </Badge>
+          )}
+        </div>
+      </label>
+    );
+  };
+
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
@@ -388,16 +546,18 @@ export function BrandPlacementRequestModal({
               <div className="rounded-md border border-border/50 p-3 text-sm text-muted-foreground">
                 This video has no detected surfaces yet. Ask the creator to run scene analysis.
               </div>
-            ) : (
+            ) : surfaceGroups ? (
+              /* Canonical surfaces from the scene inventory — one entry per
+                 physical surface. Selecting a group submits its representative
+                 row's id, so the placement API is untouched. */
               <div className="space-y-1.5 max-h-64 overflow-y-auto border border-border/50 rounded-md p-2">
-                {surfaces.map((s) => {
-                  const isClaimed = claimedSurfaceIds.has(s.id);
-                  const isConflict = conflictSurfaceIds.has(s.id);
-                  const isSelected = selectedSurfaceIds.has(s.id);
-                  const confidencePct = Math.round(parseFloat(s.confidence) * 100);
+                {surfaceGroups.groups.map((g) => {
+                  const isClaimed = g.memberRowIds.some((id) => claimedSurfaceIds.has(id));
+                  const isConflict = g.memberRowIds.some((id) => conflictSurfaceIds.has(id));
+                  const isSelected = selectedSurfaceIds.has(g.representativeId);
                   return (
                     <label
-                      key={s.id}
+                      key={g.groupId}
                       className={`flex items-center gap-3 p-2 rounded cursor-pointer transition-colors ${
                         isClaimed
                           ? "opacity-50 cursor-not-allowed"
@@ -407,21 +567,24 @@ export function BrandPlacementRequestModal({
                           ? "bg-emerald-500/10 border border-emerald-500/30"
                           : "hover:bg-muted/50"
                       }`}
-                      data-testid={`row-surface-${s.id}`}
+                      data-testid={`row-surface-group-${g.groupId}`}
                     >
                       <Checkbox
                         checked={isSelected}
                         disabled={isClaimed}
-                        onCheckedChange={() => toggleSurface(s.id)}
-                        data-testid={`checkbox-surface-${s.id}`}
+                        onCheckedChange={() => toggleSurface(g.representativeId)}
+                        data-testid={`checkbox-surface-group-${g.groupId}`}
                       />
-                      <div className="flex-1 flex items-center gap-2">
+                      <div className="flex-1 flex items-center gap-2 flex-wrap">
                         <Badge variant="outline" className="text-xs">
-                          {s.surfaceType}
+                          {g.surfaceType}
                         </Badge>
                         <span className="text-xs text-muted-foreground">
-                          @ {parseFloat(s.timestamp).toFixed(1)}s · {confidencePct}% conf
+                          on screen {formatScreenTime(g.screenTimeSec)} across {g.occurrences} shot{g.occurrences !== 1 ? "s" : ""}
                         </span>
+                        <Badge variant="outline" className="text-xs border-primary/30 text-primary/80">
+                          {g.sceneLabel}
+                        </Badge>
                         {isClaimed && (
                           <Badge variant="outline" className="text-xs border-amber-500/40 text-amber-400">
                             already taken
@@ -437,6 +600,18 @@ export function BrandPlacementRequestModal({
                     </label>
                   );
                 })}
+                {surfaceGroups.leftoverRows.length > 0 && (
+                  <>
+                    <div className="text-[10px] uppercase tracking-widest text-muted-foreground/60 px-1 pt-1.5">
+                      Other detections
+                    </div>
+                    {surfaceGroups.leftoverRows.map(renderSurfaceRow)}
+                  </>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-1.5 max-h-64 overflow-y-auto border border-border/50 rounded-md p-2">
+                {surfaces.map(renderSurfaceRow)}
               </div>
             )}
           </div>

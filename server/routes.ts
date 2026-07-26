@@ -5420,11 +5420,20 @@ export async function registerRoutes(
     // = sceneId 0 for all five). Used for placement continuity rendering.
     const sceneIndex = (video as any).sceneIndex || null;
 
+    // Scene-block inventory: canonical physical surfaces grouped by
+    // recurring scene class, with occurrence counts and screen time. This
+    // is the authoritative structure for the scene modal — the flat
+    // per-row `surfaces` list above stays for approval controls and
+    // legacy videos. Null for videos scanned before the inventory existed;
+    // clients must fall back to the flat view in that case.
+    const sceneInventory = (video as any).sceneInventory ?? null;
+
     res.json({
       surfaces: enrichedSurfaces,
       count: enrichedSurfaces.length,
       sceneBoundaries,
       sceneIndex,
+      sceneInventory,
     });
   });
 
@@ -5668,11 +5677,41 @@ export async function registerRoutes(
                 fileExists = false;
               }
             }
-            // Strip the scan internals (per-shot dHash arrays, cut lists) — no
-            // consumer of this endpoint reads them, and they ballooned the
-            // response to ~500KB / 17s under load.
-            const { sceneIndex, sceneBoundaries, ...slim } = video as any;
-            return { ...slim, adOpportunities: counts.get(video.id) || 0, fileExists };
+            // Strip the scan internals (per-shot dHash arrays, cut lists,
+            // full scene inventory) — no consumer of this endpoint reads
+            // them, and they ballooned the response to ~500KB / 17s under
+            // load.
+            const { sceneIndex, sceneBoundaries, sceneInventory, ...slim } = video as any;
+            // Compact rollup of the inventory for library cards:
+            // surface-bearing scene classes, canonical surfaces across
+            // them, and minutes of screen time those scenes cover (a
+            // 40-min episode where only the desk shot has inventory
+            // shouldn't advertise 40 tracked minutes; zero-surface and
+            // grid-failure singleton classes are excluded so the count
+            // matches the scene modal header). Null for videos scanned
+            // before the inventory existed — client falls back to the
+            // raw adOpportunities count.
+            let sceneSummary: { sceneCount: number; surfaceCount: number; trackedMinutes: number } | null = null;
+            const invScenes = Array.isArray(sceneInventory?.scenes) ? sceneInventory.scenes : null;
+            if (invScenes) {
+              let sceneCount = 0;
+              let surfaceCount = 0;
+              let trackedSec = 0;
+              for (const scene of invScenes) {
+                const n = Array.isArray(scene?.surfaces) ? scene.surfaces.length : 0;
+                surfaceCount += n;
+                if (n > 0) {
+                  sceneCount++;
+                  trackedSec += Number(scene?.totalSec) || 0;
+                }
+              }
+              sceneSummary = {
+                sceneCount,
+                surfaceCount,
+                trackedMinutes: Math.round(trackedSec / 60),
+              };
+            }
+            return { ...slim, adOpportunities: counts.get(video.id) || 0, fileExists, sceneSummary };
           }),
         ),
       );
@@ -9273,6 +9312,28 @@ export async function registerRoutes(
       if (targetSurface) {
         const tType = targetSurface.surfaceType.toLowerCase();
         const tSceneId = (targetSurface as any).sceneId;
+
+        // GROUP MATCH (strongest): the scanner stamps one surfaceGroupId
+        // per canonical physical surface, so two rows sharing a groupId
+        // ARE the same desk/wall — no type or scene inference needed.
+        // Legacy rows (null groupId) fall through to the scene/fuzzy
+        // heuristics below; differing groups of the same type also fall
+        // through, so pre-groupId behavior is unchanged for them.
+        const tGroupId = (targetSurface as any).surfaceGroupId;
+        if (tGroupId) {
+          for (const p of videoplacements) {
+            const pSurface = allSurfaces.find(s => s.id === p.surfaceId);
+            if (!pSurface) continue;
+            // Rescans retire prior-generation rows as "Filtered" without
+            // clearing surfaceGroupId, and group ids restart each scan —
+            // a retired row's groupId can collide with a new scan's group
+            // and anchor the placement to the wrong physical surface.
+            if (pSurface.surfaceType === "Filtered") continue;
+            if ((pSurface as any).surfaceGroupId === tGroupId) {
+              return res.json({ placement: p, source: "group_match" });
+            }
+          }
+        }
 
         // SCENE MATCH (preferred): same sceneId + same surfaceType. Scene
         // clustering means :08 and :46 in a podcast that flips host↔guest

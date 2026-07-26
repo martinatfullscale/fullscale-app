@@ -57,6 +57,43 @@ interface DatabaseSurface {
   frameUrl: string | null;
   sceneContext: string | null;
   surroundings: string[] | null;
+  /** Canonical-surface identity stamped at scan time — every detection row
+      of the same physical surface shares one id. Null on rows from scans
+      that predate group stamping; those fall into the ungrouped tail. */
+  surfaceGroupId?: string | null;
+}
+
+// Scene-block inventory persisted alongside the scan (video_index.scene_inventory).
+// A "scene" is a recurring camera setup — the wide 3-person shot that comes
+// back 40 times, the host close-up, etc. Each carries its canonical physical
+// surfaces (one entry per surfaceGroupId) with occurrence counts and total
+// screen time, so the review UI can show "3 surfaces across 2 scenes" instead
+// of a wall of per-frame detection rows. Null for videos scanned before the
+// inventory existed — the modal falls back to the flat per-row list.
+interface SceneInventorySurface {
+  groupId: string;
+  surfaceType: string;
+  bbox: { x: number; y: number; w: number; h: number };
+  confidence: number;
+  screenTimeSec: number;
+  rowCount: number;
+  representativeRowId: number;
+  frameUrl: string | null;
+}
+
+interface SceneInventoryScene {
+  sceneId: number;
+  label: string;
+  occurrences: number;
+  totalSec: number;
+  surfaces: SceneInventorySurface[];
+}
+
+interface SceneInventory {
+  version: number;
+  source: "sceneIndex" | "grid";
+  scenes: SceneInventoryScene[];
+  generatedAt: string;
 }
 
 interface SceneAnalysisModalProps {
@@ -87,6 +124,26 @@ function canPlayInApp(video: VideoWithScenes | null): boolean {
   return false;
 }
 
+// Frame URLs from the DB may carry absolute Replit paths or ./public/
+// prefixes from older scans — normalize to a browser-servable root path.
+function normalizeFrameUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  let src = url;
+  src = src.replace(/^\/home\/runner\/workspace\/public\//, '/');
+  src = src.replace(/^\.\/public\//, '/');
+  src = src.replace(/^public\//, '/');
+  src = src.replace(/\/\//g, '/');
+  if (!src.startsWith('/') && !src.startsWith('http')) src = '/' + src;
+  return src;
+}
+
+// Screen-time label for scene/surface headers: "23.4 min" above a minute,
+// plain seconds below it.
+function formatScreenTime(totalSec: number): string {
+  if (!Number.isFinite(totalSec) || totalSec <= 0) return "0s";
+  return totalSec >= 60 ? `${(totalSec / 60).toFixed(1)} min` : `${Math.round(totalSec)}s`;
+}
+
 export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVideo, onPlayFromTimestamp }: SceneAnalysisModalProps) {
   const [currentSceneIndex, setCurrentSceneIndex] = useState(0);
   const [model, setModel] = useState<cocoSsd.ObjectDetection | null>(null);
@@ -100,6 +157,10 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
   const [dbSurfaces, setDbSurfaces] = useState<DatabaseSurface[]>([]);
   const [isLoadingDbSurfaces, setIsLoadingDbSurfaces] = useState(false);
   const [hasDbSurfaces, setHasDbSurfaces] = useState(false);
+  // Scene-block inventory from the same surfaces response. Follows the
+  // exact staleness semantics of dbSurfaces: always overwritten together
+  // on a successful fetch, null whenever the scan didn't produce one.
+  const [sceneInventory, setSceneInventory] = useState<SceneInventory | null>(null);
 
   // Server-side rescan state
   const [isServerScanning, setIsServerScanning] = useState(false);
@@ -200,6 +261,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
         console.log(`[SceneAnalysisModal] Surfaces from DB:`, data);
         setDbSurfaces(data.surfaces || []);
         setHasDbSurfaces((data.surfaces || []).length > 0);
+        setSceneInventory(data.sceneInventory ?? null);
         console.log(`[SceneAnalysisModal] Loaded ${data.surfaces?.length || 0} surfaces, hasDbSurfaces: ${(data.surfaces || []).length > 0}`);
       } else {
         const errText = await res.text();
@@ -212,18 +274,40 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
     }
   };
 
+  // Approve every frame of a canonical surface at once. Deliberately goes
+  // through the same per-row PATCH endpoint as the individual toggles —
+  // approval stays a per-row fact server-side, this is purely a client
+  // convenience. Optimistic like the single-row toggle; any row whose
+  // PATCH fails reverts individually so partial success sticks.
+  const approveGroupRows = async (rows: DatabaseSurface[]) => {
+    const pending = rows.filter(r => !r.creatorApproved);
+    if (pending.length === 0) return;
+    const pendingIds = new Set(pending.map(r => r.id));
+    setDbSurfaces(prev => prev.map(x =>
+      pendingIds.has(x.id) ? { ...x, creatorApproved: true } : x
+    ));
+    const results = await Promise.allSettled(pending.map(r =>
+      fetch(`/api/surface/${r.id}/approval`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ approved: true }),
+      }).then(res => {
+        if (!res.ok) throw new Error("approval failed");
+      })
+    ));
+    const failedIds = new Set(
+      pending.filter((_, i) => results[i].status === "rejected").map(r => r.id)
+    );
+    if (failedIds.size > 0) {
+      setDbSurfaces(prev => prev.map(x =>
+        failedIds.has(x.id) ? { ...x, creatorApproved: false } : x
+      ));
+    }
+  };
+
   // Helper: build scenes from surfaces data (same logic as Library.tsx handleVideoClick)
   const buildScenesFromSurfaces = (surfaces: any[], videoId: number): Scene[] => {
-    const normalizeFrameUrl = (url: string | null | undefined): string | null => {
-      if (!url) return null;
-      let src = url;
-      src = src.replace(/^\/home\/runner\/workspace\/public\//, '/');
-      src = src.replace(/^\.\/public\//, '/');
-      src = src.replace(/^public\//, '/');
-      src = src.replace(/\/\//g, '/');
-      if (!src.startsWith('/') && !src.startsWith('http')) src = '/' + src;
-      return src;
-    };
     const buildFrameUrl = (ts: number): string => {
       const roundedTs = Math.floor(Number(ts));
       return `/uploads/frames/${videoId}/frame_${roundedTs}s.jpg`;
@@ -292,6 +376,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
         const surfaces = data.surfaces || [];
         setDbSurfaces(surfaces);
         setHasDbSurfaces(surfaces.length > 0);
+        setSceneInventory(data.sceneInventory ?? null);
 
         // Rebuild scenes from fresh surface data
         const newScenes = buildScenesFromSurfaces(surfaces, video.id);
@@ -1054,10 +1139,12 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                   })()}
                 </div>
 
-                {/* All-surfaces list — scrollable, every detected surface
-                    visible regardless of which scene is currently shown.
-                    Click a row to jump to its scene. Surfaces default to
-                    hidden from brands; creator approves to expose. */}
+                {/* Surfaces review — scene-block inventory when the scan
+                    produced one (canonical surfaces grouped by recurring
+                    scene class), otherwise the flat all-surfaces list.
+                    Either way every detection row is visible and clickable
+                    to jump to its scene. Surfaces default to hidden from
+                    brands; creator approves to expose. */}
                 {hasDbSurfaces && dbSurfaces.length > 0 && (() => {
                   const sortedSurfaces = [...dbSurfaces].sort(
                     (a, b) => parseFloat(a.timestamp) - parseFloat(b.timestamp)
@@ -1076,16 +1163,11 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                     return (m || 0) * 60 + (s || 0);
                   })();
 
-                  return (
-                    <div className="rounded-xl bg-white/5 border border-white/10">
-                      <div className="flex items-center justify-between p-4 border-b border-white/10 sticky top-0 bg-zinc-900/95 z-10">
-                        <span className="text-sm font-medium text-white">
-                          All detected surfaces ({dbSurfaces.length})
-                        </span>
-                        <span className="text-xs text-muted-foreground">Approve to expose to brands · ✕ removes bad detections</span>
-                      </div>
-                      <div className="max-h-80 overflow-y-auto p-2 space-y-1.5">
-                        {sortedSurfaces.map((s) => {
+                  // One detection row with its approve/reject controls. Shared
+                  // between the scene-block view (nested under each canonical
+                  // surface) and the legacy flat list — behavior is identical
+                  // in both, only the grouping around the rows differs.
+                  const renderSurfaceRow = (s: DatabaseSurface) => {
                           const isApproved = !!s.creatorApproved;
                           const orientation = (s as any).orientation === "vertical" ? "vertical" : "horizontal";
                           const confPct = Math.round(parseFloat(s.confidence) * 100);
@@ -1185,7 +1267,135 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                               </div>
                             </div>
                           );
-                        })}
+                  };
+
+                  // Scene-block view — authoritative whenever the scan produced
+                  // an inventory. One section per recurring scene class, each
+                  // listing its canonical physical surfaces; the per-frame
+                  // detection rows nest under the surface they belong to so
+                  // approval stays per-row.
+                  const invScenes = (sceneInventory?.scenes || []).filter(
+                    sc => Array.isArray(sc.surfaces) && sc.surfaces.length > 0
+                  );
+                  if (invScenes.length > 0) {
+                    const rowsByGroup = new Map<string, DatabaseSurface[]>();
+                    sortedSurfaces.forEach(s => {
+                      if (!s.surfaceGroupId) return;
+                      const list = rowsByGroup.get(s.surfaceGroupId);
+                      if (list) list.push(s);
+                      else rowsByGroup.set(s.surfaceGroupId, [s]);
+                    });
+                    const inventoryGroupIds = new Set<string>();
+                    invScenes.forEach(sc => sc.surfaces.forEach(surf => inventoryGroupIds.add(surf.groupId)));
+                    // Rows the inventory doesn't claim — legacy rows without a
+                    // groupId, or groups pruned after the inventory was built —
+                    // still need review controls, so they get a tail section
+                    // instead of silently disappearing.
+                    const ungroupedRows = sortedSurfaces.filter(
+                      s => !s.surfaceGroupId || !inventoryGroupIds.has(s.surfaceGroupId)
+                    );
+                    const totalCanonical = invScenes.reduce((sum, sc) => sum + sc.surfaces.length, 0);
+
+                    return (
+                      <div className="rounded-xl bg-white/5 border border-white/10">
+                        <div className="flex items-center justify-between p-4 border-b border-white/10 sticky top-0 bg-zinc-900/95 z-10">
+                          <span className="text-sm font-medium text-white">
+                            Scene inventory ({totalCanonical} surface{totalCanonical !== 1 ? "s" : ""} · {invScenes.length} scene{invScenes.length !== 1 ? "s" : ""})
+                          </span>
+                          <span className="text-xs text-muted-foreground">Approve to expose to brands · ✕ removes bad detections</span>
+                        </div>
+                        <div className="max-h-96 overflow-y-auto p-2 space-y-3">
+                          {invScenes.map((scene) => (
+                            <div key={scene.sceneId} data-testid={`scene-block-${scene.sceneId}`}>
+                              <div className="flex items-center gap-2 px-1 mb-1.5">
+                                <Layers className="w-3.5 h-3.5 text-primary shrink-0" />
+                                <span className="text-sm font-semibold text-white">{scene.label}</span>
+                                <span className="text-xs text-muted-foreground">
+                                  — {scene.occurrences} shot{scene.occurrences !== 1 ? "s" : ""} · {formatScreenTime(scene.totalSec)} on screen
+                                </span>
+                              </div>
+                              <div className="space-y-2">
+                                {scene.surfaces.map((surf) => {
+                                  const groupRows = rowsByGroup.get(surf.groupId) || [];
+                                  const unapprovedCount = groupRows.filter(r => !r.creatorApproved).length;
+                                  const thumbUrl = normalizeFrameUrl(surf.frameUrl);
+                                  return (
+                                    <div
+                                      key={surf.groupId}
+                                      className="rounded-lg border border-white/10 bg-zinc-900/60 p-2"
+                                      data-testid={`surface-group-${surf.groupId}`}
+                                    >
+                                      <div className="flex items-center gap-2.5">
+                                        {thumbUrl && (
+                                          <img
+                                            src={thumbUrl}
+                                            alt={surf.surfaceType}
+                                            className="w-16 h-10 rounded object-cover shrink-0 border border-white/10"
+                                            onError={(e) => { e.currentTarget.style.display = "none"; }}
+                                          />
+                                        )}
+                                        <div className="min-w-0 flex-1">
+                                          <div className="flex items-center gap-2">
+                                            <span className="text-sm font-medium text-white truncate">{surf.surfaceType}</span>
+                                            <span className="text-xs text-muted-foreground">{Math.round(surf.confidence * 100)}%</span>
+                                          </div>
+                                          <div className="text-xs text-muted-foreground">
+                                            {formatScreenTime(surf.screenTimeSec)} on screen · seen in {surf.rowCount} sampled frame{surf.rowCount !== 1 ? "s" : ""}
+                                          </div>
+                                        </div>
+                                        {groupRows.length > 0 && (
+                                          <Button
+                                            size="sm"
+                                            variant={unapprovedCount === 0 ? "default" : "secondary"}
+                                            className="shrink-0"
+                                            disabled={unapprovedCount === 0}
+                                            onClick={() => approveGroupRows(groupRows)}
+                                            data-testid={`button-approve-group-${surf.groupId}`}
+                                          >
+                                            {unapprovedCount === 0 ? "All approved" : "Approve all frames"}
+                                          </Button>
+                                        )}
+                                      </div>
+                                      {groupRows.length > 0 && (
+                                        <div className="mt-2 space-y-1.5">
+                                          {groupRows.map(renderSurfaceRow)}
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ))}
+                          {ungroupedRows.length > 0 && (
+                            <div data-testid="section-ungrouped-detections">
+                              <div className="flex items-center gap-2 px-1 mb-1.5">
+                                <span className="text-sm font-semibold text-white">Ungrouped detections</span>
+                                <span className="text-xs text-muted-foreground">
+                                  {ungroupedRows.length} row{ungroupedRows.length !== 1 ? "s" : ""} without a canonical surface
+                                </span>
+                              </div>
+                              <div className="space-y-1.5">
+                                {ungroupedRows.map(renderSurfaceRow)}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  // Legacy flat list — videos scanned before the inventory existed.
+                  return (
+                    <div className="rounded-xl bg-white/5 border border-white/10">
+                      <div className="flex items-center justify-between p-4 border-b border-white/10 sticky top-0 bg-zinc-900/95 z-10">
+                        <span className="text-sm font-medium text-white">
+                          All detected surfaces ({dbSurfaces.length})
+                        </span>
+                        <span className="text-xs text-muted-foreground">Approve to expose to brands · ✕ removes bad detections</span>
+                      </div>
+                      <div className="max-h-80 overflow-y-auto p-2 space-y-1.5">
+                        {sortedSurfaces.map(renderSurfaceRow)}
                       </div>
                     </div>
                   );

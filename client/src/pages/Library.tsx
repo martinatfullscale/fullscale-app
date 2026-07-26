@@ -43,6 +43,10 @@ interface IndexedVideo {
   updatedAt: string;
   adOpportunities: number;
   filePath?: string | null;
+  /** Scene-inventory rollup from the server: canonical surfaces × recurring
+   *  scenes. Null for videos scanned before the inventory existed — the
+   *  card falls back to the raw adOpportunities count. */
+  sceneSummary?: { sceneCount: number; surfaceCount: number; trackedMinutes: number } | null;
 }
 
 type PlatformFilter = "all" | "youtube" | "instagram" | "twitch" | "facebook" | "fullscale";
@@ -211,6 +215,7 @@ interface DisplayVideo {
   subcategory?: string | null;
   youtubeId?: string | null;
   sourceUrl?: string | null;
+  sceneSummary?: { sceneCount: number; surfaceCount: number; trackedMinutes: number } | null;
 }
 
 function getVideoStatusInfo(video: IndexedVideo): { status: string; statusColor: string; statusDot: string; aiStatus: string; aiText: string } {
@@ -226,7 +231,23 @@ function getVideoStatusInfo(video: IndexedVideo): { status: string; statusColor:
       aiText: "Processing..."
     };
   }
-  
+
+  // Scene-inventory rollup is the honest count when the scan produced one:
+  // canonical physical surfaces across recurring scene classes, not the
+  // per-frame detection rows that inflate with sampling density. Null on
+  // videos scanned before the inventory existed — those fall through to
+  // the raw adOpportunities count below.
+  const sceneSummary = (video as any).sceneSummary ?? null;
+  if (sceneSummary && sceneSummary.surfaceCount > 0) {
+    return {
+      status: `${sceneSummary.surfaceCount} surface${sceneSummary.surfaceCount !== 1 ? "s" : ""} · ${sceneSummary.sceneCount} scene${sceneSummary.sceneCount !== 1 ? "s" : ""}`,
+      statusColor: "bg-emerald-500/20 text-emerald-400",
+      statusDot: "bg-emerald-500",
+      aiStatus: "ready",
+      aiText: `${sceneSummary.sceneCount} Scene${sceneSummary.sceneCount !== 1 ? "s" : ""} Indexed`
+    };
+  }
+
   if (adOpportunities > 0) {
     return {
       status: `Ready (${adOpportunities} Spots)`,
@@ -322,6 +343,10 @@ function formatIndexedVideo(video: IndexedVideo): DisplayVideo {
     // YouTube/Instagram/Facebook" embed button has what it needs.
     youtubeId: (video as any).youtubeId || (video as any).youtube_id || null,
     sourceUrl: (video as any).sourceUrl || (video as any).source_url || null,
+    // Scene rollup rides along so the click handler can recognize a
+    // completed scan even when the status badge shows the inventory
+    // counts instead of the legacy "Ready (N Spots)" text.
+    sceneSummary: (video as any).sceneSummary ?? null,
   };
 }
 
@@ -650,9 +675,12 @@ export default function Library() {
     console.log(`[Library] hasLocalFile: ${video.hasLocalFile}, filePath: ${video.filePath}, status: ${video.status}`);
     
     // For scanned videos (status contains "Complete" or "Ready"), show scene analysis modal with surfaces
-    // This takes priority over video preview for analyzed content
+    // This takes priority over video preview for analyzed content.
+    // sceneSummary.surfaceCount covers cards whose badge shows the inventory
+    // counts ("3 surfaces · 2 scenes") — that status text contains neither
+    // "Complete" nor "Ready" but the scan is very much done.
     const videoAny = video as any;
-    const adOpportunityCount = videoAny.adOpportunities ?? videoAny.surfaceCount ?? 0;
+    const adOpportunityCount = videoAny.adOpportunities ?? videoAny.surfaceCount ?? videoAny.sceneSummary?.surfaceCount ?? 0;
     const hasCompletedScan = video.status?.toLowerCase().includes('complete') || 
                              video.status?.toLowerCase().includes('ready') ||
                              adOpportunityCount > 0;

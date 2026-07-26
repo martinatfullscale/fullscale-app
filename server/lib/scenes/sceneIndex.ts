@@ -43,14 +43,40 @@ export interface SceneIndex {
   sceneCount: number;
   // For backwards compat with existing sceneBoundaries[] consumers.
   cuts: number[];
+  // Set when cut detection handed us ZERO cuts on a long video. A single
+  // uncut hour is almost never real footage — it's the upstream detector
+  // timing out or failing open — so the resulting sceneCount=1 must not
+  // drive frame budgeting. Callers should switch to uniform sampling
+  // across the timeline instead of trusting one scene's worth of frames.
+  degenerate?: boolean;
 }
 
 const DHASH_HAMMING_THRESHOLD = 12;
 
-// Cluster shots by perceptual hash similarity using single-link clustering.
-// Two shots are in the same cluster if their hashes' hamming distance is
-// below threshold OR they share at least one shot that's transitively close.
-function clusterByHash(hashes: string[], threshold: number): number[] {
+// Keyframes that couldn't be extracted or hashed get a 'fail'-prefixed
+// sentinel instead of a real dHash (see processShot). Sentinels contain
+// non-hex characters that hammingDistance coerces to 0 bits, so two
+// DIFFERENT failed shots look nearly identical — without a guard they all
+// chain into one bogus mega-scene.
+function isFailedHash(hash: string): boolean {
+  return hash.startsWith("fail");
+}
+
+// Cluster perceptual hashes by similarity using single-link clustering.
+// Two hashes are in the same cluster if their hamming distance is below
+// threshold OR they share at least one hash that's transitively close.
+// Exported so the scanner can run the exact same clustering on dense-grid
+// frame hashes when no shot-cut list exists (streamed path) — recurring
+// scene classes come out of the same algorithm either way.
+//
+// Failed-hash sentinels each get their own singleton cluster: an
+// unhashable frame tells us nothing about which scene it belongs to, and
+// letting sentinels compare with anything collapses unrelated failures
+// (or worse, real scenes) together.
+export function clusterHashes(
+  hashes: string[],
+  threshold: number = DHASH_HAMMING_THRESHOLD,
+): number[] {
   const n = hashes.length;
   const sceneId = new Array(n).fill(-1);
   let nextId = 0;
@@ -58,19 +84,21 @@ function clusterByHash(hashes: string[], threshold: number): number[] {
   for (let i = 0; i < n; i++) {
     if (sceneId[i] !== -1) continue;
     sceneId[i] = nextId;
-    // Single-link: anything within threshold of any member of this cluster
-    // joins it. Iterate until no new additions (BFS).
-    let added = true;
-    while (added) {
-      added = false;
-      for (let j = 0; j < n; j++) {
-        if (sceneId[j] !== -1) continue;
-        for (let k = 0; k < n; k++) {
-          if (sceneId[k] !== nextId) continue;
-          if (hammingDistance(hashes[j], hashes[k]) < threshold) {
-            sceneId[j] = nextId;
-            added = true;
-            break;
+    if (!isFailedHash(hashes[i])) {
+      // Single-link: anything within threshold of any member of this cluster
+      // joins it. Iterate until no new additions (BFS).
+      let added = true;
+      while (added) {
+        added = false;
+        for (let j = 0; j < n; j++) {
+          if (sceneId[j] !== -1 || isFailedHash(hashes[j])) continue;
+          for (let k = 0; k < n; k++) {
+            if (sceneId[k] !== nextId) continue;
+            if (hammingDistance(hashes[j], hashes[k]) < threshold) {
+              sceneId[j] = nextId;
+              added = true;
+              break;
+            }
           }
         }
       }
@@ -327,6 +355,19 @@ export async function buildSceneIndex(
     refinedCuts = refined.sort((a, b) => a - b);
   }
 
+  // Zero usable cuts on a >10-min video means the detector broke, not that
+  // the creator shot an uncut hour. Flag rather than silently returning
+  // sceneCount=1 — the scanner budgets frames PER SCENE, so a silent
+  // single-scene result starves an hour of footage down to a handful of
+  // samples.
+  const degenerate = refinedCuts.length === 0 && duration > 600;
+  if (degenerate) {
+    console.warn(
+      `[SceneIndex] Zero cuts on a ${(duration / 60).toFixed(1)}-min video — ` +
+      `flagging index as degenerate (single-scene result is untrustworthy)`,
+    );
+  }
+
   // Build shot list: [0, cuts[0]), [cuts[0], cuts[1]), ..., [cuts[N-1], duration)
   const shotStarts = [0, ...refinedCuts];
   const shots: Array<{ shotIdx: number; tStart: number; tEnd: number }> = [];
@@ -383,7 +424,7 @@ export async function buildSceneIndex(
   }
 
   // Cluster.
-  const sceneIds = clusterByHash(hashes, DHASH_HAMMING_THRESHOLD);
+  const sceneIds = clusterHashes(hashes);
   const sceneCount = new Set(sceneIds).size;
 
   const indexedShots: SceneShot[] = shots.map((shot, i) => ({
@@ -410,7 +451,12 @@ export async function buildSceneIndex(
   // surface clustering) use the frame-accurate boundaries instead of
   // ffmpeg's approximate ones. Was returning the input `cuts` previously —
   // that's why the user saw products bleed past cuts before disappearing.
-  return { shots: indexedShots, sceneCount, cuts: refinedCuts };
+  return {
+    shots: indexedShots,
+    sceneCount,
+    cuts: refinedCuts,
+    ...(degenerate ? { degenerate: true } : {}),
+  };
 }
 
 // Look up the sceneId covering a given video timestamp. Returns 0 if no

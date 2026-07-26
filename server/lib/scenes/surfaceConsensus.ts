@@ -46,7 +46,8 @@ export interface ConsensusSurface {
   confidence: number;
   /** Number of distinct frames that detected this surface */
   votes: number;
-  /** Number of frames analyzed for the scene */
+  /** Effective frames analyzed for the scene (abstained frames excluded
+   *  when the caller reports them via ConsensusOptions.framesAnalyzed) */
   framesAnalyzed: number;
   /** Timestamps of supporting frames */
   supportTimestamps: number[];
@@ -147,6 +148,17 @@ function median(values: number[]): number {
   return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
+function medianBbox(
+  members: Array<{ bbox: { x: number; y: number; width: number; height: number } }>,
+): { x: number; y: number; width: number; height: number } {
+  return {
+    x: median(members.map((m) => m.bbox.x)),
+    y: median(members.map((m) => m.bbox.y)),
+    width: median(members.map((m) => m.bbox.width)),
+    height: median(members.map((m) => m.bbox.height)),
+  };
+}
+
 // ── Consensus ──────────────────────────────────────────────────────
 
 export interface ConsensusOptions {
@@ -158,6 +170,13 @@ export interface ConsensusOptions {
   minVotes?: number;
   /** Normalize a raw label to its canonical form (scanner's synonym table); defaults to lowercase trim */
   normalizeType?: (raw: string) => string;
+  /** Effective frame count for the scene, overriding frames.length. When a
+   *  frame ABSTAINS (e.g. the model was rate-limited into an empty result),
+   *  it's not a "nothing here" vote — counting it lets one throttled frame
+   *  veto everything a 2-frame scene detected. Callers pass the count
+   *  excluding abstained frames; minVotes clamps to 1 when only one
+   *  effective frame remains. */
+  framesAnalyzed?: number;
 }
 
 /**
@@ -178,13 +197,15 @@ export function buildSceneConsensus(
   const iouThreshold = options.iouThreshold ?? 0.25;
   const centerThreshold = options.centerThreshold ?? 0.18;
   const normalize = options.normalizeType ?? ((raw: string) => raw.toLowerCase().trim());
-  const framesAnalyzed = frames.length;
+  const framesAnalyzed = options.framesAnalyzed ?? frames.length;
   const minVotes = Math.min(options.minVotes ?? 2, Math.max(1, framesAnalyzed));
 
   const rejected: ConsensusRejection[] = [];
 
   interface Cluster {
     surfaceType: string;
+    /** Running median bbox across members — the cluster's identity anchor */
+    bbox: FrameDetection["surfaces"][number]["bbox"];
     members: Array<{ frameT: number; confidence: number; bbox: FrameDetection["surfaces"][number]["bbox"]; ref?: unknown }>;
   }
   const clusters: Cluster[] = [];
@@ -200,16 +221,25 @@ export function buildSceneConsensus(
         continue;
       }
 
+      // Match against the cluster's running MEDIAN bbox, never its most
+      // recent member. Last-member matching lets the comparison point walk:
+      // each marginal join shifts the anchor, so a chain of slowly-drifting
+      // boxes drags one cluster across the frame while an honest re-detect
+      // of the ORIGINAL position falls outside the drifted anchor and
+      // fragments into a fresh cluster (which then dies as a one-frame
+      // wonder). The median is stable — outliers can join, but they can't
+      // move it.
       const match = clusters.find(
         (c) =>
           c.surfaceType === type &&
-          (bboxIoU(c.members[c.members.length - 1].bbox, det.bbox) >= iouThreshold ||
-            centerDistance(c.members[c.members.length - 1].bbox, det.bbox) <= centerThreshold),
+          (bboxIoU(c.bbox, det.bbox) >= iouThreshold ||
+            centerDistance(c.bbox, det.bbox) <= centerThreshold),
       );
       if (match) {
         match.members.push({ frameT: frame.frameT, confidence: det.confidence, bbox: det.bbox, ref: det.ref });
+        match.bbox = medianBbox(match.members);
       } else {
-        clusters.push({ surfaceType: type, members: [{ frameT: frame.frameT, confidence: det.confidence, bbox: det.bbox, ref: det.ref }] });
+        clusters.push({ surfaceType: type, bbox: det.bbox, members: [{ frameT: frame.frameT, confidence: det.confidence, bbox: det.bbox, ref: det.ref }] });
       }
     }
   }
@@ -225,12 +255,9 @@ export function buildSceneConsensus(
       continue;
     }
 
-    const bbox = {
-      x: median(cluster.members.map((m) => m.bbox.x)),
-      y: median(cluster.members.map((m) => m.bbox.y)),
-      width: median(cluster.members.map((m) => m.bbox.width)),
-      height: median(cluster.members.map((m) => m.bbox.height)),
-    };
+    // cluster.bbox is already the median across every member (kept current
+    // on each join above) — no recompute needed.
+    const bbox = cluster.bbox;
     const meanConf = cluster.members.reduce((s, m) => s + m.confidence, 0) / cluster.members.length;
     const support = distinctFrames.size / Math.max(1, framesAnalyzed);
 

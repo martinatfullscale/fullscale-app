@@ -31,7 +31,7 @@ import { seedSourceCache } from "./lib/sourceCache";
 import { safeDecrypt } from "./lib/socialAnalytics";
 import { getFreshYoutubeTokenForUser } from "./lib/youtubeAuth";
 import { resolveYoutubeStreamUrl, resolveGraphStreamUrl, type StreamSource } from "./lib/streamResolver";
-import { buildSceneIndex, sceneIdForTimestamp, sampleMultiTimestampsPerScene, computeDHash, hammingDistance, type SceneIndex } from "./lib/scenes/sceneIndex";
+import { buildSceneIndex, sceneIdForTimestamp, sampleMultiTimestampsPerScene, computeDHash, hammingDistance, clusterHashes, type SceneIndex } from "./lib/scenes/sceneIndex";
 import { buildSceneConsensus, type FrameDetection } from "./lib/scenes/surfaceConsensus";
 
 // ============================================================================
@@ -199,6 +199,11 @@ interface FrameAnalysisResult {
   isVertical: boolean;
   /** True if AI successfully analyzed the frame (even if it found no surfaces) */
   aiAnalyzed?: boolean;
+  /** True when every retry was consumed by 429s — the frame was never actually
+   *  seen by the model. An ABSTENTION, not a "no surfaces here" verdict: the
+   *  consensus vote must drop this frame from its denominator instead of
+   *  letting it veto surfaces the scene's other frames agreed on. */
+  rateLimited?: boolean;
 }
 
 // EdgeAnalysisResult removed — replaced by band-based detection in analyzeFrameForSurfaces
@@ -1062,21 +1067,25 @@ async function extractFramesUniformFromUrl(
  * Detection recall depends on SEEING every distinct scene at least once — a
  * surface only visible in one shot is missed if that shot is skipped. So we:
  *   1. dHash every dense-grid candidate.
- *   2. Segment into scenes: a new scene starts wherever the hash jumps
- *      (hamming ≥ threshold vs the previous frame) — a cut or hard angle change.
- *   3. Guarantee ≥1 detection frame per scene (the scene's midpoint), then
- *      distribute any remaining budget to the LONGEST scenes (more samples where
- *      more can change), capped at the Gemini budget.
- * This gives even coverage across the whole timeline AND guarantees no scene is
- * skipped — the two things that determine surface recall. Non-selected frames
- * are deleted immediately to bound temp usage.
+ *   2. Cluster ALL candidate hashes into RECURRING scene classes (single-link,
+ *      same clustering the download path's sceneIndex uses). A multicam
+ *      podcast alternating host/guest/wide is 3 classes, not 60 segments —
+ *      contiguous same-class runs are the "shots" of a grid-derived scene
+ *      index that the caller persists exactly like the download path's.
+ *   3. Allocate the detection budget ACROSS CLASSES proportionally to each
+ *      class's total screen time (≥2 frames per class where possible), and
+ *      spread each class's picks evenly across ALL of its occurrences. This
+ *      covers the whole timeline — the previous chronological midpoint pass
+ *      exhausted the budget on the first ~60 segments, leaving the back half
+ *      of a fast-cutting episode unseen.
+ * Non-selected frames are deleted immediately to bound temp usage.
  */
 async function selectDiverseFrames(
   frames: string[],
   timestamps: number[],
   opts: { hashThreshold: number; budget: number },
-): Promise<{ frames: string[]; timestamps: number[]; segmentIds: number[] }> {
-  if (frames.length === 0) return { frames: [], timestamps: [], segmentIds: [] };
+): Promise<{ frames: string[]; timestamps: number[]; segmentIds: number[]; sceneIndex: SceneIndex | null }> {
+  if (frames.length === 0) return { frames: [], timestamps: [], segmentIds: [], sceneIndex: null };
 
   // 1. Hash every candidate (parallel-ish; computeDHash is I/O light).
   const hashes: (string | null)[] = [];
@@ -1084,65 +1093,129 @@ async function selectDiverseFrames(
     try { hashes.push(await computeDHash(frames[i])); } catch { hashes.push(null); }
   }
 
-  // 2. Segment into scenes by hash jumps. Each scene is a contiguous index range.
-  const scenes: Array<{ start: number; end: number }> = [];
-  let sceneStart = 0;
+  // 2. Cluster candidates into recurring scene classes. Failed hashes get the
+  //    same 'fail'-prefixed sentinel shape the sceneIndex builder uses — the
+  //    clusterer isolates those as singletons instead of chaining them.
+  let classIds: number[];
+  let gridSceneIndex: SceneIndex | null = null;
+  let classesAreRecurring = true;
+  const safeHashes = hashes.map((h, i) => h ?? `fail${i.toString(16).padStart(12, "0")}`);
+  try {
+    classIds = clusterHashes(safeHashes);
+  } catch (clusterErr: any) {
+    // Degraded fallback: hash-jump segmentation (each contiguous segment its
+    // own class — no recurrence merging, but allocation still spans the
+    // timeline). No scene index is synthesized in this mode.
+    console.warn(`[Scanner V2] Grid hash clustering failed (segment fallback):`, clusterErr?.message || clusterErr);
+    classesAreRecurring = false;
+    classIds = new Array(frames.length).fill(0);
+    let seg = 0;
+    for (let i = 1; i < frames.length; i++) {
+      const prev = hashes[i - 1];
+      const cur = hashes[i];
+      if (prev === null || cur === null || hammingDistance(cur, prev) >= opts.hashThreshold) seg++;
+      classIds[i] = seg;
+    }
+  }
+
+  // 3. Contiguous same-class runs = shots of the grid-derived scene index.
+  //    tEnd of a run is the next run's tStart; the last run extends one grid
+  //    interval past its final frame (the frame represents that interval).
+  const runs: Array<{ start: number; end: number; classId: number }> = [];
+  let runStart = 0;
   for (let i = 1; i < frames.length; i++) {
-    const prev = hashes[i - 1];
-    const cur = hashes[i];
-    const jump = prev === null || cur === null || hammingDistance(cur, prev) >= opts.hashThreshold;
-    if (jump) {
-      scenes.push({ start: sceneStart, end: i - 1 });
-      sceneStart = i;
+    if (classIds[i] !== classIds[i - 1]) {
+      runs.push({ start: runStart, end: i - 1, classId: classIds[runStart] });
+      runStart = i;
     }
   }
-  scenes.push({ start: sceneStart, end: frames.length - 1 });
+  runs.push({ start: runStart, end: frames.length - 1, classId: classIds[runStart] });
 
-  // 3. Allocate the budget. Every scene gets its midpoint. Remaining budget goes
-  //    to the longest scenes (by candidate count), one extra sample at a time.
+  const gridStep = frames.length > 1
+    ? (timestamps[timestamps.length - 1] - timestamps[0]) / (frames.length - 1)
+    : 1;
+  if (classesAreRecurring && new Set(classIds).size > 0) {
+    gridSceneIndex = {
+      shots: runs.map((r, idx) => ({
+        shotIdx: idx,
+        sceneId: r.classId,
+        tStart: timestamps[r.start],
+        tEnd: idx + 1 < runs.length ? timestamps[runs[idx + 1].start] : timestamps[r.end] + gridStep,
+        hash: safeHashes[Math.floor((r.start + r.end) / 2)],
+      })),
+      sceneCount: new Set(classIds).size,
+      cuts: runs.slice(1).map(r => timestamps[r.start]),
+    };
+  }
+
+  // 4. Budget allocation across classes, proportional to class screen time.
+  //    The grid is uniform, so a class's candidate count IS its duration
+  //    share. Every class gets 1 frame, then a 2nd where it has one (the
+  //    consensus vote needs two independent samples), then extras flow to
+  //    the classes with the most unsampled screen time.
+  const classFrames = new Map<number, number[]>();
+  for (let i = 0; i < frames.length; i++) {
+    const arr = classFrames.get(classIds[i]) ?? [];
+    arr.push(i);
+    classFrames.set(classIds[i], arr);
+  }
+  const classesByDur = Array.from(classFrames.entries()).sort((a, b) => b[1].length - a[1].length);
+  const alloc = new Map<number, number>();
+  let remaining = opts.budget;
+  for (const [cls] of classesByDur) {
+    if (remaining <= 0) break;
+    alloc.set(cls, 1);
+    remaining--;
+  }
+  for (const [cls, idxs] of classesByDur) {
+    if (remaining <= 0) break;
+    if (alloc.get(cls) === 1 && idxs.length >= 2) {
+      alloc.set(cls, 2);
+      remaining--;
+    }
+  }
+  while (remaining > 0) {
+    // One frame at a time to the class with the most candidates per pick —
+    // largest-remainder-style proportionality without float bookkeeping.
+    let bestCls: number | null = null;
+    let bestRatio = 0;
+    for (const [cls, idxs] of classesByDur) {
+      const cur = alloc.get(cls) ?? 0;
+      if (cur >= idxs.length) continue; // class fully sampled
+      const ratio = idxs.length / (cur + 1);
+      if (ratio > bestRatio) { bestRatio = ratio; bestCls = cls; }
+    }
+    if (bestCls === null) break; // every candidate already picked
+    alloc.set(bestCls, (alloc.get(bestCls) ?? 0) + 1);
+    remaining--;
+  }
+
+  // 5. Within each class, spread picks evenly across its chronological
+  //    candidate list — the list spans every occurrence of the class, so a
+  //    class recurring at 2min and 55min gets sampled at both ends.
   const picks = new Set<number>();
-  const sceneLen = (s: { start: number; end: number }) => s.end - s.start + 1;
-  const midpoint = (s: { start: number; end: number }) => Math.floor((s.start + s.end) / 2);
-
-  for (const s of scenes) {
-    if (picks.size >= opts.budget) break;
-    picks.add(midpoint(s));
-  }
-
-  // Extra samples for long scenes, round-robin by descending length, until budget.
-  const byLenDesc = [...scenes].sort((a, b) => sceneLen(b) - sceneLen(a));
-  let added = true;
-  while (picks.size < opts.budget && added) {
-    added = false;
-    for (const s of byLenDesc) {
-      if (picks.size >= opts.budget) break;
-      // Spread additional picks evenly within the scene.
-      const len = sceneLen(s);
-      if (len <= 1) continue;
-      const existing = Array.from(picks).filter(idx => idx >= s.start && idx <= s.end).length;
-      const want = Math.min(len, existing + 1);
-      if (want <= existing) continue;
-      // place the (want)-th evenly-spaced index
-      const idx = s.start + Math.round(((existing) / want) * (len - 1));
-      if (!picks.has(idx)) { picks.add(idx); added = true; }
+  for (const [cls, idxs] of classesByDur) {
+    const n = alloc.get(cls) ?? 0;
+    for (let k = 0; k < n; k++) {
+      picks.add(idxs[Math.min(idxs.length - 1, Math.floor(((k + 0.5) * idxs.length) / n))]);
     }
   }
 
-  // 4. Materialize selection; unlink the rest.
+  // 6. Materialize selection; unlink the rest.
   const selectedIdx = Array.from(picks).sort((a, b) => a - b);
   const selectedSet = new Set(selectedIdx);
   for (let i = 0; i < frames.length; i++) {
     if (!selectedSet.has(i)) safeUnlink(frames[i]);
   }
 
-  console.log(`[Scanner V2] Scene-complete selection: ${scenes.length} scene(s) from ${frames.length} candidates → ${selectedIdx.length} detection frames (budget ${opts.budget})`);
-  // Segment id per selected frame — the dHash scene segmentation computed
-  // above, previously thrown away. The streamed path (no local file → no
-  // sceneIndex) uses these as consensus groups so cross-scene detections
-  // never vote for each other.
+  console.log(`[Scanner V2] Scene-class selection: ${classFrames.size} recurring class(es) across ${runs.length} run(s) from ${frames.length} candidates → ${selectedIdx.length} detection frames (budget ${opts.budget})`);
+  // Segment id per selected frame — the contiguous-run segmentation computed
+  // above. The streamed path uses these as consensus groups only when no
+  // scene index could be synthesized, so cross-scene detections never vote
+  // for each other even in the degraded mode.
   const segmentOf = (idx: number): number => {
-    for (let s = 0; s < scenes.length; s++) {
-      if (idx >= scenes[s].start && idx <= scenes[s].end) return s;
+    for (let r = 0; r < runs.length; r++) {
+      if (idx >= runs[r].start && idx <= runs[r].end) return r;
     }
     return 0;
   };
@@ -1150,6 +1223,7 @@ async function selectDiverseFrames(
     frames: selectedIdx.map(i => frames[i]),
     timestamps: selectedIdx.map(i => timestamps[i]),
     segmentIds: selectedIdx.map(segmentOf),
+    sceneIndex: gridSceneIndex,
   };
 }
 
@@ -1186,13 +1260,17 @@ async function detectSceneCuts(
       return;
     }
 
-    // -vf "select='gt(scene,T)',showinfo" prints info for each detected cut.
+    // -vf "scale=320:-2,select='gt(scene,T)',showinfo" prints info for each
+    // detected cut. The 320px downscale runs BEFORE the scene filter — the
+    // histogram diff is resolution-independent for cut detection, and scoring
+    // full-res 1080p frames is what made hour-long files blow past the
+    // timeout (empty cut list → sceneCount=1 → 6 frames for the whole hour).
     // -an drops audio (faster). -f null discards the output (we only want stderr).
     const args = [
       "-nostdin",
       "-i", absoluteVideoPath,
       "-an",
-      "-vf", `select='gt(scene,${threshold})',showinfo`,
+      "-vf", `scale=320:-2,select='gt(scene,${threshold})',showinfo`,
       "-f", "null",
       "-",
     ];
@@ -1203,13 +1281,15 @@ async function detectSceneCuts(
     let stderr = "";
     ffmpeg.stderr.on("data", (data) => { stderr += data.toString(); });
 
-    // Cap at 5 minutes — even multi-GB videos shouldn't take longer for
-    // detection-only (no encode). If it does, return empty + log.
+    // Cap at 10 minutes. With the 320px downscale this is generous even for
+    // hour-long files — but a decode that somehow still overruns returns
+    // empty + log, and the caller's uniform-sampling fallback takes over
+    // rather than silently under-sampling.
     const timeout = setTimeout(() => {
       try { ffmpeg.kill("SIGKILL"); } catch {}
-      console.warn(`[Scene Cuts] Timed out after 5min — returning empty cut list`);
+      console.warn(`[Scene Cuts] Timed out after 10min — returning empty cut list`);
       resolve([]);
-    }, 5 * 60 * 1000);
+    }, 10 * 60 * 1000);
 
     ffmpeg.on("close", () => {
       clearTimeout(timeout);
@@ -1251,6 +1331,31 @@ function sceneBlockForTimestamp(cuts: number[], t: number): number {
     if (t < cuts[i]) return i;
   }
   return cuts.length;
+}
+
+/**
+ * Probe a LOCAL file's duration with ffprobe. Uploads carry no DB duration
+ * (YouTube imports store ISO 8601, uploads store nothing), and scanning a
+ * local file blind against the CONFIG default plan meant a 61-minute upload
+ * scanned only its first 48 seconds. Returns 0 on any failure — callers
+ * treat that as "duration unknown" and keep their existing plan.
+ */
+async function probeLocalDurationSec(videoPath: string): Promise<number> {
+  return new Promise((resolve) => {
+    const ff = spawn("ffprobe", [
+      "-v", "error",
+      "-show_entries", "format=duration",
+      "-of", "default=noprint_wrappers=1:nokey=1",
+      videoPath,
+    ]);
+    let out = "";
+    ff.stdout.on("data", (d) => { out += d.toString(); });
+    ff.on("close", () => {
+      const v = parseFloat(out.trim());
+      resolve(Number.isFinite(v) && v > 0 ? v : 0);
+    });
+    ff.on("error", () => resolve(0));
+  });
 }
 
 // ============================================================================
@@ -1886,8 +1991,13 @@ async function analyzeFrameWithGeminiRetry(
       }
     }
   }
-  console.error(`[Gemini] Rate limit retries exhausted at ${timestamp}s — returning empty`);
-  return defaultResult;
+  // Exhausted 429s are an ABSTENTION, not a verdict — the model never saw
+  // the frame. Without the marker this empty result counted as a real
+  // "no surfaces" vote in the scene consensus denominator, so ONE
+  // rate-limited frame in a 2-frame scene vetoed every surface the other
+  // frame found. The scan loop drops marked frames from framesAnalyzed.
+  console.error(`[Gemini] Rate limit retries exhausted at ${timestamp}s — abstaining from consensus`);
+  return { ...defaultResult, rateLimited: true };
 }
 
 // ============================================================================
@@ -2188,6 +2298,16 @@ async function enrichSurfacesWithContext(
 
   let enrichedCount = 0;
 
+  // Refined-type votes per canonical surface group. Surface identity is
+  // established at consensus time (one surfaceGroupId per physical surface);
+  // writing a per-timestamp refined type onto individual rows fractured that
+  // identity — the same physical table ended up half "Table" half "Desk"
+  // depending on which frames this pass got to look at. Votes are collected
+  // here and the group-majority type is applied to ALL rows of each group
+  // after the loop. Rows without a groupId (legacy scans) keep the old
+  // per-timestamp refinement.
+  const groupTypeVotes = new Map<string, string[]>();
+
   for (const [timestamp, surfacesAtTime] of Array.from(timestampMap.entries())) {
     // Try the canonical filename first (Math.round of timestamp), then
     // fall back to Math.floor for legacy surfaces from older scans whose
@@ -2219,14 +2339,25 @@ async function enrichSurfacesWithContext(
     const result = await analyzeSceneContext(framePath, bestSurface.surfaceType, isVertical);
     if (!result) continue;
 
-    // Update ALL surfaces at this timestamp with the context
+    // Update ALL surfaces at this timestamp with the context. The refined
+    // TYPE is only written directly for group-less legacy rows — grouped
+    // rows vote, and the group majority is applied below so every row of a
+    // physical surface carries one consistent type.
     for (const surface of surfacesAtTime) {
+      const groupId = (surface as any).surfaceGroupId as string | null | undefined;
       try {
-        await storage.updateDetectedSurface(surface.id, {
-          surfaceType: result.refinedSurfaceType,
+        const patch: Record<string, any> = {
           sceneContext: `${result.sceneSetting} | ${result.mood} | Brands: ${result.brandCategories.slice(0, 3).join(", ")}`,
           surroundings: result.surroundings.slice(0, 10),
-        });
+        };
+        if (groupId) {
+          const votes = groupTypeVotes.get(groupId) ?? [];
+          votes.push(result.refinedSurfaceType);
+          groupTypeVotes.set(groupId, votes);
+        } else {
+          patch.surfaceType = result.refinedSurfaceType;
+        }
+        await storage.updateDetectedSurface(surface.id, patch);
         enrichedCount++;
       } catch (err) {
         console.error(`[FullScale Edge Context] Failed to update surface ${surface.id}:`, err);
@@ -2234,7 +2365,30 @@ async function enrichSurfacesWithContext(
     }
   }
 
-  console.log(`[FullScale Edge Context] Enriched ${enrichedCount}/${surfaces.length} surfaces`);
+  // Apply the majority refined type per group to EVERY row of the group —
+  // including rows at timestamps whose frames weren't found above. First
+  // vote wins ties (frames are processed in timestamp order, and the
+  // earliest refinement saw the same evidence as the rest).
+  for (const [groupId, votes] of Array.from(groupTypeVotes.entries())) {
+    const tally = new Map<string, number>();
+    let majority = votes[0];
+    for (const v of votes) {
+      const n = (tally.get(v) ?? 0) + 1;
+      tally.set(v, n);
+      if (n > (tally.get(majority) ?? 0)) majority = v;
+    }
+    const groupRows = surfaces.filter(s => (s as any).surfaceGroupId === groupId);
+    for (const row of groupRows) {
+      if (row.surfaceType === majority) continue;
+      try {
+        await storage.updateDetectedSurface(row.id, { surfaceType: majority });
+      } catch (err) {
+        console.error(`[FullScale Edge Context] Failed to apply group type to surface ${row.id}:`, err);
+      }
+    }
+  }
+
+  console.log(`[FullScale Edge Context] Enriched ${enrichedCount}/${surfaces.length} surfaces (${groupTypeVotes.size} group-consistent type refinements)`);
 }
 
 // ============================================================================
@@ -2343,8 +2497,15 @@ async function captureSurfaceKeyframes(videoId: number): Promise<void> {
 // product placement across frames of the same camera angle.
 
 interface SurfaceCluster {
-  surfaces: { id: number; bbX: number; bbY: number; bbW: number; bbH: number; confidence: number }[];
+  surfaces: { id: number; bbX: number; bbY: number; bbW: number; bbH: number; confidence: number; groupId?: string | null }[];
   surfaceType: string;
+  // Scene the cluster lives in (sceneId or per-shot block) — post-processing
+  // must never merge or dedupe across scenes.
+  sceneKey?: number;
+  // Canonical-surface identity stamped at consensus insert. Optional because
+  // legacy rows pre-date the column; identity-aware passes fall back to
+  // spatial behavior when it's absent.
+  groupId?: string | null;
 }
 
 // Normalize surface type synonyms to a canonical name
@@ -2527,13 +2688,13 @@ function canonicalSurfaceType(type: string): string {
  * one cluster instead of breaking off a new one.
  */
 function clusterSurfaces(
-  surfaces: Array<{ id: number; surfaceType: string; timestamp?: string | number; boundingBoxX: string; boundingBoxY: string; boundingBoxWidth: string; boundingBoxHeight: string; confidence: string; sceneId?: number | null }>,
+  surfaces: Array<{ id: number; surfaceType: string; timestamp?: string | number; boundingBoxX: string; boundingBoxY: string; boundingBoxWidth: string; boundingBoxHeight: string; confidence: string; sceneId?: number | null; surfaceGroupId?: string | null }>,
   sceneCuts: number[] = [],
 ): SurfaceCluster[] {
   const CLUSTER_TOLERANCE = 0.18; // L∞ center distance (fallback)
   const IOU_MERGE = 0.30;
 
-  const clusters: (SurfaceCluster & { sceneKey?: number })[] = [];
+  const clusters: SurfaceCluster[] = [];
 
   for (const s of surfaces) {
     const bbX = parseFloat(s.boundingBoxX);
@@ -2573,7 +2734,7 @@ function clusterSurfaces(
       });
 
       if (isMatch) {
-        cluster.surfaces.push({ id: s.id, bbX, bbY, bbW, bbH, confidence: parseFloat(s.confidence) });
+        cluster.surfaces.push({ id: s.id, bbX, bbY, bbW, bbH, confidence: parseFloat(s.confidence), groupId: s.surfaceGroupId ?? null });
         matched = true;
         break;
       }
@@ -2583,9 +2744,34 @@ function clusterSurfaces(
       clusters.push({
         surfaceType: canonical,
         sceneKey,
-        surfaces: [{ id: s.id, bbX, bbY, bbW, bbH, confidence: parseFloat(s.confidence) }],
+        groupId: s.surfaceGroupId ?? null,
+        surfaces: [{ id: s.id, bbX, bbY, bbW, bbH, confidence: parseFloat(s.confidence), groupId: s.surfaceGroupId ?? null }],
       });
     }
+  }
+
+  // Cluster-level identity: the dominant member group (most rows; ties break
+  // toward higher cumulative confidence). Members from a different group got
+  // spatially merged into this cluster — post-processing stamps them with
+  // the dominant id so a physical surface keeps exactly one identity.
+  for (const cluster of clusters) {
+    const byGroup = new Map<string, { rows: number; conf: number }>();
+    for (const m of cluster.surfaces) {
+      if (!m.groupId) continue;
+      const agg = byGroup.get(m.groupId) ?? { rows: 0, conf: 0 };
+      agg.rows++;
+      agg.conf += m.confidence;
+      byGroup.set(m.groupId, agg);
+    }
+    let dominant: string | null = null;
+    let dominantAgg = { rows: -1, conf: -1 };
+    for (const [gid, agg] of Array.from(byGroup.entries())) {
+      if (agg.rows > dominantAgg.rows || (agg.rows === dominantAgg.rows && agg.conf > dominantAgg.conf)) {
+        dominant = gid;
+        dominantAgg = agg;
+      }
+    }
+    cluster.groupId = dominant;
   }
 
   return clusters;
@@ -2597,13 +2783,41 @@ function clusterSurfaces(
  * same coffee table into two semantic groups due to confidence drift).
  * Merge clusters whose median bboxes have IoU > 0.4 — drop the
  * lower-cumulative-confidence one, mark its surfaces Filtered.
+ *
+ * Operates GROUP-WISE: clusters carrying the same surfaceGroupId are one
+ * canonical surface that spatial clustering happened to split, so they're
+ * coalesced into a single unit first — a group either survives whole or is
+ * dropped whole, never partially. And a HARD scene gate: two units in
+ * different scenes are different physical objects no matter how perfectly
+ * their bboxes overlap (same wall position in the host shot and the guest
+ * shot), so cross-scene dedupe never happens.
  */
 async function dedupeOverlappingClusters(
   clusters: SurfaceCluster[],
   computeMedianFn: (c: SurfaceCluster['surfaces']) => { x: number; y: number; w: number; h: number },
 ): Promise<{ keep: SurfaceCluster[]; drop: SurfaceCluster[] }> {
   const IOU_MERGE = 0.40;
-  const enriched = clusters.map(c => ({
+
+  // Coalesce same-group clusters into one unit. Group-less clusters (legacy
+  // rows) stay one-unit-per-cluster, preserving the old behavior for them.
+  const byGroup = new Map<string, SurfaceCluster>();
+  const units: SurfaceCluster[] = [];
+  for (const c of clusters) {
+    if (!c.groupId) {
+      units.push(c);
+      continue;
+    }
+    const existing = byGroup.get(c.groupId);
+    if (existing) {
+      existing.surfaces = existing.surfaces.concat(c.surfaces);
+    } else {
+      const unit: SurfaceCluster = { surfaceType: c.surfaceType, sceneKey: c.sceneKey, groupId: c.groupId, surfaces: [...c.surfaces] };
+      byGroup.set(c.groupId, unit);
+      units.push(unit);
+    }
+  }
+
+  const enriched = units.map(c => ({
     cluster: c,
     median: computeMedianFn(c.surfaces),
     score: c.surfaces.reduce((sum, s) => sum + s.confidence, 0),
@@ -2615,6 +2829,8 @@ async function dedupeOverlappingClusters(
     const eBox = { x: e.median.x, y: e.median.y, width: e.median.w, height: e.median.h };
     const conflict = keep.find(k => {
       if (canonicalSurfaceType(k.surfaceType) !== canonicalSurfaceType(e.cluster.surfaceType)) return false;
+      // HARD scene gate: different scenes never dedupe.
+      if (k.sceneKey !== undefined && e.cluster.sceneKey !== undefined && k.sceneKey !== e.cluster.sceneKey) return false;
       const kEnriched = enriched.find(x => x.cluster === k);
       if (!kEnriched) return false;
       const kBox = { x: kEnriched.median.x, y: kEnriched.median.y, width: kEnriched.median.w, height: kEnriched.median.h };
@@ -2720,6 +2936,25 @@ async function normalizeSurfaceBoundingBoxes(videoId: number, excludeIds?: Set<n
 
   console.log(`[Normalize] Found ${clusters.length} cluster(s) from ${validSurfaces.length} surfaces (scene cuts: ${sceneCuts.length})`);
 
+  // Step 2a: identity adoption. When spatial clustering merges rows from
+  // more than one consensus group into a single cluster, post-processing has
+  // decided they're the same physical surface — every merged row adopts the
+  // cluster's dominant surfaceGroupId so identity stays one-per-surface all
+  // the way to the inventory. Rows with no groupId (legacy scans) adopt too
+  // when the cluster has one; clusters with no grouped rows are left alone.
+  for (const cluster of clusters) {
+    if (!cluster.groupId) continue;
+    for (const member of cluster.surfaces) {
+      if (member.groupId === cluster.groupId) continue;
+      try {
+        await storage.updateDetectedSurface(member.id, { surfaceGroupId: cluster.groupId });
+        member.groupId = cluster.groupId;
+      } catch (err) {
+        console.warn(`[Normalize] Failed to adopt group id on surface ${member.id}:`, err);
+      }
+    }
+  }
+
   // Step 2b: Drop overlapping clusters of the same canonical type. clusterSurfaces
   // groups by IoU/center-distance against members, but two clusters of the same
   // type can still drift far enough apart that no individual member matches —
@@ -2775,13 +3010,14 @@ async function normalizeSurfaceBoundingBoxes(videoId: number, excludeIds?: Set<n
 // ============================================================================
 
 /**
- * Groups surfaces across frames into temporal tracks based on surface type
- * and bounding box similarity. This identifies when a surface "starts" and
- * "ends" in the video. Keeps only the single best track (longest duration,
- * highest confidence) and marks the rest as Filtered.
+ * Groups surfaces across frames into temporal tracks by canonical surface
+ * identity. This identifies when a surface "starts" and "ends" in the video.
+ * Keeps the best track (longest duration, highest confidence) PER canonical
+ * surface and marks that surface's weaker fragmented sightings as Filtered —
+ * distinct surfaces always keep their own best track.
  *
- * This prevents ghost/duplicate surfaces and ensures we show 1 prominent
- * surface with clear start/end timestamps.
+ * This prevents ghost/duplicate tracks of one surface without ever deleting
+ * a different physical surface that happens to share its type or position.
  */
 async function groupSurfacesTemporally(
   videoId: number,
@@ -2807,64 +3043,75 @@ async function groupSurfacesTemporally(
   // Sort by timestamp
   const sorted = [...validSurfaces].sort((a, b) => parseFloat(String(a.timestamp)) - parseFloat(String(b.timestamp)));
 
-  // Build tracks: consecutive frames with same surface type and overlapping bounding boxes
+  // Track identity — the canonical surface group when the row has one.
+  // Chaining used to accept `same type OR similar center-Y`, which fused
+  // DIFFERENT physical surfaces (a desk and the shelf behind it sit at
+  // similar heights) into one track labeled after whichever came first.
+  // A track is now one identity, full stop. Rows without a groupId (legacy
+  // scans) fall back to a type+scene composite — same-type-same-scene
+  // chaining without the cross-identity position shortcut.
+  const trackKeyOf = (s: (typeof sorted)[number]): string =>
+    ((s as any).surfaceGroupId as string | null | undefined)
+      ?? `${s.surfaceType.toLowerCase()}:scene${(s as any).sceneId ?? 0}`;
+
+  // Build tracks: consecutive frames of the SAME canonical surface
   interface SurfaceTrack {
     surfaceType: string;
+    key: string;
     surfaces: typeof sorted;
     startTime: number;
     endTime: number;
     avgConfidence: number;
   }
 
-  const tracks: SurfaceTrack[] = [];
-  let currentTrack: typeof sorted = [sorted[0]];
-
-  for (let i = 1; i < sorted.length; i++) {
-    const prev = sorted[i - 1];
-    const curr = sorted[i];
-    const prevTs = parseFloat(String(prev.timestamp));
-    const currTs = parseFloat(String(curr.timestamp));
-    const timeDiff = currTs - prevTs;
-
-    // Check if surfaces are consecutive (within 1.5x frame interval) and same type
-    const isSameType = curr.surfaceType.toLowerCase() === prev.surfaceType.toLowerCase();
-    // "Consecutive" means within 1.5× the actual scan interval. With the
-    // sliding-scale plan, intervals can be 2-5s — using a hard-coded
-    // CONFIG.FRAME_INTERVAL_SECONDS (=2) here would mark every 4-5s gap
-    // as non-consecutive, fragmenting tracks into one-frame slivers and
-    // filtering 95%+ of detections.
-    const isConsecutive = timeDiff <= intervalHint * 1.5;
-
-    // Check bounding box overlap (center Y within 15% tolerance)
-    const prevCenterY = parseFloat(String(prev.boundingBoxY)) + parseFloat(String(prev.boundingBoxHeight)) / 2;
-    const currCenterY = parseFloat(String(curr.boundingBoxY)) + parseFloat(String(curr.boundingBoxHeight)) / 2;
-    const isSimilarPosition = Math.abs(prevCenterY - currCenterY) < 0.15;
-
-    if (isConsecutive && (isSameType || isSimilarPosition)) {
-      currentTrack.push(curr);
-    } else {
-      // Close current track and start a new one
-      const timestamps = currentTrack.map(s => parseFloat(String(s.timestamp)));
-      tracks.push({
-        surfaceType: currentTrack[0].surfaceType,
-        surfaces: [...currentTrack],
-        startTime: Math.min(...timestamps),
-        endTime: Math.max(...timestamps),
-        avgConfidence: currentTrack.reduce((sum, s) => sum + parseFloat(String(s.confidence)), 0) / currentTrack.length,
-      });
-      currentTrack = [curr];
-    }
+  // Partition rows by identity FIRST, then chain each partition by time gap
+  // independently. Chaining the global timestamp order broke multicam scenes:
+  // when frames yield 2+ consensus surfaces each, rows of different groups
+  // alternate at every timestamp (desk@100s, wall@100s, desk@109s, ...), so
+  // every key change closed the track, nearly every track was a singleton,
+  // and best-per-group kept ONE row per surface — silently filtering the
+  // supporting-frame rows that give videoExporter fades and remix
+  // densification their keyframe density. Distinct groups never interact.
+  const rowsByKey = new Map<string, typeof sorted>();
+  for (const s of sorted) {
+    const key = trackKeyOf(s);
+    const arr = rowsByKey.get(key) ?? [];
+    arr.push(s);
+    rowsByKey.set(key, arr);
   }
 
-  // Close the last track
-  const timestamps = currentTrack.map(s => parseFloat(String(s.timestamp)));
-  tracks.push({
-    surfaceType: currentTrack[0].surfaceType,
-    surfaces: [...currentTrack],
-    startTime: Math.min(...timestamps),
-    endTime: Math.max(...timestamps),
-    avgConfidence: currentTrack.reduce((sum, s) => sum + parseFloat(String(s.confidence)), 0) / currentTrack.length,
-  });
+  const tracks: SurfaceTrack[] = [];
+  const closeTrack = (key: string, trackRows: typeof sorted) => {
+    const timestamps = trackRows.map(s => parseFloat(String(s.timestamp)));
+    tracks.push({
+      surfaceType: trackRows[0].surfaceType,
+      key,
+      surfaces: [...trackRows],
+      startTime: Math.min(...timestamps),
+      endTime: Math.max(...timestamps),
+      avgConfidence: trackRows.reduce((sum, s) => sum + parseFloat(String(s.confidence)), 0) / trackRows.length,
+    });
+  };
+
+  for (const [key, rows] of Array.from(rowsByKey.entries())) {
+    // "Consecutive" means within 1.5× the actual scan interval. The hint is
+    // the caller-measured median gap between analyzed frames — scene-first
+    // and grid-diverse sampling space frames irregularly (shot midpoints,
+    // 9s+ grids), so a config-constant interval here marked every real gap
+    // as non-consecutive, fragmenting tracks into one-frame slivers and
+    // filtering 95%+ of detections.
+    let currentTrack: typeof sorted = [rows[0]];
+    for (let i = 1; i < rows.length; i++) {
+      const timeDiff = parseFloat(String(rows[i].timestamp)) - parseFloat(String(rows[i - 1].timestamp));
+      if (timeDiff <= intervalHint * 1.5) {
+        currentTrack.push(rows[i]);
+      } else {
+        closeTrack(key, currentTrack);
+        currentTrack = [rows[i]];
+      }
+    }
+    closeTrack(key, currentTrack);
+  }
 
   console.log(`[Temporal] Found ${tracks.length} surface track(s):`);
   for (const track of tracks) {
@@ -2896,38 +3143,22 @@ async function groupSurfacesTemporally(
     return { ...track, score, duration };
   }).sort((a, b) => b.score - a.score);
 
-  // Keep the best track PER (surface type, scene). Keying by type alone kept
-  // ONE Wall track for the entire video — a 12-scene podcast where the wall
-  // appears in every scene lost all detections outside a single time window
-  // (walls found at 9.9s/13.1s were deleted because the 29-36s track was
-  // longer). Scenes come from the dHash scene index (recurring camera setups
-  // share a sceneId), so this keeps one clean track per type per camera
-  // setup while still deduping weak secondary tracks within a scene.
-  const trackSceneKey = (t: typeof scoredTracks[0]): string => {
-    // Dominant sceneId among the track's surfaces (tracks can straddle a cut)
-    const counts = new Map<number, number>();
-    for (const s of t.surfaces) {
-      const sid = (s as any).sceneId ?? 0;
-      counts.set(sid, (counts.get(sid) || 0) + 1);
-    }
-    let best = 0, bestCount = -1;
-    counts.forEach((count, sid) => {
-      if (count > bestCount) { bestCount = count; best = sid; }
-    });
-    return `${t.surfaceType.toLowerCase()}:scene${best}`;
-  };
-  const bestPerType = new Map<string, typeof scoredTracks[0]>();
+  // Keep the best track PER CANONICAL SURFACE. Keying by (type, scene) kept
+  // ONE track per type per scene — two REAL walls in the same wide shot
+  // meant one of them lost. A distinct group is a distinct physical surface
+  // and always survives; only weaker RE-DETECTIONS of the same surface
+  // (fragmented sightings of one group) lose to that group's best track.
+  const bestPerGroup = new Map<string, typeof scoredTracks[0]>();
   for (const t of scoredTracks) {
-    const key = trackSceneKey(t);
-    const existing = bestPerType.get(key);
+    const existing = bestPerGroup.get(t.key);
     if (!existing || t.score > existing.score) {
-      bestPerType.set(key, t);
+      bestPerGroup.set(t.key, t);
     }
   }
   const keepIds = new Set<number>();
-  const winningTracks = Array.from(bestPerType.values());
+  const winningTracks = Array.from(bestPerGroup.values());
   for (const t of winningTracks) {
-    console.log(`[Temporal] Keeping ${t.surfaceType}: ${t.startTime}s - ${t.endTime}s (${t.duration}s, score=${t.score.toFixed(2)})`);
+    console.log(`[Temporal] Keeping ${t.surfaceType} [${t.key}]: ${t.startTime}s - ${t.endTime}s (${t.duration}s, score=${t.score.toFixed(2)})`);
     const contextNote = `Visible: ${t.startTime}s - ${t.endTime + intervalHint}s (${t.duration}s)`;
     for (const s of t.surfaces) {
       keepIds.add(s.id);
@@ -2937,21 +3168,21 @@ async function groupSurfacesTemporally(
     }
   }
 
-  // Filter out surfaces NOT in any winning (type, scene) track. These are
-  // weaker secondary tracks of the same type WITHIN THE SAME SCENE (e.g. a
-  // brief 2-frame wall detection when that scene's primary wall track has
-  // 5 frames). Same-type tracks in other scenes keep their own winners.
+  // Filter out surfaces NOT in their group's winning track. These are weaker
+  // fragments of the SAME canonical surface (e.g. a brief 2-frame sighting
+  // when the group's primary track has 5 frames). Other groups — including
+  // same-type groups in the same scene — keep their own winners.
   for (const track of scoredTracks) {
     if (track.surfaces.every(s => keepIds.has(s.id))) continue; // entirely a winner
     for (const s of track.surfaces) {
       if (keepIds.has(s.id)) continue;
-      const winner = bestPerType.get(trackSceneKey(track));
+      const winner = bestPerGroup.get(track.key);
       const winnerLabel = winner ? `${winner.surfaceType} (${winner.duration}s)` : "best track";
-      console.log(`[Temporal] Filtering surface ${s.id} (${track.surfaceType}, ${track.duration}s) — winning ${track.surfaceType} track in this scene is ${winnerLabel}`);
+      console.log(`[Temporal] Filtering surface ${s.id} (${track.surfaceType}, ${track.duration}s) — winning track for this surface is ${winnerLabel}`);
       try {
         await storage.updateDetectedSurface(s.id, {
           surfaceType: "Filtered",
-          sceneContext: `Removed: weaker ${track.surfaceType} track (${track.duration}s) — best in scene is ${winnerLabel}`,
+          sceneContext: `Removed: weaker ${track.surfaceType} sighting (${track.duration}s) — best track for this surface is ${winnerLabel}`,
         });
       } catch (err) {
         console.warn(`[Temporal] Failed to filter surface ${s.id}:`, err);
@@ -2959,7 +3190,7 @@ async function groupSurfacesTemporally(
     }
   }
 
-  console.log(`[Temporal] Kept ${keepIds.size} surfaces across ${bestPerType.size} (type, scene) tracks, filtered ${validSurfaces.length - keepIds.size}`);
+  console.log(`[Temporal] Kept ${keepIds.size} surfaces across ${bestPerGroup.size} canonical surface track(s), filtered ${validSurfaces.length - keepIds.size}`);
 }
 
 // ============================================================================
@@ -3028,11 +3259,18 @@ async function processVideoScanInner(
   try {
     const prior = await storage.getDetectedSurfaces(videoId);
     priorSurfaceIds = prior.map(s => s.id);
-    priorActiveCount = prior.filter(
-      s => s.surfaceType !== "Filtered" && s.surfaceType !== "Potential Surface"
-    ).length;
+    // Count CANONICAL surfaces, not rows — each surface owns many
+    // supporting-frame rows, and a failed rescan reverting to
+    // "Ready (23 Spots)" over 4 physical surfaces is the row-count fiction
+    // this pipeline exists to kill. Rows from before groupIds existed fall
+    // back to type+scene identity (same coalesce storage counts by).
+    priorActiveCount = new Set(
+      prior
+        .filter(s => s.surfaceType !== "Filtered" && s.surfaceType !== "Potential Surface")
+        .map(s => ((s as any).surfaceGroupId as string | null | undefined) ?? `${s.surfaceType}:${(s as any).sceneId ?? 0}`)
+    ).size;
     if (priorSurfaceIds.length > 0) {
-      console.log(`[Scanner V2] Snapshotted ${priorSurfaceIds.length} existing surfaces (${priorActiveCount} active) — will replace only on successful scan`);
+      console.log(`[Scanner V2] Snapshotted ${priorSurfaceIds.length} existing surface rows (${priorActiveCount} active canonical surfaces) — will replace only on successful scan`);
     }
   } catch (err: any) {
     console.warn(`[Scanner V2] Could not snapshot existing surfaces:`, err?.message || err);
@@ -3087,7 +3325,7 @@ async function processVideoScanInner(
     // downloading the full video (see streamResolver.ts + extractFramesFromUrl).
     // When this succeeds, we skip the local-file requirement entirely and feed
     // these frames straight into detection.
-    let streamedFrames: { frames: string[]; timestamps: number[]; segmentIds: number[] } | null = null;
+    let streamedFrames: { frames: string[]; timestamps: number[]; segmentIds: number[]; sceneIndex: SceneIndex | null } | null = null;
 
     if ((video as any).filePath?.startsWith('/storage/')) {
       try {
@@ -3129,6 +3367,34 @@ async function processVideoScanInner(
     let scanPlan: { intervalSeconds: number; maxFrames: number } = {
       intervalSeconds: CONFIG.FRAME_INTERVAL_SECONDS,
       maxFrames: CONFIG.MAX_FRAMES_PER_VIDEO,
+    };
+    // True until a duration-derived plan replaces the CONFIG defaults. Local
+    // files (uploads) used to skip planning entirely and scan 48s of an
+    // hour-long file — the local path below probes ffprobe when this is
+    // still set.
+    let scanPlanIsDefault = true;
+
+    // Hard cap at 1 hour — anything longer scans only the first hour of
+    // content (creator-confirmed: nothing >1hr in scope). Shared by the
+    // stream grid sizing, the download plan, and the local-file plan.
+    const MAX_DURATION_SEC = 60 * 60;
+
+    // Plan adaptive sampling — duration-banded, NOT a fixed frame target.
+    // Fixed-target was wrong: 75 frames on a 30-min video = every 24s,
+    // way too sparse for podcasts where surfaces shift between cuts.
+    // Sliding scale gets denser sampling on shorter content where
+    // action density is higher, and reasonable spacing on longer content.
+    const planFromDuration = (durSec: number): { intervalSeconds: number; maxFrames: number } => {
+      // Cap effective duration at 1hr — long videos still scan, just
+      // limited to first hour of content.
+      const eff = Math.min(durSec, MAX_DURATION_SEC);
+      let interval: number;
+      if (eff <= 5 * 60) interval = 2;          // ≤5min: every 2s
+      else if (eff <= 15 * 60) interval = 3;    // 5–15min: every 3s
+      else if (eff <= 30 * 60) interval = 4;    // 15–30min: every 4s
+      else interval = 5;                         // 30–60min: every 5s
+      const maxFrames = Math.ceil(eff / interval);
+      return { intervalSeconds: interval, maxFrames };
     };
 
     // Resolve video duration. Primary source: the DB (YouTube import stores
@@ -3198,7 +3464,6 @@ async function processVideoScanInner(
         // scenes/angles, not near-identical frames. This is the OAuth
         // detection model: the stream flows through ffmpeg transiently, nothing
         // is persisted.
-        const MAX_DURATION_SEC = 60 * 60;
         const GRID_CAP = 400;                     // hard ceiling on candidate frames
         // The DB duration is often absent for imports (and unparseable
         // formats parse to null) — mirror the download fallback and probe
@@ -3311,37 +3576,21 @@ async function processVideoScanInner(
       // request here so anonymous bot detection doesn't block long
       // downloads. Falls back to anonymous if no token is available.
 
-      // Plan adaptive sampling — duration-banded, NOT a fixed frame target.
-      // Fixed-target was wrong: 75 frames on a 30-min video = every 24s,
-      // way too sparse for podcasts where surfaces shift between cuts.
-      // Sliding scale gets denser sampling on shorter content where
-      // action density is higher, and reasonable spacing on longer
-      // content. Hard cap at 1 hour — anything longer scans only the
-      // first hour (creator-confirmed: nothing >1hr in scope).
-      const MAX_DURATION_SEC = 60 * 60; // 1 hour
+      // Resolve duration for the duration-banded plan (planFromDuration
+      // above). Probe results feed back into ytProbedDurationSec so the
+      // degenerate-index fallback later in the local path can reuse them.
       let probedDuration = durationSec ?? ytProbedDurationSec;
       if (!probedDuration) {
         probedDuration = await getYoutubeVideoDuration(video.youtubeId, oauthToken || undefined);
         if (probedDuration) {
           console.log(`[Scanner V2] Duration from yt-dlp probe: ${probedDuration}s`);
+          ytProbedDurationSec = probedDuration;
         }
       }
 
-      const planFromDuration = (durSec: number): { intervalSeconds: number; maxFrames: number } => {
-        // Cap effective duration at 1hr — long videos still scan, just
-        // limited to first hour of content.
-        const eff = Math.min(durSec, MAX_DURATION_SEC);
-        let interval: number;
-        if (eff <= 5 * 60) interval = 2;          // ≤5min: every 2s
-        else if (eff <= 15 * 60) interval = 3;    // 5–15min: every 3s
-        else if (eff <= 30 * 60) interval = 4;    // 15–30min: every 4s
-        else interval = 5;                         // 30–60min: every 5s
-        const maxFrames = Math.ceil(eff / interval);
-        return { intervalSeconds: interval, maxFrames };
-      };
-
       if (probedDuration && probedDuration > 0) {
         scanPlan = planFromDuration(probedDuration);
+        scanPlanIsDefault = false;
         const coveredMin = (scanPlan.intervalSeconds * scanPlan.maxFrames / 60).toFixed(1);
         const fullMin = (probedDuration / 60).toFixed(1);
         const cappedNote = probedDuration > MAX_DURATION_SEC ? ` (CAPPED at 1hr — full video is ${fullMin}min)` : "";
@@ -3349,6 +3598,7 @@ async function processVideoScanInner(
       } else {
         // Duration unknown — default to "5 min, every 2s" plan = 150 frames.
         scanPlan = { intervalSeconds: 2, maxFrames: 150 };
+        scanPlanIsDefault = false;
         console.log(`[Scanner V2] Duration unknown — using fallback plan: every 2s × 150 frames (5min coverage)`);
       }
 
@@ -3471,18 +3721,84 @@ async function processVideoScanInner(
     let streamSegmentIds: number[] | null = null;
     let usedSceneFirst = false;
     let sceneIndex: SceneIndex | null = null;
+    // Provenance for the persisted index/inventory: ffmpeg cut detection on a
+    // local file, or classes clustered from the streamed dense grid.
+    let sceneIndexSource: "sceneIndex" | "grid" = "sceneIndex";
+    // A degenerate index (zero cuts on a long video) still gets persisted,
+    // but its single all-covering scene must not become the consensus
+    // bucket — the local dHash segmentation below takes over for grouping.
+    let indexDegenerate = false;
 
     if (streamedFrames) {
-      // OAuth stream path: frames were already pulled from the CDN URL. We
-      // can't do scene-cut detection here (that reads the whole file, which
-      // we deliberately never downloaded), so we use the uniformly-sampled
-      // frames as-is. sceneBoundaries stays whatever a prior full scan set.
+      // OAuth stream path: frames were already pulled from the CDN URL. No
+      // ffmpeg cut detection here (that reads the whole file, which we
+      // deliberately never downloaded) — but the dense grid's dHash classes
+      // give us a real scene index of their own: recurring camera setups
+      // with per-run tStart/tEnd. Adopt it (and persist it, unless that
+      // would downgrade a refined index — see below), so streamed scans get
+      // real sceneIds instead of stamping 0 on every row.
       frames = streamedFrames.frames;
       frameTimestamps = streamedFrames.timestamps;
       streamSegmentIds = streamedFrames.segmentIds;
-      console.log(`[Scanner V2] Using ${frames.length} streamed frames (uniform sampling; scene-cut detection skipped — no local file)`);
+      if (streamedFrames.sceneIndex && streamedFrames.sceneIndex.sceneCount > 0) {
+        sceneIndex = streamedFrames.sceneIndex;
+        sceneIndexSource = "grid";
+        // Grid cuts are quantized to the sampling interval (~9s on an hour
+        // file). A prior download-path scan may have persisted frame-accurate
+        // refined cuts — overwriting those silently degrades sceneBlockId
+        // enrichment and the client's shot-constrained placement. Persist
+        // only when the stored index is absent/empty or itself grid-derived:
+        // the source stamp below marks new grid rows, and all-integer cuts
+        // identify legacy grid rows (refined cuts carry 1/60s fractions).
+        // The grid index still drives THIS scan in-memory either way.
+        const existingIdx = (video as any).sceneIndex as (SceneIndex & { source?: string }) | null | undefined;
+        const existingIsRefined = !!existingIdx &&
+          Array.isArray(existingIdx.cuts) && existingIdx.cuts.length > 0 &&
+          existingIdx.source !== "grid" &&
+          existingIdx.cuts.some(c => !Number.isInteger(c));
+        if (existingIsRefined) {
+          console.log(`[Scanner V2] Keeping existing frame-accurate scene index (${existingIdx!.cuts.length} refined cuts) — adopting it for grouping and stamping`);
+          // Rows must be stamped in the SAME sceneId space as the index the
+          // API serves — the placement preview compares surface.sceneId
+          // against sceneIds computed from the served index, and the grid
+          // clustering numbers its classes independently. The grid index
+          // already did its job (frame selection); everything downstream
+          // (consensus keys, row stamping, inventory) uses the kept index.
+          sceneIndex = existingIdx!;
+          sceneIndexSource = "sceneIndex";
+        } else {
+          try {
+            await storage.updateVideoIndex(videoId, {
+              sceneIndex: { ...sceneIndex, source: "grid" } as any,
+              sceneBoundaries: sceneIndex.cuts as any,
+            });
+            console.log(`[Scanner V2] Persisted grid-derived scene index: ${sceneIndex.sceneCount} unique scene(s) across ${sceneIndex.shots.length} run(s)`);
+          } catch (gidxErr: any) {
+            console.warn(`[Scanner V2] Failed to persist grid scene index (non-fatal):`, gidxErr?.message || gidxErr);
+          }
+        }
+      }
+      console.log(`[Scanner V2] Using ${frames.length} streamed frames (${sceneIndex ? "grid scene classes" : "dHash segments"}; ffmpeg cut detection skipped — no local file)`);
     } else if (videoPath) {
       // LOCAL/DOWNLOADED path — scene-first detection for denser, cheaper sampling.
+      // Resolve duration first. Uploads reach here with the CONFIG default
+      // plan (no DB duration, no yt-dlp probe) — scanning blind against it
+      // meant a 61-minute upload scanned only its first 48 seconds. One
+      // ffprobe on the local file fixes the plan; the duration also sizes
+      // the uniform fallback below when scene-first sampling doesn't happen.
+      let localDurationSec = durationSec ?? ytProbedDurationSec;
+      if (scanPlanIsDefault || !localDurationSec) {
+        const probed = await probeLocalDurationSec(videoPath);
+        if (probed > 0) {
+          localDurationSec = probed;
+          if (scanPlanIsDefault) {
+            scanPlan = planFromDuration(probed);
+            scanPlanIsDefault = false;
+            console.log(`[Scanner V2] Local file duration ${probed.toFixed(0)}s (ffprobe) — plan: every ${scanPlan.intervalSeconds}s × ${scanPlan.maxFrames} frames`);
+          }
+        }
+      }
+
       // SCENE-FIRST: detect cuts and cluster shots into unique scenes BEFORE
       // extracting frames. Sample 1-2 frames per UNIQUE SCENE rather than
       // uniformly — a podcast with 60 cuts but 2 unique scenes goes from 50
@@ -3509,7 +3825,14 @@ async function processVideoScanInner(
         console.warn(`[Scanner V2] Scene index build failed (non-fatal):`, sidxErr?.message || sidxErr);
       }
 
-      if (sceneIndex && sceneIndex.sceneCount > 0) {
+      // A degenerate index (zero cuts on a long video — usually cut
+      // detection timing out, not a genuinely single-shot hour) means
+      // "one scene" is an artifact. Scene-first sampling would trust it
+      // and extract ~6 frames for the whole file; take the uniform
+      // fallback below instead, sized by duration.
+      indexDegenerate = !!sceneIndex && (sceneIndex as any).degenerate === true;
+
+      if (sceneIndex && sceneIndex.sceneCount > 0 && !indexDegenerate) {
         // ≥2 frames per scene ALWAYS — the consensus vote needs at least two
         // independent samples of a scene to confirm a surface ("double
         // authentication"). Budget grows to 36 frames to keep 2/scene
@@ -3534,6 +3857,22 @@ async function processVideoScanInner(
       }
 
       if (!usedSceneFirst) {
+        // Long-video uniform fallback: the banded plan's maxFrames assumes
+        // cut-dense content (an hour file = 720 frames = 720 sequential
+        // Gemini calls). Whenever scene-first sampling didn't happen on a
+        // >10-min video — degenerate index, zero cuts, or an extraction
+        // that failed or returned nothing — spread a fixed budget (one
+        // frame per ~90s, clamped 24-60) uniformly across the WHOLE
+        // duration so an hour-long file gets real coverage at bounded cost.
+        if (localDurationSec && localDurationSec > 10 * 60) {
+          const uniformBudget = Math.max(24, Math.min(60, Math.round(localDurationSec / 90)));
+          const eff = Math.min(localDurationSec, MAX_DURATION_SEC);
+          scanPlan = {
+            intervalSeconds: Math.max(1, Math.floor(eff / uniformBudget)),
+            maxFrames: uniformBudget,
+          };
+          console.log(`[Scanner V2] Scene-first unavailable for ${(localDurationSec / 60).toFixed(1)}min video — uniform fallback: every ${scanPlan.intervalSeconds}s × ${uniformBudget} frames`);
+        }
         console.log(`[Scanner V2] Extracting frames with plan: every ${scanPlan.intervalSeconds}s × ${scanPlan.maxFrames} frames`);
         frames = await extractFrames(videoPath, framesDir, scanPlan);
         frameTimestamps = frames.map((_, i) => i * scanPlan.intervalSeconds);
@@ -3580,6 +3919,10 @@ async function processVideoScanInner(
       sceneKey: number;
       surfaces: DetectedSurface[];
       viaGemini: boolean;
+      // Frame was never actually analyzed (429 retries exhausted) — it
+      // abstains from the consensus vote instead of counting as an empty
+      // verdict in the denominator.
+      rateLimited: boolean;
     }
     const bufferedAnalyses: BufferedFrameAnalysis[] = [];
 
@@ -3648,9 +3991,11 @@ async function processVideoScanInner(
       // bearing frames let a lone hallucination in an otherwise-empty scene
       // pass as 1/1 "full support".
       {
-        // Consensus group: real scene cluster when a sceneIndex exists;
-        // dHash segment ids otherwise (streamed grid or local fallback).
-        const sceneKey = sceneIndex
+        // Consensus group: real scene cluster when a usable sceneIndex
+        // exists; dHash segment ids otherwise (streamed grid, local
+        // fallback, or a degenerate one-scene index whose single bucket
+        // would let cross-scene detections vote for each other).
+        const sceneKey = sceneIndex && !indexDegenerate
           ? sceneIdForTimestamp(sceneIndex, timestamp)
           : (streamSegmentIds?.[i] ?? 0);
         bufferedAnalyses.push({
@@ -3660,6 +4005,7 @@ async function processVideoScanInner(
           sceneKey,
           surfaces: analysis.hasSurface ? analysis.surfaces : [],
           viaGemini: Boolean(useGemini) && analysis.aiAnalyzed === true,
+          rateLimited: analysis.rateLimited === true,
         });
       }
       // NOTE: temp frames are intentionally KEPT here — the verification
@@ -3685,11 +4031,12 @@ async function processVideoScanInner(
     // mistake a live verification phase for a stuck scan.
     await storage.updateVideoStatusIfScanning(videoId, "Scanning").catch(() => {});
 
-    // Local fallback without a sceneIndex: segment frames by dHash jumps so
-    // consensus groups approximate scenes instead of collapsing the whole
-    // video into one bucket (which made cross-scene detections vote for
-    // each other and killed scene-unique surfaces as 'single_frame').
-    if (!sceneIndex && !streamSegmentIds && bufferedAnalyses.length > 1) {
+    // Local fallback without a usable sceneIndex: segment frames by dHash
+    // jumps so consensus groups approximate scenes instead of collapsing the
+    // whole video into one bucket (which made cross-scene detections vote
+    // for each other and killed scene-unique surfaces as 'single_frame').
+    // Also covers the degenerate one-scene index — same single-bucket risk.
+    if ((!sceneIndex || indexDegenerate) && !streamSegmentIds && bufferedAnalyses.length > 1) {
       try {
         let seg = 0;
         let prevHash: string | null = null;
@@ -3706,6 +4053,15 @@ async function processVideoScanInner(
       }
     }
 
+    // Surface the abstention rate before consensus runs — a heavily
+    // rate-limited scan silently loses vote coverage, and that should be
+    // visible in the log next to the scenes it affected.
+    const abstainedCount = bufferedAnalyses.filter((bf) => bf.rateLimited).length;
+    if (abstainedCount > 0) {
+      const pct = ((abstainedCount / bufferedAnalyses.length) * 100).toFixed(0);
+      console.warn(`[Scanner V2] ${abstainedCount}/${bufferedAnalyses.length} frames (${pct}%) rate-limited (abstained from consensus)`);
+    }
+
     // ── Phase B: per-scene consensus vote (AUTH 1 + AUTH 2) ───────
     // ── Phase C: model verification per scene (AUTH 2b) ───────────
     // ── Phase D: insert survivors only ────────────────────────────
@@ -3717,7 +4073,13 @@ async function processVideoScanInner(
     }
 
     for (const [sceneKey, sceneFrames] of Array.from(framesByScene.entries())) {
-      const consensusInput: FrameDetection[] = sceneFrames.map((bf) => ({
+      // Rate-limited frames abstain: they leave both the vote pool AND the
+      // denominator. An abstention counted as an empty verdict meant one
+      // 429-exhausted frame in a 2-frame scene vetoed everything the other
+      // frame found. With one effective frame left, consensus clamps its
+      // vote floor to 1 internally.
+      const effectiveFrames = sceneFrames.filter((bf) => !bf.rateLimited);
+      const consensusInput: FrameDetection[] = effectiveFrames.map((bf) => ({
         frameT: bf.timestamp,
         surfaces: bf.surfaces.map((s) => ({
           surfaceType: s.surfaceType,
@@ -3729,6 +4091,7 @@ async function processVideoScanInner(
 
       const { surfaces: consensusSurfaces, rejected } = buildSceneConsensus(consensusInput, {
         normalizeType: canonicalSurfaceType,
+        framesAnalyzed: effectiveFrames.length,
       });
       if (rejected.length > 0) {
         console.log(
@@ -3746,7 +4109,7 @@ async function processVideoScanInner(
           for (const t of cs.supportTimestamps) frameSupport.set(t, (frameSupport.get(t) ?? 0) + 1);
         }
         const bestT = Array.from(frameSupport.entries()).sort((a, b) => b[1] - a[1])[0]?.[0];
-        const bestFrame = sceneFrames.find((f) => f.timestamp === bestT) ?? sceneFrames[0];
+        const bestFrame = effectiveFrames.find((f) => f.timestamp === bestT) ?? effectiveFrames[0];
         const keep = await verifySceneSurfaces(
           bestFrame.framePath,
           consensusSurfaces.map((cs) => ({ surfaceType: cs.surfaceType, bbox: cs.bbox })),
@@ -3763,7 +4126,15 @@ async function processVideoScanInner(
       // Insert one row PER SUPPORTING FRAME with that frame's own bbox —
       // keyframe density is a rendering contract downstream (videoExporter
       // fades products across keyframe gaps; remix densifies sparse tracks).
+      // Every row of a consensus surface carries the same surfaceGroupId:
+      // ONE id per canonical physical surface, minted here where identity is
+      // established. Post-processing (normalize/dedupe/temporal/enrichment)
+      // operates on groups from this point on, so a surface never fragments
+      // back into per-frame "spots".
+      let groupSeq = 0;
       for (const cs of approved) {
+        groupSeq++;
+        const surfaceGroupId = `g${videoId}-${sceneKey}-${groupSeq}`;
         for (const member of cs.members) {
           const surface = member.ref as DetectedSurface;
           const bf = sceneFrames.find((f) => f.timestamp === member.frameT);
@@ -3789,6 +4160,9 @@ async function processVideoScanInner(
             // Scene cluster — same physical set across cuts gets same ID,
             // unlocks placement continuity in the frontend.
             sceneId: sceneIdForFrame,
+            // Canonical-surface identity — shared by every supporting-frame
+            // row of this consensus surface.
+            surfaceGroupId,
             // creatorApproved defaults to false in schema — surfaces hidden from
             // brands until creator explicitly approves via UI toggle
           };
@@ -3829,27 +4203,44 @@ async function processVideoScanInner(
     }
 
     // TEMPORAL SURFACE GROUPING — Group consecutive surfaces into tracks.
-    // Keep the best track per (surface type, scene) and mark weaker same-scene
-    // duplicates as Filtered.
+    // Keep the best track per canonical surface and mark weaker sightings of
+    // the same surface as Filtered.
+    // The "consecutive" test needs the spacing frames were ACTUALLY sampled
+    // at, not the plan's nominal interval: scene-first uses shot midpoints
+    // and the streamed grid runs at 9s+, while scanPlan.intervalSeconds
+    // stays at its 2-5s default on those paths — every real gap failed the
+    // 1.5× test and all tracks collapsed to singletons. The median gap of
+    // the analyzed frames is the truth regardless of sampling mode.
+    const analyzedTs = bufferedAnalyses.map((bf) => bf.timestamp).sort((a, b) => a - b);
+    const frameGaps = analyzedTs.slice(1).map((t, i) => t - analyzedTs[i]).filter((g) => g > 0).sort((a, b) => a - b);
+    const medianFrameGap = frameGaps.length > 0
+      ? frameGaps[Math.floor(frameGaps.length / 2)]
+      : scanPlan.intervalSeconds;
     try {
-      await groupSurfacesTemporally(videoId, scanPlan.intervalSeconds, priorIdExclusions);
+      await groupSurfacesTemporally(videoId, medianFrameGap, priorIdExclusions);
     } catch (temporalErr) {
       console.error(`[Scanner V2] Temporal grouping failed (non-fatal):`, temporalErr);
     }
 
-    // Remove filtered/phantom surfaces from count.
-    // CRITICAL: only subtract NEW surfaces inserted during THIS scan run.
-    // With the snapshot/preserve-priors logic added earlier, the DB also
-    // contains old Filtered surfaces from previous scans — counting those
-    // here drove totalSurfaces to 0 even when this run inserted real
-    // detections (Floor + Shelf were vanishing this way on Call Her Daddy).
+    // Recount as CANONICAL SURFACES, not rows. Every insert above is one
+    // supporting frame of a consensus surface, so row math ("Ready (153
+    // Spots)") counted keyframes, not physical surfaces. The number a
+    // creator or brand should see is the count of distinct surviving
+    // surfaceGroupIds from THIS run — prior runs' rows (including their old
+    // Filtered ones) stay out of it entirely.
+    const insertedRowCount = totalSurfaces;
     const postNormSurfaces = await storage.getDetectedSurfaces(videoId);
     const priorIdSet = new Set(priorSurfaceIds);
-    const filteredOut = postNormSurfaces
-      .filter(s => !priorIdSet.has(s.id) && s.surfaceType === "Filtered")
-      .length;
-    totalSurfaces = Math.max(0, totalSurfaces - filteredOut);
-    console.log(`[Scanner V2] Net new active surfaces this run: ${totalSurfaces} (inserted - filtered ${filteredOut} new surfaces)`);
+    const survivingRows = postNormSurfaces.filter(s => !priorIdSet.has(s.id) && s.surfaceType !== "Filtered");
+    const survivingGroupIds = new Set<string>();
+    let ungroupedSurvivors = 0;
+    for (const s of survivingRows) {
+      const gid = (s as any).surfaceGroupId as string | null | undefined;
+      if (gid) survivingGroupIds.add(gid);
+      else ungroupedSurvivors++; // defensive: every row this run inserts carries a groupId
+    }
+    totalSurfaces = survivingGroupIds.size + ungroupedSurvivors;
+    console.log(`[Scanner V2] Net new surfaces this run: ${totalSurfaces} canonical surface(s) across ${survivingRows.length} surviving rows (${insertedRowCount} rows inserted)`);
 
     // SCENE CONTEXT ENRICHMENT — FullScale Edge image analysis
     // Uses Sharp to analyze brightness, edges, and color to infer scene context
@@ -4051,6 +4442,134 @@ async function processVideoScanInner(
         }
       } else if (totalSurfaces === 0 && priorSurfaceIds.length > 0) {
         console.log(`[Scanner V2] Re-scan found 0 surfaces — keeping ${priorSurfaceIds.length} prior surfaces intact (re-scan didn't find replacements)`);
+      }
+
+      // SCENE INVENTORY — the creator-facing model of the episode: a small
+      // set of recurring camera setups ("Scene A recurs 41 times, 23 min on
+      // screen, holds 3 surfaces"), each carrying its canonical physical
+      // surfaces with occurrence counts and screen time. Built from the
+      // scene index (cut detection or grid classes) plus this run's
+      // surviving groups. A re-scan that found nothing keeps the prior
+      // inventory, mirroring the keep-prior-surfaces rule above. A
+      // degenerate index is skipped outright: its single all-covering shot
+      // would report every surface as "Scene A · 1 shot · full-video
+      // screen time" — exactly the untrustworthy data the flag rejects —
+      // so the column stays null and the UIs fall back gracefully.
+      let inventoryPersisted = false;
+      if (totalSurfaces > 0 && sceneIndex && !indexDegenerate && sceneIndex.shots.length > 0) {
+        try {
+          const invRows = await storage.getDetectedSurfaces(videoId);
+          const invSurvivors = invRows.filter(s =>
+            !priorIdSet.has(s.id) && s.surfaceType !== "Filtered" && (s as any).surfaceGroupId);
+
+          const rowsByGroup = new Map<string, typeof invSurvivors>();
+          for (const row of invSurvivors) {
+            const gid = (row as any).surfaceGroupId as string;
+            const arr = rowsByGroup.get(gid) ?? [];
+            arr.push(row);
+            rowsByGroup.set(gid, arr);
+          }
+
+          // Occurrence count + total screen time per scene class, straight
+          // from the index shots (grid source: shots are contiguous runs,
+          // so "occurrences" is the run count).
+          const sceneStats = new Map<number, { occurrences: number; totalSec: number }>();
+          for (const shot of sceneIndex.shots) {
+            const st = sceneStats.get(shot.sceneId) ?? { occurrences: 0, totalSec: 0 };
+            st.occurrences++;
+            st.totalSec += Math.max(0, shot.tEnd - shot.tStart);
+            sceneStats.set(shot.sceneId, st);
+          }
+
+          const medianOf = (vals: number[]) => {
+            const s = [...vals].sort((a, b) => a - b);
+            const m = Math.floor(s.length / 2);
+            return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+          };
+          const surfacesByScene = new Map<number, any[]>();
+          for (const [gid, rows] of Array.from(rowsByGroup.entries())) {
+            // Dominant sceneId across the group's rows — groups never
+            // straddle scenes by construction, but degenerate-index
+            // fallbacks can leave disagreeing stamps.
+            const sceneVotes = new Map<number, number>();
+            for (const r of rows) {
+              const sid = (r as any).sceneId ?? 0;
+              sceneVotes.set(sid, (sceneVotes.get(sid) ?? 0) + 1);
+            }
+            let groupSceneId = 0;
+            let bestVotes = -1;
+            sceneVotes.forEach((n, sid) => { if (n > bestVotes) { bestVotes = n; groupSceneId = sid; } });
+
+            const rep = rows.reduce((a, b) =>
+              parseFloat(String(a.confidence)) >= parseFloat(String(b.confidence)) ? a : b);
+            const stats = sceneStats.get(groupSceneId);
+            const arr = surfacesByScene.get(groupSceneId) ?? [];
+            arr.push({
+              groupId: gid,
+              surfaceType: rep.surfaceType,
+              bbox: {
+                x: medianOf(rows.map(r => parseFloat(String(r.boundingBoxX)))),
+                y: medianOf(rows.map(r => parseFloat(String(r.boundingBoxY)))),
+                w: medianOf(rows.map(r => parseFloat(String(r.boundingBoxWidth)))),
+                h: medianOf(rows.map(r => parseFloat(String(r.boundingBoxHeight)))),
+              },
+              confidence: parseFloat(String(rep.confidence)),
+              // Set-dressing model: the surface belongs to its camera setup,
+              // so it's on screen whenever the setup is.
+              screenTimeSec: Math.round((stats?.totalSec ?? 0) * 10) / 10,
+              rowCount: rows.length,
+              representativeRowId: rep.id,
+              frameUrl: rep.frameUrl ?? null,
+            });
+            surfacesByScene.set(groupSceneId, arr);
+          }
+
+          // "Scene A" is the class with the most screen time, and so on down.
+          const sceneLabel = (i: number): string =>
+            i < 26 ? `Scene ${String.fromCharCode(65 + i)}` : `Scene ${i + 1}`;
+          const scenes = Array.from(sceneStats.entries())
+            .sort((a, b) => b[1].totalSec - a[1].totalSec)
+            .map(([classSceneId, st], i) => ({
+              sceneId: classSceneId,
+              label: sceneLabel(i),
+              occurrences: st.occurrences,
+              totalSec: Math.round(st.totalSec * 10) / 10,
+              surfaces: (surfacesByScene.get(classSceneId) ?? []).sort((a, b) => b.confidence - a.confidence),
+            }));
+          // Defensive: a group stamped with a sceneId the index doesn't know
+          // still shows up — an inventory must never drop a real surface.
+          for (const [orphanSceneId, arr] of Array.from(surfacesByScene.entries())) {
+            if (!sceneStats.has(orphanSceneId)) {
+              scenes.push({ sceneId: orphanSceneId, label: sceneLabel(scenes.length), occurrences: 0, totalSec: 0, surfaces: arr });
+            }
+          }
+
+          const sceneInventory = {
+            version: 1,
+            source: sceneIndexSource,
+            scenes,
+            generatedAt: new Date().toISOString(),
+          };
+          await storage.updateVideoIndex(videoId, { sceneInventory: sceneInventory as any });
+          console.log(`[Scanner V2] Persisted scene inventory: ${scenes.length} scene class(es), ${rowsByGroup.size} canonical surface(s) (source=${sceneIndexSource})`);
+          inventoryPersisted = true;
+        } catch (invErr: any) {
+          console.warn(`[Scanner V2] Scene inventory build failed (non-fatal):`, invErr?.message || invErr);
+        }
+      } else if (totalSurfaces > 0 && indexDegenerate) {
+        console.log(`[Scanner V2] Degenerate scene index — skipping scene inventory build`);
+      }
+      // A successful rescan retires every prior-generation row, so a stale
+      // inventory would reference only Filtered rows — scene blocks with no
+      // nested detections, badge counts that match nothing. When this run
+      // produced surfaces but could not build a fresh inventory (degenerate
+      // index, missing index, build failure), clear the column so the UIs
+      // fall back to the flat view instead of rendering ghosts. A 0-surface
+      // run keeps prior data, mirroring the keep-prior-surfaces rule.
+      if (totalSurfaces > 0 && !inventoryPersisted) {
+        try {
+          await storage.updateVideoIndex(videoId, { sceneInventory: null as any });
+        } catch {}
       }
 
       await updateStatusIfStillScanning(videoId, finalStatus);
