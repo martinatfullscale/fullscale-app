@@ -58,7 +58,13 @@ const ai = new GoogleGenAI({
 // scan silently degrades to edge detection. When GEMINI_API_KEY (a real
 // Google AI Studio key) is set, failed proxy calls retry against Google
 // directly instead of degrading.
-const directGeminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GEMINI_API_KEY;
+const directGeminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GEMINI_API_KEY
+  // A genuine Google key (AIza…) sitting in the integration slot works
+  // against Google directly too — reuse it so a dead proxy doesn't demand a
+  // second secret. (Replit-managed proxy keys don't match this prefix.)
+  || (process.env.AI_INTEGRATIONS_GEMINI_API_KEY?.startsWith("AIza")
+      ? process.env.AI_INTEGRATIONS_GEMINI_API_KEY
+      : undefined);
 const aiDirect = directGeminiKey ? new GoogleGenAI({ apiKey: directGeminiKey }) : null;
 console.log(`[Scanner V2] Direct Gemini fallback: ${aiDirect ? "CONFIGURED (GEMINI_API_KEY)" : "not set — proxy failures will degrade to edge detection"}`);
 
