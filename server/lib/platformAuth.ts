@@ -1082,13 +1082,51 @@ export async function setupPlatformAuth(app: Express) {
     return { user, userToken };
   }
 
-  /** Fetch the user's managed Pages with linked IG accounts (server-side). */
+  const PAGE_FIELDS = "id,name,fan_count,picture{url},access_token,instagram_business_account{id,username,followers_count,profile_picture_url}";
+
+  /** Page IDs the user granted the app, straight from the token's granular
+   *  scopes. The authoritative record of consent — /me/accounts sometimes
+   *  returns [] even when Pages are plainly granted (observed live). */
+  async function fetchGrantedPageIds(userToken: string): Promise<string[]> {
+    try {
+      const dbgRes = await fetch(`https://graph.facebook.com/debug_token?input_token=${encodeURIComponent(userToken)}&access_token=${encodeURIComponent(userToken)}`);
+      const dbg: any = await dbgRes.json();
+      const ids = new Set<string>();
+      for (const g of dbg?.data?.granular_scopes ?? []) {
+        if (g.scope === "pages_show_list" || g.scope === "pages_read_engagement") {
+          for (const t of g.target_ids ?? []) ids.add(String(t));
+        }
+      }
+      return Array.from(ids);
+    } catch {
+      return [];
+    }
+  }
+
+  /** Fetch the user's managed Pages with linked IG accounts (server-side).
+   *  Primary: /me/accounts. Fallback: granular-scope page ids fetched
+   *  individually — the same mechanism that finds directly-shared IG
+   *  accounts, and immune to /me/accounts' granular-consent flakiness. */
   async function fetchManagedPages(userToken: string): Promise<any[]> {
-    const url = `https://graph.facebook.com/v25.0/me/accounts?fields=id,name,fan_count,picture{url},access_token,instagram_business_account{id,username,followers_count,profile_picture_url}&limit=25&access_token=${encodeURIComponent(userToken)}`;
+    const url = `https://graph.facebook.com/v25.0/me/accounts?fields=${PAGE_FIELDS}&limit=25&access_token=${encodeURIComponent(userToken)}`;
     const res = await fetch(url);
     const data: any = await res.json();
     if (data.error) throw new Error(data.error.message || "Failed to list Pages");
-    return data.data ?? [];
+    const viaMeAccounts: any[] = data.data ?? [];
+    if (viaMeAccounts.length > 0) return viaMeAccounts;
+
+    // /me/accounts says none — cross-check the actual grant.
+    const grantedIds = await fetchGrantedPageIds(userToken);
+    console.log(`[PlatformAuth] /me/accounts returned 0 pages; granular scopes grant ${grantedIds.length} page id(s)`);
+    const pages: any[] = [];
+    for (const pageId of grantedIds) {
+      try {
+        const pRes = await fetch(`https://graph.facebook.com/v25.0/${encodeURIComponent(pageId)}?fields=${PAGE_FIELDS}&access_token=${encodeURIComponent(userToken)}`);
+        const p: any = await pRes.json();
+        if (p?.id && !p.error) pages.push(p);
+      } catch { /* skip page */ }
+    }
+    return pages;
   }
 
   /** IG accounts the user shared with the app DIRECTLY (no Page asset) —
