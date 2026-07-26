@@ -437,30 +437,47 @@ function resolveCookiesFile(): string | null {
 
   const inlineContent = process.env.YTDLP_COOKIES;
   if (inlineContent && inlineContent.trim()) {
+    // GUI secret inputs (Replit's included) can flatten the tabs and
+    // newlines a cookies.txt depends on. Accept base64 of the file too —
+    // a single [A-Za-z0-9+/=] line survives any input box:
+    //   base64 -i cookies.txt | pbcopy
+    let cookieText = inlineContent;
+    const rawTrimmed = inlineContent.trim();
+    if (!rawTrimmed.includes("\t") && /^[A-Za-z0-9+/=\s]+$/.test(rawTrimmed)) {
+      try {
+        const decoded = Buffer.from(rawTrimmed.replace(/\s+/g, ""), "base64").toString("utf8");
+        if (decoded.includes("\t")) {
+          cookieText = decoded;
+          console.log(`[Scanner] YTDLP_COOKIES is base64 — decoded to cookies.txt content`);
+        }
+      } catch { /* not base64 — validate as-is below */ }
+    }
     // Guard against a malformed paste (JSON export from the wrong
-    // extension, an HTML page, truncation). yt-dlp hard-fails on a
-    // non-Netscape jar and the download ladder classifies that as fatal —
-    // so a bad jar would kill EVERY download, strictly worse than running
-    // anonymous. Netscape data lines are 7 tab-separated fields.
-    const dataLines = inlineContent
+    // extension, an HTML page, tab/newline-flattening, truncation).
+    // yt-dlp hard-fails on a non-Netscape jar and the download ladder
+    // classifies that as fatal — so a bad jar would kill EVERY download,
+    // strictly worse than running anonymous. Netscape data lines are 7
+    // tab-separated fields.
+    const dataLines = cookieText
       .split("\n")
       .map((l) => l.trim())
       .filter((l) => l && !l.startsWith("#"));
     const looksNetscape =
       dataLines.length > 0 && dataLines[0].split("\t").length >= 7;
-    const hasYoutube = /youtube\.com/i.test(inlineContent);
+    const hasYoutube = /youtube\.com/i.test(cookieText);
     if (!looksNetscape || !hasYoutube) {
       console.error(
         `[Scanner] YTDLP_COOKIES is set but does not look like a Netscape cookies.txt export` +
         `${hasYoutube ? "" : " (no youtube.com entries)"} — IGNORING it and running anonymous. ` +
-        `Re-export from the browser with "Get cookies.txt LOCALLY" on youtube.com and paste the whole file.`,
+        `Paste the base64 of the export instead (base64 -i cookies.txt | pbcopy) — GUI secret ` +
+        `inputs often flatten the tabs/newlines of a direct paste.`,
       );
       cachedCookiesPath = null;
       return null;
     }
     try {
       const tmp = path.join(os.tmpdir(), "yt-cookies.txt");
-      fs.writeFileSync(tmp, inlineContent, { mode: 0o600 });
+      fs.writeFileSync(tmp, cookieText, { mode: 0o600 });
       console.log(`[Scanner] Wrote yt-dlp cookies from YTDLP_COOKIES env → ${tmp} (${dataLines.length} cookies)`);
       cachedCookiesPath = tmp;
       return tmp;
