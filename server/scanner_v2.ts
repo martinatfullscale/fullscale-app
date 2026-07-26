@@ -52,6 +52,37 @@ const ai = new GoogleGenAI({
   },
 });
 
+// Direct Google API fallback. The Replit modelfarm sidecar (the localhost
+// AI_INTEGRATIONS_GEMINI_BASE_URL) has been observed unreachable in
+// DEPLOYMENTS while the env vars are present — every call times out and the
+// scan silently degrades to edge detection. When GEMINI_API_KEY (a real
+// Google AI Studio key) is set, failed proxy calls retry against Google
+// directly instead of degrading.
+const directGeminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GEMINI_API_KEY;
+const aiDirect = directGeminiKey ? new GoogleGenAI({ apiKey: directGeminiKey }) : null;
+console.log(`[Scanner V2] Direct Gemini fallback: ${aiDirect ? "CONFIGURED (GEMINI_API_KEY)" : "not set — proxy failures will degrade to edge detection"}`);
+
+/**
+ * Gemini call with a per-attempt timeout and automatic proxy→direct
+ * failover. The old pattern raced ONE attempt against a timeout, so a dead
+ * proxy meant an unconditional loss; here the timeout applies to each
+ * attempt and the direct client gets its own try.
+ */
+async function geminiGenerate(params: any, timeoutMs: number = CONFIG.GEMINI_TIMEOUT_MS): Promise<any> {
+  const attempt = (client: GoogleGenAI) =>
+    Promise.race([
+      client.models.generateContent(params),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Gemini timeout")), timeoutMs)),
+    ]);
+  try {
+    return await attempt(ai);
+  } catch (err: any) {
+    if (!aiDirect) throw err;
+    console.warn(`[Gemini] Proxy attempt failed (${err?.message || err}) — retrying via direct Google API`);
+    return await attempt(aiDirect);
+  }
+}
+
 // ============================================================================
 // CONFIGURATION
 // ============================================================================
@@ -1522,11 +1553,7 @@ async function analyzeFrameWithGemini(
     const metadata = await sharp(framePath).metadata();
     const mimeType = metadata.format === 'png' ? 'image/png' : 'image/jpeg';
     
-    const timeoutPromise = new Promise<null>((_, reject) => {
-      setTimeout(() => reject(new Error('Gemini timeout')), CONFIG.GEMINI_TIMEOUT_MS);
-    });
-    
-    const analysisPromise = ai.models.generateContent({
+    const response = await geminiGenerate({
       model: "gemini-2.5-flash",
       contents: [{
         role: "user",
@@ -1536,8 +1563,6 @@ async function analyzeFrameWithGemini(
         ]
       }],
     });
-    
-    const response = await Promise.race([analysisPromise, timeoutPromise]);
     
     if (!response) {
       console.error('[Gemini] Request timed out');
@@ -2264,23 +2289,17 @@ async function verifySceneSurfaces(
     // rate-limited moment of the scan. Small backoff loop for 429s.
     let response: any = null;
     for (let attempt = 0; attempt < 3; attempt++) {
-      const timeoutPromise = new Promise<null>((resolve) => {
-        setTimeout(() => resolve(null), CONFIG.GEMINI_TIMEOUT_MS);
-      });
       try {
-        response = await Promise.race([
-          ai.models.generateContent({
-            model: "gemini-2.5-flash",
-            contents: [{
-              role: "user",
-              parts: [
-                { text: prompt },
-                { inlineData: { mimeType: "image/jpeg", data: base64Image } },
-              ],
-            }],
-          }),
-          timeoutPromise,
-        ]);
+        response = await geminiGenerate({
+          model: "gemini-2.5-flash",
+          contents: [{
+            role: "user",
+            parts: [
+              { text: prompt },
+              { inlineData: { mimeType: "image/jpeg", data: base64Image } },
+            ],
+          }],
+        });
         break;
       } catch (callErr: any) {
         const msg = String(callErr?.message || callErr);
@@ -2290,6 +2309,9 @@ async function verifySceneSurfaces(
           await new Promise((r) => setTimeout(r, backoff));
           continue;
         }
+        // geminiGenerate REJECTS on timeout (the old race resolved null);
+        // preserve the fail-open timeout semantics this pass was built with.
+        if (/timeout/i.test(msg)) { response = null; break; }
         throw callErr;
       }
     }
@@ -2345,18 +2367,17 @@ export async function refineSurfaceBBoxOnFrame(
 ): Promise<{ x: number; y: number; width: number; height: number } | null> {
   try {
     if (!fs.existsSync(framePath)) return null;
-    if (!process.env.AI_INTEGRATIONS_GEMINI_API_KEY || process.env.AI_INTEGRATIONS_GEMINI_API_KEY === "dummy-key") return null;
+    const proxyKeyOk = !!process.env.AI_INTEGRATIONS_GEMINI_API_KEY && process.env.AI_INTEGRATIONS_GEMINI_API_KEY !== "dummy-key";
+    if (!proxyKeyOk && !aiDirect) return null;
     const base64Image = fs.readFileSync(framePath).toString("base64");
     const prompt = `This is a full-resolution video frame. A "${surfaceType}" surface was previously detected at approximately x=${(bbox.x * 100).toFixed(1)}%, y=${(bbox.y * 100).toFixed(1)}%, width=${(bbox.width * 100).toFixed(1)}%, height=${(bbox.height * 100).toFixed(1)}% (percent of frame, origin top-left). Return the PRECISE bounding box of the EMPTY placeable area of that exact surface — tightened to this higher-resolution frame. Respond with STRICT JSON only: {"x": number, "y": number, "width": number, "height": number} in percent 0-100, or {"not_visible": true} if that surface is not visible in this frame.`;
 
-    const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), CONFIG.GEMINI_TIMEOUT_MS));
-    const response = await Promise.race([
-      ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: [{ role: "user", parts: [{ text: prompt }, { inlineData: { mimeType: "image/jpeg", data: base64Image } }] }],
-      }),
-      timeoutPromise,
-    ]);
+    // geminiGenerate rejects on timeout — the enclosing try's fail-open
+    // catch preserves the old resolve-null semantics.
+    const response = await geminiGenerate({
+      model: "gemini-2.5-flash",
+      contents: [{ role: "user", parts: [{ text: prompt }, { inlineData: { mimeType: "image/jpeg", data: base64Image } }] }],
+    });
     if (!response) return null;
     const part = (response as any).candidates?.[0]?.content?.parts?.[0];
     if (!part || !("text" in part) || !part.text) return null;
@@ -3330,12 +3351,12 @@ async function processVideoScanInner(
 
     // PROCESS FRAMES ONE BY ONE (with immediate cleanup)
     let totalSurfaces = 0;
-    const geminiKeyPresent = !!process.env.AI_INTEGRATIONS_GEMINI_API_KEY
-      && process.env.AI_INTEGRATIONS_GEMINI_API_KEY !== 'dummy-key';
+    const geminiKeyPresent = (!!process.env.AI_INTEGRATIONS_GEMINI_API_KEY
+      && process.env.AI_INTEGRATIONS_GEMINI_API_KEY !== 'dummy-key') || !!aiDirect;
     console.log(`[Scanner V2] Detection method: ${CONFIG.DETECTION_METHOD.toUpperCase()}`);
-    console.log(`[Scanner V2] Gemini API key: ${geminiKeyPresent ? 'CONFIGURED (' + process.env.AI_INTEGRATIONS_GEMINI_API_KEY!.substring(0, 8) + '...)' : 'NOT SET — will use edge detection fallback (less accurate)'}`);
+    console.log(`[Scanner V2] Gemini: proxy=${!!process.env.AI_INTEGRATIONS_GEMINI_API_KEY} direct-fallback=${!!aiDirect}${geminiKeyPresent ? '' : ' — NO key at all, edge-detection fallback (inaccurate)'}`);
     if (!geminiKeyPresent) {
-      console.warn(`[Scanner V2] ⚠️  AI_INTEGRATIONS_GEMINI_API_KEY not set. Surface detection will be limited. Set this env var for accurate AI-powered scanning.`);
+      console.warn(`[Scanner V2] ⚠️  No Gemini key (AI_INTEGRATIONS_GEMINI_API_KEY or GEMINI_API_KEY). Surface detection will be limited.`);
     }
 
     // ── Phase A: analyze every frame; buffer results per scene ────

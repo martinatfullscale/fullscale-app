@@ -6,8 +6,13 @@
  * that pans to follow the speaker instead of padding with black bars.
  */
 
-import * as tf from "@tensorflow/tfjs-node";
-import * as cocoSsd from "@tensorflow-models/coco-ssd";
+// TensorFlow is LAZY-LOADED: the tfjs-node native binding takes 30-60s+ to
+// initialize on small instances, and a module-scope import puts that on the
+// server BOOT path (this module is statically imported by the render
+// pipeline) — blocking listen and causing deploy healthcheck 500 storms.
+// Type-only imports are erased at compile time, so they're free.
+import type * as tfType from "@tensorflow/tfjs-node";
+import type * as cocoSsd from "@tensorflow-models/coco-ssd";
 import sharp from "sharp";
 import { spawn } from "child_process";
 import * as fs from "fs";
@@ -49,13 +54,18 @@ export interface CropTrajectory {
 
 let model: cocoSsd.ObjectDetection | null = null;
 let modelLoading: Promise<cocoSsd.ObjectDetection> | null = null;
+let tfMod: typeof tfType | null = null;
 
 async function loadModel(): Promise<cocoSsd.ObjectDetection> {
   if (model) return model;
   if (modelLoading) return modelLoading;
 
-  console.log("[FaceTracker] Loading COCO-SSD model...");
-  modelLoading = cocoSsd.load({ base: "mobilenet_v2" });
+  console.log("[FaceTracker] Loading TensorFlow + COCO-SSD model (lazy)...");
+  modelLoading = (async () => {
+    tfMod = await import("@tensorflow/tfjs-node");
+    const cocoSsdMod = await import("@tensorflow-models/coco-ssd");
+    return cocoSsdMod.load({ base: "mobilenet_v2" });
+  })();
   model = await modelLoading;
   console.log("[FaceTracker] COCO-SSD model loaded");
   return model;
@@ -231,7 +241,9 @@ async function detectFacesInFrame(
       .raw()
       .toBuffer({ resolveWithObject: true });
 
-    const tensor = tf.tensor3d(
+    // tfMod is set by loadModel(), which necessarily ran before any
+    // detection call (the model instance comes from it).
+    const tensor = tfMod!.tensor3d(
       new Uint8Array(data),
       [info.height, info.width, info.channels]
     );
