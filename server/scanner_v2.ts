@@ -231,6 +231,12 @@ interface GeminiSurfaceDetectionResult {
   surfaces_found: boolean;
   frame_description: string;
   surfaces: GeminiDetectedSurface[];
+  // Bounding boxes of every visible person (including the chair section they
+  // occupy). Powers the person-overlap ghost filter: with real person
+  // positions we only reject surfaces that actually overlap someone, instead
+  // of geometric center/side-of-frame zone guessing that also kills the real
+  // side table next to a host and the backdrop wall between two subjects.
+  people?: Array<{ location: GeminiBoundingBox }>;
   recommended_placement: {
     location: GeminiBoundingBox;
     reason: string;
@@ -335,7 +341,12 @@ These are NEVER placement surfaces — never flag them, never bound-box them:
 - The arm-rest, seat, back, or cushion of a chair, armchair, sofa, or couch
 - A leather/upholstered surface that has a person sitting on, against, or near it
 - A chair that contains a person — even the empty parts of the chair around them
-- The space between two seated people (that's a gap, not a coffee table)
+- The empty AIR GAP between two seated people is not a horizontal surface — do
+  NOT invent a "coffee_table" there unless a real table top is clearly visible
+  in that gap. But do not skip that zone either: the BACKDROP WALL visible
+  BETWEEN two subjects is a valid vertical surface (box the empty wall slice,
+  label it "wall"), and a REAL table/side table between or beside the hosts
+  with its flat top visible is prime inventory — flag both.
 - A pillow, throw, blanket, or cushion on a chair or couch
 
 VERIFICATION CHECK before flagging ANY horizontal surface (run this mentally):
@@ -484,6 +495,14 @@ CONFIDENCE GUIDANCE:
 - Use 0.4-0.6 for partially visible or partially obstructed
 - Use <0.4 for uncertain (will be filtered out — better to omit)
 
+PEOPLE BOXES (REQUIRED — powers person-overlap verification downstream):
+Alongside the surfaces, return a bounding box for EVERY visible person,
+covering their full visible extent INCLUDING the chair/couch section they
+occupy. Be generous — slightly too large is better than too small. These
+boxes are how the pipeline confirms no surface overlaps a person, which is
+what allows real side tables next to a host and the wall between two
+subjects to be kept. If no people are visible, return "people": [].
+
 For each surface, provide:
 - **location**: bounding box {x, y, width, height} in percentages (0-100)
 - **orientation**: "horizontal" or "vertical"
@@ -498,6 +517,10 @@ RESPOND IN THIS EXACT JSON FORMAT (no markdown, no code fences):
 {
   "surfaces_found": true,
   "frame_description": "Brief description of what's in the frame",
+  "people": [
+    {"location": {"x": 5, "y": 18, "width": 28, "height": 78}},
+    {"location": {"x": 66, "y": 20, "width": 30, "height": 76}}
+  ],
   "surfaces": [
     {
       "location": {"x": 20, "y": 55, "width": 30, "height": 20},
@@ -530,6 +553,7 @@ If NO suitable surfaces exist:
 {
   "surfaces_found": false,
   "frame_description": "Description of frame",
+  "people": [{"location": {"x": 30, "y": 10, "width": 42, "height": 88}}],
   "surfaces": [],
   "recommended_placement": null,
   "no_surface_reason": "Why no placement works here"
@@ -1903,10 +1927,38 @@ async function analyzeFrameWithGemini(
       return s;
     };
 
+    // Person boxes from the same response. With real person positions the
+    // ghost filter becomes an actual overlap test — only candidates that
+    // genuinely sit on a person get rejected. The geometric zone heuristics
+    // below remain solely as the fallback for responses without people data:
+    // they guess where people probably are (center frame, side thirds) and
+    // those guesses also killed real inventory — the side table next to a
+    // host, the wall slice between two subjects.
+    const peopleBoxes = (Array.isArray(parsed.people) ? parsed.people : [])
+      .filter((p) => p?.location && typeof p.location.x === "number" && typeof p.location.y === "number")
+      .map((p) => ({
+        x: p.location.x / 100,
+        y: p.location.y / 100,
+        w: (p.location.width ?? 0) / 100,
+        h: (p.location.height ?? 0) / 100,
+      }))
+      .filter((p) => p.w > 0 && p.h > 0);
+    // An explicit empty array is a real signal ("no people in frame") and
+    // enables overlap mode just like populated boxes do; only a MISSING
+    // field (older model output, malformed response) falls back to zones.
+    const hasPeopleData = Array.isArray(parsed.people);
+    const personOverlapFraction = (bx: number, by: number, bw: number, bh: number): number => {
+      let worst = 0;
+      for (const p of peopleBoxes) {
+        const ix = Math.max(0, Math.min(bx + bw, p.x + p.w) - Math.max(bx, p.x));
+        const iy = Math.max(0, Math.min(by + bh, p.y + p.h) - Math.max(by, p.y));
+        const frac = bw * bh > 0 ? (ix * iy) / (bw * bh) : 0;
+        if (frac > worst) worst = frac;
+      }
+      return worst;
+    };
+
     // Map Gemini surfaces, filter low-confidence, validate against ghost patterns.
-    // Up to 3 surfaces per frame, mixing horizontal (product placement) and
-    // vertical (poster/signage). Ghost filters apply only to horizontal — walls
-    // legitimately occupy the upper frame and span large vertical areas.
     const allSurfaces: DetectedSurface[] = parsed.surfaces
       .map(correctMislabel)
       // 0.60 (was 0.75): per-frame precision is now enforced by the
@@ -1915,12 +1967,6 @@ async function analyzeFrameWithGemini(
       .filter((s: GeminiDetectedSurface) => s.confidence >= 0.60)
       .filter((s: GeminiDetectedSurface) => {
         const orientation = s.orientation || inferOrientation(s.surface_type);
-        if (orientation === "vertical") {
-          // Walls/doors/windows have different geometry — skip horizontal-surface ghost rules
-          return true;
-        }
-
-        // GHOST SURFACE FILTER (horizontal only) — reject boxes that likely overlap a person's body
         const bbX = s.location.x / 100;
         const bbY = s.location.y / 100;
         const bbW = s.location.width / 100;
@@ -1930,6 +1976,48 @@ async function analyzeFrameWithGemini(
         const area = bbW * bbH;
         const surfTypeLower = s.surface_type.toLowerCase();
         const isFloor = surfTypeLower.includes('floor');
+        const isShelf = surfTypeLower.includes('shelf');
+
+        if (orientation === "vertical") {
+          // Walls legitimately occupy the upper frame and span large areas —
+          // the only vertical ghost is a wall box drawn OVER a person
+          // (prompt says box the empty slice beside/between them).
+          if (hasPeopleData) {
+            const frac = personOverlapFraction(bbX, bbY, bbW, bbH);
+            if (frac > 0.60) {
+              console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — vertical bbox ${(frac*100).toFixed(0)}% covered by a person box`);
+              return false;
+            }
+          }
+          return true;
+        }
+
+        // PERSON-OVERLAP MODE (people data present): reject a horizontal
+        // surface only when it substantially overlaps an actual person.
+        // 40% tolerates a real table top a host leans over; a lap/torso/
+        // chair-seat hallucination sits INSIDE the person box and scores
+        // near 100%. Two absolute physics checks stay: a "horizontal"
+        // surface spanning half the frame height isn't a table top from
+        // any camera angle, and a non-shelf horizontal living entirely in
+        // the upper frame is a mislabeled wall.
+        if (hasPeopleData) {
+          const frac = personOverlapFraction(bbX, bbY, bbW, bbH);
+          if (frac > 0.40) {
+            console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — ${(frac*100).toFixed(0)}% of bbox overlaps a person box`);
+            return false;
+          }
+          if (!isFloor && bbH > 0.45) {
+            console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — bbox too tall for a horizontal surface (h=${(bbH*100).toFixed(0)}%, max 45%)`);
+            return false;
+          }
+          if (!isShelf && bbY + bbH < 0.40) {
+            console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — bbox entirely in upper frame (bottom at ${((bbY+bbH)*100).toFixed(0)}%)`);
+            return false;
+          }
+          return true;
+        }
+
+        // FALLBACK ZONE HEURISTICS (no people data) — the original guesses.
 
         // Ghost pattern 1: small box centered on person's torso area
         const isInPersonZone = centerX > 0.20 && centerX < 0.80 && centerY > 0.15 && centerY < 0.55;
@@ -1950,12 +2038,10 @@ async function analyzeFrameWithGemini(
         // In two-host podcast frames, hosts sit at the LEFT (x ~0-0.30) and RIGHT
         // (x ~0.70-1.0) of frame. Gemini sometimes calls a leather chair seat or
         // a person's torso/lap/legs a "coffee_table" because it sees a flat-ish
-        // tone. Real coffee tables in these frames sit in the MIDDLE of frame
-        // between the two hosts — never against the left or right edge.
-        // Reject any horizontal-surface bbox whose center is in the outer thirds
-        // AND is taller than a real eye-level table strip (>20% frame height).
-        // Floor surfaces are exempt — floor space at someone's feet legitimately
-        // sits at the side of frame.
+        // tone. Reject any horizontal-surface bbox whose center is in the outer
+        // thirds AND is taller than a real eye-level table strip (>20% frame
+        // height). Floor surfaces are exempt — floor space at someone's feet
+        // legitimately sits at the side of frame.
         const isInSidePersonZone = !isFloor && (centerX < 0.30 || centerX > 0.70) && centerY > 0.10 && centerY < 0.85;
         if (isInSidePersonZone && bbH > 0.20) {
           console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — tall bbox (h=${(bbH*100).toFixed(0)}%) at side-of-frame person zone (cx=${(centerX*100).toFixed(0)}%)`);
@@ -1963,18 +2049,12 @@ async function analyzeFrameWithGemini(
         }
 
         // Ghost pattern 2c: bbox spans most of frame height — that's a person/chair, not a table.
-        // Real horizontal table-top boxes are short strips (< 25% height). Anything
-        // > 30% frame height that claims to be horizontal is a hallucinated
-        // bound-box around a person or piece of vertical furniture. Tightened
-        // from 0.35 → 0.30 because Gemini was returning 0.30-0.34 height
-        // bboxes around seated podcast hosts (torso to ankles) that survived.
         if (!isFloor && bbH > 0.30) {
           console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — bbox too tall for a horizontal surface (h=${(bbH*100).toFixed(0)}%, max 30%)`);
           return false;
         }
 
         // Ghost pattern 3: horizontal surface entirely in upper frame (shelves exempt)
-        const isShelf = surfTypeLower.includes('shelf');
         if (!isShelf && bbY + bbH < 0.40) {
           console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — bbox entirely in upper frame (bottom at ${((bbY+bbH)*100).toFixed(0)}%)`);
           return false;
