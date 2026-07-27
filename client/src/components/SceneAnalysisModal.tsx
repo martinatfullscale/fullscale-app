@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, ChevronLeft, ChevronRight, Target, Clock, Eye, Sparkles, Scan, Loader2, Database, Play, Video, Layers } from "lucide-react";
+import { X, ChevronLeft, ChevronRight, ChevronDown, Target, Clock, Eye, Sparkles, Scan, Loader2, Database, Play, Video, Layers } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import PlacementPreviewModal from "./PlacementPreviewModal";
@@ -161,6 +161,19 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
   // exact staleness semantics of dbSurfaces: always overwritten together
   // on a successful fetch, null whenever the scan didn't produce one.
   const [sceneInventory, setSceneInventory] = useState<SceneInventory | null>(null);
+  // Which canonical surfaces have their per-frame detection rows expanded.
+  // Collapsed by default: the sidebar is narrow, and the surface card plus
+  // its approve-all action is the primary review unit — the frame rows are
+  // drill-down detail.
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const toggleGroupExpanded = (groupId: string) => {
+    setExpandedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return next;
+    });
+  };
 
   // Server-side rescan state
   const [isServerScanning, setIsServerScanning] = useState(false);
@@ -1298,66 +1311,84 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
 
                     return (
                       <div className="rounded-xl bg-white/5 border border-white/10">
-                        <div className="flex items-center justify-between p-4 border-b border-white/10 sticky top-0 bg-zinc-900/95 z-10">
-                          <span className="text-sm font-medium text-white">
-                            Scene inventory ({totalCanonical} surface{totalCanonical !== 1 ? "s" : ""} · {invScenes.length} scene{invScenes.length !== 1 ? "s" : ""})
+                        <div className="p-3 border-b border-white/10 sticky top-0 bg-zinc-900/95 z-10">
+                          <span className="text-sm font-medium text-white block">
+                            Scene inventory
+                            <span className="text-muted-foreground font-normal"> · {totalCanonical} surface{totalCanonical !== 1 ? "s" : ""} · {invScenes.length} scene{invScenes.length !== 1 ? "s" : ""}</span>
                           </span>
-                          <span className="text-xs text-muted-foreground">Approve to expose to brands · ✕ removes bad detections</span>
+                          <span className="text-[11px] text-muted-foreground block mt-0.5">Approve to expose to brands · ✕ removes bad detections</span>
                         </div>
-                        <div className="max-h-96 overflow-y-auto p-2 space-y-3">
+                        <div className="max-h-96 overflow-y-auto p-2 space-y-4">
                           {invScenes.map((scene) => (
                             <div key={scene.sceneId} data-testid={`scene-block-${scene.sceneId}`}>
-                              <div className="flex items-center gap-2 px-1 mb-1.5">
-                                <Layers className="w-3.5 h-3.5 text-primary shrink-0" />
-                                <span className="text-sm font-semibold text-white">{scene.label}</span>
-                                <span className="text-xs text-muted-foreground">
-                                  — {scene.occurrences} shot{scene.occurrences !== 1 ? "s" : ""} · {formatScreenTime(scene.totalSec)} on screen
-                                </span>
+                              <div className="px-1 mb-1.5">
+                                <div className="flex items-center gap-1.5">
+                                  <Layers className="w-3.5 h-3.5 text-primary shrink-0" />
+                                  <span className="text-sm font-semibold text-white whitespace-nowrap">{scene.label}</span>
+                                  <span className="text-[11px] text-muted-foreground whitespace-nowrap truncate">
+                                    {scene.occurrences} shot{scene.occurrences !== 1 ? "s" : ""} · {formatScreenTime(scene.totalSec)}
+                                  </span>
+                                </div>
                               </div>
                               <div className="space-y-2">
                                 {scene.surfaces.map((surf) => {
                                   const groupRows = rowsByGroup.get(surf.groupId) || [];
                                   const unapprovedCount = groupRows.filter(r => !r.creatorApproved).length;
                                   const thumbUrl = normalizeFrameUrl(surf.frameUrl);
+                                  const isExpanded = expandedGroups.has(surf.groupId);
                                   return (
                                     <div
                                       key={surf.groupId}
-                                      className="rounded-lg border border-white/10 bg-zinc-900/60 p-2"
+                                      className="rounded-lg border border-white/10 bg-zinc-900/60 overflow-hidden"
                                       data-testid={`surface-group-${surf.groupId}`}
                                     >
-                                      <div className="flex items-center gap-2.5">
-                                        {thumbUrl && (
-                                          <img
-                                            src={thumbUrl}
-                                            alt={surf.surfaceType}
-                                            className="w-16 h-10 rounded object-cover shrink-0 border border-white/10"
-                                            onError={(e) => { e.currentTarget.style.display = "none"; }}
-                                          />
-                                        )}
-                                        <div className="min-w-0 flex-1">
-                                          <div className="flex items-center gap-2">
-                                            <span className="text-sm font-medium text-white truncate">{surf.surfaceType}</span>
-                                            <span className="text-xs text-muted-foreground">{Math.round(surf.confidence * 100)}%</span>
-                                          </div>
-                                          <div className="text-xs text-muted-foreground">
-                                            {formatScreenTime(surf.screenTimeSec)} on screen · seen in {surf.rowCount} sampled frame{surf.rowCount !== 1 ? "s" : ""}
-                                          </div>
+                                      <div className="p-2 space-y-1.5">
+                                        <div className="flex items-center gap-2">
+                                          {thumbUrl && (
+                                            <img
+                                              src={thumbUrl}
+                                              alt={surf.surfaceType}
+                                              className="w-14 h-9 rounded object-cover shrink-0 border border-white/10"
+                                              onError={(e) => { e.currentTarget.style.display = "none"; }}
+                                            />
+                                          )}
+                                          <span className="text-sm font-medium text-white truncate min-w-0 flex-1">{surf.surfaceType}</span>
+                                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-white/10 text-white/70 shrink-0">
+                                            {Math.round(surf.confidence * 100)}%
+                                          </span>
+                                        </div>
+                                        <div className="text-[11px] text-muted-foreground truncate">
+                                          {formatScreenTime(surf.screenTimeSec)} on screen · {surf.rowCount} frame{surf.rowCount !== 1 ? "s" : ""}
                                         </div>
                                         {groupRows.length > 0 && (
-                                          <Button
-                                            size="sm"
-                                            variant={unapprovedCount === 0 ? "default" : "secondary"}
-                                            className="shrink-0"
-                                            disabled={unapprovedCount === 0}
-                                            onClick={() => approveGroupRows(groupRows)}
-                                            data-testid={`button-approve-group-${surf.groupId}`}
-                                          >
-                                            {unapprovedCount === 0 ? "All approved" : "Approve all frames"}
-                                          </Button>
+                                          <div className="flex items-center gap-1.5">
+                                            <Button
+                                              size="sm"
+                                              variant={unapprovedCount === 0 ? "outline" : "secondary"}
+                                              className="h-7 px-2.5 text-xs flex-1 min-w-0"
+                                              disabled={unapprovedCount === 0}
+                                              onClick={() => approveGroupRows(groupRows)}
+                                              data-testid={`button-approve-group-${surf.groupId}`}
+                                            >
+                                              {unapprovedCount === 0 ? "Approved ✓" : `Approve all (${unapprovedCount})`}
+                                            </Button>
+                                            <Button
+                                              size="sm"
+                                              variant="ghost"
+                                              className="h-7 px-2 text-xs text-muted-foreground shrink-0 gap-1"
+                                              onClick={() => toggleGroupExpanded(surf.groupId)}
+                                              data-testid={`button-expand-group-${surf.groupId}`}
+                                            >
+                                              {isExpanded
+                                                ? <ChevronDown className="w-3.5 h-3.5" />
+                                                : <ChevronRight className="w-3.5 h-3.5" />}
+                                              {groupRows.length}
+                                            </Button>
+                                          </div>
                                         )}
                                       </div>
-                                      {groupRows.length > 0 && (
-                                        <div className="mt-2 space-y-1.5">
+                                      {groupRows.length > 0 && isExpanded && (
+                                        <div className="px-2 pb-2 pt-1.5 space-y-1.5 border-t border-white/10 bg-black/20">
                                           {groupRows.map(renderSurfaceRow)}
                                         </div>
                                       )}
@@ -1369,9 +1400,9 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                           ))}
                           {ungroupedRows.length > 0 && (
                             <div data-testid="section-ungrouped-detections">
-                              <div className="flex items-center gap-2 px-1 mb-1.5">
-                                <span className="text-sm font-semibold text-white">Ungrouped detections</span>
-                                <span className="text-xs text-muted-foreground">
+                              <div className="px-1 mb-1.5">
+                                <span className="text-sm font-semibold text-white block">Ungrouped detections</span>
+                                <span className="text-[11px] text-muted-foreground block">
                                   {ungroupedRows.length} row{ungroupedRows.length !== 1 ? "s" : ""} without a canonical surface
                                 </span>
                               </div>
