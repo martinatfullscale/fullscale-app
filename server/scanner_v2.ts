@@ -718,6 +718,66 @@ async function extractFrames(
 
     fs.mkdirSync(absoluteOutputDir, { recursive: true });
 
+    const scaleFilter = `scale='min(${CONFIG.FRAME_MAX_DIMENSION},iw)':'min(${CONFIG.FRAME_MAX_DIMENSION},ih)':force_original_aspect_ratio=decrease`;
+
+    // SPARSE plans (long videos, one frame every 10s+) must NOT use the
+    // single-pass fps filter: it decodes the ENTIRE file to emit a handful
+    // of frames — ~20min of decode for an hour at Replit's ~3x realtime,
+    // which no flat timeout survives (the 61-min uniform fallback died at
+    // frame 2). Input-seeking per slot decodes ~one GOP per frame instead:
+    // ~40 seeks finish in a couple of minutes with a per-frame timeout.
+    // Slot numbers stay in the filename (frame_%04d, 1-based like the
+    // fps-filter output) so the caller can recover honest timestamps even
+    // when a mid-list slot fails.
+    if (intervalSeconds >= 10) {
+      (async () => {
+        const extracted: string[] = [];
+        let consecutiveFailures = 0;
+        for (let i = 0; i < maxFrames; i++) {
+          const t = i * intervalSeconds;
+          const out = path.join(absoluteOutputDir, `frame_${String(i + 1).padStart(4, "0")}.jpg`);
+          const ok = await new Promise<boolean>((res) => {
+            const p = spawn("ffmpeg", [
+              "-nostdin", "-y",
+              "-ss", t.toString(),
+              "-i", absoluteVideoPath,
+              "-an",
+              "-frames:v", "1",
+              "-pix_fmt", "yuvj420p",
+              "-vf", scaleFilter,
+              "-q:v", "2",
+              out,
+            ]);
+            const tm = setTimeout(() => { try { p.kill("SIGKILL"); } catch {} res(false); }, 30_000);
+            p.on("close", (c) => {
+              clearTimeout(tm);
+              try {
+                res(c === 0 && fs.existsSync(out) && fs.statSync(out).size > 4096);
+              } catch { res(false); }
+            });
+            p.on("error", () => { clearTimeout(tm); res(false); });
+          });
+          if (ok) {
+            extracted.push(out);
+            consecutiveFailures = 0;
+          } else {
+            try { fs.unlinkSync(out); } catch { /* never written */ }
+            consecutiveFailures++;
+            // Three misses in a row means we've seeked past the real end of
+            // the file (plan duration can overshoot actual) or the file is
+            // unreadable — either way, stop burning 30s per empty slot.
+            if (consecutiveFailures >= 3) {
+              console.log(`[Scanner V2] Seek extraction stopping at slot ${i + 1}/${maxFrames} (3 consecutive misses — likely past end of file)`);
+              break;
+            }
+          }
+        }
+        console.log(`[Scanner V2] Extracted ${extracted.length} frames (per-seek sparse mode, every ${intervalSeconds}s)`);
+        resolve(extracted);
+      })().catch(reject);
+      return;
+    }
+
     const ffmpegArgs = [
       "-nostdin",               // Non-interactive mode
       "-y",                     // Overwrite output files
@@ -725,25 +785,30 @@ async function extractFrames(
       "-an",                    // Skip audio (faster, avoids codec issues)
       "-vsync", "vfr",         // Variable frame rate (prevents duplicate frames)
       "-pix_fmt", "yuvj420p",  // Force JPEG-compatible pixel format (fixes HEVC/HDR)
-      "-vf", `fps=1/${intervalSeconds},scale='min(${CONFIG.FRAME_MAX_DIMENSION},iw)':'min(${CONFIG.FRAME_MAX_DIMENSION},ih)':force_original_aspect_ratio=decrease`,
+      "-vf", `fps=1/${intervalSeconds},${scaleFilter}`,
       "-q:v", "2",
       "-frames:v", maxFrames.toString(),
       outputPattern,
     ];
-    
+
     console.log(`[Scanner V2] FFmpeg command: ffmpeg ${ffmpegArgs.join(" ")}`);
-    
+
     const ffmpeg = spawn("ffmpeg", ffmpegArgs);
-    
+
     let stderr = "";
     ffmpeg.stderr.on("data", (data) => {
       stderr += data.toString();
     });
-    
+
+    // The fps filter decodes up to spanSec of video to emit its frames —
+    // budget ~700ms per source second (Replit decodes ~3x realtime), never
+    // below the flat default, capped at 15 minutes.
+    const spanSec = intervalSeconds * maxFrames;
+    const timeoutMs = Math.min(15 * 60 * 1000, Math.max(CONFIG.FFMPEG_TIMEOUT_MS, spanSec * 700));
     const timeout = setTimeout(() => {
       ffmpeg.kill("SIGKILL");
-      reject(new Error(`FFmpeg timed out after ${CONFIG.FFMPEG_TIMEOUT_MS}ms`));
-    }, CONFIG.FFMPEG_TIMEOUT_MS);
+      reject(new Error(`FFmpeg timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
     
     ffmpeg.on("close", (code) => {
       clearTimeout(timeout);
@@ -1281,14 +1346,31 @@ async function detectSceneCuts(
     let stderr = "";
     ffmpeg.stderr.on("data", (data) => { stderr += data.toString(); });
 
-    // Cap at 10 minutes. With the 320px downscale this is generous even for
-    // hour-long files — but a decode that somehow still overruns returns
-    // empty + log, and the caller's uniform-sampling fallback takes over
-    // rather than silently under-sampling.
+    // Cap at 10 minutes. Even with the 320px downscale, the DECODE of an
+    // hour-long file can outrun this on Replit CPU (~3x realtime ≈ 20min for
+    // 61min of video) — but by then stderr already holds every cut found so
+    // far. So the timeout only kills the process; the close handler that
+    // follows parses the partial stderr and resolves with real cuts covering
+    // the decoded prefix, which beats an empty list by miles (empty →
+    // sceneCount=1 → degenerate sampling). A backstop resolves [] if the
+    // close event somehow never arrives after the kill.
+    let settled = false;
+    let timedOut = false;
+    const settle = (cuts: number[]) => {
+      if (settled) return;
+      settled = true;
+      resolve(cuts);
+    };
     const timeout = setTimeout(() => {
+      timedOut = true;
       try { ffmpeg.kill("SIGKILL"); } catch {}
-      console.warn(`[Scene Cuts] Timed out after 10min — returning empty cut list`);
-      resolve([]);
+      console.warn(`[Scene Cuts] Timed out after 10min — will parse partial cut list from decoded prefix`);
+      setTimeout(() => {
+        if (!settled) {
+          console.warn(`[Scene Cuts] No close event after kill — returning empty cut list`);
+          settle([]);
+        }
+      }, 15_000).unref();
     }, 10 * 60 * 1000);
 
     ffmpeg.on("close", () => {
@@ -1304,14 +1386,17 @@ async function detectSceneCuts(
       }
       // Dedup + sort (shouldn't have duplicates but be safe).
       const sorted = Array.from(new Set(cuts)).sort((a, b) => a - b);
-      console.log(`[Scene Cuts] Detected ${sorted.length} cut(s): ${sorted.slice(0, 10).map(t => t.toFixed(1)).join(", ")}${sorted.length > 10 ? " ..." : ""}`);
-      resolve(sorted);
+      const partialNote = timedOut && sorted.length > 0
+        ? ` (PARTIAL — decode killed at 10min; cuts cover first ~${sorted[sorted.length - 1].toFixed(0)}s, the remainder becomes one tail shot)`
+        : "";
+      console.log(`[Scene Cuts] Detected ${sorted.length} cut(s)${partialNote}: ${sorted.slice(0, 10).map(t => t.toFixed(1)).join(", ")}${sorted.length > 10 ? " ..." : ""}`);
+      settle(sorted);
     });
 
     ffmpeg.on("error", (err) => {
       clearTimeout(timeout);
       console.warn(`[Scene Cuts] ffmpeg spawn failed (non-fatal):`, err?.message || err);
-      resolve([]);
+      settle([]);
     });
   });
 }
@@ -3875,7 +3960,15 @@ async function processVideoScanInner(
         }
         console.log(`[Scanner V2] Extracting frames with plan: every ${scanPlan.intervalSeconds}s × ${scanPlan.maxFrames} frames`);
         frames = await extractFrames(videoPath, framesDir, scanPlan);
-        frameTimestamps = frames.map((_, i) => i * scanPlan.intervalSeconds);
+        // Timestamps come from the slot number baked into the filename
+        // (frame_0001 = t=0), not the array index — sparse per-seek
+        // extraction can skip a failed mid-list slot, and an index-based
+        // mapping would shift every later timestamp by one interval.
+        frameTimestamps = frames.map((f, i) => {
+          const m = /frame_(\d+)\.jpg$/.exec(f);
+          const slot = m ? parseInt(m[1], 10) - 1 : i;
+          return slot * scanPlan.intervalSeconds;
+        });
       }
     }
 
