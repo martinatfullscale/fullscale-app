@@ -487,6 +487,28 @@ async function sweepStaleTempArtifacts(): Promise<void> {
     // Mark server as fully ready AFTER listening
     serverReady = true;
     log("Server fully ready and accepting traffic");
+
+    // Deploy-replacement handshake. Replit stops the outgoing process with
+    // SIGTERM — but two modules register SIGTERM listeners (the yt-dlp
+    // process-group reaper, glbRenderer's puppeteer cleanup), and ANY
+    // registered listener suppresses Node's default terminate action. On a
+    // reserved VM that means the old process lingers holding this port,
+    // the replacement exhausts its EADDRINUSE retry budget above, and the
+    // deploy reports "app failed to start". This is the one authoritative
+    // shutdown owner: release the port immediately, let the other
+    // listeners' best-effort cleanup fire, then exit unconditionally.
+    let shuttingDown = false;
+    const shutdownAndExit = (signal: string) => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      log(`${signal} received — releasing port ${port} and exiting`);
+      try { httpServer.close(() => process.exit(0)); } catch { process.exit(0); }
+      // close() waits for open keep-alive connections — don't. The
+      // replacement process needs this port inside its retry window.
+      setTimeout(() => process.exit(0), 2_500).unref();
+    };
+    process.on("SIGTERM", () => shutdownAndExit("SIGTERM"));
+    process.on("SIGINT", () => shutdownAndExit("SIGINT"));
     
     // ============================================
     // PHASE 7: Background tasks (non-blocking)
