@@ -1194,17 +1194,6 @@ export default function PlacementPreviewModal({
     }
   }, [open, surfaces, selectedSurface]);
 
-  // Auto-select a product so the preview shows SOMETHING brand-shaped
-  // immediately. Without this the modal opened with productImage=null and
-  // drew only the "Drop product here" ghost — read by users as "the
-  // placement doesn't work". An explicit initialPlacement or a saved
-  // placement still wins (their effects overwrite this selection).
-  useEffect(() => {
-    if (open && !productImage && !initialPlacement && catalogProducts && catalogProducts.length > 0) {
-      selectCatalogProduct(catalogProducts[0]);
-    }
-  }, [open, productImage, initialPlacement, catalogProducts, selectCatalogProduct]);
-
   // Scene persistence: auto-load existing placement when switching surfaces
   useEffect(() => {
     if (!open || !selectedSurface) return;
@@ -2289,6 +2278,19 @@ export default function PlacementPreviewModal({
     setTransform({ ...DEFAULT_TRANSFORM });
     setBlend({ ...DEFAULT_BLEND });
   }, []);
+
+  // Auto-select a product so the preview shows SOMETHING brand-shaped
+  // immediately. Without this the modal opened with productImage=null and
+  // drew only the "Drop product here" ghost — read by users as "the
+  // placement doesn't work". An explicit initialPlacement or a saved
+  // placement still wins (their effects overwrite this selection).
+  // (Lives below selectCatalogProduct: the dep array evaluates at render
+  // time, so referencing the const above it is a TDZ crash.)
+  useEffect(() => {
+    if (open && !productImage && !initialPlacement && catalogProducts && catalogProducts.length > 0) {
+      selectCatalogProduct(catalogProducts[0]);
+    }
+  }, [open, productImage, initialPlacement, catalogProducts, selectCatalogProduct]);
 
   const resetPreview = () => {
     setProductImage(null);
