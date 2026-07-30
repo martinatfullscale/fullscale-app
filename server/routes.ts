@@ -5700,8 +5700,12 @@ export async function registerRoutes(
               for (const scene of invScenes) {
                 const n = Array.isArray(scene?.surfaces) ? scene.surfaces.length : 0;
                 surfaceCount += n;
+                // Every scene class counts — the modal renders zero-surface
+                // classes too (with an empty state), so the card and the
+                // modal header must agree. trackedMinutes stays restricted
+                // to surface-bearing scenes: it advertises sellable time.
+                sceneCount++;
                 if (n > 0) {
-                  sceneCount++;
                   trackedSec += Number(scene?.totalSec) || 0;
                 }
               }
@@ -9667,7 +9671,16 @@ export async function registerRoutes(
       const video = await storage.getVideoById(videoId);
       if (!video) return res.status(404).json({ error: "Video not found" });
 
-      const videoDuration = parseFloat(video.duration as string) || 30;
+      // Real duration or bust: the transforms array is sized from this, and
+      // a fallback of 30s on an hour-long import nulls every frame past 30s
+      // — the placement overlay then never renders at any playhead. Prefer
+      // the DB duration, then the scene index's last shot end, then the
+      // last keyframe timestamp (+ a beat) before giving up at 30s.
+      const sceneIdxShots = (video as any).sceneIndex?.shots;
+      const lastShotEnd = Array.isArray(sceneIdxShots) && sceneIdxShots.length > 0
+        ? Number(sceneIdxShots[sceneIdxShots.length - 1]?.tEnd) || 0
+        : 0;
+      const videoDuration = parseFloat(video.duration as string) || lastShotEnd || 30;
       const fps = 30;
 
       // Get dense keyframes for this specific surface

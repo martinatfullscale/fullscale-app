@@ -1194,6 +1194,17 @@ export default function PlacementPreviewModal({
     }
   }, [open, surfaces, selectedSurface]);
 
+  // Auto-select a product so the preview shows SOMETHING brand-shaped
+  // immediately. Without this the modal opened with productImage=null and
+  // drew only the "Drop product here" ghost — read by users as "the
+  // placement doesn't work". An explicit initialPlacement or a saved
+  // placement still wins (their effects overwrite this selection).
+  useEffect(() => {
+    if (open && !productImage && !initialPlacement && catalogProducts && catalogProducts.length > 0) {
+      selectCatalogProduct(catalogProducts[0]);
+    }
+  }, [open, productImage, initialPlacement, catalogProducts, selectCatalogProduct]);
+
   // Scene persistence: auto-load existing placement when switching surfaces
   useEffect(() => {
     if (!open || !selectedSurface) return;
@@ -1481,9 +1492,14 @@ export default function PlacementPreviewModal({
           const clampedIndex = Math.min(frameIndex, motionData!.transforms.length - 1);
           const pos = motionData!.transforms[clampedIndex];
 
-          // Scene-change detection: if position is null, surface is not visible at this time
+          // Null transform = the motion track has no data for this frame —
+          // NOT proof the surface is invisible. Track coverage can be
+          // sparse or mis-sized (a wrong duration once nulled every frame
+          // past 30s and hid the overlay for entire videos). Fall back to
+          // the static detection bbox and let the scene gate below own
+          // visibility — it has the actual scene data.
           if (!pos) {
-            bx = -9999; by = -9999; bw = 0; bh = 0;
+            bx = baseBX; by = baseBY; bw = baseBW; bh = baseBH;
           } else {
 
           // Anchor-lock: track the top-right corner of the bbox as the fixed reference point
@@ -1661,7 +1677,10 @@ export default function PlacementPreviewModal({
         }
       } else {
         // Same predictive look-ahead for the legacy shot-block path.
-        const tForGate = useVideo ? videoEl!.currentTime + LOOK_AHEAD_MS / 1000 : videoEl!.currentTime;
+        // videoEl can be unmounted in static mode (no videoSrc) — a bare
+        // dereference here threw mid-rAF and killed the product draw.
+        const tNow = videoRef.current?.currentTime ?? 0;
+        const tForGate = useVideo ? tNow + LOOK_AHEAD_MS / 1000 : tNow;
         const playbackBlockId = useVideo ? sceneBlockFor(tForGate) : placementBlockId;
         inOriginalShot = playbackBlockId === placementBlockId;
       }

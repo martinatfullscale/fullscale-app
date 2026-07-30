@@ -219,8 +219,21 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
     setLocalScenes(newScenes);
     // Reset index if out of range; otherwise preserve user's navigation.
     setCurrentSceneIndex(prev => prev >= newScenes.length ? 0 : prev);
-    setFrameLoaded(false);
-    setFrameError(false);
+    // The rebuilt scene usually has the string-identical imageUrl (same
+    // endpoint feeds Library's builder), so the mounted <img> keeps its key
+    // AND src — React never remounts it and no new 'load' event can fire.
+    // Resetting frameLoaded=false here would then hide an already-loaded
+    // frame forever (onLoad is the only true-setter): the black-view bug.
+    // If the img is already complete, keep it visible and paint the fresh
+    // bboxes; only reset when a genuinely new load is coming.
+    const img = imageRef.current;
+    if (img && img.complete && img.naturalWidth > 0) {
+      setFrameLoaded(true);
+      setTimeout(() => drawDbSurfaces(), 100);
+    } else {
+      setFrameLoaded(false);
+      setFrameError(false);
+    }
   }, [dbSurfaces, video?.id]);
   
   const imageRef = useRef<HTMLImageElement>(null);
@@ -1287,6 +1300,13 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                   // listing its canonical physical surfaces; the per-frame
                   // detection rows nest under the surface they belong to so
                   // approval stays per-row.
+                  // Zero-surface scene classes still render (below) with an
+                  // empty state — a recurring camera setup where every
+                  // candidate died in consensus is actionable information
+                  // ("rescan may find more"), not noise. Only the ENTRY
+                  // decision (inventory view vs legacy flat list) keys on
+                  // surface-bearing scenes.
+                  const allInvScenes = sceneInventory?.scenes || [];
                   const invScenes = (sceneInventory?.scenes || []).filter(
                     sc => Array.isArray(sc.surfaces) && sc.surfaces.length > 0
                   );
@@ -1314,12 +1334,12 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                         <div className="p-3 border-b border-white/10 sticky top-0 bg-zinc-900/95 z-10">
                           <span className="text-sm font-medium text-white block">
                             Scene inventory
-                            <span className="text-muted-foreground font-normal"> · {totalCanonical} surface{totalCanonical !== 1 ? "s" : ""} · {invScenes.length} scene{invScenes.length !== 1 ? "s" : ""}</span>
+                            <span className="text-muted-foreground font-normal"> · {totalCanonical} surface{totalCanonical !== 1 ? "s" : ""} · {allInvScenes.length} scene{allInvScenes.length !== 1 ? "s" : ""}</span>
                           </span>
                           <span className="text-[11px] text-muted-foreground block mt-0.5">Approve to expose to brands · ✕ removes bad detections</span>
                         </div>
                         <div className="max-h-96 overflow-y-auto p-2 space-y-4">
-                          {invScenes.map((scene) => (
+                          {allInvScenes.map((scene) => (
                             <div key={scene.sceneId} data-testid={`scene-block-${scene.sceneId}`}>
                               <div className="px-1 mb-1.5">
                                 <div className="flex items-center gap-1.5">
@@ -1330,6 +1350,11 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                                   </span>
                                 </div>
                               </div>
+                              {scene.surfaces.length === 0 && (
+                                <div className="rounded-lg border border-dashed border-white/10 bg-zinc-900/40 p-2.5 text-[11px] text-muted-foreground">
+                                  No approved surfaces yet — a rescan may find more in this scene.
+                                </div>
+                              )}
                               <div className="space-y-2">
                                 {scene.surfaces.map((surf) => {
                                   const groupRows = rowsByGroup.get(surf.groupId) || [];
