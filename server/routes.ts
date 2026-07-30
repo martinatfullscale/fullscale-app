@@ -13456,93 +13456,345 @@ export async function registerRoutes(
     }
   });
 
-  // GET /api/admin/creator-intelligence — the OPERATOR view: every connected
-  // creator's audience, engagement, demographics, and placement activity in
-  // one reviewable roster. Admin-gated; this powers FullScale's own
-  // understanding of how creators and brands interact — it is NOT the
-  // surface shown in Meta App Review screencasts (that's /analytics).
+  // GET /api/admin/creator-intelligence — the OPERATOR roster: EVERY creator
+  // account on the platform (not just Meta-connected), each with connection
+  // coverage, audience (latest Meta snapshot), supply (scanned videos /
+  // canonical surfaces / scene classes / sellable minutes), the placement
+  // funnel, and editorial clip totals. Admin-gated; built from whole-table
+  // GROUP BY aggregates folded onto canonical users — no per-creator queries
+  // (the old per-account loop was an N+1 against the pool). NOT the surface
+  // shown in Meta App Review screencasts (that's /analytics).
   app.get("/api/admin/creator-intelligence", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       if (!req.isAdmin) return res.status(403).json({ error: "Admin only" });
-      const metaAccounts = await storage.getAllMetaSocialAccounts();
-      const byUser = new Map<string, typeof metaAccounts>();
-      for (const acct of metaAccounts) {
-        const list = byUser.get(acct.userId) ?? [];
-        list.push(acct);
-        byUser.set(acct.userId, list);
+
+      const [
+        roster, allowlist, supplyRows, surfaceRows, funnelRows,
+        releaseRows, coverageRows, ytKeys, snapshotRows,
+      ] = await Promise.all([
+        storage.getAllUserIdentities(),
+        storage.getAllowedUsers(),
+        storage.getCreatorSupplyAggregates(),
+        storage.getCreatorSurfaceAggregates(),
+        storage.getCreatorPlacementFunnelAggregates(),
+        storage.getCreatorReleaseCounts(),
+        storage.getSocialCoverageKeys(),
+        storage.getYoutubeConnectionKeys(),
+        storage.getLatestInsightSnapshotPerUser(),
+      ]);
+
+      // ── Who counts as a creator ───────────────────────────────────────
+      // The users table carries no role column — the role lives on the
+      // allowed_users allowlist (userType 'creator' | 'brand'; see the brand
+      // signup flow and updateAllowedUserRole). A users row is treated as a
+      // CREATOR unless its email is allowlisted with userType='brand':
+      // brands only ever enter through explicitly brand-typed allowlist
+      // paths, while legacy creator signups may predate their allowlist row
+      // entirely — so "not a known brand" is the safe creator test (and it
+      // keeps creators who own videoIndex rows without an allowlist entry).
+      const brandEmails = new Set(
+        allowlist
+          .filter((a) => a.userType === "brand")
+          .map((a) => (a.email || "").toLowerCase()),
+      );
+      const creatorUsers = roster.filter(
+        (u) => !brandEmails.has((u.email || "").toLowerCase()),
+      );
+
+      // ── Identity-alias fold ───────────────────────────────────────────
+      // Data tables key rows by users.id OR legacy email (the dual-ID
+      // reality identityMatchValues resolves per-user). The aggregates come
+      // back GROUPed BY the RAW key, so fold them onto canonical users.id
+      // through an alias map instead of a lookup query per creator.
+      const canonicalByAlias = new Map<string, string>();
+      for (const u of creatorUsers) {
+        canonicalByAlias.set(u.id, u.id);
+        if (u.email) canonicalByAlias.set(u.email.toLowerCase(), u.id);
+      }
+      const resolveAlias = (raw: string | null | undefined): string | null => {
+        if (!raw) return null;
+        return canonicalByAlias.get(raw) ?? canonicalByAlias.get(raw.toLowerCase()) ?? null;
+      };
+
+      type SupplyAgg = { videosScanned: number; canonicalSurfaces: number; sceneClasses: number; sellableSec: number };
+      type FunnelAgg = { surfacesApproved: number; brandRequests: number; placementsApproved: number; released: number };
+      type EditorialAgg = { clipsGenerated: number; clipsRendered: number };
+      const supply = new Map<string, SupplyAgg>();
+      const funnel = new Map<string, FunnelAgg>();
+      const editorial = new Map<string, EditorialAgg>();
+      const supplyFor = (id: string): SupplyAgg => {
+        let s = supply.get(id);
+        if (!s) { s = { videosScanned: 0, canonicalSurfaces: 0, sceneClasses: 0, sellableSec: 0 }; supply.set(id, s); }
+        return s;
+      };
+      const funnelFor = (id: string): FunnelAgg => {
+        let f = funnel.get(id);
+        if (!f) { f = { surfacesApproved: 0, brandRequests: 0, placementsApproved: 0, released: 0 }; funnel.set(id, f); }
+        return f;
+      };
+
+      for (const row of supplyRows) {
+        const id = resolveAlias(row.userId);
+        if (!id) continue; // brand-owned or orphaned key — not roster supply
+        const s = supplyFor(id);
+        s.videosScanned += row.videosScanned;
+        s.sceneClasses += row.sceneClasses;
+        s.sellableSec += row.sellableSec;
+        const e = editorial.get(id) ?? { clipsGenerated: 0, clipsRendered: 0 };
+        e.clipsGenerated += row.clipsGenerated;
+        e.clipsRendered += row.clipsRendered;
+        editorial.set(id, e);
+      }
+      for (const row of surfaceRows) {
+        const id = resolveAlias(row.userId);
+        if (!id) continue;
+        supplyFor(id).canonicalSurfaces += row.canonicalSurfaces;
+        funnelFor(id).surfacesApproved += row.surfacesApproved;
+      }
+      for (const row of funnelRows) {
+        const id = resolveAlias(row.userId);
+        if (!id) continue;
+        const f = funnelFor(id);
+        f.brandRequests += row.brandRequests;
+        f.placementsApproved += row.placementsApproved;
+      }
+      for (const row of releaseRows) {
+        const id = resolveAlias(row.userId);
+        if (id) funnelFor(id).released += row.released;
       }
 
-      const creators: any[] = [];
-      for (const [userId, accts] of Array.from(byUser.entries())) {
-        let user = await storage.getUserById(userId);
-        if (!user && userId.includes("@")) user = await storage.getUserByEmail(userId);
-        const name = user ? [user.firstName, user.lastName].filter(Boolean).join(" ").trim() : null;
+      const coverage = new Map<string, { meta: boolean; youtube: boolean }>();
+      const coverageFor = (id: string) => {
+        let c = coverage.get(id);
+        if (!c) { c = { meta: false, youtube: false }; coverage.set(id, c); }
+        return c;
+      };
+      for (const row of coverageRows) {
+        const id = resolveAlias(row.userId);
+        if (!id) continue;
+        if (row.platform === "instagram" || row.platform === "facebook") coverageFor(id).meta = true;
+      }
+      for (const key of ytKeys) {
+        const id = resolveAlias(key);
+        if (id) coverageFor(id).youtube = true;
+      }
 
-        let views = 0, reach = 0, interactions = 0, followers = 0;
-        let topCountry: string | null = null, topAge: string | null = null;
-        let lastSyncedAt: Date | null = null;
-        const platforms: string[] = [];
-        for (const acct of accts) {
-          platforms.push(acct.platform);
-          followers += acct.followers ?? 0;
-          const [latest] = await storage.getSocialInsightSnapshotsForAccount(acct.id, 1);
-          if (latest) {
-            const m: any = latest.metrics ?? {};
-            views += m.views ?? m.page_media_view ?? 0;
-            reach += m.reach ?? m.page_total_media_view_unique ?? 0;
-            interactions += m.total_interactions ?? m.page_post_engagements ?? 0;
-            if (!lastSyncedAt || (latest.capturedAt && latest.capturedAt > lastSyncedAt)) lastSyncedAt = latest.capturedAt;
-            const demo: any = latest.demographics ?? {};
-            const pick = (key: string) => {
-              const rows: Array<{ dimension: string; value: number }> = demo[key] ?? [];
-              return rows.length ? rows.reduce((a, b) => (b.value > a.value ? b : a)).dimension : null;
-            };
-            topCountry = topCountry ?? pick("follower_demographics.country");
-            topAge = topAge ?? pick("follower_demographics.age");
-          }
+      // Sum accounts per canonical user. Rows arrive as latest-per-account
+      // (IG and FB each snapshot separately under one user_id); alias keys
+      // for the same human dedupe per account id so a legacy-email row and
+      // a UUID row for the same IG account can't double-count.
+      const audienceAgg = new Map<string, { followers: number | null; interactions: number; reach: number; accounts: Set<string> }>();
+      for (const row of snapshotRows) {
+        const id = resolveAlias(row.userId);
+        if (!id) continue;
+        const agg = audienceAgg.get(id) ?? { followers: null, interactions: 0, reach: 0, accounts: new Set<string>() };
+        if (agg.accounts.has(row.platformAccountId)) continue;
+        agg.accounts.add(row.platformAccountId);
+        if (typeof row.followers === "number") {
+          agg.followers = (agg.followers ?? 0) + row.followers;
         }
-
-        // Placement activity — how this creator interacts with brands
-        let placements = { pending: 0, active: 0, live: 0 };
-        try {
-          const rows = await storage.getCreatorPlacements(
-            String(userId),
-            "pending_creator_review,creator_approved,pending_brand_review,brand_approved",
-          );
-          for (const p of rows as any[]) {
-            if (p.status === "pending_creator_review") placements.pending++;
-            else if (["creator_approved", "pending_brand_review"].includes(p.status)) placements.active++;
-            else if (p.status === "brand_approved") placements.live++;
-          }
-        } catch { /* placement rollup is best-effort */ }
-
-        creators.push({
-          userId,
-          name: name || user?.email || userId,
-          email: user?.email ?? null,
-          platforms: Array.from(new Set(platforms)),
-          followers,
-          views24h: views,
-          reach24h: reach,
-          interactions24h: interactions,
-          engagementRate: reach > 0 ? interactions / reach : 0,
-          topCountry,
-          topAge,
-          placements,
-          lastSyncedAt,
-        });
+        const m: any = row.metrics ?? {};
+        const interactions = m.total_interactions ?? m.page_post_engagements;
+        const reach = m.reach ?? m.page_total_media_view_unique;
+        if (typeof interactions === "number") agg.interactions += interactions;
+        if (typeof reach === "number") agg.reach += reach;
+        audienceAgg.set(id, agg);
       }
 
-      creators.sort((a, b) => b.followers - a.followers);
-      res.json({ creators, totals: {
-        creators: creators.length,
-        followers: creators.reduce((n, c) => n + c.followers, 0),
-        views24h: creators.reduce((n, c) => n + c.views24h, 0),
-        livePlacements: creators.reduce((n, c) => n + c.placements.live, 0),
-      }});
+      const creators = creatorUsers.map((u) => {
+        const s = supply.get(u.id) ?? { videosScanned: 0, canonicalSurfaces: 0, sceneClasses: 0, sellableSec: 0 };
+        const e = editorial.get(u.id) ?? { clipsGenerated: 0, clipsRendered: 0 };
+        const f = funnel.get(u.id) ?? { surfacesApproved: 0, brandRequests: 0, placementsApproved: 0, released: 0 };
+        const c = coverage.get(u.id) ?? { meta: false, youtube: false };
+        const snap = audienceAgg.get(u.id) ?? null;
+        const engagementRatePct =
+          snap && snap.reach > 0
+            ? Math.round((snap.interactions / snap.reach) * 10000) / 100
+            : null;
+        return {
+          userId: u.id,
+          email: u.email ?? null,
+          name: [u.firstName, u.lastName].filter(Boolean).join(" ").trim() || u.email || u.id,
+          joinedAt: u.createdAt ?? null,
+          coverage: { meta: c.meta, youtube: c.youtube },
+          audience: {
+            followers: snap?.followers ?? null,
+            engagementRatePct,
+            source: snap ? ("meta" as const) : null,
+          },
+          supply: {
+            videosScanned: s.videosScanned,
+            canonicalSurfaces: s.canonicalSurfaces,
+            sceneClasses: s.sceneClasses,
+            sellableMinutes: Math.round((s.sellableSec / 60) * 10) / 10,
+          },
+          funnel: {
+            surfacesApproved: f.surfacesApproved,
+            brandRequests: f.brandRequests,
+            placementsApproved: f.placementsApproved,
+            released: f.released,
+          },
+          editorial: { clipsGenerated: e.clipsGenerated, clipsRendered: e.clipsRendered },
+        };
+      });
+
+      // Most-monetizable first: audience, then supply depth, then recency
+      creators.sort((a, b) =>
+        ((b.audience.followers ?? -1) - (a.audience.followers ?? -1)) ||
+        (b.supply.videosScanned - a.supply.videosScanned) ||
+        (new Date(b.joinedAt ?? 0).getTime() - new Date(a.joinedAt ?? 0).getTime()),
+      );
+
+      res.json({ creators });
     } catch (err: any) {
       console.error("[API] /api/admin/creator-intelligence error:", err.message);
       res.status(500).json({ error: "Failed to load creator intelligence" });
+    }
+  });
+
+  // GET /api/admin/data-inventory — live census of every data asset the
+  // platform holds, grouped by provenance: first-party (our tables, our
+  // marketplace events), third-party (platform-API metrics we merely display
+  // in-app), and derived (blends). Each card carries a licensable posture —
+  // the house export rule: third-party platform metrics are NEVER exportable
+  // or licensable (Meta Platform Terms / YouTube API ToS), and derived
+  // blends leave only as consented aggregates. This payload contains counts
+  // only — no raw platform metric values. Computed live; no schema changes.
+  app.get("/api/admin/data-inventory", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      if (!req.isAdmin) return res.status(403).json({ error: "Admin only" });
+      const inv = await storage.getDataInventoryCounts();
+      const st = inv.assignmentsByStatus;
+      const sellableMinutes = Math.round((inv.videos.sellableSec / 60) * 10) / 10;
+      const allowlistCreators = inv.allowlistByType["creator"] ?? 0;
+      const allowlistBrands = inv.allowlistByType["brand"] ?? 0;
+
+      const firstParty = [
+        {
+          key: "roster",
+          title: "Creator & Brand Roster",
+          description: "Registered accounts plus the typed allowlist that separates creators from brands.",
+          table: "users + allowed_users",
+          rowCount: inv.users.rowCount,
+          last30d: inv.users.last30d,
+          licensable: "consent-required",
+          notes: `Allowlist: ${allowlistCreators} creators, ${allowlistBrands} brands. Contains PII — external use requires user consent.`,
+        },
+        {
+          key: "videos-indexed",
+          title: "Videos Indexed",
+          description: "Creator videos imported or uploaded into the scan pipeline (active, non-trashed).",
+          table: "video_index",
+          rowCount: inv.videos.rowCount,
+          last30d: inv.videos.last30d,
+          licensable: "consent-required",
+          notes: `${inv.videos.ready} fully scanned (status Ready). Creator-owned content — licensing needs creator consent.`,
+        },
+        {
+          key: "scene-supply",
+          title: "Scene Classes, Canonical Surfaces & Sellable Screen-Time",
+          description: "FullScale-derived structural index of what is physically sellable inside creator footage.",
+          table: "detected_surfaces + video_index.scene_inventory",
+          rowCount: inv.surfaces.rowCount,
+          last30d: inv.surfaces.last30d,
+          licensable: "yes",
+          notes: `${inv.surfaces.canonical} canonical surfaces across ${inv.videos.sceneClasses} scene classes; ${sellableMinutes} sellable screen-minutes (scenes with at least one surface). Structural metadata only — no platform metrics.`,
+        },
+        {
+          key: "placement-funnel",
+          title: "Placement Funnel Events",
+          description: "Creator-side saved placements plus brand-initiated placement requests through the approval lifecycle.",
+          table: "saved_placements + brand_placement_assignments",
+          rowCount: inv.savedPlacements.rowCount + inv.assignments.rowCount,
+          last30d: inv.savedPlacements.last30d + inv.assignments.last30d,
+          licensable: "yes",
+          notes: `Requests by status: ${st["pending_creator_review"] ?? 0} pending, ${(st["creator_approved"] ?? 0) + (st["pending_brand_review"] ?? 0)} creator-approved, ${st["brand_approved"] ?? 0} brand-approved. First-party marketplace events.`,
+        },
+        {
+          key: "pricing-points",
+          title: "Placement Pricing Points",
+          description: "CPM-rubric priced placement requests: fee, platform take, creator payout, and the full pricing breakdown audit blob.",
+          table: "brand_placement_assignments",
+          rowCount: inv.assignments.priced,
+          last30d: inv.assignments.pricedLast30d,
+          licensable: "yes",
+          notes: "Fields: placement_fee_cents, platform_take_cents, creator_payout_cents, custom_fee_cents, duration_term, pricing_breakdown. First-party pricing signal.",
+        },
+        {
+          key: "editorial-clips",
+          title: "Editorial Clips",
+          description: "AI-identified narrative moments per video, with render state and quality scoring.",
+          table: "editorial_clips",
+          rowCount: inv.editorialClips.rowCount,
+          last30d: inv.editorialClips.last30d,
+          licensable: "consent-required",
+          notes: `${inv.editorialClips.rendered} rendered. Derivative of creator content — distribution needs creator consent.`,
+        },
+        {
+          key: "release-pages",
+          title: "Release Pages (Shared Links)",
+          description: "Public share links for placements and exports, including A1 release pages minted at brand approval.",
+          table: "shared_links",
+          rowCount: inv.sharedLinks.rowCount,
+          last30d: inv.sharedLinks.last30d,
+          licensable: "yes",
+          notes: `${inv.sharedLinks.releasePages} brand-release pages (brand_placement_id set). Already public surfaces; view counts are first-party.`,
+        },
+      ];
+
+      const thirdParty = [
+        {
+          key: "meta-insight-snapshots",
+          title: "Meta Insight Snapshots",
+          description: "Longitudinal IG/FB account insights (followers, engagement, demographics) captured by the snapshot job beyond Meta's ~90-day retention.",
+          table: "social_insight_snapshots",
+          rowCount: inv.insightSnapshots.rowCount,
+          last30d: inv.insightSnapshots.last30d,
+          licensable: "no",
+          notes: "Meta Platform Terms — in-app display only. Never exported, resold, or included in licensable datasets.",
+        },
+        {
+          key: "social-account-stats",
+          title: "Social Account Stats",
+          description: "Per-account platform stats cached on connected social accounts: follower counts, total views, audience_data demographics.",
+          table: "social_accounts",
+          rowCount: inv.socialAccounts.rowCount,
+          last30d: inv.socialAccounts.last30d,
+          licensable: "no",
+          notes: "Stats fields originate from platform Graph/Data APIs — display only under the source platform's terms; no export.",
+        },
+        {
+          key: "youtube-stats",
+          title: "YouTube Channel & Video Stats",
+          description: "Channel subscriber/view totals on OAuth connections plus per-video view counts refreshed from the YouTube Data API.",
+          table: "youtube_connections",
+          rowCount: inv.youtubeConnections.rowCount,
+          last30d: inv.youtubeConnections.last30d,
+          licensable: "no",
+          notes: "YouTube API Services ToS — metrics are display-only and refreshed from the API; no export or retention beyond policy.",
+        },
+      ];
+
+      const derived = [
+        {
+          key: "brand-fit-metrics",
+          title: "Brand-Fit & Blended Metrics",
+          description: "Scene-to-brand compatibility scores and narrative analysis blending first-party scene structure with platform-sourced audience signals.",
+          table: "brand_match_scores + scene_analysis",
+          rowCount: inv.brandMatchScores.rowCount + inv.sceneAnalysis.rowCount,
+          last30d:
+            inv.brandMatchScores.last30d != null && inv.sceneAnalysis.last30d != null
+              ? inv.brandMatchScores.last30d + inv.sceneAnalysis.last30d
+              : null,
+          licensable: "consent-required",
+          notes: `Export posture: aggregate-only (cohort-level, never raw platform metrics), and per-creator export requires creator consent. Inputs include ${inv.brandProducts.rowCount} brand product profiles.`,
+        },
+      ];
+
+      res.json({ firstParty, thirdParty, derived });
+    } catch (err: any) {
+      console.error("[API] /api/admin/data-inventory error:", err.message);
+      res.status(500).json({ error: "Failed to load data inventory" });
     }
   });
 

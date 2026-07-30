@@ -6,36 +6,51 @@
  * demographic breakdowns, complete per-post tables with watch time, story
  * metrics, trend history, and each creator's placement pipeline. Used to
  * deliver the marketplace service (brand matching, placement pricing).
+ * The roster covers EVERY creator account on the platform — connected or not —
+ * so coverage gaps are visible, not invisible.
  * FullScale-internal — never shown in Meta App Review screencasts.
  */
 
-import { Fragment, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
-  Loader2, ShieldAlert, Database, Users, Eye, Megaphone,
+  Loader2, ShieldAlert, Database, Users, Clock, Megaphone,
   ChevronDown, ChevronRight, Instagram, Facebook,
+  ArrowUp, ArrowDown, ArrowUpDown,
 } from "lucide-react";
 import {
   fmt, TrendBars, DemoBars, MediaTable, StoriesStrip,
   type SocialAccountAnalytics,
 } from "@/components/AnalyticsBits";
 
+/** Contract (A): full-roster entry from GET /api/admin/creator-intelligence. */
 interface CreatorRow {
   userId: string;
-  name: string;
   email: string | null;
-  platforms: string[];
-  followers: number;
-  views24h: number;
-  reach24h: number;
-  interactions24h: number;
-  engagementRate: number;
-  topCountry: string | null;
-  topAge: string | null;
-  placements: { pending: number; active: number; live: number };
-  lastSyncedAt: string | null;
+  name: string;
+  joinedAt: string | null;
+  coverage: { meta: boolean; youtube: boolean };
+  audience: {
+    followers: number | null;
+    engagementRatePct: number | null;
+    source: "meta" | null;
+  };
+  supply: {
+    videosScanned: number;
+    canonicalSurfaces: number;
+    sceneClasses: number;
+    sellableMinutes: number;
+  };
+  funnel: {
+    surfacesApproved: number;
+    brandRequests: number;
+    placementsApproved: number;
+    released: number;
+  };
+  editorial: { clipsGenerated: number; clipsRendered: number };
 }
 
 interface CreatorDetail {
@@ -79,6 +94,11 @@ function CreatorDetailPanel({ userId }: { userId: string }) {
 
   return (
     <div className="space-y-6 p-4 bg-black/20">
+      {data.accounts.length === 0 && data.placements.length === 0 && (
+        <p className="py-4 text-sm text-muted-foreground text-center">
+          No connected platform data for this creator yet.
+        </p>
+      )}
       {data.accounts.map((acct) => {
         const viewSeries = acct.series.map((s) => s.views);
         const followerSeries = acct.series.map((s) => s.followers ?? 0).filter((v) => v > 0);
@@ -181,12 +201,80 @@ function CreatorDetailPanel({ userId }: { userId: string }) {
   );
 }
 
+/** Filled badge when connected; muted outline + "not connected" tooltip when not. */
+function CoverageBadge({ label, connected }: { label: string; connected: boolean }) {
+  if (connected) {
+    return <Badge variant="secondary" className="text-[10px]">{label}</Badge>;
+  }
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        {/* span wrapper: Badge doesn't forward refs, Radix asChild needs one */}
+        <span className="inline-flex" tabIndex={0}>
+          <Badge
+            variant="outline"
+            className="text-[10px] text-muted-foreground border-white/15 opacity-60"
+            data-testid={`coverage-missing-${label.toLowerCase()}`}
+          >
+            {label}
+          </Badge>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent>
+        <p className="text-xs">{label} not connected</p>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+type SortKey = "followers" | "er" | "videos" | "surfaces" | "minutes" | "clips";
+type SortState = { key: SortKey; dir: "asc" | "desc" };
+
+function sortValue(c: CreatorRow, key: SortKey): number | null {
+  switch (key) {
+    case "followers": return c.audience?.followers ?? null;
+    case "er": return c.audience?.engagementRatePct ?? null;
+    case "videos": return c.supply?.videosScanned ?? 0;
+    case "surfaces": return c.supply?.canonicalSurfaces ?? 0;
+    case "minutes": return c.supply?.sellableMinutes ?? 0;
+    case "clips": return c.editorial?.clipsGenerated ?? 0;
+  }
+}
+
+function SortableTh({
+  label, k, sort, onSort,
+}: {
+  label: string; k: SortKey; sort: SortState; onSort: (k: SortKey) => void;
+}) {
+  const active = sort.key === k;
+  return (
+    <th className="p-3 font-medium text-right">
+      <button
+        type="button"
+        className={`inline-flex items-center gap-1 hover:text-gray-200 ${active ? "text-gray-200" : ""}`}
+        onClick={() => onSort(k)}
+        data-testid={`sort-${k}`}
+      >
+        {label}
+        {active
+          ? (sort.dir === "desc" ? <ArrowDown className="w-3 h-3" /> : <ArrowUp className="w-3 h-3" />)
+          : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+      </button>
+    </th>
+  );
+}
+
+/** Minutes can be fractional; keep one decimal below 10, k/M formatting above. */
+function fmtMinutes(v: number | null | undefined): string {
+  if (v == null) return "—";
+  if (v < 10) return v.toFixed(1);
+  return fmt(Math.round(v));
+}
+
 export default function AdminCreatorIntelligence() {
   const [expanded, setExpanded] = useState<string | null>(null);
-  const { data, isLoading, isError, error } = useQuery<{
-    creators: CreatorRow[];
-    totals: { creators: number; followers: number; views24h: number; livePlacements: number };
-  }>({
+  const [sort, setSort] = useState<SortState>({ key: "followers", dir: "desc" });
+  const { data, isLoading, isError, error } = useQuery<{ creators: CreatorRow[] }>({
     queryKey: ["/api/admin/creator-intelligence"],
     queryFn: async () => {
       const res = await fetch("/api/admin/creator-intelligence", { credentials: "include" });
@@ -196,6 +284,29 @@ export default function AdminCreatorIntelligence() {
     refetchInterval: 5 * 60_000,
     retry: false,
   });
+
+  const creators = data?.creators ?? [];
+
+  const sorted = useMemo(() => {
+    return [...creators].sort((a, b) => {
+      const av = sortValue(a, sort.key);
+      const bv = sortValue(b, sort.key);
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1; // nulls last, whichever direction
+      if (bv == null) return -1;
+      return sort.dir === "desc" ? bv - av : av - bv;
+    });
+  }, [creators, sort]);
+
+  const totals = useMemo(() => ({
+    creators: creators.length,
+    followers: creators.reduce((n, c) => n + (c.audience?.followers ?? 0), 0),
+    sellableMinutes: creators.reduce((n, c) => n + (c.supply?.sellableMinutes ?? 0), 0),
+    released: creators.reduce((n, c) => n + (c.funnel?.released ?? 0), 0),
+  }), [creators]);
+
+  const onSort = (k: SortKey) =>
+    setSort((s) => (s.key === k ? { key: k, dir: s.dir === "desc" ? "asc" : "desc" } : { key: k, dir: "desc" }));
 
   if (isLoading) {
     return (
@@ -215,9 +326,6 @@ export default function AdminCreatorIntelligence() {
     );
   }
 
-  const creators = data?.creators ?? [];
-  const totals = data?.totals;
-
   return (
     <div className="container mx-auto px-4 md:px-6 py-8 max-w-6xl">
       <div className="mb-6">
@@ -225,36 +333,34 @@ export default function AdminCreatorIntelligence() {
           <Database className="w-6 h-6 text-primary" /> Creator Intelligence
         </h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Connected creators, their audiences, and how they're interacting with brands.
-          Click a row for the full drill-down.
+          The full creator roster — audiences, scanned supply, and how each creator is
+          interacting with brands. Click a row for the full drill-down.
         </p>
       </div>
 
-      {totals && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-          {[
-            { label: "Creators", value: fmt(totals.creators), icon: Users },
-            { label: "Total audience", value: fmt(totals.followers), icon: Users },
-            { label: "Views (24h)", value: fmt(totals.views24h), icon: Eye },
-            { label: "Live placements", value: fmt(totals.livePlacements), icon: Megaphone },
-          ].map((t) => (
-            <Card key={t.label}>
-              <CardContent className="p-4">
-                <p className="text-xs text-muted-foreground flex items-center gap-1">
-                  <t.icon className="w-3.5 h-3.5" /> {t.label}
-                </p>
-                <p className="text-xl font-bold text-white mt-1">{t.value}</p>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      )}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+        {[
+          { label: "Creators", value: fmt(totals.creators), icon: Users },
+          { label: "Total audience", value: fmt(totals.followers), icon: Users },
+          { label: "Sellable minutes", value: fmtMinutes(totals.sellableMinutes), icon: Clock },
+          { label: "Released placements", value: fmt(totals.released), icon: Megaphone },
+        ].map((t) => (
+          <Card key={t.label}>
+            <CardContent className="p-4">
+              <p className="text-xs text-muted-foreground flex items-center gap-1">
+                <t.icon className="w-3.5 h-3.5" /> {t.label}
+              </p>
+              <p className="text-xl font-bold text-white mt-1">{t.value}</p>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
 
       {creators.length === 0 ? (
         <Card className="border-dashed">
           <CardContent className="py-16 text-center text-sm text-muted-foreground">
-            No creators with connected Meta accounts yet. Data appears as creators
-            connect Facebook/Instagram and the snapshot job runs.
+            No creator accounts yet. The roster fills in as creators sign up;
+            audience metrics appear once they connect Meta or YouTube.
           </CardContent>
         </Card>
       ) : (
@@ -265,19 +371,18 @@ export default function AdminCreatorIntelligence() {
                 <tr className="text-xs text-muted-foreground text-left border-b border-white/10">
                   <th className="p-3 font-medium w-6"></th>
                   <th className="p-3 font-medium">Creator</th>
-                  <th className="p-3 font-medium">Platforms</th>
-                  <th className="p-3 font-medium text-right">Followers</th>
-                  <th className="p-3 font-medium text-right">Views 24h</th>
-                  <th className="p-3 font-medium text-right">Reach 24h</th>
-                  <th className="p-3 font-medium text-right">Eng. rate</th>
-                  <th className="p-3 font-medium">Top geo</th>
-                  <th className="p-3 font-medium">Top age</th>
-                  <th className="p-3 font-medium text-center">Placements (p/a/live)</th>
-                  <th className="p-3 font-medium text-right">Synced</th>
+                  <th className="p-3 font-medium">Coverage</th>
+                  <SortableTh label="Followers" k="followers" sort={sort} onSort={onSort} />
+                  <SortableTh label="ER%" k="er" sort={sort} onSort={onSort} />
+                  <SortableTh label="Videos" k="videos" sort={sort} onSort={onSort} />
+                  <SortableTh label="Surfaces" k="surfaces" sort={sort} onSort={onSort} />
+                  <SortableTh label="Sellable min" k="minutes" sort={sort} onSort={onSort} />
+                  <th className="p-3 font-medium text-center">Funnel (appr/req/placed/rel)</th>
+                  <SortableTh label="Clips (gen/rend)" k="clips" sort={sort} onSort={onSort} />
                 </tr>
               </thead>
               <tbody>
-                {creators.map((c) => (
+                {sorted.map((c) => (
                   <Fragment key={c.userId}>
                     <tr
                       className="border-b border-white/5 hover:bg-white/[0.02] cursor-pointer"
@@ -295,33 +400,36 @@ export default function AdminCreatorIntelligence() {
                       </td>
                       <td className="p-3">
                         <div className="flex gap-1">
-                          {c.platforms.map((p) => (
-                            <Badge key={p} variant="secondary" className="text-[10px] capitalize">{p}</Badge>
-                          ))}
+                          <CoverageBadge label="Meta" connected={!!c.coverage?.meta} />
+                          <CoverageBadge label="YouTube" connected={!!c.coverage?.youtube} />
                         </div>
                       </td>
-                      <td className="p-3 text-right text-white">{fmt(c.followers)}</td>
-                      <td className="p-3 text-right">{fmt(c.views24h)}</td>
-                      <td className="p-3 text-right">{fmt(c.reach24h)}</td>
+                      <td className="p-3 text-right text-white">{fmt(c.audience?.followers)}</td>
                       <td className="p-3 text-right">
-                        {c.engagementRate > 0 ? `${(c.engagementRate * 100).toFixed(1)}%` : "—"}
+                        {c.audience?.engagementRatePct != null
+                          ? `${c.audience.engagementRatePct.toFixed(1)}%`
+                          : "—"}
                       </td>
-                      <td className="p-3">{c.topCountry || "—"}</td>
-                      <td className="p-3">{c.topAge || "—"}</td>
-                      <td className="p-3 text-center">
-                        <span className="text-amber-400">{c.placements.pending}</span>
+                      <td className="p-3 text-right">{fmt(c.supply?.videosScanned ?? 0)}</td>
+                      <td className="p-3 text-right">{fmt(c.supply?.canonicalSurfaces ?? 0)}</td>
+                      <td className="p-3 text-right">{fmtMinutes(c.supply?.sellableMinutes ?? 0)}</td>
+                      <td className="p-3 text-center whitespace-nowrap">
+                        <span className="text-gray-200">{c.funnel?.surfacesApproved ?? 0}</span>
                         {" / "}
-                        <span className="text-sky-400">{c.placements.active}</span>
+                        <span className="text-amber-400">{c.funnel?.brandRequests ?? 0}</span>
                         {" / "}
-                        <span className="text-emerald-400">{c.placements.live}</span>
+                        <span className="text-sky-400">{c.funnel?.placementsApproved ?? 0}</span>
+                        {" / "}
+                        <span className="text-emerald-400">{c.funnel?.released ?? 0}</span>
                       </td>
-                      <td className="p-3 text-right text-xs text-muted-foreground">
-                        {c.lastSyncedAt ? new Date(c.lastSyncedAt).toLocaleDateString() : "never"}
+                      <td className="p-3 text-right whitespace-nowrap">
+                        <span className="text-white">{fmt(c.editorial?.clipsGenerated ?? 0)}</span>
+                        <span className="text-muted-foreground"> / {fmt(c.editorial?.clipsRendered ?? 0)}</span>
                       </td>
                     </tr>
                     {expanded === c.userId && (
                       <tr>
-                        <td colSpan={11} className="p-0">
+                        <td colSpan={10} className="p-0">
                           <CreatorDetailPanel userId={c.userId} />
                         </td>
                       </tr>

@@ -2984,6 +2984,344 @@ export class DatabaseStorage implements IStorage {
       .returning();
     return result;
   }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // Admin analytics aggregates — batched roll-ups for the operator surfaces
+  // (/api/admin/creator-intelligence, /api/admin/data-inventory).
+  //
+  // Every method is ONE query per table, GROUP BY the RAW identity key —
+  // never a query per creator (the per-account loop in the old operator
+  // roster was the same N+1 shape that exhausted the pool in prod, see
+  // getSurfaceCountsForVideos). Identity columns are mixed-key (users.id
+  // UUID or legacy email — the dual-ID reality identityMatchValues handles
+  // per-user); the route folds the raw-keyed rows onto canonical users.id
+  // via an alias map built once from the users table.
+  // ══════════════════════════════════════════════════════════════════════
+
+  /** Lightweight full roster — identity + join date only, no auth fields. */
+  async getAllUserIdentities(): Promise<Array<{
+    id: string;
+    email: string | null;
+    firstName: string | null;
+    lastName: string | null;
+    createdAt: Date | null;
+  }>> {
+    return await db
+      .select({
+        id: users.id,
+        email: users.email,
+        firstName: users.firstName,
+        lastName: users.lastName,
+        createdAt: users.createdAt,
+      })
+      .from(users)
+      .orderBy(users.createdAt);
+  }
+
+  /**
+   * Per-owner video supply + editorial roll-up in one GROUP BY: scanned
+   * videos (status LIKE 'Ready%' — statuses are "Ready (12 Spots)" style),
+   * editorial clip totals, and the sceneInventory JSON aggregation (scene
+   * classes + sellable screen time). Sellable seconds count each scene's
+   * totalSec once, and only for scenes that carry at least one surface —
+   * screen time with nothing to sell on it isn't inventory.
+   */
+  async getCreatorSupplyAggregates(): Promise<Array<{
+    userId: string;
+    videosScanned: number;
+    clipsGenerated: number;
+    clipsRendered: number;
+    sceneClasses: number;
+    sellableSec: number;
+  }>> {
+    const scenes = sql`${videoIndex.sceneInventory}->'scenes'`;
+    const rows = await db
+      .select({
+        userId: videoIndex.userId,
+        // Legacy 'Scan Complete' rows are scanned too — same status band the
+        // marketplace queries use, so a legacy-only creator can't show
+        // Videos=0 while contributing surfaces and scenes.
+        videosScanned: sql<number>`count(*) FILTER (WHERE ${videoIndex.status} LIKE 'Ready%' OR ${videoIndex.status} = 'Scan Complete')::int`,
+        clipsGenerated: sql<number>`COALESCE(SUM(${videoIndex.editorialClipCount}), 0)::int`,
+        sceneClasses: sql<number>`COALESCE(SUM(CASE WHEN jsonb_typeof(${scenes}) = 'array' THEN jsonb_array_length(${scenes}) ELSE 0 END), 0)::int`,
+        sellableSec: sql<number>`COALESCE(SUM(CASE WHEN jsonb_typeof(${scenes}) = 'array' THEN (
+          SELECT COALESCE(SUM((sc->>'totalSec')::double precision), 0)
+          FROM jsonb_array_elements(${scenes}) sc
+          WHERE jsonb_typeof(sc->'surfaces') = 'array' AND jsonb_array_length(sc->'surfaces') > 0
+        ) ELSE 0 END), 0)::double precision`,
+      })
+      .from(videoIndex)
+      .where(sql`${videoIndex.deletedAt} IS NULL`)
+      .groupBy(videoIndex.userId);
+
+    // Rendered = actual editorial_clips rows with render_status 'rendered'
+    // — the same definition the data-inventory card uses, so the two admin
+    // surfaces reconcile. (The video-level editorialStatus proxy both over-
+    // and under-counted: failed clips on a 'ready' video counted, rendered
+    // clips on a later-'failed' video didn't.)
+    const renderedRows = await db
+      .select({
+        userId: videoIndex.userId,
+        clipsRendered: sql<number>`count(*)::int`,
+      })
+      .from(editorialClips)
+      .innerJoin(videoIndex, eq(videoIndex.id, editorialClips.videoId))
+      .where(and(
+        sql`${editorialClips.renderStatus} = 'rendered'`,
+        sql`${videoIndex.deletedAt} IS NULL`,
+      ))
+      .groupBy(videoIndex.userId);
+    const renderedByUser = new Map(renderedRows.map((r) => [r.userId, Number(r.clipsRendered)]));
+
+    return rows.map((r) => ({
+      userId: r.userId,
+      videosScanned: Number(r.videosScanned),
+      clipsGenerated: Number(r.clipsGenerated),
+      clipsRendered: renderedByUser.get(r.userId) ?? 0,
+      sceneClasses: Number(r.sceneClasses),
+      sellableSec: Number(r.sellableSec),
+    }));
+  }
+
+  /**
+   * Per-owner canonical-surface counts. Same COALESCE fallback + Filtered
+   * exclusion as getSurfaceCountsForVideos, with video_id folded into the
+   * legacy composite so pre-grouping rows can't collide across videos in a
+   * cross-video GROUP BY (surface_group_id already embeds the video id).
+   * surfacesApproved counts a canonical surface once ANY member row is
+   * creator-approved — approval is a per-surface toggle, but member rows
+   * written before the toggle flip stay false.
+   */
+  async getCreatorSurfaceAggregates(): Promise<Array<{
+    userId: string;
+    canonicalSurfaces: number;
+    surfacesApproved: number;
+  }>> {
+    const groupExpr = sql`COALESCE(${detectedSurfaces.surfaceGroupId}, ${detectedSurfaces.videoId}::text || ':' || ${detectedSurfaces.surfaceType} || ':' || COALESCE(${detectedSurfaces.sceneId}, 0)::text)`;
+    const rows = await db
+      .select({
+        userId: videoIndex.userId,
+        canonicalSurfaces: sql<number>`count(DISTINCT ${groupExpr})::int`,
+        surfacesApproved: sql<number>`count(DISTINCT ${groupExpr}) FILTER (WHERE ${detectedSurfaces.creatorApproved})::int`,
+      })
+      .from(detectedSurfaces)
+      .innerJoin(videoIndex, eq(videoIndex.id, detectedSurfaces.videoId))
+      .where(and(
+        ne(detectedSurfaces.surfaceType, "Filtered"),
+        sql`${videoIndex.deletedAt} IS NULL`,
+      ))
+      .groupBy(videoIndex.userId);
+    return rows.map((r) => ({
+      userId: r.userId,
+      canonicalSurfaces: Number(r.canonicalSurfaces),
+      surfacesApproved: Number(r.surfacesApproved),
+    }));
+  }
+
+  /**
+   * Placement funnel per creator key: total brand requests (any status) and
+   * creator-approved-onward (creator_approved → pending_brand_review →
+   * brand_approved — same "approved by the creator" band
+   * getApprovedPlacementsForVideo renders from).
+   */
+  async getCreatorPlacementFunnelAggregates(): Promise<Array<{
+    userId: string;
+    brandRequests: number;
+    placementsApproved: number;
+  }>> {
+    const rows = await db
+      .select({
+        userId: brandPlacementAssignments.creatorUserId,
+        brandRequests: sql<number>`count(*)::int`,
+        placementsApproved: sql<number>`count(*) FILTER (WHERE ${brandPlacementAssignments.status} IN ('creator_approved', 'pending_brand_review', 'brand_approved'))::int`,
+      })
+      .from(brandPlacementAssignments)
+      .groupBy(brandPlacementAssignments.creatorUserId);
+    return rows.map((r) => ({
+      userId: r.userId,
+      brandRequests: Number(r.brandRequests),
+      placementsApproved: Number(r.placementsApproved),
+    }));
+  }
+
+  /**
+   * Released A1 pages per creator key — shared_links minted against a brand
+   * placement (brand_placement_id NOT NULL, enforced by the inner join).
+   */
+  async getCreatorReleaseCounts(): Promise<Array<{ userId: string; released: number }>> {
+    const rows = await db
+      .select({
+        userId: brandPlacementAssignments.creatorUserId,
+        released: sql<number>`count(*)::int`,
+      })
+      .from(sharedLinks)
+      .innerJoin(brandPlacementAssignments, eq(brandPlacementAssignments.id, sharedLinks.brandPlacementId))
+      .groupBy(brandPlacementAssignments.creatorUserId);
+    return rows.map((r) => ({ userId: r.userId, released: Number(r.released) }));
+  }
+
+  /** Raw identity keys with a connected social account, platform tagged.
+   *  Deliberately skips token columns — no decrypt work for a coverage flag. */
+  async getSocialCoverageKeys(): Promise<Array<{ userId: string; platform: string }>> {
+    return await db
+      .select({ userId: socialAccounts.userId, platform: socialAccounts.platform })
+      .from(socialAccounts);
+  }
+
+  /** Raw identity keys holding a YouTube OAuth connection (mixed id/email). */
+  async getYoutubeConnectionKeys(): Promise<string[]> {
+    const rows = await db
+      .select({ userId: youtubeConnections.userId })
+      .from(youtubeConnections);
+    return rows.map((r) => r.userId);
+  }
+
+  /**
+   * Latest insight snapshot per (RAW identity key, platform account). The
+   * snapshot job writes one row PER connected Meta account (IG and FB) per
+   * cycle, all sharing user_id — DISTINCT ON user_id alone would collapse a
+   * multi-account creator to whichever account captured most recently, and
+   * the winner flips between cycles. The route sums accounts per canonical
+   * user instead.
+   */
+  async getLatestInsightSnapshotPerUser(): Promise<Array<{
+    userId: string;
+    platformAccountId: string;
+    followers: number | null;
+    metrics: unknown;
+    capturedAt: Date | null;
+  }>> {
+    return await db
+      .selectDistinctOn(
+        [socialInsightSnapshots.userId, socialInsightSnapshots.platformAccountId],
+        {
+          userId: socialInsightSnapshots.userId,
+          platformAccountId: socialInsightSnapshots.platformAccountId,
+          followers: socialInsightSnapshots.followers,
+          metrics: socialInsightSnapshots.metrics,
+          capturedAt: socialInsightSnapshots.capturedAt,
+        },
+      )
+      .from(socialInsightSnapshots)
+      .orderBy(
+        socialInsightSnapshots.userId,
+        socialInsightSnapshots.platformAccountId,
+        desc(socialInsightSnapshots.capturedAt),
+      );
+  }
+
+  /**
+   * Live table census for /api/admin/data-inventory. COUNTS ONLY — no raw
+   * platform-metric values leave this method, so nothing downstream can leak
+   * Meta/YouTube numbers into an exportable surface. Same-table counts are
+   * merged into single statements (14 small queries total, admin-only path).
+   */
+  async getDataInventoryCounts(): Promise<{
+    users: { rowCount: number; last30d: number };
+    allowlistByType: Record<string, number>;
+    videos: { rowCount: number; last30d: number; ready: number; sceneClasses: number; sellableSec: number };
+    surfaces: { rowCount: number; last30d: number; canonical: number };
+    savedPlacements: { rowCount: number; last30d: number };
+    assignments: { rowCount: number; last30d: number; priced: number; pricedLast30d: number };
+    assignmentsByStatus: Record<string, number>;
+    editorialClips: { rowCount: number; last30d: number; rendered: number };
+    sharedLinks: { rowCount: number; last30d: number; releasePages: number };
+    insightSnapshots: { rowCount: number; last30d: number };
+    socialAccounts: { rowCount: number; last30d: number };
+    youtubeConnections: { rowCount: number; last30d: number };
+    brandMatchScores: { rowCount: number; last30d: number };
+    sceneAnalysis: { rowCount: number; last30d: number };
+    brandProducts: { rowCount: number; last30d: number };
+  }> {
+    const recent = (col: any) => sql<number>`count(*) FILTER (WHERE ${col} >= now() - interval '30 days')::int`;
+    const scenes = sql`${videoIndex.sceneInventory}->'scenes'`;
+    const canonicalExpr = sql`COALESCE(${detectedSurfaces.surfaceGroupId}, ${detectedSurfaces.videoId}::text || ':' || ${detectedSurfaces.surfaceType} || ':' || COALESCE(${detectedSurfaces.sceneId}, 0)::text)`;
+    const pricedCond = sql`(COALESCE(${brandPlacementAssignments.placementFeeCents}, 0) > 0 OR COALESCE(${brandPlacementAssignments.customFeeCents}, 0) > 0 OR ${brandPlacementAssignments.pricingBreakdown} IS NOT NULL)`;
+
+    // Two waves of <=8: the pool caps at 10 connections, and a 15-wide
+    // burst behind an already-busy pool (scans, renders) can queue past the
+    // 10s acquire timeout and 500 the whole endpoint.
+    const [
+      [usersRow], allowlistRows, [videosRow], [surfacesRow], [savedRow],
+      [assignRow], assignStatusRows, [editorialRow],
+    ] = await Promise.all([
+      db.select({ rowCount: sql<number>`count(*)::int`, last30d: recent(users.createdAt) }).from(users),
+      db.select({ userType: allowedUsers.userType, count: sql<number>`count(*)::int` })
+        .from(allowedUsers).groupBy(allowedUsers.userType),
+      db.select({
+        rowCount: sql<number>`count(*)::int`,
+        last30d: recent(videoIndex.createdAt),
+        ready: sql<number>`count(*) FILTER (WHERE ${videoIndex.status} LIKE 'Ready%' OR ${videoIndex.status} = 'Scan Complete')::int`,
+        sceneClasses: sql<number>`COALESCE(SUM(CASE WHEN jsonb_typeof(${scenes}) = 'array' THEN jsonb_array_length(${scenes}) ELSE 0 END), 0)::int`,
+        sellableSec: sql<number>`COALESCE(SUM(CASE WHEN jsonb_typeof(${scenes}) = 'array' THEN (
+          SELECT COALESCE(SUM((sc->>'totalSec')::double precision), 0)
+          FROM jsonb_array_elements(${scenes}) sc
+          WHERE jsonb_typeof(sc->'surfaces') = 'array' AND jsonb_array_length(sc->'surfaces') > 0
+        ) ELSE 0 END), 0)::double precision`,
+      }).from(videoIndex).where(sql`${videoIndex.deletedAt} IS NULL`),
+      db.select({
+        rowCount: sql<number>`count(*)::int`,
+        last30d: recent(detectedSurfaces.createdAt),
+        canonical: sql<number>`count(DISTINCT ${canonicalExpr})::int`,
+      }).from(detectedSurfaces).where(ne(detectedSurfaces.surfaceType, "Filtered")),
+      db.select({ rowCount: sql<number>`count(*)::int`, last30d: recent(savedPlacements.createdAt) }).from(savedPlacements),
+      db.select({
+        rowCount: sql<number>`count(*)::int`,
+        last30d: recent(brandPlacementAssignments.createdAt),
+        priced: sql<number>`count(*) FILTER (WHERE ${pricedCond})::int`,
+        pricedLast30d: sql<number>`count(*) FILTER (WHERE ${pricedCond} AND ${brandPlacementAssignments.createdAt} >= now() - interval '30 days')::int`,
+      }).from(brandPlacementAssignments),
+      db.select({ status: brandPlacementAssignments.status, count: sql<number>`count(*)::int` })
+        .from(brandPlacementAssignments).groupBy(brandPlacementAssignments.status),
+      db.select({
+        rowCount: sql<number>`count(*)::int`,
+        last30d: recent(editorialClips.createdAt),
+        rendered: sql<number>`count(*) FILTER (WHERE ${editorialClips.renderStatus} = 'rendered')::int`,
+      }).from(editorialClips),
+    ]);
+    const [
+      [linksRow], [snapshotsRow], [socialRow], [ytRow],
+      [matchRow], [sceneAnalysisRow], [productsRow],
+    ] = await Promise.all([
+      db.select({
+        rowCount: sql<number>`count(*)::int`,
+        last30d: recent(sharedLinks.createdAt),
+        releasePages: sql<number>`count(*) FILTER (WHERE ${sharedLinks.brandPlacementId} IS NOT NULL)::int`,
+      }).from(sharedLinks),
+      // captured_at is the snapshots table's row-creation stamp (defaultNow at insert)
+      db.select({ rowCount: sql<number>`count(*)::int`, last30d: recent(socialInsightSnapshots.capturedAt) }).from(socialInsightSnapshots),
+      db.select({ rowCount: sql<number>`count(*)::int`, last30d: recent(socialAccounts.createdAt) }).from(socialAccounts),
+      db.select({ rowCount: sql<number>`count(*)::int`, last30d: recent(youtubeConnections.createdAt) }).from(youtubeConnections),
+      db.select({ rowCount: sql<number>`count(*)::int`, last30d: recent(brandMatchScores.createdAt) }).from(brandMatchScores),
+      db.select({ rowCount: sql<number>`count(*)::int`, last30d: recent(sceneAnalysis.createdAt) }).from(sceneAnalysis),
+      db.select({ rowCount: sql<number>`count(*)::int`, last30d: recent(brandProducts.createdAt) }).from(brandProducts),
+    ]);
+
+    const n = (v: unknown) => Number(v ?? 0);
+    return {
+      users: { rowCount: n(usersRow?.rowCount), last30d: n(usersRow?.last30d) },
+      allowlistByType: Object.fromEntries(allowlistRows.map((r) => [r.userType ?? "unknown", n(r.count)])),
+      videos: {
+        rowCount: n(videosRow?.rowCount), last30d: n(videosRow?.last30d),
+        ready: n(videosRow?.ready), sceneClasses: n(videosRow?.sceneClasses), sellableSec: n(videosRow?.sellableSec),
+      },
+      surfaces: { rowCount: n(surfacesRow?.rowCount), last30d: n(surfacesRow?.last30d), canonical: n(surfacesRow?.canonical) },
+      savedPlacements: { rowCount: n(savedRow?.rowCount), last30d: n(savedRow?.last30d) },
+      assignments: {
+        rowCount: n(assignRow?.rowCount), last30d: n(assignRow?.last30d),
+        priced: n(assignRow?.priced), pricedLast30d: n(assignRow?.pricedLast30d),
+      },
+      assignmentsByStatus: Object.fromEntries(assignStatusRows.map((r) => [r.status, n(r.count)])),
+      editorialClips: { rowCount: n(editorialRow?.rowCount), last30d: n(editorialRow?.last30d), rendered: n(editorialRow?.rendered) },
+      sharedLinks: { rowCount: n(linksRow?.rowCount), last30d: n(linksRow?.last30d), releasePages: n(linksRow?.releasePages) },
+      insightSnapshots: { rowCount: n(snapshotsRow?.rowCount), last30d: n(snapshotsRow?.last30d) },
+      socialAccounts: { rowCount: n(socialRow?.rowCount), last30d: n(socialRow?.last30d) },
+      youtubeConnections: { rowCount: n(ytRow?.rowCount), last30d: n(ytRow?.last30d) },
+      brandMatchScores: { rowCount: n(matchRow?.rowCount), last30d: n(matchRow?.last30d) },
+      sceneAnalysis: { rowCount: n(sceneAnalysisRow?.rowCount), last30d: n(sceneAnalysisRow?.last30d) },
+      brandProducts: { rowCount: n(productsRow?.rowCount), last30d: n(productsRow?.last30d) },
+    };
+  }
 }
 
 export const storage = new DatabaseStorage();
