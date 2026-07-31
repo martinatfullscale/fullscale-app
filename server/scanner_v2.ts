@@ -59,15 +59,47 @@ const ai = new GoogleGenAI({
 // scan silently degrades to edge detection. When GEMINI_API_KEY (a real
 // Google AI Studio key) is set, failed proxy calls retry against Google
 // directly instead of degrading.
-const directGeminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GEMINI_API_KEY
-  // A genuine Google key (AIza…) sitting in the integration slot works
-  // against Google directly too — reuse it so a dead proxy doesn't demand a
-  // second secret. (Replit-managed proxy keys don't match this prefix.)
-  || (process.env.AI_INTEGRATIONS_GEMINI_API_KEY?.startsWith("AIza")
-      ? process.env.AI_INTEGRATIONS_GEMINI_API_KEY
-      : undefined);
+/**
+ * Find a real Google Gemini key in the environment, whatever the operator
+ * named it. Two hard-won details:
+ *  - Env names are CASE-SENSITIVE on Linux, and secrets panels invite
+ *    "Gemini_API_Key". Matching only GEMINI_API_KEY left a perfectly good
+ *    key invisible while the UI showed it plainly, and every scan silently
+ *    degraded to edge detection.
+ *  - Key FORMATS change: classic AI Studio keys are "AIza…" (39 chars),
+ *    newer ones are "AQ.…" (~53). So we reject the known placeholder
+ *    rather than allow-listing prefixes — anything short or literally
+ *    _DUMMY_API_KEY_ (Replit's proxy credential) isn't a usable key.
+ * Returns the variable NAME too, so boot logs can name what they found
+ * without ever printing the value.
+ */
+function resolveDirectGeminiKey(): { key: string; source: string } | null {
+  const looksReal = (v: string | undefined): v is string =>
+    !!v && v.length >= 20 && !v.includes("DUMMY");
+  const preferred = ["GEMINI_API_KEY", "GOOGLE_GEMINI_API_KEY", "GOOGLE_API_KEY"];
+  for (const name of preferred) {
+    if (looksReal(process.env[name])) return { key: process.env[name]!, source: name };
+  }
+  // Case/separator-insensitive sweep: Gemini_API_Key, gemini-api-key, …
+  const normalize = (s: string) => s.toLowerCase().replace(/[^a-z]/g, "");
+  const wanted = new Set(["geminiapikey", "googlegeminiapikey"]);
+  for (const name of Object.keys(process.env)) {
+    if (wanted.has(normalize(name)) && looksReal(process.env[name])) {
+      return { key: process.env[name]!, source: name };
+    }
+  }
+  // The integration slot holds Replit's proxy placeholder in normal setups,
+  // but an operator may have pasted a genuine key there.
+  if (looksReal(process.env.AI_INTEGRATIONS_GEMINI_API_KEY)) {
+    return { key: process.env.AI_INTEGRATIONS_GEMINI_API_KEY!, source: "AI_INTEGRATIONS_GEMINI_API_KEY" };
+  }
+  return null;
+}
+
+const resolvedDirectGemini = resolveDirectGeminiKey();
+const directGeminiKey = resolvedDirectGemini?.key;
 const aiDirect = directGeminiKey ? new GoogleGenAI({ apiKey: directGeminiKey }) : null;
-console.log(`[Scanner V2] Direct Gemini fallback: ${aiDirect ? "CONFIGURED (GEMINI_API_KEY)" : "not set — proxy failures will degrade to edge detection"}`);
+console.log(`[Scanner V2] Direct Gemini: ${aiDirect ? `CONFIGURED from ${resolvedDirectGemini!.source} (${directGeminiKey!.length} chars)` : "NOT SET — scans will degrade to edge detection if the proxy is unreachable"}`);
 
 /**
  * Gemini call with a per-attempt timeout and automatic proxy→direct

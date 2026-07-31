@@ -149,13 +149,35 @@ console.log(`[Scanner] AI_INTEGRATIONS_GEMINI_BASE_URL: ${process.env.AI_INTEGRA
 console.log(`[Scanner] LOCAL_ASSET_MAP entries: ${Object.keys(LOCAL_ASSET_MAP).length}`);
 console.log(`[Scanner] =============================================`);
 
-const ai = new GoogleGenAI({
-  apiKey: process.env.AI_INTEGRATIONS_GEMINI_API_KEY,
-  httpOptions: {
-    apiVersion: "",
-    baseUrl: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL,
-  },
-});
+// Prefer a real Google key over Replit's proxy sidecar, matching
+// scanner_v2's resolution (case-insensitive name sweep, placeholder
+// rejection): the proxy only exists inside the workspace, so a deployed
+// scan that trusts it times out on every frame. Only when no direct key is
+// present do we fall back to the integration slot + its base URL.
+const legacyDirectGeminiKey = (() => {
+  const looksReal = (v: string | undefined): v is string =>
+    !!v && v.length >= 20 && !v.includes("DUMMY");
+  for (const name of ["GEMINI_API_KEY", "GOOGLE_GEMINI_API_KEY", "GOOGLE_API_KEY"]) {
+    if (looksReal(process.env[name])) return process.env[name]!;
+  }
+  const normalize = (s: string) => s.toLowerCase().replace(/[^a-z]/g, "");
+  for (const name of Object.keys(process.env)) {
+    if (normalize(name) === "geminiapikey" && looksReal(process.env[name])) return process.env[name]!;
+  }
+  if (looksReal(process.env.AI_INTEGRATIONS_GEMINI_API_KEY)) return process.env.AI_INTEGRATIONS_GEMINI_API_KEY!;
+  return undefined;
+})();
+
+const ai = legacyDirectGeminiKey
+  ? new GoogleGenAI({ apiKey: legacyDirectGeminiKey })
+  : new GoogleGenAI({
+      apiKey: process.env.AI_INTEGRATIONS_GEMINI_API_KEY,
+      httpOptions: {
+        apiVersion: "",
+        baseUrl: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL,
+      },
+    });
+console.log(`[Scanner] Gemini client: ${legacyDirectGeminiKey ? "direct Google key" : "Replit proxy (no direct key found)"}`);
 
 // Helper to add timeout to promises
 function withTimeout<T>(promise: Promise<T>, ms: number, errorMessage: string): Promise<T> {
