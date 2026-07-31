@@ -1201,7 +1201,7 @@ If no surfaces visible, return: {"surfaces": [], "sentiment": "Neutral", "cultur
     console.log(`[Scanner] Base URL: ${process.env.AI_INTEGRATIONS_GEMINI_BASE_URL || '(default)'}`);
     
     const apiCall = ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
       contents: [
         {
           role: "user",

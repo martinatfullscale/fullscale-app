@@ -107,10 +107,28 @@ console.log(`[Scanner V2] Direct Gemini: ${aiDirect ? `CONFIGURED from ${resolve
  * proxy meant an unconditional loss; here the timeout applies to each
  * attempt and the direct client gets its own try.
  */
+// Model ids ROT: Google retired gemini-2.5-flash for new accounts and the
+// hardcoded name 404'd every frame of a scan ("no longer available to new
+// users"). Instead of pinning one id, walk a candidate ladder — operator
+// override first, then Google's rolling alias, then explicit generations —
+// and MEMOIZE the first id the key accepts so discovery costs one frame,
+// not the whole scan. A NOT_FOUND on the working id (mid-flight retirement)
+// just advances the ladder.
+export const GEMINI_MODEL_CANDIDATES: string[] = [
+  process.env.GEMINI_MODEL,        // explicit operator pin wins
+  "gemini-flash-latest",           // Google's rolling latest-flash alias
+  "gemini-3-flash",
+  "gemini-3-flash-preview",
+  "gemini-2.5-flash",              // legacy accounts + the Replit proxy
+].filter((m): m is string => !!m);
+let geminiModelIdx = 0;
+const isModelGoneError = (err: any): boolean =>
+  /NOT_FOUND|not found|no longer available|is not supported/i.test(String(err?.message ?? err));
+
 async function geminiGenerate(params: any, timeoutMs: number = CONFIG.GEMINI_TIMEOUT_MS): Promise<any> {
-  const attempt = (client: GoogleGenAI) =>
+  const attempt = (client: GoogleGenAI, model: string) =>
     Promise.race([
-      client.models.generateContent(params),
+      client.models.generateContent({ ...params, model }),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Gemini timeout")), timeoutMs)),
     ]);
   // A real Google key goes FIRST. The Replit modelfarm proxy only exists
@@ -119,12 +137,23 @@ async function geminiGenerate(params: any, timeoutMs: number = CONFIG.GEMINI_TIM
   // When we hold a direct key, the proxy is the fallback, not the primary.
   const primary = aiDirect ?? ai;
   const secondary = aiDirect ? ai : null;
-  try {
-    return await attempt(primary);
-  } catch (err: any) {
-    if (!secondary) throw err;
-    console.warn(`[Gemini] Direct attempt failed (${err?.message || err}) — retrying via proxy`);
-    return await attempt(secondary);
+
+  while (true) {
+    const model = GEMINI_MODEL_CANDIDATES[geminiModelIdx];
+    try {
+      return await attempt(primary, model);
+    } catch (err: any) {
+      if (isModelGoneError(err) && geminiModelIdx < GEMINI_MODEL_CANDIDATES.length - 1) {
+        geminiModelIdx++;
+        console.warn(`[Gemini] Model "${model}" unavailable to this key — advancing to "${GEMINI_MODEL_CANDIDATES[geminiModelIdx]}"`);
+        continue;
+      }
+      if (!secondary) throw err;
+      console.warn(`[Gemini] Direct attempt failed (${err?.message || err}) — retrying via proxy`);
+      // The proxy speaks the legacy model id regardless of what the direct
+      // key supports — it predates the newer generations.
+      return await attempt(secondary, "gemini-2.5-flash");
+    }
   }
 }
 
