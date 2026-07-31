@@ -103,6 +103,9 @@ import {
   type InsertDataDeletionRequest,
   socialInsightSnapshots,
   type InsertSocialInsightSnapshot,
+  roomModels,
+  type RoomModel,
+  type InsertRoomModel,
 } from "@shared/schema";
 import { users, type User, type UpsertUser } from "@shared/models/auth";
 import { encrypt, decrypt } from "./encryption";
@@ -320,6 +323,11 @@ export interface IStorage {
   getKeyframesByVideo(videoId: number): Promise<SurfaceKeyframe[]>;
   deleteKeyframesBySurface(surfaceId: number): Promise<void>;
   deleteSurfaceKeyframesInRange(surfaceId: number, startTime: number, endTime: number): Promise<void>;
+
+  // Room model methods (persistent set memory for the scanner)
+  getRoomModelsForUsers(userIds: string[]): Promise<RoomModel[]>;
+  insertRoomModel(model: InsertRoomModel): Promise<RoomModel>;
+  updateRoomModel(id: number, patch: { sceneExemplarHashes?: string[]; surfaces?: unknown; lastVideoId?: number; episodeCount?: number }): Promise<void>;
 
   // Creator profile methods
   getFeaturedCreators(): Promise<AllowedUser[]>;
@@ -2693,6 +2701,46 @@ export class DatabaseStorage implements IStorage {
       );
   }
 
+  // ─── Room Model Methods (persistent set memory) ─────
+
+  // Every room model owned by any of the given identities. Creator identity
+  // is split across users.id and legacy email keys, so the CALLER passes the
+  // full alias list it wants merged (the scanner sends video.userId plus the
+  // canonical id when they differ) — this method is plain equality, no alias
+  // resolution of its own.
+  async getRoomModelsForUsers(userIds: string[]): Promise<RoomModel[]> {
+    if (userIds.length === 0) return [];
+    return await db
+      .select()
+      .from(roomModels)
+      .where(inArray(roomModels.userId, userIds));
+  }
+
+  async insertRoomModel(model: InsertRoomModel): Promise<RoomModel> {
+    const [result] = await db
+      .insert(roomModels)
+      .values(model)
+      .returning();
+    return result;
+  }
+
+  async updateRoomModel(id: number, patch: {
+    sceneExemplarHashes?: string[];
+    surfaces?: unknown;
+    lastVideoId?: number;
+    episodeCount?: number;
+  }): Promise<void> {
+    const setValues: Record<string, any> = { updatedAt: new Date() };
+    if (patch.sceneExemplarHashes !== undefined) setValues.sceneExemplarHashes = patch.sceneExemplarHashes;
+    if (patch.surfaces !== undefined) setValues.surfaces = patch.surfaces;
+    if (patch.lastVideoId !== undefined) setValues.lastVideoId = patch.lastVideoId;
+    if (patch.episodeCount !== undefined) setValues.episodeCount = patch.episodeCount;
+    await db
+      .update(roomModels)
+      .set(setValues)
+      .where(eq(roomModels.id, id));
+  }
+
   // Creator profile methods
   async getFeaturedCreators(): Promise<AllowedUser[]> {
     return await db
@@ -3087,7 +3135,14 @@ export class DatabaseStorage implements IStorage {
    * Per-owner canonical-surface counts. Same COALESCE fallback + Filtered
    * exclusion as getSurfaceCountsForVideos, with video_id folded into the
    * legacy composite so pre-grouping rows can't collide across videos in a
-   * cross-video GROUP BY (surface_group_id already embeds the video id).
+   * cross-video GROUP BY. Group-id semantics here are DELIBERATE: fresh
+   * g{videoId}-... ids embed the video, so per-episode surfaces count per
+   * episode — but room-model rm{modelId}-s{idx} ids are identical across
+   * every rescan and episode of the same set, so a recurring studio desk
+   * counts as ONE canonical surface no matter how many episodes it appears
+   * in. That matches the product meaning of "canonical surface" (a
+   * physical thing, not a per-video sighting); per-video counts and the
+   * placement group-match are videoId-scoped and unaffected.
    * surfacesApproved counts a canonical surface once ANY member row is
    * creator-approved — approval is a per-surface toggle, but member rows
    * written before the toggle flip stay false.

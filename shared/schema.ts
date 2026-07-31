@@ -280,11 +280,15 @@ export const detectedSurfaces = pgTable("detected_surfaces", {
   // Canonical physical-surface identity. The scanner writes one row per
   // supporting frame of a consensus surface, so "the host's desk" spans many
   // rows — every member row shares this id so downstream can group, count,
-  // and sell the desk as ONE surface instead of N frames. Format:
-  // "g{videoId}-{sceneKey}-{seq}" (e.g. "g91067-2-1"), stamped at insert and
-  // preserved through post-processing merges. Null for rows written before
-  // grouping shipped — consumers must fall back to a (surfaceType, sceneId)
-  // composite when null, never treat raw rows as distinct surfaces.
+  // and sell the desk as ONE surface instead of N frames. Two formats, both
+  // stamped at insert and preserved through post-processing merges:
+  // "g{videoId}-{sceneKey}-{seq}" (e.g. "g91067-2-1") for surfaces discovered
+  // fresh in this scan, and "rm{modelId}-s{idx}" (e.g. "rm12-s3") for surfaces
+  // confirmed against a room model — the latter is IDENTICAL across rescans
+  // and episodes on purpose, so group-keyed placements survive both. Consumers
+  // must treat the id as an opaque string, never parse its parts. Null for
+  // rows written before grouping shipped — fall back to a (surfaceType,
+  // sceneId) composite when null, never treat raw rows as distinct surfaces.
   surfaceGroupId: text("surface_group_id"),
   createdAt: timestamp("created_at").defaultNow(),
 });
@@ -319,6 +323,46 @@ export const insertSurfaceKeyframeSchema = createInsertSchema(surfaceKeyframes).
 
 export type SurfaceKeyframe = typeof surfaceKeyframes.$inferSelect;
 export type InsertSurfaceKeyframe = z.infer<typeof insertSurfaceKeyframeSchema>;
+
+// Room Models Table — persistent per-creator "set memory". sceneIndex already
+// knows the host's studio keeps coming back WITHIN one video; this table
+// remembers it ACROSS rescans and episodes. Each row is one recurring
+// set/camera setup: sceneExemplarHashes identifies it perceptually (a scan's
+// scene class matches when any of its shot dHashes lands within hamming
+// distance 12 of any exemplar), and `surfaces` is the ONE authoritative
+// surface list for that set — built from the cleanest frames ever seen, then
+// CONFIRMED on later scans instead of re-discovered from scratch. That buys
+// consistent labels/boxes within a scan, placements that survive rescans
+// (via the stable "rm{modelId}-s{idx}" group id), and instant, consistent
+// inventory for new episodes shot in the same room.
+// `surfaces` holds a RoomModelSurface[]:
+//   { idx,                       // stable per-model index — append-only,
+//                                //   never reused after a deletion
+//     surfaceType, orientation,  // canonical values; later scans keep these
+//                                //   even when Gemini relabels the surface
+//     bbox: {x,y,w,h},           // 0-1 normalized floats
+//     confidence,
+//     frameUrl }                 // cleanest keyframe seen so far, or null
+export const roomModels = pgTable("room_models", {
+  id: serial("id").primaryKey(),
+  userId: varchar("user_id").notNull(), // Canonical creator (users.id); legacy email-keyed rows fold in via the usual alias handling at read time
+  sceneExemplarHashes: text("scene_exemplar_hashes").array().notNull(), // Up to 8 dHashes of shot-midpoint keyframes for this set/camera setup
+  surfaces: jsonb("surfaces").notNull(), // RoomModelSurface[] — see comment above
+  sourceVideoId: integer("source_video_id"), // First video that built this model
+  lastVideoId: integer("last_video_id"), // Most recent video that confirmed it
+  episodeCount: integer("episode_count").default(1), // Distinct videos that have matched this set
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const insertRoomModelSchema = createInsertSchema(roomModels).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type RoomModel = typeof roomModels.$inferSelect;
+export type InsertRoomModel = z.infer<typeof insertRoomModelSchema>;
 
 // Brand Products Table - stores product images uploaded by brands for placement previews
 export const brandProducts = pgTable("brand_products", {
