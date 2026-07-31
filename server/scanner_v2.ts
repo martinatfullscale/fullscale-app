@@ -81,12 +81,18 @@ async function geminiGenerate(params: any, timeoutMs: number = CONFIG.GEMINI_TIM
       client.models.generateContent(params),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Gemini timeout")), timeoutMs)),
     ]);
+  // A real Google key goes FIRST. The Replit modelfarm proxy only exists
+  // inside the workspace sidecar — in a deployment it is a black hole that
+  // burns the full per-attempt timeout on every frame before failing over.
+  // When we hold a direct key, the proxy is the fallback, not the primary.
+  const primary = aiDirect ?? ai;
+  const secondary = aiDirect ? ai : null;
   try {
-    return await attempt(ai);
+    return await attempt(primary);
   } catch (err: any) {
-    if (!aiDirect) throw err;
-    console.warn(`[Gemini] Proxy attempt failed (${err?.message || err}) — retrying via direct Google API`);
-    return await attempt(aiDirect);
+    if (!secondary) throw err;
+    console.warn(`[Gemini] Direct attempt failed (${err?.message || err}) — retrying via proxy`);
+    return await attempt(secondary);
   }
 }
 
@@ -5180,7 +5186,22 @@ async function processVideoScanInner(
       // surfaces absent from this scan stay in the model untouched — sets
       // evolve, pruning is a future concern. Non-fatal throughout: the scan
       // result stands even if set memory can't be written.
-      if (totalSurfaces > 0 && sceneIndex && !indexDegenerate && sceneIndex.shots.length > 0) {
+      //
+      // AI-QUALITY GATE: set memory is persistent and feeds every future
+      // scan of this creator's sets, so a scan that mostly ran on the edge-
+      // detection fallback (dead Gemini proxy, missing key, rate limits)
+      // must not teach it. Garbage written here would be confirmed forever
+      // after. Require Gemini to have actually analyzed most frames.
+      const geminiFrames = bufferedAnalyses.filter(b => b.viaGemini).length;
+      const geminiShare = bufferedAnalyses.length > 0 ? geminiFrames / bufferedAnalyses.length : 0;
+      const aiQualityOk = geminiShare >= 0.7;
+      if (!aiQualityOk && totalSurfaces > 0) {
+        console.warn(
+          `[RoomModel] SKIPPING set-memory write — only ${geminiFrames}/${bufferedAnalyses.length} frames (${Math.round(geminiShare * 100)}%) were AI-analyzed; ` +
+          `the rest fell back to edge detection. Set memory must not learn from a degraded scan (check GEMINI_API_KEY / proxy health).`,
+        );
+      }
+      if (aiQualityOk && totalSurfaces > 0 && sceneIndex && !indexDegenerate && sceneIndex.shots.length > 0) {
         try {
           const rmRows = await storage.getDetectedSurfaces(videoId);
           const rmSurvivors = rmRows.filter(s =>
