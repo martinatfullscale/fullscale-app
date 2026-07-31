@@ -957,6 +957,14 @@ export async function downloadVideo(
     if (attempt.ok) return true;
 
     const failureClass = classifyYtDlpFailure(attempt.stderr);
+    if (failureClass === "bot") {
+      // Make the bot-check self-diagnosing: the answer is ALWAYS the cookie
+      // session, so say exactly which half of it is broken.
+      const jar = resolveCookiesFile();
+      console.warn(jar
+        ? `[Scanner] Bot-check HIT WITH cookies presented — the exported YTDLP_COOKIES session is stale or invalidated. Re-export from the signed-in browser profile (Get cookies.txt LOCALLY on youtube.com), re-base64, update the secret.`
+        : `[Scanner] Bot-check hit and NO cookie session is configured (YTDLP_COOKIES unset, empty, or rejected by the format guard — check boot logs). A signed-in cookie session is the fix for datacenter bot-checks.`);
+    }
     if (failureClass === "fatal") {
       // Every remaining rung would fail the same way — burning them just
       // hammers YouTube from the already-flagged datacenter IP.
