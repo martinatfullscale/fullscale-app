@@ -1947,15 +1947,23 @@ async function analyzeFrameWithGemini(
     // enables overlap mode just like populated boxes do; only a MISSING
     // field (older model output, malformed response) falls back to zones.
     const hasPeopleData = Array.isArray(parsed.people);
+    // Total person-covered fraction of a box (sum of per-person
+    // intersections, clamped — people rarely overlap each other in frame).
+    // The REMAINDER (non-person area) is the actual placement real estate:
+    // a backdrop wall extends BEHIND a seated host, so a generous person
+    // box always overlaps it heavily even when plenty of empty wall shows
+    // around them. Rejecting on overlap fraction alone killed real
+    // backdrop walls at 60-80% overlap; the usable-remainder test keeps
+    // them while still killing boxes that basically ARE the person.
     const personOverlapFraction = (bx: number, by: number, bw: number, bh: number): number => {
-      let worst = 0;
+      let inter = 0;
       for (const p of peopleBoxes) {
         const ix = Math.max(0, Math.min(bx + bw, p.x + p.w) - Math.max(bx, p.x));
         const iy = Math.max(0, Math.min(by + bh, p.y + p.h) - Math.max(by, p.y));
-        const frac = bw * bh > 0 ? (ix * iy) / (bw * bh) : 0;
-        if (frac > worst) worst = frac;
+        inter += ix * iy;
       }
-      return worst;
+      const area = bw * bh;
+      return area > 0 ? Math.min(1, inter / area) : 0;
     };
 
     // Map Gemini surfaces, filter low-confidence, validate against ghost patterns.
@@ -1979,31 +1987,44 @@ async function analyzeFrameWithGemini(
         const isShelf = surfTypeLower.includes('shelf');
 
         if (orientation === "vertical") {
-          // Walls legitimately occupy the upper frame and span large areas —
-          // the only vertical ghost is a wall box drawn OVER a person
-          // (prompt says box the empty slice beside/between them).
+          // A wall plane extends BEHIND the people in front of it, so heavy
+          // person overlap is NORMAL for a real backdrop wall. Reject only
+          // when the box is essentially the person (>85% covered) or when
+          // the person-free remainder is too small to hang anything on
+          // (<4% of frame — signage needs a substantial visible plane).
           if (hasPeopleData) {
             const frac = personOverlapFraction(bbX, bbY, bbW, bbH);
-            if (frac > 0.60) {
-              console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — vertical bbox ${(frac*100).toFixed(0)}% covered by a person box`);
+            const remainder = area * (1 - frac);
+            if (frac > 0.85) {
+              console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — vertical bbox ${(frac*100).toFixed(0)}% covered by person boxes (is the person)`);
+              return false;
+            }
+            if (remainder < 0.04) {
+              console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — only ${(remainder*100).toFixed(1)}% of frame is person-free wall (too small for signage)`);
               return false;
             }
           }
           return true;
         }
 
-        // PERSON-OVERLAP MODE (people data present): reject a horizontal
-        // surface only when it substantially overlaps an actual person.
-        // 40% tolerates a real table top a host leans over; a lap/torso/
-        // chair-seat hallucination sits INSIDE the person box and scores
-        // near 100%. Two absolute physics checks stay: a "horizontal"
-        // surface spanning half the frame height isn't a table top from
-        // any camera angle, and a non-shelf horizontal living entirely in
-        // the upper frame is a mislabeled wall.
+        // PERSON-OVERLAP MODE (people data present). A table top a host
+        // leans over (or a side table inside a GENEROUS person box that
+        // includes the chair) legitimately overlaps — the tests are: is the
+        // box essentially the person (>85% covered → lap/torso/chair-seat
+        // hallucination), and does enough person-free surface remain to set
+        // a product on (>=2% of frame). Two absolute physics checks stay: a
+        // "horizontal" surface spanning half the frame height isn't a table
+        // top from any camera angle, and a non-shelf horizontal living
+        // entirely in the upper frame is a mislabeled wall.
         if (hasPeopleData) {
           const frac = personOverlapFraction(bbX, bbY, bbW, bbH);
-          if (frac > 0.40) {
-            console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — ${(frac*100).toFixed(0)}% of bbox overlaps a person box`);
+          const remainder = area * (1 - frac);
+          if (frac > 0.85) {
+            console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — ${(frac*100).toFixed(0)}% of bbox overlaps person boxes (is the person)`);
+            return false;
+          }
+          if (remainder < 0.02) {
+            console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — only ${(remainder*100).toFixed(1)}% of frame is person-free surface (too small for a product)`);
             return false;
           }
           if (!isFloor && bbH > 0.45) {
