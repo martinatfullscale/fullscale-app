@@ -49,7 +49,7 @@ import ytdl from "@distube/ytdl-core";
 import { decrypt, encrypt } from "./encryption";
 import { db } from "./db";
 import { users, users as usersTable, allowedUsers as allowedUsersTable, videoIndex as videoIndexTable, editorialClips, detectedSurfaces } from "@shared/schema";
-import { eq, sql } from "drizzle-orm";
+import { eq, sql, inArray } from "drizzle-orm";
 import crypto from "crypto";
 import sharp from "sharp";
 import { uploadFileToStorage, uploadStreamToStorage, fileExistsInStorage, objectKeyFromServeUrl, storageServeUrl, getStorageStream, downloadToTempFile } from "./lib/objectStorage";
@@ -13795,6 +13795,157 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("[API] /api/admin/data-inventory error:", err.message);
       res.status(500).json({ error: "Failed to load data inventory" });
+    }
+  });
+
+  // ══════════════════════════════════════════════════════════════════════
+  // Room model admin — operator visibility and reset for the scanner's
+  // persistent SET MEMORY (room_models). Each row is one recurring camera
+  // setup whose canonical surfaces every later scan of that room CONFIRMS
+  // instead of re-discovering. That's the point when the model is good, and
+  // the problem when it isn't: a model built from a degraded scan (bad
+  // lighting, a one-off camera angle, a person parked over the desk) keeps
+  // stamping its wrong surfaces onto every future episode, and no code path
+  // prunes it. These endpoints are the only way to SEE set memory and to
+  // forget it. Same admin gate as the rest of /api/admin/*.
+  // ══════════════════════════════════════════════════════════════════════
+
+  // GET /api/admin/room-models — every set the platform remembers, freshest
+  // confirmation first, with the creator it belongs to and the video that
+  // last confirmed it. Counts are derived from the jsonb defensively: a
+  // malformed surfaces blob reads as zero surfaces rather than 500ing the
+  // one screen an operator would use to delete it.
+  app.get("/api/admin/room-models", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      if (!req.isAdmin) return res.status(403).json({ error: "Admin only" });
+
+      const models = await storage.getAllRoomModels();
+      if (models.length === 0) return res.json({ models: [] });
+
+      // ── Batch lookups (no per-model queries) ──────────────────────────
+      // room_models.userId is users.id for new rows and a legacy email for
+      // old ones, so index the roster both ways and resolve either key.
+      const roster = await storage.getAllUserIdentities();
+      const byIdentity = new Map<string, (typeof roster)[number]>();
+      for (const u of roster) {
+        byIdentity.set(u.id, u);
+        if (u.email) byIdentity.set(u.email.toLowerCase(), u);
+      }
+
+      const videoIds = Array.from(
+        new Set(models.map((m) => m.lastVideoId).filter((id): id is number => typeof id === "number")),
+      );
+      const titleById = new Map<number, string | null>();
+      if (videoIds.length > 0) {
+        const rows = await db
+          .select({ id: videoIndexTable.id, title: videoIndexTable.title })
+          .from(videoIndexTable)
+          .where(inArray(videoIndexTable.id, videoIds));
+        for (const row of rows) titleById.set(row.id, row.title ?? null);
+      }
+
+      const out = models.map((m) => {
+        // Match the scanner's parseRoomModelSurfaces guard EXACTLY. A looser
+        // count here would be worse than useless on this screen: a model
+        // whose entries lack a bbox would show "6 surfaces" while every scan
+        // using it resolves zero and places nothing — precisely the degraded
+        // model the operator came here to find and forget.
+        const surfaces = Array.isArray(m.surfaces) ? (m.surfaces as any[]) : [];
+        const usable = surfaces.filter((s) =>
+          s &&
+          typeof s.idx === "number" &&
+          typeof s.surfaceType === "string" && s.surfaceType.length > 0 &&
+          (s.orientation === "horizontal" || s.orientation === "vertical") &&
+          s.bbox &&
+          typeof s.bbox.x === "number" && typeof s.bbox.y === "number" &&
+          typeof s.bbox.w === "number" && typeof s.bbox.h === "number" &&
+          typeof s.confidence === "number");
+        const unusableCount = surfaces.length - usable.length;
+        const surfaceTypes: string[] = [];
+        for (const s of usable) {
+          if (!surfaceTypes.includes(s.surfaceType)) surfaceTypes.push(s.surfaceType);
+        }
+        const user = byIdentity.get(m.userId) ?? byIdentity.get(m.userId.toLowerCase());
+
+        return {
+          id: m.id,
+          userId: m.userId,
+          creatorName: user
+            ? [user.firstName, user.lastName].filter(Boolean).join(" ").trim() || user.email || user.id
+            : null,
+          creatorEmail: user?.email ?? (m.userId.includes("@") ? m.userId : null),
+          surfaceCount: usable.length,
+          unusableCount,
+          surfaceTypes,
+          episodeCount: m.episodeCount ?? 0,
+          exemplarCount: Array.isArray(m.sceneExemplarHashes) ? m.sceneExemplarHashes.length : 0,
+          sourceVideoId: m.sourceVideoId ?? null,
+          lastVideoId: m.lastVideoId ?? null,
+          lastVideoTitle: m.lastVideoId != null ? titleById.get(m.lastVideoId) ?? null : null,
+          createdAt: m.createdAt ?? null,
+          updatedAt: m.updatedAt ?? null,
+        };
+      });
+
+      res.json({ models: out });
+    } catch (err: any) {
+      console.error("[API] /api/admin/room-models error:", err.message);
+      res.status(500).json({ error: "Failed to load room models" });
+    }
+  });
+
+  // DELETE /api/admin/room-models/:id — forget one set. The next scan of that
+  // room rediscovers it from scratch; surfaces already written by past scans
+  // are untouched.
+  // Destructive room-model routes demand a REAL session, not just req.isAdmin.
+  // isFlexibleAuthenticated's dev fallbacks (?admin_email=, x-admin-email,
+  // ALLOW_DEV_AUTH) set isAdmin with no credentials whatsoever — acceptable
+  // for read paths, but these delete other creators' persistent set memory
+  // with no undo, so a guessable query param must never be enough.
+  const requireRealAdminSession = (req: any, res: any): boolean => {
+    if (!req.isAdmin) {
+      res.status(403).json({ error: "Admin only" });
+      return false;
+    }
+    if (!req.user && !req.session?.userId && !req.session?.passport?.user) {
+      console.warn(`[Admin] Rejected credential-less room-model delete (dev auth fallback) from ${req.authEmail || "unknown"}`);
+      res.status(403).json({ error: "A signed-in admin session is required for this action" });
+      return false;
+    }
+    return true;
+  };
+
+  app.delete("/api/admin/room-models/:id", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      if (!requireRealAdminSession(req, res)) return;
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: "Valid room model id required" });
+      const deleted = await storage.deleteRoomModel(id);
+      if (!deleted) return res.status(404).json({ error: "Room model not found" });
+      console.log(`[Admin] Room model ${id} deleted by ${req.authEmail}`);
+      res.json({ deleted: true });
+    } catch (err: any) {
+      console.error("[API] DELETE /api/admin/room-models/:id error:", err.message);
+      res.status(500).json({ error: "Failed to delete room model" });
+    }
+  });
+
+  // DELETE /api/admin/room-models?scope=all — wipe set memory platform-wide.
+  // Requires the explicit scope=all so a client that merely forgot to
+  // interpolate an id into the per-model URL can never nuke every creator's
+  // memory by accident.
+  app.delete("/api/admin/room-models", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      if (!requireRealAdminSession(req, res)) return;
+      if (req.query.scope !== "all") {
+        return res.status(400).json({ error: "scope=all required to reset all room models" });
+      }
+      const deleted = await storage.deleteAllRoomModels();
+      console.log(`[Admin] Room model reset: ${deleted} model(s) forgotten by ${req.authEmail}`);
+      res.json({ deleted });
+    } catch (err: any) {
+      console.error("[API] DELETE /api/admin/room-models error:", err.message);
+      res.status(500).json({ error: "Failed to reset room models" });
     }
   });
 

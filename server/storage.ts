@@ -326,8 +326,11 @@ export interface IStorage {
 
   // Room model methods (persistent set memory for the scanner)
   getRoomModelsForUsers(userIds: string[]): Promise<RoomModel[]>;
+  getAllRoomModels(): Promise<RoomModel[]>;
   insertRoomModel(model: InsertRoomModel): Promise<RoomModel>;
   updateRoomModel(id: number, patch: { sceneExemplarHashes?: string[]; surfaces?: unknown; lastVideoId?: number; episodeCount?: number }): Promise<void>;
+  deleteRoomModel(id: number): Promise<boolean>;
+  deleteAllRoomModels(): Promise<number>;
 
   // Creator profile methods
   getFeaturedCreators(): Promise<AllowedUser[]>;
@@ -2716,6 +2719,17 @@ export class DatabaseStorage implements IStorage {
       .where(inArray(roomModels.userId, userIds));
   }
 
+  // Whole-table read for the operator console. Set memory is invisible
+  // everywhere else — a model built from a degraded scan keeps confirming
+  // itself onto every future episode, and nothing prunes it — so the admin
+  // view needs every row, not one creator's. Freshest confirmation first.
+  async getAllRoomModels(): Promise<RoomModel[]> {
+    return await db
+      .select()
+      .from(roomModels)
+      .orderBy(desc(roomModels.updatedAt));
+  }
+
   async insertRoomModel(model: InsertRoomModel): Promise<RoomModel> {
     const [result] = await db
       .insert(roomModels)
@@ -2739,6 +2753,25 @@ export class DatabaseStorage implements IStorage {
       .update(roomModels)
       .set(setValues)
       .where(eq(roomModels.id, id));
+  }
+
+  // Forget one set. Detected surfaces already written by past scans stay —
+  // only the memory that would re-confirm them on the next scan goes, so the
+  // next scan of that room rediscovers it from scratch.
+  // Returns whether a row actually went away, so the route can 404 a stale
+  // id instead of reporting a deletion that never happened.
+  async deleteRoomModel(id: number): Promise<boolean> {
+    const gone = await db.delete(roomModels).where(eq(roomModels.id, id)).returning({ id: roomModels.id });
+    return gone.length > 0;
+  }
+
+  // Forget every set on the platform. Returns how many models were dropped
+  // so the operator sees what the reset actually cost.
+  async deleteAllRoomModels(): Promise<number> {
+    const deleted = await db
+      .delete(roomModels)
+      .returning({ id: roomModels.id });
+    return deleted.length;
   }
 
   // Creator profile methods
