@@ -5,7 +5,8 @@ import { api } from "@shared/routes";
 import { z } from "zod";
 import { setupAuth, registerAuthRoutes, isAuthenticated } from "./replit_integrations/auth";
 import { runIndexerForUser } from "./lib/indexer";
-import { processVideoScan, scanPendingVideos, addToLocalAssetMap, getYouTubeThumbnailWithFallback } from "./scanner_v2";
+import { processVideoScan, scanPendingVideos, addToLocalAssetMap, getYouTubeThumbnailWithFallback, canonicalSurfaceType } from "./scanner_v2";
+import { hammingDistance } from "./lib/scenes/sceneIndex";
 // DISABLED: TensorFlow scanner replaced by scanner_v2.ts which uses Sharp
 // import { queueVideoScan, getScanJobStatus, getQueueStatus, initializeScanWorker } from "./lib/scanWorker";
 // import { detectSurfacesFromVideo } from "./lib/surfaceDetector";
@@ -9571,6 +9572,200 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("[Scene Groups] Error:", err.message);
       res.status(500).json({ error: "Failed to compute scene groups" });
+    }
+  });
+
+  // ── Teach-a-surface ──
+  // The creator can SEE a surface the detector keeps missing. Teaching = one
+  // bbox drawn on a frame + a type pick; the surface enters the creator's
+  // room model as a known surface, so every future scan of that set CONFIRMS
+  // it (re-locates it per frame) instead of hoping detection finds it. The
+  // scene class anchors the teach: its exemplar hashes are matched against
+  // the creator's stored models exactly the way the scanner does at scan
+  // start — a match appends to that model, no match births a new one. For
+  // immediate visibility (no rescan needed) the taught surface also lands as
+  // one detected_surfaces row (creator-approved — the creator personally
+  // vouched for it) and as an entry in the scene inventory.
+  const TEACHABLE_SURFACE_TYPES = [
+    "desk", "table", "shelf", "counter", "nightstand", "side_table",
+    "coffee_table", "studio_desk", "floor", "rug", "couch", "wall",
+    "door", "window",
+  ];
+  app.post("/api/video/:videoId/scenes/:sceneId/teach", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+      const sceneId = parseInt(req.params.sceneId);
+      if (isNaN(sceneId)) return res.status(400).json({ error: "Invalid scene ID" });
+
+      const { surfaceType: rawType, orientation, bbox } = req.body || {};
+      const surfaceType = typeof rawType === "string" ? rawType.toLowerCase().trim() : "";
+      if (!TEACHABLE_SURFACE_TYPES.includes(surfaceType)) {
+        return res.status(400).json({ error: `surfaceType must be one of: ${TEACHABLE_SURFACE_TYPES.join(", ")}` });
+      }
+      if (orientation !== "horizontal" && orientation !== "vertical") {
+        return res.status(400).json({ error: 'orientation must be "horizontal" or "vertical"' });
+      }
+      // Extent must stay inside the frame and the box must be drawably
+      // large — the client enforces both, but the endpoint contract can't
+      // trust its only current caller.
+      const bboxOk = bbox &&
+        [bbox.x, bbox.y, bbox.w, bbox.h].every((v: any) => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1) &&
+        bbox.w >= 0.01 && bbox.h >= 0.01 &&
+        bbox.x + bbox.w <= 1.0001 && bbox.y + bbox.h <= 1.0001;
+      if (!bboxOk) {
+        return res.status(400).json({ error: "bbox must be { x, y, w, h } as 0-1 floats, at least 1% in each dimension, fully inside the frame" });
+      }
+      // Store the DISPLAY-canonical type (Table, Nightstand, ...) — every
+      // scan-produced row and model surface uses that vocabulary, and a
+      // snake_case taught type would render as a distinct type in the UI.
+      const canonicalTaughtType = canonicalSurfaceType(surfaceType);
+
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+      if (!(await isSameCreator(String(video.userId), req.authUserId)) && !req.isAdmin) {
+        return res.status(403).json({ error: "Not authorized to teach surfaces on this video" });
+      }
+
+      // The scene class anchors everything: its shots give us the exemplar
+      // hashes for model matching and the timestamp for the visible row.
+      const idxShots = (video as any).sceneIndex?.shots;
+      const sceneShots = Array.isArray(idxShots)
+        ? idxShots.filter((s: any) =>
+            s && s.sceneId === sceneId &&
+            typeof s.tStart === "number" && typeof s.tEnd === "number" && s.tEnd >= s.tStart)
+        : [];
+      if (sceneShots.length === 0) {
+        return res.status(400).json({ error: "Video has no scene index for this scene — rescan before teaching" });
+      }
+
+      // Exemplar hashes for the class — longest shots first, sentinels
+      // ('fail'-prefixed unextractable keyframes) excluded, cap 5. Mirrors
+      // the scanner's collectClassExemplarHashes so a teach and a scan agree
+      // on what this set looks like.
+      const exemplarHashes: string[] = [];
+      const byDuration = [...sceneShots].sort((a: any, b: any) => (b.tEnd - b.tStart) - (a.tEnd - a.tStart));
+      for (const shot of byDuration) {
+        if (exemplarHashes.length >= 5) break;
+        const h = shot.hash;
+        if (typeof h !== "string" || !h || h.startsWith("fail")) continue;
+        if (!exemplarHashes.includes(h)) exemplarHashes.push(h);
+      }
+      // An unhashable class can never be matched by a future scan, so the
+      // taught surface could never be confirmed — refuse rather than write a
+      // dead model (same rule the scanner's upsert applies).
+      if (exemplarHashes.length === 0) {
+        return res.status(400).json({ error: "This scene has no usable keyframe hashes — future scans could never recognize the taught surface" });
+      }
+
+      // Match against the creator's room models the way the scanner does:
+      // min hamming across the exemplar cross product, same-scene threshold,
+      // closest model wins. Legacy models may be keyed by email, so pass the
+      // full alias list.
+      const identity = await resolveCreatorIdentity(String(video.userId));
+      const ownerKeys = Array.from(new Set(
+        [String(video.userId), identity.userId, identity.email].filter((k): k is string => !!k)));
+      const models = await storage.getRoomModelsForUsers(ownerKeys);
+      let bestModel: (typeof models)[number] | null = null;
+      let bestDist = Number.MAX_SAFE_INTEGER;
+      for (const model of models) {
+        for (const mh of model.sceneExemplarHashes ?? []) {
+          if (!mh || mh.startsWith("fail")) continue;
+          for (const ch of exemplarHashes) {
+            const d = hammingDistance(ch, mh);
+            if (d < bestDist) { bestDist = d; bestModel = model; }
+          }
+        }
+      }
+
+      const taughtSurface = {
+        surfaceType: canonicalTaughtType,
+        orientation: orientation as "horizontal" | "vertical",
+        bbox: { x: bbox.x, y: bbox.y, w: bbox.w, h: bbox.h },
+        confidence: 0.9,
+        frameUrl: null,
+        taught: true,
+      };
+
+      let modelId: number;
+      let surfaceIdx: number;
+      if (bestModel && bestDist < 12) {
+        modelId = bestModel.id;
+        surfaceIdx = await storage.appendRoomModelSurface(modelId, taughtSurface);
+      } else {
+        const created = await storage.insertRoomModel({
+          userId: String(video.userId),
+          sceneExemplarHashes: exemplarHashes,
+          surfaces: [{ idx: 0, ...taughtSurface }],
+          sourceVideoId: videoId,
+          lastVideoId: videoId,
+        });
+        modelId = created.id;
+        surfaceIdx = 0;
+      }
+      const groupId = `rm${modelId}-s${surfaceIdx}`;
+
+      // Immediate visibility 1/2: one detected_surfaces row at the midpoint
+      // of the scene's longest shot, pre-approved — the creator drew this
+      // box personally, no review gate needed.
+      const longestShot = sceneShots.reduce((a: any, b: any) =>
+        (b.tEnd - b.tStart) > (a.tEnd - a.tStart) ? b : a);
+      const midpoint = (longestShot.tStart + longestShot.tEnd) / 2;
+      const surfaceRow = await storage.insertDetectedSurface({
+        videoId,
+        timestamp: midpoint.toString(),
+        surfaceType: canonicalTaughtType,
+        orientation,
+        confidence: "0.9",
+        boundingBoxX: bbox.x.toString(),
+        boundingBoxY: bbox.y.toString(),
+        boundingBoxWidth: bbox.w.toString(),
+        boundingBoxHeight: bbox.h.toString(),
+        frameUrl: null,
+        creatorApproved: true,
+        sceneId,
+        surfaceGroupId: groupId,
+      });
+
+      // Immediate visibility 2/2: the scene inventory, when the video has
+      // one. Non-fatal — the model and the row above are the durable truth;
+      // a malformed inventory blob must not fail the teach.
+      try {
+        const inventory = (video as any).sceneInventory;
+        if (inventory && Array.isArray(inventory.scenes)) {
+          const shotSec = sceneShots.reduce((sum: number, s: any) => sum + (s.tEnd - s.tStart), 0);
+          let scene = inventory.scenes.find((s: any) => s && s.sceneId === sceneId);
+          if (!scene) {
+            // Same orphan handling the inventory build uses: a scene the
+            // rollup didn't know still shows its surface.
+            const label = inventory.scenes.length < 26
+              ? `Scene ${String.fromCharCode(65 + inventory.scenes.length)}`
+              : `Scene ${inventory.scenes.length + 1}`;
+            scene = { sceneId, label, occurrences: sceneShots.length, totalSec: Math.round(shotSec * 10) / 10, surfaces: [] };
+            inventory.scenes.push(scene);
+          }
+          if (!Array.isArray(scene.surfaces)) scene.surfaces = [];
+          scene.surfaces.push({
+            groupId,
+            surfaceType: canonicalTaughtType,
+            bbox: { x: bbox.x, y: bbox.y, w: bbox.w, h: bbox.h },
+            confidence: 0.9,
+            screenTimeSec: typeof scene.totalSec === "number" ? scene.totalSec : Math.round(shotSec * 10) / 10,
+            rowCount: 1,
+            representativeRowId: surfaceRow.id,
+            frameUrl: null,
+          });
+          await storage.updateVideoIndex(videoId, { sceneInventory: inventory as any });
+        }
+      } catch (invErr: any) {
+        console.warn(`[Teach] Scene inventory patch failed (non-fatal):`, invErr?.message || invErr);
+      }
+
+      console.log(`[Teach] Video ${videoId} scene ${sceneId}: taught ${surfaceType} → model #${modelId} idx ${surfaceIdx} (${bestModel && bestDist < 12 ? `matched at hamming ${bestDist}` : "new model"})`);
+      res.json({ modelId, idx: surfaceIdx, groupId, surfaceRowId: surfaceRow.id });
+    } catch (err: any) {
+      console.error("[API] /api/video/:videoId/scenes/:sceneId/teach error:", err.message);
+      res.status(500).json({ error: "Failed to teach surface" });
     }
   });
 

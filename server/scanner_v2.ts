@@ -351,6 +351,9 @@ interface RoomModelSurface {
   bbox: { x: number; y: number; w: number; h: number }; // 0-1 floats
   confidence: number;
   frameUrl: string | null;
+  // Creator drew this one by hand (teach-a-surface). Human ground truth:
+  // the person-overlap ghost check must never veto its confirmations.
+  taught?: boolean;
 }
 
 /** Defensive read of a model's jsonb surface list — malformed entries are
@@ -397,7 +400,7 @@ function collectClassExemplarHashes(index: SceneIndex, cap: number): Map<number,
 /** The known-surface list handed to detection for a matched scene class.
  *  Shape mirrors RoomModelSurface minus frameUrl; confidence rides along so
  *  confirmations without a fresh score inherit the model's. */
-type KnownSurfaceSpec = Pick<RoomModelSurface, "idx" | "surfaceType" | "orientation" | "bbox" | "confidence">;
+type KnownSurfaceSpec = Pick<RoomModelSurface, "idx" | "surfaceType" | "orientation" | "bbox" | "confidence" | "taught">;
 
 /** Prompt section appended when a frame's scene class matched a room model.
  *  Gemini re-locates each known surface instead of re-discovering the room —
@@ -2141,7 +2144,13 @@ async function analyzeFrameWithGemini(
         const bbW = loc.width / 100;
         const bbH = loc.height / 100;
         if (bbW <= 0 || bbH <= 0) continue;
-        if (hasPeopleData) {
+        // Taught surfaces are human ground truth — the creator drew the box
+        // and vouched for it. A small side table beside a host lives
+        // entirely inside the GENEROUS person envelope by construction, so
+        // the overlap test would veto exactly the surfaces teaching exists
+        // to rescue. Gemini saying present:false is the only way a taught
+        // surface sits out a frame.
+        if (hasPeopleData && !model.taught) {
           const frac = personOverlapFraction(bbX, bbY, bbW, bbH);
           const remainder = bbW * bbH * (1 - frac);
           const minRemainder = model.orientation === "vertical" ? 0.04 : 0.02;
@@ -2259,6 +2268,19 @@ async function analyzeFrameWithGemini(
         if (hasPeopleData) {
           const frac = personOverlapFraction(bbX, bbY, bbW, bbH);
           const remainder = area * (1 - frac);
+          // Small side furniture BESIDE a host is the one geometry boxes
+          // cannot disambiguate: a real side table inside the generous
+          // person+chair envelope and a chair-arm hallucination are the
+          // same rectangle. When some remainder is visible (frac <= 0.95),
+          // defer the judgment to the semantic layers — consensus still
+          // needs multi-frame agreement and the verify pass looks at the
+          // actual pixels. Fully-swallowed boxes (frac > 0.95) still die;
+          // the teach flow is the human override for those.
+          const isSmallSideFurniture =
+            /side_table|coffee_table|nightstand/.test(surfTypeLower) && area <= 0.08;
+          if (isSmallSideFurniture && frac > 0.40 && frac <= 0.95) {
+            console.log(`[Gemini] GHOST FILTER: Deferring ${s.surface_type} to consensus+verify — ${(frac*100).toFixed(0)}% person overlap but small side furniture with visible remainder`);
+          } else {
           if (frac > 0.85) {
             console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — ${(frac*100).toFixed(0)}% of bbox overlaps person boxes (is the person)`);
             return false;
@@ -2266,6 +2288,7 @@ async function analyzeFrameWithGemini(
           if (remainder < 0.02) {
             console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — only ${(remainder*100).toFixed(1)}% of frame is person-free surface (too small for a product)`);
             return false;
+          }
           }
           if (!isFloor && bbH > 0.45) {
             console.log(`[Gemini] GHOST FILTER: Rejected ${s.surface_type} — bbox too tall for a horizontal surface (h=${(bbH*100).toFixed(0)}%, max 45%)`);
@@ -3114,7 +3137,7 @@ const SURFACE_TYPE_SYNONYMS: Record<string, string> = {
   carpet: "Rug",
 };
 
-function canonicalSurfaceType(type: string): string {
+export function canonicalSurfaceType(type: string): string {
   const lower = type.toLowerCase().trim();
   return SURFACE_TYPE_SYNONYMS[lower] || type.charAt(0).toUpperCase() + type.slice(1);
 }
@@ -4370,7 +4393,25 @@ async function processVideoScanInner(
     const modelBySceneKey = new Map<number, SceneModelMatch>();
     if (sceneIndex && !indexDegenerate && sceneIndex.sceneCount > 0) {
       try {
-        const roomModels = await storage.getRoomModelsForUsers([video.userId]);
+        // Same alias set the teach route matches under — videoIndex.userId
+        // is a mixed users.id/email column, and a model created under one
+        // key must stay loadable from a video keyed by the other, or a
+        // taught surface lands in a model this video's scans never read
+        // (and the scan mints a duplicate model for the same room).
+        const ownerAliases = new Set<string>([video.userId]);
+        try {
+          const owner = String(video.userId).includes("@")
+            ? await storage.getUserByEmail(video.userId)
+            : await storage.getUserById(video.userId);
+          if (owner) {
+            ownerAliases.add(owner.id);
+            if (owner.email) {
+              ownerAliases.add(owner.email);
+              ownerAliases.add(owner.email.toLowerCase());
+            }
+          }
+        } catch { /* alias widening is best-effort */ }
+        const roomModels = await storage.getRoomModelsForUsers(Array.from(ownerAliases));
         if (roomModels.length > 0) {
           const classExemplars = collectClassExemplarHashes(sceneIndex, 5);
           for (const [classId, classHashes] of Array.from(classExemplars.entries())) {
@@ -5339,7 +5380,23 @@ async function processVideoScanInner(
           let modelsCreated = 0;
 
           for (const [modelId, upd] of Array.from(updatesByModel.entries())) {
-            const surfaces = upd.match.surfaces.map(s => ({ ...s, bbox: { ...s.bbox } }));
+            // Base the merge on a FRESH read, not the scan-start snapshot.
+            // Scans run for many minutes, and a surface taught mid-scan
+            // would otherwise be clobbered by a whole-jsonb replace — worse,
+            // nextIdx computed from the stale snapshot would re-issue the
+            // taught surface's idx to a different physical surface, aliasing
+            // its already-written rm{model}-s{idx} rows. Refresh targets are
+            // found by idx, so fresh-only entries simply persist untouched.
+            let surfaces = upd.match.surfaces.map(s => ({ ...s, bbox: { ...s.bbox } }));
+            try {
+              const freshModel = await storage.getRoomModelById(modelId);
+              if (freshModel) {
+                const freshSurfaces = parseRoomModelSurfaces(freshModel.surfaces);
+                if (freshSurfaces.length >= surfaces.length) {
+                  surfaces = freshSurfaces.map(s => ({ ...s, bbox: { ...s.bbox } }));
+                }
+              }
+            } catch { /* fall back to the scan-start snapshot */ }
             let nextIdx = surfaces.reduce((mx, s) => Math.max(mx, s.idx), -1) + 1;
             let refreshed = 0;
             let appended = 0;

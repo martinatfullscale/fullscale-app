@@ -326,9 +326,11 @@ export interface IStorage {
 
   // Room model methods (persistent set memory for the scanner)
   getRoomModelsForUsers(userIds: string[]): Promise<RoomModel[]>;
+  getRoomModelById(id: number): Promise<RoomModel | undefined>;
   getAllRoomModels(): Promise<RoomModel[]>;
   insertRoomModel(model: InsertRoomModel): Promise<RoomModel>;
   updateRoomModel(id: number, patch: { sceneExemplarHashes?: string[]; surfaces?: unknown; lastVideoId?: number; episodeCount?: number }): Promise<void>;
+  appendRoomModelSurface(modelId: number, surface: { surfaceType: string; orientation: "horizontal" | "vertical"; bbox: { x: number; y: number; w: number; h: number }; confidence: number; frameUrl: string | null; taught?: boolean }): Promise<number>;
   deleteRoomModel(id: number): Promise<boolean>;
   deleteAllRoomModels(): Promise<number>;
 
@@ -2719,6 +2721,14 @@ export class DatabaseStorage implements IStorage {
       .where(inArray(roomModels.userId, userIds));
   }
 
+  async getRoomModelById(id: number): Promise<RoomModel | undefined> {
+    const [model] = await db
+      .select()
+      .from(roomModels)
+      .where(eq(roomModels.id, id));
+    return model;
+  }
+
   // Whole-table read for the operator console. Set memory is invisible
   // everywhere else — a model built from a degraded scan keeps confirming
   // itself onto every future episode, and nothing prunes it — so the admin
@@ -2753,6 +2763,38 @@ export class DatabaseStorage implements IStorage {
       .update(roomModels)
       .set(setValues)
       .where(eq(roomModels.id, id));
+  }
+
+  // Append one surface to a model's jsonb list under the append-only idx
+  // rule: next idx = max existing idx + 1, computed over the RAW entries so
+  // even a malformed entry's idx is never reused (the groupId
+  // "rm{modelId}-s{idx}" must stay unambiguous forever). Reads the row fresh
+  // rather than trusting a caller-held copy, so a scan upsert landing between
+  // the caller's read and this write can't be clobbered. Returns the idx the
+  // surface landed at.
+  async appendRoomModelSurface(modelId: number, surface: {
+    surfaceType: string;
+    orientation: "horizontal" | "vertical";
+    bbox: { x: number; y: number; w: number; h: number };
+    confidence: number;
+    frameUrl: string | null;
+    taught?: boolean;
+  }): Promise<number> {
+    const [model] = await db
+      .select()
+      .from(roomModels)
+      .where(eq(roomModels.id, modelId));
+    if (!model) throw new Error(`Room model ${modelId} not found`);
+    const existing = Array.isArray(model.surfaces) ? (model.surfaces as any[]) : [];
+    const nextIdx = existing.reduce(
+      (mx, s) => (s && typeof s.idx === "number" && Number.isFinite(s.idx) ? Math.max(mx, s.idx) : mx),
+      -1,
+    ) + 1;
+    await db
+      .update(roomModels)
+      .set({ surfaces: [...existing, { idx: nextIdx, ...surface }], updatedAt: new Date() })
+      .where(eq(roomModels.id, modelId));
+    return nextIdx;
   }
 
   // Forget one set. Detected surfaces already written by past scans stay —

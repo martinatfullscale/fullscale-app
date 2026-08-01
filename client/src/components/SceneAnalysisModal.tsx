@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, ChevronLeft, ChevronRight, ChevronDown, Target, Clock, Eye, Sparkles, Scan, Loader2, Database, Play, Video, Layers } from "lucide-react";
+import { X, ChevronLeft, ChevronRight, ChevronDown, Target, Clock, Eye, Sparkles, Scan, Loader2, Database, Play, Video, Layers, Crosshair } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useToast } from "@/hooks/use-toast";
 import PlacementPreviewModal from "./PlacementPreviewModal";
 import * as tf from "@tensorflow/tfjs";
 import * as cocoSsd from "@tensorflow-models/coco-ssd";
@@ -61,6 +63,10 @@ interface DatabaseSurface {
       of the same physical surface shares one id. Null on rows from scans
       that predate group stamping; those fall into the ungrouped tail. */
   surfaceGroupId?: string | null;
+  /** Scene cluster ID from the perceptual scene index, stamped at scan
+      time. Null on pre-index rows — teach mode then falls back to locating
+      the frame timestamp in the scene index's shots. */
+  sceneId?: number | null;
 }
 
 // Scene-block inventory persisted alongside the scan (video_index.scene_inventory).
@@ -96,6 +102,30 @@ interface SceneInventory {
   generatedAt: string;
 }
 
+// Minimal slice of the perceptual scene index the surfaces endpoint passes
+// through — enough to map any frame timestamp to its recurring scene class.
+// Teach mode needs the class id even when the displayed frame has zero
+// detection rows, which is exactly when a creator wants to teach.
+interface SceneIndexShot {
+  shotIdx: number;
+  sceneId: number;
+  tStart: number;
+  tEnd: number;
+}
+
+/** A drawn teach bbox: display px (relative to the frame image's rendered
+ *  box) for the overlay + form anchor, plus the 0-1 normalization captured
+ *  at release time so a later window resize can't skew what gets saved. */
+interface TeachRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  wrapW: number;
+  wrapH: number;
+  norm: { x: number; y: number; w: number; h: number };
+}
+
 interface SceneAnalysisModalProps {
   video: VideoWithScenes | null;
   open: boolean;
@@ -111,6 +141,24 @@ const PLACEMENT_SURFACES = [
   "bed", "potted plant", "vase", "clock", "refrigerator", "microwave",
   "oven", "toaster", "sink", "backpack", "handbag", "suitcase", "umbrella"
 ];
+
+// The scanner's canonical surface vocabulary (scanner_v2 detection prompt) —
+// what a creator can teach. Values go to the teach endpoint verbatim; the
+// label is the human-readable render ("side_table" → "Side table").
+const TEACH_SURFACE_TYPES = [
+  "desk", "table", "shelf", "counter", "nightstand", "side_table",
+  "coffee_table", "studio_desk", "floor", "rug", "couch", "wall", "door", "window",
+] as const;
+
+const teachTypeLabel = (t: string): string => {
+  const spaced = t.replace(/_/g, " ");
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+};
+
+// Same rule as the scanner's inferOrientation: walls/doors/windows are
+// vertical, everything else is horizontal.
+const teachOrientationFor = (t: string): "horizontal" | "vertical" =>
+  t === "wall" || t === "door" || t === "window" ? "vertical" : "horizontal";
 
 // True when the video can be played in-app via /api/video/:id/source.
 // We support local uploads + YT/IG/FB sources (downloaded on demand).
@@ -195,6 +243,27 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
   // Local scenes state — starts from video.scenes, rebuilt after server rescan
   const [localScenes, setLocalScenes] = useState<Scene[]>(video?.scenes || []);
 
+  // ── Teach-a-surface state ──
+  // Creator-drawn bbox teaching: armed → crosshair drag on the frame →
+  // compact type form → POST to the teach endpoint, which writes the
+  // surface into the set's room model so every future scan confirms it.
+  const [teachArmed, setTeachArmed] = useState(false);
+  const [teachDrag, setTeachDrag] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  const [teachRect, setTeachRect] = useState<TeachRect | null>(null);
+  const [teachType, setTeachType] = useState<string>("");
+  const [isTeaching, setIsTeaching] = useState(false);
+  // Perceptual scene index shots passed through the surfaces response —
+  // the timestamp → scene-class mapping for frames without detection rows.
+  const [sceneIndexShots, setSceneIndexShots] = useState<SceneIndexShot[] | null>(null);
+  const { toast } = useToast();
+
+  const resetTeach = useCallback(() => {
+    setTeachArmed(false);
+    setTeachDrag(null);
+    setTeachRect(null);
+    setTeachType("");
+  }, []);
+
   // Sync localScenes when video prop changes or modal opens
   useEffect(() => {
     if (video?.scenes && video.scenes.length > 0) {
@@ -263,6 +332,27 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
       drawDbSurfaces();
     }
   }, [currentSceneIndex]);
+
+  // Teach mode is frame-anchored: anything that swaps what's on screen
+  // (scene nav, player toggle, another video, modal close) invalidates an
+  // in-progress draw — disarm instead of letting a stale box land on the
+  // wrong frame.
+  useEffect(() => {
+    resetTeach();
+  }, [open, video?.id, currentSceneIndex, showEmbedPlayer, resetTeach]);
+
+  // Escape disarms teach mode. Bubble phase + listbox guard so an open
+  // type dropdown consumes its own Escape first.
+  useEffect(() => {
+    if (!teachArmed) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (e.target instanceof HTMLElement && e.target.closest('[role="listbox"]')) return;
+      resetTeach();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [teachArmed, resetTeach]);
   
   // Fetch surfaces from database API
   const fetchDbSurfaces = async (videoId: number) => {
@@ -288,6 +378,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
         setDbSurfaces(data.surfaces || []);
         setHasDbSurfaces((data.surfaces || []).length > 0);
         setSceneInventory(data.sceneInventory ?? null);
+        setSceneIndexShots(Array.isArray(data.sceneIndex?.shots) ? data.sceneIndex.shots : null);
         console.log(`[SceneAnalysisModal] Loaded ${data.surfaces?.length || 0} surfaces, hasDbSurfaces: ${(data.surfaces || []).length > 0}`);
       } else {
         const errText = await res.text();
@@ -403,6 +494,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
         setDbSurfaces(surfaces);
         setHasDbSurfaces(surfaces.length > 0);
         setSceneInventory(data.sceneInventory ?? null);
+        setSceneIndexShots(Array.isArray(data.sceneIndex?.shots) ? data.sceneIndex.shots : null);
 
         // Rebuild scenes from fresh surface data
         const newScenes = buildScenesFromSurfaces(surfaces, video.id);
@@ -659,7 +751,131 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
     const surfaceTs = parseFloat(s.timestamp) || 0;
     return Math.abs(surfaceTs - sceneSeconds) < 0.75;
   });
-  
+
+  // Scene class of the displayed frame — what the teach endpoint keys on.
+  // Detection rows on this frame carry the sceneId they were stamped with
+  // at scan time; a frame with zero rows (the teach case) falls back to
+  // locating its timestamp among the scene index's shots.
+  const teachSceneId = (() => {
+    const stamped = currentDbSurfaces.find(s => typeof s.sceneId === "number");
+    if (stamped) return stamped.sceneId as number;
+    if (sceneIndexShots && sceneIndexShots.length > 0) {
+      let best: SceneIndexShot | null = null;
+      let bestDist = Infinity;
+      for (const shot of sceneIndexShots) {
+        const dist = sceneSeconds < shot.tStart
+          ? shot.tStart - sceneSeconds
+          : sceneSeconds > shot.tEnd
+            ? sceneSeconds - shot.tEnd
+            : 0;
+        if (dist < bestDist) { bestDist = dist; best = shot; }
+      }
+      if (best && bestDist <= 1.5) return best.sceneId;
+    }
+    return null;
+  })();
+
+  // ── Teach-mode drag handlers ──
+  // Coordinates are captured against the frame img's rendered box (the
+  // overlay wrapper shrink-wraps to it) and normalized to 0-1 frame space
+  // at release time. Pointer capture keeps the drag alive when the cursor
+  // exits the frame; coords clamp to the box edges.
+  const teachFrameBox = () => imageRef.current?.getBoundingClientRect() ?? null;
+
+  const handleTeachPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!teachArmed || teachRect || isTeaching) return;
+    const box = teachFrameBox();
+    if (!box || box.width <= 0 || box.height <= 0) return;
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const x = Math.max(0, Math.min(e.clientX - box.left, box.width));
+    const y = Math.max(0, Math.min(e.clientY - box.top, box.height));
+    setTeachDrag({ x0: x, y0: y, x1: x, y1: y });
+  };
+
+  const handleTeachPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!teachDrag) return;
+    const box = teachFrameBox();
+    if (!box) return;
+    const x = Math.max(0, Math.min(e.clientX - box.left, box.width));
+    const y = Math.max(0, Math.min(e.clientY - box.top, box.height));
+    setTeachDrag(prev => (prev ? { ...prev, x1: x, y1: y } : prev));
+  };
+
+  const handleTeachPointerUp = () => {
+    if (!teachDrag) return;
+    const drag = teachDrag;
+    setTeachDrag(null);
+    const box = teachFrameBox();
+    if (!box || box.width <= 0 || box.height <= 0) return;
+    const x = Math.min(drag.x0, drag.x1);
+    const y = Math.min(drag.y0, drag.y1);
+    const w = Math.abs(drag.x1 - drag.x0);
+    const h = Math.abs(drag.y1 - drag.y0);
+    // Stray-click guard: a real surface box is at least ~1.5% of the frame
+    // in both dimensions — anything smaller never opens the form.
+    if (w < box.width * 0.015 || h < box.height * 0.015) return;
+    setTeachRect({
+      x, y, w, h,
+      wrapW: box.width,
+      wrapH: box.height,
+      norm: {
+        x: Math.max(0, Math.min(1, x / box.width)),
+        y: Math.max(0, Math.min(1, y / box.height)),
+        w: Math.max(0, Math.min(1, w / box.width)),
+        h: Math.max(0, Math.min(1, h / box.height)),
+      },
+    });
+  };
+
+  const saveTaughtSurface = async () => {
+    if (!video?.id || teachSceneId == null || !teachRect || !teachType) return;
+    setIsTeaching(true);
+    try {
+      const res = await fetch(`/api/video/${video.id}/scenes/${teachSceneId}/teach`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          surfaceType: teachType,
+          orientation: teachOrientationFor(teachType),
+          bbox: teachRect.norm,
+        }),
+      });
+      if (!res.ok) {
+        let msg = `Teach failed (${res.status})`;
+        try {
+          const body = await res.json();
+          if (body?.error) msg = body.error;
+        } catch {}
+        throw new Error(msg);
+      }
+      toast({ title: "Taught — this set will track it from now on" });
+      resetTeach();
+      await fetchDbSurfaces(video.id);
+    } catch (err) {
+      toast({
+        title: "Couldn't teach surface",
+        description: err instanceof Error ? err.message : "Request failed",
+        variant: "destructive",
+      });
+    } finally {
+      setIsTeaching(false);
+    }
+  };
+
+  // Rect to paint on the overlay: the live drag while the button is down,
+  // the finalized rect while the form is open.
+  const teachDrawRect = teachDrag
+    ? {
+        x: Math.min(teachDrag.x0, teachDrag.x1),
+        y: Math.min(teachDrag.y0, teachDrag.y1),
+        w: Math.abs(teachDrag.x1 - teachDrag.x0),
+        h: Math.abs(teachDrag.y1 - teachDrag.y0),
+      }
+    : teachRect;
+
+
   // Priority: Database surfaces (real scan) > TensorFlow live detections > NO FALLBACK (show empty state)
   // NEVER use demo/placeholder data - only show real scan results
   const displaySurfaces = hasDbSurfaces && currentDbSurfaces.length > 0
@@ -882,6 +1098,99 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                       className="absolute inset-0 w-full h-full pointer-events-none"
                       data-testid="canvas-detections"
                     />
+                    {/* Teach-mode draw layer — armed only. Covers exactly the
+                        frame image (the wrapper shrink-wraps to it) and
+                        captures the drag that defines the taught surface's
+                        bbox; the detection canvas below is pointer-events-none
+                        so it never competes. */}
+                    {teachArmed && (
+                      <div
+                        className="absolute inset-0 z-10 cursor-crosshair touch-none select-none"
+                        onPointerDown={handleTeachPointerDown}
+                        onPointerMove={handleTeachPointerMove}
+                        onPointerUp={handleTeachPointerUp}
+                        data-testid="overlay-teach-draw"
+                      >
+                        {teachDrawRect && (
+                          <div
+                            className="absolute border-2 border-dashed border-emerald-400 bg-emerald-400/10 pointer-events-none"
+                            style={{
+                              left: teachDrawRect.x,
+                              top: teachDrawRect.y,
+                              width: teachDrawRect.w,
+                              height: teachDrawRect.h,
+                            }}
+                            data-testid="teach-draw-rect"
+                          />
+                        )}
+                        {teachRect && (() => {
+                          // Anchor the form under the drawn box, clamped so it
+                          // stays inside the frame on edge draws.
+                          const formLeft = Math.max(4, Math.min(teachRect.x, teachRect.wrapW - 236));
+                          const formTop = Math.max(4, Math.min(teachRect.y + teachRect.h + 8, teachRect.wrapH - 132));
+                          const orientation = teachType ? teachOrientationFor(teachType) : "horizontal";
+                          return (
+                            <div
+                              className="absolute z-20 w-56 rounded-lg border border-white/15 bg-zinc-900/95 p-3 space-y-2 shadow-xl cursor-default"
+                              style={{ left: formLeft, top: formTop }}
+                              onPointerDown={(e) => e.stopPropagation()}
+                              data-testid="form-teach-surface"
+                            >
+                              <Select value={teachType} onValueChange={setTeachType}>
+                                <SelectTrigger className="h-8 text-xs" data-testid="select-teach-type">
+                                  <SelectValue placeholder="Surface type" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {TEACH_SURFACE_TYPES.map((t) => (
+                                    <SelectItem key={t} value={t} className="text-xs">
+                                      {teachTypeLabel(t)}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                              {/* Orientation derives from the type (walls/doors/
+                                  windows vertical, everything else horizontal) —
+                                  shown, not editable, mirroring the scanner's
+                                  inferOrientation rule. */}
+                              <div className="flex items-center justify-between">
+                                <span className="text-[11px] text-muted-foreground">Orientation</span>
+                                <Badge
+                                  variant="outline"
+                                  className={`text-[10px] uppercase ${
+                                    orientation === "vertical"
+                                      ? "border-blue-500/40 text-blue-300"
+                                      : "border-amber-500/40 text-amber-300"
+                                  }`}
+                                >
+                                  {orientation}
+                                </Badge>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <Button
+                                  size="sm"
+                                  className="h-7 flex-1 text-xs"
+                                  disabled={!teachType || isTeaching}
+                                  onClick={saveTaughtSurface}
+                                  data-testid="button-teach-save"
+                                >
+                                  {isTeaching ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "Save"}
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-7 px-2.5 text-xs"
+                                  disabled={isTeaching}
+                                  onClick={resetTeach}
+                                  data-testid="button-teach-cancel"
+                                >
+                                  Cancel
+                                </Button>
+                              </div>
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    )}
                     </div>
                   )}
 
@@ -898,7 +1207,10 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                   
                   <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent pointer-events-none" />
                   
-                  <div className="absolute bottom-4 left-4 flex items-center gap-2">
+                  {/* While teach mode is armed the badges dim and stop
+                      catching pointers — they overlay the bottom-left of the
+                      frame, exactly where floor/rug boxes get drawn. */}
+                  <div className={`absolute bottom-4 left-4 flex items-center gap-2 ${teachArmed ? "pointer-events-none opacity-40" : ""}`}>
                     <Badge className="bg-primary/90 text-white">
                       <Clock className="w-3 h-3 mr-1" />
                       {currentScene?.timestamp || '0:00'}
@@ -948,6 +1260,35 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                 </div>
 
                 <div className="p-3 bg-black/50 border-t border-white/10 space-y-2">
+                  {/* Teach-a-surface — the creator's override for surfaces the
+                      detector keeps missing: draw one box, pick a type, and the
+                      set's room model tracks it on every future scan. Needs a
+                      scene class for the displayed frame (from its detection
+                      rows or the scene index), so it stays disabled until scan
+                      data can map the timestamp to one. */}
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={showEmbedPlayer || !frameLoaded || teachSceneId == null || isTeaching}
+                      onClick={() => (teachArmed ? resetTeach() : setTeachArmed(true))}
+                      className={`gap-1.5 h-7 px-2.5 text-xs ${
+                        teachArmed
+                          ? "text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20"
+                          : "text-zinc-300"
+                      }`}
+                      title={teachSceneId == null ? "Teaching needs a scene index — scan the video first" : undefined}
+                      data-testid="button-teach-surface"
+                    >
+                      <Crosshair className="w-3.5 h-3.5" />
+                      {teachArmed ? "Cancel teaching" : "Teach surface"}
+                    </Button>
+                    {teachArmed && !teachRect && (
+                      <span className="text-[11px] text-muted-foreground">
+                        Drag a box around the surface · Esc to cancel
+                      </span>
+                    )}
+                  </div>
                   {/* Surface-type hotkey buttons — jump to first scene with that surface */}
                   {(() => {
                     const surfaceTypeSet = new Set<string>();
@@ -1005,7 +1346,25 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                     ))}
                   </div>
                   <p className="text-xs text-muted-foreground text-center mt-2">
-                    Scene {currentSceneIndex + 1} of {totalScenes}
+                    {/* These cards are sampled FRAMES; "Scene A/B/C" in the
+                        sidebar are recurring camera setups that each own many
+                        frames. The badge bridges the two vocabularies: it
+                        names the scene class the displayed frame belongs to,
+                        using the inventory's own labels. */}
+                    Frame {currentSceneIndex + 1} of {totalScenes}
+                    {(() => {
+                      const cls = sceneInventory?.scenes?.find((sc) => sc.sceneId === teachSceneId);
+                      if (!cls?.label) return null;
+                      return (
+                        <span
+                          className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-primary/15 text-primary text-[10px] align-middle"
+                          data-testid="badge-frame-scene-class"
+                        >
+                          {cls.label}
+                          {typeof cls.occurrences === "number" ? ` · ${cls.occurrences} shots` : ""}
+                        </span>
+                      );
+                    })()}
                   </p>
                 </div>
               </div>
