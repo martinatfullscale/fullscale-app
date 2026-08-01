@@ -125,8 +125,19 @@ let geminiModelIdx = 0;
 const isModelGoneError = (err: any): boolean =>
   /NOT_FOUND|not found|no longer available|is not supported/i.test(String(err?.message ?? err));
 
+// Google-side capacity spikes surface as 503 UNAVAILABLE "high demand" —
+// transient by Google's own message, but the old handling treated them as
+// terminal for the direct client and fell to the proxy (a black hole in
+// deployment) → 30s timeout → edge detection. A whole scan run during one
+// spike came back degraded. 503s get a short same-model retry, then a
+// PER-CALL fallback down the model ladder (the preferred model isn't gone,
+// just busy — no sticky advance), and only then the proxy.
+const isOverloadedError = (err: any): boolean =>
+  /UNAVAILABLE|high demand|overloaded|\b503\b/i.test(String(err?.message ?? err));
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
 async function geminiGenerate(params: any, timeoutMs: number = CONFIG.GEMINI_TIMEOUT_MS): Promise<any> {
-  const attempt = (client: GoogleGenAI, model: string) =>
+  const tryModel = (client: GoogleGenAI, model: string) =>
     Promise.race([
       client.models.generateContent({ ...params, model }),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Gemini timeout")), timeoutMs)),
@@ -138,23 +149,43 @@ async function geminiGenerate(params: any, timeoutMs: number = CONFIG.GEMINI_TIM
   const primary = aiDirect ?? ai;
   const secondary = aiDirect ? ai : null;
 
-  while (true) {
-    const model = GEMINI_MODEL_CANDIDATES[geminiModelIdx];
+  let callModelIdx = geminiModelIdx;
+  let busyRetried = false;
+  const maxIterations = GEMINI_MODEL_CANDIDATES.length + 3;
+  for (let iter = 0; iter < maxIterations; iter++) {
+    const model = GEMINI_MODEL_CANDIDATES[callModelIdx];
     try {
-      return await attempt(primary, model);
+      return await tryModel(primary, model);
     } catch (err: any) {
-      if (isModelGoneError(err) && geminiModelIdx < GEMINI_MODEL_CANDIDATES.length - 1) {
-        geminiModelIdx++;
-        console.warn(`[Gemini] Model "${model}" unavailable to this key — advancing to "${GEMINI_MODEL_CANDIDATES[geminiModelIdx]}"`);
+      if (isModelGoneError(err) && callModelIdx < GEMINI_MODEL_CANDIDATES.length - 1) {
+        callModelIdx++;
+        // Retirement is permanent — advance the sticky index for everyone.
+        if (callModelIdx > geminiModelIdx) geminiModelIdx = callModelIdx;
+        console.warn(`[Gemini] Model "${model}" unavailable to this key — advancing to "${GEMINI_MODEL_CANDIDATES[callModelIdx]}"`);
         continue;
+      }
+      if (isOverloadedError(err)) {
+        if (!busyRetried) {
+          busyRetried = true;
+          console.warn(`[Gemini] "${model}" overloaded (503) — retrying in 2s`);
+          await sleep(2000);
+          continue;
+        }
+        if (callModelIdx < GEMINI_MODEL_CANDIDATES.length - 1) {
+          callModelIdx++;
+          busyRetried = false;
+          console.warn(`[Gemini] "${model}" still overloaded — trying "${GEMINI_MODEL_CANDIDATES[callModelIdx]}" for this call`);
+          continue;
+        }
       }
       if (!secondary) throw err;
       console.warn(`[Gemini] Direct attempt failed (${err?.message || err}) — retrying via proxy`);
       // The proxy speaks the legacy model id regardless of what the direct
       // key supports — it predates the newer generations.
-      return await attempt(secondary, "gemini-2.5-flash");
+      return await tryModel(secondary, "gemini-2.5-flash");
     }
   }
+  throw new Error("Gemini: exhausted model candidates");
 }
 
 // ============================================================================
