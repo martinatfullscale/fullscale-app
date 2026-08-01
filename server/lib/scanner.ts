@@ -891,6 +891,15 @@ function classifyYtDlpFailure(stderr: string): YtDlpFailureClass {
   if (/Requested format is not available/i.test(stderr)) {
     return "format";
   }
+  // "This video is DRM protected" on ordinary content is NOT real DRM —
+  // it's what a current extractor reports when the chosen client/session
+  // combination is served only SABR/protected streams (pruned innertube
+  // clients, or a signed-in session under SABR enforcement). Same remedy
+  // family as format-not-available: different client mode / auth mode,
+  // so classify it the same way and let the flip passes run.
+  if (/DRM protected/i.test(stderr)) {
+    return "format";
+  }
   // ffmpeg / post-processing / --download-sections blew up: the trim path
   // is broken for this video (classic HLS+section failure, ffmpeg exit
   // 183), so only the full pulls can work.
