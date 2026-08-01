@@ -559,8 +559,26 @@ function makePerInvocationCookiesCopy(masterPath: string): string | null {
   }
 }
 
+// Cookie attachment is OFF by default — auth is a bot-check REMEDY, not a
+// baseline. Twice now a default-on credential degraded extraction platform-
+// wide: the OAuth bearer (2026-06-11, degraded format lists) and the cookie
+// jar (2026-08-01, SABR enforcement served the signed-in session
+// storyboards ONLY while anonymous saw the full 360p-1080p table — proven
+// by side-by-side --list-formats). When YouTube actually bot-checks us,
+// the ladder flips this on (sticky for the process) and retries.
+let ytDlpCookiesEnabled = false;
+export function ytDlpCookiesActive(): boolean {
+  return ytDlpCookiesEnabled;
+}
+export function enableYtDlpCookies(reason: string): void {
+  if (!ytDlpCookiesEnabled) {
+    console.warn(`[Scanner] Enabling cookie session for yt-dlp (${reason}) — sticky for this process`);
+    ytDlpCookiesEnabled = true;
+  }
+}
+
 export function applyYtDlpAuthArgs(args: string[], context: string): void {
-  const cookies = resolveCookiesFile();
+  const cookies = ytDlpCookiesEnabled ? resolveCookiesFile() : null;
   if (cookies) {
     const isolated = makePerInvocationCookiesCopy(cookies);
     // Fall back to the shared master only if the copy failed — better a
@@ -960,36 +978,54 @@ export async function downloadVideo(
   let skipAnonReason: string | null = null;
   let fatalStop = false;
   let sawFormatFailure = false;
+  let sawBotFailure = false;
 
   // Two ladder passes at most: if pass 1 dies entirely on "Requested format
   // is not available" — the stale-extractor signature that hits every rung
   // identically when YouTube ships a player change — force-refresh the
   // yt-dlp binary and, ONLY if a genuinely newer release landed, run the
   // ladder once more. Rate-limited inside forceRefreshYtDlp.
-  for (let ladderPass = 0; ladderPass < 3; ladderPass++) {
-  if (ladderPass === 1) {
-    if (!sawFormatFailure) break;
-    const refreshed = await forceRefreshYtDlp();
-    // No newer binary anywhere upstream — skip straight to the
-    // default-clients pass; the binary was never the problem then.
-    if (!refreshed || !refreshed.changed) continue;
-    console.warn(`[Scanner] Retrying download ladder with freshly updated yt-dlp (${refreshed.version})`);
+  const resetPassFlags = () => {
     skipTrim = false;
     skipAnonReason = null;
     fatalStop = false;
     sawFormatFailure = false;
+    sawBotFailure = false;
+  };
+  const cookiePassPending = () => sawBotFailure && !ytDlpCookiesActive() && !!resolveCookiesFile();
+  for (let ladderPass = 0; ladderPass < 4; ladderPass++) {
+  if (ladderPass === 1) {
+    if (!sawFormatFailure) {
+      if (cookiePassPending()) continue; // bot-only failure — go enable cookies
+      break;
+    }
+    const refreshed = await forceRefreshYtDlp();
+    // No newer binary anywhere upstream — skip straight to the
+    // client-flip pass; the binary was never the problem then.
+    if (!refreshed || !refreshed.changed) continue;
+    console.warn(`[Scanner] Retrying download ladder with freshly updated yt-dlp (${refreshed.version})`);
+    resetPassFlags();
   }
   if (ladderPass === 2) {
-    if (!sawFormatFailure) break;
+    if (!sawFormatFailure) {
+      if (cookiePassPending()) continue;
+      break;
+    }
     // Fresh binary (or no fresher binary) and STILL format-failing on
     // every rung: the remaining suspect is the player-client mode. Flip
     // to the other mode for a final pass; sticks for the process.
     flipPlayerClientMode();
     console.warn(`[Scanner] Retrying download ladder with flipped player clients`);
-    skipTrim = false;
-    skipAnonReason = null;
-    fatalStop = false;
-    sawFormatFailure = false;
+    resetPassFlags();
+  }
+  if (ladderPass === 3) {
+    // Cookie pass: only when a bot-check was actually seen, cookies exist,
+    // and they weren't already on. Sticky — future calls in this process
+    // stay authenticated (the wall usually persists once it appears).
+    if (!cookiePassPending()) break;
+    enableYtDlpCookies("bot-check on anonymous requests");
+    console.warn(`[Scanner] Retrying download ladder with cookie session enabled`);
+    resetPassFlags();
   }
 
   for (const rung of rungs) {
@@ -1019,11 +1055,14 @@ export async function downloadVideo(
 
     const failureClass = classifyYtDlpFailure(attempt.stderr);
     if (failureClass === "bot") {
-      // Make the bot-check self-diagnosing: the answer is ALWAYS the cookie
-      // session, so say exactly which half of it is broken.
-      const jar = resolveCookiesFile();
-      console.warn(jar
+      sawBotFailure = true;
+      // Self-diagnosing: cookies are the bot-check remedy. Off → the
+      // cookie pass below will enable them and retry. Already on → the
+      // exported session itself is stale/invalidated.
+      console.warn(ytDlpCookiesEnabled
         ? `[Scanner] Bot-check HIT WITH cookies presented — the exported YTDLP_COOKIES session is stale or invalidated. Re-export from the signed-in browser profile (Get cookies.txt LOCALLY on youtube.com), re-base64, update the secret.`
+        : resolveCookiesFile()
+        ? `[Scanner] Bot-check on an anonymous request — cookie session available, retry pass will enable it.`
         : `[Scanner] Bot-check hit and NO cookie session is configured (YTDLP_COOKIES unset, empty, or rejected by the format guard — check boot logs). A signed-in cookie session is the fix for datacenter bot-checks.`);
     }
     if (failureClass === "fatal") {
