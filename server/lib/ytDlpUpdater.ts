@@ -118,31 +118,55 @@ async function probeVersion(binPath: string): Promise<ProbeResult> {
  * callers should NOT bother retrying their failed operation.
  */
 let lastForceRefreshAt = 0;
+let forceRefreshInFlight: Promise<{ path: string; version: string | null; changed: boolean } | null> | null = null;
 export async function forceRefreshYtDlp(): Promise<{ path: string; version: string | null; changed: boolean } | null> {
   if (process.platform !== "linux") return null;
+  // Single-flight: concurrent ladders (scan + playback pull) must SHARE one
+  // refresh and both get its result — with a bare rate limiter the second
+  // caller got an instant null and fell through to ytdl-core while the
+  // refresh it needed was still downloading.
+  if (forceRefreshInFlight) return forceRefreshInFlight;
   const now = Date.now();
   if (now - lastForceRefreshAt < 6 * 60 * 60 * 1000) {
     console.log(`[yt-dlp] Force-refresh skipped (rate-limited; last attempt ${Math.round((now - lastForceRefreshAt) / 60000)}min ago)`);
     return null;
   }
   lastForceRefreshAt = now;
-  const before = await probeVersion(CACHE_PATH);
-  try {
-    console.warn(`[yt-dlp] FORCE-REFRESH: current binary${before.ok ? ` (${before.version})` : ""} appears extractor-stale — pulling latest release`);
-    await downloadLatest();
-    const after = await probeVersion(CACHE_PATH);
-    if (!after.ok) {
+  forceRefreshInFlight = (async () => {
+    const looksReal = () => {
+      try { return fs.statSync(CACHE_PATH).size > 10_000_000; } catch { return false; }
+    };
+    const before = await probeVersion(CACHE_PATH);
+    try {
+      console.warn(`[yt-dlp] FORCE-REFRESH: current binary${before.ok ? ` (${before.version})` : ""} appears extractor-stale — pulling latest release`);
+      await downloadLatest();
+      const after = await probeVersion(CACHE_PATH);
+      if (after.ok) {
+        cachedPath = CACHE_PATH;
+        const changed = !before.ok || before.version !== after.version;
+        console.log(`[yt-dlp] Force-refresh: now on ${after.version}${changed ? "" : " (unchanged — no newer release upstream yet)"}`);
+        return { path: CACHE_PATH, version: after.version ?? null, changed };
+      }
+      if (after.reason === "timeout" && looksReal()) {
+        // Same cold-start reality getYtDlpPath already trusts: a freshly
+        // downloaded PyInstaller binary self-extracts on first run and can
+        // blow the probe budget on a busy VM. Full-size + fresh download =
+        // usable; version unknown, so assume changed and let the (rate-
+        // limited) retry ladder find out.
+        console.warn(`[yt-dlp] Force-refresh probe timed out but binary is full-size — trusting it (version unknown)`);
+        cachedPath = CACHE_PATH;
+        return { path: CACHE_PATH, version: null, changed: true };
+      }
       console.warn(`[yt-dlp] Force-refresh produced an unusable binary (${after.reason}); keeping prior behavior`);
       return null;
+    } catch (err: any) {
+      console.warn(`[yt-dlp] Force-refresh failed (${err?.message || err}); keeping cached binary`);
+      return null;
+    } finally {
+      forceRefreshInFlight = null;
     }
-    cachedPath = CACHE_PATH;
-    const changed = !before.ok || before.version !== after.version;
-    console.log(`[yt-dlp] Force-refresh: now on ${after.version}${changed ? "" : " (unchanged — no newer release upstream yet)"}`);
-    return { path: CACHE_PATH, version: after.version ?? null, changed };
-  } catch (err: any) {
-    console.warn(`[yt-dlp] Force-refresh failed (${err?.message || err}); keeping cached binary`);
-    return null;
-  }
+  })();
+  return forceRefreshInFlight;
 }
 
 /**
