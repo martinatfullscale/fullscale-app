@@ -103,7 +103,11 @@ export default function SavedPlacements() {
         // anchor surface might not be creatorApproved yet on a new scan).
         const res = await fetch(`/api/video/${quickEditPlacement.videoId}/surfaces?includeUnapproved=true`, { credentials: "include" });
         if (res.ok) {
-          const surfaces = await res.json();
+          // The endpoint returns { surfaces, count, ... }, not a bare array —
+          // calling .find() on the envelope threw and Quick Edit silently
+          // opened with no surface data.
+          const body = await res.json();
+          const surfaces = Array.isArray(body) ? body : (body?.surfaces ?? []);
           // Filter to just the surface this placement is on
           const targetSurface = surfaces.find((s: any) => s.id === quickEditPlacement.surfaceId);
           setQuickEditSurfaces(targetSurface ? [targetSurface] : surfaces.slice(0, 1));

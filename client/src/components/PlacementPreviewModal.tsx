@@ -963,6 +963,9 @@ export default function PlacementPreviewModal({
     flowCanvas: HTMLCanvasElement;
     initialized: boolean;
     frameCounter: number;
+    // Shot block (per-cut index from sceneBoundaries) of the last rendered
+    // frame — tracking state must never survive a cut.
+    lastShotBlock: number | null;
   }>({
     prevFrameData: null,
     cumulativeOffsetX: 0,
@@ -976,6 +979,7 @@ export default function PlacementPreviewModal({
     flowCanvas: typeof document !== "undefined" ? document.createElement("canvas") : null as any,
     initialized: false,
     frameCounter: 0,
+    lastShotBlock: null,
   });
 
   // Smooths the product visibility transition when playback crosses
@@ -1475,6 +1479,23 @@ export default function PlacementPreviewModal({
 
       if (useVideo && videoEl) {
         const tracking = trackingRef.current;
+        // Optical-flow state is only meaningful WITHIN a shot. Correlating
+        // across a cut produces a confident garbage offset (two similarly
+        // lit shots match easily) that shoves the accumulator and visibly
+        // slides the product onto a different region — the "hops from
+        // surface to surface" bug. Key on the per-cut shot block, not the
+        // scene class: two adjacent shots of the same class are still a
+        // cut, and cross-cut flow is equally garbage there.
+        const nowShotBlock = sceneBlockFor(videoEl.currentTime);
+        if (tracking.lastShotBlock !== null && nowShotBlock !== tracking.lastShotBlock) {
+          tracking.prevFrameData = null;
+          tracking.cumulativeOffsetX = 0;
+          tracking.cumulativeOffsetY = 0;
+          tracking.velocityX = 0;
+          tracking.velocityY = 0;
+          tracking.initialized = false;
+        }
+        tracking.lastShotBlock = nowShotBlock;
         const hasGeminiData = motionData?.available && motionData.source === "gemini-keyframes" && motionData.transforms.length > 0;
 
         if (hasGeminiData) {
@@ -1630,8 +1651,15 @@ export default function PlacementPreviewModal({
 
       const hasProduct = !!productImgRef.current;
 
+      // Chrome (outline / drop ghost) obeys the same scene authority as the
+      // product: never draw it while the playhead is outside the surface's
+      // own shots. It used to render unconditionally BEFORE the gate was
+      // even computed, so the dashed box hopped through every scene.
+      const chromeInScene = !useVideo || placementSceneId === null ||
+        sceneIdFor(videoRef.current?.currentTime ?? 0) === placementSceneId;
+
       // Bounding box outline (hidden when toggle is off)
-      if (showBoundingBox) {
+      if (showBoundingBox && chromeInScene) {
         ctx.strokeStyle = hasProduct ? "rgba(16, 185, 129, 0.6)" : "rgba(139, 92, 246, 0.8)";
         ctx.lineWidth = 2;
         ctx.setLineDash(hasProduct ? [4, 4] : [6, 4]);
@@ -1692,11 +1720,26 @@ export default function PlacementPreviewModal({
       const now = performance.now();
       const dt = ts.lastFrameTime ? Math.min(0.1, (now - ts.lastFrameTime) / 1000) : 0;
       ts.lastFrameTime = now;
-      // 200ms total transition — easing rate computed so opacity
-      // changes by 1.0 in 0.2 seconds = rate of 5/sec.
-      const FADE_RATE_PER_SEC = 5;
+      // Exponential ease toward the target. At rate 20/s the 0.05 draw
+      // threshold is crossed in ~150ms — inside the LOOK_AHEAD window, so
+      // the fade COMPLETES before the cut lands. The old rate of 5/s took
+      // ~600ms to cross: the product ghosted almost half a second into
+      // every foreign scene and materialized late on re-entry ("doesn't
+      // know the beginning or end of a scene").
+      const FADE_RATE_PER_SEC = 20;
       const delta = (ts.targetOpacity - ts.currentOpacity) * FADE_RATE_PER_SEC * dt;
       ts.currentOpacity = Math.max(0, Math.min(1, ts.currentOpacity + delta));
+      // Hard clamp on the CURRENT playhead (no look-ahead): whatever the
+      // easing is doing, the product never paints outside its surface's
+      // own shots. This is also what contains the static-fallback position
+      // and the motion track's ±2s edge bleed — they can propose
+      // coordinates, but not visibility.
+      if (useVideo && placementSceneId !== null) {
+        const nowT = videoRef.current?.currentTime ?? 0;
+        if (sceneIdFor(nowT) !== placementSceneId) {
+          ts.currentOpacity = 0;
+        }
+      }
       const sceneOpacity = ts.currentOpacity;
 
       // "Placement hidden" badge — fades in inversely with the product
@@ -1774,7 +1817,7 @@ export default function PlacementPreviewModal({
       }
 
       // "Drop product here" text if no product (hidden when toggle is off)
-      if (!hasProduct && showBoundingBox) {
+      if (!hasProduct && showBoundingBox && chromeInScene) {
         ctx.fillStyle = "rgba(139, 92, 246, 0.15)";
         ctx.fillRect(bx, by, bw, bh);
 

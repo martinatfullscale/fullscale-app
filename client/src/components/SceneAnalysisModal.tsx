@@ -1842,7 +1842,10 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
           videoTitle={video.title}
           surfaces={dbSurfaces.map(s => ({
             id: s.id,
-            timestamp: parseInt(s.timestamp) || 0,
+            // parseFloat, not parseInt: truncating to whole seconds put any
+            // surface detected <1s after a cut into the PREVIOUS shot when
+            // the preview modal re-derived its scene — wrong scene gate.
+            timestamp: parseFloat(s.timestamp) || 0,
             surfaceType: s.surfaceType,
             confidence: parseFloat(s.confidence) || 0,
             frameUrl: s.frameUrl,
@@ -1850,6 +1853,13 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
             boundingBoxY: parseFloat(s.boundingBoxY) || 0,
             boundingBoxWidth: parseFloat(s.boundingBoxWidth) || 0,
             boundingBoxHeight: parseFloat(s.boundingBoxHeight) || 0,
+            // Scene + canonical identity MUST survive this mapping: the
+            // preview's scene gate reads sceneId (else it guesses from the
+            // timestamp), and the scope checkboxes read surfaceGroupId
+            // (else every surface renders as unscopable "legacy").
+            sceneId: typeof (s as any).sceneId === "number" ? (s as any).sceneId : null,
+            sceneBlockId: typeof (s as any).sceneBlockId === "number" ? (s as any).sceneBlockId : null,
+            surfaceGroupId: (s as any).surfaceGroupId ?? null,
             sceneContext: (s as any).sceneContext || null,
             lightingDirection: (s as any).lightingDirection || null,
             lightingIntensity: (s as any).lightingIntensity ? parseFloat((s as any).lightingIntensity) : null,
