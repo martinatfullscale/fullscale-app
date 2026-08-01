@@ -352,7 +352,10 @@ async function sweepStaleTempArtifacts(): Promise<void> {
 
 (async () => {
   try {
-    log("Starting server initialization...");
+    // Which code is actually running? Replit stamps a per-deployment id on
+    // every log line that resembles a git SHA but isn't one; this is the
+    // real build commit, injected by script/build.ts at bundle time.
+    log(`Starting server initialization... (build ${process.env.BUILD_COMMIT || "dev"})`);
     
     // ============================================
     // PHASE 1: Health endpoint (for load balancer)

@@ -46,6 +46,16 @@ async function buildAll() {
   ];
   const externals = allDeps.filter((dep) => !allowlist.includes(dep));
 
+  let buildCommit = "unknown";
+  try {
+    const { execSync } = await import("child_process");
+    buildCommit = execSync("git rev-parse --short HEAD", { encoding: "utf8" }).trim();
+  } catch {
+    // Not a git checkout (or git missing) — the stamp is a nicety, never a
+    // build blocker.
+  }
+  console.log(`building server... (commit ${buildCommit})`);
+
   await esbuild({
     entryPoints: ["server/index.ts"],
     platform: "node",
@@ -54,6 +64,11 @@ async function buildAll() {
     outfile: "dist/index.cjs",
     define: {
       "process.env.NODE_ENV": '"production"',
+      // Stamp the built commit into the bundle so the running deployment
+      // can state WHICH code it is. Replit's per-line deployment id looks
+      // like a short SHA but isn't one, and "did my fix deploy?" cost
+      // several diagnosis cycles before this existed.
+      "process.env.BUILD_COMMIT": JSON.stringify(buildCommit),
     },
     // Minify is the memory hog during esbuild — on Replit's deploy
     // container this was OOMing silently and the deploy step would
