@@ -27,6 +27,11 @@ const STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000; // refresh weekly
 // PyInstaller bundle with Python embedded (~30MB), no host Python needed.
 // Linux x86_64 is what Replit runs on.
 const DOWNLOAD_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux";
+// Nightly builds live in a separate repo and carry extractor fixes within
+// ~a day of YouTube player changes — stable releases can lag by weeks. The
+// self-heal escalates to nightly only when stable came back unchanged, i.e.
+// when we KNOW stable has no fix for whatever just broke.
+const NIGHTLY_DOWNLOAD_URL = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp_linux";
 
 let cachedPath: string | null = null;
 let updateInFlight: Promise<string> | null = null;
@@ -40,9 +45,9 @@ function isFresh(): boolean {
   }
 }
 
-async function downloadLatest(): Promise<string> {
-  console.log(`[yt-dlp] Downloading latest from GitHub releases...`);
-  const res = await fetch(DOWNLOAD_URL, { redirect: "follow" });
+async function downloadLatest(url: string = DOWNLOAD_URL): Promise<string> {
+  console.log(`[yt-dlp] Downloading from ${url.includes("nightly") ? "NIGHTLY builds" : "GitHub releases"}...`);
+  const res = await fetch(url, { redirect: "follow" });
   if (!res.ok || !res.body) {
     throw new Error(`yt-dlp download failed: HTTP ${res.status}`);
   }
@@ -144,8 +149,37 @@ export async function forceRefreshYtDlp(): Promise<{ path: string; version: stri
       if (after.ok) {
         cachedPath = CACHE_PATH;
         const changed = !before.ok || before.version !== after.version;
-        console.log(`[yt-dlp] Force-refresh: now on ${after.version}${changed ? "" : " (unchanged — no newer release upstream yet)"}`);
-        return { path: CACHE_PATH, version: after.version ?? null, changed };
+        if (changed) {
+          console.log(`[yt-dlp] Force-refresh: now on ${after.version}`);
+          return { path: CACHE_PATH, version: after.version, changed: true };
+        }
+        // Stable had no fix — escalate to the nightly channel, which ships
+        // extractor patches within a day of YouTube changes.
+        console.log(`[yt-dlp] Force-refresh: stable unchanged (${after.version}) — escalating to nightly builds`);
+        try {
+          await downloadLatest(NIGHTLY_DOWNLOAD_URL);
+          const nightly = await probeVersion(CACHE_PATH);
+          if (nightly.ok && nightly.version !== after.version) {
+            cachedPath = CACHE_PATH;
+            console.log(`[yt-dlp] Force-refresh: now on NIGHTLY ${nightly.version}`);
+            return { path: CACHE_PATH, version: nightly.version, changed: true };
+          }
+          if (!nightly.ok && nightly.reason === "timeout" && looksReal()) {
+            cachedPath = CACHE_PATH;
+            console.warn(`[yt-dlp] Nightly probe timed out but binary is full-size — trusting it`);
+            return { path: CACHE_PATH, version: null, changed: true };
+          }
+          if (nightly.ok) {
+            console.log(`[yt-dlp] Nightly matches stable (${nightly.version}) — no fix upstream anywhere yet`);
+            return { path: CACHE_PATH, version: nightly.version, changed: false };
+          }
+          console.warn(`[yt-dlp] Nightly binary unusable (${nightly.reason}); re-fetching stable`);
+          await downloadLatest();
+          return { path: CACHE_PATH, version: after.version, changed: false };
+        } catch (nightlyErr: any) {
+          console.warn(`[yt-dlp] Nightly escalation failed (${nightlyErr?.message || nightlyErr}); staying on stable ${after.version}`);
+          return { path: CACHE_PATH, version: after.version, changed: false };
+        }
       }
       if (after.reason === "timeout" && looksReal()) {
         // Same cold-start reality getYtDlpPath already trusts: a freshly
