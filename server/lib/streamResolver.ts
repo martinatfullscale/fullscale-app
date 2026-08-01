@@ -20,7 +20,7 @@
 
 import { spawn } from "child_process";
 import { getYtDlpPath } from "./ytDlpUpdater";
-import { applyYtDlpAuthArgs, YT_MOBILE_SAFARI_USER_AGENT } from "./scanner";
+import { applyYtDlpAuthArgs, playerClientArgs, YT_MOBILE_SAFARI_USER_AGENT } from "./scanner";
 
 export interface StreamSource {
   url: string;
@@ -85,7 +85,9 @@ export async function resolveYoutubeStreamUrl(
           "b[protocol^=https]",
         "--no-playlist",
         "--no-warnings",
-        "--extractor-args", "youtube:player_client=tv_embedded,mweb,web_safari,android_vr",
+        // Shared with the download ladder: when the ladder proves the custom
+      // client list dead and flips to defaults, resolves follow suit.
+      ...playerClientArgs(),
         "--user-agent", YT_MOBILE_SAFARI_USER_AGENT,
       ];
       // TLS verification stays ON unless explicitly opted out: this process

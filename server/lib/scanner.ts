@@ -575,6 +575,27 @@ export function applyYtDlpAuthArgs(args: string[], context: string): void {
   }
 }
 
+// Custom innertube client lists rot: YouTube prunes internal clients
+// (tv_embedded, android_vr, ...) without notice, and when a pruned client
+// is in our --extractor-args list EVERY extraction returns "Requested
+// format is not available" on every yt-dlp version — indistinguishable
+// from a stale binary until a binary refresh doesn't help. When the
+// ladder proves that state, it flips this flag and retries with yt-dlp's
+// DEFAULT clients (upstream keeps those working); success makes the flag
+// sticky for the process so later scans skip the dead list entirely.
+let useDefaultPlayerClients = false;
+export function playerClientArgs(): string[] {
+  return useDefaultPlayerClients
+    ? []
+    : ["--extractor-args", "youtube:player_client=tv_embedded,mweb,web_safari,android_vr"];
+}
+export function forceDefaultPlayerClients(): void {
+  if (!useDefaultPlayerClients) {
+    console.warn(`[Scanner] Switching to yt-dlp DEFAULT player clients for this process (custom client list appears dead upstream)`);
+    useDefaultPlayerClients = true;
+  }
+}
+
 // Detached children get their own process group precisely so our SIGKILL
 // can reach the whole PyInstaller fork tree — but that same detachment means
 // they no longer die when node itself does. Track live pgids and hard-kill
@@ -628,7 +649,7 @@ export async function getYoutubeVideoDuration(
         "--skip-download",
         "--no-warnings",
         "--no-playlist",
-        "--extractor-args", "youtube:player_client=tv_embedded,mweb,web_safari,android_vr",
+        ...playerClientArgs(),
       ];
       if (useToken && oauthToken) {
         args.push("--add-header", `Authorization:Bearer ${oauthToken}`);
@@ -725,7 +746,7 @@ async function downloadVideoWithYtDlp(
       "--no-warnings",
       "--retries", "3",
       "--retry-sleep", "exp=2:30",
-      "--extractor-args", "youtube:player_client=tv_embedded,mweb,web_safari,android_vr",
+      ...playerClientArgs(),
       "--user-agent", MOBILE_SAFARI_USER_AGENT,
       "--newline",            // emit progress on its own lines, helps log streaming
       "--progress",           // show download progress
@@ -937,12 +958,27 @@ export async function downloadVideo(
   // identically when YouTube ships a player change — force-refresh the
   // yt-dlp binary and, ONLY if a genuinely newer release landed, run the
   // ladder once more. Rate-limited inside forceRefreshYtDlp.
-  for (let ladderPass = 0; ladderPass < 2; ladderPass++) {
+  for (let ladderPass = 0; ladderPass < 3; ladderPass++) {
   if (ladderPass === 1) {
     if (!sawFormatFailure) break;
     const refreshed = await forceRefreshYtDlp();
-    if (!refreshed || !refreshed.changed) break;
+    // No newer binary anywhere upstream — skip straight to the
+    // default-clients pass; the binary was never the problem then.
+    if (!refreshed || !refreshed.changed) continue;
     console.warn(`[Scanner] Retrying download ladder with freshly updated yt-dlp (${refreshed.version})`);
+    skipTrim = false;
+    skipAnonReason = null;
+    fatalStop = false;
+    sawFormatFailure = false;
+  }
+  if (ladderPass === 2) {
+    if (!sawFormatFailure) break;
+    // Fresh binary (or no fresher binary) and STILL format-failing on
+    // every rung: the remaining suspect is our custom innertube client
+    // list — YouTube prunes those clients without notice. Final pass on
+    // yt-dlp's defaults; sticks for the process if it works.
+    forceDefaultPlayerClients();
+    console.warn(`[Scanner] Retrying download ladder with DEFAULT player clients`);
     skipTrim = false;
     skipAnonReason = null;
     fatalStop = false;
