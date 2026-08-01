@@ -107,6 +107,45 @@ async function probeVersion(binPath: string): Promise<ProbeResult> {
 }
 
 /**
+ * Force a refresh of the cached binary NOW, ignoring the weekly freshness
+ * window. Exists for the stale-extractor emergency: YouTube ships player
+ * changes mid-week, every request starts failing with "Requested format is
+ * not available", and the correct fix is always the newest release — which
+ * the weekly window would not fetch for days. Rate-limited to once per 6h
+ * per process (a broken-upstream day must not hammer GitHub's release CDN).
+ * Returns { path, version, changed } — changed=false means the download
+ * yielded the SAME version we already had (no newer release exists yet), so
+ * callers should NOT bother retrying their failed operation.
+ */
+let lastForceRefreshAt = 0;
+export async function forceRefreshYtDlp(): Promise<{ path: string; version: string | null; changed: boolean } | null> {
+  if (process.platform !== "linux") return null;
+  const now = Date.now();
+  if (now - lastForceRefreshAt < 6 * 60 * 60 * 1000) {
+    console.log(`[yt-dlp] Force-refresh skipped (rate-limited; last attempt ${Math.round((now - lastForceRefreshAt) / 60000)}min ago)`);
+    return null;
+  }
+  lastForceRefreshAt = now;
+  const before = await probeVersion(CACHE_PATH);
+  try {
+    console.warn(`[yt-dlp] FORCE-REFRESH: current binary${before.ok ? ` (${before.version})` : ""} appears extractor-stale — pulling latest release`);
+    await downloadLatest();
+    const after = await probeVersion(CACHE_PATH);
+    if (!after.ok) {
+      console.warn(`[yt-dlp] Force-refresh produced an unusable binary (${after.reason}); keeping prior behavior`);
+      return null;
+    }
+    cachedPath = CACHE_PATH;
+    const changed = !before.ok || before.version !== after.version;
+    console.log(`[yt-dlp] Force-refresh: now on ${after.version}${changed ? "" : " (unchanged — no newer release upstream yet)"}`);
+    return { path: CACHE_PATH, version: after.version ?? null, changed };
+  } catch (err: any) {
+    console.warn(`[yt-dlp] Force-refresh failed (${err?.message || err}); keeping cached binary`);
+    return null;
+  }
+}
+
+/**
  * Returns the path to a usable yt-dlp binary. Uses a cached recent download
  * if available, otherwise pulls latest from GitHub. Falls back to system
  * "yt-dlp" on any failure.

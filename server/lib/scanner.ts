@@ -7,7 +7,7 @@ import sharp from "sharp";
 import { storage } from "../storage";
 import type { VideoIndex, InsertDetectedSurface } from "@shared/schema";
 import ytdl from "@distube/ytdl-core";
-import { getYtDlpPath } from "./ytDlpUpdater";
+import { getYtDlpPath, forceRefreshYtDlp } from "./ytDlpUpdater";
 // Bundled ffmpeg for yt-dlp's post-processing (--download-sections trims).
 // The deployment's PATH ffmpeg segfaulted (exit -11) mid-download in
 // production; the ffmpeg-static build is the same binary our renders use.
@@ -930,6 +930,24 @@ export async function downloadVideo(
   let skipTrim = false;
   let skipAnonReason: string | null = null;
   let fatalStop = false;
+  let sawFormatFailure = false;
+
+  // Two ladder passes at most: if pass 1 dies entirely on "Requested format
+  // is not available" — the stale-extractor signature that hits every rung
+  // identically when YouTube ships a player change — force-refresh the
+  // yt-dlp binary and, ONLY if a genuinely newer release landed, run the
+  // ladder once more. Rate-limited inside forceRefreshYtDlp.
+  for (let ladderPass = 0; ladderPass < 2; ladderPass++) {
+  if (ladderPass === 1) {
+    if (!sawFormatFailure) break;
+    const refreshed = await forceRefreshYtDlp();
+    if (!refreshed || !refreshed.changed) break;
+    console.warn(`[Scanner] Retrying download ladder with freshly updated yt-dlp (${refreshed.version})`);
+    skipTrim = false;
+    skipAnonReason = null;
+    fatalStop = false;
+    sawFormatFailure = false;
+  }
 
   for (const rung of rungs) {
     if (fatalStop) break;
@@ -973,6 +991,7 @@ export async function downloadVideo(
     } else if (failureClass === "trim" && rung.useTrim) {
       skipTrim = true;
     } else if (failureClass === "bot" || failureClass === "format") {
+      if (failureClass === "format") sawFormatFailure = true;
       if (rung.useOAuth) {
         // Even the authenticated request got bot-checked / saw no usable
         // format; nothing below in the yt-dlp ladder can do better.
@@ -986,6 +1005,8 @@ export async function downloadVideo(
     }
     // "other" (network flake, transient 5xx, stall-kill): plain fallthrough
     // to the next rung.
+  }
+
   }
 
   console.log(`[Scanner] All yt-dlp paths failed; trying @distube/ytdl-core fallback...`);
