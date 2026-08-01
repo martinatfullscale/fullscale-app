@@ -858,6 +858,12 @@ export default function PlacementPreviewModal({
 
   // Save state
   const [isSaving, setIsSaving] = useState(false);
+  // Placement scope — canonical surfaceGroupIds this placement applies to.
+  // Initialized to just the anchor's group whenever the anchor's identity
+  // changes; the strip's checkboxes add/remove other canonical surfaces.
+  // Surfaces without a groupId (legacy scans) can't be scoped — when the
+  // ANCHOR lacks one the save omits the field entirely (legacy behavior).
+  const [scopeGroupIds, setScopeGroupIds] = useState<Set<string>>(new Set());
   const [saveSuccess, setSaveSuccess] = useState(false);
   const { toast } = useToast();
 
@@ -2349,6 +2355,11 @@ export default function PlacementPreviewModal({
   // SAVE PLACEMENT
   // ============================================================================
 
+  const anchorGroupId = (selectedSurface as any)?.surfaceGroupId as string | undefined | null;
+  useEffect(() => {
+    setScopeGroupIds(new Set(anchorGroupId ? [anchorGroupId] : []));
+  }, [anchorGroupId]);
+
   const savePlacement = useCallback(async () => {
     if (!selectedSurface || !productImage) return;
     setIsSaving(true);
@@ -2374,6 +2385,11 @@ export default function PlacementPreviewModal({
           // any. Empty array → backend stores null which falls back to
           // the constant `transform` at render time.
           keyframes: keyframes.length > 0 ? keyframes : null,
+          // Explicit scope — exactly the canonical surfaces this placement
+          // applies to. Omitted (legacy) when the anchor has no groupId.
+          ...(anchorGroupId
+            ? { appliesToGroupIds: Array.from(new Set([anchorGroupId, ...Array.from(scopeGroupIds)])) }
+            : {}),
         }),
       });
       if (!res.ok) {
@@ -2390,9 +2406,12 @@ export default function PlacementPreviewModal({
       const result = await res.json().catch(() => ({}));
       setSaveSuccess(true);
       const propagated = result.propagatedCount || 0;
+      const scopeCount = anchorGroupId ? new Set([anchorGroupId, ...Array.from(scopeGroupIds)]).size : 0;
       toast({
         title: "Placement saved",
-        description: propagated > 0
+        description: anchorGroupId
+          ? `Applies to exactly ${scopeCount} surface${scopeCount === 1 ? "" : "s"} — nowhere else.`
+          : propagated > 0
           ? `Saved and auto-applied to ${propagated} matching scene${propagated > 1 ? 's' : ''} across the video.`
           : "Your placement has been saved and can be viewed in Saved Placements.",
       });
@@ -2403,7 +2422,7 @@ export default function PlacementPreviewModal({
     } finally {
       setIsSaving(false);
     }
-  }, [selectedSurface, productImage, videoId, selectedCatalogProduct, transform, blend, toast]);
+  }, [selectedSurface, productImage, videoId, selectedCatalogProduct, transform, blend, toast, anchorGroupId, scopeGroupIds]);
 
   const surfacesWithFrames = surfaces.filter((s) => s.frameUrl);
   const hasProduct = !!productImage;
@@ -3161,6 +3180,44 @@ export default function PlacementPreviewModal({
                             alt={`Surface ${surface.surfaceType}`}
                             className="w-full h-full object-cover"
                           />
+                          {/* Scope checkbox — is this canonical surface in
+                              the placement's applies-to list? The anchor's
+                              own group is always included (disabled+checked);
+                              legacy surfaces without a groupId can't be
+                              scoped. stopPropagation so toggling doesn't
+                              also switch the editing anchor. */}
+                          {(() => {
+                            const gid = (surface as any).surfaceGroupId as string | undefined | null;
+                            const isAnchorGroup = !!gid && gid === anchorGroupId;
+                            const checked = !!gid && (scopeGroupIds.has(gid) || isAnchorGroup);
+                            return (
+                              <span
+                                role="checkbox"
+                                aria-checked={checked}
+                                title={!gid ? "Legacy detection — cannot be scoped" : isAnchorGroup ? "Anchor surface — always included" : checked ? "Included in placement scope" : "Excluded from placement scope"}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (!gid || isAnchorGroup) return;
+                                  setScopeGroupIds((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(gid)) next.delete(gid);
+                                    else next.add(gid);
+                                    return next;
+                                  });
+                                }}
+                                className={`absolute top-1 right-1 w-3.5 h-3.5 rounded-sm border flex items-center justify-center text-[9px] leading-none ${
+                                  !gid
+                                    ? "border-white/20 bg-black/40 text-transparent cursor-not-allowed"
+                                    : checked
+                                    ? "border-emerald-400 bg-emerald-500/90 text-black"
+                                    : "border-white/50 bg-black/50 text-transparent"
+                                } ${isAnchorGroup ? "opacity-70" : "cursor-pointer"}`}
+                                data-testid={`scope-checkbox-${surface.id}`}
+                              >
+                                ✓
+                              </span>
+                            );
+                          })()}
                           {/* Scene indicator dot — color cycles per sceneId
                               so the user can see at a glance which thumbs
                               belong to the same physical scene. Click into
@@ -3190,6 +3247,11 @@ export default function PlacementPreviewModal({
                         </button>
                       ))}
                     </div>
+                    {anchorGroupId && (
+                      <p className="text-[10px] text-muted-foreground mt-1.5">
+                        Product applies to {new Set([anchorGroupId, ...Array.from(scopeGroupIds)]).size} checked surface{new Set([anchorGroupId, ...Array.from(scopeGroupIds)]).size === 1 ? "" : "s"} — check others to include them, e.g. the same table in another scene.
+                      </p>
+                    )}
                   </div>
                 )}
 

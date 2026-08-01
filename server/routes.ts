@@ -9100,10 +9100,28 @@ export async function registerRoutes(
   app.post("/api/placements", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const userEmail = req.authEmail || "unknown";
-      const { videoId, surfaceId, productId, productImageUrl, transform, blend, sceneGroupId, role, bidId, harmonizedImageUrl, isHarmonized, keyframes } = req.body;
+      const { videoId, surfaceId, productId, productImageUrl, transform, blend, sceneGroupId, role, bidId, harmonizedImageUrl, isHarmonized, keyframes, appliesToGroupIds } = req.body;
 
       if (!videoId || !surfaceId || !productImageUrl || !transform || !blend) {
         return res.status(400).json({ error: "Missing required fields: videoId, surfaceId, productImageUrl, transform, blend" });
+      }
+
+      // Placement scoping: a PRESENT appliesToGroupIds (including []) is the
+      // creator's explicit scope — one row, no fan-out. [] means "anchor
+      // surface only"; a list names exactly the canonical surfaces (by
+      // surfaceGroupId) the placement applies to. Absent field = legacy
+      // client = auto-propagation behavior below, and the row stays null.
+      const scopeProvided = appliesToGroupIds !== undefined;
+      let scopeGroupIds: string[] | null = null;
+      if (scopeProvided) {
+        if (
+          !Array.isArray(appliesToGroupIds) ||
+          appliesToGroupIds.length > 64 ||
+          appliesToGroupIds.some((g: any) => typeof g !== "string" || g.length === 0)
+        ) {
+          return res.status(400).json({ error: "appliesToGroupIds must be an array of at most 64 non-empty strings" });
+        }
+        scopeGroupIds = [...new Set(appliesToGroupIds as string[])];
       }
 
       // Validate keyframes shape if provided. Each entry must have `t` and
@@ -9144,6 +9162,7 @@ export async function registerRoutes(
         role: role || "creator",
         bidId: bidId || null,
         sceneGroupId: computedGroupId,
+        appliesToGroupIds: scopeGroupIds,
         transform,
         blend,
         status: "active",
@@ -9154,8 +9173,11 @@ export async function registerRoutes(
 
       // Auto-propagate to matching surfaces in the same scene group (scene persistence)
       // Uses fuzzy spatial matching: same surface type + bounding box center within 20% tolerance
+      // Skipped entirely when the creator sent an explicit scope — the single
+      // anchor row plus its appliesToGroupIds list already says where the
+      // placement applies; cloning rows would reintroduce the fan-out.
       let propagatedCount = 0;
-      if (computedGroupId) {
+      if (computedGroupId && !scopeProvided) {
         const allSurfaces = await storage.getDetectedSurfaces(videoId);
         const anchorSurface = allSurfaces.find(s => s.id === surfaceId);
         const anchorBBX = anchorSurface ? parseFloat(String(anchorSurface.boundingBoxX)) : 0;
@@ -9239,7 +9261,7 @@ export async function registerRoutes(
         }
       }
 
-      console.log(`[Placements] Saved placement ${placement.id} for video ${videoId} surface ${surfaceId} by ${userEmail} (propagated to ${propagatedCount} additional surfaces)`);
+      console.log(`[Placements] Saved placement ${placement.id} for video ${videoId} surface ${surfaceId} by ${userEmail} ${scopeProvided ? `(explicit scope: ${scopeGroupIds!.length} group id${scopeGroupIds!.length === 1 ? "" : "s"}, no fan-out)` : `(propagated to ${propagatedCount} additional surfaces)`}`);
       res.json({ placement, propagatedCount, reviewSlug });
     } catch (err: any) {
       console.error("[Placements] Save error:", err.message);
@@ -9318,15 +9340,30 @@ export async function registerRoutes(
         const tType = targetSurface.surfaceType.toLowerCase();
         const tSceneId = (targetSurface as any).sceneId;
 
+        // EXPLICIT SCOPE (decisive): rows saved with appliesToGroupIds carry
+        // the creator's exact answer to "where does this apply" — they match
+        // iff the target's canonical groupId is in the list, and they never
+        // fall through to the heuristic tiers below (an empty list means
+        // anchor-only, and the anchor was already served by the direct match
+        // above). Legacy rows (null scope) skip this tier untouched.
+        const tGroupId = (targetSurface as any).surfaceGroupId;
+        for (const p of videoplacements) {
+          const scope = (p as any).appliesToGroupIds;
+          if (scope == null) continue;
+          if (tGroupId && Array.isArray(scope) && scope.includes(tGroupId)) {
+            return res.json({ placement: p, source: "scope_match" });
+          }
+        }
+
         // GROUP MATCH (strongest): the scanner stamps one surfaceGroupId
         // per canonical physical surface, so two rows sharing a groupId
         // ARE the same desk/wall — no type or scene inference needed.
         // Legacy rows (null groupId) fall through to the scene/fuzzy
         // heuristics below; differing groups of the same type also fall
         // through, so pre-groupId behavior is unchanged for them.
-        const tGroupId = (targetSurface as any).surfaceGroupId;
         if (tGroupId) {
           for (const p of videoplacements) {
+            if ((p as any).appliesToGroupIds != null) continue; // scoped rows decided above
             const pSurface = allSurfaces.find(s => s.id === p.surfaceId);
             if (!pSurface) continue;
             // Rescans retire prior-generation rows as "Filtered" without
@@ -9334,6 +9371,10 @@ export async function registerRoutes(
             // a retired row's groupId can collide with a new scan's group
             // and anchor the placement to the wrong physical surface.
             if (pSurface.surfaceType === "Filtered") continue;
+            // Same collision family: a colliding groupId from another scan
+            // generation can pair a Desk with a Wall — same-group rows for
+            // the same physical surface always share a type, so require it.
+            if (pSurface.surfaceType.toLowerCase() !== tType) continue;
             if ((pSurface as any).surfaceGroupId === tGroupId) {
               return res.json({ placement: p, source: "group_match" });
             }
@@ -9346,6 +9387,7 @@ export async function registerRoutes(
         // :46, you see the mug — no re-establishing required.
         if (typeof tSceneId === "number") {
           for (const p of videoplacements) {
+            if ((p as any).appliesToGroupIds != null) continue; // scoped rows decided above
             const pSurface = allSurfaces.find(s => s.id === p.surfaceId);
             if (!pSurface) continue;
             if ((pSurface as any).sceneId !== tSceneId) continue;
@@ -9371,11 +9413,19 @@ export async function registerRoutes(
         const FUZZY_TOLERANCE = 0.20;
 
         for (const p of videoplacements) {
+          if ((p as any).appliesToGroupIds != null) continue; // scoped rows decided above
           const pSurface = allSurfaces.find(s => s.id === p.surfaceId);
           if (!pSurface || pSurface.surfaceType.toLowerCase() !== tType) continue;
           // Hard gate: if both have sceneIds and they differ, never match.
+          // Just as hard: if only ONE side has a sceneId (mixed-generation
+          // pair — new scan vs. pre-sceneId row), refuse too; those pairs
+          // were fuzzy-matching across scenes. Only null-null pairs, i.e.
+          // pure-legacy videos, may still fuzzy-match.
           const pSceneId = (pSurface as any).sceneId;
-          if (typeof tSceneId === "number" && typeof pSceneId === "number" && tSceneId !== pSceneId) continue;
+          const tHasScene = typeof tSceneId === "number";
+          const pHasScene = typeof pSceneId === "number";
+          if (tHasScene !== pHasScene) continue;
+          if (tHasScene && pHasScene && tSceneId !== pSceneId) continue;
           const pBBX = parseFloat(String(pSurface.boundingBoxX));
           const pBBY = parseFloat(String(pSurface.boundingBoxY));
           const pBBW = parseFloat(String(pSurface.boundingBoxWidth));

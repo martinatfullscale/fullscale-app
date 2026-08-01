@@ -486,6 +486,15 @@ export const savedPlacements = pgTable("saved_placements", {
   bidId: integer("bid_id"), // Reference to monetization_items.id (null for organic placements)
   // Scene continuity: group ID links surfaces that share the same placement
   sceneGroupId: varchar("scene_group_id"), // e.g., "video-5-Desk-0.3-0.5" — surfaces with matching group share placements
+  // Placement scoping — the creator's explicit answer to "where does this
+  // placement apply?". Values are detected_surfaces.surfaceGroupId strings
+  // (canonical physical surfaces), so a scope can deliberately include the
+  // same table's surface as seen in another scene.
+  //   null = legacy row (saved before scoping): heuristic group/scene/fuzzy
+  //          matching applies exactly as before.
+  //   []   = anchor surface only — no propagation anywhere.
+  //   ["rm3-s1", ...] = exactly those canonical surfaces, nothing else.
+  appliesToGroupIds: jsonb("applies_to_group_ids").$type<string[]>(),
   // Transform settings (JSON blob)
   transform: jsonb("transform").notNull().$type<{
     offsetX: number;

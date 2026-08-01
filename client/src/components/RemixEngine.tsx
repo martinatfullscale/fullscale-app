@@ -41,6 +41,12 @@ interface DetectedSurface {
   frameExists?: boolean;
   surroundings: string[] | null;
   sceneContext: string | null;
+  // Scene cluster ID — surfaces sharing a sceneId are in the same physical
+  // scene. Null/absent for videos scanned before scene clustering shipped.
+  sceneId?: number | null;
+  // Canonical physical-surface identity — one id spans every frame row of
+  // the same real-world surface. Opaque string; null/absent for legacy rows.
+  surfaceGroupId?: string | null;
 }
 
 interface CatalogProduct {
@@ -59,7 +65,15 @@ interface SurfaceKeyframe {
 }
 
 interface SurfaceTrack {
+  // Stable identity for this track: the canonical surfaceGroupId when the
+  // detection has one, else a legacy `${type}:${sceneId ?? "x"}` composite.
+  trackKey: string;
   surfaceType: string;
+  surfaceGroupId: string | null;
+  sceneId: number | null;
+  // Surface row ids feeding this track, sorted by timestamp (parallel to
+  // keyframes). surfaceIds[0] is the anchor surface for saves.
+  surfaceIds: number[];
   keyframes: SurfaceKeyframe[];
 }
 
@@ -189,13 +203,32 @@ function findKeyframes(keyframes: SurfaceKeyframe[], currentTime: number) {
   return { prev, next, progress: Math.min(Math.max(progress, 0), 1) };
 }
 
+// Tracks are keyed by canonical surface identity so keyframes never merge
+// across distinct physical surfaces or scenes. Legacy rows (no surfaceGroupId)
+// fall back to a type+scene composite; fully-legacy videos (no sceneId either)
+// collapse to `${type}:x` — the old by-type behavior.
+function getTrackKey(surface: DetectedSurface): string {
+  return surface.surfaceGroupId || `${surface.surfaceType}:${surface.sceneId ?? "x"}`;
+}
+
 function buildSurfaceTracks(surfaces: DetectedSurface[]): Map<string, SurfaceTrack> {
   const tracks = new Map<string, SurfaceTrack>();
 
   for (const surface of surfaces) {
-    const type = surface.surfaceType;
-    if (!tracks.has(type)) {
-      tracks.set(type, { surfaceType: type, keyframes: [] });
+    const key = getTrackKey(surface);
+    if (!tracks.has(key)) {
+      tracks.set(key, {
+        trackKey: key,
+        surfaceType: surface.surfaceType,
+        surfaceGroupId: surface.surfaceGroupId ?? null,
+        sceneId: surface.sceneId ?? null,
+        surfaceIds: [],
+        keyframes: [],
+      });
+    }
+    const track = tracks.get(key)!;
+    if (track.sceneId == null && surface.sceneId != null) {
+      track.sceneId = surface.sceneId;
     }
 
     // DB stores bounding box as 0-1 normalized; render code expects 0-100 percentage
@@ -207,7 +240,8 @@ function buildSurfaceTracks(surfaces: DetectedSurface[]): Map<string, SurfaceTra
     const isNormalized = rawX <= 1 && rawY <= 1 && rawW <= 1 && rawH <= 1;
     const scale = isNormalized ? 100 : 1;
 
-    tracks.get(type)!.keyframes.push({
+    track.surfaceIds.push(surface.id);
+    track.keyframes.push({
       timestamp: parseFloat(surface.timestamp),
       bbox: {
         x: rawX * scale,
@@ -219,8 +253,13 @@ function buildSurfaceTracks(surfaces: DetectedSurface[]): Map<string, SurfaceTra
     });
   }
 
-  for (const track of tracks.values()) {
-    track.keyframes.sort((a, b) => a.timestamp - b.timestamp);
+  for (const track of Array.from(tracks.values())) {
+    // Sort keyframes and surfaceIds together so they stay parallel
+    const order = track.keyframes
+      .map((_: unknown, i: number) => i)
+      .sort((a: number, b: number) => track.keyframes[a].timestamp - track.keyframes[b].timestamp);
+    track.keyframes = order.map((i: number) => track.keyframes[i]);
+    track.surfaceIds = order.map((i: number) => track.surfaceIds[i]);
   }
   return tracks;
 }
@@ -516,16 +555,56 @@ export default function RemixEngine() {
   const sceneTimestamps = useMemo(() => getUniqueTimestamps(surfaces), [surfaces]);
   const videoSrc = useMemo(() => resolveVideoSrc(video?.filePath), [video?.filePath]);
   const [videoError, setVideoError] = useState<string | null>(null);
-  const trackNames = useMemo(() => Array.from(surfaceTracks.keys()).sort(), [surfaceTracks]);
+  // Track keys ordered by type then first appearance, so a video with one
+  // surface per type keeps the familiar alphabetical order
+  const trackKeys = useMemo(
+    () =>
+      Array.from(surfaceTracks.values())
+        .sort(
+          (a, b) =>
+            a.surfaceType.localeCompare(b.surfaceType) ||
+            (a.keyframes[0]?.timestamp ?? 0) - (b.keyframes[0]?.timestamp ?? 0) ||
+            a.trackKey.localeCompare(b.trackKey)
+        )
+        .map(t => t.trackKey),
+    [surfaceTracks]
+  );
+
+  // Display labels: bare type when unique, scene-qualified when the same type
+  // appears on multiple tracks
+  const trackLabels = useMemo(() => {
+    const typeCounts = new Map<string, number>();
+    for (const track of Array.from(surfaceTracks.values())) {
+      typeCounts.set(track.surfaceType, (typeCounts.get(track.surfaceType) || 0) + 1);
+    }
+    const labels = new Map<string, string>();
+    const used = new Map<string, number>();
+    for (const key of trackKeys) {
+      const track = surfaceTracks.get(key)!;
+      let label = track.surfaceType;
+      if ((typeCounts.get(track.surfaceType) || 0) > 1) {
+        label = track.sceneId != null
+          ? `${track.surfaceType} · scene ${track.sceneId}`
+          : track.surfaceType;
+        const n = (used.get(label) || 0) + 1;
+        used.set(label, n);
+        if (n > 1 || (track.sceneId == null && (typeCounts.get(track.surfaceType) || 0) > 1)) {
+          label = `${label} (${n})`;
+        }
+      }
+      labels.set(key, label);
+    }
+    return labels;
+  }, [surfaceTracks, trackKeys]);
 
   const selectedAssignment = selectedTrack ? assignments.get(selectedTrack) : undefined;
 
   // Auto-select first track
   useEffect(() => {
-    if (trackNames.length > 0 && !selectedTrack) {
-      setSelectedTrack(trackNames[0]);
+    if (trackKeys.length > 0 && !selectedTrack) {
+      setSelectedTrack(trackKeys[0]);
     }
-  }, [trackNames, selectedTrack]);
+  }, [trackKeys, selectedTrack]);
 
   // Auto-load saved placements into assignments when data arrives
   useEffect(() => {
@@ -538,15 +617,15 @@ export default function RemixEngine() {
       surfaceMap.set(s.id, s);
     }
 
-    // Group placements by surface type (one per track, newest wins)
+    // Group placements by track (one per track, newest wins)
     const byTrack = new Map<string, any>();
     for (const p of savedPlacements) {
       const surface = surfaceMap.get(p.surfaceId);
       if (!surface) continue;
-      const trackName = surface.surfaceType;
+      const trackKey = getTrackKey(surface);
       // Keep the newest placement per track
-      if (!byTrack.has(trackName) || new Date(p.createdAt) > new Date(byTrack.get(trackName).createdAt)) {
-        byTrack.set(trackName, p);
+      if (!byTrack.has(trackKey) || new Date(p.createdAt) > new Date(byTrack.get(trackKey).createdAt)) {
+        byTrack.set(trackKey, p);
       }
     }
 
@@ -555,7 +634,7 @@ export default function RemixEngine() {
     // Preload product images and populate assignments
     const loadAll = async () => {
       const newAssignments = new Map<string, ProductAssignment>();
-      for (const [trackName, placement] of byTrack) {
+      for (const [trackKey, placement] of Array.from(byTrack.entries())) {
         try {
           const img = new Image();
           img.crossOrigin = "anonymous";
@@ -565,7 +644,7 @@ export default function RemixEngine() {
             img.src = placement.productImageUrl;
           });
           productImagesRef.current.set(placement.productId || -1, img);
-          newAssignments.set(trackName, {
+          newAssignments.set(trackKey, {
             productId: placement.productId || -1,
             imageUrl: placement.productImageUrl,
             name: `Saved Placement`,
@@ -585,7 +664,7 @@ export default function RemixEngine() {
             } : { ...DEFAULT_BLEND },
           });
         } catch (err) {
-          console.warn(`[RemixEngine] Failed to load saved placement for ${trackName}:`, err);
+          console.warn(`[RemixEngine] Failed to load saved placement for ${trackKey}:`, err);
         }
       }
       if (newAssignments.size > 0) {
@@ -638,7 +717,7 @@ export default function RemixEngine() {
     // interpolate/render during the gap (prevents products appearing in close-ups).
     const MAX_INTERPOLATION_GAP = 4; // seconds
 
-    for (const [surfaceType, track] of surfaceTracks) {
+    for (const [surfaceType, track] of Array.from(surfaceTracks.entries())) {
       const { prev, next, progress } = findKeyframes(track.keyframes, t);
       if (!prev) continue;
 
@@ -960,7 +1039,7 @@ export default function RemixEngine() {
 
     try {
       // Save each assignment as a placement linked to the bid
-      for (const [surfaceType, assignment] of assignments) {
+      for (const [surfaceType, assignment] of Array.from(assignments.entries())) {
         const track = surfaceTracks.get(surfaceType);
         if (!track) continue;
 
@@ -1025,7 +1104,7 @@ export default function RemixEngine() {
     const scaleX = exportCanvas.width / canvas.width;
     const scaleY = exportCanvas.height / canvas.height;
 
-    for (const [surfaceType, assignment] of assignments) {
+    for (const [surfaceType, assignment] of Array.from(assignments.entries())) {
       const track = surfaceTracks.get(surfaceType);
       if (!track || !assignment.imageElement) continue;
 
@@ -1059,7 +1138,7 @@ export default function RemixEngine() {
     const canvasDisplayHeight = canvas?.height || 360;
 
     const placementData = [];
-    for (const [surfaceType, assignment] of assignments) {
+    for (const [surfaceType, assignment] of Array.from(assignments.entries())) {
       const track = surfaceTracks.get(surfaceType);
       if (!track || !assignment.imageElement) continue;
 
@@ -1157,7 +1236,7 @@ export default function RemixEngine() {
     let totalPropagated = 0;
 
     try {
-      for (const [surfaceType, assignment] of assignments) {
+      for (const [surfaceType, assignment] of Array.from(assignments.entries())) {
         const track = surfaceTracks.get(surfaceType);
         if (!track || track.keyframes.length === 0) continue;
 
