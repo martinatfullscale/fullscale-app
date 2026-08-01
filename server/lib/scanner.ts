@@ -575,25 +575,24 @@ export function applyYtDlpAuthArgs(args: string[], context: string): void {
   }
 }
 
-// Custom innertube client lists rot: YouTube prunes internal clients
-// (tv_embedded, android_vr, ...) without notice, and when a pruned client
-// is in our --extractor-args list EVERY extraction returns "Requested
-// format is not available" on every yt-dlp version — indistinguishable
-// from a stale binary until a binary refresh doesn't help. When the
-// ladder proves that state, it flips this flag and retries with yt-dlp's
-// DEFAULT clients (upstream keeps those working); success makes the flag
-// sticky for the process so later scans skip the dead list entirely.
-let useDefaultPlayerClients = false;
+// Player-client selection. DEFAULT clients are primary: side-by-side
+// --list-formats on 2026-08-01 showed yt-dlp's defaults returning the full
+// format table (360p-1080p) while our old custom list
+// (tv_embedded,mweb,web_safari,android_vr) returned storyboards plus one
+// leftover 360p — YouTube pruned those internal clients, and a pruned
+// client in --extractor-args fails every extraction on every binary
+// version. The custom list survives only as the last-resort flip should
+// defaults ever regress the same way; upstream actively maintains
+// defaults, so that flip should stay theoretical.
+let playerClientMode: "default" | "custom" = "default";
 export function playerClientArgs(): string[] {
-  return useDefaultPlayerClients
+  return playerClientMode === "default"
     ? []
     : ["--extractor-args", "youtube:player_client=tv_embedded,mweb,web_safari,android_vr"];
 }
-export function forceDefaultPlayerClients(): void {
-  if (!useDefaultPlayerClients) {
-    console.warn(`[Scanner] Switching to yt-dlp DEFAULT player clients for this process (custom client list appears dead upstream)`);
-    useDefaultPlayerClients = true;
-  }
+export function flipPlayerClientMode(): void {
+  playerClientMode = playerClientMode === "default" ? "custom" : "default";
+  console.warn(`[Scanner] Switching to ${playerClientMode.toUpperCase()} player clients for this process (previous mode format-failed everywhere)`);
 }
 
 // Detached children get their own process group precisely so our SIGKILL
@@ -974,11 +973,10 @@ export async function downloadVideo(
   if (ladderPass === 2) {
     if (!sawFormatFailure) break;
     // Fresh binary (or no fresher binary) and STILL format-failing on
-    // every rung: the remaining suspect is our custom innertube client
-    // list — YouTube prunes those clients without notice. Final pass on
-    // yt-dlp's defaults; sticks for the process if it works.
-    forceDefaultPlayerClients();
-    console.warn(`[Scanner] Retrying download ladder with DEFAULT player clients`);
+    // every rung: the remaining suspect is the player-client mode. Flip
+    // to the other mode for a final pass; sticks for the process.
+    flipPlayerClientMode();
+    console.warn(`[Scanner] Retrying download ladder with flipped player clients`);
     skipTrim = false;
     skipAnonReason = null;
     fatalStop = false;
