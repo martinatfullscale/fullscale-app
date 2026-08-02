@@ -1598,6 +1598,12 @@ async function detectSceneCuts(
     // the decoded prefix, which beats an empty list by miles (empty →
     // sceneCount=1 → degenerate sampling). A backstop resolves [] if the
     // close event somehow never arrives after the kill.
+    // 20 minutes: Replit decodes ~3x realtime even at 320px, so an hour-long
+    // file needs ~20min to reach the end. At the old 10-minute budget the
+    // cut list stopped ~halfway and everything after became ONE tail shot —
+    // a camera setup living mostly in the back half never got its own scene
+    // class (observed: the 1-shot vanishing from an episode's inventory).
+    const CUT_DETECT_BUDGET_MS = 20 * 60 * 1000;
     let settled = false;
     let timedOut = false;
     const settle = (cuts: number[]) => {
@@ -1608,14 +1614,14 @@ async function detectSceneCuts(
     const timeout = setTimeout(() => {
       timedOut = true;
       try { ffmpeg.kill("SIGKILL"); } catch {}
-      console.warn(`[Scene Cuts] Timed out after 10min — will parse partial cut list from decoded prefix`);
+      console.warn(`[Scene Cuts] Timed out after ${CUT_DETECT_BUDGET_MS / 60000}min — will parse partial cut list from decoded prefix`);
       setTimeout(() => {
         if (!settled) {
           console.warn(`[Scene Cuts] No close event after kill — returning empty cut list`);
           settle([]);
         }
       }, 15_000).unref();
-    }, 10 * 60 * 1000);
+    }, CUT_DETECT_BUDGET_MS);
 
     ffmpeg.on("close", () => {
       clearTimeout(timeout);
@@ -1631,7 +1637,7 @@ async function detectSceneCuts(
       // Dedup + sort (shouldn't have duplicates but be safe).
       const sorted = Array.from(new Set(cuts)).sort((a, b) => a - b);
       const partialNote = timedOut && sorted.length > 0
-        ? ` (PARTIAL — decode killed at 10min; cuts cover first ~${sorted[sorted.length - 1].toFixed(0)}s, the remainder becomes one tail shot)`
+        ? ` (PARTIAL — decode killed at ${CUT_DETECT_BUDGET_MS / 60000}min; cuts cover first ~${sorted[sorted.length - 1].toFixed(0)}s, the REMAINDER BECOMES ONE TAIL SHOT — any camera setup living only past that point cannot get its own scene class)`
         : "";
       console.log(`[Scene Cuts] Detected ${sorted.length} cut(s)${partialNote}: ${sorted.slice(0, 10).map(t => t.toFixed(1)).join(", ")}${sorted.length > 10 ? " ..." : ""}`);
       settle(sorted);
@@ -5469,29 +5475,41 @@ async function processVideoScanInner(
               byType.set(typeKey, arr);
             }
             for (const [typeKey, surfs] of Array.from(byType.entries())) {
-              // Model-backed ordinals come from the MODEL'S full same-type
-              // roster (all idx values of this type across the matched
-              // models), not from which surfaces happened to survive THIS
-              // scan — a dense per-scan rank would renumber "Wall 2" to
-              // "Wall 1" the first scan its sibling goes unconfirmed, and
-              // a fixture's number is a name the creator remembers.
-              const typeIdxRoster: number[] = [];
+              // Ordinals rank against the MODEL'S same-type roster, not this
+              // scan's survivors — a dense per-scan rank would renumber
+              // "Wall 2" to "Wall 1" the first scan its sibling goes
+              // unconfirmed, and a fixture's number is a name the creator
+              // remembers. The roster is keyed by full groupId (model id +
+              // idx), so it is unique by construction: ranking by idx alone
+              // collided whenever two models contributed the same-type
+              // surface to one scene, and surfaces MINTED into a model this
+              // scan (absent from the stored roster) all fell to the same
+              // fallback ordinal — the observed "Nightstand 1" twice.
+              const parseRm = (gid: string): { modelId: number; idx: number } | null => {
+                const m = /^rm(\d+)-s(\d+)$/.exec(gid);
+                return m ? { modelId: Number(m[1]), idx: Number(m[2]) } : null;
+              };
+              const rosterKeys: string[] = [];
               for (const match of Array.from(modelBySceneKey.values())) {
                 for (const ms of match.surfaces) {
-                  if (canonicalSurfaceType(String(ms.surfaceType)) === typeKey) typeIdxRoster.push(ms.idx);
+                  if (canonicalSurfaceType(String(ms.surfaceType)) === typeKey) {
+                    rosterKeys.push(`rm${match.model.id}-s${ms.idx}`);
+                  }
                 }
               }
-              const rosterSorted = Array.from(new Set(typeIdxRoster)).sort((a, b) => a - b);
-              const modelBacked = surfs.filter(s => modelIdxByGroup.has(s.groupId));
-              const fresh = surfs.filter(s => !modelIdxByGroup.has(s.groupId));
-              for (const surf of modelBacked) {
-                const idx = modelIdxByGroup.get(surf.groupId)!;
-                const pos = rosterSorted.indexOf(idx);
-                surf.displayLabel = `${humanTypeName(typeKey)} ${(pos >= 0 ? pos : rosterSorted.length) + 1}`;
+              // Surfaces minted into a model during THIS scan belong to the
+              // roster too — they're permanent from now on.
+              for (const surf of surfs) {
+                if (parseRm(String(surf.groupId))) rosterKeys.push(String(surf.groupId));
               }
-              let freshOrdinal = rosterSorted.length;
-              for (const surf of fresh) {
-                surf.displayLabel = `${humanTypeName(typeKey)} ${++freshOrdinal}`;
+              const rosterSorted = Array.from(new Set(rosterKeys)).sort((a, b) => {
+                const pa = parseRm(a)!, pb = parseRm(b)!;
+                return pa.modelId - pb.modelId || pa.idx - pb.idx;
+              });
+              let nextOrdinal = rosterSorted.length;
+              for (const surf of surfs) {
+                const pos = rosterSorted.indexOf(String(surf.groupId));
+                surf.displayLabel = `${humanTypeName(typeKey)} ${(pos >= 0 ? pos : nextOrdinal++) + 1}`;
               }
             }
           }
