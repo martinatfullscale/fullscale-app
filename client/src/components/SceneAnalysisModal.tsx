@@ -67,6 +67,10 @@ interface DatabaseSurface {
       time. Null on pre-index rows — teach mode then falls back to locating
       the frame timestamp in the scene index's shots. */
   sceneId?: number | null;
+  /** Numbered fixture identity ("Wall 2", "Side Table 1") resolved
+      server-side from the scene inventory via surfaceGroupId. Null for
+      legacy videos / unresolvable rows — render surfaceType instead. */
+  displayLabel?: string | null;
 }
 
 // Scene-block inventory persisted alongside the scan (video_index.scene_inventory).
@@ -79,6 +83,9 @@ interface DatabaseSurface {
 interface SceneInventorySurface {
   groupId: string;
   surfaceType: string;
+  /** Numbered fixture identity ("Wall 2") stamped at inventory build time.
+      Absent/null on inventories built before numbering existed. */
+  displayLabel?: string | null;
   bbox: { x: number; y: number; w: number; h: number };
   confidence: number;
   screenTimeSec: number;
@@ -486,35 +493,17 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
       const scanResult = await res.json();
       console.log(`[SceneAnalysisModal] Server scan complete:`, scanResult);
 
-      // Refetch surfaces from the API
-      const surfacesRes = await fetch(`/api/video/${video.id}/surfaces`, { credentials: "include" });
-      if (surfacesRes.ok) {
-        const data = await surfacesRes.json();
-        const surfaces = data.surfaces || [];
-        setDbSurfaces(surfaces);
-        setHasDbSurfaces(surfaces.length > 0);
-        setSceneInventory(data.sceneInventory ?? null);
-        setSceneIndexShots(Array.isArray(data.sceneIndex?.shots) ? data.sceneIndex.shots : null);
-
-        // Rebuild scenes from fresh surface data
-        const newScenes = buildScenesFromSurfaces(surfaces, video.id);
-        if (newScenes.length > 0) {
-          setLocalScenes(newScenes);
-          setCurrentSceneIndex(0);
-        } else {
-          // Fallback: single scene from thumbnail
-          setLocalScenes([{
-            id: `scene-${video.id}-0`,
-            timestamp: "0:00",
-            imageUrl: `/uploads/frames/${video.id}/frame_0s.jpg`,
-            surfaces: scanResult.result?.surfacesDetected || 0,
-            surfaceTypes: [],
-            context: "Scan complete",
-            confidence: 0,
-          }]);
-          setCurrentSceneIndex(0);
-        }
-      }
+      // Refetch exactly as a fresh open does (includeUnapproved=true +
+      // admin_email). A rescan retires every prior-generation row and
+      // inserts the new ones unapproved, so the approved-only default view
+      // is empty right after a scan — the params are what make the fresh
+      // rows visible to the owner. The dbSurfaces rebuild effect then
+      // regenerates localScenes from the fresh rows — same code path as
+      // opening the modal. No 0-surface fallback needed: /api/admin-scan
+      // returns 422 when a scan yields nothing, which the error path above
+      // already handles.
+      await fetchDbSurfaces(video.id);
+      setCurrentSceneIndex(0);
     } catch (err) {
       console.error("[SceneAnalysisModal] Server rescan failed:", err);
       setServerScanError(err instanceof Error ? err.message : "Scan failed");
@@ -572,16 +561,28 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
       ctx.lineWidth = 3;
       ctx.strokeRect(x, y, w, h);
       
-      // Draw label background
-      const label = `${surface.surfaceType} (${confidence}%)`;
+      // Draw label. Canvas silently clips anything outside its bounds, so
+      // an unconditional band above the box vanishes for top-of-frame
+      // surfaces (walls have y ≈ 0 by construction). Flip inside the box's
+      // top edge when there's no headroom — safe even for full-height wall
+      // boxes where below-the-box would clip at the bottom — and clamp x /
+      // elide long text so the band never overflows the right edge.
+      const label = `${(surface as any).displayLabel || surface.surfaceType} (${confidence}%)`;
       ctx.font = "bold 14px Inter, sans-serif";
-      const textWidth = ctx.measureText(label).width;
+      const labelH = 24;
+      let text = label;
+      let textWidth = ctx.measureText(text).width;
+      const maxW = canvas.width - 8;
+      while (textWidth + 12 > maxW && text.length > 4) {
+        text = text.slice(0, -2) + "…";
+        textWidth = ctx.measureText(text).width;
+      }
+      const labelX = Math.max(0, Math.min(x, canvas.width - (textWidth + 12)));
+      const labelTop = y >= labelH ? y - labelH : Math.min(y + 2, canvas.height - labelH);
       ctx.fillStyle = color;
-      ctx.fillRect(x, y - 24, textWidth + 12, 24);
-      
-      // Draw label text
+      ctx.fillRect(labelX, labelTop, textWidth + 12, labelH);
       ctx.fillStyle = "#ffffff";
-      ctx.fillText(label, x + 6, y - 7);
+      ctx.fillText(text, labelX + 6, labelTop + 17);
     });
   }, [dbSurfaces, currentSceneIndex, video]);
 
@@ -1736,7 +1737,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                                               onError={(e) => { e.currentTarget.style.display = "none"; }}
                                             />
                                           )}
-                                          <span className="text-sm font-medium text-white truncate min-w-0 flex-1">{surf.surfaceType}</span>
+                                          <span className="text-sm font-medium text-white truncate min-w-0 flex-1">{surf.displayLabel || surf.surfaceType}</span>
                                           <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-white/10 text-white/70 shrink-0">
                                             {Math.round(surf.confidence * 100)}%
                                           </span>
@@ -1860,6 +1861,9 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
             sceneId: typeof (s as any).sceneId === "number" ? (s as any).sceneId : null,
             sceneBlockId: typeof (s as any).sceneBlockId === "number" ? (s as any).sceneBlockId : null,
             surfaceGroupId: (s as any).surfaceGroupId ?? null,
+            // Numbered fixture identity — the preview prefers this over the
+            // raw surfaceType wherever it names a surface ("Wall 2" > "wall").
+            displayLabel: s.displayLabel ?? null,
             sceneContext: (s as any).sceneContext || null,
             lightingDirection: (s as any).lightingDirection || null,
             lightingIntensity: (s as any).lightingIntensity ? parseFloat((s as any).lightingIntensity) : null,

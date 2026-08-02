@@ -311,6 +311,10 @@ interface FrameAnalysisResult {
    *  1). Only set when the response carried people data — it powers the
    *  clean-frame re-sampling pass, which skips frames it can't measure. */
   personCoverage?: number;
+  /** Known-surface idx values the ghost filter vetoed in this frame. Taught
+   *  surfaces are exempt from that filter, so a non-zero count for a taught
+   *  idx means the exemption regressed — feeds the [Taught] fate line. */
+  knownGhostVetoedIdx?: number[];
 }
 
 // EdgeAnalysisResult removed — replaced by band-based detection in analyzeFrameForSurfaces
@@ -2162,6 +2166,7 @@ async function analyzeFrameWithGemini(
     // now sitting where the desk was is still a person) but SKIP the
     // fallback zone heuristics — the model already vetted this surface.
     const knownConfirmed: DetectedSurface[] = [];
+    const knownGhostVetoedIdx: number[] = [];
     if (knownSurfaces && knownSurfaces.length > 0 && Array.isArray(parsed.known_surfaces)) {
       for (const k of parsed.known_surfaces) {
         if (!k || typeof k.idx !== "number" || k.present !== true) continue;
@@ -2187,6 +2192,7 @@ async function analyzeFrameWithGemini(
           const minRemainder = model.orientation === "vertical" ? 0.04 : 0.02;
           if (frac > 0.85 || remainder < minRemainder) {
             console.log(`[Gemini] GHOST FILTER: Rejected known #${k.idx} (${model.surfaceType}) — ${(frac * 100).toFixed(0)}% person overlap, ${(remainder * 100).toFixed(1)}% person-free`);
+            knownGhostVetoedIdx.push(k.idx);
             continue;
           }
         }
@@ -2204,7 +2210,7 @@ async function analyzeFrameWithGemini(
 
     if ((!parsed.surfaces_found || !parsed.surfaces || parsed.surfaces.length === 0) && knownConfirmed.length === 0) {
       // Gemini analyzed successfully but found no surfaces — don't fall back to edge
-      return { ...defaultResult, aiAnalyzed: true, personCoverage };
+      return { ...defaultResult, aiAnalyzed: true, personCoverage, knownGhostVetoedIdx };
     }
 
     // Infer orientation from surface_type if Gemini didn't provide it explicitly.
@@ -2414,7 +2420,7 @@ async function analyzeFrameWithGemini(
 
     const combinedSurfaces = [...freshSurfaces, ...knownConfirmed];
     if (combinedSurfaces.length === 0) {
-      return { ...defaultResult, aiAnalyzed: true, personCoverage };
+      return { ...defaultResult, aiAnalyzed: true, personCoverage, knownGhostVetoedIdx };
     }
 
     const maxConfidence = Math.max(...combinedSurfaces.map(s => s.confidence));
@@ -2426,6 +2432,7 @@ async function analyzeFrameWithGemini(
       isVertical,
       aiAnalyzed: true,
       personCoverage,
+      knownGhostVetoedIdx,
     };
 
   } catch (err: any) {
@@ -3376,7 +3383,7 @@ function computeMedianBBox(surfaces: SurfaceCluster['surfaces']): { x: number; y
  * consistent bounding box per group, and updates all surfaces to use it.
  * Also filters out phantom surfaces that are too small (<5% frame area).
  */
-async function normalizeSurfaceBoundingBoxes(videoId: number, excludeIds?: Set<number>): Promise<void> {
+async function normalizeSurfaceBoundingBoxes(videoId: number, excludeIds?: Set<number>, taughtGroupIds?: Set<string>): Promise<void> {
   console.log(`[Normalize] Starting bounding box normalization for video ${videoId}`);
 
   // excludeIds = the previous scan's rows (still active until end-of-scan
@@ -3400,6 +3407,12 @@ async function normalizeSurfaceBoundingBoxes(videoId: number, excludeIds?: Set<n
   const MAX_VERTICAL_HEIGHT = 0.95; // walls can fill almost the entire frame
   const phantomIds: number[] = [];
   for (const s of surfaces) {
+    // Taught surfaces are creator ground truth — the creator drew the box.
+    // The area/height heuristics exist to kill hallucinated detections, and
+    // they were deterministically erasing small taught furniture every scan
+    // (teach accepted boxes below the 3% floor). Never phantom-filter them.
+    const rowGid = (s as any).surfaceGroupId as string | null | undefined;
+    if (rowGid && taughtGroupIds?.has(rowGid)) continue;
     const width = parseFloat(String(s.boundingBoxWidth));
     const height = parseFloat(String(s.boundingBoxHeight));
     const area = width * height;
@@ -3467,7 +3480,20 @@ async function normalizeSurfaceBoundingBoxes(videoId: number, excludeIds?: Set<n
   // their MEDIANS, however, can still overlap heavily. This pass catches the
   // green+blue duplicate case where Gemini split one real coffee table into two
   // semantic groups across many frames.
-  const { keep: keptClusters, drop: droppedClusters } = await dedupeOverlappingClusters(clusters, computeMedianBBox);
+  const { keep: keptClusters, drop: dropCandidates } = await dedupeOverlappingClusters(clusters, computeMedianBBox);
+  // Taught clusters never lose the dedupe: a 1-row taught cluster (~0.9
+  // cumulative confidence) loses to any multi-row cluster on score, which
+  // deterministically erased the creator's own box every scan. Spared
+  // clusters rejoin the kept set so step 3 still normalizes their rows.
+  const droppedClusters: typeof dropCandidates = [];
+  for (const cluster of dropCandidates) {
+    if (cluster.groupId && taughtGroupIds?.has(cluster.groupId)) {
+      console.log(`[Normalize] Sparing taught cluster ${cluster.groupId} (${cluster.surfaceType}) from dedupe drop`);
+      keptClusters.push(cluster);
+    } else {
+      droppedClusters.push(cluster);
+    }
+  }
   if (droppedClusters.length > 0) {
     console.log(`[Normalize] Dropping ${droppedClusters.length} overlapping cluster(s) of duplicate type`);
     for (const cluster of droppedClusters) {
@@ -3762,9 +3788,17 @@ async function processVideoScanInner(
   // retired rows must revert to "Ready (4 Spots)", not "Ready (134 Spots)".
   let priorSurfaceIds: number[] = [];
   let priorActiveCount = 0;
+  // groupId per ACTIVE prior row — the retirement sweep spares taught rows
+  // only when they were still live at scan start. A row the creator rejected
+  // is already Filtered and stays that way; sparing must never resurrect it.
+  const priorGroupById = new Map<number, string>();
   try {
     const prior = await storage.getDetectedSurfaces(videoId);
     priorSurfaceIds = prior.map(s => s.id);
+    for (const s of prior) {
+      const gid = (s as any).surfaceGroupId as string | null | undefined;
+      if (gid && s.surfaceType !== "Filtered") priorGroupById.set(s.id, gid);
+    }
     // Count CANONICAL surfaces, not rows — each surface owns many
     // supporting-frame rows, and a failed rescan reverting to
     // "Ready (23 Spots)" over 4 physical surfaces is the row-count fiction
@@ -4474,9 +4508,33 @@ async function processVideoScanInner(
               console.log(`[RoomModel] Scene class ${classId} matched model #${best.model.id} (${best.surfaces.length} surfaces, seen in ${best.model.episodeCount ?? 1} episode(s))`);
             }
           }
+          // Drift visibility: when the creator HAS taught surfaces but a scene
+          // class matched no model, the taught set may be sitting right there
+          // unrecognized (exemplar drift, stale model hashes after a
+          // gate-skipped upsert) — and every taught confirmation silently
+          // skipped for that class.
+          const taughtModelCount = roomModels.filter(m => parseRoomModelSurfaces(m.surfaces).some(s => s.taught)).length;
+          if (taughtModelCount > 0) {
+            for (const classId of Array.from(classExemplars.keys())) {
+              if (!modelBySceneKey.has(classId)) {
+                console.warn(`[RoomModel] Scene class ${classId} matched NO model while ${taughtModelCount} of this creator's model(s) carry taught surfaces — if this class is the taught set, exemplar drift is hiding it and its taught surfaces cannot be confirmed this scan`);
+              }
+            }
+          }
         }
       } catch (rmErr: any) {
         console.warn(`[RoomModel] Model lookup failed (non-fatal — scanning without set memory):`, rmErr?.message || rmErr);
+      }
+    }
+
+    // Every taught surface's cross-scan identity across the matched models —
+    // the exemption set the post-processing passes (phantom filter, dedupe)
+    // and the end-of-scan retirement sweep honor. Creator ground truth is
+    // never silently filtered, deduped away, or retired without replacement.
+    const taughtGroupIds = new Set<string>();
+    for (const match of Array.from(modelBySceneKey.values())) {
+      for (const s of match.surfaces) {
+        if (s.taught) taughtGroupIds.add(`rm${match.model.id}-s${s.idx}`);
       }
     }
 
@@ -4512,6 +4570,10 @@ async function processVideoScanInner(
       // Person-box coverage of the frame (0-1), when the response carried
       // people data — drives the clean-frame re-sampling pass below.
       personCoverage?: number;
+      // Known-surface idx values the parse-time ghost filter vetoed in this
+      // frame. Taught surfaces are exempt there, so this should stay empty
+      // for taught idx values — the [Taught] fate line counts it as proof.
+      knownGhostVetoes?: number[];
     }
     const bufferedAnalyses: BufferedFrameAnalysis[] = [];
 
@@ -4598,6 +4660,7 @@ async function processVideoScanInner(
         viaGemini: Boolean(useGemini) && analysis.aiAnalyzed === true,
         rateLimited: analysis.rateLimited === true,
         personCoverage: analysis.personCoverage,
+        knownGhostVetoes: analysis.knownGhostVetoedIdx,
       });
       // NOTE: temp frames are intentionally KEPT here — the verification
       // pass re-reads the best frame per scene. The outer finally removes
@@ -4711,6 +4774,7 @@ async function processVideoScanInner(
               viaGemini: extraAnalysis.aiAnalyzed === true,
               rateLimited: extraAnalysis.rateLimited === true,
               personCoverage: extraAnalysis.personCoverage,
+              knownGhostVetoes: extraAnalysis.knownGhostVetoedIdx,
             });
           }
         }
@@ -4830,12 +4894,46 @@ async function processVideoScanInner(
       }
 
       const allSceneSurfaces = [...modelSurfaces, ...consensusSurfaces];
-      if (allSceneSurfaces.length === 0) continue;
+
+      // Taught-fate line: one per taught surface of the matched model, every
+      // scan. Each link of the confirm chain fails silently on its own
+      // (degraded frames can't confirm a known, present:false is a no-op,
+      // an omitted known_surfaces array logs nothing) — this line is the
+      // single place a vanished taught surface names the link that ate it.
+      const logTaughtFates = (verifyKeepSet: Set<number> | null, rowsByGroup?: Map<string, number>) => {
+        if (!matchedModel) return;
+        const promptedFrames = effectiveFrames.filter((f) => f.viaGemini).length;
+        for (const ms of matchedModel.surfaces) {
+          if (!ms.taught) continue;
+          const gid = `rm${matchedModel.model.id}-s${ms.idx}`;
+          const confirmed = knownConfirmations.get(ms.idx)?.length ?? 0;
+          const ghostVetoed = effectiveFrames.reduce(
+            (sum, f) => sum + (f.knownGhostVetoes?.filter((vIdx) => vIdx === ms.idx).length ?? 0), 0);
+          const taughtCs = modelSurfaces.find((m) => modelKeyBySurface.get(m)?.idx === ms.idx);
+          let verifyFate = "skipped";
+          if (taughtCs && verifyKeepSet) {
+            verifyFate = verifyKeepSet.has(allSceneSurfaces.indexOf(taughtCs)) ? "kept" : "rejected";
+          }
+          const rows = rowsByGroup?.get(gid) ?? 0;
+          console.log(`[Taught] ${gid}: prompted in ${promptedFrames} frames / confirmed ${confirmed} / ghost-vetoed ${ghostVetoed} / verify=${verifyFate} / rows=${rows}`);
+        }
+      };
+
+      if (allSceneSurfaces.length === 0) {
+        logTaughtFates(null);
+        continue;
+      }
 
       // AUTH 2b: second model opinion on the scene's best-supported frame.
       // Audits BOTH kinds — a known surface the verifier rejects is dropped
       // for THIS scan but stays in the room model (removal-only, fail-open).
+      // EXCEPT taught surfaces: the verifier's "genuinely visible" / "does
+      // not primarily cover a person" criteria are the exact judgments
+      // teaching exists to override (mirrors the confirm-mode ghost-filter
+      // exemption), and it audits the scene's max-support frame — usually
+      // not the frame that confirmed the taught surface.
       let approved = allSceneSurfaces;
+      let verifyKeep: Set<number> | null = null;
       if (sceneFrames.some((f) => f.viaGemini)) {
         const frameSupport = new Map<number, number>();
         for (const cs of allSceneSurfaces) {
@@ -4843,16 +4941,22 @@ async function processVideoScanInner(
         }
         const bestT = Array.from(frameSupport.entries()).sort((a, b) => b[1] - a[1])[0]?.[0];
         const bestFrame = effectiveFrames.find((f) => f.timestamp === bestT) ?? effectiveFrames[0];
-        const keep = await verifySceneSurfaces(
+        verifyKeep = await verifySceneSurfaces(
           bestFrame.framePath,
           allSceneSurfaces.map((cs) => ({ surfaceType: cs.surfaceType, bbox: cs.bbox })),
         );
-        if (keep) {
-          const dropped = allSceneSurfaces.filter((_, idx) => !keep.has(idx));
+        if (verifyKeep) {
+          const keep = verifyKeep;
+          const taughtIdx = new Set<number>();
+          allSceneSurfaces.forEach((cs, idx) => {
+            const mk = modelKeyBySurface.get(cs);
+            if (mk && matchedModel?.surfaces.find((s) => s.idx === mk.idx)?.taught) taughtIdx.add(idx);
+          });
+          const dropped = allSceneSurfaces.filter((_, idx) => !keep.has(idx) && !taughtIdx.has(idx));
           if (dropped.length > 0) {
             console.log(`[Scanner V2] Scene ${sceneKey}: verification rejected ${dropped.map((d) => d.surfaceType).join(", ")}`);
           }
-          approved = allSceneSurfaces.filter((_, idx) => keep.has(idx));
+          approved = allSceneSurfaces.filter((_, idx) => keep.has(idx) || taughtIdx.has(idx));
         }
       }
 
@@ -4867,6 +4971,7 @@ async function processVideoScanInner(
       // stable id — IDENTICAL across rescans and episodes by design, which
       // is what lets group-keyed placements survive both.
       let groupSeq = 0;
+      const insertedRowsByGroup = new Map<string, number>();
       for (const cs of approved) {
         const modelKey = modelKeyBySurface.get(cs);
         const surfaceGroupId = modelKey
@@ -4907,9 +5012,12 @@ async function processVideoScanInner(
 
           const inserted = await storage.insertDetectedSurface(dbSurface);
           console.log(`[Scanner V2] *** SURFACE CONFIRMED: ${surface.surfaceType} at ${member.frameT.toFixed(1)}s scene=${sceneKey} (votes ${cs.votes}/${cs.framesAnalyzed}, conf ${(cs.confidence * 100).toFixed(1)}%, id: ${inserted.id}) ***`);
+          insertedRowsByGroup.set(surfaceGroupId, (insertedRowsByGroup.get(surfaceGroupId) ?? 0) + 1);
           totalSurfaces++;
         }
       }
+
+      logTaughtFates(verifyKeep, insertedRowsByGroup);
     }
     
     // NOTE: The "Potential Surface" fallback that used to pad low-detection
@@ -4935,7 +5043,7 @@ async function processVideoScanInner(
     // compete with (or overwrite) this run's detections.
     const priorIdExclusions = new Set(priorSurfaceIds);
     try {
-      await normalizeSurfaceBoundingBoxes(videoId, priorIdExclusions);
+      await normalizeSurfaceBoundingBoxes(videoId, priorIdExclusions, taughtGroupIds);
     } catch (normErr) {
       console.error(`[Scanner V2] Bounding box normalization failed (non-fatal):`, normErr);
     }
@@ -4979,6 +5087,15 @@ async function processVideoScanInner(
     }
     totalSurfaces = survivingGroupIds.size + ungroupedSurvivors;
     console.log(`[Scanner V2] Net new surfaces this run: ${totalSurfaces} canonical surface(s) across ${survivingRows.length} surviving rows (${insertedRowCount} rows inserted)`);
+
+    // Scan-end taught audit: a taught surface with ZERO surviving rows means
+    // some link of the confirm chain ate it — the [Taught] fate lines above
+    // name which one. The retirement sweep below spares its prior row(s).
+    for (const gid of Array.from(taughtGroupIds)) {
+      if (!survivingGroupIds.has(gid)) {
+        console.warn(`[Taught] ⚠️ ${gid}: taught surface produced ZERO surviving rows this scan — see the [Taught] fate lines above for the failing link`);
+      }
+    }
 
     // SCENE CONTEXT ENRICHMENT — FullScale Edge image analysis
     // Uses Sharp to analyze brightness, edges, and color to infer scene context
@@ -5169,12 +5286,29 @@ async function processVideoScanInner(
       // delete the snapshotted prior IDs so the new surfaces stand alone. If
       // totalSurfaces == 0, KEEP the prior data — a re-scan that finds nothing
       // shouldn't wipe creator's earlier good results.
+      const sparedTaughtIds = new Set<number>();
       if (totalSurfaces > 0 && priorSurfaceIds.length > 0) {
         try {
           for (const id of priorSurfaceIds) {
+            // Taught prior rows survive a scan that produced NO replacement
+            // rows for their group — the creator vouched for the surface,
+            // and a degraded scan failing to re-confirm it must not erase
+            // it. A CONFIRMED taught surface (surviving replacement rows
+            // exist) retires its prior rows normally, so old and new rows
+            // are never active together. Only rows still live at scan start
+            // qualify (priorGroupById skips Filtered) — a creator-rejected
+            // row stays retired.
+            const gid = priorGroupById.get(id);
+            if (gid && taughtGroupIds.has(gid) && !survivingGroupIds.has(gid)) {
+              sparedTaughtIds.add(id);
+              continue;
+            }
             await storage.updateDetectedSurface(id, { surfaceType: "Filtered", sceneContext: "Replaced by re-scan" });
           }
-          console.log(`[Scanner V2] Marked ${priorSurfaceIds.length} prior surfaces as Filtered (replaced by ${totalSurfaces} new surfaces)`);
+          if (sparedTaughtIds.size > 0) {
+            console.log(`[Taught] Spared ${sparedTaughtIds.size} prior taught row(s) from retirement — no replacement rows this scan`);
+          }
+          console.log(`[Scanner V2] Marked ${priorSurfaceIds.length - sparedTaughtIds.size} prior surfaces as Filtered (replaced by ${totalSurfaces} new surfaces)`);
         } catch (err: any) {
           console.warn(`[Scanner V2] Failed to filter prior surfaces:`, err?.message || err);
         }
@@ -5197,8 +5331,13 @@ async function processVideoScanInner(
       if (totalSurfaces > 0 && sceneIndex && !indexDegenerate && sceneIndex.shots.length > 0) {
         try {
           const invRows = await storage.getDetectedSurfaces(videoId);
+          // Spared taught prior rows count as survivors here: their row
+          // outlived the retirement sweep, and an inventory that omits them
+          // would hide the taught surface from the scene modal anyway —
+          // exactly the disappearance the sparing exists to prevent. They
+          // stay OUT of the room-model upsert below (not fresh evidence).
           const invSurvivors = invRows.filter(s =>
-            !priorIdSet.has(s.id) && s.surfaceType !== "Filtered" && (s as any).surfaceGroupId);
+            (!priorIdSet.has(s.id) || sparedTaughtIds.has(s.id)) && s.surfaceType !== "Filtered" && (s as any).surfaceGroupId);
 
           const rowsByGroup = new Map<string, typeof invSurvivors>();
           for (const row of invSurvivors) {
@@ -5260,6 +5399,59 @@ async function processVideoScanInner(
               frameUrl: rep.frameUrl ?? null,
             });
             surfacesByScene.set(groupSceneId, arr);
+          }
+
+          // NUMBERED FIXTURES — displayLabel gives every canonical surface a
+          // stable human name: per scene, per canonical type — "Wall 1",
+          // "Wall 2", "Nightstand 1". Ordinals derive from room-model idx
+          // (model-backed surfaces first, ordered by idx; fresh surfaces
+          // after, in insertion order), so a modeled surface keeps its number
+          // across rescans and episodes of the same set. Assigned BEFORE the
+          // per-scene confidence sort so "insertion order" means row order,
+          // not display order. jsonb-only — no schema change; clients fall
+          // back to surfaceType when the field is absent (legacy videos).
+          const modelIdxByGroup = new Map<string, number>();
+          for (const match of Array.from(modelBySceneKey.values())) {
+            for (const s of match.surfaces) modelIdxByGroup.set(`rm${match.model.id}-s${s.idx}`, s.idx);
+          }
+          for (const [gid, info] of Array.from(modelGroupInfo.entries())) modelIdxByGroup.set(gid, info.idx);
+          const humanTypeName = (canonical: string): string =>
+            canonical.replace(/_/g, " ").split(/\s+/).filter(Boolean)
+              .map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+          for (const sceneSurfaceList of Array.from(surfacesByScene.values())) {
+            const byType = new Map<string, any[]>();
+            for (const surf of sceneSurfaceList) {
+              const typeKey = canonicalSurfaceType(String(surf.surfaceType));
+              const arr = byType.get(typeKey) ?? [];
+              arr.push(surf);
+              byType.set(typeKey, arr);
+            }
+            for (const [typeKey, surfs] of Array.from(byType.entries())) {
+              // Model-backed ordinals come from the MODEL'S full same-type
+              // roster (all idx values of this type across the matched
+              // models), not from which surfaces happened to survive THIS
+              // scan — a dense per-scan rank would renumber "Wall 2" to
+              // "Wall 1" the first scan its sibling goes unconfirmed, and
+              // a fixture's number is a name the creator remembers.
+              const typeIdxRoster: number[] = [];
+              for (const match of Array.from(modelBySceneKey.values())) {
+                for (const ms of match.surfaces) {
+                  if (canonicalSurfaceType(String(ms.surfaceType)) === typeKey) typeIdxRoster.push(ms.idx);
+                }
+              }
+              const rosterSorted = Array.from(new Set(typeIdxRoster)).sort((a, b) => a - b);
+              const modelBacked = surfs.filter(s => modelIdxByGroup.has(s.groupId));
+              const fresh = surfs.filter(s => !modelIdxByGroup.has(s.groupId));
+              for (const surf of modelBacked) {
+                const idx = modelIdxByGroup.get(surf.groupId)!;
+                const pos = rosterSorted.indexOf(idx);
+                surf.displayLabel = `${humanTypeName(typeKey)} ${(pos >= 0 ? pos : rosterSorted.length) + 1}`;
+              }
+              let freshOrdinal = rosterSorted.length;
+              for (const surf of fresh) {
+                surf.displayLabel = `${humanTypeName(typeKey)} ${++freshOrdinal}`;
+              }
+            }
           }
 
           // "Scene A" is the class with the most screen time, and so on down.

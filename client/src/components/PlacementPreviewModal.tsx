@@ -68,6 +68,10 @@ interface Surface {
   // Per-shot block ID (legacy — pre-perceptual-clustering). Still emitted
   // by the surfaces endpoint for backwards compat with the render filter.
   sceneBlockId?: number | null;
+  // Stable fixture identity for display ("Wall 2", "Side Table 1").
+  // Derived server-side in the scene-inventory build; null for legacy
+  // videos. Rendered verbatim, falling back to surfaceType when absent.
+  displayLabel?: string | null;
 }
 
 interface PlacementPreviewModalProps {
@@ -802,6 +806,12 @@ export default function PlacementPreviewModal({
   // Core state
   const [selectedSurface, setSelectedSurface] = useState<Surface | null>(null);
   const [productImage, setProductImage] = useState<string | null>(null);
+  // Provenance of the painted product: "user" = painted this session
+  // (catalog tile, drag-drop, or upload), "saved" = restored from a saved
+  // placement, null = nothing painted. The catalog auto-select only arms
+  // the picker — it never paints — so unplaced surfaces stay null and
+  // render the outline-only ghost.
+  const [productSource, setProductSource] = useState<"user" | "saved" | null>(null);
   const [productFile, setProductFile] = useState<File | null>(null);
   const [productTab, setProductTab] = useState<"upload" | "catalog">("upload");
   const [selectedCatalogProduct, setSelectedCatalogProduct] = useState<CatalogProduct | null>(null);
@@ -1214,11 +1224,19 @@ export default function PlacementPreviewModal({
         });
         if (!res.ok) return;
         const data = await res.json();
+        if (!data.placement) {
+          // No saved placement on THIS surface: whatever product carried
+          // over from a same-scene switch is a preview here, not a saved
+          // fixture — the badge must not claim otherwise.
+          setProductSource((prev) => (prev === "saved" ? "user" : prev));
+          return;
+        }
         if (data.placement) {
           const p = data.placement;
           // Restore product image
           if (p.productImageUrl) {
             setProductImage(p.productImageUrl);
+            setProductSource("saved");
           }
           // Restore transform
           if (p.transform) {
@@ -1266,6 +1284,7 @@ export default function PlacementPreviewModal({
     if (!open) {
       setSelectedSurface(null);
       setProductImage(null);
+      setProductSource(null);
       setProductFile(null);
       setProductTab("upload");
       setSelectedCatalogProduct(null);
@@ -1329,6 +1348,7 @@ export default function PlacementPreviewModal({
   useEffect(() => {
     if (!open || !initialPlacement) return;
     setProductImage(initialPlacement.productImageUrl);
+    setProductSource("saved");
     setTransform({ ...initialPlacement.transform });
     setBlend({ ...initialPlacement.blend });
     setToolPanel("transform");
@@ -1666,15 +1686,27 @@ export default function PlacementPreviewModal({
         ctx.strokeRect(bx, by, bw, bh);
         ctx.setLineDash([]);
 
-        // Surface label
+        // Surface label — headroom-aware. Drawing above the box at
+        // negative y is silently clipped, so top-of-frame surfaces
+        // (walls especially) lost their tag entirely; fall back to the
+        // box's inside-top edge when there's no headroom. X-clamped and
+        // elided so long labels can't overflow past the canvas edge.
         if (!hasProduct) {
           ctx.font = "bold 11px Inter, system-ui, sans-serif";
-          const label = selectedSurface.surfaceType;
-          const tw = ctx.measureText(label).width;
+          let label = selectedSurface.displayLabel || selectedSurface.surfaceType;
+          let tw = ctx.measureText(label).width;
+          const maxW = canvas.width - 8;
+          while (tw + 10 > maxW && label.length > 4) {
+            label = label.slice(0, -2) + "…";
+            tw = ctx.measureText(label).width;
+          }
+          const labelH = 18;
+          const labelX = Math.max(0, Math.min(bx, canvas.width - (tw + 10)));
+          const labelTop = by >= labelH ? by - labelH : by;
           ctx.fillStyle = "rgba(139, 92, 246, 0.85)";
-          ctx.fillRect(bx, by - 18, tw + 10, 18);
+          ctx.fillRect(labelX, labelTop, tw + 10, labelH);
           ctx.fillStyle = "#fff";
-          ctx.fillText(label, bx + 5, by - 5);
+          ctx.fillText(label, labelX + 5, labelTop + 13);
         }
       }
 
@@ -2258,6 +2290,7 @@ export default function PlacementPreviewModal({
       const reader = new FileReader();
       reader.onload = () => {
         setProductImage(reader.result as string);
+        setProductSource("user");
       };
       reader.readAsDataURL(file);
     },
@@ -2316,6 +2349,7 @@ export default function PlacementPreviewModal({
     const reader = new FileReader();
     reader.onload = () => {
       setProductImage(reader.result as string);
+      setProductSource("user");
     };
     reader.readAsDataURL(file);
   }, []);
@@ -2323,26 +2357,30 @@ export default function PlacementPreviewModal({
   const selectCatalogProduct = useCallback((product: CatalogProduct) => {
     setSelectedCatalogProduct(product);
     setProductImage(product.imageUrl);
+    setProductSource("user");
     setProductFile(null);
     setTransform({ ...DEFAULT_TRANSFORM });
     setBlend({ ...DEFAULT_BLEND });
   }, []);
 
-  // Auto-select a product so the preview shows SOMETHING brand-shaped
-  // immediately. Without this the modal opened with productImage=null and
-  // drew only the "Drop product here" ghost — read by users as "the
-  // placement doesn't work". An explicit initialPlacement or a saved
-  // placement still wins (their effects overwrite this selection).
-  // (Lives below selectCatalogProduct: the dep array evaluates at render
-  // time, so referencing the const above it is a TDZ crash.)
+  // Auto-select arms the catalog PICKER only — it must never paint.
+  // Painting here (via selectCatalogProduct) put catalog[0] on every
+  // surface the modal landed on, and formed a loop with the
+  // different-scene switch: its clear re-satisfied `!productImage` and
+  // catalog[0] instantly re-painted onto the new scene — products showed
+  // up in scenes the user never placed anything in, and Reset couldn't
+  // stick. Guarding on !selectedCatalogProduct breaks that loop; the
+  // draw loop renders the outline-only ghost until a real paint path
+  // (tile click, drag-drop, upload, or a saved placement) sets the image.
   useEffect(() => {
-    if (open && !productImage && !initialPlacement && catalogProducts && catalogProducts.length > 0) {
-      selectCatalogProduct(catalogProducts[0]);
+    if (open && !selectedCatalogProduct && !initialPlacement && catalogProducts && catalogProducts.length > 0) {
+      setSelectedCatalogProduct(catalogProducts[0]);
     }
-  }, [open, productImage, initialPlacement, catalogProducts, selectCatalogProduct]);
+  }, [open, selectedCatalogProduct, initialPlacement, catalogProducts]);
 
   const resetPreview = () => {
     setProductImage(null);
+    setProductSource(null);
     setProductFile(null);
     setSelectedCatalogProduct(null);
     setTransform({ ...DEFAULT_TRANSFORM });
@@ -2448,6 +2486,9 @@ export default function PlacementPreviewModal({
       }
       const result = await res.json().catch(() => ({}));
       setSaveSuccess(true);
+      // The painted product is now a persisted placement — reflect that
+      // in the provenance badge.
+      setProductSource("saved");
       const propagated = result.propagatedCount || 0;
       const scopeCount = anchorGroupId ? new Set([anchorGroupId, ...Array.from(scopeGroupIds)]).size : 0;
       toast({
@@ -3200,6 +3241,7 @@ export default function PlacementPreviewModal({
                             setSelectedSurface(surface);
                             if (!sameScene) {
                               setProductImage(null);
+                              setProductSource(null);
                               setProductFile(null);
                               setSelectedCatalogProduct(null);
                               productImgRef.current = null;
@@ -3220,7 +3262,7 @@ export default function PlacementPreviewModal({
                         >
                           <img
                             src={surface.frameUrl!}
-                            alt={`Surface ${surface.surfaceType}`}
+                            alt={`Surface ${surface.displayLabel || surface.surfaceType}`}
                             className="w-full h-full object-cover"
                           />
                           {/* Scope checkbox — is this canonical surface in
@@ -3233,11 +3275,12 @@ export default function PlacementPreviewModal({
                             const gid = (surface as any).surfaceGroupId as string | undefined | null;
                             const isAnchorGroup = !!gid && gid === anchorGroupId;
                             const checked = !!gid && (scopeGroupIds.has(gid) || isAnchorGroup);
+                            const fixtureName = surface.displayLabel || surface.surfaceType;
                             return (
                               <span
                                 role="checkbox"
                                 aria-checked={checked}
-                                title={!gid ? "Legacy detection — cannot be scoped" : isAnchorGroup ? "Anchor surface — always included" : checked ? "Included in placement scope" : "Excluded from placement scope"}
+                                title={!gid ? "Legacy detection — cannot be scoped" : isAnchorGroup ? `${fixtureName} — anchor surface, always included` : checked ? `${fixtureName} — included in placement scope` : `${fixtureName} — excluded from placement scope`}
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   if (!gid || isAnchorGroup) return;
@@ -3284,8 +3327,8 @@ export default function PlacementPreviewModal({
                               title={`Scene ${(surface as any).sceneId}`}
                             />
                           )}
-                          <span className="absolute bottom-0 left-0 right-0 bg-black/70 text-[8px] text-white text-center py-0.5">
-                            {surface.surfaceType}
+                          <span className="absolute bottom-0 left-0 right-0 bg-black/70 text-[8px] text-white text-center py-0.5 truncate px-0.5">
+                            {surface.displayLabel || surface.surfaceType}
                           </span>
                         </button>
                       ))}
@@ -3359,7 +3402,7 @@ export default function PlacementPreviewModal({
                           </div>
                           <div className="flex flex-wrap gap-1.5">
                             <Badge variant="secondary" className="text-xs">
-                              {selectedSurface.surfaceType}
+                              {selectedSurface.displayLabel || selectedSurface.surfaceType}
                             </Badge>
                             <Badge variant="outline" className="text-xs">
                               <Clock className="w-3 h-3 mr-1" />
@@ -3438,6 +3481,14 @@ export default function PlacementPreviewModal({
                                 {selectedCatalogProduct.name}
                               </p>
                             )}
+                            <p
+                              className={`text-[10px] mt-1 ${
+                                productSource === "saved" ? "text-emerald-400" : "text-amber-400/80"
+                              }`}
+                              data-testid="product-provenance-badge"
+                            >
+                              {productSource === "saved" ? "Saved placement" : "Preview — not saved"}
+                            </p>
                             <div className="flex gap-2 mt-2">
                               <Button
                                 size="sm"

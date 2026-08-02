@@ -5400,6 +5400,30 @@ export async function registerRoutes(
       return sceneBoundaries.length;
     };
 
+    // Scene-block inventory: canonical physical surfaces grouped by
+    // recurring scene class, with occurrence counts and screen time. This
+    // is the authoritative structure for the scene modal — the flat
+    // per-row `surfaces` list stays for approval controls and legacy
+    // videos. Null for videos scanned before the inventory existed;
+    // clients must fall back to the flat view in that case.
+    const sceneInventory = (video as any).sceneInventory ?? null;
+
+    // Numbered-fixture labels: groupId → displayLabel ("Wall 2"), derived
+    // once at inventory build time and rendered verbatim by clients. Null
+    // when the video predates labels or a row's group isn't in the
+    // inventory — clients fall back to surfaceType.
+    const labelByGroup = new Map<string, string>();
+    if (sceneInventory && Array.isArray(sceneInventory.scenes)) {
+      for (const scene of sceneInventory.scenes) {
+        if (!scene || !Array.isArray(scene.surfaces)) continue;
+        for (const surf of scene.surfaces) {
+          if (surf && typeof surf.groupId === "string" && typeof surf.displayLabel === "string") {
+            labelByGroup.set(surf.groupId, surf.displayLabel);
+          }
+        }
+      }
+    }
+
     // Enrich surfaces with frame availability info AND scene block ID
     const framesDir = path.join(process.cwd(), "public", "uploads", "frames", videoId.toString());
     const enrichedSurfaces = surfaces.map(s => {
@@ -5413,21 +5437,16 @@ export async function registerRoutes(
 
       const sceneBlockId = sceneBlockFor(Number(s.timestamp) || 0);
 
-      return { ...s, frameUrl, frameExists, sceneBlockId };
+      const gid = (s as any).surfaceGroupId as string | null | undefined;
+      const displayLabel = gid ? labelByGroup.get(gid) ?? null : null;
+
+      return { ...s, frameUrl, frameExists, sceneBlockId, displayLabel };
     });
 
     // Pass through the perceptual scene index too — lets the client know
     // which shots belong to the same physical scene (host shot returns 5x
     // = sceneId 0 for all five). Used for placement continuity rendering.
     const sceneIndex = (video as any).sceneIndex || null;
-
-    // Scene-block inventory: canonical physical surfaces grouped by
-    // recurring scene class, with occurrence counts and screen time. This
-    // is the authoritative structure for the scene modal — the flat
-    // per-row `surfaces` list above stays for approval controls and
-    // legacy videos. Null for videos scanned before the inventory existed;
-    // clients must fall back to the flat view in that case.
-    const sceneInventory = (video as any).sceneInventory ?? null;
 
     res.json({
       surfaces: enrichedSurfaces,
@@ -9658,13 +9677,18 @@ export async function registerRoutes(
       }
       // Extent must stay inside the frame and the box must be drawably
       // large — the client enforces both, but the endpoint contract can't
-      // trust its only current caller.
+      // Floor matches the CLIENT's draw guard (1.5% per dimension), not the
+      // normalize pass's 3% area minimum — taught rows are exempt from that
+      // filter precisely so a small real fixture (a side table is often
+      // 1-3% of frame) can be taught. A 3% area floor here would reject the
+      // exact surfaces teaching exists for, with the client happily letting
+      // the user draw them first.
       const bboxOk = bbox &&
         [bbox.x, bbox.y, bbox.w, bbox.h].every((v: any) => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1) &&
-        bbox.w >= 0.01 && bbox.h >= 0.01 &&
+        bbox.w >= 0.015 && bbox.h >= 0.015 &&
         bbox.x + bbox.w <= 1.0001 && bbox.y + bbox.h <= 1.0001;
       if (!bboxOk) {
-        return res.status(400).json({ error: "bbox must be { x, y, w, h } as 0-1 floats, at least 1% in each dimension, fully inside the frame" });
+        return res.status(400).json({ error: "bbox must be { x, y, w, h } as 0-1 floats, fully inside the frame, at least 1.5% of the frame in each dimension" });
       }
       // Store the DISPLAY-canonical type (Table, Nightstand, ...) — every
       // scan-produced row and model surface uses that vocabulary, and a
@@ -9742,6 +9766,24 @@ export async function registerRoutes(
       if (bestModel && bestDist < 12) {
         modelId = bestModel.id;
         surfaceIdx = await storage.appendRoomModelSurface(modelId, taughtSurface);
+        // Re-anchor matching on the set's CURRENT look: union the teach-time
+        // exemplars into the model (teach hashes first, dedupe, cap 8 — the
+        // same merge rule the scan upsert uses). Without this, a gate-skipped
+        // prior upsert leaves the model's hashes stale and the next scan's
+        // closest-model argmin can land on a duplicate model that shadows
+        // the taught one. Non-fatal: the append above is the durable truth.
+        try {
+          const mergedHashes: string[] = [];
+          for (const h of [...exemplarHashes, ...(bestModel.sceneExemplarHashes ?? [])]) {
+            if (mergedHashes.length >= 8) break;
+            if (h && !h.startsWith("fail") && !mergedHashes.includes(h)) mergedHashes.push(h);
+          }
+          if (mergedHashes.length > 0) {
+            await storage.updateRoomModel(modelId, { sceneExemplarHashes: mergedHashes });
+          }
+        } catch (hashErr: any) {
+          console.warn(`[Teach] Exemplar enrichment failed (non-fatal):`, hashErr?.message || hashErr);
+        }
       } else {
         const created = await storage.insertRoomModel({
           userId: String(video.userId),
