@@ -49,12 +49,18 @@ async function buildAll() {
   let buildCommit = "unknown";
   try {
     const { execSync } = await import("child_process");
-    buildCommit = execSync("git rev-parse --short HEAD", { encoding: "utf8" }).trim();
+    // SHA + date + subject: Replit auto-commits on Publish ("Published your
+    // App"), so the deployed SHA is often one THEY made and never appears in
+    // the GitHub branch — the date and subject make it obvious at a glance
+    // whether the running build is today's work or last week's.
+    buildCommit = execSync('git log -1 --format="%h %cd %s" --date=format:"%Y-%m-%d %H:%M"', { encoding: "utf8" })
+      .trim()
+      .slice(0, 120);
   } catch {
     // Not a git checkout (or git missing) — the stamp is a nicety, never a
     // build blocker.
   }
-  console.log(`building server... (commit ${buildCommit})`);
+  console.log(`building server... (${buildCommit})`);
 
   await esbuild({
     entryPoints: ["server/index.ts"],
