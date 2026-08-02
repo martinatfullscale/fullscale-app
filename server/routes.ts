@@ -9400,6 +9400,17 @@ export async function registerRoutes(
           }
         }
 
+        // FIXTURE BOUNDARY: a target that CARRIES a canonical identity is
+        // decided entirely by the identity tiers above (explicit scope,
+        // exact group). The heuristic tiers below predate surface identity
+        // and would hand Wall 4's placement to Wall 2 — same type, same
+        // scene, different fixture — which is exactly the cross-fixture
+        // bleed the fixture model forbids. They remain ONLY for legacy
+        // rows with no groupId, where heuristics are all we have.
+        if (tGroupId) {
+          return res.json({ placement: null });
+        }
+
         // SCENE MATCH (preferred): same sceneId + same surfaceType. Scene
         // clustering means :08 and :46 in a podcast that flips host↔guest
         // both resolve to the same coffee table. Drop a mug at :08, click
@@ -9767,7 +9778,7 @@ export async function registerRoutes(
         modelId = bestModel.id;
         surfaceIdx = await storage.appendRoomModelSurface(modelId, taughtSurface);
         // Re-anchor matching on the set's CURRENT look: union the teach-time
-        // exemplars into the model (teach hashes first, dedupe, cap 8 — the
+        // exemplars into the model (teach hashes first, dedupe, cap 16 — the
         // same merge rule the scan upsert uses). Without this, a gate-skipped
         // prior upsert leaves the model's hashes stale and the next scan's
         // closest-model argmin can land on a duplicate model that shadows

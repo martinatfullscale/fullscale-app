@@ -4508,6 +4508,48 @@ async function processVideoScanInner(
               console.log(`[RoomModel] Scene class ${classId} matched model #${best.model.id} (${best.surfaces.length} surfaces, seen in ${best.model.episodeCount ?? 1} episode(s))`);
             }
           }
+          // DRIFT RECOVERY: cut-detection variance shifts shot midpoints
+          // between scans, so the same physical set can hash 12-17 bits from
+          // its own model's exemplars and go unmatched at the strict
+          // threshold — orphaning its taught surfaces (observed live:
+          // "matched NO model" warnings on the taught set). Second pass at a
+          // looser threshold (<18), guarded three ways so it cannot smear
+          // sets together: only SUBSTANTIAL classes (>=5 shots — singleton
+          // b-roll stays out), only models NOT already claimed by a strict
+          // match this scan, and still closest-model-wins.
+          const claimedModelIds = new Set(Array.from(modelBySceneKey.values()).map(m => m.model.id));
+          const shotsPerClass = new Map<number, number>();
+          for (const shot of sceneIndex.shots) {
+            shotsPerClass.set(shot.sceneId, (shotsPerClass.get(shot.sceneId) ?? 0) + 1);
+          }
+          for (const [classId, classHashes] of Array.from(classExemplars.entries())) {
+            if (modelBySceneKey.has(classId)) continue;
+            if ((shotsPerClass.get(classId) ?? 0) < 5) continue;
+            let best: SceneModelMatch | null = null;
+            for (const model of roomModels) {
+              if (claimedModelIds.has(model.id)) continue;
+              let minDist = Number.MAX_SAFE_INTEGER;
+              for (const mh of model.sceneExemplarHashes ?? []) {
+                if (!mh || mh.startsWith("fail")) continue;
+                for (const ch of classHashes) {
+                  const d = hammingDistance(ch, mh);
+                  if (d < minDist) minDist = d;
+                }
+              }
+              if (minDist < 18 && (!best || minDist < best.distance)) {
+                const modelSurfaces = parseRoomModelSurfaces(model.surfaces);
+                if (modelSurfaces.length > 0) {
+                  best = { model, surfaces: modelSurfaces, distance: minDist };
+                }
+              }
+            }
+            if (best) {
+              modelBySceneKey.set(classId, best);
+              claimedModelIds.add(best.model.id);
+              console.log(`[RoomModel] Scene class ${classId} matched model #${best.model.id} via DRIFT RECOVERY (distance ${best.distance}, ${best.surfaces.length} surfaces)`);
+            }
+          }
+
           // Drift visibility: when the creator HAS taught surfaces but a scene
           // class matched no model, the taught set may be sitting right there
           // unrecognized (exemplar drift, stale model hashes after a
@@ -5580,7 +5622,11 @@ async function processVideoScanInner(
             groupsByClass.set(classId, arr);
           }
 
-          const upsertExemplars = collectClassExemplarHashes(sceneIndex, 8);
+          // 16 exemplars (was 8): more remembered looks of the same set
+          // shrink the cross-scan hamming distance the matcher must absorb —
+          // the drift that orphaned taught surfaces came from midpoint
+          // variance exceeding what 8 exemplars covered.
+          const upsertExemplars = collectClassExemplarHashes(sceneIndex, 16);
 
           // Classes that matched the same model update it ONCE, merged — a
           // close-up class and a wide class both within range of one model
@@ -5687,7 +5733,7 @@ async function processVideoScanInner(
             }
             const mergedHashes: string[] = [];
             for (const h of [...scanHashes, ...(upd.match.model.sceneExemplarHashes ?? [])]) {
-              if (mergedHashes.length >= 8) break;
+              if (mergedHashes.length >= 16) break;
               if (h && !h.startsWith("fail") && !mergedHashes.includes(h)) mergedHashes.push(h);
             }
 
