@@ -26,6 +26,7 @@ import {
   Pause,
   Film,
   Sparkles,
+  Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -812,6 +813,11 @@ export default function PlacementPreviewModal({
   // the picker — it never paints — so unplaced surfaces stay null and
   // render the outline-only ghost.
   const [productSource, setProductSource] = useState<"user" | "saved" | null>(null);
+  // Identity of the saved placement currently painted on the selected
+  // surface (null when the paint is an unsaved preview). source tells us
+  // whether this surface IS the anchor ("direct") or merely inherits the
+  // product through fixture scope — deleting is only offered on the anchor.
+  const [loadedPlacement, setLoadedPlacement] = useState<{ id: number; source: string } | null>(null);
   const [productFile, setProductFile] = useState<File | null>(null);
   const [productTab, setProductTab] = useState<"upload" | "catalog">("upload");
   const [selectedCatalogProduct, setSelectedCatalogProduct] = useState<CatalogProduct | null>(null);
@@ -1226,13 +1232,15 @@ export default function PlacementPreviewModal({
         const data = await res.json();
         if (!data.placement) {
           // No saved placement on THIS surface: whatever product carried
-          // over from a same-scene switch is a preview here, not a saved
+          // over from a same-fixture switch is a preview here, not a saved
           // fixture — the badge must not claim otherwise.
           setProductSource((prev) => (prev === "saved" ? "user" : prev));
+          setLoadedPlacement(null);
           return;
         }
         if (data.placement) {
           const p = data.placement;
+          setLoadedPlacement(typeof p.id === "number" ? { id: p.id, source: data.source } : null);
           // Restore product image
           if (p.productImageUrl) {
             setProductImage(p.productImageUrl);
@@ -1285,6 +1293,7 @@ export default function PlacementPreviewModal({
       setSelectedSurface(null);
       setProductImage(null);
       setProductSource(null);
+      setLoadedPlacement(null);
       setProductFile(null);
       setProductTab("upload");
       setSelectedCatalogProduct(null);
@@ -2390,6 +2399,44 @@ export default function PlacementPreviewModal({
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
+  // Remove the SAVED placement painted on this surface. On the anchor
+  // surface ("direct") this deletes the row — the product disappears from
+  // every shot of this fixture. On an inheriting surface the row lives on
+  // another fixture, so we only clear the local paint and say where the
+  // product actually comes from.
+  const deleteSavedPlacement = async () => {
+    if (!loadedPlacement) return;
+    if (loadedPlacement.source !== "direct") {
+      resetPreview();
+      setLoadedPlacement(null);
+      toast({
+        title: "Product comes from another fixture",
+        description:
+          "This surface inherits it from a placement saved elsewhere. Delete that placement in Saved Placements to remove it everywhere.",
+      });
+      return;
+    }
+    try {
+      const res = await fetch(`/api/placements/${loadedPlacement.id}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error(`delete failed (${res.status})`);
+      resetPreview();
+      setLoadedPlacement(null);
+      toast({
+        title: "Placement removed",
+        description: "This fixture no longer has a saved product.",
+      });
+    } catch (err) {
+      toast({
+        title: "Couldn't remove placement",
+        description: err instanceof Error ? err.message : "Try again from Saved Placements.",
+        variant: "destructive",
+      });
+    }
+  };
+
   // ============================================================================
   // EXPORT
   // ============================================================================
@@ -3222,24 +3269,32 @@ export default function PlacementPreviewModal({
                         <button
                           key={surface.id}
                           onClick={() => {
-                            // Same-scene jump: keep product + transform so
-                            // an unsaved drop at :08 still shows on :46.
-                            // Different-scene jump: clear EVERYTHING — the
-                            // user is now editing a placement in a different
-                            // physical scene, the old product/transform/blend
-                            // don't apply. Without this clear the product
-                            // visually re-renders on the new surface's bbox
-                            // (looks like the product "moved" — the
-                            // user's exact complaint).
+                            // FIXTURE model: the working product belongs to
+                            // ONE fixture, not to the scene. Keep it only
+                            // when jumping between rows of the SAME fixture
+                            // (same surfaceGroupId — e.g. Wall 4 at :08 and
+                            // Wall 4 at :46). Jumping to a DIFFERENT fixture
+                            // — even in the same scene — clears everything;
+                            // the old same-scene keep is exactly how a wall's
+                            // product got painted onto the nightstand the
+                            // user never placed on. Legacy rows without
+                            // fixture identity (both gids null) keep the old
+                            // same-scene behavior so pre-fixture videos don't
+                            // lose the unsaved drop while browsing a scene.
+                            const prevGid = (selectedSurface as any)?.surfaceGroupId ?? null;
+                            const nextGid = (surface as any)?.surfaceGroupId ?? null;
+                            const sameFixture = !!prevGid && !!nextGid && prevGid === nextGid;
                             const prevSceneId = (selectedSurface as any)?.sceneId;
                             const nextSceneId = (surface as any)?.sceneId;
-                            const sameScene =
+                            const legacySameScene =
+                              !prevGid &&
+                              !nextGid &&
                               typeof prevSceneId === "number" &&
                               typeof nextSceneId === "number" &&
                               prevSceneId === nextSceneId;
 
                             setSelectedSurface(surface);
-                            if (!sameScene) {
+                            if (!sameFixture && !legacySameScene) {
                               setProductImage(null);
                               setProductSource(null);
                               setProductFile(null);
@@ -3247,6 +3302,8 @@ export default function PlacementPreviewModal({
                               productImgRef.current = null;
                               setTransform({ ...DEFAULT_TRANSFORM });
                               setBlend(getAutoBlendDefaults(surface));
+                              setKeyframes([]);
+                              setLoadedPlacement(null);
                             }
                             // The loadExistingPlacement effect runs next
                             // (driven by selectedSurface.id change) and
@@ -3514,6 +3571,18 @@ export default function PlacementPreviewModal({
                                 Reset
                               </Button>
                             </div>
+                            {productSource === "saved" && loadedPlacement && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="w-full mt-1 text-xs text-red-400 hover:text-red-300"
+                                onClick={deleteSavedPlacement}
+                                data-testid="delete-saved-placement"
+                              >
+                                <Trash2 className="w-3 h-3 mr-1" />
+                                Remove saved placement
+                              </Button>
+                            )}
                           </div>
                         ) : productTab === "upload" ? (
                           <div
