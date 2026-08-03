@@ -564,7 +564,10 @@ export async function sendAdminNotification(userData: {
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
           <h2 style="color: #1a1a1a;">New User Signup</h2>
           <p style="color: #4a4a4a; font-size: 16px; line-height: 1.6;">
-            A new user has signed up for FullScale but has not completed the Airtable form yet.
+            A new user has signed up for FullScale and is waiting for review.
+          </p>
+          <p style="margin: 16px 0;">
+            <a href="https://gofullscale.co/admin/signups" style="display: inline-block; background: #10b981; color: #fff; padding: 10px 18px; border-radius: 8px; text-decoration: none; font-weight: 600;">Review &amp; approve in one click</a>
           </p>
           <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
             <tr>

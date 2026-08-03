@@ -859,6 +859,7 @@ export async function registerRoutes(
         lastName: usersTable.lastName,
         authProvider: usersTable.authProvider,
         isApproved: usersTable.isApproved,
+        profileSubmittedAt: usersTable.profileSubmittedAt,
         createdAt: usersTable.createdAt,
       }).from(usersTable).orderBy(usersTable.createdAt);
 
@@ -875,6 +876,7 @@ export async function registerRoutes(
           hasUserRow: true,
           isApproved: u.isApproved,
           authProvider: u.authProvider,
+          profileSubmitted: !!u.profileSubmittedAt,
           createdAt: u.createdAt,
           allowlistType: null,
           allowlistName: null,
@@ -917,6 +919,57 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("[List Signups] Error:", err);
       res.status(500).json({ success: false, error: err.message || "List failed" });
+    }
+  });
+
+  // -------------------------------------------------------------------
+  // ONE-CLICK ADMIN APPROVAL — the first-party path. Flips isApproved,
+  // writes the allowlist, and sends the founder-voice approval email in
+  // one action; the Airtable automation becomes an optional mirror, not a
+  // load-bearing dependency. Session-only admin (no dev fallback).
+  // -------------------------------------------------------------------
+  app.post("/api/admin/approve-user", async (req: any, res) => {
+    try {
+      const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
+      const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
+      if (!callerEmail || !adminEmails.map((e: string) => e.toLowerCase()).includes(callerEmail.toLowerCase())) {
+        return res.status(403).json({ error: "Admin access required" });
+      }
+
+      const { email, userType } = req.body || {};
+      if (!email || typeof email !== "string") {
+        return res.status(400).json({ error: "email required" });
+      }
+      const normalizedEmail = email.toLowerCase().trim();
+      const role: "brand" | "creator" = userType === "brand" ? "brand" : "creator";
+
+      // Allowlist row (idempotent) — this is what the auth self-heal and
+      // approved-before-signup creation paths read.
+      const existing = await storage.getAllowedUser(normalizedEmail);
+      if (!existing) {
+        await storage.addAllowedUser({ email: normalizedEmail, userType: role });
+      } else if (existing.userType !== role) {
+        await storage.updateAllowedUserRole(normalizedEmail, role);
+      }
+
+      // Flip the flag if they already have an account (if not, the
+      // allowlist admits them the moment they sign up).
+      const userFlipped = await storage.setUserApproved(normalizedEmail, true);
+      const userRow = await storage.getUserByEmail(normalizedEmail).catch(() => undefined);
+
+      // Founder-voice approval email (fire-and-forget).
+      const { sendApprovalEmail } = await import("./lib/resend");
+      const emailResult = await sendApprovalEmail({
+        email: normalizedEmail,
+        firstName: userRow?.firstName || "there",
+        userType: role,
+      }).catch((e: any) => ({ sent: false, reason: e?.message }));
+
+      console.log(`[Admin Approve] ${callerEmail} approved ${normalizedEmail} (${role}) — userFlipped=${userFlipped}, email=${JSON.stringify(emailResult)}`);
+      res.json({ ok: true, email: normalizedEmail, userFlipped, hadAccount: !!userRow, approvalEmail: emailResult });
+    } catch (err: any) {
+      console.error("[Admin Approve] Error:", err?.message || err);
+      res.status(500).json({ error: "Approval failed" });
     }
   });
 
