@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { TopBar } from "@/components/TopBar";
 import { Upload, Eye, CheckCircle, Loader2, AlertTriangle, X, Shield, Sun, Tag, Box, DollarSign, Sparkles, RefreshCw, Play, Globe, HardDrive, Scan, Video, Wand2, Trash2, Pencil, Brain, Scissors, Send } from "lucide-react";
 import { useLocation } from "wouter";
-import { SiInstagram, SiYoutube, SiTwitch, SiFacebook } from "react-icons/si";
+import { SiInstagram, SiYoutube, SiTwitch, SiFacebook, SiTiktok, SiX } from "react-icons/si";
 import { motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "@/hooks/use-auth";
 import { useHybridMode } from "@/hooks/use-hybrid-mode";
@@ -49,7 +49,7 @@ interface IndexedVideo {
   sceneSummary?: { sceneCount: number; surfaceCount: number; trackedMinutes: number } | null;
 }
 
-type PlatformFilter = "all" | "youtube" | "instagram" | "twitch" | "facebook" | "fullscale";
+type PlatformFilter = "all" | "youtube" | "instagram" | "twitch" | "tiktok" | "twitter" | "facebook" | "fullscale";
 
 interface VideoIndexResponse {
   videos: IndexedVideo[];
@@ -592,6 +592,9 @@ export default function Library() {
   const [selectedVideo, setSelectedVideo] = useState<DisplayVideo | null>(null);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [platformFilter, setPlatformFilter] = useState<PlatformFilter>("all");
+  // URL-paste import (YouTube / Twitch / TikTok / X)
+  const [importUrlValue, setImportUrlValue] = useState("");
+  const [isImportingUrl, setIsImportingUrl] = useState(false);
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [sceneModalOpen, setSceneModalOpen] = useState(false);
   const [sceneVideo, setSceneVideo] = useState<VideoWithScenes | null>(null);
@@ -1294,6 +1297,8 @@ export default function Library() {
   const youtubeCount = displayVideos.filter(v => v.platform === "youtube").length;
   const instagramCount = displayVideos.filter(v => v.platform === "instagram").length;
   const twitchCount = displayVideos.filter(v => v.platform === "twitch").length;
+  const tiktokCount = displayVideos.filter(v => v.platform === "tiktok").length;
+  const twitterCount = displayVideos.filter(v => v.platform === "twitter").length;
   const facebookCount = displayVideos.filter(v => v.platform === "facebook").length;
   const uploadsCount = displayVideos.filter(v => v.platform === "fullscale").length;
   
@@ -1428,6 +1433,14 @@ export default function Library() {
                 <SiTwitch className="w-4 h-4 text-purple-500" />
                 Twitch ({twitchCount})
               </TabsTrigger>
+              <TabsTrigger value="tiktok" className="gap-2 data-[state=active]:bg-zinc-500/20" data-testid="tab-tiktok">
+                <SiTiktok className="w-4 h-4" />
+                TikTok ({tiktokCount})
+              </TabsTrigger>
+              <TabsTrigger value="twitter" className="gap-2 data-[state=active]:bg-sky-500/20" data-testid="tab-twitter">
+                <SiX className="w-4 h-4" />
+                X ({twitterCount})
+              </TabsTrigger>
               <TabsTrigger value="facebook" className="gap-2 data-[state=active]:bg-blue-500/20" data-testid="tab-facebook">
                 <SiFacebook className="w-4 h-4 text-blue-500" />
                 Facebook ({facebookCount})
@@ -1452,6 +1465,46 @@ export default function Library() {
               <SelectItem value="europe">Europe</SelectItem>
             </SelectContent>
           </Select>
+
+          {/* URL-paste import: the v1 ingest path for Twitch/TikTok/X */}
+          <div className="flex items-center gap-2 flex-1 min-w-[280px] max-w-md" data-testid="import-url-bar">
+            <Input
+              value={importUrlValue}
+              onChange={(e) => setImportUrlValue(e.target.value)}
+              placeholder="Paste a YouTube, Twitch, TikTok, or X video URL…"
+              className="bg-white/5 border-white/10 text-sm"
+              data-testid="input-import-url"
+              onKeyDown={(e) => { if (e.key === "Enter") (document.getElementById("btn-import-url") as HTMLButtonElement)?.click(); }}
+            />
+            <Button
+              id="btn-import-url"
+              size="sm"
+              disabled={isImportingUrl || !importUrlValue.trim()}
+              onClick={async () => {
+                setIsImportingUrl(true);
+                try {
+                  const res = await fetch("/api/video/import-url", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    credentials: "include",
+                    body: JSON.stringify({ url: importUrlValue.trim() }),
+                  });
+                  const data = await res.json();
+                  if (!res.ok) throw new Error(data?.error || "Import failed");
+                  toast({ title: "Video imported", description: `${data.video?.title ?? "Imported"} — hit Scan when ready.` });
+                  setImportUrlValue("");
+                  queryClient.invalidateQueries({ queryKey: ["videos"] });
+                } catch (err: any) {
+                  toast({ title: "Import failed", description: err?.message ?? "Check the URL and try again.", variant: "destructive" });
+                } finally {
+                  setIsImportingUrl(false);
+                }
+              }}
+              data-testid="button-import-url"
+            >
+              {isImportingUrl ? "Importing…" : "Import"}
+            </Button>
+          </div>
         </div>
 
         {isLoadingVideos ? (
@@ -1521,6 +1574,14 @@ export default function Library() {
                     ) : video.platform === "facebook" ? (
                       <div className="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center">
                         <SiFacebook className="w-3.5 h-3.5 text-white" />
+                      </div>
+                    ) : video.platform === "tiktok" ? (
+                      <div className="w-6 h-6 rounded-full bg-black border border-white/20 flex items-center justify-center">
+                        <SiTiktok className="w-3.5 h-3.5 text-white" />
+                      </div>
+                    ) : video.platform === "twitter" ? (
+                      <div className="w-6 h-6 rounded-full bg-black border border-white/20 flex items-center justify-center">
+                        <SiX className="w-3.5 h-3.5 text-white" />
                       </div>
                     ) : video.platform === "fullscale" ? (
                       <div className="w-6 h-6 rounded-full bg-emerald-600 flex items-center justify-center">

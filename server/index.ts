@@ -19,7 +19,6 @@ import { objectKeyFromServeUrl, getStorageStream } from "./lib/objectStorage";
 import ffmpegStaticPath from "ffmpeg-static";
 import ffprobeStatic from "ffprobe-static";
 // DISABLED: TensorFlow scanner replaced by scanner_v2.ts which uses Sharp
-// import { initializeScanWorker } from "./lib/scanWorker";
 
 // -----------------------------------------------------------------------
 // FFMPEG/FFPROBE PATH BOOTSTRAP — must run before anything spawns a child

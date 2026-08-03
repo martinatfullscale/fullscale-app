@@ -50,7 +50,7 @@ export interface CropTrajectory {
   cropH: number;
 }
 
-// ── Model Singleton (shared with surfaceDetector) ──────────────
+// ── Model Singleton ────────────────────────────────────────────
 
 let model: cocoSsd.ObjectDetection | null = null;
 let modelLoading: Promise<cocoSsd.ObjectDetection> | null = null;
@@ -269,6 +269,46 @@ async function detectFacesInFrame(
     });
   } catch {
     return [];
+  }
+}
+
+/**
+ * Tier 2 (scanner): tight FULL-BODY person boxes for a single frame image.
+ * Unlike detectFacesInFrame this returns the whole person bbox (no
+ * FACE_REGION_RATIO truncation) — the scanner's occlusion-remainder ghost
+ * filter needs the true person envelope, and COCO-SSD's boxes are
+ * deterministic frame-to-frame where Gemini's "generous" envelopes vary.
+ * Normalized 0-1 coordinates. Fail-open: any error (model load OOM, decode
+ * failure) returns null so the caller falls back to Gemini's people boxes.
+ */
+export async function detectPeopleInFrame(
+  framePath: string
+): Promise<Array<{ x: number; y: number; width: number; height: number; confidence: number }> | null> {
+  try {
+    const loadedModel = await loadModel();
+    const { data, info } = await sharp(framePath)
+      .resize(DETECTION_WIDTH, undefined, { fit: "inside", withoutEnlargement: true })
+      .removeAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    const tensor = tfMod!.tensor3d(new Uint8Array(data), [info.height, info.width, info.channels]);
+    const predictions = await loadedModel.detect(tensor);
+    tensor.dispose();
+    return predictions
+      .filter((p) => p.class === "person" && p.score >= MIN_PERSON_CONFIDENCE)
+      .map((p) => {
+        const [bx, by, bw, bh] = p.bbox;
+        return {
+          x: bx / info.width,
+          y: by / info.height,
+          width: bw / info.width,
+          height: bh / info.height,
+          confidence: p.score,
+        };
+      });
+  } catch (err: any) {
+    console.warn(`[FaceTracker] detectPeopleInFrame failed (non-fatal): ${err?.message || err}`);
+    return null;
   }
 }
 

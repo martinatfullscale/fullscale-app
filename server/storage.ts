@@ -141,6 +141,7 @@ export interface IStorage {
   getVideoIndex(userId: string, authEmail?: string): Promise<VideoIndex[]>;
   getAllVideos(): Promise<VideoIndex[]>;
   upsertVideoIndex(video: InsertVideoIndex): Promise<VideoIndex>;
+  findVideoIndexRow(userId: string, youtubeId: string): Promise<VideoIndex | undefined>;
   insertVideo(video: InsertVideoIndex): Promise<VideoIndex>;
   bulkUpsertVideoIndex(videos: InsertVideoIndex[]): Promise<void>;
   deleteVideoIndex(userId: string, userEmail?: string): Promise<void>;
@@ -895,6 +896,18 @@ export class DatabaseStorage implements IStorage {
       .values(video)
       .returning();
     return result;
+  }
+
+  async findVideoIndexRow(userId: string, youtubeId: string): Promise<VideoIndex | undefined> {
+    const ids = await this.identityMatchValues(userId);
+    const [existing] = await db
+      .select()
+      .from(videoIndex)
+      .where(and(
+        inArray(videoIndex.userId, ids),
+        eq(videoIndex.youtubeId, youtubeId)
+      ));
+    return existing;
   }
 
   async upsertVideoIndex(video: InsertVideoIndex): Promise<VideoIndex> {

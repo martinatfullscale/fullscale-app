@@ -27,6 +27,7 @@ import { downloadVideo as downloadYouTubeVideo } from "./scanner";
 import { downloadFacebookVideo, downloadInstagramVideo } from "./socialDownloader";
 import { safeDecrypt } from "./socialAnalytics";
 import { getFreshYoutubeTokenForUser } from "./youtubeAuth";
+import { isYtDlpPlatform, sourceUrlForStoredId } from "./platformSources";
 
 const CACHE_DIR = path.join(os.tmpdir(), "fullscale-source-cache");
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
@@ -197,6 +198,21 @@ export async function getSourcePath(video: VideoIndex): Promise<string> {
         ? await downloadFacebookVideo(ytId, fbToken, temp)
         : await downloadInstagramVideo(ytId, fbToken, temp);
       return promotePartial(ok, temp, target, `${platform} download failed for ${ytId}`);
+    }
+
+    // Twitch/TikTok/X: same yt-dlp ladder as YouTube, keyed on the rebuilt
+    // watch URL. Without this arm, playback/editorial/remix all throw for a
+    // platform whose SCAN succeeded.
+    if (isYtDlpPlatform(platform) && ytId) {
+      const sourceUrl = sourceUrlForStoredId(platform, ytId);
+      if (sourceUrl) {
+        const temp = partialPath(video.id);
+        const ok = await downloadYouTubeVideo(ytId, temp, {
+          sourceUrl,
+          timeoutMs: PLAYBACK_DOWNLOAD_TIMEOUT_MS,
+        });
+        return promotePartial(ok, temp, target, `${platform} download failed for ${ytId}`);
+      }
     }
 
     throw new Error(`Cannot resolve source for video ${video.id} (platform=${platform})`);

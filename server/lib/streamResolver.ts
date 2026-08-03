@@ -233,3 +233,104 @@ export async function resolveGraphStreamUrl(
     return null;
   }
 }
+
+/**
+ * Generic yt-dlp stream resolve for platforms whose public posts need no
+ * credentials (Twitch clips, TikTok, Twitter/X). Same contract as the
+ * YouTube resolver: progressive https mp4 only — manifest URLs are rejected
+ * so HLS-only sources (Twitch VODs) fall to the download ladder, which
+ * handles HLS natively. No innertube client args, no cookie jar: those are
+ * YouTube-specific machinery.
+ */
+export async function resolveGenericStreamUrl(sourceUrl: string, label: string): Promise<StreamSource | null> {
+  const ytDlpBin = await getYtDlpPath();
+  const url = await new Promise<string | null>((resolve) => {
+    const args = [
+      "-g",
+      "-f",
+        "b[height<=720][ext=mp4][protocol^=https]/" +
+        "bv*[height<=720][ext=mp4][protocol^=https]/" +
+        "best[ext=mp4][protocol^=https]/" +
+        "b[protocol^=https]",
+      "--no-playlist",
+      "--no-warnings",
+      sourceUrl,
+    ];
+    const proc = spawn(ytDlpBin, args, { detached: true });
+    let stdout = "";
+    let stderr = "";
+    const tm = setTimeout(() => {
+      try {
+        if (proc.pid) process.kill(-proc.pid, "SIGKILL");
+        else proc.kill("SIGKILL");
+      } catch { try { proc.kill("SIGKILL"); } catch {} }
+      console.warn(`[StreamResolver] Generic resolve timed out for ${label}`);
+      resolve(null);
+    }, 45_000);
+    proc.stdout.on("data", (d) => { stdout += d.toString(); });
+    proc.stderr.on("data", (d) => { stderr += d.toString(); });
+    proc.on("close", (code) => {
+      clearTimeout(tm);
+      if (code !== 0) {
+        console.warn(`[StreamResolver] Generic resolve failed (${code}) for ${label}: ${stderr.slice(-200)}`);
+        return resolve(null);
+      }
+      const urls = stdout.split("\n").map((s) => s.trim()).filter(Boolean);
+      if (urls.length === 0) return resolve(null);
+      if (urls[0].includes(".m3u8") || urls[0].includes("/manifest/")) {
+        console.warn(`[StreamResolver] ${label} resolved to an HLS/DASH manifest; download ladder will handle it`);
+        return resolve(null);
+      }
+      console.log(`[StreamResolver] Resolved generic stream URL for ${label}`);
+      resolve(urls[0]);
+    });
+    proc.on("error", (err) => {
+      clearTimeout(tm);
+      console.warn(`[StreamResolver] Generic resolve spawn error for ${label}: ${err.message}`);
+      resolve(null);
+    });
+  });
+  if (!url) return null;
+  try {
+    const probe = await fetch(url, { headers: { Range: "bytes=0-0" }, signal: AbortSignal.timeout(5_000) });
+    if (!probe.ok) {
+      console.warn(`[StreamResolver] Generic URL for ${label} failed validation (HTTP ${probe.status})`);
+      return null;
+    }
+    try { await probe.body?.cancel(); } catch {}
+  } catch (e: any) {
+    console.warn(`[StreamResolver] Generic URL validation for ${label} errored: ${e.message}`);
+    return null;
+  }
+  return { url };
+}
+
+/**
+ * Best-effort title + duration probe for a pasted URL (no download).
+ * Used by the URL-import route so imported rows land with a real title.
+ */
+export async function probeVideoMeta(sourceUrl: string): Promise<{ title: string | null; durationSec: number | null }> {
+  const ytDlpBin = await getYtDlpPath();
+  return new Promise((resolve) => {
+    const args = ["--skip-download", "--no-playlist", "--no-warnings", "--print", "%(title)s\t%(duration)s", sourceUrl];
+    const proc = spawn(ytDlpBin, args, { detached: true });
+    let stdout = "";
+    const tm = setTimeout(() => {
+      try {
+        if (proc.pid) process.kill(-proc.pid, "SIGKILL");
+        else proc.kill("SIGKILL");
+      } catch { try { proc.kill("SIGKILL"); } catch {} }
+      resolve({ title: null, durationSec: null });
+    }, 20_000);
+    proc.stdout.on("data", (d) => { stdout += d.toString(); });
+    proc.on("close", (code) => {
+      clearTimeout(tm);
+      if (code !== 0) return resolve({ title: null, durationSec: null });
+      const line = stdout.split("\n").map((s) => s.trim()).filter(Boolean)[0] ?? "";
+      const [title, dur] = line.split("\t");
+      const durationSec = dur && /^\d+(\.\d+)?$/.test(dur) ? Math.round(parseFloat(dur)) : null;
+      resolve({ title: title?.slice(0, 300) || null, durationSec });
+    });
+    proc.on("error", () => { clearTimeout(tm); resolve({ title: null, durationSec: null }); });
+  });
+}

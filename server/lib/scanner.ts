@@ -422,6 +422,11 @@ interface DownloadOpts {
   /** OAuth access token. When set, sent via --add-header "Authorization: Bearer ..."
    *  to bypass YouTube's anonymous-bot detection on the creator's own videos. */
   oauthToken?: string;
+  /** Non-YouTube platforms (Twitch/TikTok/X): the full watch URL yt-dlp
+   *  should pull instead of building a youtube.com/watch URL from the id.
+   *  YouTube-specific machinery (innertube client args, ytdl-core fallback,
+   *  OAuth header) is skipped when this is set. */
+  sourceUrl?: string;
 }
 
 /**
@@ -651,11 +656,13 @@ function trackDetachedProcessGroup(proc: ChildProcess): void {
   }
 }
 
-/** Fetch only the duration of a YouTube video without downloading it.
- *  Used to plan adaptive scan sampling for long-form content. */
+/** Fetch only the duration of a video without downloading it.
+ *  Used to plan adaptive scan sampling for long-form content.
+ *  `sourceUrl` overrides the youtube.com watch URL for other platforms. */
 export async function getYoutubeVideoDuration(
   youtubeId: string,
   oauthToken?: string,
+  sourceUrl?: string,
 ): Promise<number | null> {
   const ytDlpBin = await getYtDlpPath();
 
@@ -672,7 +679,7 @@ export async function getYoutubeVideoDuration(
         args.push("--add-header", `Authorization:Bearer ${oauthToken}`);
       }
       applyYtDlpAuthArgs(args, "duration probe");
-      args.push(`https://www.youtube.com/watch?v=${youtubeId}`);
+      args.push(sourceUrl || `https://www.youtube.com/watch?v=${youtubeId}`);
 
       // detached: own process group, so the timeout kill takes the real
       // Python child forked by the PyInstaller onefile bootloader with it
@@ -804,7 +811,10 @@ async function downloadVideoWithYtDlp(
       // (which triggers the fragile HLS+ffmpeg path that broke last time).
       args.push("--download-sections", `*0-${trim}`);
     }
-    args.push(`https://www.youtube.com/watch?v=${youtubeId}`);
+    // Non-YouTube platforms pass their own watch URL. The YouTube-specific
+    // args above (innertube client args, youtube.com cookies) are inert for
+    // other extractors — yt-dlp scopes both by domain.
+    args.push(opts.sourceUrl || `https://www.youtube.com/watch?v=${youtubeId}`);
 
     unlinkStalePartial(outputPath);
 
@@ -1091,6 +1101,12 @@ export async function downloadVideo(
 
   }
 
+  if (opts.sourceUrl) {
+    // ytdl-core speaks only YouTube — for other platforms the ladder was
+    // the whole story.
+    console.log(`[Scanner] All yt-dlp paths failed for ${opts.sourceUrl} (no ytdl-core fallback for non-YouTube platforms)`);
+    return false;
+  }
   console.log(`[Scanner] All yt-dlp paths failed; trying @distube/ytdl-core fallback...`);
   console.log(`[Scanner] DIAGNOSTIC: in Replit Shell, run \`yt-dlp --list-formats https://www.youtube.com/watch?v=${youtubeId}\` to see what formats are actually available.`);
   // Belt and braces: the fallback has its own internal watchdog, and the

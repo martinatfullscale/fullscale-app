@@ -6,10 +6,10 @@ import { z } from "zod";
 import { setupAuth, registerAuthRoutes, isAuthenticated } from "./replit_integrations/auth";
 import { runIndexerForUser } from "./lib/indexer";
 import { processVideoScan, scanPendingVideos, addToLocalAssetMap, getYouTubeThumbnailWithFallback, canonicalSurfaceType } from "./scanner_v2";
+import { parsePlatformUrl, storedIdFor, platformMaxDurationSec } from "./lib/platformSources";
+import { probeVideoMeta } from "./lib/streamResolver";
 import { hammingDistance } from "./lib/scenes/sceneIndex";
 // DISABLED: TensorFlow scanner replaced by scanner_v2.ts which uses Sharp
-// import { queueVideoScan, getScanJobStatus, getQueueStatus, initializeScanWorker } from "./lib/scanWorker";
-// import { detectSurfacesFromVideo } from "./lib/surfaceDetector";
 import { extractThumbnailForVideo, extractAndUpdateThumbnails } from "./lib/thumbnailExtractor";
 import {
   calculatePlacementPricing,
@@ -3388,6 +3388,65 @@ export async function registerRoutes(
   });
 
   // POST /api/youtube/import-selected — Import only selected YouTube videos
+  // URL-paste import: YouTube, Twitch, TikTok, Twitter/X. The paste flow is
+  // the v1 ingest for the three new platforms (no OAuth listing exists for
+  // them, and public posts need no credentials for yt-dlp). NOTE: a pasted
+  // URL is not proof of ownership — monetization gating on ownership is a
+  // product decision tracked separately; imports land in the creator's own
+  // library either way.
+  app.post("/api/video/import-url", scanLimiter, isFlexibleAuthenticated, async (req: any, res) => {
+    const userId = req.authUserId;
+    const { url } = req.body || {};
+    if (!url || typeof url !== "string") {
+      return res.status(400).json({ error: "url required" });
+    }
+    const parsed = parsePlatformUrl(url);
+    if (!parsed) {
+      return res.status(400).json({
+        error: "Unrecognized video URL. Supported: YouTube, Twitch (VODs & clips), TikTok, Twitter/X post links.",
+      });
+    }
+    try {
+      // Already imported? Return the existing row untouched — re-pasting a
+      // URL must never wipe real metadata or flip a scanned row back to
+      // "Pending Scan" (which would also cancel an in-flight scan).
+      const storedIdEarly = storedIdFor(parsed.platform, parsed.nativeId);
+      const existing = await storage.findVideoIndexRow(userId, storedIdEarly);
+      if (existing) {
+        return res.json({ video: existing, platform: parsed.platform, alreadyImported: true });
+      }
+
+      // Best-effort metadata; the scan probes again if this comes back empty.
+      const meta = await probeVideoMeta(parsed.sourceUrl).catch(() => ({ title: null, durationSec: null as number | null }));
+
+      const maxSec = platformMaxDurationSec(parsed.platform);
+      if (maxSec && meta.durationSec && meta.durationSec > maxSec) {
+        return res.status(400).json({
+          error: `${parsed.platform} videos over ${Math.round(maxSec / 60)} minutes aren't supported yet — this one is ~${Math.round(meta.durationSec / 60)} minutes. Try a clip or a shorter VOD.`,
+        });
+      }
+
+      const storedId = storedIdEarly;
+      const video = await storage.upsertVideoIndex({
+        userId,
+        youtubeId: storedId,
+        title: meta.title || `${parsed.platform} video`,
+        description: "",
+        thumbnailUrl: parsed.platform === "youtube" ? getYouTubeThumbnailWithFallback(parsed.nativeId) : undefined,
+        platform: parsed.platform,
+        viewCount: 0,
+        duration: meta.durationSec ? `PT${meta.durationSec}S` : undefined,
+        status: "Pending Scan",
+        priorityScore: 50,
+      });
+      console.log(`[ImportURL] ${parsed.platform} import for user ${userId}: ${storedId} ("${meta.title ?? "untitled"}")`);
+      res.json({ video, platform: parsed.platform });
+    } catch (err: any) {
+      console.error(`[ImportURL] Failed:`, err?.message || err);
+      res.status(500).json({ error: "Import failed. Check the URL and try again." });
+    }
+  });
+
   app.post("/api/youtube/import-selected", isFlexibleAuthenticated, async (req: any, res) => {
     const userId = req.authUserId;
     const authEmail = req.authEmail;

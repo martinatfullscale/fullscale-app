@@ -176,6 +176,8 @@ function canPlayInApp(video: VideoWithScenes | null): boolean {
   const ytId = video.youtubeId;
   if (platform === "youtube" && ytId && !ytId.includes(":") && !ytId.startsWith("upload-")) return true;
   if ((platform === "instagram" || platform === "facebook") && ytId) return true;
+  // Generic yt-dlp platforms — sourceCache resolves these on demand.
+  if ((platform === "twitch" || platform === "tiktok" || platform === "twitter") && ytId) return true;
   return false;
 }
 

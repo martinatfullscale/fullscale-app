@@ -34,6 +34,14 @@ import { getFreshYoutubeTokenForUser } from "./lib/youtubeAuth";
 import { resolveYoutubeStreamUrl, resolveGraphStreamUrl, type StreamSource } from "./lib/streamResolver";
 import { buildSceneIndex, sceneIdForTimestamp, sampleMultiTimestampsPerScene, computeDHash, hammingDistance, clusterHashes, type SceneIndex, type SceneShot } from "./lib/scenes/sceneIndex";
 import { buildSceneConsensus, type FrameDetection, type ConsensusSurface } from "./lib/scenes/surfaceConsensus";
+// Tier 2: tight person boxes (COCO-SSD, lazily loaded inside faceTracker —
+// importing this module does NOT pull the TF native binding onto boot).
+import { detectPeopleInFrame } from "./lib/remix/faceTracker";
+// Tier 2: grounded geometry proposals (fal Florence-2, fail-open).
+import { detectGroundedSurfaces, groundedDetectorAvailable } from "./lib/groundedDetector";
+// Twitch/TikTok/X: generic yt-dlp platform registry.
+import { isYtDlpPlatform, sourceUrlForStoredId, platformMaxDurationSec, safeFileStem } from "./lib/platformSources";
+import { resolveGenericStreamUrl } from "./lib/streamResolver";
 
 // ============================================================================
 // GEMINI AI CLIENT
@@ -352,6 +360,9 @@ interface FrameAnalysisResult {
    *  1). Only set when the response carried people data — it powers the
    *  clean-frame re-sampling pass, which skips frames it can't measure. */
   personCoverage?: number;
+  /** Which source produced peopleBoxes/personCoverage — the clean-frame
+   *  re-sampler trigger is calibrated per source (tight boxes ≈ lower). */
+  peopleSource?: "detector" | "gemini";
   /** Known-surface idx values the ghost filter vetoed in this frame. Taught
    *  surfaces are exempt from that filter, so a non-zero count for a taught
    *  idx means the exemption regressed — feeds the [Taught] fate line. */
@@ -430,6 +441,11 @@ interface RoomModelSurface {
   // Creator drew this one by hand (teach-a-surface). Human ground truth:
   // the person-overlap ghost check must never veto its confirmations.
   taught?: boolean;
+  // Tier 3: the creator APPROVED a detection row of this surface (free
+  // label harvested from the approval flow). Sticky once set. Validated
+  // surfaces get a confidence floor and survive the retirement sweep like
+  // taught ones — an explicit human yes outranks one bad scan.
+  validated?: boolean;
 }
 
 /** Defensive read of a model's jsonb surface list — malformed entries are
@@ -503,6 +519,31 @@ with exactly one entry per known surface:
 - Do NOT re-list known surfaces in "surfaces" — "surfaces" is ONLY for NEW
   placement surfaces that are not in the known list above
 - The "people" boxes are still required exactly as described`;
+}
+
+/** Tier 2: prompt section carrying grounded-detector geometry proposals.
+ *  Honest framing — these are machine proposals to JUDGE, not confirmed
+ *  inventory (that assertion belongs only to room-model knowns). Proposals
+ *  the judge accepts flow into the NORMAL surfaces array, so consensus and
+ *  every downstream filter apply unchanged. */
+function buildProposalsPromptSection(proposals: import("./lib/groundedDetector").GroundedProposal[]): string {
+  const list = proposals
+    .map((p, i) => `P${i}: "${p.phrase}" region at approx x ${(p.x * 100).toFixed(0)}%, y ${(p.y * 100).toFixed(0)}%, w ${(p.width * 100).toFixed(0)}%, h ${(p.height * 100).toFixed(0)}%`)
+    .join("\n");
+  return `
+
+DETECTOR REGION PROPOSALS (machine-generated, unverified):
+${list}
+
+A geometry detector flagged the regions above as possible placement
+surfaces in this camera setup. They are PROPOSALS, not truth — the detector
+knows shapes, not suitability. For each proposal: if it corresponds to a
+real, physical, placeable surface visible in THIS frame, include that
+surface in your normal "surfaces" array (correct type, your own adjusted
+bounding box — prefer the proposal's geometry when it looks right, since it
+came from a deterministic detector). If a proposal is wrong, partially
+occluded to uselessness, or not a placement surface, simply omit it — do
+NOT force-match. Also still report any real surface the detector missed.`;
 }
 
 // ============================================================================
@@ -2139,7 +2180,8 @@ async function analyzeFrameWithGemini(
   framePath: string,
   timestamp: number,
   isVertical: boolean,
-  knownSurfaces?: KnownSurfaceSpec[]
+  knownSurfaces?: KnownSurfaceSpec[],
+  proposals?: import("./lib/groundedDetector").GroundedProposal[]
 ): Promise<FrameAnalysisResult> {
   const defaultResult: FrameAnalysisResult = {
     hasSurface: false,
@@ -2156,12 +2198,32 @@ async function analyzeFrameWithGemini(
     const metadata = await sharp(framePath).metadata();
     const mimeType = metadata.format === 'png' ? 'image/png' : 'image/jpeg';
 
+    // Tier 2 slice 1: tight person boxes from the in-process COCO-SSD
+    // (already loaded lazily by the remix pipeline). Kicked off BEFORE the
+    // Gemini call so its ~50-350ms rides inside Gemini's multi-second
+    // latency. Deterministic tight boxes replace Gemini's deliberately
+    // "generous" person+chair envelopes in the ghost filter — the envelope
+    // that swallowed real side tables. null = detector unavailable → fall
+    // back to Gemini's people boxes exactly as before.
+    // Hard-bounded: the FIRST call pays the lazy tfjs-node model load
+    // (30-60s on small instances); a wedged load must degrade to Gemini's
+    // boxes, never hang the scan (SCAN_IN_FLIGHT would make that sticky).
+    const personDetectorPromise: Promise<Array<{ x: number; y: number; width: number; height: number; confidence: number }> | null> =
+      process.env.PERSON_DETECTOR === "0"
+        ? Promise.resolve(null)
+        : Promise.race([
+            detectPeopleInFrame(framePath).catch(() => null),
+            new Promise<null>((r) => setTimeout(() => r(null), 90_000)),
+          ]);
+
     // Room-model confirm mode: a matched scene class appends its known
     // surface inventory so the model re-locates them instead of
-    // re-discovering the room from scratch every frame.
-    const prompt = knownSurfaces && knownSurfaces.length > 0
-      ? SURFACE_DETECTION_PROMPT + buildKnownSurfacesPromptSection(knownSurfaces)
-      : SURFACE_DETECTION_PROMPT;
+    // re-discovering the room from scratch every frame. Grounded proposals
+    // (Tier 2) stack on top — knowns are asserted inventory, proposals are
+    // unverified geometry to judge.
+    let prompt = SURFACE_DETECTION_PROMPT;
+    if (knownSurfaces && knownSurfaces.length > 0) prompt += buildKnownSurfacesPromptSection(knownSurfaces);
+    if (proposals && proposals.length > 0) prompt += buildProposalsPromptSection(proposals);
 
     const response = await geminiGenerate({
       model: "gemini-2.5-flash",
@@ -2209,7 +2271,7 @@ async function analyzeFrameWithGemini(
     // surfaces early return: a frame with zero surfaces still reports its
     // person coverage (that's the clean-frame re-sampler's trigger signal)
     // and may still confirm known set surfaces.
-    const peopleBoxes = (Array.isArray(parsed.people) ? parsed.people : [])
+    const geminiPeopleBoxes = (Array.isArray(parsed.people) ? parsed.people : [])
       .filter((p) => p?.location && typeof p.location.x === "number" && typeof p.location.y === "number")
       .map((p) => ({
         x: p.location.x / 100,
@@ -2218,10 +2280,32 @@ async function analyzeFrameWithGemini(
         h: (p.location.height ?? 0) / 100,
       }))
       .filter((p) => p.w > 0 && p.h > 0);
+    // PREFER the detector's tight boxes when it ran (null = didn't). A
+    // union would keep Gemini's generous envelope in the test and defeat
+    // the slice: the whole point is that a side table beside the host sits
+    // OUTSIDE the tight person box and survives the remainder test on the
+    // first scan of a new set. Detector [] means "ran, no people" — a real
+    // signal, same as Gemini's explicit empty array.
+    const detectorPeople = await personDetectorPromise;
+    // Tight boxes are preferred only when the detector actually FOUND
+    // someone. Detector-empty while Gemini reported people is disagreement
+    // (COCO misses seated/occluded hosts at 480px), and treating it as
+    // truth would zero personOverlapFraction AND skip the zone heuristics —
+    // every ghost defense off at once.
+    const detectorFound = detectorPeople !== null && detectorPeople.length > 0;
+    const peopleBoxes = detectorFound
+      ? detectorPeople!.map((p) => ({ x: p.x, y: p.y, w: p.width, h: p.height }))
+      : geminiPeopleBoxes;
+    if (detectorPeople !== null) {
+      console.log(`[Tier2] Person detector: ${detectorPeople.length} tight box(es) (Gemini reported ${geminiPeopleBoxes.length})${detectorFound ? "" : " — using Gemini boxes"}`);
+    }
     // An explicit empty array is a real signal ("no people in frame") and
     // enables overlap mode just like populated boxes do; only a MISSING
-    // field (older model output, malformed response) falls back to zones.
-    const hasPeopleData = Array.isArray(parsed.people);
+    // field (older model output, malformed response) AND no detector run
+    // falls back to zones.
+    const hasPeopleData = detectorFound || Array.isArray(parsed.people);
+    const peopleSource: "detector" | "gemini" | undefined =
+      detectorFound ? "detector" : hasPeopleData ? "gemini" : undefined;
     // Total person-covered fraction of a box (sum of per-person
     // intersections, clamped — people rarely overlap each other in frame).
     // The REMAINDER (non-person area) is the actual placement real estate:
@@ -2296,7 +2380,7 @@ async function analyzeFrameWithGemini(
 
     if ((!parsed.surfaces_found || !parsed.surfaces || parsed.surfaces.length === 0) && knownConfirmed.length === 0) {
       // Gemini analyzed successfully but found no surfaces — don't fall back to edge
-      return { ...defaultResult, aiAnalyzed: true, personCoverage, knownGhostVetoedIdx };
+      return { ...defaultResult, aiAnalyzed: true, personCoverage, peopleSource, knownGhostVetoedIdx };
     }
 
     // Infer orientation from surface_type if Gemini didn't provide it explicitly.
@@ -2506,7 +2590,7 @@ async function analyzeFrameWithGemini(
 
     const combinedSurfaces = [...freshSurfaces, ...knownConfirmed];
     if (combinedSurfaces.length === 0) {
-      return { ...defaultResult, aiAnalyzed: true, personCoverage, knownGhostVetoedIdx };
+      return { ...defaultResult, aiAnalyzed: true, personCoverage, peopleSource, knownGhostVetoedIdx };
     }
 
     const maxConfidence = Math.max(...combinedSurfaces.map(s => s.confidence));
@@ -2518,6 +2602,7 @@ async function analyzeFrameWithGemini(
       isVertical,
       aiAnalyzed: true,
       personCoverage,
+      peopleSource,
       knownGhostVetoedIdx,
     };
 
@@ -2556,7 +2641,8 @@ async function analyzeFrameWithGeminiRetry(
   timestamp: number,
   isDense: boolean = false,
   knownSurfaces?: KnownSurfaceSpec[],
-  maxRetries: number = 5
+  maxRetries: number = 5,
+  proposals?: import("./lib/groundedDetector").GroundedProposal[]
 ): Promise<any> {
   const defaultResult = {
     surfaces: [],
@@ -2566,7 +2652,7 @@ async function analyzeFrameWithGeminiRetry(
   let lastErr: any = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      return await analyzeFrameWithGemini(framePath, timestamp, isDense, knownSurfaces);
+      return await analyzeFrameWithGemini(framePath, timestamp, isDense, knownSurfaces, proposals);
     } catch (err: any) {
       lastErr = err;
       if (!err.isRateLimit) {
@@ -3878,12 +3964,19 @@ async function processVideoScanInner(
   // only when they were still live at scan start. A row the creator rejected
   // is already Filtered and stays that way; sparing must never resurrect it.
   const priorGroupById = new Map<number, string>();
+  const priorApprovedIds = new Set<number>();
   try {
     const prior = await storage.getDetectedSurfaces(videoId);
     priorSurfaceIds = prior.map(s => s.id);
     for (const s of prior) {
       const gid = (s as any).surfaceGroupId as string | null | undefined;
-      if (gid && s.surfaceType !== "Filtered") priorGroupById.set(s.id, gid);
+      if (gid && s.surfaceType !== "Filtered") {
+        priorGroupById.set(s.id, gid);
+        // Row-level approval signal — spares the row from the retirement
+        // sweep even before the model round-trip stamps validated (the
+        // first scan after approval is exactly the one that must not lose it).
+        if ((s as any).creatorApproved === true) priorApprovedIds.add(s.id);
+      }
     }
     // Count CANONICAL surfaces, not rows — each surface owns many
     // supporting-frame rows, and a failed rescan reverting to
@@ -4050,10 +4143,16 @@ async function processVideoScanInner(
     // is never persisted. Falls through to the download fallbacks below only if
     // URL resolution or streaming extraction fails.
     const platform = (video as any).platform as string | undefined;
+    // Twitch/TikTok/X: whole acquisition path is generic yt-dlp keyed on a
+    // rebuilt watch URL. Null when the stored id is malformed.
+    const genericSourceUrl = isYtDlpPlatform(platform)
+      ? sourceUrlForStoredId(platform, video.youtubeId)
+      : null;
     const isStreamableImport =
       process.env.SCANNER_DISABLE_STREAM !== "1" &&
       !videoPath &&
       ((platform === "youtube" && looksLikeRealYouTubeId(video.youtubeId)) ||
+       !!genericSourceUrl ||
        ((platform === "instagram" || platform === "facebook") &&
         (video.youtubeId.startsWith("instagram:") || video.youtubeId.startsWith("facebook:"))));
     if (process.env.SCANNER_DISABLE_STREAM === "1" && !videoPath) {
@@ -4076,6 +4175,8 @@ async function processVideoScanInner(
       try {
         if (platform === "youtube") {
           source = await resolveYoutubeStreamUrl(video.youtubeId, oauthToken || undefined);
+        } else if (genericSourceUrl) {
+          source = await resolveGenericStreamUrl(genericSourceUrl, `${platform} ${video.youtubeId}`);
         } else {
           const user = await storage.getUserById((video as any).userId);
           const token = safeDecrypt(user?.facebookAccessToken);
@@ -4104,8 +4205,8 @@ async function processVideoScanInner(
         // too-small grid silently caps coverage at the first few minutes
         // of a video of unknown length.
         let streamDurationSec = durationSec;
-        if (!streamDurationSec && platform === "youtube") {
-          ytProbedDurationSec = await getYoutubeVideoDuration(video.youtubeId, oauthToken || undefined);
+        if (!streamDurationSec && (platform === "youtube" || genericSourceUrl)) {
+          ytProbedDurationSec = await getYoutubeVideoDuration(video.youtubeId, oauthToken || undefined, genericSourceUrl || undefined);
           streamDurationSec = ytProbedDurationSec;
           if (streamDurationSec) {
             console.log(`[Scanner V2] Duration from yt-dlp probe: ${streamDurationSec}s`);
@@ -4206,10 +4307,12 @@ async function processVideoScanInner(
     // clobbered and the write is a no-op.
     await storage.updateVideoStatusIfScanning(videoId, "Scanning").catch(() => {});
 
-    if (!videoPath && !streamedFrames && (video as any).platform === "youtube" && looksLikeRealYouTubeId(video.youtubeId)) {
-      console.log(`[Scanner V2] No filePath; attempting YouTube download for ${video.youtubeId}`);
+    if (!videoPath && !streamedFrames &&
+        (((video as any).platform === "youtube" && looksLikeRealYouTubeId(video.youtubeId)) || genericSourceUrl)) {
+      console.log(`[Scanner V2] No filePath; attempting ${platform} download for ${video.youtubeId}`);
       fs.mkdirSync(tempDir, { recursive: true });
-      const downloadPath = path.join(tempDir, `${video.youtubeId}.mp4`);
+      // Stored ids can contain "/" (tiktok @user/video/123) — sanitize.
+      const downloadPath = path.join(tempDir, `${safeFileStem(video.youtubeId)}.mp4`);
 
       // Path B (OAuth): the hoisted oauthToken above rides along on every
       // request here so anonymous bot detection doesn't block long
@@ -4220,11 +4323,22 @@ async function processVideoScanInner(
       // degenerate-index fallback later in the local path can reuse them.
       let probedDuration = durationSec ?? ytProbedDurationSec;
       if (!probedDuration) {
-        probedDuration = await getYoutubeVideoDuration(video.youtubeId, oauthToken || undefined);
+        probedDuration = await getYoutubeVideoDuration(video.youtubeId, oauthToken || undefined, genericSourceUrl || undefined);
         if (probedDuration) {
           console.log(`[Scanner V2] Duration from yt-dlp probe: ${probedDuration}s`);
           ytProbedDurationSec = probedDuration;
         }
+      }
+
+      // Per-platform duration gate (Twitch VODs: HLS-only, often multi-hour
+      // — a pull the light-cloud /tmp budget can't absorb). Clear error
+      // instead of a mid-download ENOSPC mystery.
+      const platformMaxSec = platformMaxDurationSec(platform ?? "");
+      if (platformMaxSec && probedDuration && probedDuration > platformMaxSec) {
+        throw new Error(
+          `${platform} videos over ${Math.round(platformMaxSec / 60)} minutes aren't supported yet — ` +
+          `this one is ~${Math.round(probedDuration / 60)} minutes. Try a clip or a shorter VOD.`
+        );
       }
 
       if (probedDuration && probedDuration > 0) {
@@ -4278,10 +4392,11 @@ async function processVideoScanInner(
         trimToSeconds: trimSec,
         timeoutMs: 10 * 60 * 1000, // 10min cap — long videos with full-duration scans take longer
         oauthToken: oauthToken || undefined,
+        sourceUrl: genericSourceUrl || undefined,
       });
       if (ok && fs.existsSync(downloadPath)) {
         videoPath = downloadPath;
-        console.log(`[Scanner V2] YouTube download succeeded: ${videoPath}`);
+        console.log(`[Scanner V2] ${platform} download succeeded: ${videoPath}`);
         // Tee the pull into the playback/editorial cache so review playback
         // and the editorial pipeline become cache hits instead of separate
         // YouTube downloads from the same IP. Only when the trim window
@@ -4292,7 +4407,7 @@ async function processVideoScanInner(
           seedSourceCache(videoId, downloadPath);
         }
       } else {
-        console.error(`[Scanner V2] YouTube download failed for ${video.youtubeId}`);
+        console.error(`[Scanner V2] ${platform} download failed for ${video.youtubeId}`);
       }
     }
 
@@ -4348,7 +4463,7 @@ async function processVideoScanInner(
       const failStatus =
         platform === "instagram" || platform === "facebook"
           ? "Scan Failed — Reconnect Instagram/Facebook"
-          : platform === "youtube"
+          : platform === "youtube" || isYtDlpPlatform(platform)
           ? "Scan Failed — Source Unavailable"
           : "Pending Upload";
       await updateStatusIfStillScanning(videoId, failStatus);
@@ -4356,8 +4471,8 @@ async function processVideoScanInner(
         success: false,
         videoId,
         surfacesDetected: 0,
-        error: streamedFrames === null && (platform === "youtube" || platform === "instagram" || platform === "facebook")
-          ? `Could not access ${platform} source. The connection may need to be re-authorized, or the video may be private/unavailable.`
+        error: streamedFrames === null && (platform === "youtube" || platform === "instagram" || platform === "facebook" || isYtDlpPlatform(platform))
+          ? `Could not access ${platform} source. The video may be private, geo-blocked, or unavailable.`
           : "Video file not found. Upload required.",
       };
     }
@@ -4703,9 +4818,12 @@ async function processVideoScanInner(
     // and the end-of-scan retirement sweep honor. Creator ground truth is
     // never silently filtered, deduped away, or retired without replacement.
     const taughtGroupIds = new Set<string>();
+    // Tier 3: model surfaces the creator previously validated via approval.
+    const validatedGroupIds = new Set<string>();
     for (const match of Array.from(modelBySceneKey.values())) {
       for (const s of match.surfaces) {
         if (s.taught) taughtGroupIds.add(`rm${match.model.id}-s${s.idx}`);
+        if (s.validated) validatedGroupIds.add(`rm${match.model.id}-s${s.idx}`);
       }
     }
 
@@ -4741,12 +4859,23 @@ async function processVideoScanInner(
       // Person-box coverage of the frame (0-1), when the response carried
       // people data — drives the clean-frame re-sampling pass below.
       personCoverage?: number;
+      peopleSource?: "detector" | "gemini";
       // Known-surface idx values the parse-time ghost filter vetoed in this
       // frame. Taught surfaces are exempt there, so this should stay empty
       // for taught idx values — the [Taught] fate line counts it as proof.
       knownGhostVetoes?: number[];
     }
     const bufferedAnalyses: BufferedFrameAnalysis[] = [];
+
+    // Tier 2: per-scene-class grounded proposal cache. undefined = not yet
+    // attempted for this class; null = attempted/unavailable. Cap bounds
+    // fal spend per scan (phrases × classes calls worst case).
+    const groundedBySceneKey = new Map<number, import("./lib/groundedDetector").GroundedProposal[] | null>();
+    const GROUNDED_MAX_SCENES_PER_SCAN = 6;
+    // Frame-loop heartbeat: long loops (Gemini ladders, detector calls, 429
+    // storms) can run >120min with zero row writes — keep updated_at fresh
+    // so the stuck-scan sweep never reaps a live loop. CAS write, cheap.
+    let lastFrameHeartbeat = Date.now();
 
     for (let i = 0; i < frames.length; i++) {
       const framePath = frames[i];
@@ -4760,6 +4889,10 @@ async function processVideoScanInner(
       // from "Scanning"; honor it within a few frames instead of grinding
       // through the whole Gemini budget. Checked every 3rd frame to keep
       // the DB chatter negligible.
+      if (Date.now() - lastFrameHeartbeat > 4 * 60 * 1000) {
+        lastFrameHeartbeat = Date.now();
+        storage.updateVideoStatusIfScanning(videoId, "Scanning").catch(() => {});
+      }
       if (i % 3 === 0) {
         try {
           const fresh = await storage.getVideoById(videoId);
@@ -4804,9 +4937,25 @@ async function processVideoScanInner(
         : (streamSegmentIds?.[i] ?? 0);
       const knownForFrame = modelBySceneKey.get(sceneKey)?.surfaces;
 
+      // Tier 2: grounded geometry proposals, ONCE per scene class on its
+      // first analyzed frame (scene classes are recurring camera setups, so
+      // one frame's geometry holds for the class). Cached — later frames of
+      // the class reuse the same proposals, which is itself a consistency
+      // win: every frame of a scene judges the SAME candidate geometry.
+      // Capped per scan for cost; null = detector unavailable, never fatal.
+      let proposalsForFrame = groundedBySceneKey.get(sceneKey);
+      if (proposalsForFrame === undefined && useGemini) {
+        if (groundedBySceneKey.size < GROUNDED_MAX_SCENES_PER_SCAN && groundedDetectorAvailable()) {
+          proposalsForFrame = await detectGroundedSurfaces(framePath);
+        } else {
+          proposalsForFrame = null;
+        }
+        groundedBySceneKey.set(sceneKey, proposalsForFrame);
+      }
+
       let analysis: FrameAnalysisResult;
       if (useGemini) {
-        analysis = await analyzeFrameWithGeminiRetry(framePath, timestamp, isVertical, knownForFrame);
+        analysis = await analyzeFrameWithGeminiRetry(framePath, timestamp, isVertical, knownForFrame, 5, proposalsForFrame ?? undefined);
         // Only fall back to edge if Gemini API actually failed (not if it just found no surfaces)
         // If aiAnalyzed=true, Gemini worked fine — it just said "no surfaces here"
         if (!analysis.aiAnalyzed && !analysis.hasSurface) {
@@ -4831,6 +4980,7 @@ async function processVideoScanInner(
         viaGemini: Boolean(useGemini) && analysis.aiAnalyzed === true,
         rateLimited: analysis.rateLimited === true,
         personCoverage: analysis.personCoverage,
+        peopleSource: analysis.peopleSource,
         knownGhostVetoes: analysis.knownGhostVetoedIdx,
       });
       // NOTE: temp frames are intentionally KEPT here — the verification
@@ -4904,7 +5054,10 @@ async function processVideoScanInner(
           // EVERY analyzed frame must be >50% person-covered. Frames without
           // people data can't be measured and disqualify the class — the
           // trigger fails closed rather than spending budget on a guess.
-          const allCrowded = effective.every((bf) => (bf.personCoverage ?? 0) > 0.5);
+          // 0.5 was calibrated against Gemini's generous person envelopes;
+          // tight detector boxes cover ~30-40% less area for the same crowd.
+          const allCrowded = effective.every((bf) =>
+            (bf.personCoverage ?? 0) > (bf.peopleSource === "detector" ? 0.35 : 0.5));
           if (!allCrowded) continue;
           const classShots = sceneIndex.shots.filter((s) => s.sceneId === classKey);
           const unsampled = classShots.filter(
@@ -4935,7 +5088,7 @@ async function processVideoScanInner(
             } catch (upErr) {
               console.error(`[Scanner V2] Failed to upload re-sampled frame to storage:`, upErr);
             }
-            const extraAnalysis: FrameAnalysisResult = await analyzeFrameWithGeminiRetry(extraPath, extraT, isVertical, knownForClass);
+            const extraAnalysis: FrameAnalysisResult = await analyzeFrameWithGeminiRetry(extraPath, extraT, isVertical, knownForClass, 5, groundedBySceneKey.get(classKey) ?? undefined);
             bufferedAnalyses.push({
               framePath: extraPath,
               timestamp: extraT,
@@ -4945,6 +5098,7 @@ async function processVideoScanInner(
               viaGemini: extraAnalysis.aiAnalyzed === true,
               rateLimited: extraAnalysis.rateLimited === true,
               personCoverage: extraAnalysis.personCoverage,
+              peopleSource: extraAnalysis.peopleSource,
               knownGhostVetoes: extraAnalysis.knownGhostVetoedIdx,
             });
           }
@@ -5470,14 +5624,14 @@ async function processVideoScanInner(
             // qualify (priorGroupById skips Filtered) — a creator-rejected
             // row stays retired.
             const gid = priorGroupById.get(id);
-            if (gid && taughtGroupIds.has(gid) && !survivingGroupIds.has(gid)) {
+            if (gid && (taughtGroupIds.has(gid) || validatedGroupIds.has(gid) || priorApprovedIds.has(id)) && !survivingGroupIds.has(gid)) {
               sparedTaughtIds.add(id);
               continue;
             }
             await storage.updateDetectedSurface(id, { surfaceType: "Filtered", sceneContext: "Replaced by re-scan" });
           }
           if (sparedTaughtIds.size > 0) {
-            console.log(`[Taught] Spared ${sparedTaughtIds.size} prior taught row(s) from retirement — no replacement rows this scan`);
+            console.log(`[Taught] Spared ${sparedTaughtIds.size} prior taught/validated/approved row(s) from retirement — no replacement rows this scan`);
           }
           console.log(`[Scanner V2] Marked ${priorSurfaceIds.length - sparedTaughtIds.size} prior surfaces as Filtered (replaced by ${totalSurfaces} new surfaces)`);
         } catch (err: any) {
@@ -5723,6 +5877,20 @@ async function processVideoScanInner(
             rmByGroup.set(gid, arr);
           }
 
+          // Tier 3: creator-approved rows (this scan's rows can't be approved
+          // yet — the signal rides in from PRIOR scans' rows of the same
+          // fixture). Absence of approval is NOT rejection; only the explicit
+          // yes is harvested.
+          // ONLY rm-gids: g-prefixed ids are re-minted per scan with no
+          // cross-scan identity, so an approval recorded on scan N's g-id
+          // would validate whatever different surface drew that id in scan
+          // N+1. rm{model}-s{idx} is the one identity that survives rescans.
+          const approvedGroupIds = new Set(
+            rmRows
+              .filter(r => (r as any).creatorApproved === true &&
+                           /^rm\d+-s\d+$/.test(String((r as any).surfaceGroupId ?? "")))
+              .map(r => (r as any).surfaceGroupId as string));
+
           const rmMedian = (vals: number[]) => {
             const s = [...vals].sort((a, b) => a - b);
             const m = Math.floor(s.length / 2);
@@ -5824,6 +5992,10 @@ async function processVideoScanInner(
                   target.bbox = summary.bbox;
                   target.confidence = summary.confidence;
                   target.frameUrl = summary.frameUrl;
+                  if (approvedGroupIds.has(gid)) {
+                    target.validated = true;
+                    target.confidence = Math.max(target.confidence, 0.75);
+                  }
                   refreshed++;
                   continue;
                 }
@@ -5856,8 +6028,9 @@ async function processVideoScanInner(
                 surfaceType: summary.surfaceType,
                 orientation: summary.orientation,
                 bbox: summary.bbox,
-                confidence: summary.confidence,
+                confidence: approvedGroupIds.has(gid) ? Math.max(summary.confidence, 0.75) : summary.confidence,
                 frameUrl: summary.frameUrl,
+                ...(approvedGroupIds.has(gid) ? { validated: true } : {}),
               });
               appended++;
             }
