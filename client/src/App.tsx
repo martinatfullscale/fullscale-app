@@ -35,6 +35,7 @@ import BrandPlacementRequests from "@/pages/BrandPlacementRequests";
 import CreatorAnalytics from "@/pages/CreatorAnalytics";
 import AdminCreatorIntelligence from "@/pages/AdminCreatorIntelligence";
 import AdminSignups from "@/pages/AdminSignups";
+import AdminPlacements from "@/pages/AdminPlacements";
 import AdminDataInventory from "@/pages/AdminDataInventory";
 import RemixEngine from "@/components/RemixEngine";
 import SharedView from "@/pages/SharedView";
@@ -302,6 +303,7 @@ function Router() {
               <Route path="/analytics" component={CreatorAnalytics} />
               <Route path="/admin/creators" component={AdminCreatorIntelligence} />
               <Route path="/admin/signups" component={AdminSignups} />
+              <Route path="/admin/placements" component={AdminPlacements} />
               <Route path="/admin/data-inventory" component={AdminDataInventory} />
               <Route path="/brand/clips" component={BrandClipsBrowser} />
               <Route path="/brand/placements" component={BrandPlacementRequests} />

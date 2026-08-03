@@ -2150,7 +2150,7 @@ export default function PlacementPreviewModal({
         if (data.status === "complete") {
           setExportOutputUrl(data.outputUrl);
           setIsExporting(false);
-          toast({ title: "Video export complete!", description: "Your video with product placement is ready to download." });
+          toast({ title: "Preview export complete", description: "This is your placement preview for reference — the final polished render is produced by our team after review." });
           clearInterval(interval);
         } else if (data.status === "failed") {
           setIsExporting(false);
@@ -2544,7 +2544,7 @@ export default function PlacementPreviewModal({
           ? `Applies to exactly ${scopeCount} surface${scopeCount === 1 ? "" : "s"} — nowhere else.`
           : propagated > 0
           ? `Saved and auto-applied to ${propagated} matching scene${propagated > 1 ? 's' : ''} across the video.`
-          : "Your placement has been saved and can be viewed in Saved Placements.",
+          : "Placement submitted! Our team reviews every placement and produces the final polished render — track its status in Saved Placements.",
       });
       setTimeout(() => setSaveSuccess(false), 3000);
     } catch (err: any) {
@@ -3647,7 +3647,7 @@ export default function PlacementPreviewModal({
                             <li>Upload your product or brand image</li>
                             <li>Drag to reposition, resize, and rotate</li>
                             <li>Adjust blend, shadow, and lighting</li>
-                            <li>Export the final mockup</li>
+                            <li>Save it — our team reviews your placement and produces the final render</li>
                           </ol>
                         </div>
                       )}
@@ -4044,7 +4044,7 @@ export default function PlacementPreviewModal({
 
                   <div>
                     <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm font-medium text-white">Saved composite</span>
+                      <span className="text-sm font-medium text-white">Saved composite (review reference)</span>
                       <Badge className="text-[10px] bg-emerald-500/20 text-emerald-300 border-emerald-500/40">
                         what brands see
                       </Badge>

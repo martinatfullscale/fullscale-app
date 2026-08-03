@@ -517,6 +517,14 @@ export const savedPlacements = pgTable("saved_placements", {
     contrast: number;
   }>(),
   status: varchar("status").notNull().default("active"), // 'active', 'archived'
+  // Human-review lifecycle — the creator CHOOSES a placement; a human at
+  // FullScale reviews the choice and produces the final photorealistic
+  // render before anything ships. 'submitted' (default on save) →
+  // 'in_review' → 'render_ready' | 'needs_changes'. Distinct from `status`
+  // (active/archived), which is row liveness, not pipeline position.
+  reviewStatus: varchar("review_status", { length: 20 }).notNull().default("submitted"),
+  reviewNote: text("review_note"), // ops note back to the creator (esp. needs_changes)
+  reviewedAt: timestamp("reviewed_at"),
   // Harmonization persistence — per-placement opt-in. When isHarmonized=true,
   // brand-side previews + render pipeline use harmonizedImageUrl instead of
   // the flat product overlay. URL points at fal.ai's CDN (or a future GCS

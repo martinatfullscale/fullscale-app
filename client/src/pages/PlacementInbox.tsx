@@ -77,7 +77,7 @@ export default function PlacementInbox() {
       setPickingFor(null);
       queryClient.invalidateQueries({ queryKey: ["/api/creator/placements/inbox"] });
       queryClient.invalidateQueries({ queryKey: ["/api/creator/placements/inbox/count"] });
-      toast({ title: "Placement approved", description: "It will appear in your next remix render." });
+      toast({ title: "Placement approved", description: "The FullScale team will review it and produce the final render." });
     },
     onError: (err: any) => {
       toast({ title: "Approval failed", description: err?.message || "Try again", variant: "destructive" });

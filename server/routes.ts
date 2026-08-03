@@ -973,6 +973,91 @@ export async function registerRoutes(
     }
   });
 
+  // -------------------------------------------------------------------
+  // PLACEMENT REVIEW QUEUE — the in-app home of the human step. Creators
+  // choose placements; this is where FullScale reviews each choice and
+  // marks the final render ready (or asks for changes).
+  // -------------------------------------------------------------------
+  app.get("/api/admin/placements", async (req: any, res) => {
+    try {
+      const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
+      const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
+      if (!callerEmail || !adminEmails.map((e: string) => e.toLowerCase()).includes(callerEmail.toLowerCase())) {
+        return res.status(403).json({ error: "Admin access required" });
+      }
+      const all = await storage.getAllActivePlacements();
+      const videoIds = [...new Set(all.map((p) => p.videoId))];
+      const titles = new Map<number, string>();
+      for (const vid of videoIds) {
+        const v = await storage.getVideoById(vid).catch(() => undefined);
+        if (v) titles.set(vid, v.title);
+      }
+      const order: Record<string, number> = { submitted: 0, in_review: 1, needs_changes: 2, render_ready: 3 };
+      const rows = all
+        .map((p: any) => ({
+          id: p.id,
+          videoId: p.videoId,
+          videoTitle: titles.get(p.videoId) ?? `video ${p.videoId}`,
+          createdBy: p.createdBy,
+          productImageUrl: p.productImageUrl,
+          harmonizedImageUrl: p.harmonizedImageUrl,
+          reviewStatus: p.reviewStatus ?? "submitted",
+          reviewNote: p.reviewNote ?? null,
+          createdAt: p.createdAt,
+        }))
+        .sort((a, b) => (order[a.reviewStatus] ?? 0) - (order[b.reviewStatus] ?? 0) || b.id - a.id);
+      res.json({ placements: rows });
+    } catch (err: any) {
+      console.error("[Admin Placements] List error:", err?.message);
+      res.status(500).json({ error: "Failed to list placements" });
+    }
+  });
+
+  app.post("/api/admin/placements/:id/review", async (req: any, res) => {
+    try {
+      const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
+      const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
+      if (!callerEmail || !adminEmails.map((e: string) => e.toLowerCase()).includes(callerEmail.toLowerCase())) {
+        return res.status(403).json({ error: "Admin access required" });
+      }
+      const placementId = parseInt(req.params.id);
+      const { reviewStatus, reviewNote } = req.body || {};
+      const VALID = ["submitted", "in_review", "render_ready", "needs_changes"];
+      if (isNaN(placementId) || !VALID.includes(reviewStatus)) {
+        return res.status(400).json({ error: `reviewStatus must be one of ${VALID.join(", ")}` });
+      }
+      const row = await storage.updatePlacementReview(placementId, { reviewStatus, reviewNote: reviewNote || null });
+      if (!row) return res.status(404).json({ error: "Placement not found" });
+
+      // Tell the creator where their placement stands (in-app bell).
+      const creatorUser = await storage.getUserByEmail((row as any).createdBy).catch(() => undefined);
+      if (creatorUser) {
+        const video = await storage.getVideoById(row.videoId).catch(() => undefined);
+        const titles: Record<string, { t: string; b: string }> = {
+          in_review: { t: "Your placement is in review", b: "Our team is reviewing your placement choice and preparing the final render." },
+          render_ready: { t: "Final render ready 🎉", b: "Your placement passed review and the final render is done." },
+          needs_changes: { t: "Your placement needs a tweak", b: reviewNote ? String(reviewNote).slice(0, 200) : "Our team left a note on your placement — open it to see what to adjust." },
+        };
+        const msg = titles[reviewStatus];
+        if (msg) {
+          storage.createNotification({
+            userId: creatorUser.id,
+            type: "placement_review",
+            title: msg.t,
+            body: `${video?.title ? `"${video.title}" — ` : ""}${msg.b}`,
+            linkPath: "/placements",
+            metadata: { placementId, reviewStatus },
+          }).catch(() => {});
+        }
+      }
+      console.log(`[Admin Placements] ${callerEmail} set placement ${placementId} → ${reviewStatus}`);
+      res.json({ ok: true, placement: row });
+    } catch (err: any) {
+      console.error("[Admin Placements] Review error:", err?.message);
+      res.status(500).json({ error: "Review update failed" });
+    }
+  });
+
   // Pull every signup from the Airtable base (canonical source-of-truth
   // for who has expressed interest — every signup gets POSTed there at
   // -------------------------------------------------------------------
@@ -9613,6 +9698,23 @@ export async function registerRoutes(
       }
 
       console.log(`[Placements] Saved placement ${placement.id} for video ${videoId} surface ${surfaceId} by ${userEmail} ${scopeProvided ? `(explicit scope: ${scopeGroupIds!.length} group id${scopeGroupIds!.length === 1 ? "" : "s"}, no fan-out)` : `(propagated to ${propagatedCount} additional surfaces)`}`);
+
+      // The human step starts HERE: the creator chose a placement; a human
+      // at FullScale reviews it and produces the final render. Until this
+      // email existed, saves were silent and the ops step could never begin.
+      (async () => {
+        try {
+          const { sendPlacementSubmittedNotification } = await import("./lib/resend");
+          await sendPlacementSubmittedNotification({
+            placementId: placement.id,
+            creatorEmail: userEmail,
+            videoTitle: (targetVideo as any)?.title ?? `video ${videoId}`,
+          });
+        } catch (e: any) {
+          console.warn(`[Placements] Review-notification email failed (non-fatal): ${e?.message}`);
+        }
+      })();
+
       res.json({ placement, propagatedCount, reviewSlug });
     } catch (err: any) {
       console.error("[Placements] Save error:", err.message);

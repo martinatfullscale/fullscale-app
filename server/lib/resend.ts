@@ -654,7 +654,8 @@ export async function sendApprovalEmail(params: {
             <li style="margin-bottom: 10px;"><strong>Sign in</strong> at <a href="${loginUrl}" style="${link}">gofullscale.co</a> using ${params.email} — the same way you signed up.</li>
             <li style="margin-bottom: 10px;"><strong>Bring in a video.</strong> Connect your YouTube channel from the dashboard, or just paste a link into the bar at the top of your Library — YouTube, Twitch, TikTok, and X all work.</li>
             <li style="margin-bottom: 10px;"><strong>Hit Scan.</strong> Our AI watches the whole video, maps every recurring scene, and finds the walls, desks, and tables a brand could actually live on. A long episode takes a few minutes — you can close the tab.</li>
-            <li style="margin-bottom: 10px;"><strong>Open the results and try a placement.</strong> Pick a surface you like, drop a product onto it, and save. That's the thing brands pay for, and it's worth seeing it on your own footage.</li>
+            <li style="margin-bottom: 10px;"><strong>Open the results and try a placement.</strong> Pick a surface you like, drop a product onto it, and save. You're choosing <em>where the product lives</em> — it doesn't need to look perfect, that's our job.</li>
+            <li style="margin-bottom: 10px;"><strong>We take it from there.</strong> A real person on our team reviews every placement and produces the final polished render — nothing ships straight off the tool. You'll see the status on each placement as it moves.</li>
             <li><strong>Approve what brands can see.</strong> Nothing about your content reaches a brand until you approve it — that switch is yours, always.</li>
           </ol>
           <p style="${p}">The same checklist is waiting on your dashboard and ticks itself off as you go, so you don't need to keep this email open.</p>
@@ -734,4 +735,37 @@ export async function sendDemoSchedulingEmail(params: {
     console.error("[Resend] Failed to send demo scheduling email:", error?.message || error);
     return { sent: false, reason: error?.message || String(error) };
   }
+}
+
+/**
+ * Internal ops ping: a creator saved a placement — the human review + final
+ * render step starts now. Without this, saves were silent and the ops queue
+ * could never begin.
+ */
+export async function sendPlacementSubmittedNotification(params: {
+  placementId: number;
+  creatorEmail: string;
+  videoTitle: string;
+}): Promise<void> {
+  const { client } = await getResendClient();
+  if (!client) return;
+  await client.emails.send({
+    from: MAIL_FROM.noreply,
+    to: MAIL_MARTIN_ADDRESS,
+    subject: `Placement #${params.placementId} submitted for review — ${params.videoTitle}`,
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #1a1a1a;">New placement to review</h2>
+        <p style="color: #4a4a4a; font-size: 15px; line-height: 1.6;">
+          <strong>${params.creatorEmail}</strong> chose a placement on
+          <strong>${params.videoTitle}</strong>. Review the choice and produce the
+          final render, then mark it in the queue so they see the status.
+        </p>
+        <p style="margin: 16px 0;">
+          <a href="https://gofullscale.co/admin/placements" style="display: inline-block; background: #6366f1; color: #fff; padding: 10px 18px; border-radius: 8px; text-decoration: none; font-weight: 600;">Open the review queue</a>
+        </p>
+      </div>
+    `,
+  });
+  console.log(`[Resend] Placement-review notification sent for #${params.placementId}`);
 }

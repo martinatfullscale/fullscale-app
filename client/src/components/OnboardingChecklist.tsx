@@ -60,7 +60,7 @@ export function OnboardingChecklist() {
       key: "place",
       done: progress.hasPlacement,
       title: "Place a product and save it",
-      detail: "Open the scan results, drop a product onto a surface you like, and save the placement. That's what brands pay for.",
+      detail: "Open the scan results, drop a product onto a surface you like, and save. You're choosing WHERE the product lives — our team reviews every placement and produces the final polished render.",
       cta: "Try a placement",
       go: () => navigate("/library"),
     },
@@ -101,7 +101,7 @@ export function OnboardingChecklist() {
           <h3 className="font-semibold text-sm">Welcome to FullScale — here's how to get paid</h3>
         </div>
         <p className="text-xs text-muted-foreground mb-4">
-          Three steps from zero to your first brand-ready placement. {doneCount}/{steps.length} done.
+          Three steps to your first placement — you choose where the product lives, our team polishes it into the final render. {doneCount}/{steps.length} done.
         </p>
 
         <div className="space-y-3">

@@ -36,11 +36,15 @@ interface SavedPlacementEnriched {
   id: number;
   videoId: number;
   surfaceId: number;
+  surfaceType?: string;
   productId: number | null;
   productImageUrl: string;
   createdBy: string;
   role: string;
   sceneGroupId: string | null;
+  // Human-review lifecycle: submitted → in_review → render_ready | needs_changes
+  reviewStatus?: string;
+  reviewNote?: string | null;
   transform: {
     offsetX: number;
     offsetY: number;
@@ -245,12 +249,12 @@ export default function SavedPlacements() {
             // Trigger download
             const link = document.createElement("a");
             link.href = exportData.outputUrl;
-            link.download = `${placement.videoTitle || "export"}_with_placement.mp4`;
+            link.download = `${placement.videoTitle || "export"}_placement_preview.mp4`;
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
 
-            toast({ title: "Export complete!", description: "Your video with product placement is downloading." });
+            toast({ title: "Preview downloading", description: "This is your placement preview for reference — the final polished render is produced by our team after review." });
             setTimeout(() => {
               setExportingId(null);
               setExportStatus(null);
@@ -448,6 +452,30 @@ export default function SavedPlacements() {
                                 {Math.round(placement.blend.opacity)}% opacity
                               </span>
                             </div>
+                            {/* Human-review lifecycle: the creator chose the
+                                placement; FullScale reviews it and produces
+                                the final render. This chip is how they know
+                                where it stands. */}
+                            {(() => {
+                              const rs = placement.reviewStatus ?? "submitted";
+                              const chip =
+                                rs === "render_ready"
+                                  ? { label: "Final render ready", cls: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30" }
+                                  : rs === "in_review"
+                                  ? { label: "In review with FullScale", cls: "bg-sky-500/15 text-sky-400 border-sky-500/30" }
+                                  : rs === "needs_changes"
+                                  ? { label: "Needs a tweak — see note", cls: "bg-amber-500/15 text-amber-400 border-amber-500/30" }
+                                  : { label: "Submitted — awaiting review", cls: "bg-white/5 text-muted-foreground border-white/10" };
+                              return (
+                                <div
+                                  className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full border w-fit ${chip.cls}`}
+                                  title={rs === "needs_changes" && placement.reviewNote ? placement.reviewNote : "Our team reviews every placement and produces the final render before anything goes live."}
+                                  data-testid={`review-status-${placement.id}`}
+                                >
+                                  {chip.label}
+                                </div>
+                              );
+                            })()}
                             <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
                               <Clock className="w-3 h-3" />
                               {placement.createdAt ? formatDate(placement.createdAt) : "Unknown"}
@@ -483,7 +511,7 @@ export default function SavedPlacements() {
                                   variant="outline"
                                   size="sm"
                                   className="gap-1 text-[10px] h-7 px-2"
-                                  title="Export Video with Placement"
+                                  title="Download preview video (reference only — the final render is produced by FullScale after review)"
                                   disabled={exportingId === placement.id}
                                   onClick={(e) => {
                                     e.stopPropagation();

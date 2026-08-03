@@ -43,7 +43,7 @@ const STATUS_META: Record<string, { label: string; className: string; icon: any 
   pending_creator_review: { label: "Awaiting creator", className: "bg-amber-500/15 text-amber-400 border-amber-500/30", icon: Clock },
   creator_approved: { label: "Rendering", className: "bg-sky-500/15 text-sky-400 border-sky-500/30", icon: Loader2 },
   pending_brand_review: { label: "Review the render", className: "bg-violet-500/15 text-violet-400 border-violet-500/30", icon: Clock },
-  brand_approved: { label: "Approved — ready for launch", className: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30", icon: CheckCircle2 },
+  brand_approved: { label: "Approved — final render in production", className: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30", icon: CheckCircle2 },
   creator_rejected: { label: "Declined", className: "bg-red-500/15 text-red-400 border-red-500/30", icon: XCircle },
   brand_withdrawn: { label: "Withdrawn", className: "bg-gray-500/15 text-gray-400 border-gray-500/30", icon: Ban },
   expired: { label: "Expired", className: "bg-gray-500/15 text-gray-400 border-gray-500/30", icon: Hourglass },
@@ -203,7 +203,7 @@ export default function BrandPlacementRequests() {
                     <div className="flex flex-col gap-2">
                       <p className="text-sm text-muted-foreground max-w-xs">
                         {p.clip?.exportPath
-                          ? "This is the final cut with your product baked in. Approve it to mark the placement ready for launch."
+                          ? "This preview shows your product in the chosen placement. Approve it and the FullScale team produces the final polished render."
                           : "The creator approved this placement. Give final approval to mark it ready for launch."}
                       </p>
                       <Button
@@ -213,7 +213,7 @@ export default function BrandPlacementRequests() {
                         data-testid={`approve-render-${p.id}`}
                         className="bg-emerald-600 hover:bg-emerald-500 text-white w-fit"
                       >
-                        {approveMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "Approve final render"}
+                        {approveMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "Approve placement"}
                       </Button>
                     </div>
                   </div>
@@ -261,7 +261,7 @@ export default function BrandPlacementRequests() {
                     {p.clip?.exportPath && (
                       <a href={p.clip.exportPath} download>
                         <Button size="sm" variant="outline" className="text-gray-300 border-white/15 hover:bg-white/10">
-                          <Download className="w-3.5 h-3.5 mr-1" /> Download render
+                          <Download className="w-3.5 h-3.5 mr-1" /> Download preview
                         </Button>
                       </a>
                     )}

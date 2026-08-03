@@ -190,6 +190,7 @@ export interface IStorage {
   // Saved placement methods
   savePlacement(placement: InsertSavedPlacement): Promise<SavedPlacement>;
   getAllActivePlacements(): Promise<SavedPlacement[]>;
+  updatePlacementReview(placementId: number, patch: { reviewStatus: string; reviewNote?: string | null }): Promise<SavedPlacement | undefined>;
   getPlacementsByCreator(email: string): Promise<SavedPlacement[]>;
   getPlacementsForVideo(videoId: number): Promise<SavedPlacement[]>;
   getPlacementById(placementId: number): Promise<SavedPlacement | undefined>;
@@ -1613,6 +1614,20 @@ export class DatabaseStorage implements IStorage {
       .values(placement)
       .returning();
     return result;
+  }
+
+  async updatePlacementReview(placementId: number, patch: { reviewStatus: string; reviewNote?: string | null }): Promise<SavedPlacement | undefined> {
+    const [row] = await db
+      .update(savedPlacements)
+      .set({
+        reviewStatus: patch.reviewStatus,
+        reviewNote: patch.reviewNote ?? null,
+        reviewedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(savedPlacements.id, placementId))
+      .returning();
+    return row;
   }
 
   async getAllActivePlacements(): Promise<SavedPlacement[]> {

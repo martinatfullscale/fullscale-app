@@ -411,8 +411,8 @@ function AnalysisModal({ video, open, onClose }: { video: DisplayVideo | null; o
 
   const handleApprove = () => {
     toast({
-      title: "Placement Saved",
-      description: "This surface has been approved for brand placement.",
+      title: "Surface Approved",
+      description: "This surface is now visible to brands as a placement option.",
     });
     onClose();
   };

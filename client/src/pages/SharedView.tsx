@@ -452,8 +452,9 @@ export default function SharedView() {
                     Verified Placement
                   </h3>
                   <p className="text-sm text-muted-foreground">
-                    This render was approved by both the creator and the brand through FullScale's
-                    two-sided review.
+                    This placement was approved by both the creator and the brand through
+                    FullScale's two-sided review. The FullScale team produces the final
+                    polished render.
                   </p>
                 </CardContent>
               </Card>
@@ -461,7 +462,7 @@ export default function SharedView() {
               {rel.clipUrl && (
                 <Card>
                   <CardContent className="p-4">
-                    <h3 className="font-semibold mb-3">Final Render</h3>
+                    <h3 className="font-semibold mb-3">Approved Placement Preview</h3>
                     <a href={rel.clipUrl} download>
                       <Button className="w-full" size="sm">
                         <Download className="w-4 h-4 mr-2" />
