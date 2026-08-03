@@ -34,6 +34,7 @@ import { generateTranscriptCaptions } from "./captionEngine";
 import { buildAssSubtitles, escapeAssFilterPath } from "./captionStyler";
 import { buildCaptionFilter } from "./clipGenerator";
 import { downloadToTempFile, uploadFileToStorage, objectKeyFromServeUrl } from "../objectStorage";
+import sharp from "sharp";
 
 // ── Configuration ──────────────────────────────────────────────────
 
@@ -1214,6 +1215,57 @@ async function loadBrandOverlaysForClip(
           continue;
         }
 
+        // ── Creator's saved placement (the whole point of the render) ──
+        // Join heuristic (no FK exists): same video + same anchor surface,
+        // OR the surface's stable group id appears in the placement's
+        // explicit scope. Prefer the row whose product matches the
+        // assignment's; rows come most-recent-first (same disambiguation
+        // precedent as the harmonized-export path). Fail-open: no match =
+        // legacy raw-PNG overlay, exactly as before.
+        let creatorPlacement: BrandOverlay["creatorPlacement"];
+        try {
+          const saved = await storage.getPlacementsForVideo(videoId);
+          const surfaceGid = (surface as any).surfaceGroupId as string | null | undefined;
+          const candidates = saved.filter((sp: any) =>
+            sp.surfaceId === placement.surfaceId ||
+            (surfaceGid && Array.isArray(sp.appliesToGroupIds) && sp.appliesToGroupIds.includes(surfaceGid)));
+          const match =
+            candidates.find((sp: any) => sp.productId != null && sp.productId === placement.brandProductId) ??
+            candidates[0];
+          if (match && (match as any).transform && (match as any).blend) {
+            let harmonizedCompositePath: string | undefined;
+            if ((match as any).isHarmonized && (match as any).harmonizedImageUrl) {
+              harmonizedCompositePath =
+                (await downloadBrandProductImage((match as any).harmonizedImageUrl, tmpDir, match.id)) ?? undefined;
+            }
+            const t = (match as any).transform;
+            const b = (match as any).blend;
+            const hasKeyframes = Array.isArray((match as any).keyframes) && (match as any).keyframes.length > 0;
+            if (hasKeyframes) {
+              console.log(`[BrandOverlay] Placement ${match.id} has transform keyframes — clip render uses the static base transform (keyframe playback not yet supported here)`);
+            }
+            creatorPlacement = {
+              transform: {
+                offsetX: Number(t.offsetX) || 0,
+                offsetY: Number(t.offsetY) || 0,
+                scale: Number(t.scale) || 0.6,
+                rotation: Number(t.rotation) || 0,
+                flipH: !!t.flipH,
+              },
+              blend: {
+                opacity: typeof b.opacity === "number" ? b.opacity : 90,
+                brightness: Number(b.brightness) || 0,
+                contrast: Number(b.contrast) || 0,
+              },
+              harmonizedCompositePath,
+              hasKeyframes,
+            };
+            console.log(`[BrandOverlay] Using creator's saved placement ${match.id} for assignment ${placement.id} (${harmonizedCompositePath ? "harmonized crop" : "styled sprite"})`);
+          }
+        } catch (spErr: any) {
+          console.warn(`[BrandOverlay] Saved-placement lookup failed (non-fatal, using raw overlay): ${spErr?.message}`);
+        }
+
         overlays.push({
           imagePath: localImagePath,
           bboxX: parseFloat(surface.boundingBoxX),
@@ -1222,6 +1274,7 @@ async function loadBrandOverlaysForClip(
           bboxHeight: parseFloat(surface.boundingBoxHeight),
           surfaceTimestamp: parseFloat(String(surface.timestamp)) || undefined,
           surfaceType: surface.surfaceType || undefined,
+          creatorPlacement,
         });
       } catch (err: any) {
         console.warn(`[BrandOverlay] Skipping placement ${placement.id}: ${err.message}`);
@@ -1299,6 +1352,132 @@ interface BrandOverlay {
   surfaceTimestamp?: number;
   /** Detected surface type (e.g. "Table") — improves refinement targeting */
   surfaceType?: string;
+  /** Creator's saved-placement styling. When present, the render composites
+   *  the CREATOR'S CHOICE — transform + blend baked into a sprite via the
+   *  canonical exporter math — instead of the raw product PNG at the padded
+   *  bbox. Absent = legacy behavior (creator never placed on this fixture). */
+  creatorPlacement?: {
+    transform: { offsetX: number; offsetY: number; scale: number; rotation: number; flipH: boolean };
+    blend: { opacity: number; brightness: number; contrast: number };
+    /** Local path to the FULL-SCENE harmonized composite; cropped to the
+     *  bbox at bake time (same precedent as the harmonized export path —
+     *  the crop carries the harmonized product + its cast shadow). */
+    harmonizedCompositePath?: string;
+    hasKeyframes?: boolean;
+  };
+  /** Set by bakeCreatorOverlaySprite AFTER full-res bbox refinement — the
+   *  final sprite file and its exact pixel rect in the source frame. */
+  baked?: { spritePath: string; w: number; h: number; x: number; y: number };
+}
+
+/**
+ * Bake the creator's placement into a ready-to-composite sprite + exact
+ * pixel rect. Runs AFTER the full-res bbox refinement (which mutates
+ * ov.bbox in place), so the creator's relative positioning lands on the
+ * best-aligned box. Math mirrors videoExporter's fast path exactly —
+ * aspect-fit × scale, center + offset scaled from the 1920×1080 preview
+ * canvas convention, brightness/contrast via linear, rotate, flop, opacity
+ * via alpha multiply. Harmonized placements instead crop the full-scene
+ * composite to the bbox (harmonized-export precedent: the crop carries the
+ * product + its cast shadow and fills the box with identity transform).
+ * Throws on failure — the caller catches and falls back to the raw overlay.
+ */
+async function bakeCreatorOverlaySprite(
+  ov: BrandOverlay,
+  srcWidth: number,
+  srcHeight: number,
+  tmpDir: string,
+): Promise<void> {
+  const cp = ov.creatorPlacement;
+  if (!cp) return;
+
+  const bboxPxX = ov.bboxX * srcWidth;
+  const bboxPxY = ov.bboxY * srcHeight;
+  const bboxPxW = Math.max(8, ov.bboxWidth * srcWidth);
+  const bboxPxH = Math.max(8, ov.bboxHeight * srcHeight);
+  const spritePath = path.join(tmpDir, `creator-sprite-${Date.now()}-${Math.round(bboxPxX)}.png`);
+  const opacity = Math.max(0, Math.min(100, cp.blend.opacity)) / 100;
+
+  if (cp.harmonizedCompositePath) {
+    const meta = await sharp(cp.harmonizedCompositePath).metadata();
+    if (!meta.width || !meta.height) throw new Error("harmonized composite has no dimensions");
+    const left = Math.max(0, Math.round(ov.bboxX * meta.width));
+    const top = Math.max(0, Math.round(ov.bboxY * meta.height));
+    const cw = Math.min(meta.width - left, Math.max(8, Math.round(ov.bboxWidth * meta.width)));
+    const ch = Math.min(meta.height - top, Math.max(8, Math.round(ov.bboxHeight * meta.height)));
+    if (cw < 8 || ch < 8) throw new Error("harmonized crop degenerate");
+    let sprite = sharp(cp.harmonizedCompositePath)
+      .extract({ left, top, width: cw, height: ch })
+      .resize(Math.round(bboxPxW), Math.round(bboxPxH), { fit: "fill" });
+    const { data, info } = await sprite.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    if (opacity < 1) {
+      for (let i = 3; i < data.length; i += 4) data[i] = Math.round(data[i] * opacity);
+    }
+    await sharp(data, { raw: { width: info.width, height: info.height, channels: 4 } })
+      .png()
+      .toFile(spritePath);
+    ov.baked = {
+      spritePath,
+      w: info.width,
+      h: info.height,
+      x: Math.round(bboxPxX),
+      y: Math.round(bboxPxY),
+    };
+    return;
+  }
+
+  // Styled sprite from the raw product image — canonical exporter math.
+  const imgMeta = await sharp(ov.imagePath).metadata();
+  if (!imgMeta.width || !imgMeta.height) throw new Error("product image has no dimensions");
+  const prodAspect = imgMeta.width / imgMeta.height;
+  const boxAspect = bboxPxW / bboxPxH;
+  let drawWidth: number, drawHeight: number;
+  if (prodAspect > boxAspect) {
+    drawWidth = bboxPxW * cp.transform.scale;
+    drawHeight = (bboxPxW / prodAspect) * cp.transform.scale;
+  } else {
+    drawHeight = bboxPxH * cp.transform.scale;
+    drawWidth = (bboxPxH * prodAspect) * cp.transform.scale;
+  }
+  const finalW = Math.max(1, Math.round(drawWidth));
+  const finalH = Math.max(1, Math.round(drawHeight));
+
+  let product = sharp(ov.imagePath).resize(finalW, finalH, {
+    fit: "fill",
+    background: { r: 0, g: 0, b: 0, alpha: 0 },
+  });
+  if (cp.blend.brightness !== 0 || cp.blend.contrast !== 0) {
+    const bf = (100 + cp.blend.brightness) / 100;
+    const cf = (100 + cp.blend.contrast) / 100;
+    product = product.linear(cf * bf, 128 * (1 - cf) * bf);
+  }
+  if (cp.transform.rotation !== 0) {
+    product = product.rotate(cp.transform.rotation, { background: { r: 0, g: 0, b: 0, alpha: 0 } });
+  }
+  if (cp.transform.flipH) {
+    product = product.flop();
+  }
+  const { data, info } = await product.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  if (opacity < 1) {
+    for (let i = 3; i < data.length; i += 4) data[i] = Math.round(data[i] * opacity);
+  }
+  await sharp(data, { raw: { width: info.width, height: info.height, channels: 4 } })
+    .png()
+    .toFile(spritePath);
+
+  // Offsets are client-canvas pixels; the export contract's canvas
+  // convention is 1920×1080 (what the client sends on every export).
+  const scaleX = srcWidth / 1920;
+  const scaleY = srcHeight / 1080;
+  const centerX = bboxPxX + bboxPxW / 2 + cp.transform.offsetX * scaleX;
+  const centerY = bboxPxY + bboxPxH / 2 + cp.transform.offsetY * scaleY;
+  ov.baked = {
+    spritePath,
+    w: info.width,
+    h: info.height,
+    x: Math.max(0, Math.round(centerX - info.width / 2)),
+    y: Math.max(0, Math.round(centerY - info.height / 2)),
+  };
 }
 
 interface RenderOptions {
@@ -1416,9 +1595,25 @@ async function runFFmpegRenderUngated(opts: RenderOptions): Promise<void> {
   let videoFilterArgs: string[];
 
   if (hasOverlays && srcWidth && srcHeight) {
-    // Add each overlay PNG as an additional input
+    // Bake creator-styled sprites first (AFTER any bbox refinement — the
+    // caller mutates ov.bbox in place before we get here). Fail-open per
+    // overlay: a failed bake falls back to the legacy raw-PNG behavior.
     for (const ov of brandOverlays!) {
-      inputArgs.push("-i", ov.imagePath);
+      if (ov.creatorPlacement && !ov.baked) {
+        try {
+          await bakeCreatorOverlaySprite(ov, srcWidth, srcHeight, "/tmp");
+        } catch (bakeErr: any) {
+          console.warn(`[EditorialAuto] Creator-sprite bake failed (falling back to raw overlay): ${bakeErr?.message || bakeErr}`);
+          ov.creatorPlacement = undefined;
+          ov.baked = undefined;
+        }
+      }
+    }
+
+    // Add each overlay image as an additional input (baked sprite when the
+    // creator's placement drove it, raw product PNG otherwise)
+    for (const ov of brandOverlays!) {
+      inputArgs.push("-i", ov.baked?.spritePath ?? ov.imagePath);
     }
 
     // Build filter_complex graph
@@ -1428,25 +1623,34 @@ async function runFFmpegRenderUngated(opts: RenderOptions): Promise<void> {
 
     brandOverlays!.forEach((ov, idx) => {
       const inputIdx = idx + 1; // 0 is main video
-      const pad = ov.padding ?? padding;
-
-      // Pixel dimensions for the overlay area, with padding inset
-      const bboxPxW = Math.max(20, Math.round(ov.bboxWidth * srcWidth * (1 - 2 * pad)));
-      const bboxPxH = Math.max(20, Math.round(ov.bboxHeight * srcHeight * (1 - 2 * pad)));
-      const bboxPxX = Math.round((ov.bboxX + pad * ov.bboxWidth) * srcWidth);
-      const bboxPxY = Math.round((ov.bboxY + pad * ov.bboxHeight) * srcHeight);
-
       const scaledLabel = `[ov${idx}]`;
       const composedLabel = idx === brandOverlays!.length - 1 ? "[vcomp]" : `[v${idx}]`;
 
-      // Scale overlay to fit bbox, preserving aspect ratio (force_original_aspect_ratio=decrease)
-      filterParts.push(
-        `[${inputIdx}:v]scale=${bboxPxW}:${bboxPxH}:force_original_aspect_ratio=decrease${scaledLabel}`,
-      );
-      // Overlay onto current main video chain
-      filterParts.push(
-        `${lastLabel}${scaledLabel}overlay=x=${bboxPxX}:y=${bboxPxY}:eof_action=pass${composedLabel}`,
-      );
+      if (ov.baked) {
+        // Creator-styled sprite: already the exact size (transform math
+        // baked in) — composite at its exact rect, no padding inset.
+        filterParts.push(`[${inputIdx}:v]scale=${ov.baked.w}:${ov.baked.h}${scaledLabel}`);
+        filterParts.push(
+          `${lastLabel}${scaledLabel}overlay=x=${ov.baked.x}:y=${ov.baked.y}:eof_action=pass${composedLabel}`,
+        );
+      } else {
+        const pad = ov.padding ?? padding;
+
+        // Pixel dimensions for the overlay area, with padding inset
+        const bboxPxW = Math.max(20, Math.round(ov.bboxWidth * srcWidth * (1 - 2 * pad)));
+        const bboxPxH = Math.max(20, Math.round(ov.bboxHeight * srcHeight * (1 - 2 * pad)));
+        const bboxPxX = Math.round((ov.bboxX + pad * ov.bboxWidth) * srcWidth);
+        const bboxPxY = Math.round((ov.bboxY + pad * ov.bboxHeight) * srcHeight);
+
+        // Scale overlay to fit bbox, preserving aspect ratio (force_original_aspect_ratio=decrease)
+        filterParts.push(
+          `[${inputIdx}:v]scale=${bboxPxW}:${bboxPxH}:force_original_aspect_ratio=decrease${scaledLabel}`,
+        );
+        // Overlay onto current main video chain
+        filterParts.push(
+          `${lastLabel}${scaledLabel}overlay=x=${bboxPxX}:y=${bboxPxY}:eof_action=pass${composedLabel}`,
+        );
+      }
       lastLabel = composedLabel;
     });
 
@@ -1472,26 +1676,36 @@ async function runFFmpegRenderUngated(opts: RenderOptions): Promise<void> {
     outputPath,
   ];
 
-  return new Promise((resolve, reject) => {
-    const proc = spawn("ffmpeg", args);
-    let stderr = "";
-    proc.stderr.on("data", (d) => { stderr += d.toString(); });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const proc = spawn("ffmpeg", args);
+      let stderr = "";
+      proc.stderr.on("data", (d) => { stderr += d.toString(); });
 
-    const timeout = setTimeout(() => {
-      proc.kill("SIGKILL");
-      reject(new Error(`FFmpeg render timed out after ${RENDER_CONFIG.TIMEOUT_MS}ms`));
-    }, RENDER_CONFIG.TIMEOUT_MS);
+      const timeout = setTimeout(() => {
+        proc.kill("SIGKILL");
+        reject(new Error(`FFmpeg render timed out after ${RENDER_CONFIG.TIMEOUT_MS}ms`));
+      }, RENDER_CONFIG.TIMEOUT_MS);
 
-    proc.on("close", (code) => {
-      clearTimeout(timeout);
-      if (code !== 0) {
-        reject(new Error(`FFmpeg exited with code ${code}: ${stderr.slice(-300)}`));
-      } else {
-        resolve();
-      }
+      proc.on("close", (code) => {
+        clearTimeout(timeout);
+        if (code !== 0) {
+          reject(new Error(`FFmpeg exited with code ${code}: ${stderr.slice(-300)}`));
+        } else {
+          resolve();
+        }
+      });
+      proc.on("error", (err) => { clearTimeout(timeout); reject(err); });
     });
-    proc.on("error", (err) => { clearTimeout(timeout); reject(err); });
-  });
+  } finally {
+    // Baked creator sprites are per-render temp files in /tmp.
+    for (const ov of brandOverlays ?? []) {
+      if (ov.baked?.spritePath) {
+        try { fs.unlinkSync(ov.baked.spritePath); } catch { /* ignore */ }
+        ov.baked = undefined;
+      }
+    }
+  }
 }
 
 /**
