@@ -3912,6 +3912,37 @@ export function isVideoScanInFlight(videoId: number): boolean {
   return SCAN_IN_FLIGHT.has(videoId);
 }
 
+// GLOBAL scan throttle: one Replit VM cannot decode/analyze N videos at
+// once — 10 parallel scans contend the vCPU until ffmpeg watchdogs fire
+// and an OOM takes everything down. Excess scans WAIT here (their status
+// stays "Scanning"; the queue delay reads as a slower scan, which under
+// contention it would have been anyway — just without the crash risk).
+const MAX_CONCURRENT_SCANS = Math.max(1, parseInt(process.env.MAX_CONCURRENT_SCANS || "2", 10) || 2);
+let runningScanCount = 0;
+const scanSlotWaiters: Array<() => void> = [];
+async function acquireScanSlot(videoId: number): Promise<void> {
+  if (runningScanCount >= MAX_CONCURRENT_SCANS) {
+    console.log(`[Scanner V2] Video ${videoId}: waiting for a scan slot (${runningScanCount}/${MAX_CONCURRENT_SCANS} running, ${scanSlotWaiters.length} queued)`);
+    // Queued scans still hold status "Scanning" — keep updated_at fresh so
+    // a long queue can't trip the 120-min stuck-scan sweep.
+    const hb = setInterval(() => {
+      storage.updateVideoStatusIfScanning(videoId, "Scanning").catch(() => {});
+    }, 5 * 60 * 1000);
+    (hb as any).unref?.();
+    try {
+      await new Promise<void>((r) => scanSlotWaiters.push(r));
+    } finally {
+      clearInterval(hb);
+    }
+  }
+  runningScanCount++;
+}
+function releaseScanSlot(): void {
+  runningScanCount = Math.max(0, runningScanCount - 1);
+  const next = scanSlotWaiters.shift();
+  if (next) next();
+}
+
 export async function processVideoScan(
   videoId: number,
   forceRescan: boolean = false,
@@ -3927,9 +3958,11 @@ export async function processVideoScan(
   }
 
   const promise = (async () => {
+    await acquireScanSlot(videoId);
     try {
       return await processVideoScanInner(videoId, forceRescan, scanMode);
     } finally {
+      releaseScanSlot();
       SCAN_IN_FLIGHT.delete(videoId);
     }
   })();

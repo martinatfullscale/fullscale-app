@@ -7,6 +7,7 @@ import { setupAuth, registerAuthRoutes, isAuthenticated } from "./replit_integra
 import { runIndexerForUser } from "./lib/indexer";
 import { processVideoScan, scanPendingVideos, addToLocalAssetMap, getYouTubeThumbnailWithFallback, canonicalSurfaceType } from "./scanner_v2";
 import { parsePlatformUrl, storedIdFor, platformMaxDurationSec } from "./lib/platformSources";
+import { ADMIN_EMAILS } from "./lib/adminEmails";
 import { probeVideoMeta } from "./lib/streamResolver";
 import { hammingDistance } from "./lib/scenes/sceneIndex";
 // DISABLED: TensorFlow scanner replaced by scanner_v2.ts which uses Sharp
@@ -1439,8 +1440,10 @@ export async function registerRoutes(
       if (!existingUser) {
         console.log("[Google OAuth Callback] Creating new user...");
         const nameParts = (userInfo.name || "").split(" ");
-        // Only VIPs/Founding members are auto-approved
-        userIsApproved = isVip;
+        // VIPs/Founding members auto-approve — and so does anyone an admin
+        // already approved via the Airtable webhook (allowed_users row
+        // written before their first login).
+        userIsApproved = isVip || (await storage.isEmailAllowed(normalizedEmail).catch(() => false));
         try {
           existingUser = await storage.createUser({
             email: normalizedEmail,
@@ -1491,6 +1494,16 @@ export async function registerRoutes(
       } else {
         // Existing user - use their current approval status
         userIsApproved = existingUser.isApproved ?? false;
+        // Pre-hijack defense: registration never verifies email ownership,
+        // so a squatter could have registered this address with their own
+        // password before the real owner's first Google login. Google HAS
+        // verified ownership — scrub any password on the row so the
+        // squatter's credential dies the moment the real owner arrives.
+        if (existingUser.authProvider === "email" && (existingUser as any).password) {
+          await storage.scrubUserPassword(existingUser.id).catch((e: any) =>
+            console.error("[Google OAuth Callback] Password scrub failed:", e?.message));
+          console.warn(`[Google OAuth Callback] Cleared pre-existing password for ${normalizedEmail} — Google login proved ownership`);
+        }
       }
       
       // Only add VIPs to allowlist
@@ -1814,8 +1827,21 @@ export async function registerRoutes(
         return res.status(400).json({ message: "User already exists with this email" });
       }
 
-      // VIP users are auto-approved, others go to waitlist
+      // Admin addresses cannot be self-registered: admin status is granted
+      // by email allowlist with NO email verification, so an unclaimed admin
+      // address was a privilege-escalation prize for whoever registered it
+      // first. Founder provisions these accounts directly.
+      if (ADMIN_EMAILS.includes(normalizedEmail)) {
+        console.warn(`[Auth] Blocked self-registration of admin address ${normalizedEmail} from ${req.ip}`);
+        return res.status(400).json({ message: "This email cannot be registered here. Contact support." });
+      }
+
+      // VIP users are auto-approved, others go to waitlist — UNLESS an
+      // admin already approved this email (Airtable webhook writes
+      // allowed_users before the person ever logs in; without this check
+      // they'd be created unapproved and stuck on the waitlist anyway).
       const isVip = isVipEmail(normalizedEmail);
+      const preApproved = await storage.isEmailAllowed(normalizedEmail).catch(() => false);
 
       // Hash password and create user
       const hashedPassword = await hashPassword(password);
@@ -1824,7 +1850,7 @@ export async function registerRoutes(
         password: hashedPassword,
         firstName: firstName || null,
         lastName: lastName || null,
-        isApproved: isVip, // Only VIPs are auto-approved
+        isApproved: isVip || preApproved,
         authProvider: "email",
       });
 
@@ -1968,6 +1994,7 @@ export async function registerRoutes(
         picture: googleUser.picture,
         authProvider: googleUser.authProvider || "google",
         isApproved,
+        profileSubmitted: !!(user as any)?.profileSubmittedAt,
       });
     }
     
@@ -2027,28 +2054,62 @@ export async function registerRoutes(
   
   // Flexible auth middleware - works with Google OAuth, Replit Auth, or Facebook session
   // Used for endpoints that should work for authenticated users regardless of method
+  // Per-user daily scan budget (spend guard; in-memory, single-VM).
+  const DAILY_SCAN_LIMIT = Math.max(1, parseInt(process.env.DAILY_SCAN_LIMIT || "25", 10) || 25);
+  const dailyScanCounts = new Map<string, { day: string; count: number }>();
+  const consumeDailyScanBudget = (userId: string): boolean => {
+    const day = new Date().toISOString().slice(0, 10);
+    const rec = dailyScanCounts.get(userId);
+    if (!rec || rec.day !== day) {
+      dailyScanCounts.set(userId, { day, count: 1 });
+      return true;
+    }
+    if (rec.count >= DAILY_SCAN_LIMIT) return false;
+    rec.count += 1;
+    return true;
+  };
+
+  // SERVER-SIDE approval gate. The waitlist used to be enforced only in the
+  // browser — a waitlisted user's session cookie worked against every API
+  // (scans, imports, brand discovery) via curl/devtools. Any identity branch
+  // below that resolves to a users row with isApproved=false is now blocked
+  // here, with a small exemption list for what a waitlisted user legitimately
+  // needs. Legacy sessions with NO users row (email-keyed pre-migration
+  // accounts) are grandfathered — new signups always have a row.
+  const approvalExemptPath = (path: string): boolean =>
+    path.startsWith("/api/auth/") || path.toLowerCase().includes("waitlist") || path === "/api/logout";
+  const blockUnapproved = (req: any, res: any, row: { isApproved?: boolean | null } | undefined): boolean => {
+    if (req.isAdmin || !row || row.isApproved !== false || approvalExemptPath(req.path)) return false;
+    res.status(403).json({ error: "Your account is pending approval", code: "PENDING_APPROVAL" });
+    return true;
+  };
+
   const isFlexibleAuthenticated = async (req: any, res: any, next: any) => {
     const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
     const isDevelopment = process.env.NODE_ENV !== 'production';
-    
+
     // First try Google OAuth session
     const googleUser = req.session?.googleUser;
     if (googleUser && googleUser.email) {
       req.authEmail = googleUser.email;
-      req.authUserId = (await storage.getUserByEmail(googleUser.email))?.id || googleUser.email;
+      const userRow = await storage.getUserByEmail(googleUser.email);
+      req.authUserId = userRow?.id || googleUser.email;
       req.isAdmin = adminEmails.includes(googleUser.email);
+      if (blockUnapproved(req, res, userRow)) return;
       return next();
     }
-    
+
     // Try Replit OIDC Auth (Passport-based)
     if (req.isAuthenticated && req.isAuthenticated() && req.user?.claims) {
       const claims = req.user.claims;
       req.authEmail = claims.email;
-      req.authUserId = claims.sub || (await storage.getUserByEmail(claims.email))?.id || claims.email;
+      const oidcRow = claims.email ? await storage.getUserByEmail(claims.email) : undefined;
+      req.authUserId = claims.sub || oidcRow?.id || claims.email;
       req.isAdmin = adminEmails.includes(claims.email);
+      if (blockUnapproved(req, res, oidcRow)) return;
       return next();
     }
-    
+
     // Try Facebook session auth (via req.session.userId from platformAuth)
     const sessionUserId = req.session?.userId;
     if (sessionUserId) {
@@ -2057,6 +2118,7 @@ export async function registerRoutes(
         req.authEmail = user.email;
         req.authUserId = user.id;
         req.isAdmin = adminEmails.includes(user.email);
+        if (blockUnapproved(req, res, user)) return;
         return next();
       }
     }
@@ -3388,6 +3450,59 @@ export async function registerRoutes(
   });
 
   // POST /api/youtube/import-selected — Import only selected YouTube videos
+  // ── First-login onboarding checklist ─────────────────────────────────
+  // Progress is derived from REAL state, not click-tracking: has a video,
+  // has a completed scan, has a saved placement. Survives logouts and can't
+  // be gamed by clicking "next".
+  app.get("/api/onboarding/progress", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.authUserId;
+      const userRow = await storage.getUserById(userId).catch(() => undefined);
+      const videos = await storage.getVideoIndex(userId, req.authEmail).catch(() => [] as any[]);
+      const hasVideo = videos.length > 0;
+      const hasScan = videos.some((v: any) =>
+        (typeof v.status === "string" && v.status.startsWith("Ready")) || v.status === "Scan Complete");
+      const placements = await storage.getPlacementsByCreator(req.authEmail).catch(() => []);
+      const hasPlacement = placements.length > 0;
+      const hasConnection = !!(userRow?.facebookPageId || userRow?.instagramBusinessId ||
+        (await storage.getYoutubeConnection(userId).catch(() => null)) ||
+        (req.authEmail && await storage.getYoutubeConnectionByEmail(req.authEmail).catch(() => null)));
+      res.json({
+        hasConnection,
+        hasVideo,
+        hasScan,
+        hasPlacement,
+        dismissedAt: (userRow as any)?.onboardingDismissedAt ?? null,
+        complete: hasVideo && hasScan && hasPlacement,
+      });
+    } catch (err: any) {
+      console.error("[Onboarding] Progress error:", err?.message);
+      res.status(500).json({ error: "Failed to load onboarding progress" });
+    }
+  });
+
+  // Waitlisted creator confirms they submitted the Airtable profile form.
+  // (Path contains "waitlist" → exempt from the approval gate by design.)
+  app.post("/api/waitlist/profile-submitted", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      await storage.setProfileSubmitted(req.authUserId);
+      res.json({ ok: true });
+    } catch (err: any) {
+      console.error("[Waitlist] profile-submitted error:", err?.message);
+      res.status(500).json({ error: "Failed to record submission" });
+    }
+  });
+
+  app.post("/api/onboarding/dismiss", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      await storage.setOnboardingDismissed(req.authUserId);
+      res.json({ ok: true });
+    } catch (err: any) {
+      console.error("[Onboarding] Dismiss error:", err?.message);
+      res.status(500).json({ error: "Failed to dismiss" });
+    }
+  });
+
   // URL-paste import: YouTube, Twitch, TikTok, Twitter/X. The paste flow is
   // the v1 ingest for the three new platforms (no OAuth listing exists for
   // them, and public posts need no credentials for yt-dlp). NOTE: a pasted
@@ -4313,6 +4428,15 @@ export async function registerRoutes(
     if (!isOwner) {
       console.log(`[BACKEND] ERROR: Unauthorized - video belongs to ${video.userId}`);
       return res.status(403).json({ error: "Unauthorized" });
+    }
+
+    // Per-user daily scan cap: every scan buys Gemini + Florence-2 (+ the
+    // editorial pipeline's Whisper/Claude on success) with no other spend
+    // guard. In-memory is fine on a single VM; resets on redeploy.
+    if (!req.isAdmin && !consumeDailyScanBudget(String(req.authUserId))) {
+      return res.status(429).json({
+        error: `Daily scan limit reached (${DAILY_SCAN_LIMIT}/day). It resets at midnight UTC — or reach out if you legitimately need more.`,
+      });
     }
 
     // Single-flight check — if a scan is already running for this video,
@@ -7259,14 +7383,25 @@ export async function registerRoutes(
   // ============================================
   // Monetization Items API
   // ============================================
-  app.get(api.monetization.list.path, async (req, res) => {
+  app.get(api.monetization.list.path, isFlexibleAuthenticated, async (req: any, res) => {
+    // Was unauthenticated + unscoped: every creator saw every brand's bids
+    // presented as their own "Live Offers". Non-admins now see items where
+    // they are the creator or the bidding brand.
     const items = await storage.getMonetizationItems();
-    res.json(items);
+    const scoped = req.isAdmin
+      ? items
+      : items.filter((it: any) =>
+          (it.creatorUserId && (it.creatorUserId === req.authUserId || it.creatorUserId === req.authEmail)) ||
+          (it.brandEmail && it.brandEmail === req.authEmail));
+    res.json(scoped);
   });
 
-  app.post(api.monetization.create.path, async (req, res) => {
+  app.post(api.monetization.create.path, isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const input = api.monetization.create.input.parse(req.body);
+      // The bidding identity comes from the SESSION — an anonymous caller
+      // could previously insert fabricated bids under any brand name.
+      (input as any).brandEmail = req.authEmail;
       const item = await storage.createMonetizationItem(input);
       res.status(201).json(item);
     } catch (err) {
@@ -8166,7 +8301,7 @@ export async function registerRoutes(
   });
 
   // Get single product detail
-  app.get("/api/brand-products/catalog", async (_req, res) => {
+  app.get("/api/brand-products/catalog", isFlexibleAuthenticated, async (_req: any, res) => {
     try {
       const products = await storage.getAllBrandProducts();
       res.json(products);
@@ -9184,6 +9319,22 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Missing required fields: videoId, surfaceId, productImageUrl, transform, blend" });
       }
 
+      // Ownership: creators place on their OWN videos; brand accounts may
+      // place on marketplace videos (the product's whole flow — still gated
+      // by creator approval downstream). Random creators writing placements
+      // onto strangers' videos is neither.
+      const targetVideo = await storage.getVideoById(parseInt(String(videoId)));
+      if (!targetVideo) return res.status(404).json({ error: "Video not found" });
+      const ownsTargetVideo = await isSameCreator(String((targetVideo as any).userId ?? ""), String(req.authUserId ?? ""));
+      if (!ownsTargetVideo && !req.isAdmin) {
+        const viewRole = (req.session as any)?.viewRole;
+        const allowedUser = await storage.getAllowedUser(req.authEmail);
+        const effectiveRole = viewRole || allowedUser?.userType || "creator";
+        if (effectiveRole !== "brand") {
+          return res.status(403).json({ error: "You can only place products on your own videos" });
+        }
+      }
+
       // Placement scoping: a PRESENT appliesToGroupIds (including []) is the
       // creator's explicit scope — one row, no fan-out. [] means "anchor
       // surface only"; a list names exactly the canonical surfaces (by
@@ -9535,9 +9686,16 @@ export async function registerRoutes(
   });
 
   // Get all saved placements (enriched with video info)
-  app.get("/api/placements", async (req: any, res) => {
+  app.get("/api/placements", isFlexibleAuthenticated, async (req: any, res) => {
     try {
-      const placements = await storage.getAllActivePlacements();
+      // Admins see the platform; everyone else sees THEIR placements only.
+      // This endpoint was unauthenticated and returned every placement on
+      // the platform (incl. creator emails in the client's preview modal).
+      const all = await storage.getAllActivePlacements();
+      const placements = req.isAdmin
+        ? all
+        : all.filter((p: any) =>
+            p.createdBy === req.authEmail || p.createdBy === req.authUserId || p.userId === req.authUserId);
 
       // Enrich with video titles/thumbnails
       const videoIds = [...new Set(placements.map(p => p.videoId))];
@@ -10353,6 +10511,10 @@ export async function registerRoutes(
       // Verify video exists and has a file path
       const video = await storage.getVideoById(videoId);
       if (!video) return res.status(404).json({ error: "Video not found" });
+      // Only the video's creator (or an admin) can trigger a render of it.
+      if (!req.isAdmin && !(await isSameCreator(String((video as any).userId ?? ""), String(req.authUserId ?? "")))) {
+        return res.status(403).json({ error: "You can only export your own videos" });
+      }
       if (!video.filePath) return res.status(400).json({ error: "Video has no local file — only locally uploaded videos can be exported" });
 
       // Verify video file is accessible (Object Storage or local disk)
@@ -10502,13 +10664,26 @@ export async function registerRoutes(
   });
 
   // Poll export job status
-  app.get("/api/exports/:exportId", async (req: any, res) => {
+  // Ownership gate shared by the export status/download routes: exports were
+  // unauthenticated and integer-enumerable — anyone could walk IDs and pull
+  // other creators' finished renders.
+  const authorizeExportAccess = async (req: any, exportJob: { videoId: number }): Promise<boolean> => {
+    if (req.isAdmin) return true;
+    const video = await storage.getVideoById(exportJob.videoId).catch(() => undefined);
+    if (!video) return false;
+    return await isSameCreator(String((video as any).userId ?? ""), String(req.authUserId ?? ""));
+  };
+
+  app.get("/api/exports/:exportId", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const exportId = parseInt(req.params.exportId);
       if (isNaN(exportId)) return res.status(400).json({ error: "Invalid export ID" });
 
       const exportJob = await storage.getVideoExport(exportId);
       if (!exportJob) return res.status(404).json({ error: "Export not found" });
+      if (!(await authorizeExportAccess(req, exportJob))) {
+        return res.status(404).json({ error: "Export not found" });
+      }
 
       res.json({
         id: exportJob.id,
@@ -10527,13 +10702,16 @@ export async function registerRoutes(
   });
 
   // Download completed export
-  app.get("/api/exports/:exportId/download", async (req: any, res) => {
+  app.get("/api/exports/:exportId/download", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const exportId = parseInt(req.params.exportId);
       if (isNaN(exportId)) return res.status(400).json({ error: "Invalid export ID" });
 
       const exportJob = await storage.getVideoExport(exportId);
       if (!exportJob) return res.status(404).json({ error: "Export not found" });
+      if (!(await authorizeExportAccess(req, exportJob))) {
+        return res.status(404).json({ error: "Export not found" });
+      }
       if (exportJob.status !== "complete" || !exportJob.outputPath) {
         return res.status(400).json({ error: "Export not yet complete" });
       }

@@ -642,7 +642,7 @@ export async function sendApprovalEmail(params: {
         : `
           <p style="${p}">Hi ${params.firstName},</p>
           <p style="${p}">Just approved your account — welcome in. You're part of the founding creator cohort, which means you're helping shape how this whole thing works.</p>
-          <p style="${p}">To get rolling: sign in at <a href="${loginUrl}" style="${link}">gofullscale.co</a>, connect your YouTube or Instagram, and our AI starts finding natural product-placement moments in your content. You stay in full control — nothing reaches a brand until you approve it.</p>
+          <p style="${p}">To get rolling: sign in at <a href="${loginUrl}" style="${link}">gofullscale.co</a> — a short step-by-step guide will be waiting on your dashboard. It walks you through bringing in your first video, scanning it for placement spots, and dropping in your first product. You stay in full control — nothing reaches a brand until you approve it.</p>
           <p style="${p}">I'm around if you hit anything weird or have ideas. Just reply to this email — it comes straight to me.</p>
           <p style="${p}">Glad you're here,</p>
         `;

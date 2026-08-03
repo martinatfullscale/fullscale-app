@@ -163,15 +163,31 @@ export async function setupAuth(app: Express) {
     })(req, res, next);
   });
 
-  app.get("/api/logout", (req, res) => {
-    req.logout(() => {
-      res.redirect(
-        client.buildEndSessionUrl(config, {
-          client_id: process.env.REPL_ID!,
-          post_logout_redirect_uri: `${req.protocol}://${req.hostname}`,
-        }).href
-      );
-    });
+  app.get("/api/logout", (req: any, res) => {
+    // Email/Google users live in req.session.googleUser — the old handler
+    // never destroyed the session (they stayed logged in!) and bounced
+    // EVERYONE through Replit's end-session URL (landing on replit.com).
+    // OIDC end-session only applies to actual passport OIDC sessions.
+    const hadOidcUser = !!req.user;
+    const finish = () => {
+      const destroy = req.session?.destroy?.bind(req.session);
+      const after = () => {
+        res.clearCookie("connect.sid");
+        if (hadOidcUser) {
+          res.redirect(
+            client.buildEndSessionUrl(config, {
+              client_id: process.env.REPL_ID!,
+              post_logout_redirect_uri: `${req.protocol}://${req.hostname}`,
+            }).href
+          );
+        } else {
+          res.redirect("/");
+        }
+      };
+      if (destroy) destroy(after); else after();
+    };
+    if (typeof req.logout === "function") req.logout(finish);
+    else finish();
   });
 }
 

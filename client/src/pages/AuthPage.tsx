@@ -62,7 +62,10 @@ export default function AuthPage() {
   };
 
   // Dev-only admin login bypass — skips OAuth entirely
-  const isDevEnvironment = window.location.hostname !== "gofullscale.co";
+  // Vite-inlined: true only in local dev builds. The old hostname test
+  // rendered an orange "Dev Login (martin@...)" button to the PUBLIC on
+  // every Replit deploy URL that wasn't the bare apex domain.
+  const isDevEnvironment = import.meta.env.DEV;
   const handleDevLogin = async () => {
     setIsLoading(true);
     try {

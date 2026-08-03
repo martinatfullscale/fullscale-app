@@ -900,10 +900,21 @@ export default function Library() {
       return res.json();
     },
     onSuccess: (data) => {
-      toast({
-        title: "Channel Synced",
-        description: `Indexed ${data.indexed || 0} high-value videos from your channel.`,
-      });
+      const indexed = data.indexed || 0;
+      if (indexed === 0) {
+        // Zero indexed usually means YouTube isn't connected yet — a green
+        // "success" here told new users everything worked while their
+        // library stayed empty with no path forward.
+        toast({
+          title: "No videos found",
+          description: "Connect your YouTube channel on the Dashboard first, or paste a video URL above to import one directly.",
+        });
+      } else {
+        toast({
+          title: "Channel Synced",
+          description: `Indexed ${indexed} high-value videos from your channel.`,
+        });
+      }
       queryClient.invalidateQueries({ queryKey: ["videos"] });
     },
     onError: (error: Error) => {

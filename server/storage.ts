@@ -141,6 +141,9 @@ export interface IStorage {
   getVideoIndex(userId: string, authEmail?: string): Promise<VideoIndex[]>;
   getAllVideos(): Promise<VideoIndex[]>;
   upsertVideoIndex(video: InsertVideoIndex): Promise<VideoIndex>;
+  scrubUserPassword(userId: string): Promise<void>;
+  setOnboardingDismissed(userId: string): Promise<void>;
+  setProfileSubmitted(userId: string): Promise<void>;
   findVideoIndexRow(userId: string, youtubeId: string): Promise<VideoIndex | undefined>;
   insertVideo(video: InsertVideoIndex): Promise<VideoIndex>;
   bulkUpsertVideoIndex(videos: InsertVideoIndex[]): Promise<void>;
@@ -424,6 +427,30 @@ export class DatabaseStorage implements IStorage {
       })
       .returning();
     return user;
+  }
+
+  async setProfileSubmitted(userId: string): Promise<void> {
+    await db
+      .update(users)
+      .set({ profileSubmittedAt: new Date(), updatedAt: new Date() })
+      .where(eq(users.id, userId));
+  }
+
+  async setOnboardingDismissed(userId: string): Promise<void> {
+    await db
+      .update(users)
+      .set({ onboardingDismissedAt: new Date(), updatedAt: new Date() })
+      .where(eq(users.id, userId));
+  }
+
+  async scrubUserPassword(userId: string): Promise<void> {
+    // Google login proved ownership of the email; any password set earlier
+    // (possibly by a pre-registration squatter — register has no email
+    // verification) must stop working.
+    await db
+      .update(users)
+      .set({ password: null, authProvider: "google", updatedAt: new Date() })
+      .where(eq(users.id, userId));
   }
 
   async getMonetizationItems(): Promise<MonetizationItem[]> {
@@ -1289,9 +1316,16 @@ export class DatabaseStorage implements IStorage {
     const results: VideoWithOpportunities[] = [];
 
     for (const video of videos) {
+      // Creator-consent gate: a video reaches the brand marketplace only
+      // when the creator has APPROVED at least one surface on it, and never
+      // after they trashed it. Without these two checks a stranger's video
+      // appeared to every brand the moment its first scan found a surface.
+      if ((video as any).deletedAt) continue;
       const surfaces = await this.getActiveSurfaces(video.id);
       // Only include videos that actually have surfaces
       if (surfaces.length === 0) continue;
+      const approvedSurfaces = surfaces.filter((sf: any) => sf.creatorApproved === true);
+      if (approvedSurfaces.length === 0) continue;
       const contexts = this.deriveContexts(surfaces);
       results.push({
         ...video,

@@ -525,7 +525,10 @@ export default function BrandMarketplace() {
               </div>
             </div>
             <div className="flex items-center gap-3">
-              {/* Pitch Mode Toggle - Always visible for demo purposes */}
+              {/* Pitch Mode Toggle — ADMIN ONLY. Real brand users flipping
+                  this saw 30+ fabricated creators with stock photos and fake
+                  view counts, unlabeled. Pitch props are for pitches. */}
+              {isSuperAdmin && (
               <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-secondary/50 border border-border">
                 <span className="text-xs text-muted-foreground">Real Data</span>
                 <Switch
@@ -536,6 +539,7 @@ export default function BrandMarketplace() {
                 />
                 <span className="text-xs text-muted-foreground">Pitch Mode</span>
               </div>
+              )}
               <Badge variant="outline" className="gap-1">
                 <Sparkles className="w-3 h-3" />
                 {filteredOpportunities.length} Opportunities

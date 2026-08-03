@@ -14,6 +14,7 @@ import { UploadModal } from "@/components/UploadModal";
 import { YouTubeVideoPicker } from "@/components/YouTubeVideoPicker";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { AnalyticsOverview } from "@/components/AnalyticsOverview";
+import { OnboardingChecklist } from "@/components/OnboardingChecklist";
 import { SceneAnalysisModal, VideoWithScenes } from "@/components/SceneAnalysisModal";
 import { useLocation } from "wouter";
 import { Switch } from "@/components/ui/switch";
@@ -780,8 +781,11 @@ export default function Dashboard() {
           </div>
         )}
         
-        {/* Demo Mode badge for non-authenticated users */}
-        {!isSuperAdmin && showDemoMode && (
+        {/* Demo Mode badge — ONLY when demo content is actually active.
+            It used to also key on !hasRealData, which stamped "DEMO MODE"
+            on every freshly-approved creator's real (empty) dashboard —
+            the worst possible first impression. */}
+        {!isSuperAdmin && isDemoMode && (
           <div className="absolute top-8 right-8 px-3 py-1 rounded-full bg-primary/20 border border-primary/40 text-primary text-xs font-bold uppercase tracking-wider z-10">
             Demo Mode
           </div>
@@ -798,6 +802,8 @@ export default function Dashboard() {
           </h1>
           <p className="text-muted-foreground">Here's what's happening with your content today.</p>
         </motion.div>
+
+        <OnboardingChecklist />
 
         <motion.div 
           initial={{ opacity: 0, y: 20 }}

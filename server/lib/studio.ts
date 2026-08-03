@@ -303,9 +303,21 @@ export function registerStudioRoutes(app: Express) {
 
   // ──────────────────────────────────────────────────────────────────
   // AUTH: Studio signup (creates user with isApproved=true, skip waitlist)
+  //
+  // DISABLED by default: this endpoint was an unauthenticated factory for
+  // pre-approved accounts + live sessions (no password, no rate limit, no
+  // client caller) — a full waitlist bypass and, combined with the
+  // email-allowlist admin check, a privilege-escalation path. It only
+  // functions when STUDIO_SIGNUP_SECRET is set AND the caller presents it.
   // ──────────────────────────────────────────────────────────────────
   app.post("/api/studio/signup", async (req: any, res: Response) => {
     try {
+      const requiredSecret = process.env.STUDIO_SIGNUP_SECRET;
+      const presented = req.headers["x-studio-signup-secret"];
+      if (!requiredSecret || presented !== requiredSecret) {
+        console.warn(`[Studio] Blocked /api/studio/signup attempt (${req.ip}) — endpoint disabled without STUDIO_SIGNUP_SECRET`);
+        return res.status(410).json({ error: "Studio signup is not available" });
+      }
       const { email, firstName, lastName, password } = req.body;
       if (!email) {
         return res.status(400).json({ error: "Email is required" });
