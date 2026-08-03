@@ -20,6 +20,7 @@ import { spawn } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import ffmpegStaticPath from "ffmpeg-static";
 import sharp from "sharp";
 import { storage } from "./storage";
 import type { InsertDetectedSurface, RoomModel } from "@shared/schema";
@@ -134,14 +135,28 @@ const isModelGoneError = (err: any): boolean =>
 // just busy — no sticky advance), and only then the proxy.
 const isOverloadedError = (err: any): boolean =>
   /UNAVAILABLE|high demand|overloaded|\b503\b/i.test(String(err?.message ?? err));
+// Our own Promise.race timeout below — a timed-out model is indistinguishable
+// from an overloaded one during a capacity spike, so it walks the same ladder.
+const isTimeoutError = (err: any): boolean =>
+  /gemini timeout/i.test(String(err?.message ?? err));
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+// In deployments the modelfarm proxy is a black hole: nothing listens on its
+// port, and each attempt burns the full per-attempt timeout. One failure is
+// proof enough for the whole process lifetime.
+let proxyDeadThisSession = false;
 
 async function geminiGenerate(params: any, timeoutMs: number = CONFIG.GEMINI_TIMEOUT_MS): Promise<any> {
-  const tryModel = (client: GoogleGenAI, model: string) =>
-    Promise.race([
+  // Hard wall-clock ceiling for the WHOLE call, across every ladder step and
+  // the proxy. Without it, a Google capacity spike serializes retries into
+  // multi-minute stalls per frame (observed: ~4min worst case per call).
+  const deadline = Date.now() + CONFIG.GEMINI_CALL_DEADLINE_MS;
+  const tryModel = (client: GoogleGenAI, model: string) => {
+    const attemptMs = Math.max(1_000, Math.min(timeoutMs, deadline - Date.now()));
+    return Promise.race([
       client.models.generateContent({ ...params, model }),
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Gemini timeout")), timeoutMs)),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Gemini timeout")), attemptMs)),
     ]);
+  };
   // A real Google key goes FIRST. The Replit modelfarm proxy only exists
   // inside the workspace sidecar — in a deployment it is a black hole that
   // burns the full per-attempt timeout on every frame before failing over.
@@ -153,6 +168,9 @@ async function geminiGenerate(params: any, timeoutMs: number = CONFIG.GEMINI_TIM
   let busyRetried = false;
   const maxIterations = GEMINI_MODEL_CANDIDATES.length + 3;
   for (let iter = 0; iter < maxIterations; iter++) {
+    if (Date.now() >= deadline) {
+      throw new Error(`Gemini: per-call deadline (${CONFIG.GEMINI_CALL_DEADLINE_MS}ms) exceeded`);
+    }
     const model = GEMINI_MODEL_CANDIDATES[callModelIdx];
     try {
       return await tryModel(primary, model);
@@ -164,25 +182,45 @@ async function geminiGenerate(params: any, timeoutMs: number = CONFIG.GEMINI_TIM
         console.warn(`[Gemini] Model "${model}" unavailable to this key — advancing to "${GEMINI_MODEL_CANDIDATES[callModelIdx]}"`);
         continue;
       }
-      if (isOverloadedError(err)) {
+      if (isOverloadedError(err) || isTimeoutError(err)) {
         if (!busyRetried) {
           busyRetried = true;
-          console.warn(`[Gemini] "${model}" overloaded (503) — retrying in 2s`);
-          await sleep(2000);
+          console.warn(`[Gemini] "${model}" ${isTimeoutError(err) ? "timed out" : "overloaded (503)"} — retrying`);
+          // A timed-out attempt already burned its full window; only 503s
+          // need the courtesy pause before hitting the same model again.
+          if (isOverloadedError(err)) await sleep(2000);
           continue;
         }
         if (callModelIdx < GEMINI_MODEL_CANDIDATES.length - 1) {
           callModelIdx++;
           busyRetried = false;
-          console.warn(`[Gemini] "${model}" still overloaded — trying "${GEMINI_MODEL_CANDIDATES[callModelIdx]}" for this call`);
+          console.warn(`[Gemini] "${model}" still unresponsive — trying "${GEMINI_MODEL_CANDIDATES[callModelIdx]}" for this call`);
           continue;
         }
       }
-      if (!secondary) throw err;
+      if (!secondary || proxyDeadThisSession) throw err;
       console.warn(`[Gemini] Direct attempt failed (${err?.message || err}) — retrying via proxy`);
       // The proxy speaks the legacy model id regardless of what the direct
       // key supports — it predates the newer generations.
-      return await tryModel(secondary, "gemini-2.5-flash");
+      // Trip the dead-proxy breaker ONLY on the black-hole signature: the
+      // proxy got its FULL attempt window (not one starved down to seconds
+      // by the shared per-call deadline) and still failed with something
+      // other than an overload — a 503 during the same Google spike that
+      // routed us here proves nothing about the proxy being dead.
+      const proxyWindowMs = Math.min(timeoutMs, deadline - Date.now());
+      try {
+        return await tryModel(secondary, "gemini-2.5-flash");
+      } catch (proxyErr: any) {
+        if (proxyWindowMs >= timeoutMs && !isOverloadedError(proxyErr)) {
+          proxyDeadThisSession = true;
+          console.warn(`[Gemini] Proxy failed (${proxyErr?.message || proxyErr}) — skipping proxy for the rest of this session`);
+        } else {
+          console.warn(`[Gemini] Proxy failed (${proxyErr?.message || proxyErr}) — not marking dead (starved window or shared overload)`);
+        }
+        // Surface the ORIGINAL direct-path error, not the proxy timeout —
+        // this keeps real 429s visible to the rate-limit backoff upstream.
+        throw err;
+      }
     }
   }
   throw new Error("Gemini: exhausted model candidates");
@@ -221,6 +259,9 @@ const CONFIG = {
   FFMPEG_TIMEOUT_MS: 60000,
   FRAME_PROCESS_TIMEOUT_MS: 5000,
   GEMINI_TIMEOUT_MS: 30000,
+  // Whole-call ceiling across ladder retries + proxy (3 attempt windows).
+  // Beyond this the frame falls to edge detection rather than stalling the scan.
+  GEMINI_CALL_DEADLINE_MS: 90000,
   
   // Vertical video handling
   VERTICAL_ASPECT_THRESHOLD: 1.0,
@@ -1255,6 +1296,17 @@ async function extractFramesFromUrl(
   return out;
 }
 
+// Circuit breaker for the stream path: this deploy image's PATH ffmpeg has
+// been segfaulting (-11) on HTTPS CDN reads for weeks. After N consecutive
+// stream attempts that produced no usable frame set, skip the stream path
+// for the rest of the process lifetime (a restart/redeploy resets it)
+// instead of re-burning resolve + probe + minutes of doomed ffmpeg per scan.
+// Mirrors the ladder's existing failure-driven sticky flips (cookie enable,
+// player-client mode).
+const STREAM_BREAKER_LIMIT = 3;
+let streamConsecutiveFailures = 0;
+let streamPathDisabledReason: string | null = null;
+
 /**
  * Dense uniform frame extraction from a remote CDN URL in a SINGLE ffmpeg pass
  * (fps filter). The stream flows through ffmpeg transiently — frames are kept,
@@ -1308,7 +1360,14 @@ async function extractFramesUniformFromUrl(
       outputPattern,
     );
 
-    const ff = spawn("ffmpeg", args);
+    // Pin the ffmpeg-static binary for NETWORK reads (same pattern as the
+    // download ladder): the deploy image's PATH ffmpeg segfaults (-11) on
+    // HTTPS CDN fetches, and this is the one spawn where ffmpeg is the
+    // network client. Local-file decodes elsewhere are fine on either build.
+    const ffmpegBin = ffmpegStaticPath && fs.existsSync(ffmpegStaticPath as unknown as string)
+      ? (ffmpegStaticPath as unknown as string)
+      : "ffmpeg";
+    const ff = spawn(ffmpegBin, args);
     let stderr = "";
     ff.stderr.on("data", (d) => { stderr += d.toString(); });
     const tm = setTimeout(() => {
@@ -1560,6 +1619,7 @@ async function selectDiverseFrames(
 async function detectSceneCuts(
   videoPath: string,
   threshold: number = 0.3,
+  durationSec: number = 0, // known from ffprobe/DB; 0 = unknown
 ): Promise<number[]> {
   return new Promise((resolve) => {
     const absoluteVideoPath = path.resolve(videoPath);
@@ -1569,17 +1629,34 @@ async function detectSceneCuts(
       return;
     }
 
-    // -vf "scale=320:-2,select='gt(scene,T)',showinfo" prints info for each
-    // detected cut. The 320px downscale runs BEFORE the scene filter — the
-    // histogram diff is resolution-independent for cut detection, and scoring
-    // full-res 1080p frames is what made hour-long files blow past the
-    // timeout (empty cut list → sceneCount=1 → 6 frames for the whole hour).
+    // -vf "fps=F,scale=320:-2,select='gt(scene,T)',showinfo" prints info for
+    // each detected cut. The fps filter FIRST bounds how many frames the
+    // scale+scene stages ever score, regardless of duration — a hard cut
+    // between two sampled frames still scores near-max, so cuts survive
+    // subsampling. F is clamped to [2.5, 10]:
+    //   - F >= 2.5 keeps the reported cut within 1/F <= 0.4s of the true cut,
+    //     exactly refineCutBoundary's ±400ms window, so the frame-accurate
+    //     boundary is still recovered downstream;
+    //   - F <= 10 caps filter cost even when duration is unknown.
+    // Shots shorter than 1/F can vanish, but buildSceneIndex already drops
+    // shots under 0.5s. Cut timestamps come from showinfo pts_time (real
+    // video seconds, quantized to 1/F) — not frame-index math — so nothing
+    // downstream needs to know about the sampling.
     // -an drops audio (faster). -f null discards the output (we only want stderr).
+    // 18000 target: an hour-long episode samples at ~5fps (0.2s quantization),
+    // and only 2h+ files sit at the 2.5 floor (0.4s). Filter cost at 320px is
+    // trivial next to decode, and the finer grid matters on rapid-cut videos
+    // where buildSceneIndex skips per-cut refinement (≥200 cuts) and the
+    // detection timestamp ships as-is.
+    const TARGET_SCORED_FRAMES = 18000; // 3659s episode -> F≈4.9 -> ~18k frames vs ~110k native
+    const fpsSample = durationSec > 0
+      ? Math.min(10, Math.max(2.5, TARGET_SCORED_FRAMES / durationSec))
+      : 10;
     const args = [
       "-nostdin",
       "-i", absoluteVideoPath,
       "-an",
-      "-vf", `scale=320:-2,select='gt(scene,${threshold})',showinfo`,
+      "-vf", `fps=${fpsSample},scale=320:-2,select='gt(scene,${threshold})',showinfo`,
       "-f", "null",
       "-",
     ];
@@ -1590,20 +1667,23 @@ async function detectSceneCuts(
     let stderr = "";
     ffmpeg.stderr.on("data", (data) => { stderr += data.toString(); });
 
-    // Cap at 10 minutes. Even with the 320px downscale, the DECODE of an
-    // hour-long file can outrun this on Replit CPU (~3x realtime ≈ 20min for
-    // 61min of video) — but by then stderr already holds every cut found so
-    // far. So the timeout only kills the process; the close handler that
-    // follows parses the partial stderr and resolves with real cuts covering
-    // the decoded prefix, which beats an empty list by miles (empty →
-    // sceneCount=1 → degenerate sampling). A backstop resolves [] if the
-    // close event somehow never arrives after the kill.
-    // 20 minutes: Replit decodes ~3x realtime even at 320px, so an hour-long
-    // file needs ~20min to reach the end. At the old 10-minute budget the
-    // cut list stopped ~halfway and everything after became ONE tail shot —
-    // a camera setup living mostly in the back half never got its own scene
-    // class (observed: the 1-shot vanishing from an episode's inventory).
-    const CUT_DETECT_BUDGET_MS = 20 * 60 * 1000;
+    // Budget derives from the KNOWN duration, not a fixed constant: the fps
+    // filter removes filter-side work but ffmpeg must still DECODE every
+    // native frame to feed it, and decode is the irreducible cost. Observed
+    // ~3x realtime on Replit — a fixed 20min budget left <2% margin on a
+    // 61min episode and one vCPU-contention spike erased it (observed: the
+    // decode killed with the tail undone, so a camera setup living in the
+    // back half never got its own scene class). Floor of 2.5x realtime plus
+    // 60s slack, never below the old 20min. If the timeout still fires, the
+    // close handler parses the partial stderr and resolves real cuts for the
+    // decoded prefix — far better than an empty list (empty → sceneCount=1 →
+    // degenerate sampling). A backstop resolves [] if the close event never
+    // arrives after the kill.
+    const MIN_DECODE_X_REALTIME = 2.5;
+    const CUT_DETECT_BUDGET_MS = Math.max(
+      20 * 60 * 1000,
+      durationSec > 0 ? Math.ceil((durationSec / MIN_DECODE_X_REALTIME) * 1000) + 60_000 : 0,
+    );
     let settled = false;
     let timedOut = false;
     const settle = (cuts: number[]) => {
@@ -3971,10 +4051,14 @@ async function processVideoScanInner(
     // URL resolution or streaming extraction fails.
     const platform = (video as any).platform as string | undefined;
     const isStreamableImport =
+      process.env.SCANNER_DISABLE_STREAM !== "1" &&
       !videoPath &&
       ((platform === "youtube" && looksLikeRealYouTubeId(video.youtubeId)) ||
        ((platform === "instagram" || platform === "facebook") &&
         (video.youtubeId.startsWith("instagram:") || video.youtubeId.startsWith("facebook:"))));
+    if (process.env.SCANNER_DISABLE_STREAM === "1" && !videoPath) {
+      console.warn(`[Scanner V2] SCANNER_DISABLE_STREAM=1 — stream-and-scan disabled by operator, going straight to the download ladder`);
+    }
 
     // Creator's YouTube OAuth token — shared by the stream-URL resolve, the
     // duration probe, and the download fallback below (Path B: authenticated
@@ -3984,7 +4068,10 @@ async function processVideoScanInner(
       ? await getFreshYoutubeTokenForUser(video.userId).catch(() => null)
       : null;
 
-    if (isStreamableImport) {
+    if (isStreamableImport && streamPathDisabledReason) {
+      console.warn(`[Scanner V2] Stream-and-scan SKIPPED — circuit breaker open (${streamPathDisabledReason}); going straight to the download ladder`);
+    }
+    if (isStreamableImport && !streamPathDisabledReason) {
       let source: StreamSource | null = null;
       try {
         if (platform === "youtube") {
@@ -4076,6 +4163,7 @@ async function processVideoScanInner(
           });
           if (selected.frames.length > 0) {
             streamedFrames = selected;
+            streamConsecutiveFailures = 0;
             console.log(`[Scanner V2] Stream-and-scan: ${grid.frames.length} candidates → ${selected.frames.length} diverse frames for detection — skipping download`);
           }
         } else if (grid.frames.length > 0) {
@@ -4089,6 +4177,11 @@ async function processVideoScanInner(
         }
         if (!streamedFrames) {
           console.warn(`[Scanner V2] Stream-and-scan produced no usable frame set — falling back to download`);
+          streamConsecutiveFailures += 1;
+          if (streamConsecutiveFailures >= STREAM_BREAKER_LIMIT) {
+            streamPathDisabledReason = `${streamConsecutiveFailures} consecutive stream attempts produced no usable frames`;
+            console.error(`[Scanner V2] Stream-and-scan DISABLED for this process: ${streamPathDisabledReason}. All scans go straight to the download ladder until restart.`);
+          }
           // Purge the whole grid (including size-floor stubs the collector
           // excluded from its return but left on disk): the download
           // fallback's uniform extractor globs this same dir for *.jpg,
@@ -4151,7 +4244,22 @@ async function processVideoScanInner(
       // Download budget: enough seconds to cover the planned frames + a buffer.
       const plannedRange = scanPlan.intervalSeconds * scanPlan.maxFrames + 30;
       const cappedDuration = probedDuration ? Math.min(probedDuration, MAX_DURATION_SEC) : null;
-      const trimSec = cappedDuration ? Math.min(cappedDuration, plannedRange) : plannedRange;
+      const rawTrimSec = cappedDuration ? Math.min(cappedDuration, plannedRange) : plannedRange;
+      // A trim covering ≥90% of the video saves almost nothing but forces
+      // yt-dlp to fork ffmpeg as its --download-sections downloader — the
+      // exact invocation dying with "ffmpeg exited with code -11" on this
+      // deploy image. Full pulls use yt-dlp's native downloader (no ffmpeg
+      // networking), so skip the trim when it buys <10%. Only for videos
+      // WITHIN the 1hr cap — beyond it the trim IS the cap, and dropping it
+      // would pull the entire multi-hour file.
+      const trimSec =
+        cappedDuration && probedDuration && probedDuration <= MAX_DURATION_SEC && rawTrimSec >= 0.9 * cappedDuration
+          ? undefined
+          : rawTrimSec;
+      const pulledSec = trimSec ?? cappedDuration ?? rawTrimSec;
+      if (trimSec === undefined) {
+        console.log(`[Scanner V2] Trim skipped (${rawTrimSec}s ≥ 90% of ${cappedDuration}s) — full pull via native downloader`);
+      }
 
       // Re-check disk right before committing to the pull — the scan
       // preflight ran before the trim size was known, the stream attempt
@@ -4160,10 +4268,10 @@ async function processVideoScanInner(
       // of letting yt-dlp ENOSPC mid-file) skips the whole retry ladder,
       // whose later rungs drop the trim and pull strictly MORE bytes at
       // the same full disk. ~0.4 MB/s covers ≤720p plus merge headroom.
-      const dlRequiredMB = Math.max(CONFIG.MIN_DISK_SPACE_MB, Math.ceil(trimSec * 0.4));
+      const dlRequiredMB = Math.max(CONFIG.MIN_DISK_SPACE_MB, Math.ceil(pulledSec * 0.4));
       const dlAvailableMB = await getAvailableDiskSpaceMB();
       if (dlAvailableMB < dlRequiredMB) {
-        throw new Error(`Insufficient disk space for source download: ${dlAvailableMB}MB available, ~${dlRequiredMB}MB needed for a ${trimSec}s pull`);
+        throw new Error(`Insufficient disk space for source download: ${dlAvailableMB}MB available, ~${dlRequiredMB}MB needed for a ${pulledSec}s pull`);
       }
 
       const ok = await downloadYouTubeVideo(video.youtubeId, downloadPath, {
@@ -4180,7 +4288,7 @@ async function processVideoScanInner(
         // covers the whole video — a >1hr capped pull or an
         // unknown-duration bounded pull is a truncated source and must
         // never be served to the player.
-        if (probedDuration && probedDuration > 0 && probedDuration <= trimSec) {
+        if (probedDuration && probedDuration > 0 && probedDuration <= pulledSec) {
           seedSourceCache(videoId, downloadPath);
         }
       } else {
@@ -4351,7 +4459,19 @@ async function processVideoScanInner(
       // frames to ~4. Failure is non-fatal — falls back to uniform.
       let sceneCuts: number[] = [];
       try {
-        sceneCuts = await detectSceneCuts(videoPath);
+        // Cut detection legitimately runs 20min+ under the duration-derived
+        // budget; without writes the 120-min stuck-scan sweep would reap a
+        // live decode on a multi-hour upload. CAS heartbeat — a cancel that
+        // already flipped status is never clobbered.
+        const cutHeartbeat = setInterval(() => {
+          storage.updateVideoStatusIfScanning(videoId, "Scanning").catch(() => {});
+        }, 5 * 60 * 1000);
+        cutHeartbeat.unref?.();
+        try {
+          sceneCuts = await detectSceneCuts(videoPath, 0.3, localDurationSec || 0);
+        } finally {
+          clearInterval(cutHeartbeat);
+        }
         await storage.updateVideoIndex(videoId, { sceneBoundaries: sceneCuts as any });
         console.log(`[Scanner V2] Persisted ${sceneCuts.length} scene cut(s) to videoIndex.sceneBoundaries`);
       } catch (sceneErr: any) {
@@ -4556,16 +4676,19 @@ async function processVideoScanInner(
             }
           }
 
-          // Drift visibility: when the creator HAS taught surfaces but a scene
-          // class matched no model, the taught set may be sitting right there
-          // unrecognized (exemplar drift, stale model hashes after a
-          // gate-skipped upsert) — and every taught confirmation silently
-          // skipped for that class.
-          const taughtModelCount = roomModels.filter(m => parseRoomModelSurfaces(m.surfaces).some(s => s.taught)).length;
-          if (taughtModelCount > 0) {
+          // Drift visibility: only meaningful when a TAUGHT model is still
+          // unmatched after BOTH passes. A taught model matched by any class
+          // is having its surfaces confirmed this scan, so leftover unmatched
+          // classes (b-roll, intro cards, the partial-cut mega-shot tail) are
+          // expected junk, not a drift signal — warning on each of them
+          // produced four alarming-but-contentless lines per scan.
+          const unmatchedTaughtModels = roomModels.filter(m =>
+            !claimedModelIds.has(m.id) && parseRoomModelSurfaces(m.surfaces).some(s => s.taught));
+          if (unmatchedTaughtModels.length > 0) {
+            const ids = unmatchedTaughtModels.map(m => `#${m.id}`).join(", ");
             for (const classId of Array.from(classExemplars.keys())) {
               if (!modelBySceneKey.has(classId)) {
-                console.warn(`[RoomModel] Scene class ${classId} matched NO model while ${taughtModelCount} of this creator's model(s) carry taught surfaces — if this class is the taught set, exemplar drift is hiding it and its taught surfaces cannot be confirmed this scan`);
+                console.warn(`[RoomModel] Scene class ${classId} matched NO model while taught model(s) ${ids} remain UNMATCHED this scan — if this class is one of those sets, exemplar drift is hiding it and its taught surfaces cannot be confirmed this scan`);
               }
             }
           }
