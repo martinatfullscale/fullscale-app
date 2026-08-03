@@ -2042,14 +2042,25 @@ export async function registerRoutes(
   // ============================================
   
   // Middleware to check Google OAuth session (returns JSON for API calls)
-  const isGoogleAuthenticated = (req: any, res: any, next: any) => {
-    const googleUser = req.session?.googleUser;
-    console.log(`[isGoogleAuthenticated] Session ID: ${req.sessionID}, googleUser: ${googleUser?.email || 'missing'}`);
-    if (!googleUser || !googleUser.email) {
-      return res.status(401).json({ message: "Unauthorized - Please login with Google" });
+  const isGoogleAuthenticated = async (req: any, res: any, next: any) => {
+    try {
+      const googleUser = req.session?.googleUser;
+      console.log(`[isGoogleAuthenticated] Session ID: ${req.sessionID}, googleUser: ${googleUser?.email || 'missing'}`);
+      if (!googleUser || !googleUser.email) {
+        return res.status(401).json({ message: "Unauthorized - Please login with Google" });
+      }
+      req.googleUser = googleUser;
+      // Same server-side approval gate as isFlexibleAuthenticated — brand
+      // discovery and the marketplace hang off this middleware, and a
+      // waitlisted session must not browse them via curl.
+      req.isAdmin = ADMIN_EMAILS.includes(googleUser.email?.toLowerCase?.() ?? googleUser.email);
+      const row = await storage.getUserByEmail(googleUser.email);
+      if (blockUnapproved(req, res, row ?? undefined)) return;
+      next();
+    } catch (err: any) {
+      console.error(`[Auth] isGoogleAuthenticated failed: ${err?.message || err}`);
+      if (!res.headersSent) res.status(500).json({ error: "Authentication check failed" });
     }
-    req.googleUser = googleUser;
-    next();
   };
   
   // Flexible auth middleware - works with Google OAuth, Replit Auth, or Facebook session
@@ -2076,8 +2087,11 @@ export async function registerRoutes(
   // here, with a small exemption list for what a waitlisted user legitimately
   // needs. Legacy sessions with NO users row (email-keyed pre-migration
   // accounts) are grandfathered — new signups always have a row.
+  const APPROVAL_EXEMPT_EXACT = new Set([
+    "/api/waitlist/profile-submitted",
+  ]);
   const approvalExemptPath = (path: string): boolean =>
-    path.startsWith("/api/auth/") || path.toLowerCase().includes("waitlist") || path === "/api/logout";
+    path.startsWith("/api/auth/") || APPROVAL_EXEMPT_EXACT.has(path);
   const blockUnapproved = (req: any, res: any, row: { isApproved?: boolean | null } | undefined): boolean => {
     if (req.isAdmin || !row || row.isApproved !== false || approvalExemptPath(req.path)) return false;
     res.status(403).json({ error: "Your account is pending approval", code: "PENDING_APPROVAL" });
@@ -2085,6 +2099,17 @@ export async function registerRoutes(
   };
 
   const isFlexibleAuthenticated = async (req: any, res: any, next: any) => {
+    try {
+      return await isFlexibleAuthenticatedInner(req, res, next);
+    } catch (err: any) {
+      // Express 4 does not catch async middleware rejections — without this
+      // a DB fault here (e.g. schema drift before db:push) HANGS every
+      // request instead of failing. Fail loud and fast.
+      console.error(`[Auth] isFlexibleAuthenticated failed: ${err?.message || err}`);
+      if (!res.headersSent) res.status(500).json({ error: "Authentication check failed" });
+    }
+  };
+  const isFlexibleAuthenticatedInner = async (req: any, res: any, next: any) => {
     const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
     const isDevelopment = process.env.NODE_ENV !== 'production';
 
@@ -3457,6 +3482,13 @@ export async function registerRoutes(
   app.get("/api/onboarding/progress", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const userId = req.authUserId;
+      // Brand accounts get no creator checklist — report complete so the
+      // component renders nothing (Dashboard is reachable via /earnings).
+      const viewRole = (req.session as any)?.viewRole;
+      const allowedUser = req.authEmail ? await storage.getAllowedUser(req.authEmail).catch(() => undefined) : undefined;
+      if ((viewRole || allowedUser?.userType) === "brand") {
+        return res.json({ hasConnection: false, hasVideo: false, hasScan: false, hasPlacement: false, dismissedAt: null, complete: true });
+      }
       const userRow = await storage.getUserById(userId).catch(() => undefined);
       const videos = await storage.getVideoIndex(userId, req.authEmail).catch(() => [] as any[]);
       const hasVideo = videos.length > 0;
@@ -4430,15 +4462,6 @@ export async function registerRoutes(
       return res.status(403).json({ error: "Unauthorized" });
     }
 
-    // Per-user daily scan cap: every scan buys Gemini + Florence-2 (+ the
-    // editorial pipeline's Whisper/Claude on success) with no other spend
-    // guard. In-memory is fine on a single VM; resets on redeploy.
-    if (!req.isAdmin && !consumeDailyScanBudget(String(req.authUserId))) {
-      return res.status(429).json({
-        error: `Daily scan limit reached (${DAILY_SCAN_LIMIT}/day). It resets at midnight UTC — or reach out if you legitimately need more.`,
-      });
-    }
-
     // Single-flight check — if a scan is already running for this video,
     // tell the user instead of stacking another scan or wiping surfaces.
     // The actual lock is enforced inside processVideoScan; this just gives
@@ -4451,6 +4474,17 @@ export async function registerRoutes(
         videoId,
         alreadyRunning: true,
         message: "A scan is already running for this video. Wait for it to complete before re-scanning.",
+      });
+    }
+
+    // Per-user daily scan cap: every scan buys Gemini + Florence-2 (+ the
+    // editorial pipeline's Whisper/Claude on success) with no other spend
+    // guard. Consumed only for scans that actually DISPATCH (after the
+    // single-flight no-op check). In-memory on a single VM; resets on
+    // redeploy.
+    if (!req.isAdmin && !consumeDailyScanBudget(String(req.authUserId))) {
+      return res.status(429).json({
+        error: `Daily scan limit reached (${DAILY_SCAN_LIMIT}/day). It resets at midnight UTC — or reach out if you legitimately need more.`,
       });
     }
 
@@ -4477,7 +4511,20 @@ export async function registerRoutes(
   // Scan all pending videos for the user
   app.post("/api/video-scan/batch", scanLimiter, isFlexibleAuthenticated, async (req: any, res) => {
     const userId = req.authEmail;
-    const limit = parseInt(req.query.limit as string) || 5;
+    let limit = parseInt(req.query.limit as string) || 5;
+
+    // Batch scans draw from the same daily budget as single scans —
+    // otherwise "Scan All" was a free bypass of the spend guard.
+    if (!req.isAdmin) {
+      let allowed = 0;
+      while (allowed < limit && consumeDailyScanBudget(String(req.authUserId))) allowed++;
+      if (allowed === 0) {
+        return res.status(429).json({
+          error: `Daily scan limit reached (${DAILY_SCAN_LIMIT}/day). It resets at midnight UTC.`,
+        });
+      }
+      limit = allowed;
+    }
 
     setImmediate(async () => {
       try {
@@ -7402,6 +7449,15 @@ export async function registerRoutes(
       // The bidding identity comes from the SESSION — an anonymous caller
       // could previously insert fabricated bids under any brand name.
       (input as any).brandEmail = req.authEmail;
+      // Creator identity comes from the TARGET VIDEO, not the request body
+      // — a client-supplied creatorUserId could plant fake offers in any
+      // creator's Live Offers list.
+      if ((input as any).videoId) {
+        const targetVid = await storage.getVideoById((input as any).videoId).catch(() => undefined);
+        (input as any).creatorUserId = targetVid ? (targetVid as any).userId : null;
+      } else {
+        (input as any).creatorUserId = null;
+      }
       const item = await storage.createMonetizationItem(input);
       res.status(201).json(item);
     } catch (err) {
@@ -8081,7 +8137,7 @@ export async function registerRoutes(
   });
 
   // Submit a placement request (public - no auth)
-  app.post("/api/public/placement-request", async (req, res) => {
+  app.post("/api/public/placement-request", authLimiter, async (req, res) => {
     const { videoId, brandName, brandEmail, message } = req.body;
     
     if (!videoId || !brandName || !brandEmail) {
@@ -9695,7 +9751,7 @@ export async function registerRoutes(
       const placements = req.isAdmin
         ? all
         : all.filter((p: any) =>
-            p.createdBy === req.authEmail || p.createdBy === req.authUserId || p.userId === req.authUserId);
+            p.createdBy === req.authEmail || p.createdBy === req.authUserId);
 
       // Enrich with video titles/thumbnails
       const videoIds = [...new Set(placements.map(p => p.videoId))];
@@ -10690,7 +10746,9 @@ export async function registerRoutes(
         videoId: exportJob.videoId,
         status: exportJob.status,
         progress: exportJob.progress,
-        outputUrl: exportJob.outputUrl,
+        // Always the gated route — raw /storage/exports/* URLs are no
+        // longer served (legacy rows keep working through this rewrite).
+        outputUrl: exportJob.outputUrl ? `/api/exports/${exportJob.id}/download` : null,
         error: exportJob.error,
         createdAt: exportJob.createdAt,
         completedAt: exportJob.completedAt,

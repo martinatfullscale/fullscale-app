@@ -2184,6 +2184,10 @@ export class DatabaseStorage implements IStorage {
           eq(editorialClips.renderStatus, "rendered"),
           // Don't show clips from soft-deleted videos
           sql`${videoIndex.deletedAt} IS NULL`,
+          // Creator-consent gate (same rule as the marketplace query): a
+          // creator's content reaches brand browsing only once they've
+          // APPROVED at least one surface on the video.
+          sql`EXISTS (SELECT 1 FROM detected_surfaces ds WHERE ds.video_id = ${videoIndex.id} AND ds.creator_approved = true AND ds.surface_type != 'Filtered')`,
         ),
       )
       .orderBy(desc(editorialClips.finalScore))

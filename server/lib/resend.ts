@@ -635,7 +635,7 @@ export async function sendApprovalEmail(params: {
         ? `
           <p style="${p}">Hi ${params.firstName},</p>
           <p style="${p}">I went through your application${params.companyName ? ` for <strong>${params.companyName}</strong>` : ""} myself — really glad to have you in. We're keeping the founding group small and intentional${params.companyName ? `, and ${params.companyName} is exactly the kind of brand we built this for` : ""}.</p>
-          <p style="${p}">To get started, sign in at <a href="${loginUrl}" style="${link}">gofullscale.co</a> with ${params.email} and you'll be in the marketplace. Look around, browse the creators, and flag a few whose content feels right${params.companyName ? ` for ${params.companyName}` : ""}. Once you do, I'll put together a tailored placement brief and walk you through it personally.</p>
+          <p style="${p}">To get started, sign in at <a href="${loginUrl}" style="${link}">gofullscale.co</a> with ${params.email} and you'll be in the marketplace. The founding creator roster is coming online right now, so new creators land there as they approve their first placements — flag any whose content feels right${params.companyName ? ` for ${params.companyName}` : ""} and I'll put together a tailored placement brief and walk you through it personally.</p>
           <p style="${p}">If you'd rather talk it through first, grab any time that works: <a href="${calendarUrl}" style="${link}">cal.com/martinatfullscale</a>. I'd genuinely love to hear what you're trying to accomplish.</p>
           <p style="${p}">Talk soon,</p>
         `

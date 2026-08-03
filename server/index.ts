@@ -142,6 +142,14 @@ app.use('/attached_assets', express.static(path.join(projectRoot, "attached_asse
 
 app.get('/storage/*', async (req, res) => {
   try {
+    // Finished renders are NOT public assets: this route has no session
+    // (registered before session middleware) and serves with CORS * and a
+    // 7-day cache, so /storage/exports/export_<id>.mp4 was anonymously
+    // enumerable. Exports are served exclusively through the ownership-
+    // gated /api/exports/:id/download.
+    if (req.path.startsWith('/storage/exports/')) {
+      return res.status(404).json({ error: 'Not found' });
+    }
     const objectKey = objectKeyFromServeUrl(req.path);
     const { file } = getStorageStream(objectKey);
     const [metadata] = await file.getMetadata();

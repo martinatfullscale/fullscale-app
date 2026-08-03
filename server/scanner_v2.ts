@@ -3960,7 +3960,25 @@ export async function processVideoScan(
   const promise = (async () => {
     await acquireScanSlot(videoId);
     try {
-      return await processVideoScanInner(videoId, forceRescan, scanMode);
+      // Hard slot cap: a never-settling scan (wedged child process, hung
+      // fetch) would otherwise hold 1 of MAX_CONCURRENT_SCANS slots for the
+      // process lifetime and quietly halve/zero scan throughput. 90min is
+      // far above any legitimate scan; the timed-out run's status flips so
+      // the UI doesn't spin forever.
+      const HARD_SCAN_CAP_MS = 90 * 60 * 1000;
+      let capTimer: NodeJS.Timeout | undefined;
+      const capPromise = new Promise<ScanResult>((resolve) => {
+        capTimer = setTimeout(async () => {
+          console.error(`[Scanner V2] Video ${videoId}: HARD CAP (${HARD_SCAN_CAP_MS / 60000}min) — releasing scan slot; the run is abandoned`);
+          try { await updateStatusIfStillScanning(videoId, "Scan Failed"); } catch {}
+          resolve({ success: false, videoId, surfacesDetected: 0, error: "Scan exceeded the hard time cap" });
+        }, HARD_SCAN_CAP_MS);
+        (capTimer as any).unref?.();
+      });
+      return await Promise.race([
+        processVideoScanInner(videoId, forceRescan, scanMode).finally(() => clearTimeout(capTimer)),
+        capPromise,
+      ]);
     } finally {
       releaseScanSlot();
       SCAN_IN_FLIGHT.delete(videoId);
