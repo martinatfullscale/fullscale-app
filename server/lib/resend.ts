@@ -628,7 +628,10 @@ export async function sendApprovalEmail(params: {
     //  - Founder-voice copy, no bulleted feature dump.
     const fromAddress = MAIL_FROM.martin;
     const replyTo = MAIL_MARTIN_ADDRESS;
-    const loginUrl = "https://gofullscale.co/auth?mode=signup";
+    // Sign-IN, not sign-up: everyone receiving this already has an account.
+    // ?mode=signup opened the Register tab and dead-ended them on
+    // "User already exists with this email".
+    const loginUrl = "https://gofullscale.co/auth";
     const calendarUrl = "https://cal.com/martinatfullscale";
     const p = "margin: 0 0 16px 0; line-height: 1.55;";
     const link = "color: #10b981; font-weight: 500;";
@@ -638,15 +641,24 @@ export async function sendApprovalEmail(params: {
         ? `
           <p style="${p}">Hi ${params.firstName},</p>
           <p style="${p}">I went through your application${params.companyName ? ` for <strong>${params.companyName}</strong>` : ""} myself — really glad to have you in. We're keeping the founding group small and intentional${params.companyName ? `, and ${params.companyName} is exactly the kind of brand we built this for` : ""}.</p>
-          <p style="${p}">To get started, sign in at <a href="${loginUrl}" style="${link}">gofullscale.co</a> with ${params.email} and you'll be in the marketplace. The founding creator roster is coming online right now, so new creators land there as they approve their first placements — flag any whose content feels right${params.companyName ? ` for ${params.companyName}` : ""} and I'll put together a tailored placement brief and walk you through it personally.</p>
+          <p style="${p}">To get started, sign in at <a href="${loginUrl}" style="${link}">gofullscale.co</a> with ${params.email} and you'll land in the marketplace. Two things worth doing first: add your products under <strong>Products</strong> so placements can be mocked up on real packaging, then browse the creator roster and flag anyone whose content feels right${params.companyName ? ` for ${params.companyName}` : ""}. The founding creator roster is coming online right now, so new creators appear there as they approve their first placements — if it looks thin today, that's why, and it fills in week over week.</p>
+          <p style="${p}">Once you've flagged a few, I'll put together a tailored placement brief and walk you through it personally.</p>
           <p style="${p}">If you'd rather talk it through first, grab any time that works: <a href="${calendarUrl}" style="${link}">cal.com/martinatfullscale</a>. I'd genuinely love to hear what you're trying to accomplish.</p>
           <p style="${p}">Talk soon,</p>
         `
         : `
           <p style="${p}">Hi ${params.firstName},</p>
           <p style="${p}">Just approved your account — welcome in. You're part of the founding creator cohort, which means you're helping shape how this whole thing works.</p>
-          <p style="${p}">To get rolling: sign in at <a href="${loginUrl}" style="${link}">gofullscale.co</a> — a short step-by-step guide will be waiting on your dashboard. It walks you through bringing in your first video, scanning it for placement spots, and dropping in your first product. You stay in full control — nothing reaches a brand until you approve it.</p>
-          <p style="${p}">I'm around if you hit anything weird or have ideas. Just reply to this email — it comes straight to me.</p>
+          <p style="${p}">Here's the whole flow, start to finish. It takes about ten minutes:</p>
+          <ol style="margin: 0 0 16px 0; padding-left: 20px; line-height: 1.7;">
+            <li style="margin-bottom: 10px;"><strong>Sign in</strong> at <a href="${loginUrl}" style="${link}">gofullscale.co</a> using ${params.email} — the same way you signed up.</li>
+            <li style="margin-bottom: 10px;"><strong>Bring in a video.</strong> Connect your YouTube channel from the dashboard, or just paste a link into the bar at the top of your Library — YouTube, Twitch, TikTok, and X all work.</li>
+            <li style="margin-bottom: 10px;"><strong>Hit Scan.</strong> Our AI watches the whole video, maps every recurring scene, and finds the walls, desks, and tables a brand could actually live on. A long episode takes a few minutes — you can close the tab.</li>
+            <li style="margin-bottom: 10px;"><strong>Open the results and try a placement.</strong> Pick a surface you like, drop a product onto it, and save. That's the thing brands pay for, and it's worth seeing it on your own footage.</li>
+            <li><strong>Approve what brands can see.</strong> Nothing about your content reaches a brand until you approve it — that switch is yours, always.</li>
+          </ol>
+          <p style="${p}">The same checklist is waiting on your dashboard and ticks itself off as you go, so you don't need to keep this email open.</p>
+          <p style="${p}">One ask: this is early, and you'll probably hit something rough. Tell me when you do — just reply here, it comes straight to me. That feedback is genuinely why the founding cohort exists.</p>
           <p style="${p}">Glad you're here,</p>
         `;
 
