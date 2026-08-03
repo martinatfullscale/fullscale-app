@@ -1984,7 +1984,20 @@ export async function registerRoutes(
     const googleUser = (req.session as any)?.googleUser;
     if (googleUser && googleUser.email) {
       const user = await storage.getUserByEmail(googleUser.email);
-      const isApproved = user?.isApproved ?? googleUser.isApproved ?? false;
+      let isApproved = user?.isApproved ?? googleUser.isApproved ?? false;
+      // Self-heal: the approval webhook writes allowed_users, then flips
+      // users.isApproved — if the flip didn't land (email-case drift, row
+      // created after the webhook, transient failure), converge here. The
+      // waitlist page polls this endpoint every 30s, so an approval that
+      // reached the server at all lets the user in within one poll.
+      if (user && !isApproved) {
+        const allowed = await storage.isEmailAllowed(googleUser.email).catch(() => false);
+        if (allowed) {
+          await storage.setUserApproved(googleUser.email.toLowerCase().trim(), true).catch(() => {});
+          isApproved = true;
+          console.log(`[Auth] Self-healed approval for ${googleUser.email} from allowlist`);
+        }
+      }
       return res.json({
         authenticated: true,
         email: googleUser.email,
