@@ -50,7 +50,8 @@ import fs from "fs";
 import ytdl from "@distube/ytdl-core";
 import { decrypt, encrypt } from "./encryption";
 import { db } from "./db";
-import { users, users as usersTable, allowedUsers as allowedUsersTable, videoIndex as videoIndexTable, editorialClips, detectedSurfaces } from "@shared/schema";
+import { users, users as usersTable, allowedUsers as allowedUsersTable, videoIndex as videoIndexTable, editorialClips, detectedSurfaces,
+  fixtureExposure as fixtureExposureTable, fixtureAssignments as fixtureAssignmentsTable, placementExposures as placementExposuresTable } from "@shared/schema";
 import { eq, sql, inArray } from "drizzle-orm";
 import crypto from "crypto";
 import sharp from "sharp";
@@ -974,6 +975,127 @@ export async function registerRoutes(
   });
 
   // -------------------------------------------------------------------
+  // MEASUREMENT READOUT — the research spine as a queryable summary.
+  // Fixtures (experimental units) × their treatments × exposure dose,
+  // with control periods visible as gaps. This is the view the data team
+  // works against; see docs/DATA_DICTIONARY.md §1.
+  // -------------------------------------------------------------------
+  app.get("/api/admin/measurement/fixtures", async (req: any, res) => {
+    try {
+      // Cross-tenant research aggregate — shared allowlist, session only.
+      const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
+      if (!callerEmail || !ADMIN_EMAILS.includes(String(callerEmail).toLowerCase())) {
+        return res.status(403).json({ error: "Admin access required" });
+      }
+
+      const exposure = await db.select().from(fixtureExposureTable);
+      const assignments = await db.select().from(fixtureAssignmentsTable);
+      const exposures = await db.select().from(placementExposuresTable);
+
+      // Roll up by fixture — the experimental unit.
+      const byFixture = new Map<string, any>();
+      const ensure = (gid: string) => {
+        let agg = byFixture.get(gid);
+        if (!agg) {
+          agg = {
+            surfaceGroupId: gid,
+            displayLabel: null,
+            surfaceType: "unknown",
+            isModelBacked: /^rm\d+-s\d+$/.test(gid),
+            videoCount: 0,
+            videoIds: new Set<number>(),
+            // NOTE the name: this is fixture-seconds (a dose-weighted
+            // measure), NOT wall-clock. See the grain warning below.
+            fixtureSecondsSum: 0,
+            totalOccurrences: 0,
+            treatments: [] as any[],
+            liveExposures: 0,
+            /** True when the fixture has treatment/exposure rows but no
+             *  exposure-supply row (degenerate-index scan, pre-instrumentation
+             *  video). Dropping these silently would make the summary and the
+             *  table disagree. */
+            orphaned: true,
+          };
+          byFixture.set(gid, agg);
+        }
+        return agg;
+      };
+
+      // Wall-clock exposure supply must be summed at the SCENE grain:
+      // scene_screen_time_sec is replicated onto every fixture in a scene,
+      // so summing across fixtures multiplies by fixtures-per-scene.
+      const sceneSeconds = new Map<string, number>();
+      for (const row of exposure) {
+        const agg = ensure(row.surfaceGroupId);
+        agg.orphaned = false;
+        agg.displayLabel = agg.displayLabel ?? row.displayLabel;
+        agg.surfaceType = row.surfaceType ?? agg.surfaceType;
+        agg.isModelBacked = row.isModelBacked;
+        agg.videoIds.add(row.videoId);
+        agg.fixtureSecondsSum += parseFloat(String(row.sceneScreenTimeSec)) || 0;
+        agg.totalOccurrences += row.occurrences ?? 0;
+        sceneSeconds.set(`${row.videoId}:${row.sceneId}`, parseFloat(String(row.sceneScreenTimeSec)) || 0);
+      }
+      for (const a of assignments) {
+        ensure(a.surfaceGroupId).treatments.push({
+          brandProductId: a.brandProductId,
+          productName: a.productName,
+          startedAt: a.startedAt,
+          endedAt: a.endedAt,
+          endReason: a.endReason,
+        });
+      }
+      for (const e of exposures) {
+        if (!e.surfaceGroupId) continue;
+        ensure(e.surfaceGroupId).liveExposures += 1;
+      }
+
+      const fixtures = Array.from(byFixture.values())
+        .map((f) => ({
+          surfaceGroupId: f.surfaceGroupId,
+          displayLabel: f.displayLabel,
+          surfaceType: f.surfaceType,
+          isModelBacked: f.isModelBacked,
+          videoCount: f.videoIds.size,
+          // Renamed from the misleading "totalScreenTimeSec": summing a
+          // scene-level quantity across fixtures is dose, not wall-clock.
+          fixtureSecondsSum: Math.round(f.fixtureSecondsSum * 10) / 10,
+          totalOccurrences: f.totalOccurrences,
+          treatments: f.treatments,
+          liveExposures: f.liveExposures,
+          orphaned: f.orphaned,
+          distinctProducts: new Set(f.treatments.filter((t: any) => t.brandProductId).map((t: any) => t.brandProductId)).size,
+        }))
+        .sort((a, b) => b.fixtureSecondsSum - a.fixtureSecondsSum);
+
+      // True wall-clock supply: each (video, scene) counted once.
+      const wallClockSupplySec = Math.round(
+        Array.from(sceneSeconds.values()).reduce((sum, v) => sum + v, 0),
+      );
+
+      res.json({
+        summary: {
+          fixtures: fixtures.length,
+          // "Cross-episode" means OBSERVED in more than one video. A
+          // model-backed id is merely ELIGIBLE to persist — reporting that as
+          // cross-episode overstates the panel on day one.
+          crossEpisodeFixtures: fixtures.filter((f) => f.videoCount > 1).length,
+          modelBackedFixtures: fixtures.filter((f) => f.isModelBacked).length,
+          multiTreatmentFixtures: fixtures.filter((f) => f.distinctProducts >= 2).length,
+          wallClockSupplySec,
+          orphanedFixtures: fixtures.filter((f) => f.orphaned).length,
+          openTreatmentWindows: assignments.filter((a) => !a.endedAt).length,
+          liveExposures: exposures.length,
+        },
+        fixtures: fixtures.slice(0, 200),
+      });
+    } catch (err: any) {
+      console.error("[Measurement] Readout error:", err?.message);
+      res.status(500).json({ error: "Failed to build measurement readout" });
+    }
+  });
+
+  // -------------------------------------------------------------------
   // PLACEMENT REVIEW QUEUE — the in-app home of the human step. Creators
   // choose placements; this is where FullScale reviews each choice and
   // marks the final render ready (or asks for changes).
@@ -1022,7 +1144,7 @@ export async function registerRoutes(
       }
       const placementId = parseInt(req.params.id);
       const { reviewStatus, reviewNote } = req.body || {};
-      const VALID = ["submitted", "in_review", "render_ready", "needs_changes"];
+      const VALID = ["submitted", "in_review", "render_ready", "needs_changes", "live"];
       if (isNaN(placementId) || !VALID.includes(reviewStatus)) {
         return res.status(400).json({ error: `reviewStatus must be one of ${VALID.join(", ")}` });
       }
@@ -1035,7 +1157,7 @@ export async function registerRoutes(
         const video = await storage.getVideoById(row.videoId).catch(() => undefined);
         const titles: Record<string, { t: string; b: string }> = {
           in_review: { t: "Your placement is in review", b: "Our team is reviewing your placement choice and preparing the final render." },
-          render_ready: { t: "Final render ready 🎉", b: "Your placement passed review and the final render is done." },
+          render_ready: { t: "Final render ready 🎉", b: "Your placement passed review and the final render is done — tell us where you post it so we can track how it performs." },
           needs_changes: { t: "Your placement needs a tweak", b: reviewNote ? String(reviewNote).slice(0, 200) : "Our team left a note on your placement — open it to see what to adjust." },
         };
         const msg = titles[reviewStatus];
@@ -3673,6 +3795,123 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("[Waitlist] profile-submitted error:", err?.message);
       res.status(500).json({ error: "Failed to record submission" });
+    }
+  });
+
+  // ── Go-live capture (measurement spine) ─────────────────────────────
+  // Candidates for "which post carries this placement?" — uploads on the
+  // creator's connected channel published after the render was ready.
+  app.get("/api/placements/:id/go-live-candidates", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const placementId = parseInt(req.params.id);
+      if (isNaN(placementId)) return res.status(400).json({ error: "Invalid placement ID" });
+      const auth = await authorizePlacement(placementId, req);
+      if (!auth.ok) return res.status(auth.status).json({ error: "Not authorized" });
+
+      const row: any = await storage.getPlacementById(placementId);
+      if (!row) return res.status(404).json({ error: "Placement not found" });
+      const existing = await storage.getPlacementExposureForPlacement(placementId).catch(() => undefined);
+      // Candidate window opens when the render was marked ready (or, failing
+      // that, when the placement was saved) — anything posted before that
+      // can't be carrying this render.
+      const since = row.reviewedAt
+        ? new Date(row.reviewedAt)
+        : row.createdAt
+        ? new Date(row.createdAt)
+        : new Date(Date.now() - 30 * 86400_000);
+      // Search the CONTENT OWNER's channel, not the caller's — otherwise an
+      // admin helping a creator gets their own uploads as candidates.
+      const ownerVideo = await storage.getVideoById(row.videoId).catch(() => undefined);
+      const ownerUserId = ownerVideo ? String((ownerVideo as any).userId) : req.authUserId;
+      const { findGoLiveCandidates } = await import("./lib/goLive");
+      const candidates = await findGoLiveCandidates(ownerUserId, req.authEmail, since);
+      res.json({ candidates, alreadyLive: existing ?? null });
+    } catch (err: any) {
+      console.error("[GoLive] Candidates error:", err?.message);
+      res.status(500).json({ error: "Failed to load candidates" });
+    }
+  });
+
+  // Creator confirms (or types) where the placement went live. This row is
+  // what every downstream audience measurement hangs off.
+  app.post("/api/placements/:id/go-live", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const placementId = parseInt(req.params.id);
+      if (isNaN(placementId)) return res.status(400).json({ error: "Invalid placement ID" });
+      const auth = await authorizePlacement(placementId, req);
+      if (!auth.ok) return res.status(auth.status).json({ error: "Not authorized" });
+
+      const { postUrl, platform: bodyPlatform, candidateSource, publishedAt } = req.body || {};
+      if (!postUrl || typeof postUrl !== "string") {
+        return res.status(400).json({ error: "postUrl required" });
+      }
+      const { parsePostUrl, recordGoLive } = await import("./lib/goLive");
+      const parsed = parsePostUrl(postUrl);
+      // A URL we can't resolve to a platform post has no analytics path —
+      // which is the entire purpose of the row. Reject rather than store a
+      // record that can never be measured.
+      if (!parsed || (!parsed.platformPostId && parsed.platform === "other")) {
+        return res.status(400).json({
+          error: "That link doesn't look like a post we can track. Paste the direct URL to the published video.",
+        });
+      }
+
+      const placement: any = await storage.getPlacementById(placementId);
+      if (!placement) return res.status(404).json({ error: "Placement not found" });
+
+      // Lifecycle gate: only a placement whose render is ready can be live.
+      // Without this any owned placement could mint an exposure row that
+      // claims an audience saw a render that was never produced.
+      const rs = placement.reviewStatus ?? "submitted";
+      if (rs !== "render_ready" && rs !== "live") {
+        return res.status(400).json({
+          error: "This placement isn't ready to go live yet — our team is still reviewing it.",
+        });
+      }
+
+      const already = await storage.getPlacementExposureForPlacement(placementId).catch(() => undefined);
+      if (already) {
+        return res.json({ ok: true, exposure: already, alreadyRecorded: true });
+      }
+
+      const ownerVideo = await storage.getVideoById(placement.videoId).catch(() => undefined);
+      const ownerUserId = ownerVideo ? String((ownerVideo as any).userId) : req.authUserId;
+      const callerIsOwner = await isSameCreator(ownerUserId, String(req.authUserId)).catch(() => true);
+
+      // liveAt is when the AUDIENCE could see it — the post's publish time
+      // when we know it, not when someone clicked a button in our UI.
+      let liveAt: Date | undefined;
+      if (publishedAt && !isNaN(Date.parse(String(publishedAt)))) {
+        liveAt = new Date(String(publishedAt));
+      }
+
+      let exposure;
+      try {
+        exposure = await recordGoLive({
+          ownerUserId,
+          placement,
+          platform: bodyPlatform || parsed.platform,
+          postUrl,
+          platformPostId: parsed.platformPostId,
+          linkSource: callerIsOwner ? "creator_confirmed" : "admin",
+          candidateSource: candidateSource === "channel_match" ? "channel_match" : "manual",
+          liveAt,
+        });
+      } catch (dupErr: any) {
+        // Unique index on placement_id — a double-submit races past the
+        // check above and lands here. Return the existing row, don't 500.
+        const existing = await storage.getPlacementExposureForPlacement(placementId).catch(() => undefined);
+        if (existing) return res.json({ ok: true, exposure: existing, alreadyRecorded: true });
+        throw dupErr;
+      }
+      // Lifecycle: render_ready → live. Uses a dedicated setter so the
+      // review timestamps (the anchor the candidate search depends on) are
+      // not clobbered by a status the review team didn't set.
+      await storage.setPlacementLive(placementId).catch(() => {});
+      res.json({ ok: true, exposure });
+    } catch (err: any) {
+      console.error("[GoLive] Record error:", err?.message);
+      res.status(500).json({ error: "Failed to record go-live" });
     }
   });
 
@@ -9004,6 +9243,11 @@ export async function registerRoutes(
         return res.status(400).json({ error: `Cannot withdraw a ${placement.status} placement` });
       }
       const updated = await storage.updateBrandPlacementStatus(id, "brand_withdrawn");
+      // Measurement spine: close the treatment window (the fixture returns
+      // to a no-placement control period from here).
+      storage.closeFixtureAssignment({ assignmentId: id }, "withdrawn")
+        .then((n) => n && console.log(`[Measurement] fixture_assignments: closed ${n} window(s) — assignment ${id} withdrawn`))
+        .catch(() => {});
       storage.createNotification({
         userId: placement.creatorUserId,
         type: "placement_withdrawn",
@@ -9271,6 +9515,50 @@ export async function registerRoutes(
       const updated = await storage.updateBrandPlacementStatus(id, "creator_approved", chosenProductId !== undefined ? { brandProductId: chosenProductId } : {});
       storage.markPlacementNotificationsRead(id);
       console.log(`[BrandPlacement] Creator ${creatorUserId} APPROVED placement ${id}`);
+
+      // MEASUREMENT SPINE: open the treatment window on this fixture. The
+      // fixture (stable surface_group_id) is the experimental unit and the
+      // product is the treatment; the GAPS between windows are the
+      // no-placement control periods. Non-fatal — research instrumentation
+      // must never block an approval.
+      (async () => {
+        try {
+          const surfaces = await storage.getDetectedSurfaces(placement.videoId);
+          const surface = surfaces.find((sf: any) => sf.id === placement.surfaceId);
+          const groupId = (surface as any)?.surfaceGroupId as string | null | undefined;
+          if (!groupId) {
+            console.log(`[Measurement] Placement ${id}: surface ${placement.surfaceId} has no fixture id — assignment window skipped (pre-fixture scan)`);
+            return;
+          }
+          const effectiveProductId = chosenProductId ?? placement.brandProductId ?? null;
+          const product = effectiveProductId ? await storage.getBrandProduct(effectiveProductId).catch(() => undefined) : undefined;
+          // Link the creator's saved placement so archiving it can close this
+          // window — without the id the archive close matched nothing and the
+          // window stayed open forever, reading as TREATED after removal.
+          let linkedPlacementId: number | null = null;
+          try {
+            const saved = await storage.getPlacementsForVideo(placement.videoId);
+            const match = saved.find((sp: any) =>
+              sp.surfaceId === placement.surfaceId ||
+              (Array.isArray(sp.appliesToGroupIds) && sp.appliesToGroupIds.includes(groupId)));
+            linkedPlacementId = match?.id ?? null;
+          } catch { /* best-effort */ }
+          await storage.openFixtureAssignment({
+            userId: String(placement.creatorUserId),
+            surfaceGroupId: groupId,
+            videoId: placement.videoId,
+            brandProductId: effectiveProductId,
+            productName: product?.name ? String(product.name).slice(0, 200) : null,
+            brandUserId: placement.brandUserId ? String(placement.brandUserId) : null,
+            assignmentId: id,
+            placementId: linkedPlacementId,
+            startedAt: new Date(),
+          } as any);
+          console.log(`[Measurement] fixture_assignments: opened window on ${groupId} → product ${effectiveProductId ?? "none"} (assignment ${id})`);
+        } catch (mErr: any) {
+          console.warn(`[Measurement] Assignment-window write failed (non-fatal): ${mErr?.message}`);
+        }
+      })();
       storage.createNotification({
         userId: placement.brandUserId,
         type: "placement_approved",
@@ -9312,6 +9600,9 @@ export async function registerRoutes(
             // tell the creator. Re-rendering the clip (aspect chips /
             // library) advances the placement when it succeeds.
             await storage.updateEditorialClipRender(clipId, { renderStatus: "failed", renderError: err?.message || "Placement re-render failed" }).catch(() => {});
+            // No render means nothing reached an audience — close the window
+            // rather than leaving the fixture recorded as treated.
+            storage.closeFixtureAssignment({ assignmentId: id }, "render_failed").catch(() => {});
             storage.createNotification({
               userId: placement.creatorUserId,
               type: "placement_render_failed",
@@ -9365,6 +9656,9 @@ export async function registerRoutes(
       }
       const reason = typeof req.body?.reason === "string" ? req.body.reason : undefined;
       const updated = await storage.updateBrandPlacementStatus(id, "creator_rejected", { rejectionReason: reason });
+      storage.closeFixtureAssignment({ assignmentId: id }, "withdrawn")
+        .then((n) => n && console.log(`[Measurement] fixture_assignments: closed ${n} window(s) — assignment ${id} rejected`))
+        .catch(() => {});
       storage.markPlacementNotificationsRead(id);
       storage.createNotification({
         userId: placement.brandUserId,
@@ -10043,6 +10337,9 @@ export async function registerRoutes(
       if (!deleted) {
         return res.status(404).json({ error: "Placement not found" });
       }
+      storage.closeFixtureAssignment({ placementId }, "archived")
+        .then((n) => n && console.log(`[Measurement] fixture_assignments: closed ${n} window(s) — placement ${placementId} archived`))
+        .catch(() => {});
 
       res.json({ success: true });
     } catch (err: any) {

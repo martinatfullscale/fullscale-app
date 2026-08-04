@@ -1142,6 +1142,101 @@ Multi-step brand onboarding wizard — one brief per user (userId unique); statu
 
 ---
 
+## 4b. Phase 1 measurement spine (SHIPPED — added after v1.0)
+
+Three tables were added to make the research design queryable in SQL rather than
+reconstructable from jsonb. All three are **first-party (CV/pipeline-generated)**.
+
+### `fixture_exposure` — exposure supply (the denominator)
+
+Materialized at scan finalize from the same numbers that feed `scene_inventory`.
+
+| Column | Type | Definition |
+|---|---|---|
+| `user_id` | varchar | Creator who owns the content |
+| `video_id` | integer | `video_index.id` |
+| `surface_group_id` | varchar(64) | **FIXTURE identity** — the experimental unit |
+| `scene_id` / `scene_label` | integer / varchar | Scene class within the video ("Scene A") |
+| `display_label` | varchar(64) | Human fixture name ("Wall 2", "Nightstand 1") |
+| `surface_type` | varchar(64) | Canonical surface type |
+| `is_model_backed` | boolean | `rm{modelId}-s{idx}` id — **eligible** to persist across episodes (not proof it did) |
+| `scene_screen_time_sec` | numeric | ⚠️ **SCENE-grain, replicated onto every fixture in that scene.** See grain warning below |
+| `occurrences` | integer | Distinct runs of the scene class |
+| `row_count` / `confidence` | integer / numeric | Detection rows backing the fixture; data-quality signals |
+| `video_duration_sec` | numeric | Duration at scan time, for screen-time share |
+| `scan_at` | timestamp | When this row was written |
+
+> **⚠️ GRAIN WARNING — read before any aggregation.** `scene_screen_time_sec` is a
+> *scene-level* quantity attributed to every fixture in that scene (the set-dressing
+> model: a surface is on screen whenever its camera setup is). **Summing it across
+> fixtures within a video double-counts** — a 10-minute single-scene video with 5
+> fixtures sums to 50 minutes. For wall-clock exposure supply, sum over **DISTINCT
+> (video_id, scene_id)**. Per-fixture comparison and dose-weighting are valid as-is.
+
+**Other semantics that affect analysis:**
+- **Current-state, not history.** A rescan replaces the row; dose-as-of-a-past-window is
+  not reconstructible. (Scan-versioned history is a deliberate v2 decision — flag it if
+  the study design needs it.)
+- **Quality-gated.** Scans that ran mostly on edge-detection fallback (<70% AI-analyzed
+  frames) are skipped rather than overwriting good rows with fallback geometry.
+- **Missingness is non-random.** Videos with a degenerate scene index produce no rows,
+  and pre-instrumentation scans were never backfilled.
+
+### `fixture_assignments` — treatment windows (and candidate control periods)
+
+Opened when a brand placement is approved; closed on withdrawal, rejection, render
+failure, archive, or supersession.
+
+| Column | Type | Definition |
+|---|---|---|
+| `surface_group_id` | varchar(64) | FIXTURE (experimental unit) |
+| `video_id` | integer | Episode — exclusivity is enforced per (fixture × video) |
+| `brand_product_id` / `product_name` | integer / varchar | **TREATMENT** |
+| `brand_user_id` | varchar | Brand counterparty |
+| `placement_id` / `assignment_id` | integer | Traceback to `saved_placements` / `brand_placement_assignments` |
+| `started_at` / `ended_at` | timestamp | **DEAL-TIME window**, not audience time (see caveat) |
+| `end_reason` | varchar(32) | archived · expired · replaced · withdrawn · render_failed |
+
+**Caveats:**
+- **Deal-time ≠ audience-time.** A window opens at approval, but the audience only sees
+  the product once the creator posts. For audience-time, join `placement_exposures` on
+  `assignment_id` and use its `live_at`.
+- **Control periods:** gaps between windows are *candidate* control periods, with two
+  limits — time before Phase 1 instrumentation is **unobserved, not control**; and the
+  *outcome* side of a control period needs the per-video time series that does not exist
+  yet (gap 7 below). Control exposure is currently **identifiable but not measurable**.
+- **No expiry sweep yet:** windows do not auto-close at `expiresAt`.
+
+### `placement_exposures` — the exposure event (was the blocking gap)
+
+One row per placement that reached an audience. Written when a creator marks a render
+live — suggested from their connected channel's recent uploads, or pasted manually.
+
+| Column | Type | Definition |
+|---|---|---|
+| `placement_id` | integer | `saved_placements.id` — **unique**, one exposure per placement |
+| `assignment_id` | integer | Treatment window that authorized it; **null = organic/untreated** |
+| `surface_group_id` / `brand_product_id` | varchar / integer | Fixture and treatment |
+| `source_video_id` | integer | The source upload the placement lives on |
+| `platform` / `post_url` / `platform_post_id` | varchar / text / varchar | Where it ran; the post id analytics fetchers poll |
+| `live_at` | timestamp | Post publish time when resolvable, else record time |
+| `source_start_sec` / `source_end_sec` | numeric | ⚠️ **SOURCE-video coordinates**, not post-relative |
+| `editorial_clip_id` / `clip_start_sec` | integer / numeric | Set when the post was a clip — Phase 2 must map source→post coordinates through this |
+| `link_source` | varchar(24) | creator_confirmed · admin |
+| `confirmed_at` | timestamp | When a human vouched for the link |
+
+> **⚠️ COORDINATE WARNING.** `source_start_sec` is measured from the start of the
+> original upload. Published assets are frequently **trimmed clips**, so Phase 2
+> retention joins must subtract the clip's start offset before aligning to a retention
+> curve — otherwise curves point at the wrong seconds. The columns are named for what
+> they are so this cannot happen silently.
+
+**Gap status after Phase 1:** gaps 1, 2 and 6 below are now *partially addressed* —
+exposure events, treatment windows and go-live capture exist. Gaps 3, 4, 5, 7 and 8
+remain open, and control-period *outcomes* still depend on gap 7.
+
+---
+
 ## 5. Audience metrics collected today
 
 | Metric | Source | Cadence | Lands in | Code evidence |

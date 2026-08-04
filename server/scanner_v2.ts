@@ -4611,6 +4611,9 @@ async function processVideoScanInner(
         const probed = await probeLocalDurationSec(videoPath);
         if (probed > 0) {
           localDurationSec = probed;
+          // Publish to function scope: the measurement write (and anything
+          // else downstream) otherwise sees null for every upload.
+          if (!ytProbedDurationSec) ytProbedDurationSec = probed;
           if (scanPlanIsDefault) {
             scanPlan = planFromDuration(probed);
             scanPlanIsDefault = false;
@@ -5703,6 +5706,14 @@ async function processVideoScanInner(
       // would report every surface as "Scene A · 1 shot · full-video
       // screen time" — exactly the untrustworthy data the flag rejects —
       // so the column stays null and the UIs fall back gracefully.
+      // Scan-quality signal, hoisted: a scan that mostly ran on the
+      // edge-detection fallback (dead Gemini, missing key, rate limits)
+      // must not overwrite good research data with fallback geometry — the
+      // same reasoning that already guards the room-model upsert below.
+      const scanGeminiFrames = bufferedAnalyses.filter(b => b.viaGemini).length;
+      const scanGeminiShare = bufferedAnalyses.length > 0 ? scanGeminiFrames / bufferedAnalyses.length : 0;
+      const scanQualityOk = scanGeminiShare >= 0.7;
+
       let inventoryPersisted = false;
       if (totalSurfaces > 0 && sceneIndex && !indexDegenerate && sceneIndex.shots.length > 0) {
         try {
@@ -5871,6 +5882,55 @@ async function processVideoScanInner(
           await storage.updateVideoIndex(videoId, { sceneInventory: sceneInventory as any });
           console.log(`[Scanner V2] Persisted scene inventory: ${scenes.length} scene class(es), ${rowsByGroup.size} canonical surface(s) (source=${sceneIndexSource})`);
           inventoryPersisted = true;
+
+          // MEASUREMENT SPINE: materialize per-fixture exposure supply. The
+          // numbers are already computed above — this lifts them out of jsonb
+          // so a fixture's cumulative screen time across every episode is one
+          // GROUP BY instead of a jsonb walk. It is the denominator of every
+          // CV-impact effect estimate (docs/DATA_DICTIONARY.md §1).
+          // Non-fatal: a scan must never fail over research instrumentation.
+          try {
+            if (!scanQualityOk) {
+              console.warn(`[Measurement] fixture_exposure: SKIPPED for video ${videoId} — degraded scan (${(scanGeminiShare * 100).toFixed(0)}% AI-analyzed frames, need 70%); prior exposure rows kept`);
+              throw new Error("__skip_exposure__");
+            }
+            const exposureRows = scenes.flatMap((sc: any) =>
+              (sc.surfaces ?? []).map((surf: any) => ({
+                userId: String(video.userId),
+                videoId,
+                surfaceGroupId: String(surf.groupId),
+                sceneId: Number(sc.sceneId) || 0,
+                sceneLabel: String(sc.label ?? "").slice(0, 32) || null,
+                displayLabel: surf.displayLabel ? String(surf.displayLabel).slice(0, 64) : null,
+                surfaceType: String(surf.surfaceType ?? "surface").slice(0, 64),
+                // rm-prefixed ids are the room-model fixtures that persist
+                // across rescans AND episodes — the cross-episode unit.
+                isModelBacked: /^rm\d+-s\d+$/.test(String(surf.groupId)),
+                sceneScreenTimeSec: String(surf.screenTimeSec ?? 0),
+                occurrences: Number(sc.occurrences) || 0,
+                rowCount: Number(surf.rowCount) || 0,
+                confidence: surf.confidence != null ? String(surf.confidence) : null,
+                videoDurationSec: (() => {
+                  // Function-scope duration sources (the local-path variable
+                  // isn't visible here): DB value, else the yt-dlp probe.
+                  const d = durationSec ?? ytProbedDurationSec;
+                  return d && d > 0 ? String(Math.round(d)) : null;
+                })(),
+              })),
+            );
+            const written = await storage.replaceFixtureExposure(videoId, exposureRows as any);
+            const modelBacked = exposureRows.filter((r: any) => r.isModelBacked).length;
+            console.log(`[Measurement] fixture_exposure: ${written} fixture-row(s) for video ${videoId} (${modelBacked} model-backed / cross-episode)`);
+          } catch (fxErr: any) {
+            if (fxErr?.message === "__skip_exposure__") {
+              // Quality gate, already logged — not a failure.
+            } else {
+              // console.ERROR, not warn: this table is billed to the data
+              // team as the denominator of every effect estimate, so a
+              // silent write failure is a silent data gap.
+              console.error(`[Measurement] fixture_exposure WRITE FAILED for video ${videoId} (exposure supply not recorded):`, fxErr?.message || fxErr);
+            }
+          }
         } catch (invErr: any) {
           console.warn(`[Scanner V2] Scene inventory build failed (non-fatal):`, invErr?.message || invErr);
         }

@@ -1311,3 +1311,169 @@ export const insertBrandBriefSchema = createInsertSchema(brandBriefs).omit({
 
 export type BrandBrief = typeof brandBriefs.$inferSelect;
 export type InsertBrandBrief = z.infer<typeof insertBrandBriefSchema>;
+
+// ============================================================================
+// MEASUREMENT SPINE — CV-impact research instrumentation (Phase 1)
+//
+// The research design: FIXTURE (a stable physical surface, identified by
+// surface_group_id — the same desk across rescans AND episodes) is the
+// experimental unit; PRODUCT is the treatment; SCREEN TIME is the exposure
+// dose; the audience response is the outcome. These three tables make that
+// design queryable in SQL instead of buried in jsonb.
+//
+// See docs/DATA_DICTIONARY.md §1 for the full frame.
+// ============================================================================
+
+/**
+ * Per-fixture exposure supply, materialized at scan finalize.
+ *
+ * The numbers already exist inside video_index.scene_inventory (jsonb) — this
+ * table lifts them into relational form so a fixture's cumulative screen time
+ * across every episode is one GROUP BY instead of a jsonb walk. This is the
+ * DENOMINATOR of every effect estimate.
+ *
+ * SEMANTICS a researcher must know:
+ *  - CURRENT-STATE, NOT HISTORY. Idempotent per (video_id, surface_group_id):
+ *    a rescan REPLACES the row. Dose-as-of-a-past-treatment-window is not
+ *    reconstructible from this table. (Scan-versioned history is a deliberate
+ *    v2 decision — see docs/DATA_DICTIONARY.md.)
+ *  - Writes are gated on scan quality: a degraded scan (mostly edge-detection
+ *    fallback) leaves prior rows untouched rather than overwriting good data
+ *    with fallback geometry.
+ *  - MISSINGNESS IS NON-RANDOM: videos with a degenerate scene index produce
+ *    no rows at all, and pre-instrumentation scans were never backfilled.
+ */
+export const fixtureExposure = pgTable("fixture_exposure", {
+  id: serial("id").primaryKey(),
+  userId: varchar("user_id").notNull(),          // creator who owns the content
+  videoId: integer("video_id").notNull(),        // video_index.id
+  surfaceGroupId: varchar("surface_group_id", { length: 64 }).notNull(), // FIXTURE identity
+  sceneId: integer("scene_id").notNull(),        // scene class within the video
+  sceneLabel: varchar("scene_label", { length: 32 }),   // "Scene A"
+  displayLabel: varchar("display_label", { length: 64 }), // "Wall 2", "Nightstand 1"
+  surfaceType: varchar("surface_type", { length: 64 }).notNull(),
+  /** Model-backed fixtures (rm{modelId}-s{idx}) persist across episodes;
+   *  fresh g-ids are video-local. Analysts should filter on this for
+   *  cross-episode work. */
+  isModelBacked: boolean("is_model_backed").notNull().default(false),
+  /** Seconds the fixture's SCENE CLASS is on screen in this video.
+   *  ⚠️ GRAIN WARNING: this is a SCENE-level quantity replicated onto every
+   *  fixture in that scene (the set-dressing model: a surface is on screen
+   *  whenever its camera setup is). SUMMING THIS ACROSS FIXTURES WITHIN A
+   *  VIDEO DOUBLE-COUNTS — a 10-min single-scene video with 5 fixtures sums
+   *  to 50 min. For total exposure supply, sum over DISTINCT
+   *  (video_id, scene_id). Per-fixture comparisons are valid as-is. */
+  sceneScreenTimeSec: numeric("scene_screen_time_sec").notNull(),
+  /** Distinct runs of the scene class (how many times the setup recurs). */
+  occurrences: integer("occurrences").notNull().default(0),
+  /** Detection rows backing this fixture in this scan — a data-quality signal. */
+  rowCount: integer("row_count").notNull().default(0),
+  confidence: numeric("confidence"),
+  /** Video duration at scan time, so screen-time share is computable without a join. */
+  videoDurationSec: numeric("video_duration_sec"),
+  scanAt: timestamp("scan_at").defaultNow(),
+}, (table) => [
+  index("idx_fixture_exposure_group").on(table.surfaceGroupId),
+  index("idx_fixture_exposure_video").on(table.videoId),
+  uniqueIndex("uq_fixture_exposure_video_group").on(table.videoId, table.surfaceGroupId),
+]);
+
+/**
+ * Treatment assignment periods: which product occupied which fixture, when.
+ *
+ * A within-fixture crossover design needs the on-air window per treatment.
+ * Gaps between windows are CANDIDATE control periods — with two caveats a
+ * researcher must respect:
+ *  1. Windows exist only from Phase-1 instrumentation onward; earlier time is
+ *     UNOBSERVED, not control. Filter on created_at >= instrumentation start.
+ *  2. A control period's OUTCOME side needs per-video audience time series
+ *     that does not exist yet (data dictionary gap 7), so control exposure is
+ *     currently identifiable but not yet measurable.
+ * Exclusivity is enforced per (fixture × video), not globally: the same
+ * physical fixture legitimately carries different products in different
+ * episodes at the same wall-clock time.
+ */
+export const fixtureAssignments = pgTable("fixture_assignments", {
+  id: serial("id").primaryKey(),
+  userId: varchar("user_id").notNull(),
+  surfaceGroupId: varchar("surface_group_id", { length: 64 }).notNull(), // FIXTURE
+  videoId: integer("video_id").notNull(),
+  /** TREATMENT: the product occupying the fixture. Null = explicit control
+   *  row (fixture observed with no placement in this window). */
+  brandProductId: integer("brand_product_id"),
+  productName: varchar("product_name", { length: 200 }),
+  brandUserId: varchar("brand_user_id"),
+  /** Source rows so an analyst can trace back to the raw lifecycle. */
+  placementId: integer("placement_id"),        // saved_placements.id
+  assignmentId: integer("assignment_id"),      // brand_placement_assignments.id
+  /** Window in DEAL TIME (approval → archive), not audience time: a product
+   *  is "assigned" from approval even though the audience only sees it once
+   *  the creator posts. For audience-time windows join placement_exposures
+   *  on assignment_id and use its live_at. endedAt null = still assigned. */
+  startedAt: timestamp("started_at").notNull().defaultNow(),
+  endedAt: timestamp("ended_at"),
+  endReason: varchar("end_reason", { length: 32 }), // 'archived' | 'expired' | 'replaced' | 'withdrawn'
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_fixture_assign_group").on(table.surfaceGroupId),
+  index("idx_fixture_assign_window").on(table.startedAt),
+]);
+
+/**
+ * Exposure events: a placement that actually reached an audience.
+ *
+ * THE blocking gap — without a row here, no audience metric can be attributed
+ * to a treatment. One row per (placement, published post). Populated when a
+ * creator marks a render live, or when the auto-matcher links a new upload on
+ * their synced channel to a render-ready placement and the creator confirms.
+ */
+export const placementExposures = pgTable("placement_exposures", {
+  id: serial("id").primaryKey(),
+  userId: varchar("user_id").notNull(),
+  /** What was shown. */
+  placementId: integer("placement_id"),          // saved_placements.id
+  assignmentId: integer("assignment_id"),        // brand_placement_assignments.id
+  surfaceGroupId: varchar("surface_group_id", { length: 64 }), // FIXTURE
+  brandProductId: integer("brand_product_id"),   // TREATMENT
+  sourceVideoId: integer("source_video_id").notNull(), // video_index.id the placement lives on
+  /** Where it ran. */
+  platform: varchar("platform", { length: 32 }).notNull(), // youtube | instagram | tiktok | twitter | facebook | other
+  postUrl: text("post_url"),
+  /** Platform-native id once resolved — this is what the analytics fetchers poll. */
+  platformPostId: varchar("platform_post_id", { length: 128 }),
+  /** When the audience could see it. */
+  liveAt: timestamp("live_at").notNull(),
+  endedAt: timestamp("ended_at"),
+  /** Position of the placement in SOURCE-VIDEO coordinates (seconds from the
+   *  start of the original upload), taken from the anchor surface timestamp.
+   *  ⚠️ NOT post-relative. Published assets are frequently trimmed clips, so
+   *  Phase 2 retention joins MUST map this into post coordinates using the
+   *  clip's start offset (see editorialClipId below) before aligning to a
+   *  retention curve. Named for what it is so nothing silently misaligns. */
+  sourceStartSec: numeric("source_start_sec"),
+  sourceEndSec: numeric("source_end_sec"),
+  /** The editorial clip this exposure ran as, when the published asset was a
+   *  clip rather than the full upload. Null = full-video post (source
+   *  coordinates ARE post coordinates). Phase 2 needs this to align. */
+  editorialClipId: integer("editorial_clip_id"),
+  clipStartSec: numeric("clip_start_sec"),
+  /** How this record came to exist — auto-matched links need lower analytic
+   *  trust than creator-confirmed ones. */
+  linkSource: varchar("link_source", { length: 24 }).notNull().default("creator_confirmed"), // creator_confirmed | auto_matched | admin
+  confirmedAt: timestamp("confirmed_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_placement_exposure_group").on(table.surfaceGroupId),
+  index("idx_placement_exposure_live").on(table.liveAt),
+  index("idx_placement_exposure_post").on(table.platform, table.platformPostId),
+  // One exposure per placement — the check-then-insert guard alone loses a
+  // double-submit race and would double-count an audience.
+  uniqueIndex("uq_placement_exposure_placement").on(table.placementId),
+]);
+
+export type FixtureExposure = typeof fixtureExposure.$inferSelect;
+export type InsertFixtureExposure = typeof fixtureExposure.$inferInsert;
+export type FixtureAssignment = typeof fixtureAssignments.$inferSelect;
+export type InsertFixtureAssignment = typeof fixtureAssignments.$inferInsert;
+export type PlacementExposure = typeof placementExposures.$inferSelect;
+export type InsertPlacementExposure = typeof placementExposures.$inferInsert;

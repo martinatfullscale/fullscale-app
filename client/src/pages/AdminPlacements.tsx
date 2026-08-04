@@ -32,6 +32,7 @@ const STATUS_META: Record<string, { label: string; cls: string }> = {
   in_review: { label: "In review", cls: "bg-sky-500/15 text-sky-400 border-sky-500/30" },
   needs_changes: { label: "Needs changes", cls: "bg-amber-500/15 text-amber-400 border-amber-500/30" },
   render_ready: { label: "Render ready", cls: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30" },
+  live: { label: "Live", cls: "bg-violet-500/15 text-violet-300 border-violet-500/30" },
 };
 
 export default function AdminPlacements() {
@@ -73,7 +74,8 @@ export default function AdminPlacements() {
 
   const rows = data?.placements ?? [];
   const queue = rows.filter((r) => r.reviewStatus === "submitted" || r.reviewStatus === "in_review" || r.reviewStatus === "needs_changes");
-  const done = rows.filter((r) => r.reviewStatus === "render_ready");
+  // render_ready is waiting on the creator to post; live is measuring.
+  const done = rows.filter((r) => r.reviewStatus === "render_ready" || r.reviewStatus === "live");
 
   const RowCard = ({ row }: { row: ReviewRow }) => {
     const meta = STATUS_META[row.reviewStatus] ?? STATUS_META.submitted;
@@ -92,21 +94,21 @@ export default function AdminPlacements() {
           <Badge variant="outline" className={`shrink-0 ${meta.cls}`}>{meta.label}</Badge>
         </div>
         <div className="flex items-center gap-2 mt-2 pl-13">
-          {row.reviewStatus !== "in_review" && row.reviewStatus !== "render_ready" && (
+          {row.reviewStatus !== "in_review" && row.reviewStatus !== "render_ready" && row.reviewStatus !== "live" && (
             <Button size="sm" variant="outline" className="h-7 text-xs gap-1"
               disabled={reviewMutation.isPending}
               onClick={() => reviewMutation.mutate({ id: row.id, reviewStatus: "in_review" })}>
               <Eye className="w-3 h-3" /> Start review
             </Button>
           )}
-          {row.reviewStatus !== "render_ready" && (
+          {row.reviewStatus !== "render_ready" && row.reviewStatus !== "live" && (
             <Button size="sm" className="h-7 text-xs gap-1"
               disabled={reviewMutation.isPending}
               onClick={() => reviewMutation.mutate({ id: row.id, reviewStatus: "render_ready" })}>
               <CheckCircle2 className="w-3 h-3" /> Render ready
             </Button>
           )}
-          {row.reviewStatus !== "render_ready" && (
+          {row.reviewStatus !== "render_ready" && row.reviewStatus !== "live" && (
             <Button size="sm" variant="outline" className="h-7 text-xs gap-1 text-amber-400 border-amber-500/30"
               disabled={reviewMutation.isPending}
               onClick={() => { setNoteFor(noteFor === row.id ? null : row.id); setNoteText(row.reviewNote ?? ""); }}>
@@ -167,7 +169,7 @@ export default function AdminPlacements() {
 
             <div className="flex items-center gap-2 mb-3">
               <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-              <h2 className="font-semibold text-sm">Render ready ({done.length})</h2>
+              <h2 className="font-semibold text-sm">Rendered &amp; live ({done.length})</h2>
             </div>
             <Card className="border-border/50">
               <CardContent className="p-0">

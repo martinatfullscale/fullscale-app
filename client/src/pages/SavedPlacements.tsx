@@ -92,6 +92,12 @@ export default function SavedPlacements() {
   const [quickEditSurfaces, setQuickEditSurfaces] = useState<any[]>([]);
   const [loadingSurfaces, setLoadingSurfaces] = useState(false);
   const [sharingId, setSharingId] = useState<number | null>(null);
+  // Go-live capture: which post carries this placement (measurement spine)
+  const [goLiveFor, setGoLiveFor] = useState<SavedPlacementEnriched | null>(null);
+  const [goLiveCandidates, setGoLiveCandidates] = useState<any[]>([]);
+  const [goLiveUrl, setGoLiveUrl] = useState("");
+  const [goLiveLoading, setGoLiveLoading] = useState(false);
+  const [goLiveSaving, setGoLiveSaving] = useState(false);
   const [copiedSlug, setCopiedSlug] = useState<string | null>(null);
 
   // Fetch surfaces when Quick Edit is triggered
@@ -124,6 +130,49 @@ export default function SavedPlacements() {
     };
     fetchSurfaces();
   }, [quickEditPlacement]);
+
+  useEffect(() => {
+    if (!goLiveFor) { setGoLiveCandidates([]); setGoLiveUrl(""); return; }
+    let cancelled = false;
+    setGoLiveLoading(true);
+    fetch(`/api/placements/${goLiveFor.id}/go-live-candidates`, { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : { candidates: [] }))
+      .then((body) => { if (!cancelled) setGoLiveCandidates(body.candidates ?? []); })
+      .catch(() => { if (!cancelled) setGoLiveCandidates([]); })
+      .finally(() => { if (!cancelled) setGoLiveLoading(false); });
+    return () => { cancelled = true; };
+  }, [goLiveFor]);
+
+  const submitGoLive = async (
+    postUrl: string,
+    candidateSource: "channel_match" | "manual",
+    publishedAt?: string,
+  ) => {
+    if (!goLiveFor || !postUrl.trim()) return;
+    setGoLiveSaving(true);
+    try {
+      const res = await fetch(`/api/placements/${goLiveFor.id}/go-live`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        // publishedAt is the AUDIENCE-visible start time — far more useful
+        // to the analysis than when the creator happened to click.
+        body: JSON.stringify({ postUrl: postUrl.trim(), candidateSource, publishedAt }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body?.error || "Failed to record");
+      toast({
+        title: body.alreadyRecorded ? "Already recorded" : "Marked as live",
+        description: "We can now track how this placement performs with your audience.",
+      });
+      setGoLiveFor(null);
+      queryClient.invalidateQueries({ queryKey: ["/api/placements"] });
+    } catch (err: any) {
+      toast({ title: "Couldn't record it", description: err.message, variant: "destructive" });
+    } finally {
+      setGoLiveSaving(false);
+    }
+  };
 
   const { data, isLoading } = useQuery<{ placements: SavedPlacementEnriched[] }>({
     queryKey: ["/api/placements"],
@@ -459,7 +508,9 @@ export default function SavedPlacements() {
                             {(() => {
                               const rs = placement.reviewStatus ?? "submitted";
                               const chip =
-                                rs === "render_ready"
+                                rs === "live"
+                                  ? { label: "Live — tracking performance", cls: "bg-violet-500/15 text-violet-300 border-violet-500/30" }
+                                  : rs === "render_ready"
                                   ? { label: "Final render ready", cls: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30" }
                                   : rs === "in_review"
                                   ? { label: "In review with FullScale", cls: "bg-sky-500/15 text-sky-400 border-sky-500/30" }
@@ -476,6 +527,17 @@ export default function SavedPlacements() {
                                 </div>
                               );
                             })()}
+                            {placement.reviewStatus === "render_ready" && (
+                              <Button
+                                size="sm"
+                                className="w-fit h-7 text-[11px] gap-1 mt-1"
+                                onClick={(e) => { e.stopPropagation(); setGoLiveFor(placement); }}
+                                data-testid={"golive-cta-" + placement.id}
+                              >
+                                <Share2 className="w-3 h-3" />
+                                Posted it? Mark as live
+                              </Button>
+                            )}
                             <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
                               <Clock className="w-3 h-3" />
                               {placement.createdAt ? formatDate(placement.createdAt) : "Unknown"}
@@ -709,6 +771,83 @@ export default function SavedPlacements() {
               )}
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Go-live capture: which post carries this placement. Candidates come
+          from the creator's connected channel (uploads after render-ready);
+          manual URL entry is the fallback for other platforms. */}
+      <Dialog open={goLiveFor !== null} onOpenChange={(o) => { if (!o) setGoLiveFor(null); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Where did this placement go live?</DialogTitle>
+            <DialogDescription>
+              Linking the real post lets us track how the placement performs with your
+              audience — views, retention, the numbers brands pay against.
+            </DialogDescription>
+          </DialogHeader>
+
+          {goLiveLoading ? (
+            <div className="flex justify-center py-6">
+              <Loader2 className="h-5 w-5 animate-spin text-primary" />
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {goLiveCandidates.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-xs text-muted-foreground">
+                    Recent uploads on your channel — tap the one that carries this placement:
+                  </p>
+                  {goLiveCandidates.map((c) => (
+                    <button
+                      key={c.platformPostId}
+                      className="w-full flex items-center gap-3 p-2 rounded-lg border border-white/10 hover:border-primary/50 hover:bg-white/5 text-left"
+                      disabled={goLiveSaving}
+                      onClick={() => submitGoLive(c.postUrl, "channel_match", c.publishedAt)}
+                      data-testid={`golive-candidate-${c.platformPostId}`}
+                    >
+                      {c.thumbnailUrl && (
+                        <img src={c.thumbnailUrl} alt="" className="w-16 h-9 rounded object-cover shrink-0" />
+                      )}
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">{c.title}</p>
+                        <p className="text-[11px] text-muted-foreground">
+                          {new Date(c.publishedAt).toLocaleDateString()}
+                        </p>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div>
+                <p className="text-xs text-muted-foreground mb-1.5">
+                  {goLiveCandidates.length > 0 ? "Or paste the post URL:" : "Paste the post URL (YouTube, Instagram, TikTok, X…):"}
+                </p>
+                <div className="flex gap-2">
+                  <input
+                    value={goLiveUrl}
+                    onChange={(e) => setGoLiveUrl(e.target.value)}
+                    placeholder="https://…"
+                    className="flex-1 h-9 px-3 rounded-md bg-white/5 border border-white/10 text-sm"
+                    data-testid="golive-url-input"
+                  />
+                  <Button
+                    disabled={goLiveSaving || !goLiveUrl.trim()}
+                    onClick={() => submitGoLive(goLiveUrl, "manual")}
+                    data-testid="golive-submit"
+                  >
+                    {goLiveSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : "Mark live"}
+                  </Button>
+                </div>
+              </div>
+              {goLiveCandidates.length === 0 && (
+                <p className="text-[11px] text-muted-foreground/70">
+                  Connect YouTube on your dashboard and we'll suggest your recent uploads here
+                  automatically.
+                </p>
+              )}
+            </div>
+          )}
         </DialogContent>
       </Dialog>
 

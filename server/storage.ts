@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { eq, desc, and, or, sql, inArray, ne } from "drizzle-orm";
+import { eq, desc, and, or, sql, inArray, ne, isNull } from "drizzle-orm";
 import {
   monetizationItems,
   youtubeConnections,
@@ -106,6 +106,9 @@ import {
   roomModels,
   type RoomModel,
   type InsertRoomModel,
+  fixtureExposure, fixtureAssignments, placementExposures,
+  type InsertFixtureExposure, type InsertFixtureAssignment, type InsertPlacementExposure,
+  type FixtureExposure, type FixtureAssignment, type PlacementExposure,
 } from "@shared/schema";
 import { users, type User, type UpsertUser } from "@shared/models/auth";
 import { encrypt, decrypt } from "./encryption";
@@ -191,6 +194,16 @@ export interface IStorage {
   savePlacement(placement: InsertSavedPlacement): Promise<SavedPlacement>;
   getAllActivePlacements(): Promise<SavedPlacement[]>;
   updatePlacementReview(placementId: number, patch: { reviewStatus: string; reviewNote?: string | null }): Promise<SavedPlacement | undefined>;
+  setPlacementLive(placementId: number): Promise<void>;
+  replaceFixtureExposure(videoId: number, rows: InsertFixtureExposure[]): Promise<number>;
+  getFixtureExposureForVideo(videoId: number): Promise<FixtureExposure[]>;
+  getFixtureExposureByGroup(surfaceGroupId: string): Promise<FixtureExposure[]>;
+  openFixtureAssignment(row: InsertFixtureAssignment): Promise<FixtureAssignment>;
+  closeFixtureAssignment(match: { placementId?: number; assignmentId?: number }, endReason: string): Promise<number>;
+  getFixtureAssignments(surfaceGroupId: string): Promise<FixtureAssignment[]>;
+  createPlacementExposure(row: InsertPlacementExposure): Promise<PlacementExposure>;
+  getPlacementExposuresForUser(userId: string): Promise<PlacementExposure[]>;
+  getPlacementExposureForPlacement(placementId: number): Promise<PlacementExposure | undefined>;
   getPlacementsByCreator(email: string): Promise<SavedPlacement[]>;
   getPlacementsForVideo(videoId: number): Promise<SavedPlacement[]>;
   getPlacementById(placementId: number): Promise<SavedPlacement | undefined>;
@@ -1614,6 +1627,132 @@ export class DatabaseStorage implements IStorage {
       .values(placement)
       .returning();
     return result;
+  }
+
+  // ── Measurement spine (CV-impact research) ──────────────────────────
+
+  /** Replace this video's fixture-exposure rows in one transaction-ish sweep.
+   *  Idempotent per (videoId, surfaceGroupId) so a rescan overwrites rather
+   *  than accumulating duplicate exposure supply. */
+  async replaceFixtureExposure(videoId: number, rows: InsertFixtureExposure[]): Promise<number> {
+    // NEVER wipe on an empty result. A scan that produced no grouped fixtures
+    // (all-ungrouped survivors, degenerate index) must leave prior exposure
+    // supply intact — mirroring the keep-prior-surfaces rule. Deleting here
+    // would silently destroy the denominator of every effect estimate.
+    if (rows.length === 0) {
+      console.warn(`[Measurement] fixture_exposure: 0 rows computed for video ${videoId} — keeping prior exposure rows`);
+      return 0;
+    }
+    // Transactional: a partial write (connection drop, chunk 2 of 3 failing)
+    // would otherwise leave the video with a truncated denominator.
+    await db.transaction(async (tx) => {
+      await tx.delete(fixtureExposure).where(eq(fixtureExposure.videoId, videoId));
+      for (let i = 0; i < rows.length; i += 100) {
+        await tx.insert(fixtureExposure).values(rows.slice(i, i + 100));
+      }
+    });
+    return rows.length;
+  }
+
+  async getFixtureExposureForVideo(videoId: number): Promise<FixtureExposure[]> {
+    return await db.select().from(fixtureExposure).where(eq(fixtureExposure.videoId, videoId));
+  }
+
+  /** Cumulative exposure supply for a fixture across every episode — the
+   *  denominator of an effect estimate. */
+  async getFixtureExposureByGroup(surfaceGroupId: string): Promise<FixtureExposure[]> {
+    return await db
+      .select()
+      .from(fixtureExposure)
+      .where(eq(fixtureExposure.surfaceGroupId, surfaceGroupId))
+      .orderBy(desc(fixtureExposure.scanAt));
+  }
+
+  /** Open a treatment window on a fixture. Closes any window still open for
+   *  the same fixture first — a fixture holds one product at a time, and the
+   *  gap between windows is the control period. */
+  async openFixtureAssignment(row: InsertFixtureAssignment): Promise<FixtureAssignment> {
+    // Exclusivity is per (fixture × VIDEO). The same physical fixture
+    // legitimately carries different products in different episodes at the
+    // same wall-clock time — closing globally would fabricate control
+    // periods for content that is still published and still treated.
+    const superseded = await db
+      .update(fixtureAssignments)
+      .set({ endedAt: new Date(), endReason: "replaced" })
+      .where(and(
+        eq(fixtureAssignments.surfaceGroupId, row.surfaceGroupId),
+        eq(fixtureAssignments.videoId, row.videoId),
+        isNull(fixtureAssignments.endedAt),
+      ))
+      .returning();
+    if (superseded.length > 0) {
+      console.log(`[Measurement] fixture_assignments: superseded ${superseded.length} open window(s) on ${row.surfaceGroupId} (video ${row.videoId})`);
+    }
+    const [created] = await db.insert(fixtureAssignments).values(row).returning();
+    return created;
+  }
+
+  async closeFixtureAssignment(
+    match: { placementId?: number; assignmentId?: number },
+    endReason: string,
+  ): Promise<number> {
+    const clauses = [isNull(fixtureAssignments.endedAt)];
+    if (match.placementId != null) clauses.push(eq(fixtureAssignments.placementId, match.placementId));
+    if (match.assignmentId != null) clauses.push(eq(fixtureAssignments.assignmentId, match.assignmentId));
+    if (clauses.length === 1) return 0; // never close everything by accident
+    const rows = await db
+      .update(fixtureAssignments)
+      .set({ endedAt: new Date(), endReason })
+      .where(and(...clauses))
+      .returning();
+    if (rows.length === 0) {
+      // A dead close path leaves treatment windows open forever, and every
+      // later second of that fixture reads as TREATED. Never swallow it.
+      console.warn(`[Measurement] fixture_assignments: close matched 0 windows (${JSON.stringify(match)}, reason=${endReason})`);
+    }
+    return rows.length;
+  }
+
+  async getFixtureAssignments(surfaceGroupId: string): Promise<FixtureAssignment[]> {
+    return await db
+      .select()
+      .from(fixtureAssignments)
+      .where(eq(fixtureAssignments.surfaceGroupId, surfaceGroupId))
+      .orderBy(desc(fixtureAssignments.startedAt));
+  }
+
+  async createPlacementExposure(row: InsertPlacementExposure): Promise<PlacementExposure> {
+    const [created] = await db.insert(placementExposures).values(row).returning();
+    return created;
+  }
+
+  async getPlacementExposuresForUser(userId: string): Promise<PlacementExposure[]> {
+    const ids = await this.identityMatchValues(userId);
+    return await db
+      .select()
+      .from(placementExposures)
+      .where(inArray(placementExposures.userId, ids))
+      .orderBy(desc(placementExposures.liveAt));
+  }
+
+  async getPlacementExposureForPlacement(placementId: number): Promise<PlacementExposure | undefined> {
+    const [row] = await db
+      .select()
+      .from(placementExposures)
+      .where(eq(placementExposures.placementId, placementId))
+      .orderBy(desc(placementExposures.liveAt));
+    return row;
+  }
+
+  /** render_ready → live. Deliberately does NOT touch reviewedAt: that
+   *  timestamp anchors the go-live candidate search ("uploads since the
+   *  render was ready"), and overwriting it would break the suggestions on
+   *  every subsequent visit. */
+  async setPlacementLive(placementId: number): Promise<void> {
+    await db
+      .update(savedPlacements)
+      .set({ reviewStatus: "live", updatedAt: new Date() })
+      .where(eq(savedPlacements.id, placementId));
   }
 
   async updatePlacementReview(placementId: number, patch: { reviewStatus: string; reviewNote?: string | null }): Promise<SavedPlacement | undefined> {
