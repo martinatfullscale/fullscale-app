@@ -33,23 +33,24 @@ export async function runVideoStatSnapshots(): Promise<{ captured: number; skipp
   }
   console.log(`[VideoStats] Cycle: ${videoIds.length} video(s) under measurement`);
 
-  // Group by owner so one token refresh covers all of that creator's videos,
-  // and by platform because each has its own fetcher.
+  // YouTube batches (videos.list takes 50 ids per call); every other
+  // platform is fetched per-video through the dispatcher.
   const byUser = new Map<string, Array<{ id: number; platform: string; nativeId: string }>>();
+  const others: Array<{ id: number; platform: string; storedId: string; userId: string }> = [];
   for (const id of videoIds) {
     const video = await storage.getVideoById(id).catch(() => undefined);
     if (!video) { skipped++; continue; }
     const platform = String((video as any).platform ?? "");
-    const nativeId = String((video as any).youtubeId ?? "");
-    if (platform !== "youtube" || !nativeId || nativeId.includes(":")) {
-      // Non-YouTube platforms have no per-post series fetcher yet.
-      skipped++;
-      continue;
+    const storedId = String((video as any).youtubeId ?? "");
+    const userId = String((video as any).userId);
+    if (!storedId) { skipped++; continue; }
+    if (platform === "youtube" && !storedId.includes(":")) {
+      const arr = byUser.get(userId) ?? [];
+      arr.push({ id, platform, nativeId: storedId });
+      byUser.set(userId, arr);
+    } else {
+      others.push({ id, platform, storedId, userId });
     }
-    const key = String((video as any).userId);
-    const arr = byUser.get(key) ?? [];
-    arr.push({ id, platform, nativeId });
-    byUser.set(key, arr);
   }
 
   for (const [userId, videos] of Array.from(byUser.entries())) {
@@ -85,6 +86,42 @@ export async function runVideoStatSnapshots(): Promise<{ captured: number; skipp
       skipped += videos.length;
       console.warn(`[VideoStats] User ${userId} batch failed (non-fatal): ${err?.message}`);
     }
+  }
+
+  // ── Twitch / TikTok / X ────────────────────────────────────────────
+  // Each returns a REASON when it can't fetch (missing credentials, no
+  // creator OAuth, paid tier, unresolvable id) so a dark platform explains
+  // itself in the logs rather than looking like zero engagement.
+  const reasonCounts = new Map<string, number>();
+  for (const v of others) {
+    try {
+      const { fetchPlatformMetrics } = await import("./platformMetrics");
+      const result = await fetchPlatformMetrics(v.platform, v.storedId, v.userId);
+      if (!result.ok) {
+        skipped++;
+        reasonCounts.set(result.reason, (reasonCounts.get(result.reason) ?? 0) + 1);
+        continue;
+      }
+      const m = result.metrics;
+      await storage.insertVideoStatSnapshot({
+        videoId: v.id,
+        userId: v.userId,
+        platform: v.platform,
+        platformPostId: m.platformPostId,
+        viewCount: m.viewCount,
+        likeCount: m.likeCount,
+        commentCount: m.commentCount,
+        raw: { ...m.raw, shareCount: m.shareCount ?? null },
+      } as any);
+      captured++;
+      await new Promise((r) => setTimeout(r, 350));
+    } catch (err: any) {
+      skipped++;
+      console.warn(`[VideoStats] ${v.platform} video ${v.id} failed (non-fatal): ${err?.message}`);
+    }
+  }
+  for (const [reason, n] of Array.from(reasonCounts.entries())) {
+    console.log(`[VideoStats] ${n} video(s) skipped — ${reason}`);
   }
 
   console.log(`[VideoStats] Cycle done: ${captured} snapshot(s) captured, ${skipped} skipped`);

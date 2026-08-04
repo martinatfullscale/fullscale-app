@@ -77,6 +77,19 @@ export default function AdminMeasurement() {
     retry: 1,
   });
 
+  const { data: platforms } = useQuery<{
+    platforms: Array<{ platform: string; ready: boolean; detail: string; videosUnderMeasurement: number }>;
+    totalUnderMeasurement: number;
+  }>({
+    queryKey: ["/api/admin/measurement/platforms"],
+    queryFn: async () => {
+      const res = await fetch("/api/admin/measurement/platforms", { credentials: "include" });
+      if (!res.ok) throw new Error("capability unavailable");
+      return res.json();
+    },
+    retry: 1,
+  });
+
   const s = data?.summary;
 
   const Stat = ({ icon, label, value, hint }: { icon: React.ReactNode; label: string; value: string | number; hint?: string }) => (
@@ -205,6 +218,39 @@ export default function AdminMeasurement() {
                         </div>
                       </>
                     )}
+                  </CardContent>
+                </Card>
+              </>
+            )}
+
+            {platforms && (
+              <>
+                <h2 className="font-semibold text-sm mb-3">Platform coverage</h2>
+                <Card className="border-border/50 mb-10">
+                  <CardContent className="p-0">
+                    {platforms.platforms.map((p) => (
+                      <div key={p.platform} className="flex items-start gap-3 p-3 border-b border-white/5 last:border-b-0">
+                        <span
+                          className={`mt-1 w-2 h-2 rounded-full shrink-0 ${p.ready ? "bg-emerald-400" : "bg-amber-400"}`}
+                          aria-hidden
+                        />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium capitalize">
+                            {p.platform === "twitter" ? "X" : p.platform}
+                            <span className="ml-2 text-xs text-muted-foreground tabular-nums">
+                              {p.videosUnderMeasurement} video{p.videosUnderMeasurement === 1 ? "" : "s"} under measurement
+                            </span>
+                          </p>
+                          <p className="text-xs text-muted-foreground mt-0.5">{p.detail}</p>
+                        </div>
+                        <Badge
+                          variant="outline"
+                          className={`shrink-0 text-[10px] ${p.ready ? "text-emerald-400 border-emerald-500/30" : "text-amber-400 border-amber-500/30"}`}
+                        >
+                          {p.ready ? "collecting" : "blocked"}
+                        </Badge>
+                      </div>
+                    ))}
                   </CardContent>
                 </Card>
               </>

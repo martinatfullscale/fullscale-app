@@ -1096,6 +1096,39 @@ export async function registerRoutes(
     }
   });
 
+  // Which platforms can actually produce outcome metrics right now, and what
+  // is missing where they can't. Prevents "no data" from being read as "no
+  // audience" — the platforms differ in what they expose, and some of the
+  // blockers are commercial rather than technical.
+  app.get("/api/admin/measurement/platforms", async (req: any, res) => {
+    try {
+      const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
+      if (!callerEmail || !ADMIN_EMAILS.includes(String(callerEmail).toLowerCase())) {
+        return res.status(403).json({ error: "Admin access required" });
+      }
+      const { platformMetricsCapability } = await import("./lib/platformMetrics");
+      const capability = await platformMetricsCapability();
+
+      // Pair capability with what's actually in the corpus, so the answer is
+      // "3 Twitch videos and we can read them" rather than an abstract matrix.
+      const measuredIds = await storage.getVideoIdsUnderMeasurement();
+      const counts = new Map<string, number>();
+      for (const id of measuredIds) {
+        const v = await storage.getVideoById(id).catch(() => undefined);
+        if (!v) continue;
+        const p = String((v as any).platform ?? "unknown");
+        counts.set(p, (counts.get(p) ?? 0) + 1);
+      }
+      res.json({
+        platforms: capability.map((c) => ({ ...c, videosUnderMeasurement: counts.get(c.platform) ?? 0 })),
+        totalUnderMeasurement: measuredIds.length,
+      });
+    } catch (err: any) {
+      console.error("[Measurement] Platform capability error:", err?.message);
+      res.status(500).json({ error: "Failed to read platform capability" });
+    }
+  });
+
   // Per-fixture crossover timeline: every treatment and control period with
   // the dose that applied DURING that window (not today's numbers) and the
   // audience trajectory over it. This is the row-level view the study models.

@@ -1282,6 +1282,30 @@ Per-video `ageGroup × gender` (channel-level demographics can't tell you whethe
 A and product B reached the same people). Same capture cycle, same threshold caveat.
 Instagram exposes demographics only at account level — a platform limit, not a gap.
 
+### Platform coverage of the outcome side (what each platform can actually tell us)
+
+The measurement spine is platform-agnostic; the *platforms* are not. Live status is at
+`GET /api/admin/measurement/platforms` and in the readout.
+
+| Platform | Views | Likes/comments | Retention | Demographics | Requires |
+|---|---|---|---|---|---|
+| **YouTube** | ✅ | ✅ | ✅ per-second curve | ✅ per-video | Creator's connected channel (already granted) |
+| **Twitch** | ✅ VODs + clips | ❌ not exposed | ❌ none | ❌ none | App token only (`TWITCH_CLIENT_ID`/`SECRET`) — **no creator OAuth** |
+| **TikTok** | ✅ | ✅ + shares | ❌ none | ❌ account-level only | `video.list` scope + creator reconnect + creator owns the video |
+| **X** | ✅ impressions | ✅ + reposts | ❌ none | ❌ none | Creator connected via X OAuth + **paid API tier** |
+
+**Notes that affect analysis:**
+- **Retention is YouTube-only and will stay that way** — no other platform exposes a
+  per-second curve. Cross-platform comparisons must fall back to view trajectories.
+- **Twitch VOD view counts expire with the VOD** (14/60 days by account tier). Clips are
+  the durable series; a VOD series that stops is retention policy, not audience decay.
+- **TikTok share-link imports (`vm.`/`t.`) can never yield metrics** — those URLs carry no
+  numeric video id and we don't persist the resolved redirect. Re-import from the full
+  `@user/video/…` URL. The fetcher reports this explicitly rather than skipping silently.
+- **Every failure carries a reason.** A platform that can't be read logs *why*
+  (missing credentials / no creator OAuth / paid tier / unresolvable id) and writes no
+  row. There are no zero-filled rows: absence means unmeasured, never "no audience".
+
 ### Joining retention to a placement (the easy thing to get wrong)
 
 `placement_exposures.source_start_sec` is in **source-video** coordinates. Published

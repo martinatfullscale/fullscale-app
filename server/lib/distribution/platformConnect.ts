@@ -163,7 +163,11 @@ export function registerDistributionOAuthRoutes(app: Express) {
       req.session.tiktokOauth = { state, userId };
       const params = new URLSearchParams({
         client_key: process.env.TIKTOK_CLIENT_KEY,
-        scope: "user.info.basic,video.upload,video.publish",
+        // video.list is what the Display API's video/query endpoint needs to
+        // return per-post metrics; without it the measurement spine gets 403
+        // for every TikTok video. Existing connections predate this scope and
+        // must reconnect before their metrics work.
+        scope: "user.info.basic,video.upload,video.publish,video.list",
         response_type: "code",
         redirect_uri: `${BASE_URL}/auth/tiktok/callback`,
         state,

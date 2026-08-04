@@ -115,6 +115,72 @@ export function platformMaxDurationSec(platform: string): number | null {
   return isYtDlpPlatform(platform) ? DEFS[platform].maxDurationSec ?? null : null;
 }
 
+/**
+ * Recover the PLATFORM-NATIVE id a metrics API expects from our stored id.
+ *
+ * This is the primitive the measurement spine was missing. Our stored form
+ * ("twitch:videos/123", "tiktok:@user/video/7312…") is built for round-
+ * tripping to a watch URL; every platform's metrics API wants something
+ * narrower, and each wants a different shape:
+ *   - Twitch: numeric VOD id → /helix/videos, clip slug → /helix/clips
+ *     (different endpoints, so the kind must be carried, not just the id)
+ *   - TikTok Display API: the bare numeric video id
+ *   - X v2: the bare numeric tweet id
+ *
+ * Returns an explicit `unresolvable` kind rather than null so callers can
+ * report WHY a video has no metrics instead of silently skipping it. The
+ * TikTok short-link forms (vm./t.) genuinely carry no numeric id — they
+ * only resolve by following a redirect, which we don't persist at import.
+ */
+export type NativeMetricsId =
+  | { kind: "youtube_video"; id: string }
+  | { kind: "twitch_video"; id: string }
+  | { kind: "twitch_clip"; id: string }
+  | { kind: "tiktok_video"; id: string }
+  | { kind: "x_tweet"; id: string }
+  | { kind: "unresolvable"; reason: string };
+
+export function nativeIdForStoredId(platform: string, storedId: string): NativeMetricsId {
+  const raw = String(storedId ?? "").trim();
+  if (!raw) return { kind: "unresolvable", reason: "empty id" };
+
+  if (platform === "youtube") {
+    return raw.includes(":")
+      ? { kind: "unresolvable", reason: "not a bare YouTube id" }
+      : { kind: "youtube_video", id: raw };
+  }
+
+  const prefix = `${platform}:`;
+  const native = raw.startsWith(prefix) ? raw.slice(prefix.length) : raw;
+
+  if (platform === "twitch") {
+    if (native.startsWith("clip/")) return { kind: "twitch_clip", id: native.slice(5) };
+    const m = native.match(/^videos\/(\d+)$/);
+    if (m) return { kind: "twitch_video", id: m[1] };
+    return { kind: "unresolvable", reason: `unrecognized Twitch id form "${native}"` };
+  }
+
+  if (platform === "tiktok") {
+    const m = native.match(/\/video\/(\d+)/);
+    if (m) return { kind: "tiktok_video", id: m[1] };
+    if (native.startsWith("vm/") || native.startsWith("t/")) {
+      return {
+        kind: "unresolvable",
+        reason: "TikTok share-link import (vm./t.) carries no numeric video id — re-import from the full @user/video/… URL to enable metrics",
+      };
+    }
+    return { kind: "unresolvable", reason: `unrecognized TikTok id form "${native}"` };
+  }
+
+  if (platform === "twitter") {
+    const m = native.match(/status\/(\d+)/);
+    if (m) return { kind: "x_tweet", id: m[1] };
+    return { kind: "unresolvable", reason: `unrecognized X id form "${native}"` };
+  }
+
+  return { kind: "unresolvable", reason: `no metrics fetcher for platform "${platform}"` };
+}
+
 /** Stored ids can contain "/" (tiktok @user/video/123) — never use them raw
  *  as filenames. */
 export function safeFileStem(storedId: string): string {
