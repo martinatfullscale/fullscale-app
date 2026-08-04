@@ -1257,6 +1257,48 @@ counter cannot distinguish a placement-driven lift from baseline growth. Differe
 consecutive snapshots gives **views/day**, which is comparable across treatment and
 control windows on the same fixture.
 
+### `video_retention_curves` — the measurement the study turns on
+
+Daily capture per video under measurement, via YouTube Analytics
+(`dimensions=elapsedVideoTimeRatio&metrics=audienceWatchRatio,relativeRetentionPerformance`).
+Kill switch `RETENTION_CAPTURE_ENABLED=false`.
+
+| Column | Type | Definition |
+|---|---|---|
+| `video_id` / `user_id` | integer / varchar | `video_index.id`, owning creator |
+| `platform_post_id` | varchar | The post the curve describes |
+| `video_duration_sec` | numeric | Duration the ratios normalize against — needed to convert ratio ↔ seconds |
+| `curve` | jsonb | `[{ ratio, watchRatio, relativePerformance }]` ordered by ratio (~100 buckets) |
+| `start_date` / `end_date` | varchar(10) | Reporting window |
+| `captured_at` | timestamp | Capture time |
+
+**Availability caveat:** YouTube only surfaces retention above a reporting threshold, so
+new or low-traffic videos return nothing. Absence is "not yet reported", not zero
+retention — never impute it.
+
+### `video_demographics` — per-content covariates
+
+Per-video `ageGroup × gender` (channel-level demographics can't tell you whether product
+A and product B reached the same people). Same capture cycle, same threshold caveat.
+Instagram exposes demographics only at account level — a platform limit, not a gap.
+
+### Joining retention to a placement (the easy thing to get wrong)
+
+`placement_exposures.source_start_sec` is in **source-video** coordinates. Published
+assets are often trimmed clips, so:
+
+```
+post_relative_sec = source_start_sec - clip_start_sec      -- 0 when the post is the full upload
+position_ratio    = post_relative_sec / video_duration_sec  -- from the curve row
+watch_at_placement = curve[ bucket where ratio <= position_ratio ]  -- last matching bucket
+lift = watch_at_placement.watchRatio - mean(curve.watchRatio)
+```
+
+`GET /api/admin/measurement/retention` implements exactly this and returns
+`liftVsVideoMean` per exposure — **positive means more viewers than that video's own
+average were present at the moment the product was on screen.** That single number is
+the closest thing the platform has to a direct answer to the research question.
+
 ### Putting it together: the crossover query
 
 `GET /api/admin/measurement/fixture/:groupId` returns exactly this, and is the reference
@@ -1277,10 +1319,15 @@ imputed.
 exposure events, treatment windows and go-live capture exist. **Gap 7 (time-series
 collection) and gap 8 (fixture rollup + control baseline) are now CLOSED** for YouTube —
 `video_stat_snapshots` appends per-video trajectories and control periods are explicit
-rows with measurable outcomes. Gaps 3 (retention curves), 4 (per-video demographics) and
-5 (click/conversion attribution) remain open; retention curves are the highest-value
-remaining item and are blocked on nothing — the `yt-analytics.readonly` scope is already
-granted and the report has simply never been requested.
+rows with measurable outcomes. **Gaps 3 (retention curves) and 4 (per-video demographics) are now CLOSED for
+YouTube** — both captured daily through the already-granted `yt-analytics.readonly`
+scope. **Gap 5 (click/conversion attribution) is the only fully open gap**, and it is
+the one that needs brand-side cooperation (a pixel or postback) for conversions;
+first-party click tracking via the `/s/` redirect is buildable without them.
+
+Also now written: the expiry sweep that closes treatment windows whose deal term has
+passed (`end_reason = 'expired'`) and returns the fixture to an explicit control period —
+previously `expired` was a documented status nothing ever wrote.
 
 ---
 

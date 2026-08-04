@@ -1524,6 +1524,77 @@ export const videoStatSnapshots = pgTable("video_stat_snapshots", {
   index("idx_video_stat_user_time").on(table.userId, table.capturedAt),
 ]);
 
+/**
+ * Audience retention curves — the measurement that answers the actual
+ * research question: do viewers LINGER or DROP at the seconds a placed
+ * product is on screen?
+ *
+ * YouTube Analytics returns retention as a normalized curve: for each
+ * elapsed-time ratio (0.0 → 1.0 of the video), what fraction of viewers were
+ * still watching (audienceWatchRatio), and how that compares to similar
+ * videos (relativeRetentionPerformance). Stored as a whole curve per video
+ * per capture so it can be joined against placement timestamps.
+ *
+ * JOINING TO A PLACEMENT (the part that is easy to get wrong):
+ *   placement_exposures.source_start_sec is in SOURCE-video coordinates. If
+ *   the published post was a trimmed clip, subtract clip_start_sec first.
+ *   Then position_ratio = post_relative_seconds / video_duration_sec, and
+ *   look up the curve bucket at that ratio.
+ */
+export const videoRetentionCurves = pgTable("video_retention_curves", {
+  id: serial("id").primaryKey(),
+  videoId: integer("video_id").notNull(),        // video_index.id
+  userId: varchar("user_id").notNull(),
+  platform: varchar("platform", { length: 32 }).notNull().default("youtube"),
+  platformPostId: varchar("platform_post_id", { length: 128 }),
+  /** Duration the curve is normalized against — needed to convert a ratio
+   *  back into seconds (and therefore to align a placement). */
+  videoDurationSec: numeric("video_duration_sec"),
+  /** The curve itself: [{ ratio, watchRatio, relativePerformance }] ordered
+   *  by ratio. YouTube typically returns ~100 buckets. */
+  curve: jsonb("curve").$type<Array<{
+    ratio: number;
+    watchRatio: number;
+    relativePerformance?: number | null;
+  }>>(),
+  /** Reporting window the curve covers. */
+  startDate: varchar("start_date", { length: 10 }),
+  endDate: varchar("end_date", { length: 10 }),
+  capturedAt: timestamp("captured_at").defaultNow().notNull(),
+}, (table) => [
+  index("idx_retention_video_time").on(table.videoId, table.capturedAt),
+]);
+
+/**
+ * Per-CONTENT viewer demographics (as opposed to channel-level).
+ *
+ * Comparing product A against product B on the same fixture is confounded if
+ * the two videos reached different audiences. These are the covariates that
+ * make the comparison honest.
+ */
+export const videoDemographics = pgTable("video_demographics", {
+  id: serial("id").primaryKey(),
+  videoId: integer("video_id").notNull(),
+  userId: varchar("user_id").notNull(),
+  platform: varchar("platform", { length: 32 }).notNull().default("youtube"),
+  platformPostId: varchar("platform_post_id", { length: 128 }),
+  /** ageGroup → share, gender → share; each normalized to sum ~1.0. */
+  ageDistribution: jsonb("age_distribution"),
+  genderDistribution: jsonb("gender_distribution"),
+  /** Raw ageGroup × gender cells, for analysts who want the joint. */
+  raw: jsonb("raw"),
+  startDate: varchar("start_date", { length: 10 }),
+  endDate: varchar("end_date", { length: 10 }),
+  capturedAt: timestamp("captured_at").defaultNow().notNull(),
+}, (table) => [
+  index("idx_video_demo_video_time").on(table.videoId, table.capturedAt),
+]);
+
+export type VideoRetentionCurve = typeof videoRetentionCurves.$inferSelect;
+export type InsertVideoRetentionCurve = typeof videoRetentionCurves.$inferInsert;
+export type VideoDemographics = typeof videoDemographics.$inferSelect;
+export type InsertVideoDemographics = typeof videoDemographics.$inferInsert;
+
 export type VideoStatSnapshot = typeof videoStatSnapshots.$inferSelect;
 export type InsertVideoStatSnapshot = typeof videoStatSnapshots.$inferInsert;
 

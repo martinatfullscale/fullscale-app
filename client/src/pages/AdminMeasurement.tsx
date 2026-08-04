@@ -11,7 +11,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { TopBar } from "@/components/TopBar";
-import { Loader2, FlaskConical, Layers, Radio, Clock } from "lucide-react";
+import { Loader2, FlaskConical, Layers, Radio, Clock, Activity } from "lucide-react";
 
 interface FixtureRow {
   surfaceGroupId: string;
@@ -62,6 +62,19 @@ export default function AdminMeasurement() {
       if (!res.ok) throw new Error(`Failed to load readout (${res.status})`);
       return res.json();
     },
+  });
+
+  const { data: retention } = useQuery<{
+    summary: { exposures: number; withRetention: number; awaitingCurves: number; meanLiftVsVideoMean: number | null };
+    exposures: Array<any>;
+  }>({
+    queryKey: ["/api/admin/measurement/retention"],
+    queryFn: async () => {
+      const res = await fetch("/api/admin/measurement/retention", { credentials: "include" });
+      if (!res.ok) throw new Error("retention unavailable");
+      return res.json();
+    },
+    retry: 1,
   });
 
   const s = data?.summary;
@@ -131,6 +144,70 @@ export default function AdminMeasurement() {
                   </p>
                 </CardContent>
               </Card>
+            )}
+
+            {retention && retention.summary.exposures > 0 && (
+              <>
+                <div className="flex items-center gap-2 mb-3">
+                  <Activity className="w-4 h-4 text-primary" />
+                  <h2 className="font-semibold text-sm">Retention at the placement</h2>
+                </div>
+                <Card className="border-border/50 mb-10">
+                  <CardContent className="p-4">
+                    {retention.summary.withRetention === 0 ? (
+                      <p className="text-sm text-muted-foreground">
+                        {retention.summary.exposures} exposure{retention.summary.exposures === 1 ? "" : "s"} recorded,
+                        no retention curves yet. YouTube only surfaces retention once a video passes its
+                        reporting threshold; curves are fetched daily.
+                      </p>
+                    ) : (
+                      <>
+                        <p className="text-sm mb-3">
+                          <span className="font-medium tabular-nums">{retention.summary.withRetention}</span>{" "}
+                          of {retention.summary.exposures} exposures have a curve.
+                          {retention.summary.meanLiftVsVideoMean != null && (
+                            <>
+                              {" "}Mean viewer presence at the placement vs. the video's own average:{" "}
+                              <span className={`font-semibold tabular-nums ${retention.summary.meanLiftVsVideoMean >= 0 ? "text-emerald-400" : "text-amber-400"}`}>
+                                {retention.summary.meanLiftVsVideoMean >= 0 ? "+" : ""}
+                                {(retention.summary.meanLiftVsVideoMean * 100).toFixed(1)}pp
+                              </span>
+                            </>
+                          )}
+                        </p>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-xs">
+                            <thead>
+                              <tr className="border-b border-white/10 text-left text-muted-foreground">
+                                <th className="p-2 font-medium">Fixture</th>
+                                <th className="p-2 font-medium">Position</th>
+                                <th className="p-2 font-medium">Watching there</th>
+                                <th className="p-2 font-medium">vs. video avg</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {retention.exposures.filter((e: any) => e.retention).slice(0, 25).map((e: any) => (
+                                <tr key={e.exposureId} className="border-b border-white/5 last:border-b-0">
+                                  <td className="p-2 font-mono text-[11px]">{e.surfaceGroupId ?? "—"}</td>
+                                  <td className="p-2 tabular-nums">
+                                    {(e.retention.positionRatio * 100).toFixed(0)}% in
+                                    <span className="text-muted-foreground"> ({e.retention.postRelativeSec}s)</span>
+                                  </td>
+                                  <td className="p-2 tabular-nums">{(e.retention.watchRatioAtPlacement * 100).toFixed(1)}%</td>
+                                  <td className={`p-2 tabular-nums ${e.retention.liftVsVideoMean >= 0 ? "text-emerald-400" : "text-amber-400"}`}>
+                                    {e.retention.liftVsVideoMean >= 0 ? "+" : ""}
+                                    {(e.retention.liftVsVideoMean * 100).toFixed(1)}pp
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </>
+                    )}
+                  </CardContent>
+                </Card>
+              </>
             )}
 
             <h2 className="font-semibold text-sm mb-3">Fixtures by exposure supply</h2>

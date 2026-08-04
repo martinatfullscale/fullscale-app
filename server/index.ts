@@ -576,6 +576,19 @@ async function sweepStaleTempArtifacts(): Promise<void> {
         }
       }
 
+      // Audience retention curves + per-video demographics — the
+      // measurement the CV-impact study turns on (do viewers linger or drop
+      // at the seconds a product is on screen). Uses the yt-analytics scope
+      // that has been granted since launch. Kill: RETENTION_CAPTURE_ENABLED=false.
+      if (process.env.RETENTION_CAPTURE_ENABLED !== "false") {
+        try {
+          const { startRetentionCaptureJob } = await import("./lib/retentionFetcher");
+          startRetentionCaptureJob();
+        } catch (rcErr) {
+          log(`Retention capture job failed to start: ${rcErr}`);
+        }
+      }
+
       // DISABLED: TensorFlow scanner replaced by scanner_v2.ts which uses Sharp
       // try {
       //   log("Initializing TensorFlow scan worker...");

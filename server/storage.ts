@@ -107,7 +107,10 @@ import {
   type RoomModel,
   type InsertRoomModel,
   fixtureExposure, fixtureAssignments, placementExposures, videoStatSnapshots,
+  videoRetentionCurves, videoDemographics,
   type VideoStatSnapshot, type InsertVideoStatSnapshot,
+  type VideoRetentionCurve, type InsertVideoRetentionCurve,
+  type VideoDemographics, type InsertVideoDemographics,
   type InsertFixtureExposure, type InsertFixtureAssignment, type InsertPlacementExposure,
   type FixtureExposure, type FixtureAssignment, type PlacementExposure,
 } from "@shared/schema";
@@ -207,6 +210,11 @@ export interface IStorage {
   openControlPeriod(args: { userId: string; surfaceGroupId: string; videoId: number }): Promise<FixtureAssignment | null>;
   getFixtureTimeline(surfaceGroupId: string): Promise<FixtureAssignment[]>;
   insertVideoStatSnapshot(row: InsertVideoStatSnapshot): Promise<void>;
+  getExpiredOpenAssignments(): Promise<Array<{ assignmentId: number | null; userId: string; surfaceGroupId: string; videoId: number }>>;
+  insertRetentionCurve(row: InsertVideoRetentionCurve): Promise<void>;
+  getLatestRetentionCurve(videoId: number): Promise<VideoRetentionCurve | undefined>;
+  insertVideoDemographics(row: InsertVideoDemographics): Promise<void>;
+  getLatestVideoDemographics(videoId: number): Promise<VideoDemographics | undefined>;
   getVideoStatSeries(videoId: number, sinceDays?: number): Promise<VideoStatSnapshot[]>;
   getVideoIdsUnderMeasurement(): Promise<number[]>;
   createPlacementExposure(row: InsertPlacementExposure): Promise<PlacementExposure>;
@@ -1837,6 +1845,63 @@ export class DatabaseStorage implements IStorage {
       .from(fixtureAssignments)
       .where(eq(fixtureAssignments.surfaceGroupId, surfaceGroupId))
       .orderBy(asc(fixtureAssignments.startedAt));
+  }
+
+  /** Open treatment windows whose brand assignment term has passed. */
+  async getExpiredOpenAssignments(): Promise<Array<{ assignmentId: number | null; userId: string; surfaceGroupId: string; videoId: number }>> {
+    const rows = await db
+      .select({
+        assignmentId: fixtureAssignments.assignmentId,
+        userId: fixtureAssignments.userId,
+        surfaceGroupId: fixtureAssignments.surfaceGroupId,
+        videoId: fixtureAssignments.videoId,
+        expiresAt: brandPlacementAssignments.expiresAt,
+      })
+      .from(fixtureAssignments)
+      .innerJoin(
+        brandPlacementAssignments,
+        eq(fixtureAssignments.assignmentId, brandPlacementAssignments.id),
+      )
+      .where(and(
+        isNull(fixtureAssignments.endedAt),
+        eq(fixtureAssignments.isControl, false),
+        lte(brandPlacementAssignments.expiresAt, new Date()),
+      ));
+    return rows.map((r) => ({
+      assignmentId: r.assignmentId,
+      userId: r.userId,
+      surfaceGroupId: r.surfaceGroupId,
+      videoId: r.videoId,
+    }));
+  }
+
+  async insertRetentionCurve(row: InsertVideoRetentionCurve): Promise<void> {
+    await db.insert(videoRetentionCurves).values(row);
+  }
+
+  /** Most recent retention curve for a video. */
+  async getLatestRetentionCurve(videoId: number): Promise<VideoRetentionCurve | undefined> {
+    const [row] = await db
+      .select()
+      .from(videoRetentionCurves)
+      .where(eq(videoRetentionCurves.videoId, videoId))
+      .orderBy(desc(videoRetentionCurves.capturedAt))
+      .limit(1);
+    return row;
+  }
+
+  async insertVideoDemographics(row: InsertVideoDemographics): Promise<void> {
+    await db.insert(videoDemographics).values(row);
+  }
+
+  async getLatestVideoDemographics(videoId: number): Promise<VideoDemographics | undefined> {
+    const [row] = await db
+      .select()
+      .from(videoDemographics)
+      .where(eq(videoDemographics.videoId, videoId))
+      .orderBy(desc(videoDemographics.capturedAt))
+      .limit(1);
+    return row;
   }
 
   async insertVideoStatSnapshot(row: InsertVideoStatSnapshot): Promise<void> {

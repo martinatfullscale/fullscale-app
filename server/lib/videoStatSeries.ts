@@ -91,17 +91,52 @@ export async function runVideoStatSnapshots(): Promise<{ captured: number; skipp
   return { captured, skipped };
 }
 
+/**
+ * Close treatment windows whose deal term has expired. Without this a
+ * finished campaign reads as TREATED forever and every later second of that
+ * fixture is misclassified — the schema documented `expired` as an end
+ * reason that nothing ever wrote.
+ */
+export async function sweepExpiredAssignments(): Promise<number> {
+  try {
+    const { storage: st } = await import("../storage");
+    const expired = await st.getExpiredOpenAssignments();
+    let closed = 0;
+    for (const a of expired) {
+      const n = await st.closeFixtureAssignment({ assignmentId: a.assignmentId! }, "expired").catch(() => 0);
+      if (n) {
+        closed += n;
+        // Expired treatment → the fixture returns to observed-untreated.
+        await st.openControlPeriod({
+          userId: a.userId,
+          surfaceGroupId: a.surfaceGroupId,
+          videoId: a.videoId,
+        }).catch(() => null);
+      }
+    }
+    if (closed > 0) console.log(`[Measurement] Expiry sweep: closed ${closed} treatment window(s), reopened control`);
+    return closed;
+  } catch (err: any) {
+    console.warn(`[Measurement] Expiry sweep failed (non-fatal): ${err?.message}`);
+    return 0;
+  }
+}
+
 let timer: ReturnType<typeof setInterval> | null = null;
 
 export function startVideoStatSeriesJob(): void {
   if (timer) return;
+  const cycle = async () => {
+    // Sweep first: an expired window must not attribute this cycle's
+    // audience movement to a treatment that already ended.
+    await sweepExpiredAssignments();
+    await runVideoStatSnapshots();
+  };
   setTimeout(() => {
-    runVideoStatSnapshots().catch((err) =>
-      console.warn("[VideoStats] Initial run failed (non-fatal):", err?.message));
+    cycle().catch((err) => console.warn("[VideoStats] Initial run failed (non-fatal):", err?.message));
   }, FIRST_RUN_DELAY_MS);
   timer = setInterval(() => {
-    runVideoStatSnapshots().catch((err) =>
-      console.warn("[VideoStats] Cycle failed (non-fatal):", err?.message));
+    cycle().catch((err) => console.warn("[VideoStats] Cycle failed (non-fatal):", err?.message));
   }, CYCLE_MS);
   timer.unref?.();
   console.log(`[VideoStats] Time-series job started (every ${CYCLE_MS / 3600000}h, first run in ${FIRST_RUN_DELAY_MS / 60000}min)`);

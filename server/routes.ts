@@ -1183,6 +1183,95 @@ export async function registerRoutes(
     }
   });
 
+  // RETENTION AT THE PLACEMENT — the payoff measurement. For each live
+  // exposure: where the product sits in the published asset, what fraction
+  // of viewers were still watching there, and how that compares to the
+  // video's own average. Handles the source→post coordinate mapping so the
+  // curve is never silently misaligned.
+  app.get("/api/admin/measurement/retention", async (req: any, res) => {
+    try {
+      const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
+      if (!callerEmail || !ADMIN_EMAILS.includes(String(callerEmail).toLowerCase())) {
+        return res.status(403).json({ error: "Admin access required" });
+      }
+
+      const exposures = await db.select().from(placementExposuresTable);
+      const rows = await Promise.all(
+        exposures.map(async (e: any) => {
+          const curveRow = await storage.getLatestRetentionCurve(e.sourceVideoId).catch(() => undefined);
+          const demo = await storage.getLatestVideoDemographics(e.sourceVideoId).catch(() => undefined);
+          const base = {
+            exposureId: e.id,
+            placementId: e.placementId,
+            surfaceGroupId: e.surfaceGroupId,
+            brandProductId: e.brandProductId,
+            platform: e.platform,
+            postUrl: e.postUrl,
+            liveAt: e.liveAt,
+            demographics: demo
+              ? { age: demo.ageDistribution, gender: demo.genderDistribution, capturedAt: demo.capturedAt }
+              : null,
+          };
+          if (!curveRow?.curve || !Array.isArray(curveRow.curve) || curveRow.curve.length === 0) {
+            return { ...base, retention: null, reason: "no retention curve yet (below YouTube's reporting threshold, or not captured)" };
+          }
+
+          // SOURCE → POST coordinates. source_start_sec is measured from the
+          // start of the original upload; a clip-based post starts later.
+          const sourceStart = e.sourceStartSec != null ? parseFloat(String(e.sourceStartSec)) : null;
+          const clipStart = e.clipStartSec != null ? parseFloat(String(e.clipStartSec)) : 0;
+          const durationSec = curveRow.videoDurationSec != null ? parseFloat(String(curveRow.videoDurationSec)) : null;
+          if (sourceStart == null || !durationSec || durationSec <= 0) {
+            return { ...base, retention: null, reason: "missing placement timestamp or video duration — cannot position on the curve" };
+          }
+          const postRelativeSec = Math.max(0, sourceStart - clipStart);
+          const positionRatio = Math.min(1, postRelativeSec / durationSec);
+
+          const curve = curveRow.curve as Array<{ ratio: number; watchRatio: number; relativePerformance?: number | null }>;
+          // Nearest bucket at or before the placement position.
+          let at = curve[0];
+          for (const pt of curve) {
+            if (pt.ratio <= positionRatio) at = pt; else break;
+          }
+          const meanWatch = curve.reduce((sum, p) => sum + p.watchRatio, 0) / curve.length;
+
+          return {
+            ...base,
+            retention: {
+              positionRatio: Math.round(positionRatio * 1000) / 1000,
+              postRelativeSec: Math.round(postRelativeSec),
+              watchRatioAtPlacement: Math.round(at.watchRatio * 1000) / 1000,
+              videoMeanWatchRatio: Math.round(meanWatch * 1000) / 1000,
+              // >0 means more viewers than average were present at the
+              // moment the product was on screen.
+              liftVsVideoMean: Math.round((at.watchRatio - meanWatch) * 1000) / 1000,
+              relativePerformanceAtPlacement: at.relativePerformance ?? null,
+              curvePoints: curve.length,
+              capturedAt: curveRow.capturedAt,
+            },
+            reason: null,
+          };
+        }),
+      );
+
+      const measured = rows.filter((r: any) => r.retention);
+      res.json({
+        summary: {
+          exposures: rows.length,
+          withRetention: measured.length,
+          awaitingCurves: rows.length - measured.length,
+          meanLiftVsVideoMean: measured.length
+            ? Math.round((measured.reduce((s: number, r: any) => s + r.retention.liftVsVideoMean, 0) / measured.length) * 1000) / 1000
+            : null,
+        },
+        exposures: rows,
+      });
+    } catch (err: any) {
+      console.error("[Measurement] Retention readout error:", err?.message);
+      res.status(500).json({ error: "Failed to build retention readout" });
+    }
+  });
+
   // -------------------------------------------------------------------
   // PLACEMENT REVIEW QUEUE — the in-app home of the human step. Creators
   // choose placements; this is where FullScale reviews each choice and
