@@ -11,7 +11,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { TopBar } from "@/components/TopBar";
-import { Loader2, FlaskConical, Layers, Radio, Clock, Activity } from "lucide-react";
+import { Loader2, FlaskConical, Layers, Radio, Clock, Activity, Users, MessageSquare } from "lucide-react";
 
 interface FixtureRow {
   surfaceGroupId: string;
@@ -85,6 +85,32 @@ export default function AdminMeasurement() {
     queryFn: async () => {
       const res = await fetch("/api/admin/measurement/platforms", { credentials: "include" });
       if (!res.ok) throw new Error("capability unavailable");
+      return res.json();
+    },
+    retry: 1,
+  });
+
+  const { data: creators } = useQuery<{
+    summary: { creatorsWithActivity: number; totalTaught: number; totalSelfDirectedPlacements: number; awaitingBrandResponse: number; eventLogStartedAt: string };
+    creators: Array<any>;
+  }>({
+    queryKey: ["/api/admin/measurement/creators"],
+    queryFn: async () => {
+      const res = await fetch("/api/admin/measurement/creators", { credentials: "include" });
+      if (!res.ok) throw new Error("creator behavior unavailable");
+      return res.json();
+    },
+    retry: 1,
+  });
+
+  const { data: audience } = useQuery<{
+    summary: { exposures: number; withComments: number; withDailySeries: number };
+    exposures: Array<any>;
+  }>({
+    queryKey: ["/api/admin/measurement/audience-response"],
+    queryFn: async () => {
+      const res = await fetch("/api/admin/measurement/audience-response", { credentials: "include" });
+      if (!res.ok) throw new Error("audience response unavailable");
       return res.json();
     },
     retry: 1,
@@ -217,6 +243,131 @@ export default function AdminMeasurement() {
                           </table>
                         </div>
                       </>
+                    )}
+                  </CardContent>
+                </Card>
+              </>
+            )}
+
+            {creators && creators.creators.length > 0 && (
+              <>
+                <div className="flex items-center gap-2 mb-1">
+                  <Users className="w-4 h-4 text-primary" />
+                  <h2 className="font-semibold text-sm">Creator behavior</h2>
+                </div>
+                <p className="text-[11px] text-muted-foreground/70 mb-3">
+                  How creators actually use integrations. Event coverage begins {creators.summary.eventLogStartedAt} —
+                  decisions before that were stored without a date and can't be recovered.
+                  Brand responsiveness is computed from existing timestamps and covers all history.
+                </p>
+                <Card className="border-border/50 mb-10">
+                  <CardContent className="p-0 overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-white/10 text-left text-muted-foreground">
+                          <th className="p-3 font-medium text-xs">Creator</th>
+                          <th className="p-3 font-medium text-xs" title="Approved / rejected — a creator who rejects nothing is rubber-stamping, not curating">Curation</th>
+                          <th className="p-3 font-medium text-xs" title="Hand-drawn surfaces — the highest-intent action in the product">Taught</th>
+                          <th className="p-3 font-medium text-xs">Own placements</th>
+                          <th className="p-3 font-medium text-xs">Brand requests</th>
+                          <th className="p-3 font-medium text-xs">Median reply</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {creators.creators.slice(0, 25).map((c: any) => (
+                          <tr key={c.creatorUserId} className="border-b border-white/5 last:border-b-0">
+                            <td className="p-3">
+                              <p className="font-medium truncate max-w-[180px]">{c.name}</p>
+                              {c.email && <p className="text-[11px] text-muted-foreground truncate max-w-[180px]">{c.email}</p>}
+                            </td>
+                            <td className="p-3 tabular-nums">
+                              {c.behavior.surfacesApproved}<span className="text-muted-foreground">/{c.behavior.surfacesRejected}</span>
+                              {c.behavior.approvalRate != null && (
+                                <span className="text-[11px] text-muted-foreground ml-1">({Math.round(c.behavior.approvalRate * 100)}%)</span>
+                              )}
+                            </td>
+                            <td className="p-3 tabular-nums">{c.behavior.surfacesTaught}</td>
+                            <td className="p-3 tabular-nums">
+                              {c.behavior.placementsCreated}
+                              {c.behavior.placementsWentLive > 0 && (
+                                <span className="text-[11px] text-emerald-400 ml-1">{c.behavior.placementsWentLive} live</span>
+                              )}
+                            </td>
+                            <td className="p-3 tabular-nums">
+                              {c.brandResponsiveness ? (
+                                <>
+                                  {c.brandResponsiveness.approved}<span className="text-muted-foreground">/{c.brandResponsiveness.rejected}</span>
+                                  {c.brandResponsiveness.awaitingResponse > 0 && (
+                                    <span className="text-[11px] text-amber-400 ml-1">{c.brandResponsiveness.awaitingResponse} waiting</span>
+                                  )}
+                                </>
+                              ) : <span className="text-muted-foreground">—</span>}
+                            </td>
+                            <td className="p-3 tabular-nums">
+                              {c.brandResponsiveness?.medianResponseHours != null
+                                ? `${c.brandResponsiveness.medianResponseHours}h`
+                                : <span className="text-muted-foreground">—</span>}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </CardContent>
+                </Card>
+              </>
+            )}
+
+            {audience && audience.summary.exposures > 0 && (
+              <>
+                <div className="flex items-center gap-2 mb-1">
+                  <MessageSquare className="w-4 h-4 text-primary" />
+                  <h2 className="font-semibold text-sm">Audience response to integrations</h2>
+                </div>
+                <p className="text-[11px] text-muted-foreground/70 mb-3">
+                  Comment sentiment split around each placement's go-live, and whether viewers
+                  referenced the product at all — the signal that separates reacting to the
+                  integration from reacting to the video. YouTube only.
+                </p>
+                <Card className="border-border/50 mb-10">
+                  <CardContent className="p-4">
+                    {audience.summary.withComments === 0 ? (
+                      <p className="text-sm text-muted-foreground">
+                        {audience.summary.exposures} exposure{audience.summary.exposures === 1 ? "" : "s"} tracked,
+                        no comments collected yet. Comments are gathered daily for videos carrying a live placement.
+                        {audience.summary.withDailySeries > 0 && ` Per-day engagement is already in for ${audience.summary.withDailySeries}.`}
+                      </p>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="border-b border-white/10 text-left text-muted-foreground">
+                              <th className="p-2 font-medium">Fixture</th>
+                              <th className="p-2 font-medium">Comments before → after</th>
+                              <th className="p-2 font-medium">Mentioned the product</th>
+                              <th className="p-2 font-medium">Views/day before → after</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {audience.exposures.filter((e: any) => e.comments.before.n + e.comments.after.n > 0).slice(0, 25).map((e: any) => (
+                              <tr key={e.exposureId} className="border-b border-white/5 last:border-b-0">
+                                <td className="p-2 font-mono text-[11px]">{e.surfaceGroupId ?? "—"}</td>
+                                <td className="p-2 tabular-nums">
+                                  {e.comments.before.n} → {e.comments.after.n}
+                                  <span className="text-muted-foreground ml-1">
+                                    ({e.comments.after.positive}+ / {e.comments.after.negative}−)
+                                  </span>
+                                </td>
+                                <td className="p-2 tabular-nums">{e.comments.after.mentioningBrand}</td>
+                                <td className="p-2 tabular-nums">
+                                  {e.engagement.viewsBeforePerDay != null && e.engagement.viewsAfterPerDay != null
+                                    ? `${e.engagement.viewsBeforePerDay} → ${e.engagement.viewsAfterPerDay}`
+                                    : <span className="text-muted-foreground">—</span>}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
                     )}
                   </CardContent>
                 </Card>

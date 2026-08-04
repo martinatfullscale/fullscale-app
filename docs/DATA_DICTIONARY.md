@@ -1282,6 +1282,56 @@ Per-video `ageGroup × gender` (channel-level demographics can't tell you whethe
 A and product B reached the same people). Same capture cycle, same threshold caveat.
 Instagram exposes demographics only at account level — a platform limit, not a gap.
 
+### `creator_events` — the behavior log (append-only)
+
+Everything else in the app records creator decisions as **state**: an approval is a
+boolean, a rejection overwrites a type column, a teach is a flag inside a jsonb array.
+State answers "what is true now" and cannot answer "what did this creator do, when."
+This table is the only place a decision's **time and actor** are kept.
+
+| Column | Type | Definition |
+|---|---|---|
+| `creator_user_id` | varchar | The CONTENT owner — whose behavior this describes |
+| `actor_user_id` / `actor_role` | varchar | Who performed it. Diverges when an admin acts on a creator's behalf; `actor_role='admin'` rows are excluded from creator aggregates |
+| `event_type` | varchar(48) | surface_approved · surface_rejected · surface_unapproved · surface_taught · placement_created · placement_archived · placement_went_live · brand_request_approved · brand_request_rejected · video_imported · video_trashed · scan_started |
+| `video_id` / `surface_id` / `surface_group_id` / `placement_id` / `assignment_id` / `brand_product_id` | integer / varchar | Sparse — only the relevant ids are set |
+| `metadata` | jsonb | Rejection reasons, surface types, `bulk: true` (an "approve all" click is ONE decision, not N), `requestedAt` for response-time math |
+| `occurred_at` | timestamp | The decision time |
+
+> **⚠️ COVERAGE STARTS AT SHIP DATE.** The timestamps this replaces were never written,
+> so nothing before the log exists is recoverable. A low count for a long-tenured creator
+> means "not yet observed", never "not engaged". **Exception:** brand responsiveness is
+> fully recoverable from `brand_placement_assignments.createdAt → reviewedAt` and covers
+> all history.
+
+**What it answers:** curation selectivity (approve vs reject — a creator who rejects
+nothing is rubber-stamping, not curating), teaching intensity (the highest-intent action
+in the product), self-directed placement, and whether creators finish the loop by marking
+renders live.
+
+### `video_daily_metrics` — per-day audience series
+
+YouTube Analytics `dimensions=day`. **Retroactive to publish date**, so a before/after
+comparison around a placement's go-live is computable immediately rather than after weeks
+of counter accumulation. Unique on (video_id, day); re-runs update in place.
+
+### `content_comments` — what viewers actually said
+
+Comment text on videos carrying a live placement, classified for `sentiment` and
+`mentions_brand`. **`mentions_brand` is the important one** — it separates "the audience
+reacted to the integration" from "the audience reacted to the video."
+`after_placement_live` is stamped at capture so the pre/post split survives
+re-classification.
+
+**Platform reality:** YouTube only. Its comment read needs no scope beyond the granted
+`youtube.readonly`. Instagram/Facebook require an App Review permission
+(`instagram_manage_comments`), TikTok exposes no comment list to this integration, X
+needs a paid tier, and Twitch has no comment concept. Sentiment is classified in batches
+of ~40 comments per model call, so cost is negligible.
+
+> **Naming trap:** `video_index.sentiment` is a **CV scene-mood** field from the scanner —
+> it is NOT audience sentiment. Audience sentiment lives only in `content_comments`.
+
 ### Platform coverage of the outcome side (what each platform can actually tell us)
 
 The measurement spine is platform-agnostic; the *platforms* are not. Live status is at

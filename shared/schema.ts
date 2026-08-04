@@ -1590,6 +1590,121 @@ export const videoDemographics = pgTable("video_demographics", {
   index("idx_video_demo_video_time").on(table.videoId, table.capturedAt),
 ]);
 
+/**
+ * CREATOR EVENT LOG — the missing primitive.
+ *
+ * Everything else in this app records creator decisions as STATE: a surface
+ * approval is a boolean, a rejection overwrites a type column, a teach is a
+ * flag inside a jsonb array. State answers "what is true now" and cannot
+ * answer "what did this creator do, when, and how did that change" — which
+ * is exactly the creator-behavior question. This table is append-only and
+ * never updated; it is the only place a decision's TIME and ACTOR are kept.
+ *
+ * Retroactive backfill is impossible for most of these (the timestamps were
+ * never written), so coverage starts the day this ships.
+ */
+export const creatorEvents = pgTable("creator_events", {
+  id: serial("id").primaryKey(),
+  /** The creator whose behavior this describes — the CONTENT owner, always. */
+  creatorUserId: varchar("creator_user_id").notNull(),
+  /** Who actually performed it. Differs from creatorUserId when an admin
+   *  acts on a creator's behalf — without this, ops activity is silently
+   *  recorded as creator engagement (an existing bug in the teach path). */
+  actorUserId: varchar("actor_user_id"),
+  actorRole: varchar("actor_role", { length: 16 }).notNull().default("creator"), // creator | admin | brand | system
+  /** What happened. Kept as a plain varchar rather than a pg enum so a new
+   *  event type never needs a migration. */
+  eventType: varchar("event_type", { length: 48 }).notNull(),
+  // surface_approved | surface_rejected | surface_unapproved | surface_taught
+  // placement_created | placement_archived | placement_went_live
+  // brand_request_approved | brand_request_rejected
+  // video_imported | video_trashed | scan_started
+  /** What it happened to — sparse by design; only the relevant ids are set. */
+  videoId: integer("video_id"),
+  surfaceId: integer("surface_id"),
+  surfaceGroupId: varchar("surface_group_id", { length: 64 }),
+  placementId: integer("placement_id"),
+  assignmentId: integer("assignment_id"),
+  brandProductId: integer("brand_product_id"),
+  /** Free-form context: rejection reasons, surface types, bulk-action flags.
+   *  `bulk: true` matters — an "approve all" click is one decision, not N. */
+  metadata: jsonb("metadata"),
+  occurredAt: timestamp("occurred_at").defaultNow().notNull(),
+}, (table) => [
+  index("idx_creator_events_creator_time").on(table.creatorUserId, table.occurredAt),
+  index("idx_creator_events_type_time").on(table.eventType, table.occurredAt),
+]);
+
+/**
+ * Per-day audience metrics per video, from YouTube Analytics.
+ *
+ * Unlike the 6-hourly counter snapshots (which only start accumulating when
+ * we begin polling), this report is RETROACTIVE to publish date — so a
+ * before/after comparison around a placement's go-live is computable on day
+ * one rather than after weeks of waiting.
+ */
+export const videoDailyMetrics = pgTable("video_daily_metrics", {
+  id: serial("id").primaryKey(),
+  videoId: integer("video_id").notNull(),
+  userId: varchar("user_id").notNull(),
+  platform: varchar("platform", { length: 32 }).notNull().default("youtube"),
+  platformPostId: varchar("platform_post_id", { length: 128 }),
+  /** The calendar day these metrics describe (platform timezone). */
+  day: varchar("day", { length: 10 }).notNull(),
+  views: integer("views"),
+  likes: integer("likes"),
+  comments: integer("comments"),
+  shares: integer("shares"),
+  estimatedMinutesWatched: numeric("estimated_minutes_watched"),
+  averageViewDuration: numeric("average_view_duration"),
+  capturedAt: timestamp("captured_at").defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("uq_video_daily").on(table.videoId, table.day),
+  index("idx_video_daily_day").on(table.day),
+]);
+
+/**
+ * Audience comments on content carrying a placement, with classification.
+ *
+ * The qualitative half of "what are the responses" — what viewers actually
+ * SAY when a brand appears, as opposed to how many of them watched.
+ * YouTube-only today (its comment read needs no scope beyond the granted
+ * youtube.readonly); Instagram/Facebook need an App Review permission,
+ * TikTok exposes no comment list to this integration, and Twitch has none.
+ */
+export const contentComments = pgTable("content_comments", {
+  id: serial("id").primaryKey(),
+  videoId: integer("video_id").notNull(),
+  userId: varchar("user_id").notNull(),
+  platform: varchar("platform", { length: 32 }).notNull().default("youtube"),
+  platformCommentId: varchar("platform_comment_id", { length: 128 }).notNull(),
+  authorDisplayName: varchar("author_display_name", { length: 200 }),
+  text: text("text").notNull(),
+  likeCount: integer("like_count"),
+  publishedAt: timestamp("published_at"),
+  /** Classification — null until the classifier runs. */
+  sentiment: varchar("sentiment", { length: 16 }),        // positive | neutral | negative | mixed
+  /** Does the comment reference the placed product / brand at all? This is
+   *  the signal that separates "audience reacted to the integration" from
+   *  "audience reacted to the video". */
+  mentionsBrand: boolean("mentions_brand"),
+  /** Was the comment posted after the placement went live? Set at capture
+   *  so the pre/post split survives later re-classification. */
+  afterPlacementLive: boolean("after_placement_live"),
+  classifiedAt: timestamp("classified_at"),
+  capturedAt: timestamp("captured_at").defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("uq_content_comment").on(table.platform, table.platformCommentId),
+  index("idx_content_comments_video").on(table.videoId, table.publishedAt),
+]);
+
+export type CreatorEvent = typeof creatorEvents.$inferSelect;
+export type InsertCreatorEvent = typeof creatorEvents.$inferInsert;
+export type VideoDailyMetric = typeof videoDailyMetrics.$inferSelect;
+export type InsertVideoDailyMetric = typeof videoDailyMetrics.$inferInsert;
+export type ContentComment = typeof contentComments.$inferSelect;
+export type InsertContentComment = typeof contentComments.$inferInsert;
+
 export type VideoRetentionCurve = typeof videoRetentionCurves.$inferSelect;
 export type InsertVideoRetentionCurve = typeof videoRetentionCurves.$inferInsert;
 export type VideoDemographics = typeof videoDemographics.$inferSelect;

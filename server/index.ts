@@ -589,6 +589,18 @@ async function sweepStaleTempArtifacts(): Promise<void> {
         }
       }
 
+      // Audience response: per-day engagement (retroactive, so before/after
+      // around a placement works immediately) + comment text with sentiment
+      // and brand-mention classification. Kill: AUDIENCE_RESPONSE_ENABLED=false.
+      if (process.env.AUDIENCE_RESPONSE_ENABLED !== "false") {
+        try {
+          const { startAudienceResponseJob } = await import("./lib/audienceResponse");
+          startAudienceResponseJob();
+        } catch (arErr) {
+          log(`Audience response job failed to start: ${arErr}`);
+        }
+      }
+
       // DISABLED: TensorFlow scanner replaced by scanner_v2.ts which uses Sharp
       // try {
       //   log("Initializing TensorFlow scan worker...");

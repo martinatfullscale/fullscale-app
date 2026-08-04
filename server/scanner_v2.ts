@@ -153,7 +153,7 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 // proof enough for the whole process lifetime.
 let proxyDeadThisSession = false;
 
-async function geminiGenerate(params: any, timeoutMs: number = CONFIG.GEMINI_TIMEOUT_MS): Promise<any> {
+export async function geminiGenerate(params: any, timeoutMs: number = CONFIG.GEMINI_TIMEOUT_MS): Promise<any> {
   // Hard wall-clock ceiling for the WHOLE call, across every ladder step and
   // the proxy. Without it, a Google capacity spike serializes retries into
   // multi-minute stalls per frame (observed: ~4min worst case per call).

@@ -8,6 +8,7 @@ import { runIndexerForUser } from "./lib/indexer";
 import { processVideoScan, scanPendingVideos, addToLocalAssetMap, getYouTubeThumbnailWithFallback, canonicalSurfaceType } from "./scanner_v2";
 import { parsePlatformUrl, storedIdFor, platformMaxDurationSec } from "./lib/platformSources";
 import { ADMIN_EMAILS } from "./lib/adminEmails";
+import { recordCreatorEvent } from "./lib/creatorEvents";
 import { probeVideoMeta } from "./lib/streamResolver";
 import { hammingDistance } from "./lib/scenes/sceneIndex";
 // DISABLED: TensorFlow scanner replaced by scanner_v2.ts which uses Sharp
@@ -51,7 +52,8 @@ import ytdl from "@distube/ytdl-core";
 import { decrypt, encrypt } from "./encryption";
 import { db } from "./db";
 import { users, users as usersTable, allowedUsers as allowedUsersTable, videoIndex as videoIndexTable, editorialClips, detectedSurfaces,
-  fixtureExposure as fixtureExposureTable, fixtureAssignments as fixtureAssignmentsTable, placementExposures as placementExposuresTable } from "@shared/schema";
+  fixtureExposure as fixtureExposureTable, fixtureAssignments as fixtureAssignmentsTable, placementExposures as placementExposuresTable,
+  brandPlacementAssignments as brandPlacementAssignmentsTable } from "@shared/schema";
 import { eq, sql, inArray } from "drizzle-orm";
 import crypto from "crypto";
 import sharp from "sharp";
@@ -1093,6 +1095,171 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("[Measurement] Readout error:", err?.message);
       res.status(500).json({ error: "Failed to build measurement readout" });
+    }
+  });
+
+  // CREATOR BEHAVIOR + AUDIENCE RESPONSE — how creators use brand
+  // integrations, and how audiences react when one appears.
+  app.get("/api/admin/measurement/creators", async (req: any, res) => {
+    try {
+      const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
+      if (!callerEmail || !ADMIN_EMAILS.includes(String(callerEmail).toLowerCase())) {
+        return res.status(403).json({ error: "Admin access required" });
+      }
+
+      // Behavior events (creator-performed only — admin actions on a
+      // creator's behalf are excluded at the storage layer).
+      const counts = await storage.getCreatorEventCounts(365);
+      const byCreator = new Map<string, any>();
+      for (const c of counts) {
+        const agg = byCreator.get(c.creatorUserId) ?? {
+          creatorUserId: c.creatorUserId,
+          events: {} as Record<string, number>,
+          lastActiveAt: null as Date | null,
+        };
+        agg.events[c.eventType] = c.n;
+        if (c.lastAt && (!agg.lastActiveAt || c.lastAt > agg.lastActiveAt)) agg.lastActiveAt = c.lastAt;
+        byCreator.set(c.creatorUserId, agg);
+      }
+
+      // Brand responsiveness is fully recoverable from existing timestamps —
+      // it predates the event log and needs no backfill.
+      const assignments = await db.select().from(brandPlacementAssignmentsTable);
+      const respByCreator = new Map<string, { responded: number[]; approved: number; rejected: number; pending: number }>();
+      for (const a of assignments as any[]) {
+        const key = String(a.creatorUserId ?? "");
+        if (!key) continue;
+        const r = respByCreator.get(key) ?? { responded: [], approved: 0, rejected: 0, pending: 0 };
+        if (a.reviewedAt && a.createdAt) {
+          r.responded.push(new Date(a.reviewedAt).getTime() - new Date(a.createdAt).getTime());
+        }
+        if (String(a.status).startsWith("creator_approved") || String(a.status).startsWith("brand_") || String(a.status) === "pending_brand_review") r.approved++;
+        else if (String(a.status) === "creator_rejected") r.rejected++;
+        else if (String(a.status) === "pending_creator_review") r.pending++;
+        respByCreator.set(key, r);
+      }
+
+      const median = (xs: number[]) => {
+        if (xs.length === 0) return null;
+        const s2 = [...xs].sort((a, b) => a - b);
+        const m = Math.floor(s2.length / 2);
+        return s2.length % 2 ? s2[m] : Math.round((s2[m - 1] + s2[m]) / 2);
+      };
+
+      const keys = new Set<string>([...Array.from(byCreator.keys()), ...Array.from(respByCreator.keys())]);
+      const creators = await Promise.all(
+        Array.from(keys).map(async (id) => {
+          const b = byCreator.get(id);
+          const r = respByCreator.get(id);
+          const user = await storage.getUserById(id).catch(() => undefined);
+          const ev = b?.events ?? {};
+          const decided = (ev.surface_approved ?? 0) + (ev.surface_rejected ?? 0);
+          const respondedMs = r ? median(r.responded) : null;
+          return {
+            creatorUserId: id,
+            name: user ? [user.firstName, user.lastName].filter(Boolean).join(" ") || user.email : id,
+            email: user?.email ?? null,
+            lastActiveAt: b?.lastActiveAt ?? null,
+            behavior: {
+              surfacesApproved: ev.surface_approved ?? 0,
+              surfacesRejected: ev.surface_rejected ?? 0,
+              // Curation selectivity: a creator who rejects nothing isn't
+              // curating, they're rubber-stamping.
+              approvalRate: decided > 0 ? Math.round(((ev.surface_approved ?? 0) / decided) * 100) / 100 : null,
+              surfacesTaught: ev.surface_taught ?? 0,
+              placementsCreated: ev.placement_created ?? 0,
+              placementsWentLive: ev.placement_went_live ?? 0,
+              videosImported: ev.video_imported ?? 0,
+            },
+            brandResponsiveness: r
+              ? {
+                  requests: r.approved + r.rejected + r.pending,
+                  approved: r.approved,
+                  rejected: r.rejected,
+                  awaitingResponse: r.pending,
+                  acceptRate: r.approved + r.rejected > 0 ? Math.round((r.approved / (r.approved + r.rejected)) * 100) / 100 : null,
+                  medianResponseHours: respondedMs != null ? Math.round((respondedMs / 3600_000) * 10) / 10 : null,
+                }
+              : null,
+          };
+        }),
+      );
+      creators.sort((a, b) => (b.behavior.placementsCreated + b.behavior.surfacesTaught) - (a.behavior.placementsCreated + a.behavior.surfacesTaught));
+
+      res.json({
+        summary: {
+          creatorsWithActivity: creators.length,
+          totalTaught: creators.reduce((s2, c) => s2 + c.behavior.surfacesTaught, 0),
+          totalSelfDirectedPlacements: creators.reduce((s2, c) => s2 + c.behavior.placementsCreated, 0),
+          awaitingBrandResponse: creators.reduce((s2, c) => s2 + (c.brandResponsiveness?.awaitingResponse ?? 0), 0),
+          // Event coverage starts when the log shipped — say so rather than
+          // letting a small number read as low engagement.
+          eventLogStartedAt: "2026-08-04",
+        },
+        creators: creators.slice(0, 200),
+      });
+    } catch (err: any) {
+      console.error("[Measurement] Creator behavior error:", err?.message);
+      res.status(500).json({ error: "Failed to build creator behavior readout" });
+    }
+  });
+
+  // Audience reaction to integrations: comment sentiment split pre/post
+  // go-live, plus whether viewers referenced the product at all.
+  app.get("/api/admin/measurement/audience-response", async (req: any, res) => {
+    try {
+      const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
+      if (!callerEmail || !ADMIN_EMAILS.includes(String(callerEmail).toLowerCase())) {
+        return res.status(403).json({ error: "Admin access required" });
+      }
+      const exposures = await db.select().from(placementExposuresTable);
+      const rows = await Promise.all(
+        exposures.map(async (e: any) => {
+          const comments = await storage.getCommentsForVideo(e.sourceVideoId).catch(() => []);
+          const daily = await storage.getVideoDailyMetrics(e.sourceVideoId).catch(() => []);
+          const liveAt = e.liveAt ? new Date(e.liveAt).getTime() : null;
+
+          const tally = (subset: any[]) => ({
+            n: subset.length,
+            positive: subset.filter((c) => c.sentiment === "positive").length,
+            negative: subset.filter((c) => c.sentiment === "negative").length,
+            mentioningBrand: subset.filter((c) => c.mentionsBrand === true).length,
+          });
+          const before = comments.filter((c: any) => c.afterPlacementLive === false);
+          const after = comments.filter((c: any) => c.afterPlacementLive === true);
+
+          // Engagement slope around go-live, from the retroactive day series.
+          let viewsBeforePerDay: number | null = null;
+          let viewsAfterPerDay: number | null = null;
+          if (liveAt && daily.length > 0) {
+            const liveDay = new Date(liveAt).toISOString().slice(0, 10);
+            const pre = daily.filter((d: any) => d.day < liveDay);
+            const post = daily.filter((d: any) => d.day >= liveDay);
+            if (pre.length > 0) viewsBeforePerDay = Math.round(pre.reduce((s2: number, d: any) => s2 + (d.views ?? 0), 0) / pre.length);
+            if (post.length > 0) viewsAfterPerDay = Math.round(post.reduce((s2: number, d: any) => s2 + (d.views ?? 0), 0) / post.length);
+          }
+
+          return {
+            exposureId: e.id,
+            surfaceGroupId: e.surfaceGroupId,
+            platform: e.platform,
+            liveAt: e.liveAt,
+            comments: { before: tally(before), after: tally(after), unclassified: comments.filter((c: any) => !c.classifiedAt).length },
+            engagement: { viewsBeforePerDay, viewsAfterPerDay, dayRows: daily.length },
+          };
+        }),
+      );
+      res.json({
+        summary: {
+          exposures: rows.length,
+          withComments: rows.filter((r) => r.comments.before.n + r.comments.after.n > 0).length,
+          withDailySeries: rows.filter((r) => r.engagement.dayRows > 0).length,
+        },
+        exposures: rows,
+      });
+    } catch (err: any) {
+      console.error("[Measurement] Audience response error:", err?.message);
+      res.status(500).json({ error: "Failed to build audience response readout" });
     }
   });
 
@@ -4140,6 +4307,14 @@ export async function registerRoutes(
       // review timestamps (the anchor the candidate search depends on) are
       // not clobbered by a status the review team didn't set.
       await storage.setPlacementLive(placementId).catch(() => {});
+      recordCreatorEvent({
+        creatorUserId: ownerUserId,
+        actorUserId: String(req.authUserId),
+        eventType: "placement_went_live",
+        videoId: placement.videoId,
+        placementId,
+        metadata: { platform: bodyPlatform || parsed.platform, candidateSource: candidateSource ?? "manual" },
+      });
       res.json({ ok: true, exposure });
     } catch (err: any) {
       console.error("[GoLive] Record error:", err?.message);
@@ -4209,6 +4384,13 @@ export async function registerRoutes(
         priorityScore: 50,
       });
       console.log(`[ImportURL] ${parsed.platform} import for user ${userId}: ${storedId} ("${meta.title ?? "untitled"}")`);
+      recordCreatorEvent({
+        creatorUserId: String(userId),
+        actorUserId: String(userId),
+        eventType: "video_imported",
+        videoId: (video as any)?.id ?? null,
+        metadata: { platform: parsed.platform, via: "url_paste" },
+      });
       res.json({ video, platform: parsed.platform });
     } catch (err: any) {
       console.error(`[ImportURL] Failed:`, err?.message || err);
@@ -6336,6 +6518,21 @@ export async function registerRoutes(
     if (!isOwner) return res.status(403).json({ error: "Not authorized to edit this video's surfaces" });
 
     await storage.updateSurfaceApproval(surfaceId, approved);
+    // Behavior event: the boolean alone can't say WHEN this was decided or
+    // by WHOM, so curation trends were unanswerable. `bulk` distinguishes an
+    // "approve all" click (one decision) from N deliberate ones.
+    recordCreatorEvent({
+      creatorUserId: String((video as any).userId),
+      actorUserId: String(req.authUserId),
+      eventType: approved ? "surface_approved" : "surface_unapproved",
+      videoId: (surface as any).videoId,
+      surfaceId,
+      surfaceGroupId: (surface as any).surfaceGroupId ?? null,
+      metadata: {
+        surfaceType: (surface as any).surfaceType ?? null,
+        bulk: req.body?.bulk === true,
+      },
+    });
     res.json({ success: true, surfaceId, approved });
   });
 
@@ -6363,6 +6560,18 @@ export async function registerRoutes(
     await storage.updateDetectedSurface(surfaceId, {
       surfaceType: "Filtered",
       sceneContext: `Removed by creator (was ${surface.surfaceType})`,
+    });
+    // The reject overwrites surfaceType with a sentinel, so the original
+    // type only survives here. Rejections are excluded from the aggregates,
+    // which makes them invisible as a curation signal without this event.
+    recordCreatorEvent({
+      creatorUserId: String((video as any)?.userId ?? req.authUserId),
+      actorUserId: String(req.authUserId),
+      eventType: "surface_rejected",
+      videoId: (surface as any).videoId,
+      surfaceId,
+      surfaceGroupId: (surface as any).surfaceGroupId ?? null,
+      metadata: { rejectedType: surface.surfaceType },
     });
     res.json({ success: true, surfaceId, rejected: true });
   });
@@ -9751,6 +9960,20 @@ export async function registerRoutes(
       const updated = await storage.updateBrandPlacementStatus(id, "creator_approved", chosenProductId !== undefined ? { brandProductId: chosenProductId } : {});
       storage.markPlacementNotificationsRead(id);
       console.log(`[BrandPlacement] Creator ${creatorUserId} APPROVED placement ${id}`);
+      recordCreatorEvent({
+        creatorUserId: String(placement.creatorUserId),
+        actorUserId: String(creatorUserId),
+        eventType: "brand_request_approved",
+        videoId: placement.videoId,
+        surfaceId: placement.surfaceId,
+        assignmentId: id,
+        brandProductId: chosenProductId ?? placement.brandProductId ?? null,
+        metadata: {
+          // Time-to-respond is the headline responsiveness metric.
+          requestedAt: placement.createdAt,
+          delegatedChoice: chosenProductId != null,
+        },
+      });
 
       // MEASUREMENT SPINE: open the treatment window on this fixture. The
       // fixture (stable surface_group_id) is the experimental unit and the
@@ -9892,6 +10115,17 @@ export async function registerRoutes(
       }
       const reason = typeof req.body?.reason === "string" ? req.body.reason : undefined;
       const updated = await storage.updateBrandPlacementStatus(id, "creator_rejected", { rejectionReason: reason });
+      recordCreatorEvent({
+        creatorUserId: String(placement.creatorUserId),
+        actorUserId: String(creatorUserId),
+        eventType: "brand_request_rejected",
+        videoId: placement.videoId,
+        surfaceId: placement.surfaceId,
+        assignmentId: id,
+        brandProductId: placement.brandProductId ?? null,
+        // The reason corpus is how we learn WHY creators decline brands.
+        metadata: { requestedAt: placement.createdAt, reason: reason ?? null },
+      });
       (async () => {
         const n = await storage.closeFixtureAssignment({ assignmentId: id }, "withdrawn").catch(() => 0);
         if (n) console.log(`[Measurement] fixture_assignments: closed ${n} window(s) — assignment ${id} rejected`);
@@ -10230,6 +10464,17 @@ export async function registerRoutes(
       }
 
       console.log(`[Placements] Saved placement ${placement.id} for video ${videoId} surface ${surfaceId} by ${userEmail} ${scopeProvided ? `(explicit scope: ${scopeGroupIds!.length} group id${scopeGroupIds!.length === 1 ? "" : "s"}, no fan-out)` : `(propagated to ${propagatedCount} additional surfaces)`}`);
+
+      recordCreatorEvent({
+        creatorUserId: String((targetVideo as any)?.userId ?? req.authUserId),
+        actorUserId: String(req.authUserId),
+        eventType: "placement_created",
+        videoId: parseInt(String(videoId)),
+        surfaceId: parseInt(String(surfaceId)),
+        placementId: placement.id,
+        brandProductId: productId ?? null,
+        metadata: { scoped: scopeProvided, propagatedCount },
+      });
 
       // The human step starts HERE: the creator chose a placement; a human
       // at FullScale reviews it and produces the final render. Until this
@@ -10804,6 +11049,21 @@ export async function registerRoutes(
         creatorApproved: true,
         sceneId,
         surfaceGroupId: groupId,
+      });
+
+      // Teaching is the highest-intent creator action there is — and the
+      // `taught` flag lives inside a jsonb array with no date and no actor,
+      // so it was invisible as behavior. Note actorUserId: an admin is
+      // explicitly allowed to teach on a creator's video, and recording that
+      // as creator engagement would overstate it.
+      recordCreatorEvent({
+        creatorUserId: String(video.userId),
+        actorUserId: String(req.authUserId),
+        eventType: "surface_taught",
+        videoId,
+        surfaceId: surfaceRow?.id ?? null,
+        surfaceGroupId: groupId,
+        metadata: { surfaceType: canonicalTaughtType, orientation, sceneId },
       });
 
       // Immediate visibility 2/2: the scene inventory, when the video has

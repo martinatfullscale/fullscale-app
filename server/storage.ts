@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { eq, desc, and, or, sql, inArray, ne, isNull, lte, gt, asc } from "drizzle-orm";
+import { eq, desc, and, or, sql, inArray, ne, isNull, lte, gt, gte, asc } from "drizzle-orm";
 import {
   monetizationItems,
   youtubeConnections,
@@ -107,7 +107,9 @@ import {
   type RoomModel,
   type InsertRoomModel,
   fixtureExposure, fixtureAssignments, placementExposures, videoStatSnapshots,
-  videoRetentionCurves, videoDemographics,
+  videoRetentionCurves, videoDemographics, creatorEvents, videoDailyMetrics, contentComments,
+  type InsertCreatorEvent, type CreatorEvent,
+  type InsertVideoDailyMetric, type InsertContentComment, type ContentComment,
   type VideoStatSnapshot, type InsertVideoStatSnapshot,
   type VideoRetentionCurve, type InsertVideoRetentionCurve,
   type VideoDemographics, type InsertVideoDemographics,
@@ -211,6 +213,16 @@ export interface IStorage {
   getFixtureTimeline(surfaceGroupId: string): Promise<FixtureAssignment[]>;
   insertVideoStatSnapshot(row: InsertVideoStatSnapshot): Promise<void>;
   getExpiredOpenAssignments(): Promise<Array<{ assignmentId: number | null; userId: string; surfaceGroupId: string; videoId: number }>>;
+  insertCreatorEvent(row: InsertCreatorEvent): Promise<void>;
+  getCreatorEvents(creatorUserId: string, sinceDays?: number): Promise<CreatorEvent[]>;
+  getCreatorEventCounts(sinceDays?: number): Promise<Array<{ creatorUserId: string; eventType: string; n: number; lastAt: Date | null }>>;
+  upsertVideoDailyMetric(row: InsertVideoDailyMetric): Promise<void>;
+  getVideoDailyMetrics(videoId: number): Promise<Array<{ day: string; views: number | null; likes: number | null; comments: number | null }>>;
+  insertContentComments(rows: InsertContentComment[]): Promise<number>;
+  getUnclassifiedComments(limit?: number): Promise<ContentComment[]>;
+  applyCommentClassification(id: number, patch: { sentiment: string; mentionsBrand: boolean }): Promise<void>;
+  getCommentsForVideo(videoId: number): Promise<ContentComment[]>;
+  getPlacementExposureForVideo(videoId: number): Promise<PlacementExposure | undefined>;
   insertRetentionCurve(row: InsertVideoRetentionCurve): Promise<void>;
   getLatestRetentionCurve(videoId: number): Promise<VideoRetentionCurve | undefined>;
   insertVideoDemographics(row: InsertVideoDemographics): Promise<void>;
@@ -1873,6 +1885,115 @@ export class DatabaseStorage implements IStorage {
       surfaceGroupId: r.surfaceGroupId,
       videoId: r.videoId,
     }));
+  }
+
+  // ── Creator behavior + audience response ────────────────────────────
+
+  async insertCreatorEvent(row: InsertCreatorEvent): Promise<void> {
+    await db.insert(creatorEvents).values(row);
+  }
+
+  async getCreatorEvents(creatorUserId: string, sinceDays = 90): Promise<CreatorEvent[]> {
+    const ids = await this.identityMatchValues(creatorUserId);
+    const since = new Date(Date.now() - sinceDays * 86400_000);
+    return await db
+      .select()
+      .from(creatorEvents)
+      .where(and(inArray(creatorEvents.creatorUserId, ids), gte(creatorEvents.occurredAt, since)))
+      .orderBy(desc(creatorEvents.occurredAt));
+  }
+
+  /** Event counts by type per creator — the behavior profile's backbone. */
+  async getCreatorEventCounts(sinceDays = 90): Promise<Array<{ creatorUserId: string; eventType: string; n: number; lastAt: Date | null }>> {
+    const since = new Date(Date.now() - sinceDays * 86400_000);
+    const rows = await db
+      .select({
+        creatorUserId: creatorEvents.creatorUserId,
+        eventType: creatorEvents.eventType,
+        n: sql<number>`count(*)::int`,
+        lastAt: sql<Date | null>`max(${creatorEvents.occurredAt})`,
+      })
+      .from(creatorEvents)
+      .where(and(gte(creatorEvents.occurredAt, since), eq(creatorEvents.actorRole, "creator")))
+      .groupBy(creatorEvents.creatorUserId, creatorEvents.eventType);
+    return rows as any;
+  }
+
+  async upsertVideoDailyMetric(row: InsertVideoDailyMetric): Promise<void> {
+    await db
+      .insert(videoDailyMetrics)
+      .values(row)
+      .onConflictDoUpdate({
+        target: [videoDailyMetrics.videoId, videoDailyMetrics.day],
+        set: {
+          views: row.views ?? null,
+          likes: row.likes ?? null,
+          comments: row.comments ?? null,
+          shares: row.shares ?? null,
+          estimatedMinutesWatched: row.estimatedMinutesWatched ?? null,
+          averageViewDuration: row.averageViewDuration ?? null,
+          capturedAt: new Date(),
+        },
+      });
+  }
+
+  async getVideoDailyMetrics(videoId: number): Promise<Array<{ day: string; views: number | null; likes: number | null; comments: number | null }>> {
+    const rows = await db
+      .select({ day: videoDailyMetrics.day, views: videoDailyMetrics.views, likes: videoDailyMetrics.likes, comments: videoDailyMetrics.comments })
+      .from(videoDailyMetrics)
+      .where(eq(videoDailyMetrics.videoId, videoId))
+      .orderBy(videoDailyMetrics.day);
+    return rows as any;
+  }
+
+  async insertContentComments(rows: InsertContentComment[]): Promise<number> {
+    if (rows.length === 0) return 0;
+    let inserted = 0;
+    for (let i = 0; i < rows.length; i += 200) {
+      const chunk = rows.slice(i, i + 200);
+      const out = await db.insert(contentComments).values(chunk).onConflictDoNothing().returning({ id: contentComments.id });
+      inserted += out.length;
+    }
+    return inserted;
+  }
+
+  async getUnclassifiedComments(limit = 200): Promise<ContentComment[]> {
+    return await db
+      .select()
+      .from(contentComments)
+      .where(isNull(contentComments.classifiedAt))
+      .orderBy(desc(contentComments.capturedAt))
+      .limit(limit);
+  }
+
+  async applyCommentClassification(
+    id: number,
+    patch: { sentiment: string; mentionsBrand: boolean },
+  ): Promise<void> {
+    await db
+      .update(contentComments)
+      .set({ sentiment: patch.sentiment, mentionsBrand: patch.mentionsBrand, classifiedAt: new Date() })
+      .where(eq(contentComments.id, id));
+  }
+
+  /** Any live exposure on this video — used to decide whether comments are
+   *  worth collecting and to split them pre/post go-live. */
+  async getPlacementExposureForVideo(videoId: number): Promise<PlacementExposure | undefined> {
+    const [row] = await db
+      .select()
+      .from(placementExposures)
+      .where(eq(placementExposures.sourceVideoId, videoId))
+      .orderBy(desc(placementExposures.liveAt))
+      .limit(1);
+    return row;
+  }
+
+  async getCommentsForVideo(videoId: number): Promise<ContentComment[]> {
+    return await db
+      .select()
+      .from(contentComments)
+      .where(eq(contentComments.videoId, videoId))
+      .orderBy(desc(contentComments.publishedAt));
   }
 
   async insertRetentionCurve(row: InsertVideoRetentionCurve): Promise<void> {
