@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { eq, desc, and, or, sql, inArray, ne, isNull } from "drizzle-orm";
+import { eq, desc, and, or, sql, inArray, ne, isNull, lte, gt, asc } from "drizzle-orm";
 import {
   monetizationItems,
   youtubeConnections,
@@ -106,7 +106,8 @@ import {
   roomModels,
   type RoomModel,
   type InsertRoomModel,
-  fixtureExposure, fixtureAssignments, placementExposures,
+  fixtureExposure, fixtureAssignments, placementExposures, videoStatSnapshots,
+  type VideoStatSnapshot, type InsertVideoStatSnapshot,
   type InsertFixtureExposure, type InsertFixtureAssignment, type InsertPlacementExposure,
   type FixtureExposure, type FixtureAssignment, type PlacementExposure,
 } from "@shared/schema";
@@ -201,6 +202,13 @@ export interface IStorage {
   openFixtureAssignment(row: InsertFixtureAssignment): Promise<FixtureAssignment>;
   closeFixtureAssignment(match: { placementId?: number; assignmentId?: number }, endReason: string): Promise<number>;
   getFixtureAssignments(surfaceGroupId: string): Promise<FixtureAssignment[]>;
+  getFixtureExposureAsOf(surfaceGroupId: string, at: Date): Promise<FixtureExposure[]>;
+  getFixtureDoseForWindow(surfaceGroupId: string, from: Date, to: Date | null): Promise<Array<{ videoId: number; sceneScreenTimeSec: number; scanVersion: number }>>;
+  openControlPeriod(args: { userId: string; surfaceGroupId: string; videoId: number }): Promise<FixtureAssignment | null>;
+  getFixtureTimeline(surfaceGroupId: string): Promise<FixtureAssignment[]>;
+  insertVideoStatSnapshot(row: InsertVideoStatSnapshot): Promise<void>;
+  getVideoStatSeries(videoId: number, sinceDays?: number): Promise<VideoStatSnapshot[]>;
+  getVideoIdsUnderMeasurement(): Promise<number[]>;
   createPlacementExposure(row: InsertPlacementExposure): Promise<PlacementExposure>;
   getPlacementExposuresForUser(userId: string): Promise<PlacementExposure[]>;
   getPlacementExposureForPlacement(placementId: number): Promise<PlacementExposure | undefined>;
@@ -1634,37 +1642,106 @@ export class DatabaseStorage implements IStorage {
   /** Replace this video's fixture-exposure rows in one transaction-ish sweep.
    *  Idempotent per (videoId, surfaceGroupId) so a rescan overwrites rather
    *  than accumulating duplicate exposure supply. */
+  /** Record a new exposure measurement for a video, SUPERSEDING the previous
+   *  one rather than deleting it. History is the point: a treatment window
+   *  that closed last month must still resolve the dose that applied while it
+   *  was open, so rows are never destroyed — only marked superseded. */
   async replaceFixtureExposure(videoId: number, rows: InsertFixtureExposure[]): Promise<number> {
-    // NEVER wipe on an empty result. A scan that produced no grouped fixtures
-    // (all-ungrouped survivors, degenerate index) must leave prior exposure
-    // supply intact — mirroring the keep-prior-surfaces rule. Deleting here
-    // would silently destroy the denominator of every effect estimate.
+    // Never supersede on an empty result. A scan that produced no grouped
+    // fixtures (all-ungrouped survivors, degenerate index) must leave the
+    // current measurement standing — mirroring the keep-prior-surfaces rule.
     if (rows.length === 0) {
-      console.warn(`[Measurement] fixture_exposure: 0 rows computed for video ${videoId} — keeping prior exposure rows`);
+      console.warn(`[Measurement] fixture_exposure: 0 rows computed for video ${videoId} — keeping current measurement`);
       return 0;
     }
-    // Transactional: a partial write (connection drop, chunk 2 of 3 failing)
-    // would otherwise leave the video with a truncated denominator.
+    const now = new Date();
     await db.transaction(async (tx) => {
-      await tx.delete(fixtureExposure).where(eq(fixtureExposure.videoId, videoId));
-      for (let i = 0; i < rows.length; i += 100) {
-        await tx.insert(fixtureExposure).values(rows.slice(i, i + 100));
+      // Version each fixture's new row from its current one.
+      const current = await tx
+        .select({ gid: fixtureExposure.surfaceGroupId, v: fixtureExposure.scanVersion })
+        .from(fixtureExposure)
+        .where(and(eq(fixtureExposure.videoId, videoId), isNull(fixtureExposure.supersededAt)));
+      const versionByGid = new Map(current.map((r) => [r.gid, r.v ?? 1]));
+
+      // Close the validity interval of the outgoing measurement.
+      await tx
+        .update(fixtureExposure)
+        .set({ supersededAt: now })
+        .where(and(eq(fixtureExposure.videoId, videoId), isNull(fixtureExposure.supersededAt)));
+
+      const versioned = rows.map((r) => ({
+        ...r,
+        scanAt: now,
+        supersededAt: null,
+        scanVersion: (versionByGid.get(String((r as any).surfaceGroupId)) ?? 0) + 1,
+      }));
+      for (let i = 0; i < versioned.length; i += 100) {
+        await tx.insert(fixtureExposure).values(versioned.slice(i, i + 100) as any);
       }
     });
     return rows.length;
   }
 
+  /** The exposure measurement that was VALID AT a point in time — the dose
+   *  that actually applied during a past treatment window. */
+  async getFixtureExposureAsOf(surfaceGroupId: string, at: Date): Promise<FixtureExposure[]> {
+    return await db
+      .select()
+      .from(fixtureExposure)
+      .where(and(
+        eq(fixtureExposure.surfaceGroupId, surfaceGroupId),
+        lte(fixtureExposure.scanAt, at),
+        or(isNull(fixtureExposure.supersededAt), gt(fixtureExposure.supersededAt, at)),
+      ));
+  }
+
+  /** Dose that applied over a treatment window, per video. Sums the exposure
+   *  measurements valid during the window rather than today's numbers. */
+  async getFixtureDoseForWindow(
+    surfaceGroupId: string,
+    from: Date,
+    to: Date | null,
+  ): Promise<Array<{ videoId: number; sceneScreenTimeSec: number; scanVersion: number }>> {
+    const end = to ?? new Date();
+    const rows = await db
+      .select()
+      .from(fixtureExposure)
+      .where(and(
+        eq(fixtureExposure.surfaceGroupId, surfaceGroupId),
+        lte(fixtureExposure.scanAt, end),
+        or(isNull(fixtureExposure.supersededAt), gt(fixtureExposure.supersededAt, from)),
+      ));
+    // One row per video: the measurement in force for the longest part of the
+    // window is a v2 refinement; today the latest overlapping row wins.
+    const byVideo = new Map<number, any>();
+    for (const r of rows) {
+      const prev = byVideo.get(r.videoId);
+      if (!prev || (r.scanVersion ?? 1) > (prev.scanVersion ?? 1)) byVideo.set(r.videoId, r);
+    }
+    return Array.from(byVideo.values()).map((r) => ({
+      videoId: r.videoId,
+      sceneScreenTimeSec: parseFloat(String(r.sceneScreenTimeSec)) || 0,
+      scanVersion: r.scanVersion ?? 1,
+    }));
+  }
+
+  /** CURRENT measurement only (superseded history excluded). */
   async getFixtureExposureForVideo(videoId: number): Promise<FixtureExposure[]> {
-    return await db.select().from(fixtureExposure).where(eq(fixtureExposure.videoId, videoId));
+    return await db
+      .select()
+      .from(fixtureExposure)
+      .where(and(eq(fixtureExposure.videoId, videoId), isNull(fixtureExposure.supersededAt)));
   }
 
   /** Cumulative exposure supply for a fixture across every episode — the
    *  denominator of an effect estimate. */
-  async getFixtureExposureByGroup(surfaceGroupId: string): Promise<FixtureExposure[]> {
+  async getFixtureExposureByGroup(surfaceGroupId: string, opts: { includeHistory?: boolean } = {}): Promise<FixtureExposure[]> {
+    const clauses = [eq(fixtureExposure.surfaceGroupId, surfaceGroupId)];
+    if (!opts.includeHistory) clauses.push(isNull(fixtureExposure.supersededAt));
     return await db
       .select()
       .from(fixtureExposure)
-      .where(eq(fixtureExposure.surfaceGroupId, surfaceGroupId))
+      .where(and(...clauses))
       .orderBy(desc(fixtureExposure.scanAt));
   }
 
@@ -1719,6 +1796,76 @@ export class DatabaseStorage implements IStorage {
       .from(fixtureAssignments)
       .where(eq(fixtureAssignments.surfaceGroupId, surfaceGroupId))
       .orderBy(desc(fixtureAssignments.startedAt));
+  }
+
+  /** Open an explicit CONTROL period on a fixture — observed, untreated.
+   *  Idempotent: never opens a second control row while one is open, and
+   *  never opens one while a treatment is live. */
+  async openControlPeriod(args: {
+    userId: string;
+    surfaceGroupId: string;
+    videoId: number;
+  }): Promise<FixtureAssignment | null> {
+    const open = await db
+      .select()
+      .from(fixtureAssignments)
+      .where(and(
+        eq(fixtureAssignments.surfaceGroupId, args.surfaceGroupId),
+        eq(fixtureAssignments.videoId, args.videoId),
+        isNull(fixtureAssignments.endedAt),
+      ));
+    if (open.length > 0) return null; // treated or already in control
+    const [created] = await db
+      .insert(fixtureAssignments)
+      .values({
+        userId: args.userId,
+        surfaceGroupId: args.surfaceGroupId,
+        videoId: args.videoId,
+        brandProductId: null,
+        isControl: true,
+        startedAt: new Date(),
+      } as any)
+      .returning();
+    return created;
+  }
+
+  /** Treatment/control periods for a fixture, oldest first — the crossover
+   *  timeline a researcher reads directly. */
+  async getFixtureTimeline(surfaceGroupId: string): Promise<FixtureAssignment[]> {
+    return await db
+      .select()
+      .from(fixtureAssignments)
+      .where(eq(fixtureAssignments.surfaceGroupId, surfaceGroupId))
+      .orderBy(asc(fixtureAssignments.startedAt));
+  }
+
+  async insertVideoStatSnapshot(row: InsertVideoStatSnapshot): Promise<void> {
+    await db.insert(videoStatSnapshots).values(row);
+  }
+
+  /** Time series for one video, oldest first. */
+  async getVideoStatSeries(videoId: number, sinceDays = 90): Promise<VideoStatSnapshot[]> {
+    const since = new Date(Date.now() - sinceDays * 86400_000);
+    return await db
+      .select()
+      .from(videoStatSnapshots)
+      .where(and(eq(videoStatSnapshots.videoId, videoId), gt(videoStatSnapshots.capturedAt, since)))
+      .orderBy(asc(videoStatSnapshots.capturedAt));
+  }
+
+  /** Videos that matter to the study: anything carrying a fixture with a
+   *  treatment window or a recorded exposure. These get polled every cycle. */
+  async getVideoIdsUnderMeasurement(): Promise<number[]> {
+    const fromAssignments = await db
+      .selectDistinct({ videoId: fixtureAssignments.videoId })
+      .from(fixtureAssignments);
+    const fromExposures = await db
+      .selectDistinct({ videoId: placementExposures.sourceVideoId })
+      .from(placementExposures);
+    const ids = new Set<number>();
+    for (const r of fromAssignments) if (r.videoId) ids.add(r.videoId);
+    for (const r of fromExposures) if (r.videoId) ids.add(r.videoId);
+    return Array.from(ids);
   }
 
   async createPlacementExposure(row: InsertPlacementExposure): Promise<PlacementExposure> {

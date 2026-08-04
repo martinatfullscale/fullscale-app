@@ -562,6 +562,20 @@ async function sweepStaleTempArtifacts(): Promise<void> {
         }
       }
 
+      // Per-video audience time series — the OUTCOME side of the CV-impact
+      // measurement design. view_count is overwritten on refresh, so without
+      // this there are no trajectories to compare before/after a placement
+      // went live. Scoped to videos under measurement. Kill switch:
+      // VIDEO_STAT_SERIES_ENABLED=false.
+      if (process.env.VIDEO_STAT_SERIES_ENABLED !== "false") {
+        try {
+          const { startVideoStatSeriesJob } = await import("./lib/videoStatSeries");
+          startVideoStatSeriesJob();
+        } catch (vsErr) {
+          log(`Video stat series job failed to start: ${vsErr}`);
+        }
+      }
+
       // DISABLED: TensorFlow scanner replaced by scanner_v2.ts which uses Sharp
       // try {
       //   log("Initializing TensorFlow scan worker...");

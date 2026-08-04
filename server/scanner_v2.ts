@@ -5921,6 +5921,23 @@ async function processVideoScanInner(
             const written = await storage.replaceFixtureExposure(videoId, exposureRows as any);
             const modelBacked = exposureRows.filter((r: any) => r.isModelBacked).length;
             console.log(`[Measurement] fixture_exposure: ${written} fixture-row(s) for video ${videoId} (${modelBacked} model-backed / cross-episode)`);
+
+            // Explicit CONTROL periods: a fixture observed with no treatment
+            // is untreated DATA, not missing data. openControlPeriod is
+            // idempotent (no-op when any window is already open), so this is
+            // safe to run on every rescan.
+            let controlsOpened = 0;
+            for (const row of exposureRows as any[]) {
+              const opened = await storage.openControlPeriod({
+                userId: String(video.userId),
+                surfaceGroupId: row.surfaceGroupId,
+                videoId,
+              }).catch(() => null);
+              if (opened) controlsOpened++;
+            }
+            if (controlsOpened > 0) {
+              console.log(`[Measurement] fixture_assignments: opened ${controlsOpened} control period(s) — fixtures observed with no treatment`);
+            }
           } catch (fxErr: any) {
             if (fxErr?.message === "__skip_exposure__") {
               // Quality gate, already logged — not a failure.

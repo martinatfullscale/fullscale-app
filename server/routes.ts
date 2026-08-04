@@ -1084,7 +1084,8 @@ export async function registerRoutes(
           multiTreatmentFixtures: fixtures.filter((f) => f.distinctProducts >= 2).length,
           wallClockSupplySec,
           orphanedFixtures: fixtures.filter((f) => f.orphaned).length,
-          openTreatmentWindows: assignments.filter((a) => !a.endedAt).length,
+          openTreatmentWindows: assignments.filter((a) => !a.endedAt && !(a as any).isControl).length,
+          controlPeriods: assignments.filter((a) => (a as any).isControl).length,
           liveExposures: exposures.length,
         },
         fixtures: fixtures.slice(0, 200),
@@ -1092,6 +1093,93 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("[Measurement] Readout error:", err?.message);
       res.status(500).json({ error: "Failed to build measurement readout" });
+    }
+  });
+
+  // Per-fixture crossover timeline: every treatment and control period with
+  // the dose that applied DURING that window (not today's numbers) and the
+  // audience trajectory over it. This is the row-level view the study models.
+  app.get("/api/admin/measurement/fixture/:groupId", async (req: any, res) => {
+    try {
+      const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
+      if (!callerEmail || !ADMIN_EMAILS.includes(String(callerEmail).toLowerCase())) {
+        return res.status(403).json({ error: "Admin access required" });
+      }
+      const groupId = String(req.params.groupId);
+      const timeline = await storage.getFixtureTimeline(groupId);
+      const current = await storage.getFixtureExposureByGroup(groupId);
+      const history = await storage.getFixtureExposureByGroup(groupId, { includeHistory: true });
+
+      const periods = await Promise.all(
+        timeline.map(async (w: any) => {
+          const from = new Date(w.startedAt);
+          const to = w.endedAt ? new Date(w.endedAt) : null;
+          // Dose AS OF the window — the measurement in force while it was
+          // open, not whatever the latest rescan produced.
+          const dose = await storage.getFixtureDoseForWindow(groupId, from, to).catch(() => []);
+          const doseSec = dose.reduce((sum, d) => sum + d.sceneScreenTimeSec, 0);
+
+          // Outcome trajectory over the window, per video carrying the fixture.
+          const trajectories = await Promise.all(
+            dose.map(async (d) => {
+              const series = await storage.getVideoStatSeries(d.videoId, 365).catch(() => []);
+              const inWindow = series.filter((pt: any) => {
+                const t = new Date(pt.capturedAt).getTime();
+                return t >= from.getTime() && (!to || t <= to.getTime());
+              });
+              const first = inWindow[0];
+              const last = inWindow[inWindow.length - 1];
+              const days = first && last
+                ? Math.max(1e-6, (new Date(last.capturedAt).getTime() - new Date(first.capturedAt).getTime()) / 86400_000)
+                : 0;
+              return {
+                videoId: d.videoId,
+                sceneScreenTimeSec: d.sceneScreenTimeSec,
+                scanVersion: d.scanVersion,
+                points: inWindow.length,
+                viewsAtStart: first?.viewCount ?? null,
+                viewsAtEnd: last?.viewCount ?? null,
+                // Views/day over the window — the comparable slope between
+                // treatment and control periods.
+                viewVelocityPerDay:
+                  first?.viewCount != null && last?.viewCount != null && days > 0
+                    ? Math.round(((last.viewCount - first.viewCount) / days) * 10) / 10
+                    : null,
+              };
+            }),
+          );
+
+          return {
+            id: w.id,
+            kind: w.isControl ? "control" : "treatment",
+            brandProductId: w.brandProductId,
+            productName: w.productName,
+            startedAt: w.startedAt,
+            endedAt: w.endedAt,
+            endReason: w.endReason,
+            doseSecAtWindow: Math.round(doseSec * 10) / 10,
+            trajectories,
+            measurable: trajectories.some((t) => t.points >= 2),
+          };
+        }),
+      );
+
+      res.json({
+        surfaceGroupId: groupId,
+        displayLabel: current[0]?.displayLabel ?? null,
+        surfaceType: current[0]?.surfaceType ?? null,
+        currentMeasurements: current.length,
+        historicalMeasurements: history.length - current.length,
+        periods,
+        summary: {
+          treatmentPeriods: periods.filter((p) => p.kind === "treatment").length,
+          controlPeriods: periods.filter((p) => p.kind === "control").length,
+          measurablePeriods: periods.filter((p) => p.measurable).length,
+        },
+      });
+    } catch (err: any) {
+      console.error("[Measurement] Fixture timeline error:", err?.message);
+      res.status(500).json({ error: "Failed to build fixture timeline" });
     }
   });
 
@@ -2338,6 +2426,28 @@ export async function registerRoutes(
   
   // Flexible auth middleware - works with Google OAuth, Replit Auth, or Facebook session
   // Used for endpoints that should work for authenticated users regardless of method
+  /** After a treatment window closes, reopen an explicit CONTROL period on
+   *  the same fixture so untreated time stays observable rather than
+   *  becoming an ambiguous gap. */
+  const reopenControlForAssignment = async (assignmentId: number): Promise<void> => {
+    try {
+      const placement = await storage.getBrandPlacementById(assignmentId);
+      if (!placement) return;
+      const surfaces = await storage.getDetectedSurfaces(placement.videoId);
+      const surface = surfaces.find((sf: any) => sf.id === placement.surfaceId);
+      const gid = (surface as any)?.surfaceGroupId as string | undefined;
+      if (!gid) return;
+      const opened = await storage.openControlPeriod({
+        userId: String(placement.creatorUserId),
+        surfaceGroupId: gid,
+        videoId: placement.videoId,
+      });
+      if (opened) console.log(`[Measurement] fixture_assignments: control period reopened on ${gid} (video ${placement.videoId})`);
+    } catch (e: any) {
+      console.warn(`[Measurement] Control reopen failed (non-fatal): ${e?.message}`);
+    }
+  };
+
   // Per-user daily scan budget (spend guard; in-memory, single-VM).
   const DAILY_SCAN_LIMIT = Math.max(1, parseInt(process.env.DAILY_SCAN_LIMIT || "25", 10) || 25);
   const dailyScanCounts = new Map<string, { day: string; count: number }>();
@@ -9245,9 +9355,13 @@ export async function registerRoutes(
       const updated = await storage.updateBrandPlacementStatus(id, "brand_withdrawn");
       // Measurement spine: close the treatment window (the fixture returns
       // to a no-placement control period from here).
-      storage.closeFixtureAssignment({ assignmentId: id }, "withdrawn")
-        .then((n) => n && console.log(`[Measurement] fixture_assignments: closed ${n} window(s) — assignment ${id} withdrawn`))
-        .catch(() => {});
+      // Treatment ended → the fixture returns to an explicit CONTROL period,
+      // so the untreated stretch is a queryable row rather than a gap.
+      (async () => {
+        const n = await storage.closeFixtureAssignment({ assignmentId: id }, "withdrawn").catch(() => 0);
+        if (n) console.log(`[Measurement] fixture_assignments: closed ${n} window(s) — assignment ${id} withdrawn`);
+        await reopenControlForAssignment(id);
+      })();
       storage.createNotification({
         userId: placement.creatorUserId,
         type: "placement_withdrawn",
@@ -9656,9 +9770,11 @@ export async function registerRoutes(
       }
       const reason = typeof req.body?.reason === "string" ? req.body.reason : undefined;
       const updated = await storage.updateBrandPlacementStatus(id, "creator_rejected", { rejectionReason: reason });
-      storage.closeFixtureAssignment({ assignmentId: id }, "withdrawn")
-        .then((n) => n && console.log(`[Measurement] fixture_assignments: closed ${n} window(s) — assignment ${id} rejected`))
-        .catch(() => {});
+      (async () => {
+        const n = await storage.closeFixtureAssignment({ assignmentId: id }, "withdrawn").catch(() => 0);
+        if (n) console.log(`[Measurement] fixture_assignments: closed ${n} window(s) — assignment ${id} rejected`);
+        await reopenControlForAssignment(id);
+      })();
       storage.markPlacementNotificationsRead(id);
       storage.createNotification({
         userId: placement.brandUserId,

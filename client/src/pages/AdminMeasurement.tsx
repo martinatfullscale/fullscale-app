@@ -42,6 +42,7 @@ interface Readout {
     wallClockSupplySec: number;
     orphanedFixtures: number;
     openTreatmentWindows: number;
+    controlPeriods: number;
     liveExposures: number;
   };
   fixtures: FixtureRow[];
@@ -115,6 +116,8 @@ export default function AdminMeasurement() {
                 hint="placements linked to real posts" />
               <Stat icon={<Clock className="w-3.5 h-3.5" />} label="Open treatments" value={s!.openTreatmentWindows}
                 hint="products currently on a fixture" />
+              <Stat icon={<FlaskConical className="w-3.5 h-3.5" />} label="Control periods" value={s!.controlPeriods}
+                hint="observed, untreated — the counterfactual" />
             </div>
 
             {s!.liveExposures === 0 && (
@@ -152,7 +155,15 @@ export default function AdminMeasurement() {
                       <tr key={f.surfaceGroupId} className="border-b border-white/5 last:border-b-0" data-testid={`fixture-${f.surfaceGroupId}`}>
                         <td className="p-3">
                           <div className="flex items-center gap-2">
-                            <span className="font-medium">{f.displayLabel || f.surfaceType}</span>
+                            <a
+                              href={`/api/admin/measurement/fixture/${encodeURIComponent(f.surfaceGroupId)}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="font-medium hover:text-primary hover:underline"
+                              title="Open the crossover timeline: every treatment and control period with the dose that applied during it"
+                            >
+                              {f.displayLabel || f.surfaceType}
+                            </a>
                             {f.videoCount > 1 && (
                               <Badge variant="outline" className="text-[10px] text-sky-400 border-sky-500/30">cross-episode</Badge>
                             )}

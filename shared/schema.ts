@@ -1333,10 +1333,11 @@ export type InsertBrandBrief = z.infer<typeof insertBrandBriefSchema>;
  * DENOMINATOR of every effect estimate.
  *
  * SEMANTICS a researcher must know:
- *  - CURRENT-STATE, NOT HISTORY. Idempotent per (video_id, surface_group_id):
- *    a rescan REPLACES the row. Dose-as-of-a-past-treatment-window is not
- *    reconstructible from this table. (Scan-versioned history is a deliberate
- *    v2 decision — see docs/DATA_DICTIONARY.md.)
+ *  - APPEND-ONLY / SCAN-VERSIONED. A rescan SUPERSEDES prior rows rather than
+ *    deleting them: the old row gets superseded_at, the new row is current
+ *    (superseded_at IS NULL). Dose-as-of-a-past-treatment-window is therefore
+ *    reconstructible — the exposure row valid at time T is the one where
+ *    scan_at <= T AND (superseded_at IS NULL OR superseded_at > T).
  *  - Writes are gated on scan quality: a degraded scan (mostly edge-detection
  *    fallback) leaves prior rows untouched rather than overwriting good data
  *    with fallback geometry.
@@ -1371,24 +1372,42 @@ export const fixtureExposure = pgTable("fixture_exposure", {
   confidence: numeric("confidence"),
   /** Video duration at scan time, so screen-time share is computable without a join. */
   videoDurationSec: numeric("video_duration_sec"),
-  scanAt: timestamp("scan_at").defaultNow(),
+  /** When this measurement was taken. With superseded_at, this bounds the
+   *  validity interval of the row — the basis for as-of-window dose. */
+  scanAt: timestamp("scan_at").defaultNow().notNull(),
+  /** Null = the CURRENT measurement for this (video, fixture). Set when a
+   *  later scan replaced it. Never delete: a treatment window that closed
+   *  last month must still resolve the dose that applied while it was open. */
+  supersededAt: timestamp("superseded_at"),
+  /** Monotonic per (video, fixture) — 1 is the first observation. Cheap way
+   *  to order revisions without relying on timestamp ties. */
+  scanVersion: integer("scan_version").notNull().default(1),
 }, (table) => [
   index("idx_fixture_exposure_group").on(table.surfaceGroupId),
   index("idx_fixture_exposure_video").on(table.videoId),
-  uniqueIndex("uq_fixture_exposure_video_group").on(table.videoId, table.surfaceGroupId),
+  // As-of queries scan by fixture over the validity interval.
+  index("idx_fixture_exposure_asof").on(table.surfaceGroupId, table.scanAt),
+  // Exactly one CURRENT row per (video, fixture); history rows carry a
+  // superseded_at so they fall outside this partial index.
+  uniqueIndex("uq_fixture_exposure_current")
+    .on(table.videoId, table.surfaceGroupId)
+    .where(sql`superseded_at IS NULL`),
 ]);
 
 /**
  * Treatment assignment periods: which product occupied which fixture, when.
  *
- * A within-fixture crossover design needs the on-air window per treatment.
- * Gaps between windows are CANDIDATE control periods — with two caveats a
- * researcher must respect:
- *  1. Windows exist only from Phase-1 instrumentation onward; earlier time is
- *     UNOBSERVED, not control. Filter on created_at >= instrumentation start.
- *  2. A control period's OUTCOME side needs per-video audience time series
- *     that does not exist yet (data dictionary gap 7), so control exposure is
- *     currently identifiable but not yet measurable.
+ * A within-fixture crossover design needs the on-air window per treatment —
+ * AND the untreated periods to compare against. Control periods are stored
+ * as EXPLICIT ROWS (brand_product_id IS NULL, is_control = true), not
+ * inferred from gaps: a row you can join is worth more than an absence you
+ * have to reconstruct, and it makes "was this fixture observed-but-untreated
+ * or simply unobserved?" answerable.
+ *
+ * A control row opens when a fixture is first observed by instrumentation and
+ * whenever a treatment window closes; it closes when the next treatment opens.
+ * observed_from on the first control row marks when measurement began, so
+ * pre-instrumentation time is UNOBSERVED rather than silently read as control.
  * Exclusivity is enforced per (fixture × video), not globally: the same
  * physical fixture legitimately carries different products in different
  * episodes at the same wall-clock time.
@@ -1398,9 +1417,12 @@ export const fixtureAssignments = pgTable("fixture_assignments", {
   userId: varchar("user_id").notNull(),
   surfaceGroupId: varchar("surface_group_id", { length: 64 }).notNull(), // FIXTURE
   videoId: integer("video_id").notNull(),
-  /** TREATMENT: the product occupying the fixture. Null = explicit control
-   *  row (fixture observed with no placement in this window). */
+  /** TREATMENT: the product occupying the fixture. Null + is_control = the
+   *  explicit control period (observed, untreated). */
   brandProductId: integer("brand_product_id"),
+  /** True for materialized control periods. Distinguishes "observed with no
+   *  product" from a malformed treatment row with a missing product id. */
+  isControl: boolean("is_control").notNull().default(false),
   productName: varchar("product_name", { length: 200 }),
   brandUserId: varchar("brand_user_id"),
   /** Source rows so an analyst can trace back to the raw lifecycle. */
@@ -1412,7 +1434,7 @@ export const fixtureAssignments = pgTable("fixture_assignments", {
    *  on assignment_id and use its live_at. endedAt null = still assigned. */
   startedAt: timestamp("started_at").notNull().defaultNow(),
   endedAt: timestamp("ended_at"),
-  endReason: varchar("end_reason", { length: 32 }), // 'archived' | 'expired' | 'replaced' | 'withdrawn'
+  endReason: varchar("end_reason", { length: 32 }), // 'archived' | 'expired' | 'replaced' | 'withdrawn' | 'render_failed' | 'treatment_started'
   createdAt: timestamp("created_at").defaultNow(),
 }, (table) => [
   index("idx_fixture_assign_group").on(table.surfaceGroupId),
@@ -1470,6 +1492,40 @@ export const placementExposures = pgTable("placement_exposures", {
   // double-submit race and would double-count an audience.
   uniqueIndex("uq_placement_exposure_placement").on(table.placementId),
 ]);
+
+/**
+ * Per-video audience time series — the OUTCOME side of the design.
+ *
+ * video_index.view_count is overwritten on every refresh, so it can only ever
+ * answer "how many views now". Causal comparison needs trajectories: view
+ * velocity before and after a placement went live, and the counterfactual
+ * slope during control periods. This table APPENDS, never overwrites.
+ *
+ * Captured for videos that matter to the study (any video carrying a fixture
+ * with a treatment or exposure) plus, cheaply, the rest of a connected
+ * channel in the same batch call.
+ */
+export const videoStatSnapshots = pgTable("video_stat_snapshots", {
+  id: serial("id").primaryKey(),
+  videoId: integer("video_id").notNull(),          // video_index.id
+  userId: varchar("user_id").notNull(),
+  platform: varchar("platform", { length: 32 }).notNull(),
+  /** Platform-native id polled (youtube video id, IG media id, …). */
+  platformPostId: varchar("platform_post_id", { length: 128 }),
+  viewCount: bigint("view_count", { mode: "number" }),
+  likeCount: integer("like_count"),
+  commentCount: integer("comment_count"),
+  /** Raw payload for metrics we don't model yet — cheap future-proofing. */
+  raw: jsonb("raw"),
+  capturedAt: timestamp("captured_at").defaultNow().notNull(),
+}, (table) => [
+  // The dominant query: one video's series over time.
+  index("idx_video_stat_video_time").on(table.videoId, table.capturedAt),
+  index("idx_video_stat_user_time").on(table.userId, table.capturedAt),
+]);
+
+export type VideoStatSnapshot = typeof videoStatSnapshots.$inferSelect;
+export type InsertVideoStatSnapshot = typeof videoStatSnapshots.$inferInsert;
 
 export type FixtureExposure = typeof fixtureExposure.$inferSelect;
 export type InsertFixtureExposure = typeof fixtureExposure.$inferInsert;

@@ -1174,9 +1174,11 @@ Materialized at scan finalize from the same numbers that feed `scene_inventory`.
 > (video_id, scene_id)**. Per-fixture comparison and dose-weighting are valid as-is.
 
 **Other semantics that affect analysis:**
-- **Current-state, not history.** A rescan replaces the row; dose-as-of-a-past-window is
-  not reconstructible. (Scan-versioned history is a deliberate v2 decision — flag it if
-  the study design needs it.)
+- **Append-only / scan-versioned.** A rescan SUPERSEDES prior rows rather than deleting
+  them (`superseded_at` set on the outgoing row, `scan_version` increments). **Dose as of
+  a past treatment window IS reconstructible**: the row valid at time *T* is the one where
+  `scan_at <= T AND (superseded_at IS NULL OR superseded_at > T)`. Current-state queries
+  filter `superseded_at IS NULL`.
 - **Quality-gated.** Scans that ran mostly on edge-detection fallback (<70% AI-analyzed
   frames) are skipped rather than overwriting good rows with fallback geometry.
 - **Missingness is non-random.** Videos with a degenerate scene index produce no rows,
@@ -1201,10 +1203,14 @@ failure, archive, or supersession.
 - **Deal-time ≠ audience-time.** A window opens at approval, but the audience only sees
   the product once the creator posts. For audience-time, join `placement_exposures` on
   `assignment_id` and use its `live_at`.
-- **Control periods:** gaps between windows are *candidate* control periods, with two
-  limits — time before Phase 1 instrumentation is **unobserved, not control**; and the
-  *outcome* side of a control period needs the per-video time series that does not exist
-  yet (gap 7 below). Control exposure is currently **identifiable but not measurable**.
+- **Control periods are EXPLICIT ROWS** (`is_control = true`, `brand_product_id IS NULL`),
+  not inferred gaps — opened when a fixture is first observed by instrumentation and
+  reopened whenever a treatment window closes. This makes "observed but untreated"
+  distinguishable from "not observed at all". Time before instrumentation remains
+  **unobserved, not control** (no rows exist for it).
+- **Outcomes over control periods are now measurable** via `video_stat_snapshots` (below):
+  view velocity during a control window is the counterfactual slope for the treatment
+  windows on either side.
 - **No expiry sweep yet:** windows do not auto-close at `expiresAt`.
 
 ### `placement_exposures` — the exposure event (was the blocking gap)
@@ -1231,9 +1237,50 @@ live — suggested from their connected channel's recent uploads, or pasted manu
 > curve — otherwise curves point at the wrong seconds. The columns are named for what
 > they are so this cannot happen silently.
 
+### `video_stat_snapshots` — per-video audience time series (the outcome side)
+
+Appends, never overwrites. Polled every 6h for videos under measurement (any video
+carrying a fixture with a treatment window or a recorded exposure); YouTube today via
+the batch-50 `videos.list` call, other platforms when their per-post fetchers are wired.
+Kill switch `VIDEO_STAT_SERIES_ENABLED=false`.
+
+| Column | Type | Definition |
+|---|---|---|
+| `video_id` / `user_id` | integer / varchar | `video_index.id`, owning creator |
+| `platform` / `platform_post_id` | varchar | Where it was polled |
+| `view_count` / `like_count` / `comment_count` | bigint / integer | Cumulative counts at capture time |
+| `raw` | jsonb | Full payload — metrics we don't model yet |
+| `captured_at` | timestamp | Sample time (the series axis) |
+
+**Why it exists:** `video_index.view_count` is overwritten on every refresh, so a single
+counter cannot distinguish a placement-driven lift from baseline growth. Differencing
+consecutive snapshots gives **views/day**, which is comparable across treatment and
+control windows on the same fixture.
+
+### Putting it together: the crossover query
+
+`GET /api/admin/measurement/fixture/:groupId` returns exactly this, and is the reference
+implementation for the SQL:
+
+1. Read the fixture's periods from `fixture_assignments` (treatment and control, ordered).
+2. For each period, resolve the **dose that applied during it** from `fixture_exposure`
+   using the as-of predicate above — not today's measurement.
+3. For each period, slice `video_stat_snapshots` to the window and compute **views/day**
+   between the first and last sample.
+4. Compare treated vs control slopes within the same fixture, dose-weighted.
+
+Periods with fewer than two samples are returned with `measurable: false` — a window
+shorter than the sampling interval has no slope, and should be excluded rather than
+imputed.
+
 **Gap status after Phase 1:** gaps 1, 2 and 6 below are now *partially addressed* —
-exposure events, treatment windows and go-live capture exist. Gaps 3, 4, 5, 7 and 8
-remain open, and control-period *outcomes* still depend on gap 7.
+exposure events, treatment windows and go-live capture exist. **Gap 7 (time-series
+collection) and gap 8 (fixture rollup + control baseline) are now CLOSED** for YouTube —
+`video_stat_snapshots` appends per-video trajectories and control periods are explicit
+rows with measurable outcomes. Gaps 3 (retention curves), 4 (per-video demographics) and
+5 (click/conversion attribution) remain open; retention curves are the highest-value
+remaining item and are blocked on nothing — the `yt-analytics.readonly` scope is already
+granted and the report has simply never been requested.
 
 ---
 
