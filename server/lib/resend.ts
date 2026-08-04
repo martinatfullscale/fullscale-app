@@ -769,3 +769,73 @@ export async function sendPlacementSubmittedNotification(params: {
   });
   console.log(`[Resend] Placement-review notification sent for #${params.placementId}`);
 }
+
+/**
+ * Team invite — sent when someone is granted admin/operator access.
+ *
+ * Deliberately tells them to use GOOGLE sign-in: admin addresses are blocked
+ * from the email/password registration path (that block stops a stranger
+ * claiming an unclaimed admin address), so a new admin who tries the password
+ * form hits a wall with no explanation. Naming the right button up front is
+ * the difference between a 30-second onboarding and a confused reply.
+ */
+export async function sendTeamInviteEmail(params: {
+  email: string;
+  firstName: string;
+  role?: "admin" | "operator";
+}): Promise<{ sent: boolean; id?: string; reason?: string }> {
+  try {
+    const { client } = await getResendClient();
+    if (!client) return { sent: false, reason: "Resend client not available" };
+
+    const loginUrl = "https://gofullscale.co/auth";
+    const p = "margin: 0 0 16px 0; line-height: 1.55;";
+    const link = "color: #10b981; font-weight: 500;";
+    const li = "margin-bottom: 8px;";
+
+    const result = await client.emails.send({
+      from: MAIL_FROM.martin,
+      replyTo: MAIL_MARTIN_ADDRESS,
+      to: params.email,
+      subject: `You're set up on FullScale, ${params.firstName}`,
+      html: `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto; padding: 24px; color: #111;">
+          <p style="${p}">Hi ${params.firstName},</p>
+          <p style="${p}">You've got admin access to FullScale. Here's how to get in and what you're looking at.</p>
+
+          <p style="${p}"><strong>Signing in — one important detail.</strong> Go to
+            <a href="${loginUrl}" style="${link}">gofullscale.co/auth</a> and use the
+            <strong>"Continue with Google"</strong> button with <strong>${params.email}</strong>.
+            Don't use the email/password form — admin addresses are deliberately blocked from it
+            (it stops anyone claiming an admin address before we do), so it will turn you away.
+            There's no password to set up; Google handles it.</p>
+
+          <p style="${p}"><strong>What you'll see.</strong> Admin access adds a few screens the
+            creators don't have:</p>
+          <ul style="margin: 0 0 16px 0; padding-left: 20px; line-height: 1.6;">
+            <li style="${li}"><strong>Signups</strong> — everyone waiting for review. One click approves an account and sends them their welcome email.</li>
+            <li style="${li}"><strong>Review Queue</strong> — creators choose where a product sits in their video; we review that choice and deliver the finished render back to them from here.</li>
+            <li style="${li}"><strong>Measurement</strong> — the research side: which surfaces carry which products, how long they're on screen, and how audiences respond.</li>
+            <li style="${li}"><strong>Creator Intel</strong> — the full creator roster with performance and activity.</li>
+          </ul>
+
+          <p style="${p}"><strong>Worth knowing about the product model:</strong> creators pick
+            <em>where</em> a brand's product lives in their scene — they're not producing the final
+            asset. A person on our side reviews that choice and produces the polished render, which
+            goes back to the creator to publish. A lot of the tooling only makes sense once that's clear.</p>
+
+          <p style="${p}">Anything looks broken or confusing, just reply — it comes straight to me.</p>
+          <p style="${p}">Glad to have you in,</p>
+          <p style="margin: 0; line-height: 1.4;"><strong>Martin</strong><br/><span style="color: #6b7280;">Founder, FullScale</span></p>
+        </div>
+      `,
+    });
+
+    const id = (result as any)?.data?.id;
+    console.log(`[Resend] Team invite sent to ${params.email}: ${id}`);
+    return { sent: true, id };
+  } catch (error: any) {
+    console.error("[Resend] Failed to send team invite:", error?.message || error);
+    return { sent: false, reason: error?.message || String(error) };
+  }
+}

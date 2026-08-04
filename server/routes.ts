@@ -925,6 +925,37 @@ export async function registerRoutes(
     }
   });
 
+  /** Send a teammate their access instructions. Only addresses already on
+   *  the admin allowlist can be invited — the email tells them how to sign
+   *  in as an admin, so sending it to a non-admin would be a lie. */
+  app.post("/api/admin/send-team-invite", async (req: any, res) => {
+    try {
+      const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
+      if (!callerEmail || !ADMIN_EMAILS.includes(String(callerEmail).toLowerCase())) {
+        return res.status(403).json({ error: "Admin access required" });
+      }
+      const { email, firstName } = req.body || {};
+      if (!email || typeof email !== "string") return res.status(400).json({ error: "email required" });
+      const normalized = email.toLowerCase().trim();
+      if (!ADMIN_EMAILS.includes(normalized)) {
+        return res.status(400).json({
+          error: "That address isn't on the admin allowlist yet — add it in server/lib/adminEmails.ts and deploy first, otherwise the instructions in the email won't work for them.",
+        });
+      }
+      const { sendTeamInviteEmail } = await import("./lib/resend");
+      const result = await sendTeamInviteEmail({
+        email: normalized,
+        firstName: firstName ? String(firstName).slice(0, 60) : "there",
+      });
+      console.log(`[Admin] ${callerEmail} sent team invite to ${normalized}: ${JSON.stringify(result)}`);
+      if (!result.sent) return res.status(502).json({ error: `Email failed: ${result.reason}` });
+      res.json({ ok: true, ...result });
+    } catch (err: any) {
+      console.error("[Admin] Team invite error:", err?.message);
+      res.status(500).json({ error: "Failed to send invite" });
+    }
+  });
+
   // -------------------------------------------------------------------
   // ONE-CLICK ADMIN APPROVAL — the first-party path. Flips isApproved,
   // writes the allowlist, and sends the founder-voice approval email in
