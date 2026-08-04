@@ -566,7 +566,7 @@ export async function registerRoutes(
   // exact state Google reviewers need.
   app.post("/api/admin/provision-test-creator", async (req: any, res) => {
     try {
-      const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
+      const adminEmails = ADMIN_EMAILS; // canonical list — see server/lib/adminEmails.ts
       // Session/OIDC only. The ?admin_email= query fallback was an unauthenticated
       // admin bypass — any anonymous caller could pass a known admin email (all of
       // which are in source) and reset the test account's password. Removed.
@@ -648,7 +648,7 @@ export async function registerRoutes(
   // DB row and sends the notification.
   app.post("/api/admin/onboard-cobuilder", async (req: any, res) => {
     try {
-      const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
+      const adminEmails = ADMIN_EMAILS; // canonical list — see server/lib/adminEmails.ts
       const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
       if (!callerEmail || !adminEmails.map(e => e.toLowerCase()).includes(callerEmail.toLowerCase())) {
         return res.status(403).json({ error: "Admin access required" });
@@ -849,7 +849,7 @@ export async function registerRoutes(
   //   adminEmails  — current hardcoded admin list (what gets canSwitchRoles)
   app.get("/api/admin/list-signups", async (req: any, res) => {
     try {
-      const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
+      const adminEmails = ADMIN_EMAILS; // canonical list — see server/lib/adminEmails.ts
       const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
       if (!callerEmail || !adminEmails.map(e => e.toLowerCase()).includes(callerEmail.toLowerCase())) {
         return res.status(403).json({ error: "Admin access required" });
@@ -933,7 +933,7 @@ export async function registerRoutes(
   // -------------------------------------------------------------------
   app.post("/api/admin/approve-user", async (req: any, res) => {
     try {
-      const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
+      const adminEmails = ADMIN_EMAILS; // canonical list — see server/lib/adminEmails.ts
       const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
       if (!callerEmail || !adminEmails.map((e: string) => e.toLowerCase()).includes(callerEmail.toLowerCase())) {
         return res.status(403).json({ error: "Admin access required" });
@@ -1550,7 +1550,7 @@ export async function registerRoutes(
   // -------------------------------------------------------------------
   app.get("/api/admin/placements", async (req: any, res) => {
     try {
-      const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
+      const adminEmails = ADMIN_EMAILS; // canonical list — see server/lib/adminEmails.ts
       const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
       if (!callerEmail || !adminEmails.map((e: string) => e.toLowerCase()).includes(callerEmail.toLowerCase())) {
         return res.status(403).json({ error: "Admin access required" });
@@ -1585,7 +1585,7 @@ export async function registerRoutes(
 
   app.post("/api/admin/placements/:id/review", async (req: any, res) => {
     try {
-      const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
+      const adminEmails = ADMIN_EMAILS; // canonical list — see server/lib/adminEmails.ts
       const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
       if (!callerEmail || !adminEmails.map((e: string) => e.toLowerCase()).includes(callerEmail.toLowerCase())) {
         return res.status(403).json({ error: "Admin access required" });
@@ -1847,7 +1847,7 @@ export async function registerRoutes(
   // against the Postgres allowlist + users table so you can spot drift.
   app.get("/api/admin/airtable-signups", async (req: any, res) => {
     try {
-      const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
+      const adminEmails = ADMIN_EMAILS; // canonical list — see server/lib/adminEmails.ts
       const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
       if (!callerEmail || !adminEmails.map(e => e.toLowerCase()).includes(callerEmail.toLowerCase())) {
         return res.status(403).json({ error: "Admin access required" });
@@ -1911,7 +1911,7 @@ export async function registerRoutes(
 
   app.post("/api/admin/migrate-surfaces", async (req: any, res) => {
     try {
-      const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
+      const adminEmails = ADMIN_EMAILS; // canonical list — see server/lib/adminEmails.ts
       const email = req.session?.googleUser?.email || req.user?.claims?.email;
       if (!email || !adminEmails.map((e: string) => e.toLowerCase()).includes(email.toLowerCase())) {
         return res.status(403).json({ error: "Admin access required" });
@@ -2291,7 +2291,7 @@ export async function registerRoutes(
   // Dev-only admin login bypass — skips Google OAuth for admin emails
   // Creates a real session so the entire app works (Library, Dashboard, etc.)
   app.post("/api/auth/dev-login", authLimiter, async (req: any, res) => {
-    const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
+    const adminEmails = ADMIN_EMAILS; // canonical list — see server/lib/adminEmails.ts
     const isDevelopment = process.env.NODE_ENV !== 'production';
 
     if (!isDevelopment) {
@@ -2853,7 +2853,7 @@ export async function registerRoutes(
     }
   };
   const isFlexibleAuthenticatedInner = async (req: any, res: any, next: any) => {
-    const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
+    const adminEmails = ADMIN_EMAILS; // canonical list — see server/lib/adminEmails.ts
     const isDevelopment = process.env.NODE_ENV !== 'production';
 
     // First try Google OAuth session
@@ -3886,7 +3886,7 @@ export async function registerRoutes(
     const userEmail = req.authEmail;
     
     // Only allow admin emails
-    const adminEmails = ["martin@gofullscale.co", "tamara@gofullscale.co", "ben@muselabs.ai", "chu@gofullscale.co", "remiguyton@gmail.com", "scottmmills@outlook.com", "juanroviraesteve@gmail.com"];
+    const adminEmails = ADMIN_EMAILS; // canonical list — see server/lib/adminEmails.ts
     if (!adminEmails.includes(userEmail)) {
       return res.status(403).json({ error: "Admin only endpoint" });
     }
@@ -5932,7 +5932,7 @@ export async function registerRoutes(
   // Batch extract thumbnails for all videos with local files (admin only)
   app.post("/api/thumbnails/extract-all", isFlexibleAuthenticated, async (req: any, res) => {
     // Admin only - batch operation
-    const adminEmails = ['martin@gofullscale.co', 'tamara@gofullscale.co', 'ben@muselabs.ai', 'chu@gofullscale.co', 'remiguyton@gmail.com', 'scottmmills@outlook.com', 'juanroviraesteve@gmail.com'];
+    const adminEmails = ADMIN_EMAILS; // canonical list — see server/lib/adminEmails.ts
     if (!adminEmails.includes(req.authEmail || '')) {
       return res.status(403).json({ error: "Admin only endpoint" });
     }
@@ -6892,7 +6892,7 @@ export async function registerRoutes(
     const authEmail = req.authEmail;
     
     // Admin only
-    const adminEmails = ["martin@gofullscale.co", "tamara@gofullscale.co", "ben@muselabs.ai", "chu@gofullscale.co", "remiguyton@gmail.com", "scottmmills@outlook.com", "juanroviraesteve@gmail.com"];
+    const adminEmails = ADMIN_EMAILS; // canonical list — see server/lib/adminEmails.ts
     if (!adminEmails.includes(authEmail)) {
       return res.status(403).json({ error: "Admin access required" });
     }
@@ -6953,7 +6953,7 @@ export async function registerRoutes(
     const authEmail = req.authEmail;
     
     // Admin only
-    const adminEmails = ["martin@gofullscale.co", "tamara@gofullscale.co", "ben@muselabs.ai", "chu@gofullscale.co", "remiguyton@gmail.com", "scottmmills@outlook.com", "juanroviraesteve@gmail.com"];
+    const adminEmails = ADMIN_EMAILS; // canonical list — see server/lib/adminEmails.ts
     if (!adminEmails.includes(authEmail)) {
       return res.status(403).json({ error: "Admin access required" });
     }
@@ -7667,7 +7667,7 @@ export async function registerRoutes(
   });
 
   // Admin emails that can switch between roles
-  const ADMIN_EMAILS = ["martin@gofullscale.co", "tamara@gofullscale.co", "ben@muselabs.ai", "chu@gofullscale.co", "remiguyton@gmail.com", "scottmmills@outlook.com", "juanroviraesteve@gmail.com"];
+  // (uses the canonical ADMIN_EMAILS imported from ./lib/adminEmails)
 
   // Get user type (creator or brand) for routing - supports admin role override
   // Supports: Google OAuth, Replit OIDC, Facebook session auth

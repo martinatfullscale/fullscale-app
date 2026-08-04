@@ -17,6 +17,7 @@ export const ADMIN_EMAILS: readonly string[] = [
   "remiguyton@gmail.com",
   "scottmmills@outlook.com",
   "juanroviraesteve@gmail.com",
+  "rohan@growvana.com",
 ];
 
 /** Case-insensitive admin check. */
