@@ -1,6 +1,11 @@
 # FullScale Data Dictionary
 
-**Version 1.0 · 2026-08-03 · prepared for the FullScale × Deloitte data workstream**
+**Version 1.2 · 2026-08-04 · prepared for the FullScale × Deloitte data workstream**
+
+*Changelog — v1.1/1.2 (2026-08-04): added the Phase 1 measurement spine (§4b), retention curves
+and per-video demographics, the creator behavior event log, audience response (comments +
+per-day metrics), the delivery repository, and per-platform outcome coverage. Gap statuses in
+§6 updated in place — five of the original eight are now closed.*
 
 > Scope: every table in the production PostgreSQL schema (`shared/schema.ts`, `shared/models/*`),
 > classified by provenance, plus the audience-metric inventory (what is collected today, at what
@@ -1453,13 +1458,33 @@ previously `expired` was a documented status nothing ever wrote.
 | Creator-intelligence rollups: videosScanned, sceneClasses, sellableSec (Σ totalSec of scenes with ≥1 surface), canonicalSurfaces, surfacesApproved, placement funnel (brandRequests → placementsApproved → released A1 pages), engagementRatePct = total_interactions/reach from latest Meta snapshot, plus full per-creator drill-down (snapshots series, media tables, placements) | derived (SQL GROUP BY over video_index.scene_inventory, detected_surfaces, brand_placement_assignments, shared_links, social_insight_snapshots) | computed at request time (admin endpoints), never stored | `none (response-only)` | `server/storage.ts:3218-3416; server/routes.ts:14228-14414,14178-14218` |
 | Placement pricing signal: placement_fee/platform_take/creator_payout cents + pricing_breakdown audit blob (inputs: follower-count creator tier, monetizationTier, recency, bbox prominence, duration term — ExpectedImpressions × CPM rubric) | derived at placement-request time | at-event | `brand_placement_assignments.placement_fee_cents et al. + pricing_breakdown jsonb` | `server/lib/placementPricing.ts:1-80; shared/schema.ts:443-458` |
 
+### Collectors added since v1.0
+
+| Metric | Source | Cadence | Lands in | Notes |
+|---|---|---|---|---|
+| Audience retention curve (per-second) | YouTube Analytics `elapsedVideoTimeRatio` | daily | `video_retention_curves.curve` | Only above YouTube's reporting threshold — absence ≠ zero |
+| Per-video demographics (age × gender) | YouTube Analytics, video-filtered | daily | `video_demographics` | Same threshold caveat |
+| Per-day views/likes/comments/shares | YouTube Analytics `dimensions=day` | daily | `video_daily_metrics` | **Retroactive to publish date** — before/after works immediately |
+| Rolling counters (views/likes/comments) | YouTube Data API + platform fetchers | every 6h | `video_stat_snapshots` | Appends, never overwrites |
+| Twitch VOD/clip views | Twitch Helix (app token) | every 6h | `video_stat_snapshots` | Views only; VOD counts expire with the VOD |
+| TikTok post metrics | TikTok Display API `video/query` | every 6h | `video_stat_snapshots` | Needs `video.list` + creator owns the video |
+| X post metrics | X API v2 `public_metrics` | every 6h | `video_stat_snapshots` | Needs creator OAuth + paid API tier |
+| Comment text + sentiment + brand mention | YouTube `commentThreads` + LLM classification | daily | `content_comments` | Only for videos carrying a live placement |
+| Creator behavior events | First-party (in-app actions) | at-event | `creator_events` | Coverage starts 2026-08-04; not retroactive |
+| Brand response latency | Derived from existing timestamps | on read | computed | Covers **all** history, no log needed |
+
+
 ---
 
 ## 6. Gaps: what impact measurement needs that does not exist yet
 
-Each gap below is verified absent from the codebase (not merely undocumented).
+These are the eight gaps identified in the original v1.0 audit, kept here with their original
+analysis for traceability. **Each now carries a current status line** — five are closed, one is
+mostly closed, one is open, and the statuses reflect what shipped between v1.0 and v1.2.
 
 ### Gap 1: Per-placement exposure record in published content: nothing links a brand_placement_assignment (or saved_placement) to a live post with metrics. The brand-approval path ends at an A1 shared_links release page (view counter only); brand placements ride editorial_clips, which have NO analytics fields and never enter published_posts/clip_analytics. The placement→post linkage that does exist (generated_clips.productPlacements jsonb) covers only the legacy remix path.
+
+> ✅ **CLOSED** — `placement_exposures` records every placement that reached an audience, joined to its treatment window via `assignment_id`.
 
 **Why it matters:** Without an exposure record, no audience metric can be attributed to a treatment — the study cannot even enumerate which audience saw which product. This is the single blocking gap.
 
@@ -1467,11 +1492,15 @@ Each gap below is verified absent from the codebase (not merely undocumented).
 
 ### Gap 2: Treatment on-air windows / variant assignment: the fixture (surfaceGroupId — stable across rescans and episodes for room-model surfaces, exactly the experimental-unit id the study needs) and the treatment (productId on saved_placements, brandProductId on assignments, appliesToGroupIds scoping) are both recorded, but nothing records WHICH product occupied the fixture during which real-world period, and there is no versioned render registry or control (no-placement) condition.
 
+> ✅ **CLOSED** — `fixture_assignments` records which product occupied which fixture over which period, with explicit control rows for untreated periods.
+
 **Why it matters:** Same-scene/different-products is a within-fixture crossover design; without assignment periods you cannot align outcomes to treatments or define baseline periods.
 
 **What building it takes:** Small delta on existing identity work: an assignment-period table keyed on surfaceGroupId (fixture) × brandProductId (treatment) × date range, written at brand approval and at placement archive/expiry. rm{modelId}-s{idx} ids are already documented as identical across rescans/episodes (shared/schema.ts:283-292), so cross-episode fixtures work unchanged.
 
 ### Gap 3: Time-coded engagement / audience-retention curves: no integration requests retention. The YouTube Analytics calls fetch only channel totals, demographics and countries — grep confirms zero occurrences of audienceWatchRatio / elapsedVideoTimeRatio / relativeRetentionPerformance anywhere in server code. IG yields only scalar avg/total watch time per media.
+
+> ✅ **CLOSED** (YouTube) — `video_retention_curves` captures per-second retention daily; `/api/admin/measurement/retention` positions each placement on its curve. No other platform exposes retention — a permanent limit, not a backlog item.
 
 **Why it matters:** The core CV-impact question — do viewers drop, linger, or rewind at the seconds where the placed product is on screen — is unanswerable without a per-video retention curve to join against placement timestamps.
 
@@ -1479,11 +1508,15 @@ Each gap below is verified absent from the codebase (not merely undocumented).
 
 ### Gap 4: Per-content viewer demographics: demographics exist only at account level (IG follower_demographics; YouTube channel ageGroup×gender). clip_analytics.demographics_data exists as a column but no code ever writes it; no fetcher requests video-filtered demographics.
 
+> ✅ **CLOSED** (YouTube) — `video_demographics` captures per-video ageGroup × gender. Instagram exposes demographics only at account level (platform limit).
+
 **Why it matters:** Comparing product A vs product B in the same fixture across different videos/periods is confounded if the audiences differed; per-exposure demographics are the covariates the Deloitte design needs.
 
 **What building it takes:** YouTube Analytics supports filters=video==ID on the ageGroup×gender report — extend fetchYoutubeAudience with a per-video variant and write into the already-existing clip_analytics.demographics_data. IG offers engaged_audience_demographics only at account level (platform limit — document as a design constraint, not a build item).
 
 ### Gap 5: Click/conversion attribution: click_through_rate columns (clip_analytics, clip_feedback) are hard-coded 0 or manually self-reported. No UTM generation, no tracked outbound product links, no pixel/postback. The /s/ release page counts page views but has no click-out tracking on anything.
+
+> 🔴 **OPEN — the only fully open gap** — First-party click tracking via the `/s/` redirect is buildable without external dependencies; *conversions* need brand-side pixels or postbacks, which is a partnership decision rather than an engineering one.
 
 **Why it matters:** Placement impact beyond attention (purchase intent, traffic) is the metric brands ultimately pay against; today there is no path from a placement to a click, let alone a conversion.
 
@@ -1491,17 +1524,23 @@ Each gap below is verified absent from the codebase (not merely undocumented).
 
 ### Gap 6: Publish-event tracking for the real distribution path: the honest flow (human-reviewed final render → creator downloads / A1 page → creator posts natively) produces no 'went live on platform X at time T' event. published_posts covers only in-app API publishing; generated_clips.publishClip requires manually pasting a URL; brand_placement_assignments has no post-URL field at all.
 
+> ✅ **CLOSED** — The go-live step on the review lifecycle captures platform + post URL + publish time, with candidates auto-suggested from the creator's connected channel. `placement_renders` adds the delivery half (`delivered_at → downloaded_at → live_at`).
+
 **Why it matters:** Every downstream measurement (retention, per-post metrics, exposure windows) hangs off a platformPostId; if the live post is never registered, the existing PLATFORM_FETCHERS have nothing to poll.
 
 **What building it takes:** Add a 'mark live' step to the existing placement review lifecycle (reviewStatus render_ready → live) capturing postUrl/platform/liveAt on brand_placement_assignments, then feed the resolved platformPostId into collectPostAnalytics — the per-platform fetchers already exist and need only an id.
 
 ### Gap 7: Automated time-series collection: clip_analytics accumulates rows only on manual refresh; the periodic collector (startAnalyticsCollection) is a logging stub and is not even started at boot; YouTube/IG per-video view counts OVERWRITE video_index.view_count with no history; the longitudinal snapshot job covers Meta account-level only (no YouTube snapshots, no per-post snapshots).
 
+> ✅ **CLOSED** (YouTube) — `video_stat_snapshots` appends every 6h and `video_daily_metrics` back-fills a per-day series retroactive to publish date. Twitch/TikTok/X have per-post fetchers with honest unavailability reasons — see the platform coverage matrix above.
+
 **Why it matters:** Causal comparison needs pre/post trajectories and view velocity around placement go-live, not point-in-time totals — a single overwritten counter cannot distinguish a placement-driven lift from baseline growth.
 
 **What building it takes:** Wire collectVideoAnalytics for all published/live posts into a real interval (the analyticsCollector stub and the 1-minute distribution scheduler both already exist as patterns), and extend runSocialInsightSnapshots to append per-video stat rows (fetchYouTubeVideoStats is already batch-50) instead of overwriting video_index.view_count.
 
 ### Gap 8: Cross-episode fixture exposure rollup + control baseline: scene_inventory occurrences/screenTimeSec live per video in jsonb; no table aggregates a fixture's cumulative screen time and audience across episodes, and no metric captures audience response for the same scene when NO product was placed (control condition).
+
+> 🟡 **MOSTLY CLOSED** — `fixture_exposure` materializes per-fixture supply (scan-versioned, so dose-as-of-a-past-window is reconstructible) and control periods are explicit rows. Remaining: control-period *outcomes* depend on continued per-day collection accumulating history.
 
 **Why it matters:** The fixture is the experimental unit; its denominator (total exposed screen-time × views across all content) and its no-treatment baseline are what every effect estimate divides by.
 
