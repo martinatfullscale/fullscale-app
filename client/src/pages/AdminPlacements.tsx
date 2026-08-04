@@ -13,7 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { TopBar } from "@/components/TopBar";
-import { Loader2, ClipboardCheck, Clock, Eye, CheckCircle2, AlertTriangle } from "lucide-react";
+import { Loader2, ClipboardCheck, Clock, Eye, CheckCircle2, AlertTriangle, Upload } from "lucide-react";
 
 interface ReviewRow {
   id: number;
@@ -40,6 +40,41 @@ export default function AdminPlacements() {
   const queryClient = useQueryClient();
   const [noteFor, setNoteFor] = useState<number | null>(null);
   const [noteText, setNoteText] = useState("");
+  const [deliverFor, setDeliverFor] = useState<number | null>(null);
+  const [deliverAspect, setDeliverAspect] = useState("16:9");
+  const [deliverNote, setDeliverNote] = useState("");
+  const [deliverFile, setDeliverFile] = useState<File | null>(null);
+  const [delivering, setDelivering] = useState(false);
+
+  const deliverRender = async (placementId: number) => {
+    if (!deliverFile) return;
+    setDelivering(true);
+    try {
+      const form = new FormData();
+      form.append("render", deliverFile);
+      form.append("aspectRatio", deliverAspect);
+      if (deliverNote.trim()) form.append("deliveryNote", deliverNote.trim());
+      const res = await fetch(`/api/admin/placements/${placementId}/deliver`, {
+        method: "POST",
+        credentials: "include",
+        body: form,
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body?.error || "Delivery failed");
+      toast({
+        title: `Delivered to the creator`,
+        description: `${deliverAspect} cut is in their Deliveries — they've been notified.`,
+      });
+      setDeliverFor(null);
+      setDeliverFile(null);
+      setDeliverNote("");
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/placements"] });
+    } catch (err: any) {
+      toast({ title: "Delivery failed", description: err?.message, variant: "destructive" });
+    } finally {
+      setDelivering(false);
+    }
+  };
 
   const { data, isLoading, isError } = useQuery<{ placements: ReviewRow[] }>({
     queryKey: ["/api/admin/placements"],
@@ -101,11 +136,11 @@ export default function AdminPlacements() {
               <Eye className="w-3 h-3" /> Start review
             </Button>
           )}
-          {row.reviewStatus !== "render_ready" && row.reviewStatus !== "live" && (
+          {row.reviewStatus !== "live" && (
             <Button size="sm" className="h-7 text-xs gap-1"
-              disabled={reviewMutation.isPending}
-              onClick={() => reviewMutation.mutate({ id: row.id, reviewStatus: "render_ready" })}>
-              <CheckCircle2 className="w-3 h-3" /> Render ready
+              onClick={() => { setDeliverFor(deliverFor === row.id ? null : row.id); setDeliverFile(null); setDeliverNote(""); }}
+              data-testid={`deliver-${row.id}`}>
+              <Upload className="w-3 h-3" /> Deliver render
             </Button>
           )}
           {row.reviewStatus !== "render_ready" && row.reviewStatus !== "live" && (
@@ -116,6 +151,44 @@ export default function AdminPlacements() {
             </Button>
           )}
         </div>
+        {deliverFor === row.id && (
+          <div className="mt-3 p-3 rounded-lg border border-white/10 bg-white/[0.02] space-y-2">
+            <p className="text-xs text-muted-foreground">
+              Upload the finished cut. It lands in the creator's Deliveries and notifies them;
+              re-delivering the same aspect supersedes the previous version.
+            </p>
+            <div className="flex items-center gap-2 flex-wrap">
+              <input
+                type="file"
+                accept="video/mp4,video/quicktime,video/webm"
+                onChange={(e) => setDeliverFile(e.target.files?.[0] ?? null)}
+                className="text-xs"
+                data-testid={`deliver-file-${row.id}`}
+              />
+              <select
+                value={deliverAspect}
+                onChange={(e) => setDeliverAspect(e.target.value)}
+                className="h-8 rounded-md bg-white/5 border border-white/10 text-xs px-2"
+                data-testid={`deliver-aspect-${row.id}`}
+              >
+                <option value="16:9">16:9 — YouTube</option>
+                <option value="9:16">9:16 — Shorts / TikTok / Reels</option>
+                <option value="1:1">1:1 — feed</option>
+              </select>
+            </div>
+            <Textarea
+              value={deliverNote}
+              onChange={(e) => setDeliverNote(e.target.value)}
+              placeholder="Optional note to the creator — e.g. 'moved the product to 0:42, it reads better there'"
+              className="text-xs min-h-[52px]"
+            />
+            <Button size="sm" disabled={delivering || !deliverFile} onClick={() => deliverRender(row.id)}>
+              {delivering ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : null}
+              Deliver to creator
+            </Button>
+          </div>
+        )}
+
         {noteFor === row.id && (
           <div className="mt-2 flex gap-2">
             <Textarea

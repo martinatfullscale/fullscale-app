@@ -1698,6 +1698,62 @@ export const contentComments = pgTable("content_comments", {
   index("idx_content_comments_video").on(table.videoId, table.publishedAt),
 ]);
 
+/**
+ * DELIVERED RENDERS — the finished asset coming back to the creator.
+ *
+ * The creator chooses WHERE a product lives; the FullScale team produces the
+ * final photorealistic render out-of-band. Until now `reviewStatus =
+ * render_ready` was a status flag with no file behind it, so the finished
+ * work had nowhere to land and no way to reach the creator. This is that
+ * repository: one placement can ship several renders — different aspect
+ * ratios for different platforms, and revisions of each.
+ *
+ * The creator downloads from here, publishes natively, and marks it live —
+ * which is what closes the measurement loop.
+ */
+export const placementRenders = pgTable("placement_renders", {
+  id: serial("id").primaryKey(),
+  /** What was rendered. */
+  placementId: integer("placement_id").notNull(),
+  videoId: integer("video_id").notNull(),
+  /** The creator this is FOR — the content owner, not whoever uploaded it. */
+  creatorUserId: varchar("creator_user_id").notNull(),
+  brandProductId: integer("brand_product_id"),
+  surfaceGroupId: varchar("surface_group_id", { length: 64 }),
+  /** Cut variant, so one placement can ship for several destinations.
+   *  e.g. "16:9" (YouTube), "9:16" (Shorts/TikTok/Reels), "1:1". */
+  aspectRatio: varchar("aspect_ratio", { length: 16 }).notNull().default("16:9"),
+  /** Revision number within (placement, aspectRatio) — a re-render after
+   *  creator feedback supersedes rather than overwrites, so the history of
+   *  what was delivered stays intact. */
+  version: integer("version").notNull().default(1),
+  supersededAt: timestamp("superseded_at"),
+  /** The asset. storagePath is the object key; downloads are served through
+   *  an ownership-gated route, never a public URL. */
+  storagePath: text("storage_path").notNull(),
+  fileName: varchar("file_name", { length: 255 }),
+  fileSizeBytes: bigint("file_size_bytes", { mode: "number" }),
+  durationSec: numeric("duration_sec"),
+  thumbnailPath: text("thumbnail_path"),
+  /** A note from the team to the creator — "muted the original audio bed",
+   *  "product reads better at 0:42, moved it". */
+  deliveryNote: text("delivery_note"),
+  /** Who delivered it (a FullScale operator) and when. */
+  deliveredByUserId: varchar("delivered_by_user_id"),
+  deliveredAt: timestamp("delivered_at").defaultNow().notNull(),
+  /** Creator-side state: they downloaded it / they published it. Publishing
+   *  is recorded on placement_exposures; this is just the repository view. */
+  downloadedAt: timestamp("downloaded_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_placement_renders_creator").on(table.creatorUserId, table.deliveredAt),
+  index("idx_placement_renders_placement").on(table.placementId),
+  uniqueIndex("uq_placement_render_variant").on(table.placementId, table.aspectRatio, table.version),
+]);
+
+export type PlacementRender = typeof placementRenders.$inferSelect;
+export type InsertPlacementRender = typeof placementRenders.$inferInsert;
+
 export type CreatorEvent = typeof creatorEvents.$inferSelect;
 export type InsertCreatorEvent = typeof creatorEvents.$inferInsert;
 export type VideoDailyMetric = typeof videoDailyMetrics.$inferSelect;

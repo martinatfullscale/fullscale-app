@@ -60,7 +60,7 @@ export function OnboardingChecklist() {
       key: "place",
       done: progress.hasPlacement,
       title: "Place a product and save it",
-      detail: "Open the scan results, drop a product onto a surface you like, and save. You're choosing WHERE the product lives — our team reviews every placement and produces the final polished render.",
+      detail: "Open the scan results, drop a product onto a surface you like, and save. You're choosing WHERE the product lives — our team reviews it and produces the final polished render, which lands in your Deliveries ready to post.",
       cta: "Try a placement",
       go: () => navigate("/library"),
     },

@@ -1282,6 +1282,29 @@ Per-video `ageGroup × gender` (channel-level demographics can't tell you whethe
 A and product B reached the same people). Same capture cycle, same threshold caveat.
 Instagram exposes demographics only at account level — a platform limit, not a gap.
 
+### `placement_renders` — the delivery repository
+
+The creator chooses WHERE a product lives; the FullScale team produces the final
+photorealistic render out-of-band. This is where that finished work comes back to them.
+One placement can ship several renders — different aspect ratios for different
+destinations, and revisions of each.
+
+| Column | Type | Definition |
+|---|---|---|
+| `placement_id` / `video_id` | integer | What was rendered |
+| `creator_user_id` | varchar | Who it's FOR — the content owner, not the uploader |
+| `aspect_ratio` | varchar(16) | Cut variant: 16:9 (YouTube), 9:16 (Shorts/TikTok/Reels), 1:1 |
+| `version` / `superseded_at` | integer / timestamp | Re-renders supersede rather than overwrite, so delivery history survives |
+| `storage_path` | text | Object key — **outside the public prefix**; served only through the ownership-gated download route |
+| `delivery_note` | text | Note from the team to the creator ("moved the product to 0:42") |
+| `delivered_by_user_id` / `delivered_at` | varchar / timestamp | Which operator delivered it, when |
+| `downloaded_at` | timestamp | Creator-side receipt — null means finished work is sitting unclaimed |
+
+**Why it matters to the study:** delivery is the step between "placement chosen" and
+"audience exposed." `delivered_at → downloaded_at → placement_exposures.live_at` gives the
+fulfilment funnel, and a render delivered but never downloaded is a distinct failure mode
+from one downloaded but never posted.
+
 ### `creator_events` — the behavior log (append-only)
 
 Everything else in the app records creator decisions as **state**: an approval is a

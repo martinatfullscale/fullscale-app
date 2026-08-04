@@ -4332,6 +4332,137 @@ export async function registerRoutes(
     }
   });
 
+  // ── DELIVERY REPOSITORY ─────────────────────────────────────────────
+  // The finished render coming back to the creator. Team uploads against a
+  // placement; the creator sees it in their repository, downloads it,
+  // publishes natively, and marks it live — which closes the loop.
+  app.post(
+    "/api/admin/placements/:id/deliver",
+    uploadMiddleware.single("render"),
+    async (req: any, res) => {
+      try {
+        const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
+        if (!callerEmail || !ADMIN_EMAILS.includes(String(callerEmail).toLowerCase())) {
+          return res.status(403).json({ error: "Admin access required" });
+        }
+        const placementId = parseInt(req.params.id);
+        if (isNaN(placementId)) return res.status(400).json({ error: "Invalid placement ID" });
+        if (!req.file) return res.status(400).json({ error: "No render file uploaded" });
+
+        const placement: any = await storage.getPlacementById(placementId);
+        if (!placement) return res.status(404).json({ error: "Placement not found" });
+
+        const video = await storage.getVideoById(placement.videoId).catch(() => undefined);
+        if (!video) return res.status(404).json({ error: "Video not found" });
+        const creatorUserId = String((video as any).userId);
+
+        const aspectRatio = String(req.body?.aspectRatio ?? "16:9").slice(0, 16);
+        const deliveryNote = req.body?.deliveryNote ? String(req.body.deliveryNote).slice(0, 2000) : null;
+
+        // Renders are NOT public assets — the object key stays out of the
+        // public/ prefix so the /storage/* route can't serve it; downloads
+        // go through the ownership-gated route below.
+        const safeName = `placement-${placementId}-${aspectRatio.replace(/[^0-9a-z]/gi, "")}-${Date.now()}.mp4`;
+        const objectKey = `deliveries/${creatorUserId}/${safeName}`;
+        await uploadFileToStorage(req.file.path, objectKey);
+        try { fs.unlinkSync(req.file.path); } catch { /* temp cleanup */ }
+
+        const render = await storage.deliverPlacementRender({
+          placementId,
+          videoId: placement.videoId,
+          creatorUserId,
+          brandProductId: placement.productId ?? null,
+          surfaceGroupId: null,
+          aspectRatio,
+          storagePath: objectKey,
+          fileName: req.file.originalname?.slice(0, 255) ?? safeName,
+          fileSizeBytes: req.file.size ?? null,
+          deliveryNote,
+          deliveredByUserId: String(req.authUserId ?? callerEmail),
+        } as any);
+
+        // Delivery is what makes render_ready true — before this the status
+        // promised a file that didn't exist.
+        await storage.updatePlacementReview(placementId, { reviewStatus: "render_ready" }).catch(() => {});
+
+        const creatorRow = await storage.getUserById(creatorUserId).catch(() => undefined);
+        if (creatorRow) {
+          storage.createNotification({
+            userId: creatorRow.id,
+            type: "render_delivered",
+            title: "Your final render is ready 🎬",
+            body: `${(video as any).title ?? "Your video"} — the finished cut with the product is in your Deliveries. Download it, post it, then tell us where so we can track how it performs.`,
+            linkPath: "/deliveries",
+            metadata: { placementId, renderId: render.id, aspectRatio },
+          }).catch(() => {});
+        }
+
+        console.log(`[Deliveries] ${callerEmail} delivered render ${render.id} (${aspectRatio} v${render.version}) for placement ${placementId} → creator ${creatorUserId}`);
+        res.json({ ok: true, render });
+      } catch (err: any) {
+        console.error("[Deliveries] Upload error:", err?.message);
+        res.status(500).json({ error: err?.message || "Delivery failed" });
+      }
+    },
+  );
+
+  /** The creator's repository: finished renders ready to publish. */
+  app.get("/api/deliveries", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const renders = await storage.getDeliveredRendersForCreator(req.authUserId);
+      const enriched = await Promise.all(
+        renders.map(async (r: any) => {
+          const video = await storage.getVideoById(r.videoId).catch(() => undefined);
+          const product = r.brandProductId
+            ? await storage.getBrandProduct(r.brandProductId).catch(() => undefined)
+            : undefined;
+          const exposure = await storage.getPlacementExposureForPlacement(r.placementId).catch(() => undefined);
+          return {
+            ...r,
+            videoTitle: (video as any)?.title ?? `Video ${r.videoId}`,
+            videoThumbnailUrl: (video as any)?.thumbnailUrl ?? null,
+            productName: (product as any)?.name ?? null,
+            // Already published? Then the loop is closed for this one.
+            publishedAt: exposure?.liveAt ?? null,
+            postUrl: exposure?.postUrl ?? null,
+          };
+        }),
+      );
+      res.json({ deliveries: enriched });
+    } catch (err: any) {
+      console.error("[Deliveries] List error:", err?.message);
+      res.status(500).json({ error: "Failed to load deliveries" });
+    }
+  });
+
+  /** Ownership-gated download. Renders live outside the public prefix, so
+   *  this is the only way to fetch one. */
+  app.get("/api/deliveries/:id/download", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const renderId = parseInt(req.params.id);
+      if (isNaN(renderId)) return res.status(400).json({ error: "Invalid render ID" });
+      const render = await storage.getPlacementRenderById(renderId);
+      if (!render) return res.status(404).json({ error: "Render not found" });
+
+      const owns = await isSameCreator(String(render.creatorUserId), String(req.authUserId)).catch(() => false);
+      if (!owns && !req.isAdmin) return res.status(404).json({ error: "Render not found" });
+
+      const { getStorageStream } = await import("./lib/objectStorage");
+      const { stream } = getStorageStream(render.storagePath);
+      res.setHeader("Content-Type", "video/mp4");
+      res.setHeader("Content-Disposition", `attachment; filename="${render.fileName || `render-${renderId}.mp4`}"`);
+      stream.on("error", (err: any) => {
+        console.error("[Deliveries] Stream error:", err.message);
+        if (!res.headersSent) res.status(404).json({ error: "Render file not found in storage" });
+      });
+      stream.pipe(res);
+      storage.markRenderDownloaded(renderId).catch(() => {});
+    } catch (err: any) {
+      console.error("[Deliveries] Download error:", err?.message);
+      res.status(500).json({ error: "Download failed" });
+    }
+  });
+
   // URL-paste import: YouTube, Twitch, TikTok, Twitter/X. The paste flow is
   // the v1 ingest for the three new platforms (no OAuth listing exists for
   // them, and public posts need no credentials for yt-dlp). NOTE: a pasted

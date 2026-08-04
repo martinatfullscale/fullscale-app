@@ -108,6 +108,7 @@ import {
   type InsertRoomModel,
   fixtureExposure, fixtureAssignments, placementExposures, videoStatSnapshots,
   videoRetentionCurves, videoDemographics, creatorEvents, videoDailyMetrics, contentComments,
+  placementRenders, type PlacementRender, type InsertPlacementRender,
   type InsertCreatorEvent, type CreatorEvent,
   type InsertVideoDailyMetric, type InsertContentComment, type ContentComment,
   type VideoStatSnapshot, type InsertVideoStatSnapshot,
@@ -213,6 +214,11 @@ export interface IStorage {
   getFixtureTimeline(surfaceGroupId: string): Promise<FixtureAssignment[]>;
   insertVideoStatSnapshot(row: InsertVideoStatSnapshot): Promise<void>;
   getExpiredOpenAssignments(): Promise<Array<{ assignmentId: number | null; userId: string; surfaceGroupId: string; videoId: number }>>;
+  deliverPlacementRender(row: Omit<InsertPlacementRender, "version">): Promise<PlacementRender>;
+  getDeliveredRendersForCreator(creatorUserId: string): Promise<PlacementRender[]>;
+  getPlacementRenderById(id: number): Promise<PlacementRender | undefined>;
+  getRendersForPlacement(placementId: number): Promise<PlacementRender[]>;
+  markRenderDownloaded(id: number): Promise<void>;
   insertCreatorEvent(row: InsertCreatorEvent): Promise<void>;
   getCreatorEvents(creatorUserId: string, sinceDays?: number): Promise<CreatorEvent[]>;
   getCreatorEventCounts(sinceDays?: number): Promise<Array<{ creatorUserId: string; eventType: string; n: number; lastAt: Date | null }>>;
@@ -1888,6 +1894,68 @@ export class DatabaseStorage implements IStorage {
   }
 
   // ── Creator behavior + audience response ────────────────────────────
+
+  // ── Delivered renders (the repository) ──────────────────────────────
+
+  /** Deliver a render. Supersedes any live render of the same
+   *  (placement, aspectRatio) so the creator's repository always shows the
+   *  current cut, while the delivery history stays intact. */
+  async deliverPlacementRender(row: Omit<InsertPlacementRender, "version">): Promise<PlacementRender> {
+    const prior = await db
+      .select()
+      .from(placementRenders)
+      .where(and(
+        eq(placementRenders.placementId, row.placementId),
+        eq(placementRenders.aspectRatio, row.aspectRatio ?? "16:9"),
+      ))
+      .orderBy(desc(placementRenders.version));
+    const nextVersion = (prior[0]?.version ?? 0) + 1;
+    if (prior.length > 0) {
+      await db
+        .update(placementRenders)
+        .set({ supersededAt: new Date() })
+        .where(and(
+          eq(placementRenders.placementId, row.placementId),
+          eq(placementRenders.aspectRatio, row.aspectRatio ?? "16:9"),
+          isNull(placementRenders.supersededAt),
+        ));
+    }
+    const [created] = await db
+      .insert(placementRenders)
+      .values({ ...row, version: nextVersion } as any)
+      .returning();
+    return created;
+  }
+
+  /** A creator's delivery repository — current cuts only, newest first. */
+  async getDeliveredRendersForCreator(creatorUserId: string): Promise<PlacementRender[]> {
+    const ids = await this.identityMatchValues(creatorUserId);
+    return await db
+      .select()
+      .from(placementRenders)
+      .where(and(inArray(placementRenders.creatorUserId, ids), isNull(placementRenders.supersededAt)))
+      .orderBy(desc(placementRenders.deliveredAt));
+  }
+
+  async getPlacementRenderById(id: number): Promise<PlacementRender | undefined> {
+    const [row] = await db.select().from(placementRenders).where(eq(placementRenders.id, id));
+    return row;
+  }
+
+  async getRendersForPlacement(placementId: number): Promise<PlacementRender[]> {
+    return await db
+      .select()
+      .from(placementRenders)
+      .where(eq(placementRenders.placementId, placementId))
+      .orderBy(desc(placementRenders.deliveredAt));
+  }
+
+  async markRenderDownloaded(id: number): Promise<void> {
+    await db
+      .update(placementRenders)
+      .set({ downloadedAt: new Date() })
+      .where(and(eq(placementRenders.id, id), isNull(placementRenders.downloadedAt)));
+  }
 
   async insertCreatorEvent(row: InsertCreatorEvent): Promise<void> {
     await db.insert(creatorEvents).values(row);

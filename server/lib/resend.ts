@@ -655,7 +655,7 @@ export async function sendApprovalEmail(params: {
             <li style="margin-bottom: 10px;"><strong>Bring in a video.</strong> Connect your YouTube channel from the dashboard, or just paste a link into the bar at the top of your Library — YouTube, Twitch, TikTok, and X all work.</li>
             <li style="margin-bottom: 10px;"><strong>Hit Scan.</strong> Our AI watches the whole video, maps every recurring scene, and finds the walls, desks, and tables a brand could actually live on. A long episode takes a few minutes — you can close the tab.</li>
             <li style="margin-bottom: 10px;"><strong>Open the results and try a placement.</strong> Pick a surface you like, drop a product onto it, and save. You're choosing <em>where the product lives</em> — it doesn't need to look perfect, that's our job.</li>
-            <li style="margin-bottom: 10px;"><strong>We take it from there.</strong> A real person on our team reviews every placement and produces the final polished render — nothing ships straight off the tool. You'll see the status on each placement as it moves.</li>
+            <li style="margin-bottom: 10px;"><strong>We take it from there.</strong> A real person on our team reviews every placement and produces the final polished render — nothing ships straight off the tool. When it's done it appears in your <strong>Deliveries</strong>, ready to download and post.</li>
             <li><strong>Approve what brands can see.</strong> Nothing about your content reaches a brand until you approve it — that switch is yours, always.</li>
           </ol>
           <p style="${p}">The same checklist is waiting on your dashboard and ticks itself off as you go, so you don't need to keep this email open.</p>

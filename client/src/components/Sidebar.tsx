@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, FolderOpen, Zap, DollarSign, LogOut, Settings, ArrowLeftRight, Globe, Wand2, Inbox, Library as LibraryIcon, BarChart3, Database, Boxes } from "lucide-react";
+import { LayoutDashboard, FolderOpen, Zap, DollarSign, LogOut, Settings, ArrowLeftRight, Globe, Wand2, Inbox, Library as LibraryIcon, BarChart3, Database, Boxes, PackageOpen, UserCheck, ClipboardCheck, FlaskConical } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
@@ -49,6 +49,16 @@ export function Sidebar() {
   });
   const inboxCount = inboxCountData?.count ?? 0;
 
+  // Undownloaded finished renders — the badge is the nudge that finished
+  // work is waiting, which is what keeps the publish→measure loop moving.
+  const { data: deliveriesData } = useQuery<{ deliveries: Array<{ downloadedAt: string | null; publishedAt: string | null }> }>({
+    queryKey: ["/api/deliveries"],
+    refetchInterval: 120_000,
+  });
+  const deliveryCount = (deliveriesData?.deliveries ?? []).filter(
+    (d) => !d.downloadedAt && !d.publishedAt,
+  ).length;
+
   // View-as options — admins get every user with library content, others
   // get just the libraries they've been granted via LIBRARY_VIEW_GRANTS.
   // Used to render the "Other Libraries" dropdown in the creator sidebar
@@ -65,12 +75,16 @@ export function Sidebar() {
   const links = [
     { href: "/", label: "Dashboard", icon: LayoutDashboard },
     { href: "/library", label: "My Library", icon: FolderOpen },
+    { href: "/deliveries", label: "Deliveries", icon: PackageOpen, badge: deliveryCount },
     { href: "/inbox", label: "Inbox", icon: Inbox, badge: inboxCount },
     { href: "/analytics", label: "Analytics", icon: BarChart3 },
     { href: "/opportunities", label: "Opportunities", icon: Zap },
     { href: "/earnings", label: "Earnings", icon: DollarSign },
     ...(userTypeData?.isAdmin
       ? [
+          { href: "/admin/signups", label: "Signups", icon: UserCheck },
+          { href: "/admin/placements", label: "Review Queue", icon: ClipboardCheck },
+          { href: "/admin/measurement", label: "Measurement", icon: FlaskConical },
           { href: "/admin/creators", label: "Creator Intel", icon: Database },
           { href: "/admin/data-inventory", label: "Data Inventory", icon: Boxes },
         ]
