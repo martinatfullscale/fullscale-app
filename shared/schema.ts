@@ -1751,6 +1751,97 @@ export const placementRenders = pgTable("placement_renders", {
   uniqueIndex("uq_placement_render_variant").on(table.placementId, table.aspectRatio, table.version),
 ]);
 
+/**
+ * ATTRIBUTION LINKS — the only honest way to measure traffic from a placement.
+ *
+ * A product placement is not clickable; it is pixels in a frame. The click,
+ * if there is one, happens on a link the CREATOR posts alongside the video —
+ * in the description, a pinned comment, or their bio. This table mints that
+ * link per placement so a click is attributable to a specific product on a
+ * specific fixture, from a real viewer rather than from a brand reviewing
+ * their own campaign page.
+ */
+export const placementLinks = pgTable("placement_links", {
+  id: serial("id").primaryKey(),
+  placementId: integer("placement_id").notNull(),
+  videoId: integer("video_id").notNull(),
+  creatorUserId: varchar("creator_user_id").notNull(),
+  brandProductId: integer("brand_product_id"),
+  surfaceGroupId: varchar("surface_group_id", { length: 64 }),
+  /** Short public slug: /go/<slug>. */
+  slug: varchar("slug", { length: 32 }).notNull(),
+  /** Where the viewer lands — the brand's product/campaign page. */
+  destinationUrl: text("destination_url").notNull(),
+  /** UTM params appended on redirect so the brand ALSO sees the traffic in
+   *  their own analytics. Two independent records of the same clicks is
+   *  what makes the number credible to a brand. */
+  utmSource: varchar("utm_source", { length: 64 }).default("fullscale"),
+  utmMedium: varchar("utm_medium", { length: 64 }).default("placement"),
+  utmCampaign: varchar("utm_campaign", { length: 128 }),
+  /** Optional shared secret for this brand's conversion postbacks. Null
+   *  until the brand opts in to server-to-server conversion reporting. */
+  conversionSecret: varchar("conversion_secret", { length: 64 }),
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  uniqueIndex("uq_placement_link_slug").on(table.slug),
+  index("idx_placement_link_placement").on(table.placementId),
+]);
+
+/**
+ * Click events on an attribution link.
+ *
+ * PRIVACY BY DESIGN: no IP address, no cookie, no device id, no user agent
+ * string is stored — only a coarse referrer host, a coarse device class,
+ * and a country when the CDN supplies one. That keeps the dataset useful
+ * for aggregate attribution while staying out of personal-data territory,
+ * which matters because this data sits alongside a licensing conversation.
+ */
+export const linkClicks = pgTable("link_clicks", {
+  id: serial("id").primaryKey(),
+  linkId: integer("link_id").notNull(),
+  placementId: integer("placement_id").notNull(),
+  /** Host only ("youtube.com"), never the full referring URL. */
+  referrerHost: varchar("referrer_host", { length: 128 }),
+  deviceClass: varchar("device_class", { length: 16 }), // mobile | desktop | tablet | unknown
+  country: varchar("country", { length: 8 }),
+  clickedAt: timestamp("clicked_at").defaultNow().notNull(),
+}, (table) => [
+  index("idx_link_clicks_link_time").on(table.linkId, table.clickedAt),
+  index("idx_link_clicks_placement").on(table.placementId),
+]);
+
+/**
+ * Conversions reported by the BRAND (server-to-server postback).
+ *
+ * We cannot observe a purchase on someone else's storefront, so this is the
+ * receiving end of a brand integration: when an order completes, the brand
+ * POSTs to /api/conversions/:slug with their shared secret. Built now so
+ * that a brand agreeing to integrate is a configuration step rather than a
+ * project. Zero rows until a brand opts in — and an empty table here means
+ * "no brand is reporting", never "no conversions happened".
+ */
+export const placementConversions = pgTable("placement_conversions", {
+  id: serial("id").primaryKey(),
+  linkId: integer("link_id").notNull(),
+  placementId: integer("placement_id").notNull(),
+  /** Brand's own order/event reference — deduplicates replays. */
+  externalRef: varchar("external_ref", { length: 128 }),
+  eventType: varchar("event_type", { length: 32 }).notNull().default("purchase"), // purchase | signup | add_to_cart | lead
+  valueCents: integer("value_cents"),
+  currency: varchar("currency", { length: 8 }),
+  occurredAt: timestamp("occurred_at").defaultNow().notNull(),
+  receivedAt: timestamp("received_at").defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("uq_conversion_ref").on(table.linkId, table.externalRef),
+  index("idx_conversions_placement").on(table.placementId),
+]);
+
+export type PlacementLink = typeof placementLinks.$inferSelect;
+export type InsertPlacementLink = typeof placementLinks.$inferInsert;
+export type LinkClick = typeof linkClicks.$inferSelect;
+export type PlacementConversion = typeof placementConversions.$inferSelect;
+
 export type PlacementRender = typeof placementRenders.$inferSelect;
 export type InsertPlacementRender = typeof placementRenders.$inferInsert;
 

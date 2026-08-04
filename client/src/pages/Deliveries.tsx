@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { TopBar } from "@/components/TopBar";
-import { Loader2, Download, PackageOpen, CheckCircle2, Radio, ExternalLink } from "lucide-react";
+import { Loader2, Download, PackageOpen, CheckCircle2, Radio, ExternalLink, Link2, Copy } from "lucide-react";
 
 interface Delivery {
   id: number;
@@ -42,6 +42,38 @@ export default function Deliveries() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [downloading, setDownloading] = useState<number | null>(null);
+  const [linkFor, setLinkFor] = useState<number | null>(null);
+  const [destUrl, setDestUrl] = useState("");
+  const [minting, setMinting] = useState(false);
+  const [mintedUrl, setMintedUrl] = useState<Record<number, string>>({});
+
+  // A placement isn't clickable — the only real click signal is a link the
+  // creator posts alongside the video. This is where they get it.
+  const mintLink = async (placementId: number) => {
+    setMinting(true);
+    try {
+      const res = await fetch(`/api/placements/${placementId}/link`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ destinationUrl: destUrl.trim() }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body?.error || "Could not create link");
+      setMintedUrl((m) => ({ ...m, [placementId]: body.url }));
+      setLinkFor(null);
+      setDestUrl("");
+      await navigator.clipboard.writeText(body.url).catch(() => {});
+      toast({
+        title: "Tracking link copied",
+        description: "Paste it in your video description or pinned comment — that's how clicks get credited to this placement.",
+      });
+    } catch (err: any) {
+      toast({ title: "Couldn't create link", description: err?.message, variant: "destructive" });
+    } finally {
+      setMinting(false);
+    }
+  };
 
   const { data, isLoading, isError } = useQuery<{ deliveries: Delivery[] }>({
     queryKey: ["/api/deliveries"],
@@ -135,6 +167,20 @@ export default function Deliveries() {
           {downloading === d.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
           Download
         </Button>
+        <Button size="sm" variant="ghost" className="gap-1.5"
+          onClick={() => {
+            const existing = mintedUrl[d.placementId];
+            if (existing) {
+              navigator.clipboard.writeText(existing).catch(() => {});
+              toast({ title: "Link copied", description: "Paste it in your description or pinned comment." });
+            } else {
+              setLinkFor(linkFor === d.placementId ? null : d.placementId);
+            }
+          }}
+          data-testid={`link-${d.id}`}>
+          {mintedUrl[d.placementId] ? <Copy className="w-3.5 h-3.5" /> : <Link2 className="w-3.5 h-3.5" />}
+          {mintedUrl[d.placementId] ? "Copy link" : "Tracking link"}
+        </Button>
       </div>
     </div>
   );
@@ -173,11 +219,35 @@ export default function Deliveries() {
             {ready.length > 0 && (
               <>
                 <h2 className="font-semibold text-sm mb-3">Ready to publish ({ready.length})</h2>
-                <Card className="border-border/50 mb-10">
+                <Card className="border-border/50 mb-4">
                   <CardContent className="p-0">
                     {ready.map((d) => <Row key={d.id} d={d} />)}
                   </CardContent>
                 </Card>
+                {linkFor != null && (
+                  <Card className="border-primary/25 bg-primary/5 mb-10">
+                    <CardContent className="p-4 space-y-2">
+                      <p className="text-sm font-medium">Create a tracking link</p>
+                      <p className="text-xs text-muted-foreground">
+                        Where should viewers land — the brand's product page? We'll give you a short
+                        link to put in your description or pinned comment, and clicks get credited to
+                        this placement.
+                      </p>
+                      <div className="flex gap-2">
+                        <input
+                          value={destUrl}
+                          onChange={(e) => setDestUrl(e.target.value)}
+                          placeholder="https://brand.com/product"
+                          className="flex-1 h-9 px-3 rounded-md bg-white/5 border border-white/10 text-sm"
+                          data-testid="link-destination"
+                        />
+                        <Button disabled={minting || !destUrl.trim()} onClick={() => mintLink(linkFor)}>
+                          {minting ? <Loader2 className="h-4 w-4 animate-spin" /> : "Create"}
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
               </>
             )}
             {published.length > 0 && (

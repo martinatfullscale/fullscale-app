@@ -109,6 +109,8 @@ import {
   fixtureExposure, fixtureAssignments, placementExposures, videoStatSnapshots,
   videoRetentionCurves, videoDemographics, creatorEvents, videoDailyMetrics, contentComments,
   placementRenders, type PlacementRender, type InsertPlacementRender,
+  placementLinks, linkClicks, placementConversions,
+  type PlacementLink, type InsertPlacementLink, type PlacementConversion,
   type InsertCreatorEvent, type CreatorEvent,
   type InsertVideoDailyMetric, type InsertContentComment, type ContentComment,
   type VideoStatSnapshot, type InsertVideoStatSnapshot,
@@ -214,6 +216,13 @@ export interface IStorage {
   getFixtureTimeline(surfaceGroupId: string): Promise<FixtureAssignment[]>;
   insertVideoStatSnapshot(row: InsertVideoStatSnapshot): Promise<void>;
   getExpiredOpenAssignments(): Promise<Array<{ assignmentId: number | null; userId: string; surfaceGroupId: string; videoId: number }>>;
+  createPlacementLink(row: InsertPlacementLink): Promise<PlacementLink>;
+  getPlacementLinkBySlug(slug: string): Promise<PlacementLink | undefined>;
+  getPlacementLinkForPlacement(placementId: number): Promise<PlacementLink | undefined>;
+  recordLinkClick(row: { linkId: number; placementId: number; referrerHost?: string | null; deviceClass?: string | null; country?: string | null }): Promise<void>;
+  getAttributionTotals(): Promise<Array<{ placementId: number; clicks: number; conversions: number; valueCents: number }>>;
+  recordConversion(row: { linkId: number; placementId: number; externalRef?: string | null; eventType?: string; valueCents?: number | null; currency?: string | null; occurredAt?: Date }): Promise<boolean>;
+  getFixtureTreatmentDays(surfaceGroupId: string): Promise<{ windows: any[]; days: any[] }>;
   deliverPlacementRender(row: Omit<InsertPlacementRender, "version">): Promise<PlacementRender>;
   getDeliveredRendersForCreator(creatorUserId: string): Promise<PlacementRender[]>;
   getPlacementRenderById(id: number): Promise<PlacementRender | undefined>;
@@ -1894,6 +1903,110 @@ export class DatabaseStorage implements IStorage {
   }
 
   // ── Creator behavior + audience response ────────────────────────────
+
+  // ── Attribution links ───────────────────────────────────────────────
+
+  async createPlacementLink(row: InsertPlacementLink): Promise<PlacementLink> {
+    const [created] = await db.insert(placementLinks).values(row).returning();
+    return created;
+  }
+
+  async getPlacementLinkBySlug(slug: string): Promise<PlacementLink | undefined> {
+    const [row] = await db.select().from(placementLinks).where(eq(placementLinks.slug, slug));
+    return row;
+  }
+
+  async getPlacementLinkForPlacement(placementId: number): Promise<PlacementLink | undefined> {
+    const [row] = await db
+      .select()
+      .from(placementLinks)
+      .where(and(eq(placementLinks.placementId, placementId), eq(placementLinks.active, true)))
+      .orderBy(desc(placementLinks.createdAt));
+    return row;
+  }
+
+  async recordLinkClick(row: { linkId: number; placementId: number; referrerHost?: string | null; deviceClass?: string | null; country?: string | null }): Promise<void> {
+    await db.insert(linkClicks).values(row as any);
+  }
+
+  /** Click + conversion totals per placement — the attribution readout. */
+  async getAttributionTotals(): Promise<Array<{ placementId: number; clicks: number; conversions: number; valueCents: number }>> {
+    const clicks = await db
+      .select({ placementId: linkClicks.placementId, n: sql<number>`count(*)::int` })
+      .from(linkClicks)
+      .groupBy(linkClicks.placementId);
+    const convs = await db
+      .select({
+        placementId: placementConversions.placementId,
+        n: sql<number>`count(*)::int`,
+        value: sql<number>`coalesce(sum(${placementConversions.valueCents}), 0)::int`,
+      })
+      .from(placementConversions)
+      .groupBy(placementConversions.placementId);
+    const byId = new Map<number, { placementId: number; clicks: number; conversions: number; valueCents: number }>();
+    for (const c of clicks) byId.set(c.placementId, { placementId: c.placementId, clicks: c.n, conversions: 0, valueCents: 0 });
+    for (const c of convs) {
+      const e = byId.get(c.placementId) ?? { placementId: c.placementId, clicks: 0, conversions: 0, valueCents: 0 };
+      e.conversions = c.n;
+      e.valueCents = c.value;
+      byId.set(c.placementId, e);
+    }
+    return Array.from(byId.values());
+  }
+
+  async recordConversion(row: {
+    linkId: number;
+    placementId: number;
+    externalRef?: string | null;
+    eventType?: string;
+    valueCents?: number | null;
+    currency?: string | null;
+    occurredAt?: Date;
+  }): Promise<boolean> {
+    // onConflictDoNothing on (linkId, externalRef) makes brand retries safe.
+    const out = await db
+      .insert(placementConversions)
+      .values(row as any)
+      .onConflictDoNothing()
+      .returning({ id: placementConversions.id });
+    return out.length > 0;
+  }
+
+  /** Treated vs untreated day-level outcomes for a fixture. The control
+   *  comparison the study needs: daily metrics are retroactive to publish
+   *  date, so untreated periods are often already retrievable. */
+  async getFixtureTreatmentDays(surfaceGroupId: string): Promise<{
+    windows: Array<{ videoId: number; brandProductId: number | null; productName: string | null; startedAt: Date; endedAt: Date | null; isControl: boolean }>;
+    days: Array<{ videoId: number; day: string; views: number | null; likes: number | null; comments: number | null }>;
+  }> {
+    const windows = await db
+      .select({
+        videoId: fixtureAssignments.videoId,
+        brandProductId: fixtureAssignments.brandProductId,
+        productName: fixtureAssignments.productName,
+        startedAt: fixtureAssignments.startedAt,
+        endedAt: fixtureAssignments.endedAt,
+        isControl: fixtureAssignments.isControl,
+      })
+      .from(fixtureAssignments)
+      .where(eq(fixtureAssignments.surfaceGroupId, surfaceGroupId))
+      .orderBy(fixtureAssignments.startedAt);
+    const videoIds = Array.from(new Set(windows.map((w) => w.videoId)));
+    const days = videoIds.length
+      ? await db
+          .select({
+            videoId: videoDailyMetrics.videoId,
+            day: videoDailyMetrics.day,
+            views: videoDailyMetrics.views,
+            likes: videoDailyMetrics.likes,
+            comments: videoDailyMetrics.comments,
+          })
+          .from(videoDailyMetrics)
+          .where(inArray(videoDailyMetrics.videoId, videoIds))
+          .orderBy(videoDailyMetrics.day)
+      : [];
+    return { windows: windows as any, days: days as any };
+  }
 
   // ── Delivered renders (the repository) ──────────────────────────────
 

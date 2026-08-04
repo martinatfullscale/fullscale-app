@@ -5,7 +5,8 @@
 *Changelog — v1.1/1.2 (2026-08-04): added the Phase 1 measurement spine (§4b), retention curves
 and per-video demographics, the creator behavior event log, audience response (comments +
 per-day metrics), the delivery repository, and per-platform outcome coverage. Gap statuses in
-§6 updated in place — five of the original eight are now closed.*
+§6 updated in place — six of the original eight are now closed, one is half closed
+(click attribution built; conversions await brand integration), one remains partly open.*
 
 > Scope: every table in the production PostgreSQL schema (`shared/schema.ts`, `shared/models/*`),
 > classified by provenance, plus the audience-metric inventory (what is collected today, at what
@@ -1287,6 +1288,46 @@ Per-video `ageGroup × gender` (channel-level demographics can't tell you whethe
 A and product B reached the same people). Same capture cycle, same threshold caveat.
 Instagram exposes demographics only at account level — a platform limit, not a gap.
 
+### `placement_links` / `link_clicks` / `placement_conversions` — attribution
+
+**Why the design looks like this:** a product placement is not clickable — it is pixels in a
+frame. The only honest click signal is a link the **creator** posts alongside the video
+(description, pinned comment, bio). Tracking clicks on our own share page would measure
+brand reviewers, not viewers.
+
+`placement_links` mints one short link per placement (`/go/<slug>`) pointing at the brand's
+destination, with UTM params appended on redirect so the **brand sees the same traffic in
+their own analytics** — two independent records of the same clicks is what makes the number
+credible in a commercial conversation.
+
+`link_clicks` is **privacy-by-design**: no IP address, no cookie, no device identifier, no
+user-agent string. Only a referrer *host* ("youtube.com"), a coarse device class, and a
+country when the CDN supplies one. That keeps the dataset useful for aggregate attribution
+while staying out of personal-data territory — which matters directly, since this data sits
+alongside a licensing conversation.
+
+`placement_conversions` is the **receiving end of a brand integration**. We cannot observe a
+purchase on someone else's storefront, so the brand POSTs to `/api/conversions/:slug` with a
+per-link shared secret when an order completes. Deduplicated on (link, external_ref) so
+retries are safe.
+
+> **⚠️ An empty `placement_conversions` means "no brand is reporting", NEVER "no conversions
+> happened".** Conversion coverage is a property of which brands have integrated, not of
+> placement performance. Never compute a conversion rate across placements whose brands
+> haven't enabled reporting.
+
+**Brand integration spec** (share this with a brand's engineers):
+
+```
+POST https://gofullscale.co/api/conversions/<slug>
+Header: x-fullscale-secret: <secret we issue per link>
+Body:   { "externalRef": "order-12345",      // your order id — dedupes retries
+          "eventType": "purchase",           // purchase | signup | add_to_cart | lead
+          "valueCents": 4999,
+          "currency": "USD",
+          "occurredAt": "2026-08-04T18:22:00Z" }
+```
+
 ### `placement_renders` — the delivery repository
 
 The creator chooses WHERE a product lives; the FullScale team produces the final
@@ -1516,7 +1557,7 @@ mostly closed, one is open, and the statuses reflect what shipped between v1.0 a
 
 ### Gap 5: Click/conversion attribution: click_through_rate columns (clip_analytics, clip_feedback) are hard-coded 0 or manually self-reported. No UTM generation, no tracked outbound product links, no pixel/postback. The /s/ release page counts page views but has no click-out tracking on anything.
 
-> 🔴 **OPEN — the only fully open gap** — First-party click tracking via the `/s/` redirect is buildable without external dependencies; *conversions* need brand-side pixels or postbacks, which is a partnership decision rather than an engineering one.
+> 🟡 **HALF CLOSED** — Click attribution is **built**: `placement_links` mints a per-placement tracking link the creator puts in their description, `/go/<slug>` records the click (privacy-safe) and forwards with UTMs. Conversions have a **built receiving endpoint** (`POST /api/conversions/:slug`), but rows only appear once a brand integrates their storefront — that remains a partnership decision, not an engineering task.
 
 **Why it matters:** Placement impact beyond attention (purchase intent, traffic) is the metric brands ultimately pay against; today there is no path from a placement to a click, let alone a conversion.
 
@@ -1540,7 +1581,7 @@ mostly closed, one is open, and the statuses reflect what shipped between v1.0 a
 
 ### Gap 8: Cross-episode fixture exposure rollup + control baseline: scene_inventory occurrences/screenTimeSec live per video in jsonb; no table aggregates a fixture's cumulative screen time and audience across episodes, and no metric captures audience response for the same scene when NO product was placed (control condition).
 
-> 🟡 **MOSTLY CLOSED** — `fixture_exposure` materializes per-fixture supply (scan-versioned, so dose-as-of-a-past-window is reconstructible) and control periods are explicit rows. Remaining: control-period *outcomes* depend on continued per-day collection accumulating history.
+> ✅ **CLOSED (YouTube)** — `fixture_exposure` materializes per-fixture supply (scan-versioned, so dose-as-of-a-past-window is reconstructible), control periods are explicit rows, and `/api/admin/measurement/control-comparison` computes treated vs untreated day-level outcomes per fixture. Because `video_daily_metrics` is retroactive to publish date, untreated periods are frequently retrievable immediately rather than needing weeks of accumulation. Remaining limits: periods before instrumentation can't distinguish "untreated" from "unobserved", and non-YouTube platforms have no daily series.
 
 **Why it matters:** The fixture is the experimental unit; its denominator (total exposed screen-time × views across all content) and its no-treatment baseline are what every effect estimate divides by.
 

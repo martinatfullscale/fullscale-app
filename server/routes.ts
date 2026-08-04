@@ -1263,6 +1263,77 @@ export async function registerRoutes(
     }
   });
 
+  // CONTROL vs TREATED — the counterfactual comparison. Daily metrics are
+  // retroactive to publish date, so untreated periods are frequently
+  // already retrievable rather than needing weeks of accumulation.
+  app.get("/api/admin/measurement/control-comparison", async (req: any, res) => {
+    try {
+      const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
+      if (!callerEmail || !ADMIN_EMAILS.includes(String(callerEmail).toLowerCase())) {
+        return res.status(403).json({ error: "Admin access required" });
+      }
+
+      const assignments = await db.select().from(fixtureAssignmentsTable);
+      const groupIds = Array.from(new Set(assignments.map((a: any) => a.surfaceGroupId)));
+
+      const rows = await Promise.all(
+        groupIds.map(async (gid) => {
+          const { windows, days } = await storage.getFixtureTreatmentDays(gid);
+          if (days.length === 0) {
+            return { surfaceGroupId: gid, comparable: false, reason: "no per-day metrics for this fixture's videos yet (YouTube only today)", treated: null, control: null };
+          }
+
+          // A day is TREATED if it falls inside a non-control window for the
+          // same video; CONTROL if it falls in an explicit control window or
+          // outside every window (observed, untreated).
+          const treatedDays: any[] = [];
+          const controlDays: any[] = [];
+          for (const d of days) {
+            const ts = Date.parse(`${d.day}T12:00:00Z`);
+            const covering = windows.filter((w: any) =>
+              w.videoId === d.videoId &&
+              Date.parse(String(w.startedAt)) <= ts &&
+              (!w.endedAt || Date.parse(String(w.endedAt)) >= ts));
+            const treated = covering.some((w: any) => !w.isControl && w.brandProductId != null);
+            (treated ? treatedDays : controlDays).push(d);
+          }
+
+          const mean = (xs: any[], k: string) =>
+            xs.length ? Math.round(xs.reduce((sum, x) => sum + (Number(x[k]) || 0), 0) / xs.length) : null;
+
+          const treatedViews = mean(treatedDays, "views");
+          const controlViews = mean(controlDays, "views");
+          return {
+            surfaceGroupId: gid,
+            comparable: treatedDays.length > 0 && controlDays.length > 0,
+            reason: treatedDays.length === 0 ? "no treated days observed yet"
+              : controlDays.length === 0 ? "no untreated days observed — fixture has been treated for its whole observed life"
+              : null,
+            treated: { days: treatedDays.length, meanViewsPerDay: treatedViews },
+            control: { days: controlDays.length, meanViewsPerDay: controlViews },
+            // Descriptive only — assignment is NOT random, so this is a
+            // starting point for the analysts, never an effect estimate.
+            rawViewsDelta: treatedViews != null && controlViews != null ? treatedViews - controlViews : null,
+          };
+        }),
+      );
+
+      const comparable = rows.filter((r) => r.comparable);
+      res.json({
+        summary: {
+          fixturesWithWindows: rows.length,
+          comparable: comparable.length,
+          awaitingData: rows.length - comparable.length,
+          caveat: "Descriptive only. Treatment assignment is not random (brand match scores and placement viability select which fixtures get products), so these differences are not causal estimates — they are the input to a properly adjusted model.",
+        },
+        fixtures: rows.slice(0, 200),
+      });
+    } catch (err: any) {
+      console.error("[Measurement] Control comparison error:", err?.message);
+      res.status(500).json({ error: "Failed to build control comparison" });
+    }
+  });
+
   // Which platforms can actually produce outcome metrics right now, and what
   // is missing where they can't. Prevents "no data" from being read as "no
   // audience" — the platforms differ in what they expose, and some of the
@@ -4329,6 +4400,114 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("[Onboarding] Dismiss error:", err?.message);
       res.status(500).json({ error: "Failed to dismiss" });
+    }
+  });
+
+  // ── ATTRIBUTION ─────────────────────────────────────────────────────
+  // A placement isn't clickable — it's pixels in a frame. The only honest
+  // click signal is a link the CREATOR posts alongside the video, tied to
+  // the placement. Conversions can only come from the brand's own systems.
+
+  /** Mint (or fetch) the trackable link for a placement. Creator-facing. */
+  app.post("/api/placements/:id/link", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const placementId = parseInt(req.params.id);
+      if (isNaN(placementId)) return res.status(400).json({ error: "Invalid placement ID" });
+      const auth = await authorizePlacement(placementId, req);
+      if (!auth.ok) return res.status(auth.status).json({ error: "Placement not found" });
+
+      const existing = await storage.getPlacementLinkForPlacement(placementId);
+      if (existing) return res.json({ link: existing, url: `${req.protocol}://${req.get("host")}/go/${existing.slug}` });
+
+      const { destinationUrl } = req.body || {};
+      if (!destinationUrl || typeof destinationUrl !== "string" || !/^https?:\/\//i.test(destinationUrl)) {
+        return res.status(400).json({ error: "A destination URL (the brand's product page) is required" });
+      }
+
+      const placement: any = await storage.getPlacementById(placementId);
+      if (!placement) return res.status(404).json({ error: "Placement not found" });
+      const video = await storage.getVideoById(placement.videoId).catch(() => undefined);
+
+      // Short, unambiguous slug — no lookalike characters.
+      const alphabet = "abcdefghjkmnpqrstuvwxyz23456789";
+      const slug = Array.from({ length: 8 }, () => alphabet[Math.floor(Math.random() * alphabet.length)]).join("");
+
+      const link = await storage.createPlacementLink({
+        placementId,
+        videoId: placement.videoId,
+        creatorUserId: String((video as any)?.userId ?? req.authUserId),
+        brandProductId: placement.productId ?? null,
+        slug,
+        destinationUrl,
+        utmCampaign: `placement-${placementId}`,
+      } as any);
+      res.json({ link, url: `${req.protocol}://${req.get("host")}/go/${slug}` });
+    } catch (err: any) {
+      console.error("[Attribution] Link creation error:", err?.message);
+      res.status(500).json({ error: "Could not create link" });
+    }
+  });
+
+  /** PUBLIC redirect. Records the click, then sends the viewer on with UTMs
+   *  attached so the brand sees the same traffic in their own analytics —
+   *  two independent records is what makes the number credible to them.
+   *  Privacy: no IP, no cookie, no user-agent string is stored. */
+  app.get("/go/:slug", async (req: any, res) => {
+    try {
+      const link = await storage.getPlacementLinkBySlug(String(req.params.slug));
+      if (!link || !link.active) return res.redirect(302, "/");
+
+      // Coarse, non-identifying signals only.
+      let referrerHost: string | null = null;
+      try {
+        const ref = req.get("referer");
+        if (ref) referrerHost = new URL(ref).hostname.slice(0, 128);
+      } catch { /* malformed referer — ignore */ }
+      const ua = String(req.get("user-agent") ?? "");
+      const deviceClass = /iPad|Tablet/i.test(ua) ? "tablet" : /Mobi|Android|iPhone/i.test(ua) ? "mobile" : ua ? "desktop" : "unknown";
+      const country = (req.get("cf-ipcountry") || req.get("x-vercel-ip-country") || null)?.slice(0, 8) ?? null;
+
+      storage.recordLinkClick({ linkId: link.id, placementId: link.placementId, referrerHost, deviceClass, country }).catch(() => {});
+
+      const dest = new URL(link.destinationUrl);
+      if (link.utmSource) dest.searchParams.set("utm_source", link.utmSource);
+      if (link.utmMedium) dest.searchParams.set("utm_medium", link.utmMedium);
+      if (link.utmCampaign) dest.searchParams.set("utm_campaign", link.utmCampaign);
+      res.redirect(302, dest.toString());
+    } catch (err: any) {
+      console.error("[Attribution] Redirect error:", err?.message);
+      res.redirect(302, "/");
+    }
+  });
+
+  /** Brand-side conversion postback. The brand POSTs when an order
+   *  completes; we cannot observe purchases on their storefront. Built now
+   *  so a brand agreeing to integrate is configuration, not a project. */
+  app.post("/api/conversions/:slug", async (req: any, res) => {
+    try {
+      const link = await storage.getPlacementLinkBySlug(String(req.params.slug));
+      if (!link) return res.status(404).json({ error: "Unknown link" });
+      if (!link.conversionSecret) {
+        return res.status(403).json({ error: "Conversion reporting is not enabled for this link" });
+      }
+      const presented = req.get("x-fullscale-secret") || req.body?.secret;
+      if (presented !== link.conversionSecret) return res.status(403).json({ error: "Invalid secret" });
+
+      const { externalRef, eventType, valueCents, currency, occurredAt } = req.body || {};
+      const created = await storage.recordConversion({
+        linkId: link.id,
+        placementId: link.placementId,
+        externalRef: externalRef ? String(externalRef).slice(0, 128) : null,
+        eventType: ["purchase", "signup", "add_to_cart", "lead"].includes(eventType) ? eventType : "purchase",
+        valueCents: Number.isFinite(Number(valueCents)) ? Math.round(Number(valueCents)) : null,
+        currency: currency ? String(currency).slice(0, 8) : null,
+        occurredAt: occurredAt && !isNaN(Date.parse(String(occurredAt))) ? new Date(String(occurredAt)) : new Date(),
+      });
+      // Idempotent: a replayed postback is a success, not a duplicate row.
+      res.json({ ok: true, recorded: created, duplicate: !created });
+    } catch (err: any) {
+      console.error("[Attribution] Conversion error:", err?.message);
+      res.status(500).json({ error: "Could not record conversion" });
     }
   });
 
