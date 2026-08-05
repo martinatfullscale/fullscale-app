@@ -45,7 +45,7 @@ export type MetricsResult =
 
 let twitchAppToken: { token: string; expiresAt: number } | null = null;
 
-async function getTwitchAppToken(): Promise<string | null> {
+export async function getTwitchAppToken(): Promise<string | null> {
   const id = process.env.TWITCH_CLIENT_ID;
   const secret = process.env.TWITCH_CLIENT_SECRET;
   if (!id || !secret) return null;

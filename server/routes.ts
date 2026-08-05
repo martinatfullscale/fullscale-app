@@ -1398,6 +1398,23 @@ export async function registerRoutes(
     }
   });
 
+  // The pilot readout: what each platform CAN measure, what we actually
+  // HAVE, and which analyses those two facts jointly permit. Built to be
+  // handed to an external data team without a verbal caveat track.
+  app.get("/api/admin/measurement/cross-platform", async (req: any, res) => {
+    try {
+      const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
+      if (!callerEmail || !ADMIN_EMAILS.includes(String(callerEmail).toLowerCase())) {
+        return res.status(403).json({ error: "Admin access required" });
+      }
+      const { buildCrossPlatformReadout } = await import("./lib/crossPlatformAnalysis");
+      res.json(await buildCrossPlatformReadout());
+    } catch (err: any) {
+      console.error("[Measurement] Cross-platform readout error:", err?.message);
+      res.status(500).json({ error: "Failed to build cross-platform readout" });
+    }
+  });
+
   // Per-fixture crossover timeline: every treatment and control period with
   // the dose that applied DURING that window (not today's numbers) and the
   // audience trajectory over it. This is the row-level view the study models.

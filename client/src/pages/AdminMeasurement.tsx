@@ -11,7 +11,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { TopBar } from "@/components/TopBar";
-import { Loader2, FlaskConical, Layers, Radio, Clock, Activity, Users, MessageSquare } from "lucide-react";
+import { Loader2, FlaskConical, Layers, Radio, Clock, Activity, Users, MessageSquare, Globe2 } from "lucide-react";
 
 interface FixtureRow {
   surfaceGroupId: string;
@@ -47,6 +47,39 @@ interface Readout {
   };
   fixtures: FixtureRow[];
 }
+
+interface CrossPlatform {
+  generatedAt: string;
+  headline: string[];
+  design: Record<string, number>;
+  platforms: Array<{
+    platform: string;
+    label: string;
+    role: string;
+    account: { supported: boolean; snapshots: number; accounts: number; daysOfHistory: number; lastCapture: string | null };
+    content: {
+      supported: boolean; posts: number; snapshots: number; daysOfHistory: number;
+      retentionCurves: number; demographics: number; dailyMetricRows: number; comments: number;
+    };
+    strengths: string[];
+    limits: string[];
+  }>;
+  analyses: Array<{
+    id: string;
+    question: string;
+    design: string;
+    platforms: string[];
+    status: "ready" | "accumulating" | "blocked";
+    evidence: string;
+    blocking: string[];
+  }>;
+}
+
+const STATUS_STYLE: Record<string, string> = {
+  ready: "text-emerald-400 border-emerald-500/30",
+  accumulating: "text-amber-400 border-amber-500/30",
+  blocked: "text-muted-foreground border-white/15",
+};
 
 const fmtDuration = (sec: number) => {
   if (sec < 60) return `${Math.round(sec)}s`;
@@ -111,6 +144,19 @@ export default function AdminMeasurement() {
     queryFn: async () => {
       const res = await fetch("/api/admin/measurement/audience-response", { credentials: "include" });
       if (!res.ok) throw new Error("audience response unavailable");
+      return res.json();
+    },
+    retry: 1,
+  });
+
+  // The pilot readout: capability × corpus, per platform, and the analyses
+  // those two facts jointly permit. Deliberately leads the page — it's the
+  // answer to "what can you actually prove", which every other panel details.
+  const { data: cross } = useQuery<CrossPlatform>({
+    queryKey: ["/api/admin/measurement/cross-platform"],
+    queryFn: async () => {
+      const res = await fetch("/api/admin/measurement/cross-platform", { credentials: "include" });
+      if (!res.ok) throw new Error("cross-platform readout unavailable");
       return res.json();
     },
     retry: 1,
@@ -183,6 +229,125 @@ export default function AdminMeasurement() {
                   </p>
                 </CardContent>
               </Card>
+            )}
+
+            {cross && (
+              <section className="mb-10" data-testid="cross-platform-readout">
+                <div className="flex items-center gap-2 mb-1">
+                  <Globe2 className="w-4 h-4 text-primary" />
+                  <h2 className="font-semibold text-sm">Cross-platform analytical position</h2>
+                </div>
+                <p className="text-[11px] text-muted-foreground mb-4 max-w-2xl">
+                  What each platform <em>can</em> measure, what we <em>have</em>, and which analyses
+                  those two facts jointly permit. Limits are stated because a reviewer who finds one
+                  we didn't state discounts everything else.
+                </p>
+
+                <Card className="border-primary/20 bg-primary/5 mb-5">
+                  <CardContent className="p-4 space-y-2.5">
+                    {cross.headline.map((h, i) => (
+                      <p key={i} className="text-xs leading-relaxed">{h}</p>
+                    ))}
+                  </CardContent>
+                </Card>
+
+                {/* The 2x2 that used to be half-empty: account and content
+                    history, per platform. */}
+                <div className="grid md:grid-cols-2 gap-3 mb-5">
+                  {cross.platforms.map((p) => {
+                    const dark = !p.account.supported && !p.content.supported;
+                    return (
+                      <Card key={p.platform} className={`border-border/50 ${dark ? "opacity-60" : ""}`}>
+                        <CardContent className="p-4">
+                          <div className="flex items-center justify-between gap-2 mb-0.5">
+                            <p className="text-sm font-medium">{p.label}</p>
+                            <span className="text-[10px] text-muted-foreground">{p.role}</span>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-2 my-3">
+                            <div className="rounded border border-white/10 p-2">
+                              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Account</p>
+                              <p className="text-sm font-semibold tabular-nums">
+                                {p.account.snapshots.toLocaleString()}
+                                <span className="text-[10px] font-normal text-muted-foreground"> snapshots</span>
+                              </p>
+                              <p className="text-[10px] text-muted-foreground">
+                                {p.account.accounts} account{p.account.accounts === 1 ? "" : "s"} · {p.account.daysOfHistory}d history
+                              </p>
+                            </div>
+                            <div className="rounded border border-white/10 p-2">
+                              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Content</p>
+                              <p className="text-sm font-semibold tabular-nums">
+                                {p.content.snapshots.toLocaleString()}
+                                <span className="text-[10px] font-normal text-muted-foreground"> snapshots</span>
+                              </p>
+                              <p className="text-[10px] text-muted-foreground">
+                                {p.content.posts} post{p.content.posts === 1 ? "" : "s"} · {p.content.daysOfHistory}d history
+                              </p>
+                            </div>
+                          </div>
+
+                          {(p.content.retentionCurves > 0 || p.content.demographics > 0 || p.content.comments > 0 || p.content.dailyMetricRows > 0) && (
+                            <div className="flex flex-wrap gap-1.5 mb-3">
+                              {p.content.retentionCurves > 0 && <Badge variant="outline" className="text-[10px]">{p.content.retentionCurves} retention curve{p.content.retentionCurves === 1 ? "" : "s"}</Badge>}
+                              {p.content.demographics > 0 && <Badge variant="outline" className="text-[10px]">{p.content.demographics} demographics</Badge>}
+                              {p.content.dailyMetricRows > 0 && <Badge variant="outline" className="text-[10px]">{p.content.dailyMetricRows.toLocaleString()} day-rows</Badge>}
+                              {p.content.comments > 0 && <Badge variant="outline" className="text-[10px]">{p.content.comments.toLocaleString()} comments</Badge>}
+                            </div>
+                          )}
+
+                          {p.strengths.length > 0 && (
+                            <ul className="space-y-1 mb-2">
+                              {p.strengths.map((t, i) => (
+                                <li key={i} className="text-[11px] text-muted-foreground leading-snug pl-3 relative">
+                                  <span className="absolute left-0 text-emerald-400">+</span>{t}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                          <ul className="space-y-1">
+                            {p.limits.map((t, i) => (
+                              <li key={i} className="text-[11px] text-muted-foreground leading-snug pl-3 relative">
+                                <span className="absolute left-0 text-amber-400">−</span>{t}
+                              </li>
+                            ))}
+                          </ul>
+                        </CardContent>
+                      </Card>
+                    );
+                  })}
+                </div>
+
+                <h3 className="font-semibold text-xs mb-2 text-muted-foreground uppercase tracking-wider">
+                  Analyses this corpus supports
+                </h3>
+                <Card className="border-border/50">
+                  <CardContent className="p-0">
+                    {cross.analyses.map((a) => (
+                      <div key={a.id} className="p-4 border-b border-white/5 last:border-b-0" data-testid={`analysis-${a.id}`}>
+                        <div className="flex items-start justify-between gap-3 mb-1">
+                          <p className="text-sm font-medium">{a.question}</p>
+                          <Badge variant="outline" className={`text-[10px] shrink-0 ${STATUS_STYLE[a.status]}`}>
+                            {a.status}
+                          </Badge>
+                        </div>
+                        <p className="text-[11px] text-muted-foreground leading-snug mb-2">{a.design}</p>
+                        <p className="text-[11px] tabular-nums mb-1.5">{a.evidence}</p>
+                        <div className="flex flex-wrap gap-1 mb-1.5">
+                          {a.platforms.map((pl) => (
+                            <Badge key={pl} variant="outline" className="text-[10px] capitalize">{pl}</Badge>
+                          ))}
+                        </div>
+                        {a.blocking.map((b, i) => (
+                          <p key={i} className="text-[11px] text-amber-400/90 leading-snug pl-3 relative">
+                            <span className="absolute left-0">→</span>{b}
+                          </p>
+                        ))}
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
+              </section>
             )}
 
             {retention && retention.summary.exposures > 0 && (

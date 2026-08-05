@@ -103,6 +103,8 @@ import {
   type InsertDataDeletionRequest,
   socialInsightSnapshots,
   type InsertSocialInsightSnapshot,
+  socialPostSnapshots,
+  type InsertSocialPostSnapshot,
   roomModels,
   type RoomModel,
   type InsertRoomModel,
@@ -628,6 +630,7 @@ export class DatabaseStorage implements IStorage {
       ));
     for (const r of rows) {
       await db.delete(socialInsightSnapshots).where(eq(socialInsightSnapshots.socialAccountId, r.id));
+      await db.delete(socialPostSnapshots).where(eq(socialPostSnapshots.socialAccountId, r.id));
     }
     await db.delete(socialAccounts).where(and(
       eq(socialAccounts.userId, userId),
@@ -659,6 +662,64 @@ export class DatabaseStorage implements IStorage {
       .where(eq(socialInsightSnapshots.socialAccountId, socialAccountId))
       .orderBy(desc(socialInsightSnapshots.capturedAt))
       .limit(limit);
+  }
+
+  /** Channel-level history for a platform account that has no social_accounts
+   *  row — YouTube channels and Twitch broadcasters key on platformAccountId. */
+  async getSocialInsightSnapshotsForPlatformAccount(
+    platform: string,
+    platformAccountId: string,
+    limit: number = 60,
+  ): Promise<any[]> {
+    return await db
+      .select()
+      .from(socialInsightSnapshots)
+      .where(and(
+        eq(socialInsightSnapshots.platform, platform),
+        eq(socialInsightSnapshots.platformAccountId, platformAccountId),
+      ))
+      .orderBy(desc(socialInsightSnapshots.capturedAt))
+      .limit(limit);
+  }
+
+  async insertSocialPostSnapshot(row: InsertSocialPostSnapshot): Promise<void> {
+    await db.insert(socialPostSnapshots).values(row);
+  }
+
+  /** One post's series, oldest first — deltas only make sense in order. */
+  async getSocialPostSnapshots(platformPostId: string, limit: number = 120): Promise<any[]> {
+    return await db
+      .select()
+      .from(socialPostSnapshots)
+      .where(eq(socialPostSnapshots.platformPostId, platformPostId))
+      .orderBy(socialPostSnapshots.capturedAt)
+      .limit(limit);
+  }
+
+  /**
+   * Distinct Twitch content per user, for channel-snapshot broadcaster
+   * resolution. Returns stored ids (`twitch:videos/123`), capped per user so
+   * one creator with a 400-VOD back-catalogue can't consume the Helix budget.
+   */
+  async getTwitchContentSamples(perUserCap: number = 5): Promise<Array<{ userId: string; storedId: string }>> {
+    const rows = await db
+      .select({ userId: videoIndex.userId, storedId: videoIndex.youtubeId })
+      .from(videoIndex)
+      .where(and(
+        eq(videoIndex.platform, "twitch"),
+        sql`${videoIndex.deletedAt} IS NULL`,
+      ))
+      .orderBy(desc(videoIndex.id))
+      .limit(500);
+    const seen = new Map<string, number>();
+    const out: Array<{ userId: string; storedId: string }> = [];
+    for (const r of rows) {
+      const n = seen.get(r.userId) ?? 0;
+      if (n >= perUserCap) continue;
+      seen.set(r.userId, n + 1);
+      out.push({ userId: r.userId, storedId: String(r.storedId) });
+    }
+    return out;
   }
 
   // ── Meta data deletion (App Review compliance) ──
@@ -705,6 +766,12 @@ export class DatabaseStorage implements IStorage {
         .where(eq(socialInsightSnapshots.socialAccountId, acct.id))
         .returning({ id: socialInsightSnapshots.id });
       deleted["social_insight_snapshots"] = (deleted["social_insight_snapshots"] || 0) + (snaps?.length || 0);
+      // Per-post history is Meta data too — a deletion request that left it
+      // behind would be a false confirmation to Meta and to the user.
+      const postSnaps: any = await db.delete(socialPostSnapshots)
+        .where(eq(socialPostSnapshots.socialAccountId, acct.id))
+        .returning({ id: socialPostSnapshots.id });
+      deleted["social_post_snapshots"] = (deleted["social_post_snapshots"] || 0) + (postSnaps?.length || 0);
       await db.delete(socialAccounts).where(eq(socialAccounts.id, acct.id));
       deleted["social_accounts"] = (deleted["social_accounts"] || 0) + 1;
     }

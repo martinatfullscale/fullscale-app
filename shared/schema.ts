@@ -631,12 +631,18 @@ export type InsertDataDeletionRequest = z.infer<typeof insertDataDeletionRequest
 
 // Meta retains account-level IG insights only ~90 days (stories 24h) — this
 // table is FullScale's own longitudinal record, appended by the snapshot job.
+//
+// Now ALL-PLATFORM. YouTube and Twitch expose channel stats that are current
+// values with no history behind them, and the app used to overwrite its copy
+// on every refresh — so "how did this channel grow around the campaign" was
+// answerable for Meta and unanswerable for YouTube. Same table, same 12h
+// cadence, so the analysis layer never branches on platform to get a series.
 export const socialInsightSnapshots = pgTable("social_insight_snapshots", {
   id: serial("id").primaryKey(),
-  socialAccountId: uuid("social_account_id"),                      // FK to social_accounts.id (nullable: account may be deleted later)
+  socialAccountId: uuid("social_account_id"),                      // FK to social_accounts.id (nullable: YouTube/Twitch have no social_accounts row)
   userId: varchar("user_id").notNull(),
-  platform: varchar("platform", { length: 20 }).notNull(),         // 'instagram' | 'facebook'
-  platformAccountId: varchar("platform_account_id").notNull(),
+  platform: varchar("platform", { length: 20 }).notNull(),         // 'instagram' | 'facebook' | 'youtube' | 'twitch'
+  platformAccountId: varchar("platform_account_id").notNull(),     // IG business id | FB page id | YT channel id | Twitch broadcaster id
   followers: integer("followers"),
   metrics: jsonb("metrics"),                                       // account-level insight values for the window
   demographics: jsonb("demographics"),                             // follower/engaged-audience breakdowns
@@ -650,6 +656,63 @@ export const socialInsightSnapshots = pgTable("social_insight_snapshots", {
 export type SocialInsightSnapshot = typeof socialInsightSnapshots.$inferSelect;
 export const insertSocialInsightSnapshotSchema = createInsertSchema(socialInsightSnapshots).omit({ id: true, capturedAt: true });
 export type InsertSocialInsightSnapshot = z.infer<typeof insertSocialInsightSnapshotSchema>;
+
+/**
+ * PER-POST history for platform-native content — the mirror of
+ * video_stat_snapshots for posts that do not live in our library.
+ *
+ * The gap this closes is the exact inverse of the one above. For Meta we had
+ * account history but read per-media insights ON DEMAND and threw them away,
+ * so a Reel's trajectory was only ever "as of the moment someone opened the
+ * analytics page". For YouTube the reverse was true. Neither half of a
+ * pilot readout works without both.
+ *
+ * Grain: ONE ROW PER (post, capture). Deltas are the analysis unit —
+ * views_at_t2 − views_at_t1 — because every counter here is a lifetime
+ * cumulative total, not a per-window value.
+ *
+ * Separate from video_stat_snapshots on purpose: that table's video_id is a
+ * NOT NULL FK into video_index, and an Instagram Reel we never ingested has
+ * no row there. Inventing placeholder library rows to satisfy a foreign key
+ * would corrupt every count that reads video_index.
+ */
+export const socialPostSnapshots = pgTable("social_post_snapshots", {
+  id: serial("id").primaryKey(),
+  socialAccountId: uuid("social_account_id"),                      // FK to social_accounts.id (nullable: account may be disconnected later)
+  userId: varchar("user_id").notNull(),
+  platform: varchar("platform", { length: 20 }).notNull(),         // 'instagram' | 'facebook'
+  platformAccountId: varchar("platform_account_id").notNull(),
+  /** Platform-native post id (IG media id, FB post id). */
+  platformPostId: varchar("platform_post_id", { length: 128 }).notNull(),
+  mediaType: varchar("media_type", { length: 32 }),                // IMAGE | VIDEO | REELS | CAROUSEL_ALBUM | STATUS …
+  permalink: text("permalink"),
+  /** The post's own publish time — fixed, unlike captured_at. Needed to age
+   *  a post so a 3-day-old Reel isn't compared against a 3-month-old one. */
+  postedAt: timestamp("posted_at"),
+  /** Lifetime cumulative counters as of capture. Null = the platform did not
+   *  return it (missing scope / unsupported for this media type), which is
+   *  NOT the same as zero and must not be modeled as zero. */
+  views: bigint("views", { mode: "number" }),
+  reach: bigint("reach", { mode: "number" }),
+  likeCount: integer("like_count"),
+  commentCount: integer("comment_count"),
+  savedCount: integer("saved_count"),
+  shareCount: integer("share_count"),
+  totalInteractions: integer("total_interactions"),
+  /** Reels only — the closest Meta analogue to a YouTube retention curve.
+   *  Meta gives two scalars, not a curve, so per-second placement alignment
+   *  is impossible on Meta by design of their API, not by our omission. */
+  avgWatchTimeMs: integer("avg_watch_time_ms"),
+  totalWatchTimeMs: bigint("total_watch_time_ms", { mode: "number" }),
+  raw: jsonb("raw"),
+  capturedAt: timestamp("captured_at").defaultNow().notNull(),
+}, (table) => [
+  index("idx_social_post_snap_post_time").on(table.platformPostId, table.capturedAt),
+  index("idx_social_post_snap_user_time").on(table.userId, table.capturedAt),
+  index("idx_social_post_snap_acct_time").on(table.socialAccountId, table.capturedAt),
+]);
+export type SocialPostSnapshot = typeof socialPostSnapshots.$inferSelect;
+export type InsertSocialPostSnapshot = typeof socialPostSnapshots.$inferInsert;
 
 export const insertSharedLinkSchema = createInsertSchema(sharedLinks).omit({
   id: true,

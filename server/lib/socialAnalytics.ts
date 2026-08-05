@@ -347,6 +347,93 @@ export async function fetchFacebookPageAnalytics(
   }
 }
 
+export interface FacebookPostInsight {
+  postId: string;
+  permalink: string | null;
+  message: string | null;
+  createdTime: string | null;
+  /** Null means the platform did not return it (missing scope / unsupported
+   *  for this post type). Zero would be a claim we can't make. */
+  impressions: number | null;
+  reach: number | null;
+  videoViews: number | null;
+  reactions: number | null;
+  comments: number | null;
+  shares: number | null;
+}
+
+// Post-level survivors of the same deprecation wave that killed the
+// page_fans*/page_impressions* families. Requested individually rather than
+// combined because ONE unsupported metric errors the whole call, and post
+// types differ (a photo post has no post_video_views).
+const FB_POST_METRICS = ["post_impressions", "post_impressions_unique", "post_video_views"];
+
+/**
+ * Recent Page posts with their per-post insights.
+ *
+ * The mirror of fetchInstagramAnalytics's recentMedia: content-level Meta
+ * numbers, which the snapshot job appends so a post has a trajectory rather
+ * than only a current value. Reactions/comments/shares come from the edge
+ * summaries (pages_read_engagement); impressions/reach need read_insights
+ * and fail soft to null.
+ */
+export async function fetchFacebookPagePosts(
+  pageId: string,
+  pageAccessToken: string,
+  limit: number = 10,
+): Promise<FacebookPostInsight[]> {
+  try {
+    const fields = [
+      "id", "permalink_url", "message", "created_time", "shares",
+      "reactions.summary(true).limit(0)",
+      "comments.summary(true).limit(0)",
+    ].join(",");
+    const res = await fetch(
+      `${GRAPH_BASE}/${pageId}/posts?fields=${encodeURIComponent(fields)}&limit=${limit}&access_token=${encodeURIComponent(pageAccessToken)}`,
+    );
+    if (!res.ok) {
+      console.warn(`[SocialAnalytics] FB page posts fetch failed: ${res.status}`);
+      return [];
+    }
+    const data: any = await res.json();
+    const out: FacebookPostInsight[] = [];
+
+    for (const p of (data.data ?? []).slice(0, limit)) {
+      const vals: Record<string, number | null> = {};
+      for (const name of FB_POST_METRICS) {
+        try {
+          const iRes = await fetch(
+            `${GRAPH_BASE}/${p.id}/insights?metric=${name}&access_token=${encodeURIComponent(pageAccessToken)}`,
+          );
+          if (!iRes.ok) { vals[name] = null; continue; }
+          const iData: any = await iRes.json();
+          const m = iData.data?.[0];
+          const latest = m?.values?.[m.values.length - 1]?.value;
+          vals[name] = typeof latest === "number" ? latest : null;
+        } catch {
+          vals[name] = null;
+        }
+      }
+      out.push({
+        postId: p.id,
+        permalink: p.permalink_url ?? null,
+        message: p.message ?? null,
+        createdTime: p.created_time ?? null,
+        impressions: vals["post_impressions"] ?? null,
+        reach: vals["post_impressions_unique"] ?? null,
+        videoViews: vals["post_video_views"] ?? null,
+        reactions: typeof p.reactions?.summary?.total_count === "number" ? p.reactions.summary.total_count : null,
+        comments: typeof p.comments?.summary?.total_count === "number" ? p.comments.summary.total_count : null,
+        shares: typeof p.shares?.count === "number" ? p.shares.count : null,
+      });
+    }
+    return out;
+  } catch (err: any) {
+    console.error("[SocialAnalytics] fetchFacebookPagePosts error:", err.message);
+    return [];
+  }
+}
+
 // ── YouTube ───────────────────────────────────────────────────────────────
 
 export interface YouTubeVideoStats {
