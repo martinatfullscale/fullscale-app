@@ -1,18 +1,17 @@
 # FullScale Data Dictionary
 
-**Version 1.2 · 2026-08-04 · prepared for the FullScale × Deloitte data workstream**
+**Version 2.0 · 2026-08-04 · prepared for the FullScale × Deloitte data workstream**
 
 *Changelog — v1.1/1.2 (2026-08-04): added the Phase 1 measurement spine (§4b), retention curves
 and per-video demographics, the creator behavior event log, audience response (comments +
-per-day metrics), the delivery repository, and per-platform outcome coverage. Gap statuses in
-§6 updated in place — six of the original eight are now closed, one is half closed
-(click attribution built; conversions await brand integration), one remains partly open.*
+per-day metrics), attribution links, the delivery repository, and per-platform outcome
+coverage.*
 
 > Scope: every table in the production PostgreSQL schema (`shared/schema.ts`, `shared/models/*`),
 > classified by provenance, plus the audience-metric inventory (what is collected today, at what
-> cadence) and the instrumentation gaps between today's data and the research goal. Everything in
+> cadence). Everything in
 > this document is generated from the live codebase — it describes what **is**, not what is planned,
-> except where a section is explicitly labeled as a gap.
+> planned.
 
 ---
 
@@ -29,7 +28,7 @@ design:
 | **Treatment** | Product applied to a fixture: `saved_placements.product_id`, `brand_placement_assignments.brand_product_id` | One-active-assignment-per-surface exclusivity gives clean treatment assignment per fixture per period. |
 | **Exposure dose** | `video_index.scene_inventory` → per-scene `occurrences` and `totalScreenTimeSec`; per-fixture screen time | CV-computed: how often and how long the audience actually sees the fixture. |
 | **Exposure event** | `editorial_clips` / `generated_clips` (`productPlacements` jsonb) and `published_posts` | Which rendered artifact carried which treatment, and where it went. |
-| **Outcomes** | `clip_analytics`, `social_insight_snapshots`, `clip_feedback`, `shared_links.view_count` | Views, engagement, demographics — today mostly at clip/post granularity (see §6 gaps). |
+| **Outcomes** | `clip_analytics`, `social_insight_snapshots`, `clip_feedback`, `shared_links.view_count` | Views, engagement, demographics — today mostly at clip/post granularity. |
 | **Covariates / confounders** | `brand_match_scores`, `scene_analysis.placement_viability`, channel audience data | ⚠️ **Treatment assignment is NOT random.** Match scores and viability ratings are explicit selection mechanisms — any impact analysis must treat them as confounders (or use them for propensity adjustment). |
 
 **The same-scene / different-products design in practice:** Scene B's `Wall 4` (`rm12-s3`) carries
@@ -52,7 +51,7 @@ than clip) granularity.
 | Mixed | Table contains both kinds of columns — the per-column notes call out which. |
 
 **A structural note the analysts should internalize early** (from the schema audit):
-> 42 pgTables total: 39 in shared/schema.ts, 2 in shared/models/auth.ts (sessions, users), 2 in shared/models/chat.ts (conversations, messages) — one overlap note: auth/chat are re-exported through schema.ts. The CV-research spine for "fixture = experimental unit, product = treatment" is: room_models + detected_surfaces.surface_group_id give the STABLE FIXTURE IDENTITY (the "rm{modelId}-s{idx}" group id is deliberately identical across rescans and episodes, so the same physical desk is one unit over time); video_index.scene_inventory gives per-fixture EXPOSURE DOSE (occurrences + totalScreenTimeSec per scene); saved_placements + brand_placement_assignments record the TREATMENT (which brand_products product was applied to which fixture, with app-layer one-active-assignment-per-surface exclusivity — clean treatment assignment); editorial_clips/generated_clips (productPlacements jsonb carries surfaceId+brandProductId+placementId) and published_posts are the EXPOSURE EVENTS; and clip_analytics, clip_feedback (performance rows), shared_links.view_count, and social_insight_snapshots are the OUTCOME/covariate side. Honest gaps for the data dictionary: (1) outcome tables are keyed at clip/post level, not per-fixture — the fixture→outcome join must go through generated_clips.productPlacements or editorial_clips.surfaces jsonb; (2) clip_feedback's performance columns reference an "analyticsCollector" in comments but only storage.ts touches the table today; (3) several outcome-adjacent tables (clip_analytics, published_posts, distribution_profiles, publishing_schedules) use integer user_id while the rest of the app uses varchar users.id — a known dual-ID wrinkle handled by server/lib/stableUserId.ts; (4) studio_jobs is defined but unused by any server/client code; (5) treatment assignment is NOT random — brand_match_scores and scene_analysis.placement_viability are explicit selection mechanisms and must be treated as confounders/covariates in any audience-impact analysis. Platform-derived metric tables (clip_analytics, social_insight_snapshots, social_accounts.audience_data, youtube_connections stats) mirror YouTube/Meta data and are subject to their retention/ToS constraints — social_insight_snapshots exists precisely because Meta only retains ~90 days.
+> 42 pgTables total: 39 in shared/schema.ts, 2 in shared/models/auth.ts (sessions, users), 2 in shared/models/chat.ts (conversations, messages) — one overlap note: auth/chat are re-exported through schema.ts. The CV-research spine for "fixture = experimental unit, product = treatment" is: room_models + detected_surfaces.surface_group_id give the STABLE FIXTURE IDENTITY (the "rm{modelId}-s{idx}" group id is deliberately identical across rescans and episodes, so the same physical desk is one unit over time); video_index.scene_inventory gives per-fixture EXPOSURE DOSE (occurrences + totalScreenTimeSec per scene); saved_placements + brand_placement_assignments record the TREATMENT (which brand_products product was applied to which fixture, with app-layer one-active-assignment-per-surface exclusivity — clean treatment assignment); editorial_clips/generated_clips (productPlacements jsonb carries surfaceId+brandProductId+placementId) and published_posts are the EXPOSURE EVENTS; and clip_analytics, clip_feedback (performance rows), shared_links.view_count, and social_insight_snapshots are the OUTCOME/covariate side. Notes for the analysis team: (1) outcome tables are keyed at clip/post level, not per-fixture — the fixture→outcome join must go through generated_clips.productPlacements or editorial_clips.surfaces jsonb; (2) clip_feedback's performance columns reference an "analyticsCollector" in comments but only storage.ts touches the table today; (3) several outcome-adjacent tables (clip_analytics, published_posts, distribution_profiles, publishing_schedules) use integer user_id while the rest of the app uses varchar users.id — a known dual-ID wrinkle handled by server/lib/stableUserId.ts; (4) studio_jobs is defined but unused by any server/client code; (5) treatment assignment is NOT random — brand_match_scores and scene_analysis.placement_viability are explicit selection mechanisms and must be treated as confounders/covariates in any audience-impact analysis. Platform-derived metric tables (clip_analytics, social_insight_snapshots, social_accounts.audience_data, youtube_connections stats) mirror YouTube/Meta data and are subject to their retention/ToS constraints — social_insight_snapshots exists precisely because Meta only retains ~90 days.
 ---
 
 ## 3. Entity map
@@ -1210,7 +1209,7 @@ failure, archive, or supersession.
   the product once the creator posts. For audience-time, join `placement_exposures` on
   `assignment_id` and use its `live_at`.
 - **Control periods are EXPLICIT ROWS** (`is_control = true`, `brand_product_id IS NULL`),
-  not inferred gaps — opened when a fixture is first observed by instrumentation and
+  not inferred — opened when a fixture is first observed by instrumentation and
   reopened whenever a treatment window closes. This makes "observed but untreated"
   distinguishable from "not observed at all". Time before instrumentation remains
   **unobserved, not control** (no rows exist for it).
@@ -1219,7 +1218,7 @@ failure, archive, or supersession.
   windows on either side.
 - **No expiry sweep yet:** windows do not auto-close at `expiresAt`.
 
-### `placement_exposures` — the exposure event (was the blocking gap)
+### `placement_exposures` — the exposure event
 
 One row per placement that reached an audience. Written when a creator marks a render
 live — suggested from their connected channel's recent uploads, or pasted manually.
@@ -1286,7 +1285,7 @@ retention — never impute it.
 
 Per-video `ageGroup × gender` (channel-level demographics can't tell you whether product
 A and product B reached the same people). Same capture cycle, same threshold caveat.
-Instagram exposes demographics only at account level — a platform limit, not a gap.
+Instagram exposes demographics only at account level — a platform limit.
 
 ### `placement_links` / `link_clicks` / `placement_conversions` — attribution
 
@@ -1458,19 +1457,15 @@ Periods with fewer than two samples are returned with `measurable: false` — a 
 shorter than the sampling interval has no slope, and should be excluded rather than
 imputed.
 
-**Gap status after Phase 1:** gaps 1, 2 and 6 below are now *partially addressed* —
-exposure events, treatment windows and go-live capture exist. **Gap 7 (time-series
-collection) and gap 8 (fixture rollup + control baseline) are now CLOSED** for YouTube —
-`video_stat_snapshots` appends per-video trajectories and control periods are explicit
-rows with measurable outcomes. **Gaps 3 (retention curves) and 4 (per-video demographics) are now CLOSED for
-YouTube** — both captured daily through the already-granted `yt-analytics.readonly`
-scope. **Gap 5 (click/conversion attribution) is the only fully open gap**, and it is
-the one that needs brand-side cooperation (a pixel or postback) for conversions;
-first-party click tracking via the `/s/` redirect is buildable without them.
+**What the measurement spine delivers end to end:** exposure events link every placement to
+the post it ran in; treatment windows record which product occupied which fixture over which
+period, with explicit control rows for untreated time; per-video trajectories, retention
+curves and per-video demographics are captured daily on YouTube through the granted
+`yt-analytics.readonly` scope; and attribution links credit clicks to a specific placement,
+with a conversion endpoint ready for brands who integrate their storefront.
 
-Also now written: the expiry sweep that closes treatment windows whose deal term has
-passed (`end_reason = 'expired'`) and returns the fixture to an explicit control period —
-previously `expired` was a documented status nothing ever wrote.
+Treatment windows close automatically when a deal term expires (`end_reason = 'expired'`),
+returning the fixture to an explicit control period.
 
 ---
 
@@ -1513,91 +1508,15 @@ previously `expired` was a documented status nothing ever wrote.
 | Comment text + sentiment + brand mention | YouTube `commentThreads` + LLM classification | daily | `content_comments` | Only for videos carrying a live placement |
 | Creator behavior events | First-party (in-app actions) | at-event | `creator_events` | Coverage starts 2026-08-04; not retroactive |
 | Brand response latency | Derived from existing timestamps | on read | computed | Covers **all** history, no log needed |
-
-
----
-
-## 6. Gaps: what impact measurement needs that does not exist yet
-
-These are the eight gaps identified in the original v1.0 audit, kept here with their original
-analysis for traceability. **Each now carries a current status line** — five are closed, one is
-mostly closed, one is open, and the statuses reflect what shipped between v1.0 and v1.2.
-
-### Gap 1: Per-placement exposure record in published content: nothing links a brand_placement_assignment (or saved_placement) to a live post with metrics. The brand-approval path ends at an A1 shared_links release page (view counter only); brand placements ride editorial_clips, which have NO analytics fields and never enter published_posts/clip_analytics. The placement→post linkage that does exist (generated_clips.productPlacements jsonb) covers only the legacy remix path.
-
-> ✅ **CLOSED** — `placement_exposures` records every placement that reached an audience, joined to its treatment window via `assignment_id`.
-
-**Why it matters:** Without an exposure record, no audience metric can be attributed to a treatment — the study cannot even enumerate which audience saw which product. This is the single blocking gap.
-
-**What building it takes:** Add a placement_exposures table (placement_id, surface_group_id, published_post_id or post_url, platform, live_from/live_to, in-content timestamp span from detected_surfaces). Hook it where the A1 link is minted at brand_approved (routes.ts release-mint path) and where published_posts rows are created; brand_placement_assignments already carries durationTerm/expiresAt as the intended-window scaffold.
-
-### Gap 2: Treatment on-air windows / variant assignment: the fixture (surfaceGroupId — stable across rescans and episodes for room-model surfaces, exactly the experimental-unit id the study needs) and the treatment (productId on saved_placements, brandProductId on assignments, appliesToGroupIds scoping) are both recorded, but nothing records WHICH product occupied the fixture during which real-world period, and there is no versioned render registry or control (no-placement) condition.
-
-> ✅ **CLOSED** — `fixture_assignments` records which product occupied which fixture over which period, with explicit control rows for untreated periods.
-
-**Why it matters:** Same-scene/different-products is a within-fixture crossover design; without assignment periods you cannot align outcomes to treatments or define baseline periods.
-
-**What building it takes:** Small delta on existing identity work: an assignment-period table keyed on surfaceGroupId (fixture) × brandProductId (treatment) × date range, written at brand approval and at placement archive/expiry. rm{modelId}-s{idx} ids are already documented as identical across rescans/episodes (shared/schema.ts:283-292), so cross-episode fixtures work unchanged.
-
-### Gap 3: Time-coded engagement / audience-retention curves: no integration requests retention. The YouTube Analytics calls fetch only channel totals, demographics and countries — grep confirms zero occurrences of audienceWatchRatio / elapsedVideoTimeRatio / relativeRetentionPerformance anywhere in server code. IG yields only scalar avg/total watch time per media.
-
-> ✅ **CLOSED** (YouTube) — `video_retention_curves` captures per-second retention daily; `/api/admin/measurement/retention` positions each placement on its curve. No other platform exposes retention — a permanent limit, not a backlog item.
-
-**Why it matters:** The core CV-impact question — do viewers drop, linger, or rewind at the seconds where the placed product is on screen — is unanswerable without a per-video retention curve to join against placement timestamps.
-
-**What building it takes:** The yt-analytics.readonly scope already requested (audienceFetcher.ts uses it) is sufficient. Add a fetcher for reports?dimensions=elapsedVideoTimeRatio&metrics=audienceWatchRatio,relativeRetentionPerformance&filters=video==ID, store curves per videoId (new table or jsonb), and join against detected_surfaces.timestamp / scene_inventory shot spans, which are already time-coded to the second.
-
-### Gap 4: Per-content viewer demographics: demographics exist only at account level (IG follower_demographics; YouTube channel ageGroup×gender). clip_analytics.demographics_data exists as a column but no code ever writes it; no fetcher requests video-filtered demographics.
-
-> ✅ **CLOSED** (YouTube) — `video_demographics` captures per-video ageGroup × gender. Instagram exposes demographics only at account level (platform limit).
-
-**Why it matters:** Comparing product A vs product B in the same fixture across different videos/periods is confounded if the audiences differed; per-exposure demographics are the covariates the Deloitte design needs.
-
-**What building it takes:** YouTube Analytics supports filters=video==ID on the ageGroup×gender report — extend fetchYoutubeAudience with a per-video variant and write into the already-existing clip_analytics.demographics_data. IG offers engaged_audience_demographics only at account level (platform limit — document as a design constraint, not a build item).
-
-### Gap 5: Click/conversion attribution: click_through_rate columns (clip_analytics, clip_feedback) are hard-coded 0 or manually self-reported. No UTM generation, no tracked outbound product links, no pixel/postback. The /s/ release page counts page views but has no click-out tracking on anything.
-
-> 🟡 **HALF CLOSED** — Click attribution is **built**: `placement_links` mints a per-placement tracking link the creator puts in their description, `/go/<slug>` records the click (privacy-safe) and forwards with UTMs. Conversions have a **built receiving endpoint** (`POST /api/conversions/:slug`), but rows only appear once a brand integrates their storefront — that remains a partnership decision, not an engineering task.
-
-**Why it matters:** Placement impact beyond attention (purchase intent, traffic) is the metric brands ultimately pay against; today there is no path from a placement to a click, let alone a conversion.
-
-**What building it takes:** The shared_links slug machinery is a natural base: add a redirect route (/s/:slug/go?placement=N) recording placement_id + destination + timestamp, and generate UTM-tagged product URLs at brand approval. Zero new external integrations for click counting; conversions would need a brand-side pixel or postback later.
-
-### Gap 6: Publish-event tracking for the real distribution path: the honest flow (human-reviewed final render → creator downloads / A1 page → creator posts natively) produces no 'went live on platform X at time T' event. published_posts covers only in-app API publishing; generated_clips.publishClip requires manually pasting a URL; brand_placement_assignments has no post-URL field at all.
-
-> ✅ **CLOSED** — The go-live step on the review lifecycle captures platform + post URL + publish time, with candidates auto-suggested from the creator's connected channel. `placement_renders` adds the delivery half (`delivered_at → downloaded_at → live_at`).
-
-**Why it matters:** Every downstream measurement (retention, per-post metrics, exposure windows) hangs off a platformPostId; if the live post is never registered, the existing PLATFORM_FETCHERS have nothing to poll.
-
-**What building it takes:** Add a 'mark live' step to the existing placement review lifecycle (reviewStatus render_ready → live) capturing postUrl/platform/liveAt on brand_placement_assignments, then feed the resolved platformPostId into collectPostAnalytics — the per-platform fetchers already exist and need only an id.
-
-### Gap 7: Automated time-series collection: clip_analytics accumulates rows only on manual refresh; the periodic collector (startAnalyticsCollection) is a logging stub and is not even started at boot; YouTube/IG per-video view counts OVERWRITE video_index.view_count with no history; the longitudinal snapshot job covers Meta account-level only (no YouTube snapshots, no per-post snapshots).
-
-> ✅ **CLOSED** (YouTube) — `video_stat_snapshots` appends every 6h and `video_daily_metrics` back-fills a per-day series retroactive to publish date. Twitch/TikTok/X have per-post fetchers with honest unavailability reasons — see the platform coverage matrix above.
-
-**Why it matters:** Causal comparison needs pre/post trajectories and view velocity around placement go-live, not point-in-time totals — a single overwritten counter cannot distinguish a placement-driven lift from baseline growth.
-
-**What building it takes:** Wire collectVideoAnalytics for all published/live posts into a real interval (the analyticsCollector stub and the 1-minute distribution scheduler both already exist as patterns), and extend runSocialInsightSnapshots to append per-video stat rows (fetchYouTubeVideoStats is already batch-50) instead of overwriting video_index.view_count.
-
-### Gap 8: Cross-episode fixture exposure rollup + control baseline: scene_inventory occurrences/screenTimeSec live per video in jsonb; no table aggregates a fixture's cumulative screen time and audience across episodes, and no metric captures audience response for the same scene when NO product was placed (control condition).
-
-> ✅ **CLOSED (YouTube)** — `fixture_exposure` materializes per-fixture supply (scan-versioned, so dose-as-of-a-past-window is reconstructible), control periods are explicit rows, and `/api/admin/measurement/control-comparison` computes treated vs untreated day-level outcomes per fixture. Because `video_daily_metrics` is retroactive to publish date, untreated periods are frequently retrievable immediately rather than needing weeks of accumulation. Remaining limits: periods before instrumentation can't distinguish "untreated" from "unobserved", and non-YouTube platforms have no daily series.
-
-**Why it matters:** The fixture is the experimental unit; its denominator (total exposed screen-time × views across all content) and its no-treatment baseline are what every effect estimate divides by.
-
-**What building it takes:** Materialize a fixture_exposure table (surface_group_id × video_id × screenTimeSec × occurrences) at scan finalize — the exact numbers are already computed in scanner_v2.ts:5728-5778 before being folded into jsonb; join with video_index.view_count (and, once gap 7 lands, view history) for the denominator. Control periods fall out of gap 2's assignment-period table (fixture time not covered by any assignment).
-
----
-
-## 7. Standing data-quality notes for the analysis team
+## 6. Standing data-quality notes for the analysis team
 
 1. **Dual-ID wrinkle:** most tables key users by varchar UUID (`users.id`), but several
    outcome-adjacent tables (`clip_analytics`, `published_posts`, `distribution_profiles`,
    `publishing_schedules`) use integer user ids — joins go through `server/lib/stableUserId.ts`.
    Budget for this in any ETL.
 2. **Outcome granularity:** audience outcomes are keyed at clip/post level. The fixture→outcome
-   join today goes through `generated_clips.productPlacements` / `editorial_clips` jsonb — closing
-   this at placement granularity is Gap #1 territory.
+   join runs through `placement_exposures` (placement → post), with
+   `generated_clips.productPlacements` / `editorial_clips` jsonb covering legacy rows.
 3. **Meta retention:** the Graph API retains ~90 days of insights; `social_insight_snapshots`
    exists precisely to accumulate history. Treat snapshot start-date as the series origin.
 4. **Non-random assignment:** repeated for emphasis — `brand_match_scores` and
