@@ -18,6 +18,8 @@ export const ADMIN_EMAILS: readonly string[] = [
   "scottmmills@outlook.com",
   "juanroviraesteve@gmail.com",
   "rohan@growvana.com",
+  "ben@gofullscale.co",
+  "darrel@gofullscale.co",
 ];
 
 /** Case-insensitive admin check. */
