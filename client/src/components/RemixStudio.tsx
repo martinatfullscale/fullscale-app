@@ -139,7 +139,6 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
   const [isStarting, setIsStarting] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [activeJobId, setActiveJobId] = useState<number | null>(null);
-  const [pollInterval, setPollInterval] = useState<ReturnType<typeof setInterval> | null>(null);
 
   // Config state
   const [platforms, setPlatforms] = useState<string[]>(["tiktok", "youtube_shorts"]);
@@ -453,8 +452,21 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
 
   useEffect(() => {
     if (open) loadData();
-    return () => { if (pollInterval) clearInterval(pollInterval); };
+    // NO interval cleanup here. `pollInterval` is not in this effect's dep
+    // list, so the returned closure captured whatever the handle was on the
+    // render this effect last ran — closing and reopening the studio mid-job
+    // cleared the WRONG interval and the poll never came back, leaving the
+    // job frozen at whatever step it was on when you looked away. The poll
+    // effect below owns its own interval and clears it correctly.
   }, [open, loadData]);
+
+  // If the jobs list already shows this job as finished (e.g. it completed
+  // while the studio was closed), stop treating it as active.
+  useEffect(() => {
+    if (!activeJobId) return;
+    const job = jobs.find((j) => j.id === activeJobId);
+    if (job && isTerminalStatus(job.status)) setActiveJobId(null);
+  }, [jobs, activeJobId]);
 
   // Poll active job
   useEffect(() => {
@@ -481,12 +493,29 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
             setActiveJobId(null);
             clearInterval(interval);
             await loadData(); // Refresh all data
+            // Completion used to be silent — the only evidence was a badge in
+            // a collapsed list, which is why "it said complete" and "I see no
+            // output" were both true at once.
+            const produced = data.clips?.length ?? 0;
+            if (data.job.status === "completed" && produced > 0) {
+              setActiveTab("auto");
+              toast({
+                title: `${produced} clip${produced === 1 ? "" : "s"} ready`,
+                description: "Job #" + data.job.id + " finished — they're in the Auto-Remix tab.",
+              });
+            } else if (data.job.status === "failed") {
+              setActiveTab("auto");
+              toast({
+                title: `Job #${data.job.id} produced no clips`,
+                description: data.job.errorMessage || "The render step failed. Details are on the job below.",
+                variant: "destructive",
+              });
+            }
           }
         }
       } catch {}
     }, 3000);
 
-    setPollInterval(interval);
     return () => clearInterval(interval);
   }, [activeJobId]);
 
@@ -1031,34 +1060,75 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
                 </h3>
                 <div className="space-y-2">
                   {jobs.filter(j => isTerminalStatus(j.status)).map(job => (
-                    <div key={job.id} className="bg-gray-800/50 rounded-lg p-3 flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <Badge className={`${job.status === "completed" ? "bg-green-500/20 text-green-400" : job.status === "cancelled" ? "bg-gray-500/20 text-gray-400" : "bg-red-500/20 text-red-400"}`}>
-                          {job.status}
-                        </Badge>
-                        <span className="text-sm text-gray-400">
-                          Job #{job.id} — {job.platformTargets?.join(", ")}
+                    <div key={job.id} className="bg-gray-800/50 rounded-lg p-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Badge className={`${job.status === "completed" ? "bg-green-500/20 text-green-400" : job.status === "cancelled" ? "bg-gray-500/20 text-gray-400" : "bg-red-500/20 text-red-400"}`}>
+                            {job.status}
+                          </Badge>
+                          <span className="text-sm text-gray-400">
+                            Job #{job.id} — {job.platformTargets?.join(", ")}
+                          </span>
+                          {job.status === "completed" && (
+                            <span className="text-xs text-gray-500">
+                              {job.clipCount ?? 0} clip{(job.clipCount ?? 0) === 1 ? "" : "s"}
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-xs text-gray-500">
+                          {new Date(job.createdAt).toLocaleDateString()}
                         </span>
                       </div>
-                      <span className="text-xs text-gray-500">
-                        {new Date(job.createdAt).toLocaleDateString()}
-                      </span>
+                      {job.errorMessage && (
+                        <p className="text-xs text-red-300/80 mt-2 leading-snug">{job.errorMessage}</p>
+                      )}
                     </div>
                   ))}
                 </div>
               </div>
             )}
 
-            {/* Empty state */}
-            {!isLoading && clips.length === 0 && jobs.length === 0 && !isProcessing && (
-              <div className="text-center py-12">
-                <Scissors className="w-12 h-12 text-gray-600 mx-auto mb-3" />
-                <p className="text-gray-400 mb-1">No clips generated yet</p>
-                <p className="text-xs text-gray-500">
-                  Select your target platforms above and click "Start Auto-Remix" to generate clips
-                </p>
-              </div>
-            )}
+            {/* Empty state.
+                The `jobs.length === 0` term used to be part of this guard, so
+                the moment any job row existed BOTH result surfaces were hidden
+                — a finished job with zero clips rendered literally nothing and
+                the tab looked like it had never been used. */}
+            {!isLoading && clips.length === 0 && !isProcessing && (() => {
+              const lastTerminal = jobs.filter((j) => isTerminalStatus(j.status))[0];
+              if (!lastTerminal) {
+                return (
+                  <div className="text-center py-12">
+                    <Scissors className="w-12 h-12 text-gray-600 mx-auto mb-3" />
+                    <p className="text-gray-400 mb-1">No clips generated yet</p>
+                    <p className="text-xs text-gray-500">
+                      Select your target platforms above and click "Start Auto-Remix" to generate clips
+                    </p>
+                  </div>
+                );
+              }
+              return (
+                <div className="text-center py-10 px-6 border border-red-500/20 bg-red-500/5 rounded-lg">
+                  <AlertCircle className="w-10 h-10 text-red-400/70 mx-auto mb-3" />
+                  <p className="text-gray-200 mb-1 font-medium">
+                    Job #{lastTerminal.id} finished without producing any clips
+                  </p>
+                  {lastTerminal.errorMessage ? (
+                    <p className="text-xs text-red-300/90 max-w-md mx-auto leading-relaxed">
+                      {lastTerminal.errorMessage}
+                    </p>
+                  ) : (
+                    <p className="text-xs text-gray-400 max-w-md mx-auto leading-relaxed">
+                      No reason was recorded. Re-run the remix — the pipeline now writes the
+                      failure onto the job.
+                    </p>
+                  )}
+                  <p className="text-[11px] text-gray-500 mt-3">
+                    Clips from the transcript pipeline live in the <strong>Editorial Clips</strong> tab,
+                    not here — check there if you were expecting those.
+                  </p>
+                </div>
+              );
+            })()}
             </>
             </div>{/* end auto-remix tab */}
 

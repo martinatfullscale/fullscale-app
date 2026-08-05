@@ -64,6 +64,10 @@ export interface RemixResult {
     thumbnailPath: string | null;
   }>;
   error?: string;
+  /** Candidates that entered the render step and produced nothing, when at
+   *  least one other clip succeeded. A partially-empty run is still a success,
+   *  but the creator should be able to find out what was lost. */
+  partialFailures?: string[];
 }
 
 const DEFAULT_CONFIG: RemixConfig = {
@@ -643,11 +647,18 @@ export async function runRemixPipeline(
     fs.mkdirSync(outputDir, { recursive: true });
 
     const generatedClips: RemixResult["clips"] = [];
+    // Why each candidate produced nothing. Without this a job that renders
+    // zero clips reports plain success and the creator is told "complete"
+    // with an empty grid and no way to find out why.
+    const clipFailures: string[] = [];
 
     for (let i = 0; i < candidates.length; i++) {
       const clip = candidates[i];
       const platformConfig = PLATFORM_CONFIGS[clip.platform];
-      if (!platformConfig) continue;
+      if (!platformConfig) {
+        clipFailures.push(`clip #${i + 1}: no platform config for "${clip.platform}"`);
+        continue;
+      }
 
       const placements = clipPlacements.get(i) || [];
 
@@ -709,6 +720,7 @@ export async function runRemixPipeline(
 
       if (!clipResult.success) {
         console.error(`[Remix]   Clip #${i + 1} generation failed: ${clipResult.error}`);
+        clipFailures.push(`clip #${i + 1}: ${clipResult.error || "render failed"}`);
         continue;
       }
 
@@ -806,13 +818,43 @@ export async function runRemixPipeline(
     const publishReady = generatedClips.filter(c => c.recommendation === "publish").length;
     const needReview = generatedClips.filter(c => c.recommendation === "review").length;
 
+    // ZERO CLIPS IS A FAILURE, NOT A SUCCESS.
+    // Every candidate can fail to render — each one `continue`s past the DB
+    // insert — and the job would still have been marked "completed". The
+    // creator then sees "complete", an empty clip grid, and no error anywhere:
+    // the exact "it says done but there's no output" report. Surface the real
+    // reason on the row the UI is already polling.
+    if (generatedClips.length === 0) {
+      const why = clipFailures.length > 0
+        ? `No clips were produced. ${clipFailures.slice(0, 3).join("; ")}${clipFailures.length > 3 ? ` (+${clipFailures.length - 3} more)` : ""}`
+        : `No clips were produced — ${candidates.length} candidate(s) entered the render step and none completed.`;
+      console.error(`[Remix] ========== REMIX JOB ${jobId} PRODUCED NOTHING ==========`);
+      console.error(`[Remix] ${why}`);
+      await storage.updateRemixJobStatus(jobId, "failed", why);
+      await storage.setRemixJobClipCount(jobId, 0).catch(() => {});
+      return {
+        jobId,
+        success: false,
+        clipsGenerated: 0,
+        clipsPublishReady: 0,
+        clipsNeedReview: 0,
+        clips: [],
+        error: why,
+      };
+    }
+
     await storage.updateRemixJobStatus(jobId, "completed");
-    // Update clip count on the job
-    // (storage method doesn't have a dedicated update for this, use status update)
+    // clip_count exists on the row and nothing ever wrote it, so the UI could
+    // not distinguish "0 clips" from "not counted".
+    await storage.setRemixJobClipCount(jobId, generatedClips.length).catch((e: any) =>
+      console.warn(`[Remix] Could not persist clip count for job ${jobId}: ${e?.message}`));
 
     console.log(`[Remix] ========== REMIX JOB ${jobId} COMPLETE ==========`);
     console.log(`[Remix] Generated: ${generatedClips.length} clips`);
     console.log(`[Remix] Publish-ready: ${publishReady}, Needs review: ${needReview}`);
+    if (clipFailures.length > 0) {
+      console.warn(`[Remix] ${clipFailures.length} candidate(s) did not render: ${clipFailures.join("; ")}`);
+    }
 
     return {
       jobId,
@@ -821,6 +863,7 @@ export async function runRemixPipeline(
       clipsPublishReady: publishReady,
       clipsNeedReview: needReview,
       clips: generatedClips,
+      partialFailures: clipFailures.length > 0 ? clipFailures : undefined,
     };
   } catch (err: any) {
     // Distinguish cancellation from real failure

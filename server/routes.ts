@@ -13825,11 +13825,24 @@ export async function registerRoutes(
   app.get("/api/remix/video/:videoId/jobs", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const videoId = parseInt(req.params.videoId);
-      // Match the same stable-int mapping used when the job was created.
-      const userId = stableUserIntId(req.authUserId ?? req.user?.id);
-      const jobs = await storage.getRemixJobsByUser(userId);
-      const videoJobs = jobs.filter(j => j.videoId === videoId);
-      res.json(videoJobs);
+      // Scope by VIDEO ownership, not by the caller's derived integer id.
+      // remix_jobs.user_id is a stableUserIntId of req.authUserId, and that
+      // varchar differs by auth branch (Google row id vs email, OIDC sub vs
+      // email) — so a job created in one session could be invisible in the
+      // next, which reads to the creator as "my job vanished". The clips
+      // endpoint alongside this one already scopes by video only.
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+      const callerEmail = String(req.authEmail || req.session?.googleUser?.email || "").toLowerCase();
+      const isAdmin = !!callerEmail && ADMIN_EMAILS.includes(callerEmail);
+      const ownsVideo =
+        String(video.userId) === String(req.authUserId) ||
+        (!!callerEmail && String(video.userId).toLowerCase() === callerEmail);
+      if (!ownsVideo && !isAdmin) {
+        return res.status(403).json({ error: "Not your video" });
+      }
+      const jobs = await storage.getRemixJobsForVideo(videoId);
+      res.json(jobs);
     } catch (err: any) {
       res.status(500).json({ error: err.message || "Failed to fetch jobs" });
     }

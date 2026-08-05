@@ -104,7 +104,12 @@ const CLIP_CONFIG = {
   PRESET: "medium",  // Better compression for shorter clips
   AUDIO_BITRATE: "128k",
   THUMBNAIL_WIDTH: 360,
-  FFMPEG_TIMEOUT_MS: 300000, // 5 minutes max
+  // Flat 5 minutes was a silent clip-killer: a 60s 1080x1920 CRF-20 encode with
+  // an ASS burn-in, running one-at-a-time through the render queue, does not
+  // reliably finish inside it on a shared box — and the ASS→drawtext retry
+  // deliberately re-throws on timeout, so the clip was simply lost. Scale the
+  // budget with clip length and keep the flat value as the floor.
+  FFMPEG_TIMEOUT_MS: 300000, // 5 minutes — floor, see ffmpegTimeoutForClip()
 };
 
 /**
@@ -253,8 +258,13 @@ async function generateCleanClip(
     outputPath,
   ];
 
+  // Budget scales with clip length — a flat 5 minutes silently killed longer
+  // 1080x1920 encodes, and the ASS fallback below deliberately re-throws on
+  // timeout, so the clip was lost rather than retried.
+  const encodeTimeoutMs = ffmpegTimeoutForClip(clip.duration);
+
   try {
-    await runFFmpeg(encodeArgs(filters));
+    await runFFmpeg(encodeArgs(filters), encodeTimeoutMs);
   } catch (err) {
     if (!assPath) throw err;
     if (/timeout|timed out/i.test(String((err as any)?.message || err))) throw err;
@@ -264,7 +274,7 @@ async function generateCleanClip(
     const fallbackFilters = [...baseFilters];
     const subtitleFilter = buildCaptionFilter(captionSegments!, config);
     if (subtitleFilter) fallbackFilters.push(subtitleFilter);
-    await runFFmpeg(encodeArgs(fallbackFilters));
+    await runFFmpeg(encodeArgs(fallbackFilters), encodeTimeoutMs);
   } finally {
     if (assPath) { try { fs.unlinkSync(assPath); } catch { /* ignore */ } }
   }
@@ -1117,6 +1127,14 @@ async function getClipDuration(clipPath: string): Promise<number> {
     });
     proc.on("error", () => resolve(0));
   });
+}
+
+/** Render budget for a clip of `durationSec`. ~12x realtime covers a 1080x1920
+ *  CRF-20 encode with caption burn-in on a shared box, with the 5-minute floor
+ *  preserved for short clips. Capped so a bad input can't hang a worker. */
+export function ffmpegTimeoutForClip(durationSec: number): number {
+  const scaled = Math.ceil((Number(durationSec) || 0) * 12_000);
+  return Math.min(20 * 60 * 1000, Math.max(CLIP_CONFIG.FFMPEG_TIMEOUT_MS, scaled));
 }
 
 function runFFmpeg(args: string[], timeoutMs: number = CLIP_CONFIG.FFMPEG_TIMEOUT_MS): Promise<string> {

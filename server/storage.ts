@@ -2592,6 +2592,14 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(remixJobs.createdAt));
   }
 
+  /** All jobs for one video, newest first. Scoped by VIDEO rather than by the
+   *  caller's derived integer id — see the note on GET /api/remix/video/:id/jobs. */
+  async getRemixJobsForVideo(videoId: number): Promise<RemixJob[]> {
+    return db.select().from(remixJobs)
+      .where(eq(remixJobs.videoId, videoId))
+      .orderBy(desc(remixJobs.createdAt));
+  }
+
   async getActiveRemixJobForVideo(videoId: number): Promise<RemixJob | undefined> {
     // "Active" = any non-terminal status (queued or step_N). Used to prevent a
     // second concurrent pipeline for the same video.
@@ -2719,6 +2727,13 @@ export class DatabaseStorage implements IStorage {
       .where(and(inArray(notifications.userId, aliases), sql`${notifications.readAt} IS NULL`))
       .returning({ id: notifications.id });
     return result.length;
+  }
+
+  /** Persist how many clips a job actually produced. remix_jobs.clip_count has
+   *  existed since the table was created and nothing ever wrote it, so a
+   *  5-clip success and a 0-clip success were identical rows. */
+  async setRemixJobClipCount(jobId: number, clipCount: number): Promise<void> {
+    await db.update(remixJobs).set({ clipCount }).where(eq(remixJobs.id, jobId));
   }
 
   async updateRemixJobStatus(jobId: number, status: string, errorMessage?: string): Promise<RemixJob | undefined> {
