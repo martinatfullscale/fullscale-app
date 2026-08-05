@@ -439,6 +439,27 @@ async function isSameCreator(
 // Legacy numeric ids pass through unchanged so existing rows still match.
 import { stableUserIntId } from "./lib/stableUserId";
 
+/**
+ * Turn a Postgres error into something an operator can act on.
+ *
+ * Drizzle emits an explicit column list on every select, so a schema change
+ * that hasn't been pushed to the deployed database makes the query fail with
+ * `column "x" does not exist` — and every caller that swallowed it into a
+ * generic 500 turned that into a spinner with no explanation. This names the
+ * cause and the fix. Admin-only surfaces; the raw message never reaches a
+ * creator or brand.
+ */
+function explainDbError(err: any, fallback: string): { status: number; error: string } {
+  const msg = String(err?.message ?? err ?? "");
+  if (/column .* does not exist|relation .* does not exist/i.test(msg)) {
+    return {
+      status: 503,
+      error: `Database schema is behind the deployed code — ${msg.split("\n")[0]}. Run \`npm run db:push\` against this environment, then reload.`,
+    };
+  }
+  return { status: 500, error: fallback };
+}
+
 /** video_index.duration is a display string ("12:34", "1:02:03") or a bare
  *  seconds value depending on the import path. Returns 0 when unparseable —
  *  callers treat 0 as "unknown", never as "zero-length". */
@@ -1640,7 +1661,8 @@ export async function registerRoutes(
       res.json({ placements: rows });
     } catch (err: any) {
       console.error("[Admin Placements] List error:", err?.message);
-      res.status(500).json({ error: "Failed to list placements" });
+      const { status, error } = explainDbError(err, "Failed to list placements");
+      res.status(status).json({ error });
     }
   });
 

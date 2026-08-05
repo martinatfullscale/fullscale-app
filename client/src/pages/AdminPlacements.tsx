@@ -76,13 +76,23 @@ export default function AdminPlacements() {
     }
   };
 
-  const { data, isLoading, isError } = useQuery<{ placements: ReviewRow[] }>({
+  const { data, isLoading, isError, error } = useQuery<{ placements: ReviewRow[] }>({
     queryKey: ["/api/admin/placements"],
     queryFn: async () => {
       const res = await fetch("/api/admin/placements", { credentials: "include" });
-      if (!res.ok) throw new Error(`Failed to load queue (${res.status})`);
+      if (!res.ok) {
+        // Keep the server's reason. Throwing a bare status here is why a
+        // failing queue read looked like an auth problem, or like nothing at
+        // all — with refetchInterval re-entering the retry cycle every 60s,
+        // a persistent failure reads as a spinner that never resolves.
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.error || `Failed to load queue (${res.status})`);
+      }
       return res.json();
     },
+    // A 403 is a standing state, not a blip — retrying it just hides the
+    // message behind another spinner.
+    retry: (count, err: any) => !/403|Admin access/i.test(String(err?.message)) && count < 2,
     refetchInterval: 60_000,
   });
 
@@ -225,7 +235,14 @@ export default function AdminPlacements() {
         {isLoading ? (
           <div className="flex justify-center py-16"><Loader2 className="w-6 h-6 animate-spin text-primary" /></div>
         ) : isError ? (
-          <p className="text-destructive text-sm">Couldn't load the queue — are you signed in as an admin?</p>
+          <Card className="border-destructive/30 bg-destructive/5">
+            <CardContent className="p-4">
+              <p className="text-sm font-medium mb-1">Couldn't load the review queue</p>
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                {(error as Error)?.message || "Unknown error"}
+              </p>
+            </CardContent>
+          </Card>
         ) : (
           <>
             <div className="flex items-center gap-2 mb-3">
