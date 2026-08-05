@@ -10106,14 +10106,37 @@ export async function registerRoutes(
       // Hydrate with product + video + surface details so the inbox UI doesn't need 4 round-trips
       const hydrated = await Promise.all(
         placements.map(async (p) => {
-          const [product, video, surfaces] = await Promise.all([
+          const [product, video, surfaces, clip, savedForVideo] = await Promise.all([
             p.brandProductId != null ? storage.getBrandProduct(p.brandProductId) : Promise.resolve(undefined),
             storage.getVideoById(p.videoId),
             storage.getDetectedSurfaces(p.videoId),
+            p.editorialClipId ? storage.getEditorialClipById(p.editorialClipId) : Promise.resolve(null),
+            storage.getPlacementsForVideo(p.videoId).catch(() => [] as any[]),
           ]);
           const surface = surfaces.find((s) => s.id === p.surfaceId);
+          // Has the creator actually FRAMED this yet? Without a saved
+          // placement the render falls back to dropping the raw product PNG
+          // into the surface bbox, which is not a choice anyone made. The
+          // inbox uses this to lead with "Place product" instead of "Approve".
+          const framed = (savedForVideo as any[]).some((sp) =>
+            sp.status !== "archived" &&
+            sp.surfaceId === p.surfaceId &&
+            (p.editorialClipId ? sp.editorialClipId === p.editorialClipId : true) &&
+            (p.brandProductId == null || sp.productId === p.brandProductId));
           return {
             ...p,
+            hasCreatorFraming: framed,
+            clip: clip
+              ? {
+                  id: clip.id,
+                  clipStart: clip.clipStart,
+                  clipEnd: clip.clipEnd,
+                  aspectRatio: (clip as any).aspectRatio ?? null,
+                  suggestedTitle: clip.suggestedTitle,
+                  exportPath: clip.exportPath,
+                  thumbnailPath: (clip as any).thumbnailPath ?? null,
+                }
+              : null,
             product: product
               ? { id: product.id, name: product.name, imageUrl: product.imageUrl, thumbnailUrl: product.thumbnailUrl, category: product.category }
               : null,
@@ -10603,7 +10626,34 @@ export async function registerRoutes(
       const clipId = parseInt(req.params.clipId);
       if (isNaN(clipId)) return res.status(400).json({ error: "Invalid clip ID" });
       const surfaces = (await storage.getSurfacesInEditorialClip(clipId)).filter(isSellableSurface);
-      res.json({ surfaces, count: surfaces.length });
+
+      // Ship the scene inventory too, projected down to the fixtures that
+      // actually appear in this clip. Consumers build their one-row-per-
+      // physical-fixture picker from it and fall back to raw per-frame
+      // detection rows when it's absent — which is what clip-targeted requests
+      // were getting, because only the video-mode endpoint returned it.
+      let sceneInventory: any = null;
+      try {
+        const clip = await storage.getEditorialClipById(clipId);
+        const video = clip ? await storage.getVideoById(clip.videoId) : undefined;
+        const inv: any = (video as any)?.sceneInventory;
+        if (inv && Array.isArray(inv.scenes)) {
+          const clipGroupIds = new Set(
+            surfaces.map((s: any) => s.surfaceGroupId).filter(Boolean),
+          );
+          const scenes = inv.scenes
+            .map((sc: any) => ({
+              ...sc,
+              surfaces: (sc.surfaces ?? []).filter((sf: any) => clipGroupIds.has(sf.groupId)),
+            }))
+            .filter((sc: any) => sc.surfaces.length > 0);
+          if (scenes.length > 0) sceneInventory = { ...inv, scenes };
+        }
+      } catch (invErr: any) {
+        console.warn(`[API] clip ${clipId} scene-inventory projection failed (non-fatal): ${invErr?.message}`);
+      }
+
+      res.json({ surfaces, sceneInventory, count: surfaces.length });
     } catch (err: any) {
       console.error("[API] /api/editorial-clips/:clipId/surfaces error:", err.message);
       res.status(500).json({ error: err.message || "Failed to fetch surfaces" });
@@ -10644,7 +10694,7 @@ export async function registerRoutes(
   app.post("/api/placements", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const userEmail = req.authEmail || "unknown";
-      const { videoId, surfaceId, productId, productImageUrl, transform, blend, sceneGroupId, role, bidId, harmonizedImageUrl, isHarmonized, keyframes, appliesToGroupIds } = req.body;
+      const { videoId, surfaceId, productId, productImageUrl, transform, blend, sceneGroupId, role, bidId, harmonizedImageUrl, isHarmonized, keyframes, appliesToGroupIds, editorialClipId } = req.body;
 
       if (!videoId || !surfaceId || !productImageUrl || !transform || !blend) {
         return res.status(400).json({ error: "Missing required fields: videoId, surfaceId, productImageUrl, transform, blend" });
@@ -10664,6 +10714,24 @@ export async function registerRoutes(
         if (effectiveRole !== "brand") {
           return res.status(403).json({ error: "You can only place products on your own videos" });
         }
+      }
+
+      // Clip scoping: when the creator framed this placement inside a specific
+      // editorial clip, record it. The clip must belong to the same video —
+      // otherwise a placement would claim a framing for a cut it never appears
+      // in, and the render would pick it up.
+      let clipIdForRow: number | null = null;
+      if (editorialClipId !== undefined && editorialClipId !== null) {
+        const parsedClipId = parseInt(String(editorialClipId));
+        if (!Number.isFinite(parsedClipId)) {
+          return res.status(400).json({ error: "editorialClipId must be a number" });
+        }
+        const clip = await storage.getEditorialClipById(parsedClipId);
+        if (!clip) return res.status(404).json({ error: "Editorial clip not found" });
+        if (Number(clip.videoId) !== parseInt(String(videoId))) {
+          return res.status(400).json({ error: "That clip belongs to a different video" });
+        }
+        clipIdForRow = parsedClipId;
       }
 
       // Placement scoping: a PRESENT appliesToGroupIds (including []) is the
@@ -10716,6 +10784,7 @@ export async function registerRoutes(
       const placement = await storage.savePlacement({
         videoId,
         surfaceId,
+        editorialClipId: clipIdForRow,
         productId: productId || null,
         productImageUrl,
         createdBy: userEmail,
@@ -10774,6 +10843,10 @@ export async function registerRoutes(
             await storage.savePlacement({
               videoId,
               surfaceId: surface.id,
+              // Propagated rows inherit the clip intent from the anchor —
+              // otherwise the render's exact-clip lookup would find the anchor
+              // but not its scene siblings.
+              editorialClipId: clipIdForRow,
               productId: productId || null,
               productImageUrl,
               createdBy: userEmail,

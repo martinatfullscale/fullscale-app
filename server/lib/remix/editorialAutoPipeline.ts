@@ -1229,9 +1229,19 @@ async function loadBrandOverlaysForClip(
           const candidates = saved.filter((sp: any) =>
             sp.surfaceId === placement.surfaceId ||
             (surfaceGid && Array.isArray(sp.appliesToGroupIds) && sp.appliesToGroupIds.includes(surfaceGid)));
+          // Exact clip match wins. saved_placements.editorial_clip_id now
+          // records which cut the creator framed the product FOR, so the
+          // heuristic below is only the fallback for video-level rows —
+          // previously it was the only thing available and the same fixture
+          // in three clips could only ever carry one framing.
+          const clipScoped = candidates.filter((sp: any) => sp.editorialClipId === clipId);
+          const pool = clipScoped.length > 0 ? clipScoped : candidates.filter((sp: any) => sp.editorialClipId == null);
           const match =
-            candidates.find((sp: any) => sp.productId != null && sp.productId === placement.brandProductId) ??
-            candidates[0];
+            pool.find((sp: any) => sp.productId != null && sp.productId === placement.brandProductId) ??
+            pool[0];
+          if (clipScoped.length > 0) {
+            console.log(`[BrandOverlay] Using clip-scoped placement for clip ${clipId} (exact match, not heuristic)`);
+          }
           if (match && (match as any).transform && (match as any).blend) {
             let harmonizedCompositePath: string | undefined;
             if ((match as any).isHarmonized && (match as any).harmonizedImageUrl) {

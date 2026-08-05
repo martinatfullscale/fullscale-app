@@ -5,7 +5,7 @@ import {
   ArrowLeft, Play, Pause, Download, Layers, Save,
   CheckCircle, Package, Eye, EyeOff, ChevronRight,
   Move, RotateCw, Maximize2, Sun, Droplets, Blend, FlipHorizontal,
-  Film, Loader2, X as XIcon, Share2,
+  Film, Loader2, X as XIcon, Share2, Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -467,6 +467,35 @@ export default function RemixEngine() {
   const urlParams = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
   const bidId = urlParams?.get("bidId") ? parseInt(urlParams.get("bidId")!) : undefined;
 
+  // ── Clip context (creator framing a brand's product INSIDE one editorial
+  // clip, rather than at the video level).
+  //
+  // Geometry is authored in SOURCE-video space either way — the clip renderer
+  // composites overlays on the source frame and applies the 9:16 crop
+  // afterwards — so this changes WHICH surfaces are offered and what the
+  // saved row is tagged with, not the coordinate system.
+  const clipId = urlParams?.get("clip") ? parseInt(urlParams.get("clip")!) : undefined;
+  const requestedSurfaceId = urlParams?.get("surface") ? parseInt(urlParams.get("surface")!) : undefined;
+  const requestedProductId = urlParams?.get("product") ? parseInt(urlParams.get("product")!) : undefined;
+
+  const { data: clipContext } = useQuery<{
+    clip: any;
+    surfaces: any[];
+  } | null>({
+    queryKey: ["/api/editorial-clips", clipId, "placement-context"],
+    queryFn: async () => {
+      const [clipRes, surfRes] = await Promise.all([
+        fetch(`/api/editorial-clips/${clipId}`, { credentials: "include" }),
+        fetch(`/api/editorial-clips/${clipId}/surfaces`, { credentials: "include" }),
+      ]);
+      if (!clipRes.ok || !surfRes.ok) return null;
+      const clipJson = await clipRes.json();
+      const surfJson = await surfRes.json();
+      return { clip: clipJson.clip ?? clipJson, surfaces: surfJson.surfaces ?? [] };
+    },
+    enabled: !!clipId,
+  });
+
   const { data: bidData } = useQuery<any>({
     queryKey: ["/api/bids", bidId],
     queryFn: async () => {
@@ -550,7 +579,16 @@ export default function RemixEngine() {
   // DERIVED DATA
   // ============================================================================
 
-  const surfaces = surfacesData?.surfaces || [];
+  // In clip mode only the fixtures visible inside the clip are offerable —
+  // framing a product on a surface the cut never shows produces a placement
+  // that renders nowhere.
+  const surfaces = useMemo(() => {
+    const all = surfacesData?.surfaces || [];
+    if (!clipId || !clipContext?.surfaces?.length) return all;
+    const allowed = new Set(clipContext.surfaces.map((s: any) => s.id));
+    const scoped = all.filter((s: any) => allowed.has(s.id));
+    return scoped.length > 0 ? scoped : all;
+  }, [surfacesData?.surfaces, clipId, clipContext?.surfaces]);
   const surfaceTracks = useMemo(() => buildSurfaceTracks(surfaces), [surfaces]);
   const sceneTimestamps = useMemo(() => getUniqueTimestamps(surfaces), [surfaces]);
   const videoSrc = useMemo(() => resolveVideoSrc(video?.filePath), [video?.filePath]);
@@ -569,6 +607,20 @@ export default function RemixEngine() {
         .map(t => t.trackKey),
     [surfaceTracks]
   );
+
+  // Land the creator on the fixture the brand actually requested, rather than
+  // making them find it among every surface in the video.
+  const clipModeRef = useRef(false);
+  useEffect(() => {
+    if (!requestedSurfaceId || clipModeRef.current) return;
+    for (const track of Array.from(surfaceTracks.values())) {
+      if (track.surfaceIds.includes(requestedSurfaceId)) {
+        setSelectedTrack(track.trackKey);
+        clipModeRef.current = true;
+        break;
+      }
+    }
+  }, [requestedSurfaceId, surfaceTracks]);
 
   // Display labels: bare type when unique, scene-qualified when the same type
   // appears on multiple tracks
@@ -1061,6 +1113,7 @@ export default function RemixEngine() {
             blend: assignment.blend,
             role: "creator",
             bidId: bidId || undefined,
+            ...(clipId ? { editorialClipId: clipId } : {}),
           }),
         });
 
@@ -1255,6 +1308,7 @@ export default function RemixEngine() {
             productImageUrl: assignment.imageUrl,
             transform: assignment.transform,
             blend: assignment.blend,
+            ...(clipId ? { editorialClipId: clipId } : {}),
           }),
         });
 
@@ -1321,6 +1375,31 @@ export default function RemixEngine() {
 
   return (
     <div className="min-h-screen bg-background text-foreground">
+      {/* Clip-scoped framing banner.
+          The creator got here from a brand's request on ONE editorial clip.
+          Only the fixtures that clip actually shows are offered, and the saved
+          placement is tagged with the clip so the re-render uses this exact
+          framing instead of guessing which saved row was meant. */}
+      {clipId && clipContext?.clip && (
+        <div className="bg-primary/10 border-b border-primary/25 px-6 py-2.5 flex items-center gap-3 flex-wrap">
+          <Sparkles className="w-4 h-4 text-primary shrink-0" />
+          <p className="text-xs">
+            <span className="font-medium">Placing into a clip.</span>{" "}
+            {clipContext.clip.suggestedTitle
+              ? <>“{clipContext.clip.suggestedTitle}” — </>
+              : null}
+            {Number(clipContext.clip.clipStart ?? 0).toFixed(1)}s–
+            {Number(clipContext.clip.clipEnd ?? 0).toFixed(1)}s
+            {clipContext.clip.aspectRatio ? ` · ${clipContext.clip.aspectRatio}` : ""}.
+            Only the {clipContext.surfaces.length} surface
+            {clipContext.surfaces.length === 1 ? "" : "s"} visible in this cut can be used.
+          </p>
+          <span className="text-[11px] text-muted-foreground">
+            Position it where you want it, then Save — the clip re-renders with your framing.
+          </span>
+        </div>
+      )}
+
       {/* Header */}
       <div className="sticky top-0 z-30 bg-card/95 backdrop-blur-sm border-b border-border px-6 py-3 flex items-center justify-between">
         <div className="flex items-center gap-4">
@@ -1336,6 +1415,9 @@ export default function RemixEngine() {
             <h1 className="text-sm font-semibold">{video.title}</h1>
             <p className="text-xs text-muted-foreground">
               Remix Engine · {surfaces.length} surfaces · {assignments.size} placement{assignments.size !== 1 ? "s" : ""}
+              {clipId && clipContext?.clip && (
+                <> · framing for clip #{clipId}</>
+              )}
             </p>
           </div>
         </div>

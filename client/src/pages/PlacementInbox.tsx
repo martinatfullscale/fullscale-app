@@ -23,7 +23,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Loader2, CheckCircle2, XCircle, Inbox, ExternalLink, Image as ImageIcon, DollarSign } from "lucide-react";
+import { Loader2, CheckCircle2, XCircle, Inbox, ExternalLink, Image as ImageIcon, DollarSign, Move, Scissors } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient as qc } from "@/lib/queryClient";
 
@@ -39,6 +39,19 @@ interface PlacementInboxItem {
   placementFeeCents?: number | null;
   creatorPayoutCents?: number | null;
   isTestPlacement?: boolean | null;
+  editorialClipId?: number | null;
+  /** True once a saved placement exists for this clip+surface+product — i.e.
+   *  the creator has actually decided where the product sits. */
+  hasCreatorFraming?: boolean;
+  clip?: {
+    id: number;
+    clipStart: number;
+    clipEnd: number;
+    aspectRatio: string | null;
+    suggestedTitle: string | null;
+    exportPath: string | null;
+    thumbnailPath: string | null;
+  } | null;
   product: {
     id: number;
     name: string;
@@ -187,20 +200,48 @@ export default function PlacementInbox() {
                         <ImageIcon className="w-8 h-8 text-muted-foreground/40" />
                       </div>
                     )}
-                    {p.surface && (
-                      <Badge variant="outline" className="text-xs">
-                        {p.surface.surfaceType} @ {parseFloat(p.surface.timestamp).toFixed(1)}s
-                      </Badge>
-                    )}
+                    <div className="flex flex-wrap gap-1.5">
+                      {p.surface && (
+                        <Badge variant="outline" className="text-xs">
+                          {p.surface.surfaceType} @ {parseFloat(p.surface.timestamp).toFixed(1)}s
+                        </Badge>
+                      )}
+                      {/* The brand requested against a specific cut, not the
+                          whole upload. Saying so is the difference between
+                          "somewhere in a 20-minute video" and "this clip". */}
+                      {p.clip && (
+                        <Badge variant="outline" className="text-xs gap-1 text-primary border-primary/30">
+                          <Scissors className="w-3 h-3" />
+                          Clip {Number(p.clip.clipStart).toFixed(0)}–{Number(p.clip.clipEnd).toFixed(0)}s
+                          {p.clip.aspectRatio ? ` · ${p.clip.aspectRatio}` : ""}
+                        </Badge>
+                      )}
+                      {p.hasCreatorFraming && (
+                        <Badge variant="outline" className="text-xs text-emerald-400 border-emerald-500/30">
+                          Placed
+                        </Badge>
+                      )}
+                    </div>
                   </div>
 
                   {/* Details */}
                   <div className="space-y-3">
                     <div>
-                      <p className="text-xs uppercase tracking-widest text-muted-foreground/70 mb-1">Video</p>
-                      <p className="font-medium" data-testid={`text-video-title-${p.id}`}>
-                        {p.video?.title || "Unknown video"}
+                      <p className="text-xs uppercase tracking-widest text-muted-foreground/70 mb-1">
+                        {p.clip ? "Clip" : "Video"}
                       </p>
+                      <p className="font-medium" data-testid={`text-video-title-${p.id}`}>
+                        {p.clip?.suggestedTitle || p.video?.title || "Unknown video"}
+                      </p>
+                      {p.clip && p.video?.title && (
+                        <p className="text-xs text-muted-foreground mt-0.5">from {p.video.title}</p>
+                      )}
+                      {p.brandProductId != null && !p.hasCreatorFraming && (
+                        <p className="text-xs text-amber-400/90 mt-1.5 leading-snug">
+                          You haven't positioned this product yet — "Approve as-is" drops it into the
+                          detected surface box unchanged.
+                        </p>
+                      )}
                     </div>
                     <div className="flex items-center gap-3">
                       {p.product?.thumbnailUrl || p.product?.imageUrl ? (
@@ -264,8 +305,31 @@ export default function PlacementInbox() {
                     ) : null}
                   </div>
 
-                  {/* Actions */}
-                  <div className="flex md:flex-col gap-2 md:w-32">
+                  {/* Actions.
+                      Approving used to be the only move, and it fired a render
+                      immediately — so the product landed wherever the raw bbox
+                      put it, which is not a placement anyone chose. Framing is
+                      now the primary action and approval confirms it. */}
+                  <div className="flex md:flex-col gap-2 md:w-40">
+                    {p.brandProductId != null && (
+                      <Link
+                        href={`/remix/${p.videoId}?${new URLSearchParams({
+                          ...(p.editorialClipId ? { clip: String(p.editorialClipId) } : {}),
+                          surface: String(p.surfaceId),
+                          product: String(p.brandProductId),
+                        }).toString()}`}
+                        className="flex-1"
+                      >
+                        <Button
+                          variant={p.hasCreatorFraming ? "outline" : "default"}
+                          className={`w-full ${p.hasCreatorFraming ? "" : "bg-primary hover:bg-primary/90"}`}
+                          data-testid={`button-place-${p.id}`}
+                        >
+                          <Move className="w-4 h-4 mr-1.5" />
+                          {p.hasCreatorFraming ? "Adjust placement" : "Place product"}
+                        </Button>
+                      </Link>
+                    )}
                     <Button
                       onClick={() => {
                         if ((p as any).brandProductId == null) {
@@ -277,11 +341,14 @@ export default function PlacementInbox() {
                         }
                       }}
                       disabled={approveMutation.isPending}
-                      className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white"
+                      variant={p.hasCreatorFraming || p.brandProductId == null ? "default" : "outline"}
+                      className={`flex-1 ${p.hasCreatorFraming || p.brandProductId == null ? "bg-emerald-600 hover:bg-emerald-500 text-white" : "border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10"}`}
                       data-testid={`button-approve-${p.id}`}
                     >
                       <CheckCircle2 className="w-4 h-4 mr-1.5" />
-                      {(p as any).brandProductId == null ? "Choose product…" : "Approve"}
+                      {(p as any).brandProductId == null
+                        ? "Choose product…"
+                        : p.hasCreatorFraming ? "Approve" : "Approve as-is"}
                     </Button>
                     <Button
                       onClick={() => setRejectingId(p.id)}

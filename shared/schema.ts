@@ -479,6 +479,23 @@ export const savedPlacements = pgTable("saved_placements", {
   id: serial("id").primaryKey(),
   videoId: integer("video_id").notNull(), // Reference to video_index.id
   surfaceId: integer("surface_id").notNull(), // Reference to detected_surfaces.id (anchor surface)
+  /**
+   * The editorial clip this framing was authored FOR.
+   *
+   * A brand browses rendered clips and requests a placement on one
+   * (brand_placement_assignments.editorial_clip_id), but until now the
+   * creator's side of that — where the product actually sits — was keyed
+   * only by (video, surface). The clip render therefore had to guess which
+   * saved row it meant with a heuristic join, and the same fixture appearing
+   * in three clips could carry only one framing.
+   *
+   * Geometry stays in SOURCE-video space regardless: the renderer composites
+   * overlays on the source frame and applies the 9:16 crop afterwards, so a
+   * clip-scoped placement is the same coordinate system with a narrower
+   * intent. Null = a video-level placement that applies wherever the fixture
+   * appears (the pre-existing behavior, unchanged).
+   */
+  editorialClipId: integer("editorial_clip_id"),
   productId: integer("product_id"), // Reference to brand_products.id (null if custom upload)
   productImageUrl: text("product_image_url").notNull(), // URL of product image used
   createdBy: varchar("created_by").notNull(), // Email of user who created placement
@@ -551,7 +568,9 @@ export const savedPlacements = pgTable("saved_placements", {
   }>>(),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
-});
+}, (table) => [
+  index("idx_saved_placements_clip").on(table.editorialClipId),
+]);
 
 export const insertSavedPlacementSchema = createInsertSchema(savedPlacements).omit({
   id: true,
