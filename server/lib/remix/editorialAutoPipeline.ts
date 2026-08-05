@@ -1529,6 +1529,12 @@ interface RenderOptions {
   captionFilter?: string | null;
   /** Path to an .ass subtitle file — preferred (karaoke word styling) */
   captionAssPath?: string | null;
+  /** Compiled edit stack: stabilization, retiming, b-roll, text, music.
+   *  Built by buildEditGraph so the composition order is decided once. */
+  editGraph?: import("./editStack").EditGraphResult | null;
+  /** Output dimensions — text overlays are positioned in output pixels. */
+  outWidth?: number;
+  outHeight?: number;
 }
 
 /**
@@ -1635,11 +1641,84 @@ async function runFFmpegRenderUngated(opts: RenderOptions): Promise<void> {
   const vf = captionChain ? `${opts.vf},${captionChain}` : opts.vf;
 
   const hasOverlays = brandOverlays && brandOverlays.length > 0;
+  const eg = opts.editGraph ?? null;
+  const hasEdits = !!eg && !eg.isEmpty;
 
   const inputArgs: string[] = ["-nostdin", "-y", "-ss", startTime.toString(), "-i", videoPath];
   let videoFilterArgs: string[];
 
-  if (hasOverlays && srcWidth && srcHeight) {
+  if (hasEdits) {
+    // ── Edit-stack path ────────────────────────────────────────────────
+    // Everything runs through filter_complex here, because retiming,
+    // b-roll and text all need labelled streams. The chain is assembled in
+    // one place so the ordering constraints hold: source geometry effects
+    // before the crop, output-pixel effects after it.
+    //
+    //   [0:v] → editGraph.videoPre → product overlays → vf → text → [vout]
+    //   [0:a] → editGraph.audio → [aout]  (or 0:a passthrough)
+    const filterParts: string[] = [...eg!.videoPre];
+    let cur = eg!.videoOutLabel;
+
+    // Extra inputs the graph needs (b-roll media, text PNGs, music track).
+    // Still images loop so they last the overlay's whole enable window.
+    for (const inp of eg!.extraInputs) {
+      if (inp.loop) inputArgs.push("-loop", "1");
+      inputArgs.push("-i", inp.path);
+    }
+
+    // Brand product overlays, in source space, after retiming.
+    if (hasOverlays && srcWidth && srcHeight) {
+      for (const ov of brandOverlays!) {
+        if (ov.creatorPlacement && !ov.baked) {
+          try {
+            await bakeCreatorOverlaySprite(ov, srcWidth, srcHeight, "/tmp");
+          } catch (bakeErr: any) {
+            console.warn(`[EditorialAuto] Creator-sprite bake failed (falling back to raw overlay): ${bakeErr?.message || bakeErr}`);
+            ov.creatorPlacement = undefined;
+            ov.baked = undefined;
+          }
+        }
+      }
+      // Product images are appended AFTER the edit graph's inputs, so their
+      // indices start where the graph's left off.
+      const productBase = 1 + eg!.extraInputs.length;
+      for (const ov of brandOverlays!) {
+        inputArgs.push("-i", ov.baked?.spritePath ?? ov.imagePath);
+      }
+      brandOverlays!.forEach((ov, idx) => {
+        const inputIdx = productBase + idx;
+        const scaled = `[pov${idx}]`;
+        const out = `[pv${idx}]`;
+        if (ov.baked) {
+          filterParts.push(`[${inputIdx}:v]scale=${ov.baked.w}:${ov.baked.h}${scaled}`);
+          filterParts.push(`${cur}${scaled}overlay=x=${ov.baked.x}:y=${ov.baked.y}:eof_action=pass${out}`);
+        } else {
+          const pad = ov.padding ?? 0.10;
+          const w = Math.max(20, Math.round(ov.bboxWidth * srcWidth * (1 - 2 * pad)));
+          const h = Math.max(20, Math.round(ov.bboxHeight * srcHeight * (1 - 2 * pad)));
+          const x = Math.round((ov.bboxX + ov.bboxWidth * pad) * srcWidth);
+          const y = Math.round((ov.bboxY + ov.bboxHeight * pad) * srcHeight);
+          filterParts.push(`[${inputIdx}:v]scale=${w}:${h}:force_original_aspect_ratio=decrease${scaled}`);
+          filterParts.push(`${cur}${scaled}overlay=x=${x}:y=${y}:eof_action=pass${out}`);
+        }
+        cur = out;
+      });
+    }
+
+    // Crop/scale + captions, then text in output pixels.
+    const textParts = eg!.videoPost("[vcrop]", "[vout]");
+    filterParts.push(`${cur}${vf}${textParts.length > 0 ? "[vcrop]" : "[vout]"}`);
+    filterParts.push(...textParts);
+
+    const maps = ["-map", "[vout]"];
+    if (eg!.audio && eg!.audio.length > 0) {
+      filterParts.push(...eg!.audio);
+      maps.push("-map", eg!.audioOutLabel ?? "[aout]");
+    } else {
+      maps.push("-map", "0:a?");
+    }
+    videoFilterArgs = ["-filter_complex", filterParts.join(";"), ...maps];
+  } else if (hasOverlays && srcWidth && srcHeight) {
     // Bake creator-styled sprites first (AFTER any bbox refinement — the
     // caller mutates ov.bbox in place before we get here). Fail-open per
     // overlay: a failed bake falls back to the legacy raw-PNG behavior.
@@ -1707,9 +1786,15 @@ async function runFFmpegRenderUngated(opts: RenderOptions): Promise<void> {
     videoFilterArgs = ["-vf", vf];
   }
 
+  // Retiming changes the output length — a silence cut that removes 8s must
+  // not be clamped back to the original duration by -t, or the tail is lost.
+  const effectiveDuration = hasEdits && eg!.outputDurationSec > 0
+    ? Math.max(eg!.outputDurationSec, duration)
+    : duration;
+
   const args = [
     ...inputArgs,
-    "-t", duration.toString(),
+    "-t", effectiveDuration.toString(),
     ...videoFilterArgs,
     "-r", fps.toString(),
     "-c:v", "libx264", "-pix_fmt", "yuv420p",

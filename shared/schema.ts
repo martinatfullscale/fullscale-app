@@ -730,6 +730,34 @@ export const socialPostSnapshots = pgTable("social_post_snapshots", {
   index("idx_social_post_snap_user_time").on(table.userId, table.capturedAt),
   index("idx_social_post_snap_acct_time").on(table.socialAccountId, table.capturedAt),
 ]);
+/**
+ * Creator-uploaded media used INSIDE a clip — b-roll footage and music beds.
+ *
+ * Separate from video_index on purpose: these are ingredients, not content.
+ * They are never scanned for fixtures, never appear in the library, and never
+ * carry a placement. Putting them in video_index would corrupt every count
+ * that reads it as "the creator's catalogue".
+ */
+export const mediaAssets = pgTable("media_assets", {
+  id: serial("id").primaryKey(),
+  userId: varchar("user_id").notNull(),
+  kind: varchar("kind", { length: 16 }).notNull(),       // broll_video | broll_image | music
+  name: varchar("name", { length: 200 }).notNull(),
+  /** Object-storage key; served through an ownership-gated route. */
+  storagePath: text("storage_path").notNull(),
+  mimeType: varchar("mime_type", { length: 100 }),
+  fileSizeBytes: bigint("file_size_bytes", { mode: "number" }),
+  durationSec: numeric("duration_sec"),
+  thumbnailPath: text("thumbnail_path"),
+  /** Soft delete — a clip's edit stack may still reference it. */
+  deletedAt: timestamp("deleted_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_media_assets_user_kind").on(table.userId, table.kind),
+]);
+export type MediaAsset = typeof mediaAssets.$inferSelect;
+export type InsertMediaAsset = typeof mediaAssets.$inferInsert;
+
 export type SocialPostSnapshot = typeof socialPostSnapshots.$inferSelect;
 export type InsertSocialPostSnapshot = typeof socialPostSnapshots.$inferInsert;
 
@@ -1015,6 +1043,29 @@ export const editorialClips = pgTable('editorial_clips', {
   // hardcoded captions on, style "highlight", lower-third position.
   captionsEnabled: boolean('captions_enabled').default(true),
   captionStyle: varchar('caption_style', { length: 24 }),          // highlight | brand_callout | narrative
+  /**
+   * The full edit stack — b-roll, text overlays, music bed + ducking, speed
+   * ramps, silence removal and stabilization.
+   *
+   * One jsonb rather than a column per feature: these compose into a single
+   * ffmpeg filtergraph and are always read and written together, and the set
+   * will keep growing. Shape is server/lib/remix/editStack.ts `EditStack`.
+   * Null = no edits beyond trim/captions, which is the pipeline default.
+   */
+  edits: jsonb('edits'),
+  /** Cached silencedetect result, so changing padding doesn't re-analyze.
+   *  Clip-relative spans plus the parameters they were measured at. */
+  silenceAnalysis: jsonb('silence_analysis').$type<{
+    spans: Array<{ start: number; end: number }>;
+    totalSilentSec: number;
+    thresholdDb: number;
+    minDurationSec: number;
+    analyzedAt: string;
+  }>(),
+  /** Whatever the last render could NOT do — a missing ffmpeg filter, an
+   *  unresolvable asset. Surfaced in the editor so a silently-dropped effect
+   *  is never mistaken for one that was applied. */
+  renderWarnings: jsonb('render_warnings').$type<string[]>(),
   captionSettings: jsonb('caption_settings').$type<{
     sizeScale?: number;      // 0.5–2.0, multiplies the style's own scale
     positionRatio?: number;  // 0.02–0.45 of frame height from the bottom
