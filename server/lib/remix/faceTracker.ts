@@ -330,6 +330,18 @@ export interface CropTrajectoryOptions {
   speakerSegments?: SpeakerSegment[];
   /** Absolute time of clip start in source video (for mapping frame times to speaker times) */
   clipStartTime?: number;
+  /**
+   * Boxes that MUST stay inside the 9:16 window — the fixtures carrying a
+   * brand placement.
+   *
+   * The trajectory is otherwise driven purely by face detections, and the
+   * crop is applied AFTER the product is composited onto the source frame.
+   * A creator can therefore position a product perfectly, and a vertical
+   * reframe that follows a speaker to the opposite side of the frame will
+   * crop it out of the delivered clip entirely — silently, because the
+   * render still succeeds. Coordinates are 0-1 normalized to the source frame.
+   */
+  anchorBoxes?: Array<{ x: number; width: number }>;
 }
 
 /**
@@ -355,9 +367,40 @@ export function computeCropTrajectory(
   const cropH = srcH;
   const effectiveCropW = Math.min(cropW, srcW);
 
+  // Keep any placement anchor inside the window. The union of the anchor
+  // boxes gives the span that must remain visible; when it fits, the crop is
+  // clamped so it can't slide past either edge, and when it doesn't fit (a
+  // box wider than a 9:16 window) the crop centers on it instead — losing
+  // some of the product is recoverable, losing all of it is not.
+  const anchors = (options.anchorBoxes ?? []).filter(
+    (b) => Number.isFinite(b.x) && Number.isFinite(b.width) && b.width > 0,
+  );
+  const anchorLeftPx = anchors.length > 0
+    ? Math.max(0, Math.min(...anchors.map((b) => b.x)) * srcW) : 0;
+  const anchorRightPx = anchors.length > 0
+    ? Math.min(srcW, Math.max(...anchors.map((b) => b.x + b.width)) * srcW) : 0;
+
+  const constrainToAnchor = (cropX: number): number => {
+    if (anchors.length === 0 || anchorRightPx <= anchorLeftPx) return cropX;
+    const span = anchorRightPx - anchorLeftPx;
+    if (span > effectiveCropW) {
+      const centered = Math.round((anchorLeftPx + anchorRightPx) / 2 - effectiveCropW / 2);
+      return Math.max(0, Math.min(srcW - effectiveCropW, centered));
+    }
+    const minX = Math.max(0, anchorRightPx - effectiveCropW);
+    const maxX = Math.min(srcW - effectiveCropW, anchorLeftPx);
+    if (minX > maxX) return cropX; // degenerate — leave the face-driven value
+    return Math.max(minX, Math.min(maxX, cropX));
+  };
+
   if (frames.length === 0) {
+    // No faces: center crop, but still held over the placement if there is one.
     return {
-      frames: [{ time: 0, cropX: Math.round((srcW - effectiveCropW) / 2), cropY: 0 }],
+      frames: [{
+        time: 0,
+        cropX: constrainToAnchor(Math.round((srcW - effectiveCropW) / 2)),
+        cropY: 0,
+      }],
       cropW: effectiveCropW,
       cropH,
     };
@@ -516,7 +559,9 @@ export function computeCropTrajectory(
   // the cut. Hold-then-jump makes the crop change hands frame-accurately.
   const SNAP_HOLD_EPS = 0.001;
   const toCropX = (cx: number) =>
-    Math.max(0, Math.min(srcW - effectiveCropW, Math.round(cx - effectiveCropW / 2)));
+    constrainToAnchor(
+      Math.max(0, Math.min(srcW - effectiveCropW, Math.round(cx - effectiveCropW / 2))),
+    );
   const keyframes: CropKeyframe[] = [];
   for (let i = 0; i < points.length; i++) {
     const cropX = toCropX(stabilized[i]);

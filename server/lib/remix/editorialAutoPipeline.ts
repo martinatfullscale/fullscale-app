@@ -864,7 +864,14 @@ async function renderEditorialRange(
       ctx.srcSize.height,
       ctx.platformConfig.targetWidth,
       ctx.platformConfig.targetHeight,
-      { speakerSegments: ctx.speakerSegments as any, clipStartTime: rangeStart }
+      {
+        speakerSegments: ctx.speakerSegments as any,
+        clipStartTime: rangeStart,
+        // Placements are composited in source space BEFORE this crop, so a
+        // speaker-following reframe could cut the product straight out of the
+        // delivered clip. Hold the window over them.
+        anchorBoxes: (ctx.brandOverlays ?? []).map((o) => ({ x: o.bboxX, width: o.bboxWidth })),
+      }
     );
 
     const vf = `${buildCropFilterExpr(trajectory)},scale=${ctx.platformConfig.targetWidth}:${ctx.platformConfig.targetHeight}`;
