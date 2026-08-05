@@ -1630,6 +1630,22 @@ export async function registerRoutes(
   // choose placements; this is where FullScale reviews each choice and
   // marks the final render ready (or asks for changes).
   // -------------------------------------------------------------------
+  // GET /api/admin/schema-check — is the deployed DB caught up with the code?
+  // The answer to "the site is laggy and everything spins" often lives here.
+  app.get("/api/admin/schema-check", async (req: any, res) => {
+    try {
+      const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
+      if (!callerEmail || !ADMIN_EMAILS.includes(String(callerEmail).toLowerCase())) {
+        return res.status(403).json({ error: "Admin access required" });
+      }
+      const { checkSchemaDrift } = await import("./lib/schemaCheck");
+      const drift = await checkSchemaDrift();
+      res.status(drift.ok ? 200 : 503).json(drift);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Schema check failed" });
+    }
+  });
+
   app.get("/api/admin/placements", async (req: any, res) => {
     try {
       const adminEmails = ADMIN_EMAILS; // canonical list — see server/lib/adminEmails.ts

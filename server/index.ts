@@ -536,6 +536,17 @@ async function sweepStaleTempArtifacts(): Promise<void> {
         log(`Database seeding warning: ${dbError}`);
       }
 
+      // Is the database actually caught up with this build? Drizzle names
+      // every column explicitly, so one un-pushed migration fails every query
+      // touching that table and the whole app reads as "laggy, everything
+      // spins". Loud at boot beats diagnosing it from symptoms again.
+      try {
+        const { logSchemaDriftAtBoot } = await import("./lib/schemaCheck");
+        await logSchemaDriftAtBoot();
+      } catch (schemaErr) {
+        log(`Schema check failed to run: ${schemaErr}`);
+      }
+
       // Publishing scheduler — fires user-scheduled posts when due (60s poll).
       // Kill switch: SCHEDULER_ENABLED=false.
       if (process.env.SCHEDULER_ENABLED !== "false") {
