@@ -12,8 +12,9 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Sparkles, Clock, TrendingUp, Tag, ChevronDown, ChevronUp,
   Loader2, Mic, Brain, Zap, Eye, Heart, Shield, MessageSquare,
-  RefreshCw, Play, DollarSign, Filter, X, Wand2, AlertCircle, Search,
+  RefreshCw, Play, DollarSign, Filter, X, Wand2, AlertCircle, Search, SlidersHorizontal,
 } from "lucide-react";
+import ClipEditorPanel, { type ClipEditSettings } from "@/components/ClipEditorPanel";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
@@ -55,6 +56,11 @@ interface RankedClip {
   aspectRatio?: string | null;
   renderStatus?: "pending" | "rendering" | "rendered" | "failed" | null;
   renderError?: string | null;
+  // Creator edit settings, persisted so a re-render reproduces them
+  captionsEnabled?: boolean | null;
+  captionStyle?: string | null;
+  captionSettings?: Record<string, any> | null;
+  segments?: Array<{ start: number; end: number; role?: string }> | null;
 }
 
 interface TranscriptStatus {
@@ -154,6 +160,27 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
   const [isLoadingTranscript, setIsLoadingTranscript] = useState(false);
   const [isLoadingAnalysis, setIsLoadingAnalysis] = useState(false);
   const [isLoadingSavedClips, setIsLoadingSavedClips] = useState(true);
+  // Source length bounds the trim sliders. Absent (0) = unknown; the editor
+  // falls back to a window around the clip rather than guessing a hard cap.
+  const [sourceDurationSec, setSourceDurationSec] = useState<number>(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/video/${videoId}/details`, { credentials: "include" });
+        if (!res.ok) return;
+        const data = await res.json();
+        const raw = String(data?.video?.duration ?? data?.duration ?? "").trim();
+        if (!raw || cancelled) return;
+        const secs = /^\d+(\.\d+)?$/.test(raw)
+          ? parseFloat(raw)
+          : raw.split(":").map(Number).reduce((a, p) => (Number.isFinite(p) ? a * 60 + p : a), 0);
+        if (Number.isFinite(secs) && secs > 0) setSourceDurationSec(secs);
+      } catch { /* trim just falls back to a relative window */ }
+    })();
+    return () => { cancelled = true; };
+  }, [videoId]);
   const [analysisComplete, setAnalysisComplete] = useState(false);
   const [expandedClip, setExpandedClip] = useState<number | null>(null);
   const [sortBy, setSortBy] = useState<"score" | "time" | "duration">("score");
@@ -850,6 +877,35 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
                   onCopilot={onSelectForCopilot ? () => onSelectForCopilot(clip) : undefined}
                   onBuy={onBuyPlacement ? () => onBuyPlacement(clip) : undefined}
                   onPlay={clip.exportPath ? () => setPlayingClip(clip) : undefined}
+                  sourceDurationSec={sourceDurationSec}
+                  onApplyEdit={(clip as any).id ? async (settings) => {
+                    const res = await fetch(`/api/editorial-clips/${(clip as any).id}/rerender`, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      credentials: "include",
+                      body: JSON.stringify({
+                        aspect: settings.aspect,
+                        clipStart: settings.clipStart,
+                        clipEnd: settings.clipEnd,
+                        captionsEnabled: settings.captionsEnabled,
+                        captionStyle: settings.captionStyle,
+                        captionSettings: {
+                          sizeScale: settings.sizeScale,
+                          positionRatio: settings.positionRatio,
+                          wordsPerPhrase: settings.wordsPerPhrase,
+                          outline: settings.outline,
+                          accentHex: settings.accentHex,
+                        },
+                      }),
+                    });
+                    if (res.ok) {
+                      toast({ title: "Re-rendering your edit", description: "The clip refreshes here when the new cut is ready." });
+                      await refetchClips();
+                    } else {
+                      const err = await res.json().catch(() => ({}));
+                      toast({ title: "Re-render failed", description: err.error || "Try again", variant: "destructive" });
+                    }
+                  } : undefined}
                   onRerenderAspect={(clip as any).id ? async (aspect) => {
                     const res = await fetch(`/api/editorial-clips/${(clip as any).id}/rerender`, {
                       method: "POST",
@@ -966,6 +1022,8 @@ function EditorialClipCard({
   onPlay,
   onCopilot,
   onRerenderAspect,
+  onApplyEdit,
+  sourceDurationSec,
 }: {
   clip: RankedClip;
   rank: number;
@@ -977,7 +1035,10 @@ function EditorialClipCard({
   onPlay?: () => void;
   onCopilot?: () => void;
   onRerenderAspect?: (aspect: "9:16" | "16:9") => void;
+  onApplyEdit?: (settings: ClipEditSettings) => Promise<void>;
+  sourceDurationSec?: number;
 }) {
+  const [editing, setEditing] = useState(false);
   const viralPct = Math.round(clip.finalScore * 100);
   const tierBadge = getTierBadge(clip.monetizationTier);
   const isRendered = clip.renderStatus === "rendered" && !!clip.exportPath;
@@ -1116,6 +1177,19 @@ function EditorialClipCard({
                 })}
               </div>
             )}
+            {onApplyEdit && mode !== "brand" && (clip as any).id && (
+              <Button
+                size="sm"
+                variant={editing ? "default" : "ghost"}
+                onClick={() => setEditing((v) => !v)}
+                className={editing ? "bg-purple-600 hover:bg-purple-500 text-white text-xs" : "text-gray-300 hover:text-white text-xs"}
+                title="Trim, captions and shape for this clip"
+                data-testid={`button-edit-${(clip as any).id ?? rank}`}
+              >
+                <SlidersHorizontal className="w-3 h-3 mr-1" />
+                Edit
+              </Button>
+            )}
             {mode === "remix" && onCopilot && (
               <Button
                 size="sm"
@@ -1163,6 +1237,26 @@ function EditorialClipCard({
           </div>
         </div>
       </div>
+
+      {/* Editing toolkit — trim, shape and captions for this clip */}
+      {editing && onApplyEdit && (clip as any).id && (
+        <ClipEditorPanel
+          clip={{
+            id: (clip as any).id,
+            clipStart: clip.clipStart,
+            clipEnd: clip.clipEnd,
+            duration: clip.duration,
+            aspectRatio: clip.aspectRatio ?? null,
+            captionsEnabled: clip.captionsEnabled ?? null,
+            captionStyle: clip.captionStyle ?? null,
+            captionSettings: clip.captionSettings ?? null,
+            segments: clip.segments ?? null,
+          }}
+          sourceDurationSec={sourceDurationSec}
+          onApply={onApplyEdit}
+          onClose={() => setEditing(false)}
+        />
+      )}
 
       {/* Expanded Details */}
       <AnimatePresence>

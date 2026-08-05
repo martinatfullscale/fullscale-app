@@ -2989,6 +2989,32 @@ export class DatabaseStorage implements IStorage {
     await db.delete(editorialClips).where(eq(editorialClips.videoId, videoId));
   }
 
+  /** Persist the creator's edit settings (and trim) for a clip. Kept separate
+   *  from updateEditorialClipRender so a render-status write can never clobber
+   *  a setting the creator just changed. */
+  async updateEditorialClipEdit(
+    clipId: number,
+    updates: {
+      clipStart?: number;
+      clipEnd?: number;
+      duration?: number;
+      captionsEnabled?: boolean;
+      captionStyle?: string | null;
+      captionSettings?: any;
+      aspectRatio?: string | null;
+      segments?: any;
+    },
+  ): Promise<EditorialClip | undefined> {
+    const patch: Record<string, any> = {};
+    for (const [k, v] of Object.entries(updates)) {
+      if (v !== undefined) patch[k] = v;
+    }
+    if (Object.keys(patch).length === 0) return this.getEditorialClipById(clipId);
+    const [row] = await db.update(editorialClips).set(patch)
+      .where(eq(editorialClips.id, clipId)).returning();
+    return row;
+  }
+
   async updateEditorialClipRender(
     clipId: number,
     updates: {

@@ -439,6 +439,19 @@ async function isSameCreator(
 // Legacy numeric ids pass through unchanged so existing rows still match.
 import { stableUserIntId } from "./lib/stableUserId";
 
+/** video_index.duration is a display string ("12:34", "1:02:03") or a bare
+ *  seconds value depending on the import path. Returns 0 when unparseable —
+ *  callers treat 0 as "unknown", never as "zero-length". */
+function durationStringToSeconds(raw: unknown): number {
+  if (raw == null) return 0;
+  const str = String(raw).trim();
+  if (!str) return 0;
+  if (/^\d+(\.\d+)?$/.test(str)) return parseFloat(str);
+  const parts = str.split(":").map((p) => parseFloat(p));
+  if (parts.some((p) => !Number.isFinite(p))) return 0;
+  return parts.reduce((acc, p) => acc * 60 + p, 0);
+}
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
@@ -13460,8 +13473,62 @@ export async function registerRoutes(
       const aspect = req.body?.aspect === "16:9" ? "16:9" : "9:16";
       const platformKey = aspect === "16:9" ? "youtube" : "tiktok";
 
+      // ── Creator edit settings ────────────────────────────────────────
+      // This endpoint used to accept `aspect` and nothing else, so trim and
+      // caption choices had nowhere to live and every re-render silently
+      // reverted to captions-on / "highlight" / lower-third.
+      const b = req.body || {};
+      const edit: Record<string, any> = { aspectRatio: aspect };
+
+      // Trim, validated against the SOURCE video's duration. An out-of-range
+      // trim renders a black tail or an empty file rather than failing.
+      if (b.clipStart !== undefined || b.clipEnd !== undefined) {
+        const start = Number(b.clipStart ?? clip.clipStart);
+        const end = Number(b.clipEnd ?? clip.clipEnd);
+        if (!Number.isFinite(start) || !Number.isFinite(end) || end - start < 1) {
+          return res.status(400).json({ error: "Trim must be at least 1 second and both bounds must be numbers" });
+        }
+        const sourceSec = durationStringToSeconds((video as any).duration);
+        if (start < 0 || (sourceSec > 0 && end > sourceSec + 0.5)) {
+          return res.status(400).json({
+            error: sourceSec > 0
+              ? `Trim must fall inside the source video (0–${sourceSec.toFixed(1)}s)`
+              : "Trim start cannot be negative",
+          });
+        }
+        // Re-trimming a multi-beat assembled clip would silently discard the
+        // narrative structure, so the beats are dropped explicitly and the
+        // clip becomes a single range.
+        edit.clipStart = start;
+        edit.clipEnd = end;
+        edit.duration = end - start;
+        if ((clip as any).segments) edit.segments = null;
+      }
+
+      if (b.captionsEnabled !== undefined) edit.captionsEnabled = !!b.captionsEnabled;
+      if (b.captionStyle !== undefined) {
+        const allowed = ["highlight", "brand_callout", "narrative"];
+        if (b.captionStyle !== null && !allowed.includes(String(b.captionStyle))) {
+          return res.status(400).json({ error: `captionStyle must be one of ${allowed.join(", ")}` });
+        }
+        edit.captionStyle = b.captionStyle;
+      }
+      if (b.captionSettings !== undefined) {
+        const cs = b.captionSettings || {};
+        const num = (v: any, lo: number, hi: number) =>
+          v === undefined || v === null ? undefined : Math.min(hi, Math.max(lo, Number(v)));
+        edit.captionSettings = {
+          sizeScale: num(cs.sizeScale, 0.5, 2),
+          positionRatio: num(cs.positionRatio, 0.02, 0.45),
+          wordsPerPhrase: num(cs.wordsPerPhrase, 1, 12),
+          outline: num(cs.outline, 0, 8),
+          accentHex: /^#?[0-9a-f]{6}$/i.test(String(cs.accentHex ?? "")) ? String(cs.accentHex) : undefined,
+        };
+      }
+
+      await storage.updateEditorialClipEdit(clipId, edit);
       await storage.updateEditorialClipRender(clipId, { renderStatus: "rendering", renderError: null });
-      res.json({ message: "Re-render started", clipId, aspect });
+      res.json({ message: "Re-render started", clipId, aspect, applied: edit });
 
       renderSingleEditorialClip(clip.videoId, clipId, { platformKey: platformKey as any })
         .then(async () => {

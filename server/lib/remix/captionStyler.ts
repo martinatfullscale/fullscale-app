@@ -65,6 +65,11 @@ const STYLES: Record<CaptionStyleName, StyleSpec> = {
   },
 };
 
+function clamp(n: number, lo: number, hi: number): number {
+  const v = Number(n);
+  return Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : lo;
+}
+
 function assTime(seconds: number): string {
   const s = Math.max(0, seconds);
   const h = Math.floor(s / 3600);
@@ -124,17 +129,51 @@ function toPhrases(segments: CaptionSegment[], wordsPerPhrase: number): Array<{ 
  * @param styleName one of the UI style options; unknown values → "highlight"
  * @param config    output dimensions (ASS PlayRes = pixel-exact styling)
  */
+export interface CaptionOverrides {
+  /** Multiplies the style's own fontScale. 0.6–1.8 is the useful range. */
+  sizeScale?: number;
+  /** Distance from the bottom as a fraction of frame height (0.05 = very low,
+   *  0.45 = near center). Default 0.14 — the lower third. */
+  positionRatio?: number;
+  /** Highlight colour as #RRGGBB; converted to ASS BGR internally. */
+  accentHex?: string;
+  /** Words per on-screen phrase. Fewer = punchier. */
+  wordsPerPhrase?: number;
+  /** Outline thickness in ASS units. */
+  outline?: number;
+}
+
+/** #RRGGBB → ASS &HAABBGGRR (ASS is BGR, alpha 00 = opaque). */
+function hexToAss(hex?: string): string | null {
+  if (!hex) return null;
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return null;
+  const [r, g, b] = [m[1].slice(0, 2), m[1].slice(2, 4), m[1].slice(4, 6)];
+  return `&H00${b}${g}${r}`.toUpperCase();
+}
+
 export function buildAssSubtitles(
   segments: CaptionSegment[],
   styleName: string,
   config: { targetWidth: number; targetHeight: number; aspectRatio: string },
+  overrides?: CaptionOverrides,
 ): string | null {
   if (!segments || segments.length === 0) return null;
-  const spec = STYLES[(styleName as CaptionStyleName)] ?? STYLES.highlight;
+  const base = STYLES[(styleName as CaptionStyleName)] ?? STYLES.highlight;
+  // Creator-set values win over the preset; the preset still supplies
+  // everything they didn't touch, so a style stays recognizable after a tweak.
+  const spec: StyleSpec = {
+    ...base,
+    accent: hexToAss(overrides?.accentHex) ?? base.accent,
+    outline: clamp(overrides?.outline ?? base.outline, 0, 8),
+    wordsPerPhrase: Math.round(clamp(overrides?.wordsPerPhrase ?? base.wordsPerPhrase, 1, 12)),
+    fontScale: base.fontScale * clamp(overrides?.sizeScale ?? 1, 0.5, 2),
+  };
 
   const baseSize = Math.round((config.aspectRatio === "9:16" ? config.targetHeight * 0.042 : config.targetHeight * 0.05) * spec.fontScale);
-  // Lower-third margin — mirrors the drawtext y placement (~82% down)
-  const marginV = Math.round(config.targetHeight * 0.14);
+  // Distance from the bottom edge. 0.14 (the lower third) is the default and
+  // was previously the only possible value.
+  const marginV = Math.round(config.targetHeight * clamp(overrides?.positionRatio ?? 0.14, 0.02, 0.45));
 
   const header = [
     "[Script Info]",

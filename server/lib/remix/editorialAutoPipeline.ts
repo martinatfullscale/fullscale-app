@@ -809,6 +809,13 @@ interface EditorialRenderCtx {
   needsReframe: boolean;
   speakerSegments: any[] | undefined;
   brandOverlays?: BrandOverlay[];
+  /** Creator's caption choices for this clip, persisted on editorial_clips.
+   *  Absent = pipeline defaults (captions on, "highlight", lower third). */
+  captionOpts?: {
+    enabled?: boolean;
+    style?: string;
+    settings?: import("./captionStyler").CaptionOverrides | null;
+  };
   logTag: string;
 }
 
@@ -824,6 +831,7 @@ async function renderEditorialRange(
     rangeStart,
     duration,
     ctx.platformConfig as any,
+    ctx.captionOpts,
   );
   // Preferred: ASS karaoke styling; the legacy drawtext filter is retried
   // automatically by runFFmpegRender if the ASS pass fails.
@@ -1108,6 +1116,13 @@ export async function renderSingleEditorialClip(
       needsReframe,
       speakerSegments,
       brandOverlays,
+      // The clip's own saved caption choices — a re-render must reproduce
+      // what the creator set, not revert to the pipeline defaults.
+      captionOpts: {
+        enabled: (clip as any).captionsEnabled !== false,
+        style: (clip as any).captionStyle || "highlight",
+        settings: (clip as any).captionSettings ?? null,
+      },
       logTag: "EditorialAuto:Single",
     });
 
@@ -1520,8 +1535,16 @@ function buildEditorialCaptions(
   clipStart: number,
   clipDuration: number,
   platformConfig: { aspectRatio: string; targetHeight: number; targetWidth: number },
+  captionOpts?: {
+    enabled?: boolean;
+    style?: string;
+    settings?: import("./captionStyler").CaptionOverrides | null;
+  },
 ): { drawtext: string | null; ass: string | null } {
   try {
+    // Captions used to be unconditional on this path — there was no off
+    // switch anywhere in the editorial pipeline.
+    if (captionOpts?.enabled === false) return { drawtext: null, ass: null };
     if (!transcriptSegments || transcriptSegments.length === 0) return { drawtext: null, ass: null };
     const result = generateTranscriptCaptions({
       clipStart,
@@ -1530,16 +1553,21 @@ function buildEditorialCaptions(
       narrativeContext: "",
       emotionalTone: "",
       brandNames: [],
-      style: "highlight",
+      style: (captionOpts?.style as any) || "highlight",
       transcriptSegments: transcriptSegments as any,
     });
     if (result.segments.length === 0) return { drawtext: null, ass: null };
-    console.log(`[EditorialAuto]   Captions: ${result.segments.length} segment(s) will be burned in`);
+    console.log(`[EditorialAuto]   Captions: ${result.segments.length} segment(s) will be burned in (${captionOpts?.style || "highlight"})`);
     return {
       drawtext: buildCaptionFilter(result.segments, platformConfig),
       // Word-timed karaoke styling; falls back to drawtext when the ASS
       // render fails at the ffmpeg level.
-      ass: buildAssSubtitles(result.segments, "highlight", platformConfig as any),
+      ass: buildAssSubtitles(
+        result.segments,
+        captionOpts?.style || "highlight",
+        platformConfig as any,
+        captionOpts?.settings ?? undefined,
+      ),
     };
   } catch (err: any) {
     console.warn(`[EditorialAuto]   Caption build failed (non-fatal): ${err?.message || err}`);

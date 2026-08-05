@@ -1009,6 +1009,19 @@ export const editorialClips = pgTable('editorial_clips', {
   exportPath: varchar('export_path', { length: 500 }),       // Object Storage URL for rendered MP4
   thumbnailPath: varchar('thumbnail_path', { length: 500 }), // Object Storage URL for thumbnail JPG
   aspectRatio: varchar('aspect_ratio', { length: 10 }),      // e.g., '9:16', '16:9', '1:1'
+  // ── Creator edit settings (the Remix Studio toolkit) ──
+  // Persisted so a re-render reproduces the creator's choices instead of
+  // silently reverting to the pipeline defaults. Every previous re-render
+  // hardcoded captions on, style "highlight", lower-third position.
+  captionsEnabled: boolean('captions_enabled').default(true),
+  captionStyle: varchar('caption_style', { length: 24 }),          // highlight | brand_callout | narrative
+  captionSettings: jsonb('caption_settings').$type<{
+    sizeScale?: number;      // 0.5–2.0, multiplies the style's own scale
+    positionRatio?: number;  // 0.02–0.45 of frame height from the bottom
+    accentHex?: string;      // #RRGGBB highlight colour
+    wordsPerPhrase?: number; // 1–12
+    outline?: number;        // 0–8
+  }>(),
   renderStatus: varchar('render_status', { length: 20 }).default('pending'), // pending, rendering, rendered, failed
   renderError: text('render_error'),
   renderedAt: timestamp('rendered_at'),
