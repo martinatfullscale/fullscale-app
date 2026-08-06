@@ -6,6 +6,7 @@
  * bell notification).
  */
 import { useState } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -54,7 +55,7 @@ export default function AdminPlacements() {
       form.append("render", deliverFile);
       form.append("aspectRatio", deliverAspect);
       if (deliverNote.trim()) form.append("deliveryNote", deliverNote.trim());
-      const res = await fetch(`/api/admin/placements/${placementId}/deliver`, {
+      const res = await fetchWithTimeout(`/api/admin/placements/${placementId}/deliver`, {
         method: "POST",
         credentials: "include",
         body: form,
@@ -79,7 +80,7 @@ export default function AdminPlacements() {
   const { data, isLoading, isError, error } = useQuery<{ placements: ReviewRow[] }>({
     queryKey: ["/api/admin/placements"],
     queryFn: async () => {
-      const res = await fetch("/api/admin/placements", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/admin/placements", { credentials: "include" });
       if (!res.ok) {
         // Keep the server's reason. Throwing a bare status here is why a
         // failing queue read looked like an auth problem, or like nothing at
@@ -98,7 +99,7 @@ export default function AdminPlacements() {
 
   const reviewMutation = useMutation({
     mutationFn: async (args: { id: number; reviewStatus: string; reviewNote?: string }) => {
-      const res = await fetch(`/api/admin/placements/${args.id}/review`, {
+      const res = await fetchWithTimeout(`/api/admin/placements/${args.id}/review`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -121,7 +122,7 @@ export default function AdminPlacements() {
   const fixSchema = async () => {
     setFixingSchema(true);
     try {
-      const res = await fetch("/api/admin/schema-fix", {
+      const res = await fetchWithTimeout("/api/admin/schema-fix", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",

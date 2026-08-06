@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { useLocation } from "wouter";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -302,7 +303,7 @@ export default function BrandOnboarding() {
   // ── Load existing brief on mount ────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/brand-brief/me", { credentials: "include" })
+    fetchWithTimeout("/api/brand-brief/me", { credentials: "include" })
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (cancelled) return;
@@ -364,7 +365,7 @@ export default function BrandOnboarding() {
     setSaveStatus("saving");
     saveTimerRef.current = setTimeout(async () => {
       try {
-        const res = await fetch("/api/brand-brief/me", {
+        const res = await fetchWithTimeout("/api/brand-brief/me", {
           method: "PUT",
           credentials: "include",
           headers: { "Content-Type": "application/json" },
@@ -438,7 +439,7 @@ export default function BrandOnboarding() {
         clearTimeout(saveTimerRef.current);
         saveTimerRef.current = null;
       }
-      const putRes = await fetch("/api/brand-brief/me", {
+      const putRes = await fetchWithTimeout("/api/brand-brief/me", {
         method: "PUT",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
@@ -448,7 +449,7 @@ export default function BrandOnboarding() {
         throw new Error("Failed to save final draft before submit");
       }
       // Then submit
-      const submitRes = await fetch("/api/brand-brief/me/submit", {
+      const submitRes = await fetchWithTimeout("/api/brand-brief/me/submit", {
         method: "POST",
         credentials: "include",
       });

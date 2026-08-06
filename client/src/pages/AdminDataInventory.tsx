@@ -21,7 +21,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { fmt } from "@/components/AnalyticsBits";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, fetchWithTimeout } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
 interface InventoryCard {
@@ -180,7 +180,7 @@ function RoomModelSection() {
   const { data, isLoading, isError, error } = useQuery<{ models: RoomModelRow[] }>({
     queryKey: ["/api/admin/room-models"],
     queryFn: async () => {
-      const res = await fetch("/api/admin/room-models", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/admin/room-models", { credentials: "include" });
       if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || "Failed to load");
       return res.json();
     },
@@ -388,7 +388,7 @@ export default function AdminDataInventory() {
   const { data, isLoading, isError, error } = useQuery<DataInventoryResponse>({
     queryKey: ["/api/admin/data-inventory"],
     queryFn: async () => {
-      const res = await fetch("/api/admin/data-inventory", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/admin/data-inventory", { credentials: "include" });
       if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || "Failed to load");
       return res.json();
     },

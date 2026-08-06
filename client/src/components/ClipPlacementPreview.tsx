@@ -18,6 +18,7 @@
  *   (absent) — not in this clip's playing range at all
  */
 import { useMemo } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
@@ -77,7 +78,7 @@ export default function ClipPlacementPreview({ clipId, videoId, clipTitle, onClo
   const { data: surf, isLoading } = useQuery<ClipSurfacesResponse>({
     queryKey: ["/api/editorial-clips", clipId, "surfaces"],
     queryFn: async () => {
-      const res = await fetch(`/api/editorial-clips/${clipId}/surfaces`, { credentials: "include" });
+      const res = await fetchWithTimeout(`/api/editorial-clips/${clipId}/surfaces`, { credentials: "include" });
       if (!res.ok) throw new Error("surfaces unavailable");
       return res.json();
     },
@@ -88,7 +89,7 @@ export default function ClipPlacementPreview({ clipId, videoId, clipTitle, onClo
   const { data: placements } = useQuery<SavedPlacement[]>({
     queryKey: ["/api/video", videoId, "placements", "clip-preview"],
     queryFn: async () => {
-      const res = await fetch(`/api/video/${videoId}/placements`, { credentials: "include" });
+      const res = await fetchWithTimeout(`/api/video/${videoId}/placements`, { credentials: "include" });
       if (!res.ok) return [];
       const data = await res.json();
       return data.placements || [];

@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -69,7 +70,7 @@ export default function AuthPage() {
   const handleDevLogin = async () => {
     setIsLoading(true);
     try {
-      const response = await fetch("/api/auth/dev-login", {
+      const response = await fetchWithTimeout("/api/auth/dev-login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -94,7 +95,7 @@ export default function AuthPage() {
     setIsLoading(true);
 
     try {
-      const response = await fetch("/api/auth/login", {
+      const response = await fetchWithTimeout("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: loginEmail, password: loginPassword }),
@@ -177,7 +178,7 @@ export default function AuthPage() {
     setIsLoading(true);
 
     try {
-      const response = await fetch("/api/auth/register", {
+      const response = await fetchWithTimeout("/api/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

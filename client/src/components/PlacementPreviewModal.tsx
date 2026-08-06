@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { useQuery } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -1023,7 +1024,7 @@ export default function PlacementPreviewModal({
   }>({
     queryKey: [`/api/video/${videoId}/details`],
     queryFn: async () => {
-      const res = await fetch(`/api/video/${videoId}/details`);
+      const res = await fetchWithTimeout(`/api/video/${videoId}/details`);
       if (!res.ok) return { filePath: null };
       return res.json();
     },
@@ -1083,7 +1084,7 @@ export default function PlacementPreviewModal({
   }>({
     queryKey: [`/api/video/${videoId}/surface-keyframes`],
     queryFn: async () => {
-      const res = await fetch(`/api/video/${videoId}/surface-keyframes`);
+      const res = await fetchWithTimeout(`/api/video/${videoId}/surface-keyframes`);
       if (!res.ok) return { keyframes: {} };
       return res.json();
     },
@@ -1106,7 +1107,7 @@ export default function PlacementPreviewModal({
     setIsMotionLoading(true);
     try {
       console.log(`[PlacementPreview] Requesting motion tracking for video ${videoId}, surface ${selectedSurface.id}${force ? " (forced re-fetch)" : ""}...`);
-      const res = await fetch(`/api/video/${videoId}/motion-track`, {
+      const res = await fetchWithTimeout(`/api/video/${videoId}/motion-track`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -1159,7 +1160,7 @@ export default function PlacementPreviewModal({
       // ── Phase 1: Quick sparse scan (interval=2s) ──
       // Gets ~13 keyframes in ~1 minute → enough for spline interpolation
       console.log(`[PlacementPreview] Phase 1: Quick scan for video ${videoId} (interval=2s)...`);
-      const quickRes = await fetch(`/api/video/${videoId}/dense-scan`, {
+      const quickRes = await fetchWithTimeout(`/api/video/${videoId}/dense-scan`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -1176,7 +1177,7 @@ export default function PlacementPreviewModal({
       // ── Phase 2: Dense refine scan (interval=0.5s, fire-and-forget) ──
       // Runs in background to improve tracking accuracy with 4x more keyframes
       console.log(`[PlacementPreview] Phase 2: Dense scan for video ${videoId} (interval=0.5s)...`);
-      const denseRes = await fetch(`/api/video/${videoId}/dense-scan`, {
+      const denseRes = await fetchWithTimeout(`/api/video/${videoId}/dense-scan`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -1202,7 +1203,7 @@ export default function PlacementPreviewModal({
   const { data: catalogProducts } = useQuery<CatalogProduct[]>({
     queryKey: ["/api/brand-products/catalog"],
     queryFn: async () => {
-      const res = await fetch("/api/brand-products/catalog");
+      const res = await fetchWithTimeout("/api/brand-products/catalog");
       if (!res.ok) return [];
       return res.json();
     },
@@ -1225,7 +1226,7 @@ export default function PlacementPreviewModal({
     if (!open || !selectedSurface) return;
     const loadExistingPlacement = async () => {
       try {
-        const res = await fetch(`/api/video/${videoId}/surface/${selectedSurface.id}/placement`, {
+        const res = await fetchWithTimeout(`/api/video/${videoId}/surface/${selectedSurface.id}/placement`, {
           credentials: "include",
         });
         if (!res.ok) return;
@@ -2098,7 +2099,7 @@ export default function PlacementPreviewModal({
       setExportProgress(0);
       setExportOutputUrl(null);
 
-      const res = await fetch(`/api/video/${videoId}/export`, {
+      const res = await fetchWithTimeout(`/api/video/${videoId}/export`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -2140,7 +2141,7 @@ export default function PlacementPreviewModal({
 
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`/api/exports/${exportJobId}`, { credentials: "include" });
+        const res = await fetchWithTimeout(`/api/exports/${exportJobId}`, { credentials: "include" });
         if (!res.ok) return;
         const data = await res.json();
 
@@ -2417,7 +2418,7 @@ export default function PlacementPreviewModal({
       return;
     }
     try {
-      const res = await fetch(`/api/placements/${loadedPlacement.id}`, {
+      const res = await fetchWithTimeout(`/api/placements/${loadedPlacement.id}`, {
         method: "DELETE",
         credentials: "include",
       });
@@ -2493,7 +2494,7 @@ export default function PlacementPreviewModal({
     setIsSaving(true);
     setSaveSuccess(false);
     try {
-      const res = await fetch("/api/placements", {
+      const res = await fetchWithTimeout("/api/placements", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -2693,7 +2694,7 @@ export default function PlacementPreviewModal({
                         });
 
                         try {
-                          const res = await fetch("/api/placement/harmonize", {
+                          const res = await fetchWithTimeout("/api/placement/harmonize", {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
                             credentials: "include",
@@ -2820,7 +2821,7 @@ export default function PlacementPreviewModal({
                         });
 
                         try {
-                          const res = await fetch("/api/placement/harmonize", {
+                          const res = await fetchWithTimeout("/api/placement/harmonize", {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
                             credentials: "include",

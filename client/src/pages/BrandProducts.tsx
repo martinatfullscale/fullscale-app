@@ -29,7 +29,7 @@ import {
   CheckCircle,
   AlertTriangle,
 } from "lucide-react";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, fetchWithTimeout } from "@/lib/queryClient";
 
 interface BrandProduct {
   id: number;
@@ -85,7 +85,7 @@ export default function BrandProducts() {
 
   const uploadMutation = useMutation({
     mutationFn: async (formData: FormData) => {
-      const res = await fetch("/api/brand-products", {
+      const res = await fetchWithTimeout("/api/brand-products", {
         method: "POST",
         body: formData,
         credentials: "include",

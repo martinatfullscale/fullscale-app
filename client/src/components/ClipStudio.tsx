@@ -924,7 +924,7 @@ function useAssets(kinds: string[]) {
 async function uploadAsset(file: File, kind: string): Promise<AssetRow> {
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch(`/api/media-assets?kind=${kind}`, { method: "POST", credentials: "include", body: form });
+  const res = await fetchWithTimeout(`/api/media-assets?kind=${kind}`, { method: "POST", credentials: "include", body: form });
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Upload failed");
   return (await res.json()).asset;
 }

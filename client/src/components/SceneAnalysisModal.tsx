@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, ChevronLeft, ChevronRight, ChevronDown, Target, Clock, Eye, Sparkles, Scan, Loader2, Database, Play, Video, Layers, Crosshair } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -413,7 +414,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
       pendingIds.has(x.id) ? { ...x, creatorApproved: true } : x
     ));
     const results = await Promise.allSettled(pending.map(r =>
-      fetch(`/api/surface/${r.id}/approval`, {
+      fetchWithTimeout(`/api/surface/${r.id}/approval`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -472,7 +473,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
 
     try {
       // Use admin-scan endpoint (synchronous, returns when scan completes)
-      const res = await fetch(`/api/admin-scan/${video.id}`, {
+      const res = await fetchWithTimeout(`/api/admin-scan/${video.id}`, {
         method: "POST",
         credentials: "include",
       });
@@ -835,7 +836,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
     if (!video?.id || teachSceneId == null || !teachRect || !teachType) return;
     setIsTeaching(true);
     try {
-      const res = await fetch(`/api/video/${video.id}/scenes/${teachSceneId}/teach`, {
+      const res = await fetchWithTimeout(`/api/video/${video.id}/scenes/${teachSceneId}/teach`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -1611,7 +1612,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                                       x.id === s.id ? { ...x, creatorApproved: next } : x
                                     ));
                                     try {
-                                      const res = await fetch(`/api/surface/${s.id}/approval`, {
+                                      const res = await fetchWithTimeout(`/api/surface/${s.id}/approval`, {
                                         method: "PATCH",
                                         headers: { "Content-Type": "application/json" },
                                         credentials: "include",
@@ -1639,7 +1640,7 @@ export function SceneAnalysisModal({ video, open, onClose, adminEmail, onPlayVid
                                     // Optimistic removal — scenes/counts rebuild from dbSurfaces
                                     setDbSurfaces(prev => prev.filter(x => x.id !== s.id));
                                     try {
-                                      const res = await fetch(`/api/surface/${s.id}/reject`, {
+                                      const res = await fetchWithTimeout(`/api/surface/${s.id}/reject`, {
                                         method: "POST",
                                         credentials: "include",
                                       });

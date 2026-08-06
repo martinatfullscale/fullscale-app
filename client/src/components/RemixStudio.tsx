@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Film, Scissors, Play, Pause, Download, Send, Loader2, X,
@@ -176,9 +177,9 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
     let loadedClips: GeneratedClip[] = [];
     try {
       const [jobsRes, clipsRes, stitchRes] = await Promise.all([
-        fetch(`/api/remix/video/${videoId}/jobs`, { credentials: "include" }),
-        fetch(`/api/remix/clips/${videoId}`, { credentials: "include" }),
-        fetch(`/api/remix/${videoId}/stitch-plans`, { credentials: "include" }),
+        fetchWithTimeout(`/api/remix/video/${videoId}/jobs`, { credentials: "include" }),
+        fetchWithTimeout(`/api/remix/clips/${videoId}`, { credentials: "include" }),
+        fetchWithTimeout(`/api/remix/${videoId}/stitch-plans`, { credentials: "include" }),
       ]);
       if (jobsRes.ok) setJobs(await jobsRes.json());
       if (clipsRes.ok) {
@@ -256,7 +257,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
           toast({ title: "Cannot apply", description: "Suggestion has no usable time range", variant: "destructive" });
           return;
         }
-        fetch(`/api/videos/${videoId}/editorial-clip/render`, {
+        fetchWithTimeout(`/api/videos/${videoId}/editorial-clip/render`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
@@ -289,7 +290,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
       if (type === "platform_switch") {
         const target = String(data.betterPlatform || "");
         const aspect = ["youtube", "twitter", "linkedin"].includes(target) ? "16:9" : "9:16";
-        fetch(`/api/editorial-clips/${eClip.id}/rerender`, {
+        fetchWithTimeout(`/api/editorial-clips/${eClip.id}/rerender`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
@@ -324,7 +325,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
         }
         const newStart = type === "trim" ? data.newStart : data.alternativeStart;
         const newEnd = type === "trim" ? data.newEnd : undefined;
-        fetch(`/api/remix/clips/${copilotClipId}/re-render`, {
+        fetchWithTimeout(`/api/remix/clips/${copilotClipId}/re-render`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
@@ -347,7 +348,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
           toast({ title: "No clip selected", description: "Generate or select a clip first to apply this suggestion.", variant: "destructive" });
           break;
         }
-        fetch(`/api/remix/clips/${copilotClipId}/re-render`, {
+        fetchWithTimeout(`/api/remix/clips/${copilotClipId}/re-render`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
@@ -370,7 +371,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
           toast({ title: "No clip selected", description: "Generate or select a clip first to apply this suggestion.", variant: "destructive" });
           break;
         }
-        fetch(`/api/remix/clips/${copilotClipId}/re-render`, {
+        fetchWithTimeout(`/api/remix/clips/${copilotClipId}/re-render`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
@@ -394,14 +395,14 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
         }
         (async () => {
           try {
-            const catRes = await fetch("/api/brand-products/catalog", { credentials: "include" });
+            const catRes = await fetchWithTimeout("/api/brand-products/catalog", { credentials: "include" });
             const catalog = catRes.ok ? await catRes.json() : [];
             const product = (catalog || []).find((p: any) => p.id === data.productId);
             if (!product?.imageUrl) {
               toast({ title: "Cannot apply placement", description: `Product #${data.productId} has no image in the catalog`, variant: "destructive" });
               return;
             }
-            const res = await fetch("/api/placements", {
+            const res = await fetchWithTimeout("/api/placements", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               credentials: "include",
@@ -434,7 +435,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
           break;
         }
         toast({ title: "Generating asset", description: "AI asset generation started — this can take ~30s" });
-        fetch("/api/generate/product-asset", {
+        fetchWithTimeout("/api/generate/product-asset", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
@@ -480,7 +481,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
 
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`/api/remix/jobs/${activeJobId}`, { credentials: "include" });
+        const res = await fetchWithTimeout(`/api/remix/jobs/${activeJobId}`, { credentials: "include" });
         if (res.ok) {
           const data = await res.json();
           setJobs(prev => prev.map(j => j.id === activeJobId ? data.job : j));
@@ -528,7 +529,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
   const startRemix = async () => {
     setIsStarting(true);
     const attemptStart = async () => {
-      const res = await fetch(`/api/remix/${videoId}/start`, {
+      const res = await fetchWithTimeout(`/api/remix/${videoId}/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -567,7 +568,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
           description: "Running AI scene analysis first. This takes 1-3 minutes.",
         });
 
-        const analyzeRes = await fetch(`/api/scenes/${videoId}/analyze`, {
+        const analyzeRes = await fetchWithTimeout(`/api/scenes/${videoId}/analyze`, {
           method: "POST",
           credentials: "include",
         });
@@ -596,7 +597,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
 
   const approveClip = async (clipId: number) => {
     try {
-      const res = await fetch(`/api/remix/clips/${clipId}/approve`, {
+      const res = await fetchWithTimeout(`/api/remix/clips/${clipId}/approve`, {
         method: "POST",
         credentials: "include",
       });
@@ -609,7 +610,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
 
   const rejectClip = async (clipId: number) => {
     try {
-      const res = await fetch(`/api/remix/clips/${clipId}/reject`, {
+      const res = await fetchWithTimeout(`/api/remix/clips/${clipId}/reject`, {
         method: "POST",
         credentials: "include",
       });
@@ -623,7 +624,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
   const analyzeNarrativeThread = async () => {
     setIsAnalyzingThread(true);
     try {
-      const res = await fetch(`/api/remix/${videoId}/narrative-thread`, {
+      const res = await fetchWithTimeout(`/api/remix/${videoId}/narrative-thread`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -651,7 +652,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
     setIsStitching(true);
     try {
       const enabledSegments = editableSegments.filter(s => s.enabled);
-      const res = await fetch(`/api/remix/${videoId}/stitch`, {
+      const res = await fetchWithTimeout(`/api/remix/${videoId}/stitch`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -673,7 +674,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
       // Poll for completion
       const pollStitch = setInterval(async () => {
         try {
-          const planRes = await fetch(`/api/remix/stitch-plans/${data.planId}`, { credentials: "include" });
+          const planRes = await fetchWithTimeout(`/api/remix/stitch-plans/${data.planId}`, { credentials: "include" });
           if (planRes.ok) {
             const plan = await planRes.json();
             if (plan.status === "completed" || plan.status === "failed") {
@@ -698,7 +699,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
   // Re-render clip (Phase 2C)
   const reRenderClip = async (clipId: number, mods: { newStart?: number; newEnd?: number; captionsEnabled?: boolean; captionStyle?: string; platformTarget?: string }) => {
     try {
-      const res = await fetch(`/api/remix/clips/${clipId}/re-render`, {
+      const res = await fetchWithTimeout(`/api/remix/clips/${clipId}/re-render`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -838,13 +839,13 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
                   // succeed while the creator saw nothing appear here.
                   const clipId = (clip as any).id;
                   const req = clipId
-                    ? fetch(`/api/editorial-clips/${clipId}/rerender`, {
+                    ? fetchWithTimeout(`/api/editorial-clips/${clipId}/rerender`, {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         credentials: "include",
                         body: JSON.stringify({ aspect: (clip as any).aspectRatio === "16:9" ? "16:9" : "9:16" }),
                       })
-                    : fetch(`/api/videos/${videoId}/editorial-clip/render`, {
+                    : fetchWithTimeout(`/api/videos/${videoId}/editorial-clip/render`, {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         credentials: "include",
@@ -1014,7 +1015,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
                       const id = activeJobId || activeJob?.id;
                       if (!id) return;
                       try {
-                        await fetch(`/api/remix/jobs/${id}/cancel`, {
+                        await fetchWithTimeout(`/api/remix/jobs/${id}/cancel`, {
                           method: "POST",
                           credentials: "include",
                         });
@@ -1474,7 +1475,7 @@ function HighlightReelCard({ plan, onDelete }: { plan: StitchPlan; onDelete?: (p
                 if (!confirm("Delete this highlight reel?")) return;
                 setIsDeleting(true);
                 try {
-                  const res = await fetch(`/api/remix/stitch-plans/${plan.id}`, {
+                  const res = await fetchWithTimeout(`/api/remix/stitch-plans/${plan.id}`, {
                     method: "DELETE",
                     credentials: "include",
                   });

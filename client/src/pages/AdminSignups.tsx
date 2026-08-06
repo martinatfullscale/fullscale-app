@@ -4,6 +4,7 @@
  * email. Airtable stays a CRM mirror, not a load-bearing automation.
  */
 import { useState } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -32,7 +33,7 @@ export default function AdminSignups() {
   const { data, isLoading, isError } = useQuery<{ signups: SignupRow[] }>({
     queryKey: ["/api/admin/list-signups"],
     queryFn: async () => {
-      const res = await fetch("/api/admin/list-signups", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/admin/list-signups", { credentials: "include" });
       if (!res.ok) throw new Error(`Failed to load signups (${res.status})`);
       return res.json();
     },
@@ -41,7 +42,7 @@ export default function AdminSignups() {
 
   const approveMutation = useMutation({
     mutationFn: async (row: SignupRow) => {
-      const res = await fetch("/api/admin/approve-user", {
+      const res = await fetchWithTimeout("/api/admin/approve-user", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -72,7 +73,7 @@ export default function AdminSignups() {
   const sendInvite = async () => {
     setInviting(true);
     try {
-      const res = await fetch("/api/admin/send-team-invite", {
+      const res = await fetchWithTimeout("/api/admin/send-team-invite", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",

@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { useRoute, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -456,7 +457,7 @@ export default function RemixEngine() {
   const { data: userTypeData } = useQuery<{ userType?: "creator" | "brand" | null }>({
     queryKey: ["/api/auth/user-type"],
     queryFn: async () => {
-      const res = await fetch("/api/auth/user-type", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/auth/user-type", { credentials: "include" });
       if (!res.ok) return { userType: null };
       return res.json();
     },
@@ -485,8 +486,8 @@ export default function RemixEngine() {
     queryKey: ["/api/editorial-clips", clipId, "placement-context"],
     queryFn: async () => {
       const [clipRes, surfRes] = await Promise.all([
-        fetch(`/api/editorial-clips/${clipId}`, { credentials: "include" }),
-        fetch(`/api/editorial-clips/${clipId}/surfaces`, { credentials: "include" }),
+        fetchWithTimeout(`/api/editorial-clips/${clipId}`, { credentials: "include" }),
+        fetchWithTimeout(`/api/editorial-clips/${clipId}/surfaces`, { credentials: "include" }),
       ]);
       if (!clipRes.ok || !surfRes.ok) return null;
       const clipJson = await clipRes.json();
@@ -499,7 +500,7 @@ export default function RemixEngine() {
   const { data: bidData } = useQuery<any>({
     queryKey: ["/api/bids", bidId],
     queryFn: async () => {
-      const res = await fetch(`/api/bids/${bidId}`, { credentials: "include" });
+      const res = await fetchWithTimeout(`/api/bids/${bidId}`, { credentials: "include" });
       if (!res.ok) return null;
       return res.json();
     },
@@ -542,7 +543,7 @@ export default function RemixEngine() {
   const { data: video, isLoading: videoLoading } = useQuery<VideoDetails>({
     queryKey: ["/api/video", videoId, "details"],
     queryFn: async () => {
-      const res = await fetch(`/api/video/${videoId}/details`, { credentials: "include" });
+      const res = await fetchWithTimeout(`/api/video/${videoId}/details`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch video");
       return res.json();
     },
@@ -557,7 +558,7 @@ export default function RemixEngine() {
   const { data: catalogProducts } = useQuery<CatalogProduct[]>({
     queryKey: ["/api/brand-products/catalog"],
     queryFn: async () => {
-      const res = await fetch("/api/brand-products/catalog", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/brand-products/catalog", { credentials: "include" });
       if (!res.ok) return [];
       return res.json();
     },
@@ -567,7 +568,7 @@ export default function RemixEngine() {
   const { data: savedPlacements } = useQuery<any[]>({
     queryKey: ["/api/video", videoId, "placements"],
     queryFn: async () => {
-      const res = await fetch(`/api/video/${videoId}/placements`, { credentials: "include" });
+      const res = await fetchWithTimeout(`/api/video/${videoId}/placements`, { credentials: "include" });
       if (!res.ok) return [];
       const data = await res.json();
       return data.placements || [];
@@ -1100,7 +1101,7 @@ export default function RemixEngine() {
         );
         if (!anchorSurface) continue;
 
-        const res = await fetch("/api/placements", {
+        const res = await fetchWithTimeout("/api/placements", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
@@ -1219,7 +1220,7 @@ export default function RemixEngine() {
       setExportProgress(0);
       setExportOutputUrl(null);
 
-      const res = await fetch(`/api/video/${videoId}/export`, {
+      const res = await fetchWithTimeout(`/api/video/${videoId}/export`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -1252,7 +1253,7 @@ export default function RemixEngine() {
 
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`/api/exports/${exportJobId}`, { credentials: "include" });
+        const res = await fetchWithTimeout(`/api/exports/${exportJobId}`, { credentials: "include" });
         if (!res.ok) return;
 
         const data = await res.json();
@@ -1297,7 +1298,7 @@ export default function RemixEngine() {
         const matchingSurface = surfaces.find(s => s.surfaceType === surfaceType);
         if (!matchingSurface) continue;
 
-        const res = await fetch("/api/placements", {
+        const res = await fetchWithTimeout("/api/placements", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
@@ -2088,7 +2089,7 @@ export default function RemixEngine() {
                   <button
                     onClick={async () => {
                       try {
-                        const res = await fetch("/api/share", {
+                        const res = await fetchWithTimeout("/api/share", {
                           method: "POST",
                           headers: { "Content-Type": "application/json" },
                           credentials: "include",

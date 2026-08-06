@@ -6,6 +6,7 @@
  * always points at the next genuine action.
  */
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { motion, AnimatePresence } from "framer-motion";
 import { CheckCircle2, Circle, X, ArrowRight, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -27,7 +28,7 @@ export function OnboardingChecklist() {
   const { data: progress } = useQuery<OnboardingProgress>({
     queryKey: ["/api/onboarding/progress"],
     queryFn: async () => {
-      const res = await fetch("/api/onboarding/progress", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/onboarding/progress", { credentials: "include" });
       if (!res.ok) throw new Error("progress unavailable");
       return res.json();
     },
@@ -71,7 +72,7 @@ export function OnboardingChecklist() {
 
   const dismiss = async () => {
     try {
-      await fetch("/api/onboarding/dismiss", { method: "POST", credentials: "include" });
+      await fetchWithTimeout("/api/onboarding/dismiss", { method: "POST", credentials: "include" });
     } catch {
       /* non-fatal */
     }

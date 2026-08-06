@@ -7,6 +7,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   MessageSquare, Send, Loader2, X, Sparkles, Scissors,
@@ -150,7 +151,7 @@ export default function RemixCopilot({
     setMessages((prev) => [...prev, assistantMsg]);
 
     try {
-      const response = await fetch(`/api/remix/${videoId}/copilot/ask`, {
+      const response = await fetchWithTimeout(`/api/remix/${videoId}/copilot/ask`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",

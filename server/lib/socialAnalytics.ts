@@ -70,7 +70,7 @@ export async function fetchInstagramAnalytics(
   try {
     // Account-level: followers, following, media count, username
     const accountUrl = `${GRAPH_BASE}/${igBusinessAccountId}?fields=username,followers_count,follows_count,media_count&access_token=${encodeURIComponent(pageAccessToken)}`;
-    const accountRes = await fetch(accountUrl);
+    const accountRes = await fetch(accountUrl, { signal: AbortSignal.timeout(15_000) });
     if (!accountRes.ok) {
       console.warn(`[SocialAnalytics] IG account fetch failed: ${accountRes.status}`);
       return null;
@@ -79,7 +79,7 @@ export async function fetchInstagramAnalytics(
 
     // Recent media list
     const mediaUrl = `${GRAPH_BASE}/${igBusinessAccountId}/media?fields=id,media_type,permalink,thumbnail_url,caption,timestamp,like_count,comments_count&limit=${recentMediaCount}&access_token=${encodeURIComponent(pageAccessToken)}`;
-    const mediaRes = await fetch(mediaUrl);
+    const mediaRes = await fetch(mediaUrl, { signal: AbortSignal.timeout(15_000) });
     const mediaList: any = mediaRes.ok ? await mediaRes.json() : { data: [] };
 
     // Per-media insights on the CURRENT metric set. `views` replaced
@@ -96,7 +96,7 @@ export async function fetchInstagramAnalytics(
       try {
         const readInsights = async (fields: string[]) => {
           const insightsUrl = `${GRAPH_BASE}/${m.id}/insights?metric=${fields.join(",")}&access_token=${encodeURIComponent(pageAccessToken)}`;
-          const insightsRes = await fetch(insightsUrl);
+          const insightsRes = await fetch(insightsUrl, { signal: AbortSignal.timeout(15_000) });
           if (!insightsRes.ok) return false;
           const insightsData: any = await insightsRes.json();
           for (const metric of insightsData.data ?? []) {
@@ -183,7 +183,7 @@ export async function fetchInstagramAccountInsights(
   try {
     const metrics: Record<string, number> = {};
     const url = `${GRAPH_BASE}/${igBusinessAccountId}/insights?metric=${IG_ACCOUNT_METRICS.join(",")}&metric_type=total_value&period=day&access_token=${encodeURIComponent(pageAccessToken)}`;
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
     if (res.ok) {
       const data: any = await res.json();
       for (const metric of data.data ?? []) {
@@ -194,7 +194,7 @@ export async function fetchInstagramAccountInsights(
       // so a future deprecation degrades a metric, not the account.
       for (const name of IG_ACCOUNT_METRICS) {
         try {
-          const single = await fetch(`${GRAPH_BASE}/${igBusinessAccountId}/insights?metric=${name}&metric_type=total_value&period=day&access_token=${encodeURIComponent(pageAccessToken)}`);
+          const single = await fetch(`${GRAPH_BASE}/${igBusinessAccountId}/insights?metric=${name}&metric_type=total_value&period=day&access_token=${encodeURIComponent(pageAccessToken)}`, { signal: AbortSignal.timeout(15_000) });
           if (single.ok) {
             const data: any = await single.json();
             const m = data.data?.[0];
@@ -210,7 +210,7 @@ export async function fetchInstagramAccountInsights(
         for (const breakdown of IG_DEMOGRAPHIC_BREAKDOWNS) {
           try {
             const dUrl = `${GRAPH_BASE}/${igBusinessAccountId}/insights?metric=${metricName}&metric_type=total_value&period=lifetime&timeframe=this_month&breakdown=${breakdown}&access_token=${encodeURIComponent(pageAccessToken)}`;
-            const dRes = await fetch(dUrl);
+            const dRes = await fetch(dUrl, { signal: AbortSignal.timeout(15_000) });
             if (!dRes.ok) continue; // <100 followers / <100 engagements → skip
             const dData: any = await dRes.json();
             const results = dData.data?.[0]?.total_value?.breakdowns?.[0]?.results ?? [];
@@ -249,12 +249,12 @@ export async function fetchInstagramStoryInsights(
 ): Promise<InstagramStoryInsight[]> {
   const out: InstagramStoryInsight[] = [];
   try {
-    const storiesRes = await fetch(`${GRAPH_BASE}/${igBusinessAccountId}/stories?fields=id,timestamp&access_token=${encodeURIComponent(pageAccessToken)}`);
+    const storiesRes = await fetch(`${GRAPH_BASE}/${igBusinessAccountId}/stories?fields=id,timestamp&access_token=${encodeURIComponent(pageAccessToken)}`, { signal: AbortSignal.timeout(15_000) });
     if (!storiesRes.ok) return out;
     const stories: any = await storiesRes.json();
     for (const s of stories.data ?? []) {
       try {
-        const iRes = await fetch(`${GRAPH_BASE}/${s.id}/insights?metric=views,reach,replies,shares,total_interactions,profile_visits&access_token=${encodeURIComponent(pageAccessToken)}`);
+        const iRes = await fetch(`${GRAPH_BASE}/${s.id}/insights?metric=views,reach,replies,shares,total_interactions,profile_visits&access_token=${encodeURIComponent(pageAccessToken)}`, { signal: AbortSignal.timeout(15_000) });
         if (!iRes.ok) continue; // stories with <5 viewers error — skip
         const iData: any = await iRes.json();
         const metrics: Record<string, number> = {};
@@ -301,7 +301,7 @@ export async function fetchFacebookPageAnalytics(
 ): Promise<FacebookPageStats | null> {
   try {
     const url = `${GRAPH_BASE}/${pageId}?fields=name,fan_count,followers_count&access_token=${encodeURIComponent(pageAccessToken)}`;
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
     if (!res.ok) {
       console.warn(`[SocialAnalytics] FB page fetch failed: ${res.status}`);
       return null;
@@ -310,7 +310,7 @@ export async function fetchFacebookPageAnalytics(
 
     const insights: Record<string, number> = {};
     try {
-      const iRes = await fetch(`${GRAPH_BASE}/${pageId}/insights?metric=${FB_PAGE_METRICS.join(",")}&period=day&access_token=${encodeURIComponent(pageAccessToken)}`);
+      const iRes = await fetch(`${GRAPH_BASE}/${pageId}/insights?metric=${FB_PAGE_METRICS.join(",")}&period=day&access_token=${encodeURIComponent(pageAccessToken)}`, { signal: AbortSignal.timeout(15_000) });
       if (iRes.ok) {
         const iData: any = await iRes.json();
         for (const metric of iData.data ?? []) {
@@ -322,7 +322,7 @@ export async function fetchFacebookPageAnalytics(
         // missing read_insights) — try individually so survivors still land.
         for (const name of FB_PAGE_METRICS) {
           try {
-            const single = await fetch(`${GRAPH_BASE}/${pageId}/insights?metric=${name}&period=day&access_token=${encodeURIComponent(pageAccessToken)}`);
+            const single = await fetch(`${GRAPH_BASE}/${pageId}/insights?metric=${name}&period=day&access_token=${encodeURIComponent(pageAccessToken)}`, { signal: AbortSignal.timeout(15_000) });
             if (single.ok) {
               const sData: any = await single.json();
               const m = sData.data?.[0];
@@ -390,6 +390,7 @@ export async function fetchFacebookPagePosts(
     ].join(",");
     const res = await fetch(
       `${GRAPH_BASE}/${pageId}/posts?fields=${encodeURIComponent(fields)}&limit=${limit}&access_token=${encodeURIComponent(pageAccessToken)}`,
+      { signal: AbortSignal.timeout(15_000) },
     );
     if (!res.ok) {
       console.warn(`[SocialAnalytics] FB page posts fetch failed: ${res.status}`);
@@ -404,6 +405,7 @@ export async function fetchFacebookPagePosts(
         try {
           const iRes = await fetch(
             `${GRAPH_BASE}/${p.id}/insights?metric=${name}&access_token=${encodeURIComponent(pageAccessToken)}`,
+            { signal: AbortSignal.timeout(15_000) },
           );
           if (!iRes.ok) { vals[name] = null; continue; }
           const iData: any = await iRes.json();
@@ -458,6 +460,7 @@ export async function fetchYouTubeVideoStats(
     const url = `https://www.googleapis.com/youtube/v3/videos?part=statistics,snippet&id=${idsParam}`;
     const res = await fetch(url, {
       headers: { Authorization: `Bearer ${accessToken}` },
+      signal: AbortSignal.timeout(15_000),
     });
     if (!res.ok) {
       console.warn(`[SocialAnalytics] YouTube videos.list failed: ${res.status}`);

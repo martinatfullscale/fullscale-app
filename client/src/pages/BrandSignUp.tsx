@@ -14,6 +14,7 @@
  *     sign in via the standard auth flow and see only marketplace pages.
  */
 import { useState } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -50,7 +51,7 @@ export default function BrandSignUp() {
     }
     setIsLoading(true);
     try {
-      const response = await fetch("/api/brand-signup", {
+      const response = await fetchWithTimeout("/api/brand-signup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

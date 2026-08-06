@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { TopBar } from "@/components/TopBar";
 import { Video, Youtube, CheckCircle, Unlink, TrendingUp, Gavel, BarChart3, Loader2, ToggleLeft, ToggleRight, Link2, RefreshCw, Globe, Copy, ExternalLink } from "lucide-react";
 import { SiFacebook, SiInstagram } from "react-icons/si";
@@ -93,7 +94,7 @@ function RealBrandCampaigns() {
   const { data: pending } = useQuery<{ placements: any[] }>({
     queryKey: ["/api/creator/placements/inbox", "pending_creator_review"],
     queryFn: async () => {
-      const res = await fetch("/api/creator/placements/inbox?status=pending_creator_review", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/creator/placements/inbox?status=pending_creator_review", { credentials: "include" });
       if (!res.ok) return { placements: [] };
       return res.json();
     },
@@ -102,7 +103,7 @@ function RealBrandCampaigns() {
   const { data: approved } = useQuery<{ placements: any[] }>({
     queryKey: ["/api/creator/placements/inbox", "creator_approved"],
     queryFn: async () => {
-      const res = await fetch("/api/creator/placements/inbox?status=creator_approved,pending_brand_review,brand_approved", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/creator/placements/inbox?status=creator_approved,pending_brand_review,brand_approved", { credentials: "include" });
       if (!res.ok) return { placements: [] };
       return res.json();
     },
@@ -150,7 +151,7 @@ function RealBrandCampaigns() {
                     const w = window.open("about:blank", "_blank");
                     if (w) w.opener = null;
                     try {
-                      const res = await fetch(`/api/placements/${p.id}/release-link`, { credentials: "include" });
+                      const res = await fetchWithTimeout(`/api/placements/${p.id}/release-link`, { credentials: "include" });
                       if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || "Unavailable");
                       const rel = await res.json();
                       if (w) w.location.href = rel.url;
@@ -319,7 +320,7 @@ export default function Dashboard() {
       // Owner viewing their own dashboard — show all surfaces, not just
       // creatorApproved=true. Without this, freshly scanned videos look
       // empty because every new surface defaults to unapproved.
-      const res = await fetch(`/api/video/${video.id}/surfaces?includeUnapproved=true`, { credentials: "include" });
+      const res = await fetchWithTimeout(`/api/video/${video.id}/surfaces?includeUnapproved=true`, { credentials: "include" });
       if (res.ok) {
         const data = await res.json();
         
@@ -445,7 +446,7 @@ export default function Dashboard() {
   const { data: youtubeStatus, isLoading: isCheckingYoutube } = useQuery<YoutubeStatus>({
     queryKey: ["/api/auth/youtube/status", isPitchMode],
     queryFn: async () => {
-      const res = await fetch("/api/auth/youtube/status", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/auth/youtube/status", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch YouTube status");
       return res.json();
     },
@@ -455,7 +456,7 @@ export default function Dashboard() {
   const { data: channelData, isLoading: isLoadingChannel } = useQuery<YoutubeChannel>({
     queryKey: ["/api/youtube/channel", isPitchMode],
     queryFn: async () => {
-      const res = await fetch("/api/youtube/channel", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/youtube/channel", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch channel data");
       return res.json();
     },
@@ -496,7 +497,7 @@ export default function Dashboard() {
   const { data: marketplaceStats } = useQuery<MarketplaceStats>({
     queryKey: ["/api/marketplace/stats", isPitchMode],
     queryFn: async () => {
-      const res = await fetch("/api/marketplace/stats", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/marketplace/stats", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch marketplace stats");
       return res.json();
     },
@@ -508,7 +509,7 @@ export default function Dashboard() {
   const { data: platformStats } = useQuery<PlatformAuthStatus>({
     queryKey: ["/api/platform-auth/status"],
     queryFn: async () => {
-      const res = await fetch("/api/platform-auth/status", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/platform-auth/status", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch platform status");
       return res.json();
     },
@@ -563,7 +564,7 @@ export default function Dashboard() {
 
   const scanMutation = useMutation({
     mutationFn: async (videoId: number) => {
-      const res = await fetch(`/api/video-scan/${videoId}`, { 
+      const res = await fetchWithTimeout(`/api/video-scan/${videoId}`, { 
         method: "POST", 
         credentials: "include" 
       });
@@ -581,7 +582,7 @@ export default function Dashboard() {
 
   const batchScanMutation = useMutation({
     mutationFn: async () => {
-      const res = await fetch("/api/video-scan/batch", { 
+      const res = await fetchWithTimeout("/api/video-scan/batch", { 
         method: "POST", 
         credentials: "include" 
       });
@@ -598,7 +599,7 @@ export default function Dashboard() {
 
   const disconnectMutation = useMutation({
     mutationFn: async () => {
-      const res = await fetch("/api/auth/youtube", { method: "DELETE", credentials: "include" });
+      const res = await fetchWithTimeout("/api/auth/youtube", { method: "DELETE", credentials: "include" });
       if (!res.ok) throw new Error("Failed to disconnect");
       return res.json();
     },
@@ -612,7 +613,7 @@ export default function Dashboard() {
 
   const syncYouTubeMutation = useMutation({
     mutationFn: async () => {
-      const res = await fetch("/api/youtube/sync", { method: "POST", credentials: "include" });
+      const res = await fetchWithTimeout("/api/youtube/sync", { method: "POST", credentials: "include" });
       if (!res.ok) throw new Error("Failed to sync");
       return res.json();
     },
@@ -649,7 +650,7 @@ export default function Dashboard() {
   }>({
     queryKey: ["/api/facebook/pages"],
     queryFn: async () => {
-      const res = await fetch("/api/facebook/pages", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/facebook/pages", { credentials: "include" });
       if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || "Failed to list Pages");
       return res.json();
     },
@@ -657,7 +658,7 @@ export default function Dashboard() {
   });
   const confirmPageMutation = useMutation({
     mutationFn: async (target: { pageId?: string; igAccountId?: string }) => {
-      const res = await fetch("/api/facebook/select-page", {
+      const res = await fetchWithTimeout("/api/facebook/select-page", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",

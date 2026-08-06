@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Upload, Terminal, X, FileVideo, CheckCircle2, AlertCircle } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
-import { queryClient } from "@/lib/queryClient";
+import { queryClient, fetchWithTimeout } from "@/lib/queryClient";
 
 export const CONTENT_CATEGORIES = [
   { value: "Podcast", label: "Podcast" },
@@ -142,7 +142,7 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
       setProcessingLogs([`> Large file (${(selectedFile.size / 1024 / 1024).toFixed(0)} MB) — chunked upload starting...`]);
       try {
         // Step 1: init session, get sessionId + chunkSize from server
-        const initRes = await fetch("/api/upload/chunked/init", {
+        const initRes = await fetchWithTimeout("/api/upload/chunked/init", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
@@ -193,7 +193,7 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
         // Step 3: finalize → server creates DB record + fires scan
         setProcessingLogs(prev => [...prev, "> All chunks uploaded. Finalizing..."]);
         setState("processing");
-        const finRes = await fetch(`/api/upload/chunked/${sessionId}/finalize`, {
+        const finRes = await fetchWithTimeout(`/api/upload/chunked/${sessionId}/finalize`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",

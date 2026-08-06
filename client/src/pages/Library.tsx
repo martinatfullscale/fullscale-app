@@ -900,7 +900,7 @@ export default function Library() {
 
   const syncMutation = useMutation({
     mutationFn: async () => {
-      const res = await fetch("/api/video-index/refresh", { 
+      const res = await fetchWithTimeout("/api/video-index/refresh", { 
         method: "POST",
         credentials: "include" 
       });
@@ -1106,7 +1106,7 @@ export default function Library() {
   // one is simply released.
   const cancelScanMutation = useMutation({
     mutationFn: async (videoId: number) => {
-      const res = await fetch(`/api/videos/${videoId}/cancel-scan`, { method: "POST", credentials: "include" });
+      const res = await fetchWithTimeout(`/api/videos/${videoId}/cancel-scan`, { method: "POST", credentials: "include" });
       if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || "Cancel failed");
       return res.json();
     },
@@ -1502,7 +1502,7 @@ export default function Library() {
               onClick={async () => {
                 setIsImportingUrl(true);
                 try {
-                  const res = await fetch("/api/video/import-url", {
+                  const res = await fetchWithTimeout("/api/video/import-url", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     credentials: "include",

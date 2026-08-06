@@ -9,6 +9,7 @@
  */
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { motion } from "framer-motion";
 import { Loader2, Send, Clock, CheckCircle2, XCircle, Ban, Hourglass, Package, ExternalLink, Link2, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -16,7 +17,7 @@ import { useToast } from "@/hooks/use-toast";
 
 /** Resolve (lazily minting) the public release page for a brand-approved placement. */
 export async function fetchReleaseLink(placementId: number): Promise<{ url: string; downloadUrl: string | null }> {
-  const res = await fetch(`/api/placements/${placementId}/release-link`, { credentials: "include" });
+  const res = await fetchWithTimeout(`/api/placements/${placementId}/release-link`, { credentials: "include" });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error || "Failed to resolve release link");
@@ -61,7 +62,7 @@ export default function BrandPlacementRequests() {
   const { data, isLoading } = useQuery<{ placements: HydratedPlacement[] }>({
     queryKey: ["/api/brand/placements"],
     queryFn: async () => {
-      const res = await fetch("/api/brand/placements", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/brand/placements", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to load placement requests");
       return res.json();
     },
@@ -70,7 +71,7 @@ export default function BrandPlacementRequests() {
 
   const approveMutation = useMutation({
     mutationFn: async (id: number) => {
-      const res = await fetch(`/api/brand/placements/${id}/approve`, {
+      const res = await fetchWithTimeout(`/api/brand/placements/${id}/approve`, {
         method: "POST",
         credentials: "include",
       });
@@ -98,7 +99,7 @@ export default function BrandPlacementRequests() {
 
   const withdrawMutation = useMutation({
     mutationFn: async (id: number) => {
-      const res = await fetch(`/api/brand/placements/${id}/withdraw`, {
+      const res = await fetchWithTimeout(`/api/brand/placements/${id}/withdraw`, {
         method: "POST",
         credentials: "include",
       });

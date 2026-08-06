@@ -6,6 +6,7 @@
  * post it natively, then tell us where so the placement can be measured.
  */
 import { useState } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -52,7 +53,7 @@ export default function Deliveries() {
   const mintLink = async (placementId: number) => {
     setMinting(true);
     try {
-      const res = await fetch(`/api/placements/${placementId}/link`, {
+      const res = await fetchWithTimeout(`/api/placements/${placementId}/link`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -78,7 +79,7 @@ export default function Deliveries() {
   const { data, isLoading, isError } = useQuery<{ deliveries: Delivery[] }>({
     queryKey: ["/api/deliveries"],
     queryFn: async () => {
-      const res = await fetch("/api/deliveries", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/deliveries", { credentials: "include" });
       if (!res.ok) throw new Error(`Failed to load deliveries (${res.status})`);
       return res.json();
     },
@@ -87,7 +88,7 @@ export default function Deliveries() {
   const download = async (d: Delivery) => {
     setDownloading(d.id);
     try {
-      const res = await fetch(`/api/deliveries/${d.id}/download`, { credentials: "include" });
+      const res = await fetchWithTimeout(`/api/deliveries/${d.id}/download`, { credentials: "include" });
       if (!res.ok) throw new Error("Download failed");
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);

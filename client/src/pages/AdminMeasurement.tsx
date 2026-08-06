@@ -8,6 +8,7 @@
  * same-scene / different-products design. See docs/DATA_DICTIONARY.md §1.
  */
 import { useQuery } from "@tanstack/react-query";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { TopBar } from "@/components/TopBar";
@@ -91,7 +92,7 @@ export default function AdminMeasurement() {
   const { data, isLoading, isError } = useQuery<Readout>({
     queryKey: ["/api/admin/measurement/fixtures"],
     queryFn: async () => {
-      const res = await fetch("/api/admin/measurement/fixtures", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/admin/measurement/fixtures", { credentials: "include" });
       if (!res.ok) throw new Error(`Failed to load readout (${res.status})`);
       return res.json();
     },
@@ -103,7 +104,7 @@ export default function AdminMeasurement() {
   }>({
     queryKey: ["/api/admin/measurement/retention"],
     queryFn: async () => {
-      const res = await fetch("/api/admin/measurement/retention", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/admin/measurement/retention", { credentials: "include" });
       if (!res.ok) throw new Error("retention unavailable");
       return res.json();
     },
@@ -116,7 +117,7 @@ export default function AdminMeasurement() {
   }>({
     queryKey: ["/api/admin/measurement/platforms"],
     queryFn: async () => {
-      const res = await fetch("/api/admin/measurement/platforms", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/admin/measurement/platforms", { credentials: "include" });
       if (!res.ok) throw new Error("capability unavailable");
       return res.json();
     },
@@ -129,7 +130,7 @@ export default function AdminMeasurement() {
   }>({
     queryKey: ["/api/admin/measurement/creators"],
     queryFn: async () => {
-      const res = await fetch("/api/admin/measurement/creators", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/admin/measurement/creators", { credentials: "include" });
       if (!res.ok) throw new Error("creator behavior unavailable");
       return res.json();
     },
@@ -142,7 +143,7 @@ export default function AdminMeasurement() {
   }>({
     queryKey: ["/api/admin/measurement/audience-response"],
     queryFn: async () => {
-      const res = await fetch("/api/admin/measurement/audience-response", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/admin/measurement/audience-response", { credentials: "include" });
       if (!res.ok) throw new Error("audience response unavailable");
       return res.json();
     },
@@ -155,7 +156,7 @@ export default function AdminMeasurement() {
   const { data: cross } = useQuery<CrossPlatform>({
     queryKey: ["/api/admin/measurement/cross-platform"],
     queryFn: async () => {
-      const res = await fetch("/api/admin/measurement/cross-platform", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/admin/measurement/cross-platform", { credentials: "include" });
       if (!res.ok) throw new Error("cross-platform readout unavailable");
       return res.json();
     },

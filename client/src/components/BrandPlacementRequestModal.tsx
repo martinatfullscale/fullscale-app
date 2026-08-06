@@ -35,7 +35,7 @@ import {
 } from "@/components/ui/select";
 import { Loader2, Send, AlertTriangle, Image as ImageIcon, CheckCircle2, DollarSign } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, fetchWithTimeout } from "@/lib/queryClient";
 
 interface BrandProduct {
   id: number;
@@ -286,7 +286,7 @@ export function BrandPlacementRequestModal({
       if (selectedSurfaceIds.size > 0) {
         params.set("surfaceIds", Array.from(selectedSurfaceIds).join(","));
       }
-      const res = await fetch(`/api/brand/placements/quote?${params.toString()}`, {
+      const res = await fetchWithTimeout(`/api/brand/placements/quote?${params.toString()}`, {
         credentials: "include",
       });
       if (!res.ok) throw new Error("Failed to fetch quote");

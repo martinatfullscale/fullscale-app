@@ -12,6 +12,7 @@
  */
 
 import { Fragment, useMemo, useState } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -75,7 +76,7 @@ function CreatorDetailPanel({ userId }: { userId: string }) {
   const { data, isLoading, isError } = useQuery<CreatorDetail>({
     queryKey: ["/api/admin/creator-intelligence", userId],
     queryFn: async () => {
-      const res = await fetch(`/api/admin/creator-intelligence/${encodeURIComponent(userId)}`, { credentials: "include" });
+      const res = await fetchWithTimeout(`/api/admin/creator-intelligence/${encodeURIComponent(userId)}`, { credentials: "include" });
       if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || "Failed to load detail");
       return res.json();
     },
@@ -277,7 +278,7 @@ export default function AdminCreatorIntelligence() {
   const { data, isLoading, isError, error } = useQuery<{ creators: CreatorRow[] }>({
     queryKey: ["/api/admin/creator-intelligence"],
     queryFn: async () => {
-      const res = await fetch("/api/admin/creator-intelligence", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/admin/creator-intelligence", { credentials: "include" });
       if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || "Failed to load");
       return res.json();
     },

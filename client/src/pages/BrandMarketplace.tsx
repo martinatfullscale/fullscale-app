@@ -28,7 +28,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { useHybridMode } from "@/hooks/use-hybrid-mode";
 import { usePitchMode } from "@/contexts/pitch-mode-context";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, fetchWithTimeout } from "@/lib/queryClient";
 import { useAuth } from "@/hooks/use-auth";
 import { Link } from "wouter";
 import EditorialClips from "@/components/EditorialClips";
@@ -249,7 +249,7 @@ export default function BrandMarketplace() {
   const { data: featuredCreatorsData } = useQuery<{ creators: FeaturedCreator[] }>({
     queryKey: ["featured-creators"],
     queryFn: async () => {
-      const res = await fetch("/api/public/featured-creators");
+      const res = await fetchWithTimeout("/api/public/featured-creators");
       if (!res.ok) throw new Error("Failed to fetch featured creators");
       return res.json();
     },

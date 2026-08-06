@@ -8,6 +8,7 @@
  */
 
 import { useState, useCallback, useEffect, useRef } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Sparkles, Clock, TrendingUp, Tag, ChevronDown, ChevronUp,
@@ -179,7 +180,7 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
   const scanClip = useCallback(async (clipId: number) => {
     setScanningClips((prev) => new Set(prev).add(clipId));
     try {
-      const res = await fetch(`/api/editorial-clips/${clipId}/scan`, { method: "POST", credentials: "include" });
+      const res = await fetchWithTimeout(`/api/editorial-clips/${clipId}/scan`, { method: "POST", credentials: "include" });
       const body = await res.json().catch(() => ({}));
       if (res.status === 202) {
         toast({
@@ -226,7 +227,7 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`/api/video/${videoId}/details`, { credentials: "include" });
+        const res = await fetchWithTimeout(`/api/video/${videoId}/details`, { credentials: "include" });
         if (!res.ok) return;
         const data = await res.json();
         const raw = String(data?.video?.duration ?? data?.duration ?? "").trim();
@@ -254,7 +255,7 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
   // ── Helpers ────────────────────────────────────────────────────
   const refetchClips = useCallback(async () => {
     try {
-      const res = await fetch(`/api/scenes/${videoId}/editorial-clips`, { credentials: "include" });
+      const res = await fetchWithTimeout(`/api/scenes/${videoId}/editorial-clips`, { credentials: "include" });
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data.clips)) {
@@ -269,7 +270,7 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
 
   const fetchAutoStatus = useCallback(async (): Promise<EditorialStatusResponse | null> => {
     try {
-      const res = await fetch(`/api/videos/${videoId}/editorial-status`, { credentials: "include" });
+      const res = await fetchWithTimeout(`/api/videos/${videoId}/editorial-status`, { credentials: "include" });
       if (!res.ok) return null;
       return (await res.json()) as EditorialStatusResponse;
     } catch {
@@ -314,7 +315,7 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
   const handleRegenerate = useCallback(async () => {
     setIsRegenerating(true);
     try {
-      const res = await fetch(`/api/videos/${videoId}/editorial-auto`, {
+      const res = await fetchWithTimeout(`/api/videos/${videoId}/editorial-auto`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -349,7 +350,7 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
     }
     setIsSearching(true);
     try {
-      const res = await fetch(`/api/videos/${videoId}/editorial-search`, {
+      const res = await fetchWithTimeout(`/api/videos/${videoId}/editorial-search`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -393,8 +394,8 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
       // Load both transcript status and saved editorial clips in parallel
       try {
         const [transcriptRes, clipsRes] = await Promise.all([
-          fetch(`/api/video/${videoId}/transcript`, { credentials: "include" }),
-          fetch(`/api/scenes/${videoId}/editorial-clips`, { credentials: "include" }),
+          fetchWithTimeout(`/api/video/${videoId}/transcript`, { credentials: "include" }),
+          fetchWithTimeout(`/api/scenes/${videoId}/editorial-clips`, { credentials: "include" }),
         ]);
 
         if (cancelled) return;
@@ -442,7 +443,7 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
     setIsLoadingTranscript(true);
     setTranscriptStatus({ status: "processing" });
     try {
-      const res = await fetch(`/api/video/${videoId}/transcribe`, {
+      const res = await fetchWithTimeout(`/api/video/${videoId}/transcribe`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -453,7 +454,7 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
         toast({ title: "Transcription started", description: "Processing audio with Deepgram..." });
         // Start polling
         const pollTranscript = async () => {
-          const checkRes = await fetch(`/api/video/${videoId}/transcript`, { credentials: "include" });
+          const checkRes = await fetchWithTimeout(`/api/video/${videoId}/transcript`, { credentials: "include" });
           if (checkRes.ok) {
             const checkData = await checkRes.json();
             if (checkData.status === "completed") {
@@ -490,7 +491,7 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
   const handleAnalyze = async () => {
     setIsLoadingAnalysis(true);
     try {
-      const res = await fetch(`/api/scenes/${videoId}/editorial-analysis`, {
+      const res = await fetchWithTimeout(`/api/scenes/${videoId}/editorial-analysis`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -632,7 +633,7 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
                 variant="ghost"
                 onClick={async () => {
                   try {
-                    await fetch(`/api/videos/${videoId}/editorial-cancel`, {
+                    await fetchWithTimeout(`/api/videos/${videoId}/editorial-cancel`, {
                       method: "POST",
                       credentials: "include",
                     });
@@ -650,7 +651,7 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
                 size="sm"
                 onClick={async () => {
                   try {
-                    const res = await fetch(`/api/videos/${videoId}/editorial-resume`, {
+                    const res = await fetchWithTimeout(`/api/videos/${videoId}/editorial-resume`, {
                       method: "POST",
                       credentials: "include",
                     });
@@ -940,7 +941,7 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
                   isScanning={(clip as any).id ? scanningClips.has((clip as any).id) : false}
                   onOpenStudio={(clip as any).id ? () => setStudioClip(clip) : undefined}
                   onRerenderAspect={(clip as any).id ? async (aspect) => {
-                    const res = await fetch(`/api/editorial-clips/${(clip as any).id}/rerender`, {
+                    const res = await fetchWithTimeout(`/api/editorial-clips/${(clip as any).id}/rerender`, {
                       method: "POST",
                       headers: { "Content-Type": "application/json" },
                       credentials: "include",
@@ -968,7 +969,7 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
           videoId={videoId}
           onClose={() => setStudioClip(null)}
           onApply={async (payload) => {
-            const res = await fetch(`/api/editorial-clips/${(studioClip as any).id}/rerender`, {
+            const res = await fetchWithTimeout(`/api/editorial-clips/${(studioClip as any).id}/rerender`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               credentials: "include",
@@ -1424,7 +1425,7 @@ function SearchResultCard({
   const handleAdd = async () => {
     setIsAdding(true);
     try {
-      const res = await fetch(`/api/videos/${videoId}/editorial-clip/render`, {
+      const res = await fetchWithTimeout(`/api/videos/${videoId}/editorial-clip/render`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",

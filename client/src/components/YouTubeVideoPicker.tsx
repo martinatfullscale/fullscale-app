@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Loader2, CheckCircle2, Youtube, Eye, Calendar, Download, CheckSquare, Square } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { queryClient } from "@/lib/queryClient";
+import { queryClient, fetchWithTimeout } from "@/lib/queryClient";
 
 interface YouTubeVideo {
   youtubeId: string;
@@ -114,7 +114,7 @@ export function YouTubeVideoPicker({ open, onClose, onImportComplete }: YouTubeV
     if (selected.size === 0) return;
     setIsImporting(true);
     try {
-      const res = await fetch("/api/youtube/import-selected", {
+      const res = await fetchWithTimeout("/api/youtube/import-selected", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",

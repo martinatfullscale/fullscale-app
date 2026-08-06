@@ -25,7 +25,7 @@ import {
 } from "@/components/ui/dialog";
 import { Loader2, CheckCircle2, XCircle, Inbox, ExternalLink, Image as ImageIcon, DollarSign, Move, Scissors } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient as qc } from "@/lib/queryClient";
+import { apiRequest, queryClient as qc, fetchWithTimeout } from "@/lib/queryClient";
 
 interface PlacementInboxItem {
   id: number;
@@ -104,7 +104,7 @@ export default function PlacementInbox() {
   const { data: brandCatalog, isLoading: catalogLoading } = useQuery<{ products: Array<{ id: number; name: string; imageUrl: string | null; thumbnailUrl: string | null; category: string | null }> }>({
     queryKey: ["/api/creator/placements", pickingFor, "brand-products"],
     queryFn: async () => {
-      const res = await fetch(`/api/creator/placements/${pickingFor}/brand-products`, { credentials: "include" });
+      const res = await fetchWithTimeout(`/api/creator/placements/${pickingFor}/brand-products`, { credentials: "include" });
       if (!res.ok) return { products: [] };
       return res.json();
     },

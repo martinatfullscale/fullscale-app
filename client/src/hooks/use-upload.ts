@@ -1,4 +1,5 @@
 import { useState, useCallback } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import type { UppyFile } from "@uppy/core";
 
 interface UploadMetadata {
@@ -62,7 +63,7 @@ export function useUpload(options: UseUploadOptions = {}) {
    */
   const requestUploadUrl = useCallback(
     async (file: File): Promise<UploadResponse> => {
-      const response = await fetch("/api/uploads/request-url", {
+      const response = await fetchWithTimeout("/api/uploads/request-url", {
         method: "POST",
         // Explicit: the endpoint now requires a session. fetch's same-origin
         // default would send the cookie anyway, but relying on a default for
@@ -166,7 +167,7 @@ export function useUpload(options: UseUploadOptions = {}) {
       headers?: Record<string, string>;
     }> => {
       // Use the actual file properties to request a per-file presigned URL
-      const response = await fetch("/api/uploads/request-url", {
+      const response = await fetchWithTimeout("/api/uploads/request-url", {
         method: "POST",
         // Explicit: the endpoint now requires a session. fetch's same-origin
         // default would send the cookie anyway, but relying on a default for

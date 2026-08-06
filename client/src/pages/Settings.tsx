@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { TopBar } from "@/components/TopBar";
 import { User, CreditCard, Bell, CheckCircle, ExternalLink, Save, Link2, Loader2, ChevronDown, RefreshCw, Trash2, Star, Mic, Globe, Coins } from "lucide-react";
@@ -120,7 +121,7 @@ export default function Settings() {
   const { data: approvedPlacements } = useQuery<{ placements: Array<{ creatorPayoutCents?: number | null }> }>({
     queryKey: ["/api/creator/placements/inbox", "creator_approved", "payouts"],
     queryFn: async () => {
-      const res = await fetch("/api/creator/placements/inbox?status=creator_approved,pending_brand_review,brand_approved", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/creator/placements/inbox?status=creator_approved,pending_brand_review,brand_approved", { credentials: "include" });
       if (!res.ok) return { placements: [] };
       return res.json();
     },
@@ -150,13 +151,13 @@ export default function Settings() {
     if (activeTab === "creator" && !creatorProfileLoaded) {
       const loadProfile = async () => {
         try {
-          const res = await fetch("/api/auth/user-type", { credentials: "include" });
+          const res = await fetchWithTimeout("/api/auth/user-type", { credentials: "include" });
           if (!res.ok) return;
           const data = await res.json();
           if (data.email) {
             // Try fetching the creator by their slug or email-based slug
             const slug = data.email.split("@")[0].toLowerCase();
-            const profileRes = await fetch(`/api/public/creator/${slug}`);
+            const profileRes = await fetchWithTimeout(`/api/public/creator/${slug}`);
             if (profileRes.ok) {
               const profileData = await profileRes.json();
               setCreatorProfile({
@@ -183,7 +184,7 @@ export default function Settings() {
   const handleSaveCreatorProfile = async () => {
     setIsSavingCreatorProfile(true);
     try {
-      const res = await fetch("/api/creator/profile", {
+      const res = await fetchWithTimeout("/api/creator/profile", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -226,7 +227,7 @@ export default function Settings() {
     try {
       const fd = new FormData();
       fd.append("image", file);
-      const res = await fetch("/api/creator/card-image", {
+      const res = await fetchWithTimeout("/api/creator/card-image", {
         method: "POST",
         credentials: "include",
         body: fd,
@@ -251,7 +252,7 @@ export default function Settings() {
 
   const handleClearCardImage = async () => {
     try {
-      const res = await fetch("/api/creator/profile", {
+      const res = await fetchWithTimeout("/api/creator/profile", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -275,9 +276,9 @@ export default function Settings() {
         // Fetch platform auth status (Twitch, Facebook, Instagram) plus
         // distribution publishing profiles (TikTok, X, LinkedIn)
         const [platformResponse, youtubeResponse, distributionResponse] = await Promise.all([
-          fetch("/api/platform-auth/status", { credentials: "include" }),
-          fetch("/api/youtube/videos", { credentials: "include" }),
-          fetch("/api/distribution/profiles", { credentials: "include" }),
+          fetchWithTimeout("/api/platform-auth/status", { credentials: "include" }),
+          fetchWithTimeout("/api/youtube/videos", { credentials: "include" }),
+          fetchWithTimeout("/api/distribution/profiles", { credentials: "include" }),
         ]);
 
         let updates: Partial<Record<string, Partial<SocialConnection>>> = {};
@@ -357,7 +358,7 @@ export default function Settings() {
   const fetchFacebookSources = async () => {
     setIsLoadingSources(true);
     try {
-      const response = await fetch("/api/facebook/sources");
+      const response = await fetchWithTimeout("/api/facebook/sources");
       if (response.ok) {
         const data: FacebookSourcesResponse = await response.json();
         setFacebookSources(data.sources);
@@ -397,7 +398,7 @@ export default function Settings() {
   const handleSaveSourceSelection = async () => {
     try {
       const selectedSource = facebookSources.find(s => s.id === selectedFacebookSource);
-      const response = await fetch("/api/facebook/select-source", {
+      const response = await fetchWithTimeout("/api/facebook/select-source", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -434,7 +435,7 @@ export default function Settings() {
   const handleSyncContent = async () => {
     setIsSyncing(true);
     try {
-      const response = await fetch("/api/sync/facebook-instagram", { method: "POST" });
+      const response = await fetchWithTimeout("/api/sync/facebook-instagram", { method: "POST" });
       const data = await response.json();
       
       if (response.ok) {
@@ -478,12 +479,12 @@ export default function Settings() {
         } else if (id === "tiktok" || id === "x" || id === "linkedin") {
           // These connect via distribution profiles — delete the profile row
           const platform = id === "x" ? "twitter" : id;
-          const profRes = await fetch("/api/distribution/profiles", { credentials: "include" });
+          const profRes = await fetchWithTimeout("/api/distribution/profiles", { credentials: "include" });
           if (profRes.ok) {
             const profiles = await profRes.json();
             const match = (profiles || []).find((p: any) => p.platform === platform);
             if (match) {
-              const delRes = await fetch(`/api/distribution/profiles/${match.id}`, { method: "DELETE", credentials: "include" });
+              const delRes = await fetchWithTimeout(`/api/distribution/profiles/${match.id}`, { method: "DELETE", credentials: "include" });
               if (!delRes.ok) throw new Error("Failed to disconnect");
             }
           }
@@ -592,8 +593,8 @@ export default function Settings() {
     setIsRefreshingStats(true);
     try {
       const [analyticsRes, accountsRes] = await Promise.all([
-        fetch("/api/analytics/refresh", { method: "POST", credentials: "include" }),
-        fetch("/api/social-accounts/refresh-all", { method: "POST", credentials: "include" }),
+        fetchWithTimeout("/api/analytics/refresh", { method: "POST", credentials: "include" }),
+        fetchWithTimeout("/api/social-accounts/refresh-all", { method: "POST", credentials: "include" }),
       ]);
       if (analyticsRes.ok || accountsRes.ok) {
         toast({ title: "Stats refreshed", description: "Follower counts and audience data updated from the platforms." });
@@ -631,7 +632,7 @@ export default function Settings() {
     
     setIsClearingLibrary(true);
     try {
-      const response = await fetch("/api/video-index/clear-all", { 
+      const response = await fetchWithTimeout("/api/video-index/clear-all", { 
         method: "DELETE", 
         credentials: "include" 
       });

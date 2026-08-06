@@ -35,7 +35,7 @@ import {
   X,
 } from "lucide-react";
 import { useLocation } from "wouter";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, fetchWithTimeout } from "@/lib/queryClient";
 import fullscaleLogo from "@assets/fullscale-logo_1767679525676.png";
 
 interface Surface {
@@ -318,7 +318,7 @@ export default function CreatorProfile() {
   const { data, isLoading, error } = useQuery<CreatorData>({
     queryKey: ["/api/public/creator", slug],
     queryFn: async () => {
-      const res = await fetch(`/api/public/creator/${slug}`);
+      const res = await fetchWithTimeout(`/api/public/creator/${slug}`);
       if (!res.ok) throw new Error("Creator not found");
       return res.json();
     },

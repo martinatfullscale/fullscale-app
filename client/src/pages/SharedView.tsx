@@ -6,6 +6,7 @@
  */
 
 import { useEffect, useState, useRef, useCallback } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { useParams, useLocation } from "wouter";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -136,7 +137,7 @@ export default function SharedView() {
   useEffect(() => {
     async function fetchShared() {
       try {
-        const res = await fetch(`/api/share/${params.slug}`);
+        const res = await fetchWithTimeout(`/api/share/${params.slug}`);
         if (!res.ok) {
           const errData = await res.json().catch(() => ({}));
           throw new Error(errData.error || `Share link not found (${res.status})`);
@@ -156,7 +157,7 @@ export default function SharedView() {
   useEffect(() => {
     async function fetchReviewContext() {
       try {
-        const res = await fetch(`/api/share/${params.slug}/review-context`);
+        const res = await fetchWithTimeout(`/api/share/${params.slug}/review-context`);
         if (res.ok) {
           const ctx = await res.json();
           setReviewCtx(ctx);
@@ -172,7 +173,7 @@ export default function SharedView() {
   useEffect(() => {
     async function fetchUserEmail() {
       try {
-        const res = await fetch("/api/auth/user-type", { credentials: "include" });
+        const res = await fetchWithTimeout("/api/auth/user-type", { credentials: "include" });
         if (res.ok) {
           const data = await res.json();
           setCurrentUserEmail(data.email || null);
@@ -189,7 +190,7 @@ export default function SharedView() {
     if (!reviewCtx?.bidId) return;
     setSubmittingReview(true);
     try {
-      const res = await fetch(`/api/bids/${reviewCtx.bidId}/review`, {
+      const res = await fetchWithTimeout(`/api/bids/${reviewCtx.bidId}/review`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",

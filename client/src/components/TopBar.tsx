@@ -6,7 +6,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, fetchWithTimeout } from "@/lib/queryClient";
 import { useLocation } from "wouter";
 
 const SUPER_ADMIN_EMAIL = "martin@gofullscale.co";
@@ -60,7 +60,7 @@ export function TopBar() {
   }>({
     queryKey: ["/api/notifications"],
     queryFn: async () => {
-      const res = await fetch("/api/notifications", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/notifications", { credentials: "include" });
       if (!res.ok) return { notifications: [], unread: 0 };
       return res.json();
     },
@@ -80,7 +80,7 @@ export function TopBar() {
 
   const openNotification = async (n: { id: number; linkPath: string | null }) => {
     setBellOpen(false);
-    fetch(`/api/notifications/${n.id}/read`, { method: "POST", credentials: "include" })
+    fetchWithTimeout(`/api/notifications/${n.id}/read`, { method: "POST", credentials: "include" })
       .then(() => refetchNotifications())
       .catch(() => {});
     if (n.linkPath) setLocation(n.linkPath);
@@ -149,7 +149,7 @@ export function TopBar() {
                   <button
                     className="text-xs text-primary hover:underline"
                     onClick={() => {
-                      fetch("/api/notifications/read-all", { method: "POST", credentials: "include" })
+                      fetchWithTimeout("/api/notifications/read-all", { method: "POST", credentials: "include" })
                         .then(() => refetchNotifications())
                         .catch(() => {});
                     }}

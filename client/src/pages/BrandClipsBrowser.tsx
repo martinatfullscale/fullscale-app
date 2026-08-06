@@ -12,6 +12,7 @@
  * tier limits/credits would be enforced.
  */
 import { useState, useMemo } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -61,7 +62,7 @@ export default function BrandClipsBrowser() {
     queryFn: async () => {
       const params = new URLSearchParams();
       if (personalized) params.set("personalized", "true");
-      const res = await fetch(`/api/brand/clips?${params.toString()}`, {
+      const res = await fetchWithTimeout(`/api/brand/clips?${params.toString()}`, {
         credentials: "include",
       });
       if (!res.ok) throw new Error("Failed to fetch clips");

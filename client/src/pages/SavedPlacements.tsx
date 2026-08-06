@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -111,7 +112,7 @@ export default function SavedPlacements() {
       try {
         // Owner is editing their own placement — show all surfaces (the
         // anchor surface might not be creatorApproved yet on a new scan).
-        const res = await fetch(`/api/video/${quickEditPlacement.videoId}/surfaces?includeUnapproved=true`, { credentials: "include" });
+        const res = await fetchWithTimeout(`/api/video/${quickEditPlacement.videoId}/surfaces?includeUnapproved=true`, { credentials: "include" });
         if (res.ok) {
           // The endpoint returns { surfaces, count, ... }, not a bare array —
           // calling .find() on the envelope threw and Quick Edit silently
@@ -135,7 +136,7 @@ export default function SavedPlacements() {
     if (!goLiveFor) { setGoLiveCandidates([]); setGoLiveUrl(""); return; }
     let cancelled = false;
     setGoLiveLoading(true);
-    fetch(`/api/placements/${goLiveFor.id}/go-live-candidates`, { credentials: "include" })
+    fetchWithTimeout(`/api/placements/${goLiveFor.id}/go-live-candidates`, { credentials: "include" })
       .then((r) => (r.ok ? r.json() : { candidates: [] }))
       .then((body) => { if (!cancelled) setGoLiveCandidates(body.candidates ?? []); })
       .catch(() => { if (!cancelled) setGoLiveCandidates([]); })
@@ -151,7 +152,7 @@ export default function SavedPlacements() {
     if (!goLiveFor || !postUrl.trim()) return;
     setGoLiveSaving(true);
     try {
-      const res = await fetch(`/api/placements/${goLiveFor.id}/go-live`, {
+      const res = await fetchWithTimeout(`/api/placements/${goLiveFor.id}/go-live`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -177,7 +178,7 @@ export default function SavedPlacements() {
   const { data, isLoading } = useQuery<{ placements: SavedPlacementEnriched[] }>({
     queryKey: ["/api/placements"],
     queryFn: async () => {
-      const res = await fetch("/api/placements", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/placements", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch placements");
       return res.json();
     },
@@ -185,7 +186,7 @@ export default function SavedPlacements() {
 
   const deleteMutation = useMutation({
     mutationFn: async (id: number) => {
-      const res = await fetch(`/api/placements/${id}`, {
+      const res = await fetchWithTimeout(`/api/placements/${id}`, {
         method: "DELETE",
         credentials: "include",
       });
@@ -206,7 +207,7 @@ export default function SavedPlacements() {
   const handleShare = async (placement: SavedPlacementEnriched) => {
     setSharingId(placement.id);
     try {
-      const res = await fetch("/api/share", {
+      const res = await fetchWithTimeout("/api/share", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -234,7 +235,7 @@ export default function SavedPlacements() {
   const { data: userTypeData } = useQuery<{ userType?: "creator" | "brand" | null }>({
     queryKey: ["/api/auth/user-type"],
     queryFn: async () => {
-      const res = await fetch("/api/auth/user-type", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/auth/user-type", { credentials: "include" });
       if (!res.ok) return { userType: null };
       return res.json();
     },
@@ -260,7 +261,7 @@ export default function SavedPlacements() {
         blend: placement.blend,
       }];
 
-      const res = await fetch(`/api/video/${placement.videoId}/export`, {
+      const res = await fetchWithTimeout(`/api/video/${placement.videoId}/export`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -282,7 +283,7 @@ export default function SavedPlacements() {
       // Poll for progress
       const pollInterval = setInterval(async () => {
         try {
-          const pollRes = await fetch(`/api/exports/${exportId}`, { credentials: "include" });
+          const pollRes = await fetchWithTimeout(`/api/exports/${exportId}`, { credentials: "include" });
           if (!pollRes.ok) return;
           const exportData = await pollRes.json();
 

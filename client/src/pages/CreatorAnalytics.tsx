@@ -9,6 +9,7 @@
  */
 
 import { useQuery } from "@tanstack/react-query";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -30,7 +31,7 @@ export default function CreatorAnalytics() {
   const { data, isLoading, isError } = useQuery<{ accounts: SocialAccountAnalytics[] }>({
     queryKey: ["/api/analytics/social"],
     queryFn: async () => {
-      const res = await fetch("/api/analytics/social", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/analytics/social", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to load analytics");
       return res.json();
     },

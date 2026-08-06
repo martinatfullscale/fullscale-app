@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { useAuth } from "./use-auth";
 
 interface GoogleAuthStatus {
@@ -20,7 +21,7 @@ export function useHybridMode() {
   const { data: authStatus, isLoading: isGoogleLoading } = useQuery<GoogleAuthStatus>({
     queryKey: ["/api/auth/google/status"],
     queryFn: async () => {
-      const res = await fetch("/api/auth/google/status", { credentials: "include" });
+      const res = await fetchWithTimeout("/api/auth/google/status", { credentials: "include" });
       if (!res.ok) {
         return { authenticated: false };
       }

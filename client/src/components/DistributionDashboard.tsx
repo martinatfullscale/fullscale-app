@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Send, X, Loader2, BarChart3, TrendingUp, Eye, Heart,
@@ -108,10 +109,10 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
     setIsLoading(true);
     try {
       const [profilesRes, postsRes, clipsRes, metricsRes] = await Promise.all([
-        fetch("/api/distribution/profiles", { credentials: "include" }),
-        fetch(`/api/distribution/posts/video/${videoId}`, { credentials: "include" }),
-        fetch(`/api/remix/clips/${videoId}`, { credentials: "include" }),
-        fetch(`/api/distribution/analytics/video/${videoId}`, { credentials: "include" }),
+        fetchWithTimeout("/api/distribution/profiles", { credentials: "include" }),
+        fetchWithTimeout(`/api/distribution/posts/video/${videoId}`, { credentials: "include" }),
+        fetchWithTimeout(`/api/remix/clips/${videoId}`, { credentials: "include" }),
+        fetchWithTimeout(`/api/distribution/analytics/video/${videoId}`, { credentials: "include" }),
       ]);
 
       if (profilesRes.ok) setProfiles(await profilesRes.json());
@@ -135,7 +136,7 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
     if (!selectedClipId || !selectedProfileId) return;
     setIsPublishing(true);
     try {
-      const res = await fetch("/api/distribution/publish", {
+      const res = await fetchWithTimeout("/api/distribution/publish", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -164,7 +165,7 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
   const refreshAnalytics = async () => {
     setIsRefreshing(true);
     try {
-      const res = await fetch(`/api/distribution/analytics/video/${videoId}/refresh`, {
+      const res = await fetchWithTimeout(`/api/distribution/analytics/video/${videoId}/refresh`, {
         method: "POST",
         credentials: "include",
       });
@@ -179,7 +180,7 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
 
   const previewCaption = async (platform: string) => {
     try {
-      const res = await fetch("/api/distribution/format-caption", {
+      const res = await fetchWithTimeout("/api/distribution/format-caption", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -552,7 +553,7 @@ function ScheduleTab({
   const [scheduledTime, setScheduledTime] = useState("");
 
   useEffect(() => {
-    fetch("/api/distribution/schedules", { credentials: "include" })
+    fetchWithTimeout("/api/distribution/schedules", { credentials: "include" })
       .then(r => r.ok ? r.json() : [])
       .then(setSchedules)
       .catch(() => {});
@@ -563,7 +564,7 @@ function ScheduleTab({
     const profile = profiles.find(p => p.id === selectedProfile);
 
     try {
-      const res = await fetch("/api/distribution/schedule", {
+      const res = await fetchWithTimeout("/api/distribution/schedule", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -586,7 +587,7 @@ function ScheduleTab({
 
   const cancelSchedule = async (id: number) => {
     try {
-      await fetch(`/api/distribution/schedules/${id}`, { method: "DELETE", credentials: "include" });
+      await fetchWithTimeout(`/api/distribution/schedules/${id}`, { method: "DELETE", credentials: "include" });
       setSchedules(prev => prev.filter(s => s.id !== id));
     } catch {}
   };
