@@ -171,10 +171,15 @@ export async function runAudienceResponseCapture(): Promise<{ days: number; comm
     return { days: 0, comments: 0, classified: 0, skipped: 0 };
   }
 
+  // One projected batch instead of a full row per video. getVideoById returns
+  // scene_index and scene_inventory jsonb, which the pg driver parses
+  // synchronously — and this job shares the single Node thread with every HTTP
+  // request, so a big measurement set stalls the whole site on a timer.
+  const videoMap = await storage.getVideoSummaries(videoIds);
   const tokenCache = new Map<string, string | null>();
   for (const id of videoIds) {
     try {
-      const video = await storage.getVideoById(id).catch(() => undefined);
+      const video = videoMap.get(id);
       if (!video) { skipped++; continue; }
       const platform = String((video as any).platform ?? "");
       const nativeId = String((video as any).youtubeId ?? "");

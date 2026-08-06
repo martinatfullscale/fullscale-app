@@ -37,8 +37,13 @@ export async function runVideoStatSnapshots(): Promise<{ captured: number; skipp
   // platform is fetched per-video through the dispatcher.
   const byUser = new Map<string, Array<{ id: number; platform: string; nativeId: string }>>();
   const others: Array<{ id: number; platform: string; storedId: string; userId: string }> = [];
+  // One projected batch instead of a full row per video. getVideoById returns
+  // scene_index and scene_inventory jsonb, which the pg driver parses
+  // synchronously — and this job shares the single Node thread with every HTTP
+  // request, so a big measurement set stalls the whole site on a timer.
+  const videoMap = await storage.getVideoSummaries(videoIds);
   for (const id of videoIds) {
-    const video = await storage.getVideoById(id).catch(() => undefined);
+    const video = videoMap.get(id);
     if (!video) { skipped++; continue; }
     const platform = String((video as any).platform ?? "");
     const storedId = String((video as any).youtubeId ?? "");

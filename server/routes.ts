@@ -1425,10 +1425,11 @@ export async function registerRoutes(
       // "3 Twitch videos and we can read them" rather than an abstract matrix.
       const measuredIds = await storage.getVideoIdsUnderMeasurement();
       const counts = new Map<string, number>();
-      for (const id of measuredIds) {
-        const v = await storage.getVideoById(id).catch(() => undefined);
-        if (!v) continue;
-        const p = String((v as any).platform ?? "unknown");
+      // Only .platform is read — one projected query instead of a full row per
+      // measured video, which grows with the pilot.
+      const measured = await storage.getVideoSummaries(measuredIds);
+      for (const v of Array.from(measured.values())) {
+        const p = String(v.platform ?? "unknown");
         counts.set(p, (counts.get(p) ?? 0) + 1);
       }
       res.json({
@@ -4729,9 +4730,13 @@ export async function registerRoutes(
   app.get("/api/deliveries", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const renders = await storage.getDeliveredRendersForCreator(req.authUserId);
+      // Batched ahead of the Promise.all: per-row getVideoById here meant N
+      // megabyte jsonb rows fetched CONCURRENTLY, each holding one of the ten
+      // pool connections and each blocking the event loop on parse.
+      const videoMap = await storage.getVideoSummaries(renders.map((r: any) => r.videoId));
       const enriched = await Promise.all(
         renders.map(async (r: any) => {
-          const video = await storage.getVideoById(r.videoId).catch(() => undefined);
+          const video = videoMap.get(r.videoId);
           const product = r.brandProductId
             ? await storage.getBrandProduct(r.brandProductId).catch(() => undefined)
             : undefined;
@@ -7187,6 +7192,10 @@ export async function registerRoutes(
       // One batched count query (was one query per video — 80 parallel
       // acquisitions against a 10-connection pool).
       const counts = await storage.getSurfaceCountsForVideos(videos.map((v) => v.id));
+      // The card's scene rollup, aggregated in Postgres. getVideoIndex no
+      // longer returns scene_inventory at all — this endpoint used to pull
+      // hundreds of KB per video only to reduce it to three integers.
+      const sceneSummaries = await storage.getSceneSummaries(videos.map((v) => v.id));
 
       // File-existence checks hit Object Storage — bound the concurrency so 80
       // videos don't mean 80 simultaneous GCS calls.
@@ -7208,11 +7217,12 @@ export async function registerRoutes(
                 fileExists = false;
               }
             }
-            // Strip the scan internals (per-shot dHash arrays, cut lists,
-            // full scene inventory) — no consumer of this endpoint reads
-            // them, and they ballooned the response to ~500KB / 17s under
-            // load.
-            const { sceneIndex, sceneBoundaries, sceneInventory, ...slim } = video as any;
+            // The scan internals (per-shot dHash arrays, cut lists, full
+            // scene inventory) are no longer SELECTed at all — getVideoIndex
+            // projects them out. They used to be fetched, parsed, and then
+            // thrown away here, which ballooned this response to ~500KB / 17s
+            // under load and blocked the event loop on every library open.
+            const slim = video;
             // Compact rollup of the inventory for library cards:
             // surface-bearing scene classes, canonical surfaces across
             // them, and minutes of screen time those scenes cover (a
@@ -7222,30 +7232,7 @@ export async function registerRoutes(
             // matches the scene modal header). Null for videos scanned
             // before the inventory existed — client falls back to the
             // raw adOpportunities count.
-            let sceneSummary: { sceneCount: number; surfaceCount: number; trackedMinutes: number } | null = null;
-            const invScenes = Array.isArray(sceneInventory?.scenes) ? sceneInventory.scenes : null;
-            if (invScenes) {
-              let sceneCount = 0;
-              let surfaceCount = 0;
-              let trackedSec = 0;
-              for (const scene of invScenes) {
-                const n = Array.isArray(scene?.surfaces) ? scene.surfaces.length : 0;
-                surfaceCount += n;
-                // Every scene class counts — the modal renders zero-surface
-                // classes too (with an empty state), so the card and the
-                // modal header must agree. trackedMinutes stays restricted
-                // to surface-bearing scenes: it advertises sellable time.
-                sceneCount++;
-                if (n > 0) {
-                  trackedSec += Number(scene?.totalSec) || 0;
-                }
-              }
-              sceneSummary = {
-                sceneCount,
-                surfaceCount,
-                trackedMinutes: Math.round(trackedSec / 60),
-              };
-            }
+            const sceneSummary = sceneSummaries.get(video.id) ?? null;
             return { ...slim, adOpportunities: counts.get(video.id) || 0, fileExists, sceneSummary };
           }),
         ),
@@ -8472,10 +8459,21 @@ export async function registerRoutes(
       // Track which videoIds have live placements (to avoid showing duplicate bids)
       const placedVideoIds = new Set<number>();
 
+      // ONE projected fetch covering BOTH loops below. Previously each loop
+      // called getVideoById per row, so a single page load paid two unbounded
+      // fan-outs of full video rows — scene_index and scene_inventory jsonb
+      // included, parsed synchronously by the pg driver, blocking every other
+      // request in the process. Only title/thumbnail/userId/viewCount are read.
+      const brandBids = await storage.getBrandCampaigns(brandEmail);
+      const videoMap = await storage.getVideoSummaries([
+        ...uniquePlacements.map((p: any) => p.videoId),
+        ...brandBids.map((b: any) => b.videoId).filter((id: any) => id != null),
+      ]);
+
       for (const placement of uniquePlacements) {
         placedVideoIds.add(placement.videoId);
 
-        const video = await storage.getVideoById(placement.videoId);
+        const video = videoMap.get(placement.videoId);
         const surfaces = await storage.getDetectedSurfaces(placement.videoId);
         const surface = surfaces.find(s => s.id === placement.surfaceId);
 
@@ -8514,12 +8512,12 @@ export async function registerRoutes(
       }
 
       // ── SOURCE 2: Pending bids / pitches (not yet fulfilled with a placement) ──
-      const bids = await storage.getBrandCampaigns(brandEmail);
+      const bids = brandBids;
       for (const bid of bids) {
         // Skip bids for videos that already have a live placement
         if (bid.videoId && placedVideoIds.has(bid.videoId)) continue;
 
-        const video = bid.videoId ? await storage.getVideoById(bid.videoId) : null;
+        const video = bid.videoId ? (videoMap.get(bid.videoId) ?? null) : null;
 
         results.push({
           id: bid.id + 1000000, // Offset to avoid ID collision with placements
@@ -11769,14 +11767,11 @@ export async function registerRoutes(
             p.createdBy === req.authEmail || p.createdBy === req.authUserId);
 
       // Enrich with video titles/thumbnails
+      // One projected query, not one full row per video. getVideoById drags
+      // back scene_index and scene_inventory — megabytes of jsonb that the pg
+      // driver parses synchronously, stalling every other request in flight.
       const videoIds = [...new Set(placements.map(p => p.videoId))];
-      const videoMap = new Map<number, { title: string; thumbnailUrl: string | null; youtubeId: string }>();
-      for (const vid of videoIds) {
-        const video = await storage.getVideoById(vid);
-        if (video) {
-          videoMap.set(vid, { title: video.title, thumbnailUrl: video.thumbnailUrl, youtubeId: video.youtubeId });
-        }
-      }
+      const videoMap = await storage.getVideoSummaries(videoIds);
 
       const enriched = placements.map(p => ({
         ...p,

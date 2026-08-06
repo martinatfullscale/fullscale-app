@@ -134,7 +134,12 @@ import {
 import { users, type User, type UpsertUser } from "@shared/models/auth";
 import { encrypt, decrypt } from "./encryption";
 
-export interface VideoWithOpportunities extends VideoIndex {
+export type VideoSummaryRow = Pick<VideoIndex,
+  'id' | 'title' | 'thumbnailUrl' | 'youtubeId' | 'userId' | 'viewCount' | 'platform' | 'filePath' | 'duration' | 'status'>;
+
+export type VideoListRow = Omit<VideoIndex, 'sceneIndex' | 'sceneInventory' | 'sceneBoundaries'>;
+
+export interface VideoWithOpportunities extends VideoListRow {
   surfaces: DetectedSurface[];
   surfaceCount: number;
   contexts: string[];
@@ -162,13 +167,14 @@ export interface IStorage {
   getAllowedUsers(): Promise<AllowedUser[]>;
   getAllowedUser(email: string): Promise<AllowedUser | undefined>;
   updateAllowedUserRole(email: string, userType: string): Promise<void>;
-  getVideoIndex(userId: string, authEmail?: string): Promise<VideoIndex[]>;
-  getAllVideos(): Promise<VideoIndex[]>;
-  upsertVideoIndex(video: InsertVideoIndex): Promise<VideoIndex>;
+  /** Lean: excludes the three scene jsonb blobs. See VIDEO_LIST_COLUMNS. */
+  getVideoIndex(userId: string, authEmail?: string): Promise<VideoListRow[]>;
+  getAllVideos(): Promise<VideoListRow[]>;
+  upsertVideoIndex(video: InsertVideoIndex): Promise<VideoListRow>;
   scrubUserPassword(userId: string): Promise<void>;
   setOnboardingDismissed(userId: string): Promise<void>;
   setProfileSubmitted(userId: string): Promise<void>;
-  findVideoIndexRow(userId: string, youtubeId: string): Promise<VideoIndex | undefined>;
+  findVideoIndexRow(userId: string, youtubeId: string): Promise<VideoListRow | undefined>;
   insertVideo(video: InsertVideoIndex): Promise<VideoIndex>;
   bulkUpsertVideoIndex(videos: InsertVideoIndex[]): Promise<void>;
   deleteVideoIndex(userId: string, userEmail?: string): Promise<void>;
@@ -179,7 +185,7 @@ export interface IStorage {
   permanentlyDeleteVideo(videoId: number): Promise<VideoIndex | undefined>;
   getVideoById(id: number): Promise<VideoIndex | undefined>;
   getVideosByYoutubeIds(youtubeIds: string[]): Promise<VideoIndex[]>;
-  getPendingVideos(userId: string, limit?: number): Promise<VideoIndex[]>;
+  getPendingVideos(userId: string, limit?: number): Promise<VideoListRow[]>;
   updateVideoStatus(videoId: number, status: string): Promise<void>;
   updateVideoStatusIfScanning(videoId: number, status: string): Promise<boolean>;
   updateVideoThumbnail(videoId: number, thumbnailUrl: string): Promise<void>;
@@ -442,6 +448,51 @@ export interface IStorage {
   getStudioWaitlistByEmail(email: string): Promise<StudioWaitlistEntry | undefined>;
   hasApprovedStudioAccess(email: string): Promise<boolean>;
 }
+
+/**
+ * Every video column EXCEPT scene_boundaries, scene_index and scene_inventory.
+ *
+ * Those three hold per-shot perceptual hashes and per-scene surface
+ * inventories and run to megabytes on a scanned video. node-postgres parses
+ * jsonb with a SYNCHRONOUS JSON.parse on the main thread, so pulling them for
+ * a list view stalls every other request in the process — that is what took
+ * the site down when the placement queue fetched one row per placement.
+ *
+ * Drizzle's db.select() with no argument emits an explicit SELECT of EVERY
+ * column, so "we only read .title" is not a defence: the bytes still cross
+ * the wire and still get parsed. Anything that renders a LIST of videos
+ * selects this instead. Code that genuinely needs a scene blob fetches that
+ * one video by id.
+ */
+export const VIDEO_LIST_COLUMNS = {
+  id: videoIndex.id,
+  userId: videoIndex.userId,
+  youtubeId: videoIndex.youtubeId,
+  title: videoIndex.title,
+  description: videoIndex.description,
+  viewCount: videoIndex.viewCount,
+  thumbnailUrl: videoIndex.thumbnailUrl,
+  status: videoIndex.status,
+  priorityScore: videoIndex.priorityScore,
+  publishedAt: videoIndex.publishedAt,
+  category: videoIndex.category,
+  isEvergreen: videoIndex.isEvergreen,
+  duration: videoIndex.duration,
+  platform: videoIndex.platform,
+  sentiment: videoIndex.sentiment,
+  culturalContext: videoIndex.culturalContext,
+  filePath: videoIndex.filePath,
+  sourceUrl: videoIndex.sourceUrl,
+  subcategory: videoIndex.subcategory,
+  tags: videoIndex.tags,
+  deletedAt: videoIndex.deletedAt,
+  editorialStatus: videoIndex.editorialStatus,
+  editorialError: videoIndex.editorialError,
+  editorialClipCount: videoIndex.editorialClipCount,
+  editorialCompletedAt: videoIndex.editorialCompletedAt,
+  createdAt: videoIndex.createdAt,
+  updatedAt: videoIndex.updatedAt,
+} as const;
 
 export class DatabaseStorage implements IStorage {
   // User authentication methods
@@ -1186,11 +1237,14 @@ export class DatabaseStorage implements IStorage {
       .orderBy(savedPlacements.createdAt);
   }
 
-  async getVideoIndex(userId: string, authEmail?: string): Promise<VideoIndex[]> {
+  async getVideoIndex(userId: string, authEmail?: string): Promise<VideoListRow[]> {
     console.log(`[Storage.getVideoIndex] Looking up user by ID: ${userId}, authEmail: ${authEmail}`);
     // videoIndex.userId is a mixed-key column: newer rows store users.id, legacy
     // rows store the creator's email. Resolve the user from either form so the
     // match set always carries both identifiers.
+    // NOTE: this returns VIDEO_LIST_COLUMNS, not the whole row — the three
+    // scene jsonb blobs are excluded. Every caller here renders a LIST; a
+    // caller that needs a scene blob fetches that one video by id instead.
     let user = await this.getUserById(userId);
     if (!user && userId.includes("@")) {
       user = await this.getUserByEmail(userId);
@@ -1208,7 +1262,7 @@ export class DatabaseStorage implements IStorage {
     console.log(`[Storage.getVideoIndex] Querying by userId IN [${matchArray.join(', ')}]`);
 
     const videos = await db
-      .select()
+      .select(VIDEO_LIST_COLUMNS)
       .from(videoIndex)
       .where(
         and(
@@ -1223,7 +1277,7 @@ export class DatabaseStorage implements IStorage {
 
     // Deduplicate by normalized title — keeps the entry with the most surfaces (best scan)
     // This handles duplicate uploads, re-imports, and mixed youtubeId formats
-    const seen = new Map<string, VideoIndex>();
+    const seen = new Map<string, VideoListRow>();
 
     // Pre-fetch surface counts for smarter dedup (keep the best-scanned
     // version) — one batched GROUP BY, not a query per video.
@@ -1251,9 +1305,11 @@ export class DatabaseStorage implements IStorage {
     return dedupedVideos;
   }
 
-  async getAllVideos(): Promise<VideoIndex[]> {
+  async getAllVideos(): Promise<VideoListRow[]> {
+    // Platform-wide and unbounded, so the scene jsonb absolutely cannot ride
+    // along — this would otherwise be the single heaviest query on the server.
     return await db
-      .select()
+      .select(VIDEO_LIST_COLUMNS)
       .from(videoIndex)
       .orderBy(desc(videoIndex.createdAt));
   }
@@ -1266,10 +1322,10 @@ export class DatabaseStorage implements IStorage {
     return result;
   }
 
-  async findVideoIndexRow(userId: string, youtubeId: string): Promise<VideoIndex | undefined> {
+  async findVideoIndexRow(userId: string, youtubeId: string): Promise<VideoListRow | undefined> {
     const ids = await this.identityMatchValues(userId);
     const [existing] = await db
-      .select()
+      .select(VIDEO_LIST_COLUMNS)
       .from(videoIndex)
       .where(and(
         inArray(videoIndex.userId, ids),
@@ -1278,13 +1334,15 @@ export class DatabaseStorage implements IStorage {
     return existing;
   }
 
-  async upsertVideoIndex(video: InsertVideoIndex): Promise<VideoIndex> {
+  async upsertVideoIndex(video: InsertVideoIndex): Promise<VideoListRow> {
     // Alias-aware existence check: the indexer still writes email keys while
     // the boot sweep converges rows to users.id — an exact-email match would
     // miss the normalized row and INSERT a duplicate on every refresh.
     const ids = await this.identityMatchValues(video.userId);
+    // Only existing.id is read below, so do not drag the scene blobs back for
+    // every video on a 50-video YouTube sync.
     const [existing] = await db
-      .select()
+      .select({ id: videoIndex.id })
       .from(videoIndex)
       .where(and(
         inArray(videoIndex.userId, ids),
@@ -1308,14 +1366,17 @@ export class DatabaseStorage implements IStorage {
           updatedAt: new Date(),
         })
         .where(eq(videoIndex.id, existing.id))
-        .returning();
+        // Projected: a YouTube sync upserts up to 50 videos in a loop, and an
+        // unprojected RETURNING would hand back the scene blobs 50 times for a
+        // value most callers (bulkUpsertVideoIndex) discard outright.
+        .returning(VIDEO_LIST_COLUMNS);
       return updated;
     }
     
     const [result] = await db
       .insert(videoIndex)
       .values(video)
-      .returning();
+      .returning(VIDEO_LIST_COLUMNS);
     return result;
   }
 
@@ -1400,10 +1461,10 @@ export class DatabaseStorage implements IStorage {
       .where(inArray(videoIndex.youtubeId, youtubeIds));
   }
 
-  async getPendingVideos(userId: string, limit: number = 10): Promise<VideoIndex[]> {
+  async getPendingVideos(userId: string, limit: number = 10): Promise<VideoListRow[]> {
     const ids = await this.identityMatchValues(userId);
     return await db
-      .select()
+      .select(VIDEO_LIST_COLUMNS)
       .from(videoIndex)
       .where(and(
         inArray(videoIndex.userId, ids),
@@ -1586,8 +1647,11 @@ export class DatabaseStorage implements IStorage {
     // Dual-form match: callers pass either users.id or an email, and rows may
     // hold either form (the boot sweep converges them to users.id over time).
     const ids = await this.identityMatchValues(userId);
+    // Lean projection: this fans out one getActiveSurfaces call per video
+    // below, so pulling the scene jsonb for the whole library here made the
+    // marketplace pages one of the heaviest requests on the server.
     const videos = await db
-      .select()
+      .select(VIDEO_LIST_COLUMNS)
       .from(videoIndex)
       .where(inArray(videoIndex.userId, ids))
       .orderBy(desc(videoIndex.priorityScore));
@@ -1612,7 +1676,7 @@ export class DatabaseStorage implements IStorage {
 
   async getAllVideosWithOpportunities(): Promise<VideoWithOpportunities[]> {
     const videos = await db
-      .select()
+      .select(VIDEO_LIST_COLUMNS)
       .from(videoIndex)
       .orderBy(desc(videoIndex.priorityScore));
     
@@ -1642,7 +1706,7 @@ export class DatabaseStorage implements IStorage {
       .from(detectedSurfaces);
 
     const videos = await db
-      .select()
+      .select(VIDEO_LIST_COLUMNS)
       .from(videoIndex)
       .where(
         or(
@@ -1683,7 +1747,7 @@ export class DatabaseStorage implements IStorage {
     // Get ready videos for a creator by email (for public profile page)
     const ids = await this.identityMatchValues(userEmail);
     const videos = await db
-      .select()
+      .select(VIDEO_LIST_COLUMNS)
       .from(videoIndex)
       .where(
         and(
@@ -2589,11 +2653,75 @@ export class DatabaseStorage implements IStorage {
    * and each blocking the event loop on jsonb parse. A creator with a dozen
    * pending placements could stall the entire process by opening their inbox.
    */
-  async getVideoSummaries(ids: number[]): Promise<Map<number, { id: number; title: string; thumbnailUrl: string | null }>> {
+  /**
+   * The library card's scene rollup — computed IN POSTGRES.
+   *
+   * /api/videos used to fetch every video's full scene_inventory (hundreds of
+   * KB each, parsed synchronously by the pg driver), destructure it away, and
+   * keep only three numbers. This does the aggregation server-side so the blob
+   * never crosses the wire.
+   *
+   * Semantics match the JS it replaces exactly: every scene class counts
+   * toward sceneCount, surfaces sum across all of them, but trackedSec only
+   * accumulates for scenes that actually bear surfaces — it advertises
+   * sellable time, not runtime. Videos scanned before the inventory existed
+   * are absent from the map, so the caller yields null and the client falls
+   * back to the raw surface count.
+   */
+  async getSceneSummaries(ids: number[]): Promise<Map<number, { sceneCount: number; surfaceCount: number; trackedMinutes: number }>> {
+    const unique = Array.from(new Set(ids.filter((n) => Number.isFinite(n))));
+    if (unique.length === 0) return new Map();
+    // Fail soft. This is a decorative badge on a library card; if the
+    // aggregate errors, the card falls back to its raw surface count rather
+    // than taking the whole library page down with it.
+    try {
+    const res: any = await db.execute(sql`
+      SELECT v.id,
+             COALESCE(jsonb_array_length(v.scene_inventory->'scenes'), 0) AS scene_count,
+             COALESCE(SUM(
+               CASE WHEN jsonb_typeof(s->'surfaces') = 'array'
+                    THEN jsonb_array_length(s->'surfaces') ELSE 0 END
+             ), 0) AS surface_count,
+             COALESCE(SUM(
+               CASE WHEN jsonb_typeof(s->'surfaces') = 'array'
+                     AND jsonb_array_length(s->'surfaces') > 0
+                     AND s->>'totalSec' ~ '^-?[0-9]+(\\.[0-9]+)?$'
+                    THEN (s->>'totalSec')::numeric ELSE 0 END
+             ), 0) AS tracked_sec
+      FROM video_index v
+      LEFT JOIN LATERAL jsonb_array_elements(v.scene_inventory->'scenes') s ON TRUE
+      WHERE v.id = ANY(${unique})
+        AND jsonb_typeof(v.scene_inventory->'scenes') = 'array'
+      GROUP BY v.id
+    `);
+    const rows: any[] = res?.rows ?? res ?? [];
+    return new Map(rows.map((r: any) => [Number(r.id), {
+      sceneCount: Number(r.scene_count) || 0,
+      surfaceCount: Number(r.surface_count) || 0,
+      trackedMinutes: Math.round((Number(r.tracked_sec) || 0) / 60),
+    }]));
+    } catch (err: any) {
+      console.warn(`[Storage.getSceneSummaries] rollup failed, cards fall back: ${err?.message}`);
+      return new Map();
+    }
+  }
+
+  async getVideoSummaries(ids: number[]): Promise<Map<number, VideoSummaryRow>> {
     const unique = Array.from(new Set(ids.filter((n) => Number.isFinite(n))));
     if (unique.length === 0) return new Map();
     const rows = await db
-      .select({ id: videoIndex.id, title: videoIndex.title, thumbnailUrl: videoIndex.thumbnailUrl })
+      .select({
+        id: videoIndex.id,
+        title: videoIndex.title,
+        thumbnailUrl: videoIndex.thumbnailUrl,
+        youtubeId: videoIndex.youtubeId,
+        userId: videoIndex.userId,
+        viewCount: videoIndex.viewCount,
+        platform: videoIndex.platform,
+        filePath: videoIndex.filePath,
+        duration: videoIndex.duration,
+        status: videoIndex.status,
+      })
       .from(videoIndex)
       .where(inArray(videoIndex.id, unique));
     return new Map(rows.map((r) => [r.id, r]));
