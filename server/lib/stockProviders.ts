@@ -183,6 +183,38 @@ const pixabay: Provider = {
 
 const PROVIDERS: Provider[] = [pexels, pixabay];
 
+// ── Response cache ──────────────────────────────────────────────────────
+//
+// NOT an optimization — a licence term. Pixabay's API terms REQUIRE that
+// responses be cached for 24 hours, so shipping without one was a breach.
+// Pexels recommends the same. It is also the single largest multiplier on a
+// shared free quota, because b-roll queries repeat heavily across a creator
+// base: "city street" gets typed by everyone.
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const MAX_CACHE_ENTRIES = 500;
+const searchCache = new Map<string, { at: number; videos: StockVideo[]; errors: string[] }>();
+
+function cacheKey(q: string, orientation?: string): string {
+  return `${q.trim().toLowerCase().replace(/\s+/g, " ")}|${orientation ?? "any"}`;
+}
+
+function readCache(key: string) {
+  const hit = searchCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > CACHE_TTL_MS) { searchCache.delete(key); return null; }
+  return hit;
+}
+
+function writeCache(key: string, videos: StockVideo[], errors: string[]) {
+  // Oldest-out when full. A Map preserves insertion order, so the first key
+  // is the oldest — no separate LRU bookkeeping needed for a cache this size.
+  if (searchCache.size >= MAX_CACHE_ENTRIES) {
+    const oldest = searchCache.keys().next().value;
+    if (oldest !== undefined) searchCache.delete(oldest);
+  }
+  searchCache.set(key, { at: Date.now(), videos, errors });
+}
+
 // ── Public surface ──────────────────────────────────────────────────────
 
 export function providerStatuses(): ProviderStatus[] {
@@ -228,13 +260,22 @@ export function isAllowedStockUrl(raw: string): boolean {
 export async function searchAllProviders(
   query: string,
   opts: { perPage?: number; orientation?: "portrait" | "landscape" } = {},
-): Promise<{ videos: StockVideo[]; errors: string[]; configuredCount: number }> {
+): Promise<{ videos: StockVideo[]; errors: string[]; configuredCount: number; cached: boolean }> {
   const q = String(query ?? "").trim();
   const active = PROVIDERS.filter((p) => p.configured());
   if (q.length === 0 || active.length === 0) {
-    return { videos: [], errors: [], configuredCount: active.length };
+    return { videos: [], errors: [], configuredCount: active.length, cached: false };
   }
-  const perPage = Math.min(24, Math.max(3, opts.perPage ?? 12));
+
+  const key = cacheKey(q, opts.orientation);
+  const cached = readCache(key);
+  if (cached) {
+    return { videos: cached.videos, errors: cached.errors, configuredCount: active.length, cached: true };
+  }
+
+  // Larger pages, fewer requests: the quota is per REQUEST, and it is shared
+  // across every creator using the app.
+  const perPage = Math.min(40, Math.max(3, opts.perPage ?? 24));
 
   const results = await Promise.all(
     active.map((p) =>
@@ -256,7 +297,10 @@ export async function searchAllProviders(
   for (let i = 0; i < maxLen; i++) {
     for (const list of perProvider) if (list[i]) videos.push(list[i]);
   }
-  return { videos, errors, configuredCount: active.length };
+  // Only cache a result that actually reached at least one provider — caching
+  // a total failure for 24h would hide a fixed API key.
+  if (videos.length > 0 || errors.length < active.length) writeCache(key, videos, errors);
+  return { videos, errors, configuredCount: active.length, cached: false };
 }
 
 /**

@@ -1087,15 +1087,46 @@ function BrollTool(props: {
                 <span className="absolute bottom-0 inset-x-0 bg-black/70 text-[9px] text-gray-300 px-1 py-0.5 truncate">
                   {importing === v.uid ? "Importing…" : `${Math.round(v.durationSec)}s · ${v.author}`}
                 </span>
+                {v.pageUrl && (
+                  <a
+                    href={v.pageUrl} target="_blank" rel="noreferrer noopener"
+                    onClick={(e) => e.stopPropagation()}
+                    className="absolute top-1 right-1 bg-black/70 text-[8px] text-purple-200 px-1 rounded hover:text-white"
+                    title={`View source on ${v.providerLabel}`}
+                  >
+                    source
+                  </a>
+                )}
               </button>
             ))}
           </div>
 
           {stock.length > 0 && (
-            <p className="text-[10px] text-gray-600 leading-snug">
-              Free for commercial use, no attribution required. Clicking imports the file
-              into your assets and drops it at the playhead.
-            </p>
+            <div className="space-y-1.5">
+              <p className="text-[10px] text-gray-600 leading-snug">
+                Clicking imports the file into your assets and drops it at the playhead.
+              </p>
+              {/* Credit + source link. This is an API-guideline obligation and
+                  a SEPARATE thing from the content licence — the licence says
+                  attribution isn't required for the footage; the API terms
+                  require crediting the photographer and linking the source
+                  wherever results are shown. */}
+              <p className="text-[10px] text-gray-600 leading-snug">
+                Footage from{" "}
+                <a href="https://www.pexels.com" target="_blank" rel="noreferrer noopener"
+                   className="text-purple-300 hover:underline">Pexels</a>
+                {" "}and{" "}
+                <a href="https://pixabay.com" target="_blank" rel="noreferrer noopener"
+                   className="text-purple-300 hover:underline">Pixabay</a>.
+                Each result credits its creator; click through from the tile for the source.
+              </p>
+              {/* The one that matters for THIS product. */}
+              <p className="text-[10px] text-amber-300/80 leading-snug">
+                For brand placements, avoid clips with recognisable faces — free-library
+                footage carries no model release, and a stock person appearing to endorse a
+                sponsor's product isn't covered by the licence.
+              </p>
+            </div>
           )}
         </>
       ) : (
