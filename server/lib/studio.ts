@@ -537,7 +537,21 @@ export function registerStudioRoutes(app: Express) {
 
         case "invoice.paid": {
           const invoice = event.data.object as any;
-          const subId = (invoice.subscription as string) || (typeof invoice.subscription === "object" ? invoice.subscription?.id : null);
+          // Stripe MOVED this field. Through 2025-03 it was invoice.subscription;
+          // from 2025-04-30.acacia it lives at
+          // invoice.parent.subscription_details.subscription. Webhook payloads
+          // are serialized in whatever version the DESTINATION is pinned to, so
+          // reading only one location silently finds nothing on the other — no
+          // error, just subscriptions that quietly stop renewing. Read both.
+          const subId =
+            (typeof invoice.subscription === "string" ? invoice.subscription : invoice.subscription?.id) ||
+            (typeof invoice.parent?.subscription_details?.subscription === "string"
+              ? invoice.parent.subscription_details.subscription
+              : invoice.parent?.subscription_details?.subscription?.id) ||
+            null;
+          if (!subId) {
+            console.warn(`[Studio Webhook] invoice.paid ${invoice.id}: no subscription id in either the legacy or current field — check the destination's API version`);
+          }
           if (subId) {
             const sub = await storage.getStudioSubscriptionByStripeSubscription(subId);
             if (sub) {
@@ -558,11 +572,20 @@ export function registerStudioRoutes(app: Express) {
           if (sub) {
             const priceId = subscription.items?.data?.[0]?.price?.id;
             const tier = priceId && STRIPE_PRICE_MAP[priceId] ? STRIPE_PRICE_MAP[priceId] : sub.tier as TierName;
+            // Also moved in 2025-04-30.acacia: current_period_end came off the
+            // Subscription and onto each subscription ITEM. Reading only the
+            // old location yields undefined on a newer payload, and the stored
+            // period end silently stops advancing — the subscription looks
+            // expired to every downstream check.
+            const periodEnd =
+              subscription.current_period_end ??
+              subscription.items?.data?.[0]?.current_period_end ??
+              null;
             await storage.updateStudioSubscription(sub.userId, {
               tier,
               status: subscription.status === "active" ? "active" : subscription.status === "past_due" ? "past_due" : "canceled",
               cancelAtPeriodEnd: !!subscription.cancel_at_period_end,
-              currentPeriodEnd: subscription.current_period_end ? new Date(subscription.current_period_end * 1000) : undefined,
+              currentPeriodEnd: periodEnd ? new Date(periodEnd * 1000) : undefined,
             });
             console.log(`[Studio Webhook] Subscription updated for ${sub.userId}: ${tier} (${subscription.status})`);
           }
