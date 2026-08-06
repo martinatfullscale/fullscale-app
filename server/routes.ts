@@ -583,6 +583,78 @@ export async function registerRoutes(
     console.error("[Routes] Platform Auth setup failed (non-fatal):", platformError);
   }
 
+  const softAuth = async (req: any, _res: any, next: any) => {
+    try {
+      const googleUser = req.session?.googleUser;
+      if (googleUser?.email) {
+        req.authEmail = googleUser.email;
+        req.authUserId = (await storage.getUserByEmail(googleUser.email))?.id || googleUser.email;
+        return next();
+      }
+      if (req.isAuthenticated && req.isAuthenticated() && req.user?.claims) {
+        const claims = req.user.claims;
+        req.authEmail = claims.email;
+        req.authUserId = claims.sub || (await storage.getUserByEmail(claims.email))?.id || claims.email;
+        return next();
+      }
+      const sessionUserId = req.session?.userId;
+      if (sessionUserId) {
+        const user = await storage.getUserById(sessionUserId);
+        if (user?.email) {
+          req.authEmail = user.email;
+          req.authUserId = user.id;
+          return next();
+        }
+      }
+    } catch (err) {
+      // Auth failures here are not fatal — endpoint just runs as anonymous.
+      console.warn("[softAuth] auth lookup failed (continuing anonymously):", (err as any)?.message);
+    }
+    next();
+  };
+
+  // Media access policy, shared by the frame and stream endpoints.
+  //
+  // These were fully open: any visitor could enumerate sequential video ids
+  // and download the ENTIRE platform's library — including content from
+  // creators who never opted into a public profile. And the frame endpoint
+  // spawns ffmpeg on a cache miss, so anonymous traffic could burn CPU and
+  // fill the disk at will.
+  //
+  // Policy now: any logged-in user may fetch (this is a closed marketplace —
+  // brands browse creator content in-app); ANONYMOUS visitors may only fetch
+  // videos whose owner opted into a public profile (is_featured). Denials are
+  // 404, not 403, so an unauthenticated probe cannot confirm an id exists.
+  const mediaLimiter = rateLimit({ windowMs: 60_000, max: 120, bucket: "public-media" });
+  const canServeVideo = async (req: any, ownerUserId: string): Promise<boolean> => {
+    if (req.authEmail || req.authUserId) return true;
+    const featured = await storage.getFeaturedOwnerKeys();
+    return featured.has(ownerUserId) || featured.has(String(ownerUserId).toLowerCase());
+  };
+
+  /**
+   * Route guard for endpoints keyed on :videoId. Same policy as canServeVideo:
+   * any logged-in user passes; anonymous callers only reach videos owned by a
+   * creator who opted into a public profile.
+   *
+   * These four surface endpoints were fully open, so an anonymous visitor
+   * could walk video ids and pull detected surfaces, scene groups, per-frame
+   * bounding boxes and existing brand placements for the entire platform —
+   * competitive inventory data for creators who never published anything.
+   */
+  const requireVideoAccess = async (req: any, res: any, next: any) => {
+    const videoId = parseInt(req.params.videoId ?? req.params.id);
+    if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+    if (req.authEmail || req.authUserId) return next();
+    try {
+      const video = (await storage.getVideoSummaries([videoId])).get(videoId);
+      if (video && (await canServeVideo(req, video.userId))) return next();
+    } catch (err: any) {
+      console.warn(`[requireVideoAccess] ${err?.message}`);
+    }
+    return res.status(404).json({ error: "Video not found" });
+  };
+
   registerObjectStorageRoutes(app);
 
   // Setup FullScale Studio routes (auth, Stripe, quota, voices, videos)
@@ -4939,8 +5011,17 @@ export async function registerRoutes(
 
   // Diagnostic: which yt-dlp binary is actually being used and what version.
   // Useful for verifying that the self-updater landed and the cached binary
-  // is executable. Public — no sensitive info exposed.
-  app.get("/api/admin/yt-dlp-status", async (_req, res) => {
+  // is executable.
+  //
+  // Was open despite the /api/admin/ prefix, and it SPAWNS A PROCESS per call
+  // — unauthenticated process-spawn is a cheap denial-of-service, and the
+  // response leaks absolute filesystem paths. Admin-gated inline because the
+  // shared isAdmin middleware is declared further down this file.
+  app.get("/api/admin/yt-dlp-status", async (req: any, res) => {
+    const callerEmail = (req.session?.googleUser?.email || req.user?.claims?.email || "").toLowerCase();
+    if (!callerEmail || !ADMIN_EMAILS.includes(callerEmail)) {
+      return res.status(403).json({ error: "Admin access required" });
+    }
     try {
       const binPath = await getYtDlpPath();
       const proc = require("child_process").spawn(binPath, ["--version"]);
@@ -6643,7 +6724,13 @@ export async function registerRoutes(
   });
 
   // Get single video with metadata (for Remix Engine)
-  app.get("/api/video/:id/details", async (req: any, res) => {
+  //
+  // Was fully open AND returned `...video` — the entire row for any integer
+  // id. That let an anonymous visitor walk ids 1..N and read the whole
+  // library's metadata, and it shipped scene_index/scene_inventory (megabytes
+  // of jsonb, parsed synchronously) to an unauthenticated caller, so it was a
+  // free event-loop stall as well as a data leak.
+  app.get("/api/video/:id/details", mediaLimiter, softAuth, async (req: any, res) => {
     const videoId = parseInt(req.params.id);
     if (isNaN(videoId)) {
       return res.status(400).json({ error: "Invalid video ID" });
@@ -6654,11 +6741,27 @@ export async function registerRoutes(
       if (!video) {
         return res.status(404).json({ error: "Video not found" });
       }
+      if (!(await canServeVideo(req, (video as any).userId))) {
+        return res.status(404).json({ error: "Video not found" });
+      }
 
       const surfaceCount = await storage.getSurfaceCountByVideo(videoId);
 
+      // sceneInventory always goes — nothing reads it from THIS endpoint
+      // (BrandPlacementRequestModal gets it from the surfaces endpoint).
+      //
+      // sceneIndex and sceneBoundaries stay for signed-in callers:
+      // PlacementPreviewModal builds its scene gate from sceneIndex.shots, and
+      // without it sceneIdFor() returns null, the hard clamp at
+      // PlacementPreviewModal.tsx:1778 compares null against a real sceneId,
+      // and the product renders at opacity 0 for the entire clip with the
+      // "different scene" badge pinned on. Anonymous callers have no preview
+      // modal, so they get the lean payload.
+      const { sceneIndex, sceneInventory, sceneBoundaries, ...lean } = video as any;
+      const anonymous = !(req.authEmail || req.authUserId);
       res.json({
-        ...video,
+        ...lean,
+        ...(anonymous ? {} : { sceneIndex, sceneBoundaries }),
         surfaceCount,
       });
     } catch (error: any) {
@@ -6670,54 +6773,6 @@ export async function registerRoutes(
   // Get detected surfaces for a video (Ad Opportunities)
   // On-demand frame extraction: generate a single frame thumbnail from a video if it doesn't exist
   // This ensures the Scene Analysis Modal always has a frame to show
-  const softAuth = async (req: any, _res: any, next: any) => {
-    try {
-      const googleUser = req.session?.googleUser;
-      if (googleUser?.email) {
-        req.authEmail = googleUser.email;
-        req.authUserId = (await storage.getUserByEmail(googleUser.email))?.id || googleUser.email;
-        return next();
-      }
-      if (req.isAuthenticated && req.isAuthenticated() && req.user?.claims) {
-        const claims = req.user.claims;
-        req.authEmail = claims.email;
-        req.authUserId = claims.sub || (await storage.getUserByEmail(claims.email))?.id || claims.email;
-        return next();
-      }
-      const sessionUserId = req.session?.userId;
-      if (sessionUserId) {
-        const user = await storage.getUserById(sessionUserId);
-        if (user?.email) {
-          req.authEmail = user.email;
-          req.authUserId = user.id;
-          return next();
-        }
-      }
-    } catch (err) {
-      // Auth failures here are not fatal — endpoint just runs as anonymous.
-      console.warn("[softAuth] auth lookup failed (continuing anonymously):", (err as any)?.message);
-    }
-    next();
-  };
-
-  // Media access policy, shared by the frame and stream endpoints.
-  //
-  // These were fully open: any visitor could enumerate sequential video ids
-  // and download the ENTIRE platform's library — including content from
-  // creators who never opted into a public profile. And the frame endpoint
-  // spawns ffmpeg on a cache miss, so anonymous traffic could burn CPU and
-  // fill the disk at will.
-  //
-  // Policy now: any logged-in user may fetch (this is a closed marketplace —
-  // brands browse creator content in-app); ANONYMOUS visitors may only fetch
-  // videos whose owner opted into a public profile (is_featured). Denials are
-  // 404, not 403, so an unauthenticated probe cannot confirm an id exists.
-  const mediaLimiter = rateLimit({ windowMs: 60_000, max: 120, bucket: "public-media" });
-  const canServeVideo = async (req: any, ownerUserId: string): Promise<boolean> => {
-    if (req.authEmail || req.authUserId) return true;
-    const featured = await storage.getFeaturedOwnerKeys();
-    return featured.has(ownerUserId) || featured.has(String(ownerUserId).toLowerCase());
-  };
 
   app.get("/api/video/:id/frame/:timestamp", mediaLimiter, softAuth, async (req: any, res) => {
     const videoId = parseInt(req.params.id);
@@ -11652,7 +11707,7 @@ export async function registerRoutes(
 
   // Get active placement for a specific surface (or its scene group)
   // Used by PlacementPreviewModal to auto-load existing placements when switching scenes
-  app.get("/api/video/:videoId/surface/:surfaceId/placement", async (req: any, res) => {
+  app.get("/api/video/:videoId/surface/:surfaceId/placement", mediaLimiter, softAuth, requireVideoAccess, async (req: any, res) => {
     try {
       const videoId = parseInt(req.params.videoId);
       const surfaceId = parseInt(req.params.surfaceId);
@@ -11823,7 +11878,7 @@ export async function registerRoutes(
   });
 
   // Get all placements for a video
-  app.get("/api/video/:videoId/placements", async (req: any, res) => {
+  app.get("/api/video/:videoId/placements", mediaLimiter, softAuth, requireVideoAccess, async (req: any, res) => {
     try {
       const videoId = parseInt(req.params.videoId);
       if (isNaN(videoId)) {
@@ -11932,7 +11987,7 @@ export async function registerRoutes(
   });
 
   // Get scene groups for a video (computed from surfaces)
-  app.get("/api/video/:videoId/scene-groups", async (req: any, res) => {
+  app.get("/api/video/:videoId/scene-groups", mediaLimiter, softAuth, requireVideoAccess, async (req: any, res) => {
     try {
       const videoId = parseInt(req.params.videoId);
       if (isNaN(videoId)) {
@@ -12554,7 +12609,7 @@ export async function registerRoutes(
 
   // Start a new video export job
   // Get dense surface keyframes for a video (used by PlacementPreviewModal for accurate tracking)
-  app.get("/api/video/:videoId/surface-keyframes", async (req: any, res) => {
+  app.get("/api/video/:videoId/surface-keyframes", mediaLimiter, softAuth, requireVideoAccess, async (req: any, res) => {
     try {
       const videoId = parseInt(req.params.videoId);
       if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });

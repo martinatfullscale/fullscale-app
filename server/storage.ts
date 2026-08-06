@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { eq, desc, and, or, sql, inArray, ne, isNull, lte, gt, gte, asc } from "drizzle-orm";
+import { eq, desc, and, or, sql, inArray, ne, isNull, isNotNull, lte, gt, gte, asc } from "drizzle-orm";
 import {
   monetizationItems,
   youtubeConnections,
@@ -2669,35 +2669,56 @@ export class DatabaseStorage implements IStorage {
    * back to the raw surface count.
    */
   /**
-   * The set of owner keys (emails AND user ids) whose content may be served to
-   * ANONYMOUS visitors — i.e. creators who opted into a public profile via
-   * is_featured. Cached for 60s: the stream/frame endpoints are hot (every
-   * thumbnail on a public profile hits them) and the set changes rarely.
+   * Owner keys (emails AND user ids) whose media may be served to ANONYMOUS
+   * visitors.
    *
-   * video_index.userId is a mixed-key column (users.id or email), so the set
-   * carries both forms for each featured creator.
+   * The boundary is "the creator published a public profile", which means one
+   * of two opt-in acts: setting a profile slug (they chose a public URL via
+   * profile settings — this is what /api/public/creator/:slug serves) or being
+   * flagged is_featured for the marketplace. Gating on is_featured alone was
+   * too narrow: a creator with a slug but no feature flag has a live public
+   * page, and their thumbnails and video would have 404'd for logged-out
+   * visitors.
+   *
+   * video_index.userId is a mixed-key column — some rows key off users.id
+   * (UUID) and some off the email, depending on which import path created
+   * them — so the set carries BOTH forms for every public creator.
+   *
+   * Cached for 60s: every thumbnail on a public profile hits this, and the
+   * membership changes about never.
    */
-  private featuredOwnerCache: { keys: Set<string>; expiresAt: number } | null = null;
+  private publicOwnerCache: { keys: Set<string>; expiresAt: number } | null = null;
   async getFeaturedOwnerKeys(): Promise<Set<string>> {
     const now = Date.now();
-    if (this.featuredOwnerCache && this.featuredOwnerCache.expiresAt > now) {
-      return this.featuredOwnerCache.keys;
+    if (this.publicOwnerCache && this.publicOwnerCache.expiresAt > now) {
+      return this.publicOwnerCache.keys;
     }
     const keys = new Set<string>();
     try {
-      const featured = await this.getFeaturedCreators();
-      for (const f of featured) {
-        if (!f.email) continue;
-        keys.add(f.email.toLowerCase());
-        const user = await this.getUserByEmail(f.email).catch(() => undefined);
-        if (user?.id) keys.add(user.id);
+      // One query for the public creators, one to resolve their UUIDs — not
+      // a per-creator lookup in a loop.
+      const publicCreators = await db
+        .select({ email: allowedUsers.email })
+        .from(allowedUsers)
+        .where(or(isNotNull(allowedUsers.slug), eq(allowedUsers.isFeatured, true)));
+
+      const emails = publicCreators.map((c) => c.email).filter(Boolean) as string[];
+      for (const e of emails) keys.add(e.toLowerCase());
+
+      if (emails.length > 0) {
+        const rows = await db
+          .select({ id: users.id })
+          .from(users)
+          .where(inArray(users.email, emails));
+        for (const r of rows) if (r.id) keys.add(r.id);
       }
     } catch (err: any) {
-      // On failure serve an EMPTY set — anonymous access fails closed rather
-      // than open. Authenticated users are unaffected.
+      // FAIL CLOSED. An empty set denies anonymous media rather than opening
+      // it; signed-in users are unaffected because they short-circuit before
+      // this is consulted.
       console.warn(`[Storage.getFeaturedOwnerKeys] ${err?.message}`);
     }
-    this.featuredOwnerCache = { keys, expiresAt: now + 60_000 };
+    this.publicOwnerCache = { keys, expiresAt: now + 60_000 };
     return keys;
   }
 
