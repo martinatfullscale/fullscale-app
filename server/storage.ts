@@ -105,6 +105,9 @@ import {
   type InsertSocialInsightSnapshot,
   socialPostSnapshots,
   type InsertSocialPostSnapshot,
+  mediaAssets,
+  type MediaAsset,
+  type InsertMediaAsset,
   roomModels,
   type RoomModel,
   type InsertRoomModel,
@@ -680,6 +683,34 @@ export class DatabaseStorage implements IStorage {
       ))
       .orderBy(desc(socialInsightSnapshots.capturedAt))
       .limit(limit);
+  }
+
+  // ── Media assets (b-roll + music beds for the clip editor) ──
+
+  async createMediaAsset(row: InsertMediaAsset): Promise<MediaAsset> {
+    const [result] = await db.insert(mediaAssets).values(row).returning();
+    return result;
+  }
+
+  async getMediaAsset(id: number): Promise<MediaAsset | undefined> {
+    const [row] = await db.select().from(mediaAssets).where(eq(mediaAssets.id, id));
+    return row;
+  }
+
+  async getMediaAssetsForUser(userId: string, kind?: string): Promise<MediaAsset[]> {
+    const conds = [eq(mediaAssets.userId, userId), sql`${mediaAssets.deletedAt} IS NULL`];
+    if (kind) conds.push(eq(mediaAssets.kind, kind));
+    return db.select().from(mediaAssets).where(and(...conds)).orderBy(desc(mediaAssets.createdAt));
+  }
+
+  /** Soft delete — edit stacks may still reference the row; the render
+   *  reports "media missing" instead of failing on a dangling id. */
+  async softDeleteMediaAsset(id: number, userId: string): Promise<boolean> {
+    const [row] = await db.update(mediaAssets)
+      .set({ deletedAt: new Date() })
+      .where(and(eq(mediaAssets.id, id), eq(mediaAssets.userId, userId)))
+      .returning({ id: mediaAssets.id });
+    return !!row;
   }
 
   async insertSocialPostSnapshot(row: InsertSocialPostSnapshot): Promise<void> {
@@ -3003,6 +3034,9 @@ export class DatabaseStorage implements IStorage {
       captionSettings?: any;
       aspectRatio?: string | null;
       segments?: any;
+      edits?: any;
+      silenceAnalysis?: any;
+      renderWarnings?: string[];
     },
   ): Promise<EditorialClip | undefined> {
     const patch: Record<string, any> = {};

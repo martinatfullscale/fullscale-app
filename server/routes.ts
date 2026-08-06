@@ -10679,6 +10679,165 @@ export async function registerRoutes(
     }
   });
 
+  // ── Media assets: b-roll footage and music beds for the clip editor ──
+  // Deliberately NOT video_index rows — these are ingredients, never scanned,
+  // never in the library, never carrying a placement.
+
+  app.post("/api/media-assets", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const Busboy = (await import("busboy")).default;
+      const kindParam = String(req.query.kind ?? "");
+      if (!["broll_video", "broll_image", "music"].includes(kindParam)) {
+        return res.status(400).json({ error: "kind must be broll_video, broll_image or music (query param)" });
+      }
+      const MAX_BYTES = 300 * 1024 * 1024;
+      const bb = Busboy({ headers: req.headers, limits: { fileSize: MAX_BYTES, files: 1 } });
+      let handled = false;
+
+      bb.on("file", (_name: string, fileStream: any, info: any) => {
+        handled = true;
+        const filename = String(info?.filename ?? "asset");
+        const mimeType = String(info?.mimeType ?? "application/octet-stream");
+        const safe = filename.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 120);
+        const objectKey = `public/media-assets/${encodeURIComponent(String(req.authUserId))}/${Date.now()}-${safe}`;
+        let truncated = false;
+        fileStream.on("limit", () => { truncated = true; });
+
+        uploadStreamToStorage(fileStream, objectKey, mimeType)
+          .then(async (serveUrl: string) => {
+            if (truncated) {
+              return res.status(413).json({ error: `File exceeds the ${MAX_BYTES / 1024 / 1024}MB limit` });
+            }
+            // Duration probe (music + b-roll video) so the editor can bound
+            // its sliders; failure leaves it null rather than failing upload.
+            let durationSec: string | null = null;
+            if (kindParam !== "broll_image") {
+              try {
+                const tmp = await downloadToTempFile(objectKey, "/tmp");
+                if (tmp) {
+                  const { execFile } = await import("child_process");
+                  const { promisify } = await import("util");
+                  const probe = await promisify(execFile)("ffprobe", [
+                    "-v", "quiet", "-print_format", "json", "-show_format", tmp,
+                  ], { timeout: 30000 });
+                  const d = parseFloat(JSON.parse(probe.stdout)?.format?.duration);
+                  if (Number.isFinite(d)) durationSec = d.toFixed(2);
+                  try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+                }
+              } catch { /* duration stays null */ }
+            }
+            const asset = await storage.createMediaAsset({
+              userId: String(req.authUserId),
+              kind: kindParam,
+              name: filename.slice(0, 200),
+              storagePath: objectKey,
+              mimeType,
+              durationSec,
+            } as any);
+            res.json({ asset: { ...asset, url: serveUrl } });
+          })
+          .catch((err: any) => {
+            console.error("[MediaAssets] Upload failed:", err?.message);
+            if (!res.headersSent) res.status(500).json({ error: "Upload failed" });
+          });
+      });
+      bb.on("error", (err: any) => {
+        if (!res.headersSent) res.status(400).json({ error: err?.message || "Malformed upload" });
+      });
+      bb.on("finish", () => {
+        if (!handled && !res.headersSent) res.status(400).json({ error: "No file in request (multipart field expected)" });
+      });
+      req.pipe(bb);
+    } catch (err: any) {
+      console.error("[MediaAssets] Upload error:", err?.message);
+      if (!res.headersSent) res.status(500).json({ error: "Upload failed" });
+    }
+  });
+
+  app.get("/api/media-assets", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const kind = typeof req.query.kind === "string" ? req.query.kind : undefined;
+      const assets = await storage.getMediaAssetsForUser(String(req.authUserId), kind);
+      res.json({
+        assets: assets.map((a) => ({ ...a, url: storageServeUrl(a.storagePath) })),
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Failed to list assets" });
+    }
+  });
+
+  app.delete("/api/media-assets/:id", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const ok = await storage.softDeleteMediaAsset(parseInt(req.params.id), String(req.authUserId));
+      if (!ok) return res.status(404).json({ error: "Asset not found" });
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Delete failed" });
+    }
+  });
+
+  // POST /api/editorial-clips/:clipId/analyze-silence — measure the dead air.
+  // Synchronous by design: audio-only decode of a clip range runs far faster
+  // than realtime, and the editor wants the spans to draw immediately.
+  app.post("/api/editorial-clips/:clipId/analyze-silence", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const clipId = parseInt(req.params.clipId);
+      if (isNaN(clipId)) return res.status(400).json({ error: "Invalid clip ID" });
+      const clip = await storage.getEditorialClipById(clipId);
+      if (!clip) return res.status(404).json({ error: "Clip not found" });
+      const video = await storage.getVideoById(clip.videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+      if (!(await isSameCreator(String(video.userId), req.authUserId)) && !req.isAdmin) {
+        return res.status(403).json({ error: "Not your clip" });
+      }
+
+      // Resolve a local source path the same way renders do.
+      let sourcePath = (video as any).filePath as string | null;
+      let pinDir: string | null = null;
+      let tmpFile: string | null = null;
+      try {
+        if (sourcePath?.startsWith("/storage/")) {
+          tmpFile = await downloadToTempFile(sourcePath.replace(/^\/storage\//, "public/"), "/tmp");
+          sourcePath = tmpFile;
+        } else if (sourcePath) {
+          sourcePath = path.resolve(process.cwd(), sourcePath);
+        } else {
+          const { getPinnedSourcePath } = await import("./lib/sourceCache");
+          pinDir = `/tmp/silence-pin-${clipId}-${Date.now()}`;
+          sourcePath = await getPinnedSourcePath(video as any, pinDir);
+        }
+        if (!sourcePath || !fs.existsSync(sourcePath)) {
+          return res.status(400).json({ error: "Source video is not available right now — try again shortly" });
+        }
+
+        const { analyzeSilence } = await import("./lib/remix/silenceAnalysis");
+        const clipDuration = Number(clip.duration) || (Number(clip.clipEnd) - Number(clip.clipStart));
+        const analysis = await analyzeSilence(sourcePath, Number(clip.clipStart), clipDuration, {
+          thresholdDb: req.body?.thresholdDb,
+          minDurationSec: req.body?.minDurationSec,
+        });
+        if (analysis.unavailableReason) {
+          return res.status(501).json({ error: analysis.unavailableReason });
+        }
+        const stored = {
+          spans: analysis.spans,
+          totalSilentSec: analysis.totalSilentSec,
+          thresholdDb: analysis.thresholdDb,
+          minDurationSec: analysis.minDurationSec,
+          analyzedAt: new Date().toISOString(),
+        };
+        await storage.updateEditorialClipEdit(clipId, { silenceAnalysis: stored });
+        res.json(stored);
+      } finally {
+        if (tmpFile) { try { fs.unlinkSync(tmpFile); } catch { /* ignore */ } }
+        if (pinDir) { try { fs.rmSync(pinDir, { recursive: true, force: true }); } catch { /* ignore */ } }
+      }
+    } catch (err: any) {
+      console.error("[API] analyze-silence error:", err?.message);
+      res.status(500).json({ error: err?.message || "Silence analysis failed" });
+    }
+  });
+
   // POST /api/editorial-clips/:clipId/scan — make this clip's placement
   // inventory real. Brands were browsing clips with zero products offered
   // simply because the range had never been scanned; nothing said so.
@@ -13685,6 +13844,84 @@ export async function registerRoutes(
           outline: num(cs.outline, 0, 8),
           accentHex: /^#?[0-9a-f]{6}$/i.test(String(cs.accentHex ?? "")) ? String(cs.accentHex) : undefined,
         };
+      }
+
+      // ── The edit stack: b-roll, music + ducking, speed ramps, silence
+      // removal, stabilization. Validated to the EditStack shape with owned
+      // assets only; `edits: null` clears the stack. Absent = keep existing.
+      if (b.edits !== undefined) {
+        if (b.edits === null) {
+          edit.edits = null;
+        } else {
+          const num = (v: any, lo: number, hi: number, dflt: number) => {
+            const x = Number(v);
+            return Number.isFinite(x) ? Math.min(hi, Math.max(lo, x)) : dflt;
+          };
+          const assetOwned = async (id: any): Promise<boolean> => {
+            const a = Number.isFinite(Number(id)) ? await storage.getMediaAsset(Number(id)) : undefined;
+            return !!a && !a.deletedAt && String(a.userId) === String(req.authUserId);
+          };
+          const e = b.edits || {};
+          const clean: any = {};
+
+          if (e.stabilization?.enabled) {
+            clean.stabilization = { enabled: true, strength: num(e.stabilization.strength, 1, 10, 5) };
+          }
+          if (e.silenceCut?.enabled) {
+            clean.silenceCut = {
+              enabled: true,
+              thresholdDb: num(e.silenceCut.thresholdDb, -50, -20, -35),
+              minDurationSec: num(e.silenceCut.minDurationSec, 0.15, 3, 0.6),
+              paddingSec: num(e.silenceCut.paddingSec, 0, 0.5, 0.15),
+            };
+          }
+          if (Array.isArray(e.speedRamps)) {
+            clean.speedRamps = e.speedRamps.slice(0, 8)
+              .map((r: any) => ({ start: num(r.start, 0, 36000, 0), end: num(r.end, 0, 36000, 0), rate: num(r.rate, 0.25, 4, 1) }))
+              .filter((r: any) => r.end - r.start >= 0.2 && Math.abs(r.rate - 1) > 0.01);
+          }
+          if (Array.isArray(e.textOverlays)) {
+            clean.textOverlays = e.textOverlays.slice(0, 12)
+              .map((t: any) => ({
+                start: num(t.start, 0, 36000, 0),
+                end: num(t.end, 0, 36000, 0),
+                text: String(t.text ?? "").slice(0, 200),
+                x: num(t.x, 0, 1, 0.5), y: num(t.y, 0, 1, 0.1),
+                size: num(t.size, 0.02, 0.25, 0.06),
+                color: /^#?[0-9a-f]{6}$/i.test(String(t.color ?? "")) ? String(t.color) : "#ffffff",
+                background: /^#?[0-9a-f]{6}$/i.test(String(t.background ?? "")) ? String(t.background) : null,
+                weight: t.weight === "bold" ? "bold" : "regular",
+                align: ["left", "center", "right"].includes(t.align) ? t.align : "center",
+              }))
+              .filter((t: any) => t.text.trim() && t.end - t.start >= 0.3);
+          }
+          if (Array.isArray(e.broll)) {
+            const cuts: any[] = [];
+            for (const c of e.broll.slice(0, 8)) {
+              if (!(await assetOwned(c.assetId))) continue; // silently dropping someone else's asset id is the correct outcome
+              cuts.push({
+                assetId: Number(c.assetId),
+                start: num(c.start, 0, 36000, 0), end: num(c.end, 0, 36000, 0),
+                fit: c.fit === "contain" ? "contain" : "cover",
+                scale: num(c.scale, 0.1, 1, 1),
+                x: num(c.x, 0, 1, 1), y: num(c.y, 0, 1, 0),
+                muted: c.muted !== false,
+              });
+            }
+            clean.broll = cuts.filter((c) => c.end - c.start >= 0.3);
+          }
+          if (e.music && (await assetOwned(e.music.assetId))) {
+            clean.music = {
+              assetId: Number(e.music.assetId),
+              volume: num(e.music.volume, 0, 1, 0.2),
+              ducking: e.music.ducking !== false,
+              duckAmountDb: num(e.music.duckAmountDb, 6, 24, 12),
+              fadeInSec: num(e.music.fadeInSec, 0, 10, 1),
+              fadeOutSec: num(e.music.fadeOutSec, 0, 10, 2),
+            };
+          }
+          edit.edits = clean;
+        }
       }
 
       await storage.updateEditorialClipEdit(clipId, edit);

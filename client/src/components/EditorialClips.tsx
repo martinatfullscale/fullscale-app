@@ -956,6 +956,7 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
                           outline: settings.outline,
                           accentHex: settings.accentHex,
                         },
+                        edits: settings.edits,
                       }),
                     });
                     if (res.ok) {
@@ -1367,6 +1368,9 @@ function EditorialClipCard({
             captionStyle: clip.captionStyle ?? null,
             captionSettings: clip.captionSettings ?? null,
             segments: clip.segments ?? null,
+            edits: (clip as any).edits ?? null,
+            silenceAnalysis: (clip as any).silenceAnalysis ?? null,
+            renderWarnings: (clip as any).renderWarnings ?? null,
           }}
           sourceDurationSec={sourceDurationSec}
           onApply={onApplyEdit}

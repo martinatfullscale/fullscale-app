@@ -816,6 +816,9 @@ interface EditorialRenderCtx {
     style?: string;
     settings?: import("./captionStyler").CaptionOverrides | null;
   };
+  /** Compiled edit stack for this clip (b-roll, music, retiming, text,
+   *  stabilization). Single-range clips only — see prepareEditGraphForClip. */
+  editGraph?: import("./editStack").EditGraphResult | null;
   logTag: string;
 }
 
@@ -887,6 +890,9 @@ async function renderEditorialRange(
       brandOverlays: ctx.brandOverlays,
       captionFilter,
       captionAssPath,
+      editGraph: ctx.editGraph ?? null,
+      outWidth: ctx.platformConfig.targetWidth,
+      outHeight: ctx.platformConfig.targetHeight,
     });
   } else {
     const vf = `scale=${ctx.platformConfig.targetWidth}:${ctx.platformConfig.targetHeight}:force_original_aspect_ratio=decrease,pad=${ctx.platformConfig.targetWidth}:${ctx.platformConfig.targetHeight}:(ow-iw)/2:(oh-ih)/2:black`;
@@ -902,6 +908,9 @@ async function renderEditorialRange(
       brandOverlays: ctx.brandOverlays,
       captionFilter,
       captionAssPath,
+      editGraph: ctx.editGraph ?? null,
+      outWidth: ctx.platformConfig.targetWidth,
+      outHeight: ctx.platformConfig.targetHeight,
     });
   }
 }
@@ -1016,6 +1025,139 @@ export async function renderEditorialClipOutput(clip: any, outputPath: string, c
   }
 }
 
+/**
+ * Compile a clip's saved edit stack into a render-ready graph.
+ *
+ * Resolves media assets to local files, rasterizes text, runs the vidstab
+ * detect pass when stabilization wants it, and pulls cached silence spans.
+ * Returns null (with warnings) when nothing applies.
+ *
+ * SINGLE-RANGE CLIPS ONLY. Assembled multi-beat clips render as separate
+ * per-beat files that are concatenated after — a retime/music graph built
+ * against clip-relative time has no meaning across that seam. The trim
+ * editor already collapses an assembled clip to one range, so a creator who
+ * wants the full stack on one has a one-click path to it.
+ */
+async function prepareEditGraphForClip(
+  clip: any,
+  videoLocalPath: string,
+  platformConfig: { targetWidth: number; targetHeight: number },
+  workDir: string,
+): Promise<{ graph: import("./editStack").EditGraphResult | null; warnings: string[] }> {
+  const warnings: string[] = [];
+  const stack = (clip as any).edits as import("./editStack").EditStack | null;
+  const { editStackIsActive, buildEditGraph } = await import("./editStack");
+  if (!editStackIsActive(stack)) return { graph: null, warnings };
+
+  if (validClipSegments(clip)) {
+    warnings.push(
+      "Edits (b-roll, music, speed, silence removal, stabilization) apply to single-range clips only — re-trim this assembled clip to one range to use them.",
+    );
+    return { graph: null, warnings };
+  }
+
+  const clipDuration = Number(clip.duration) || (Number(clip.clipEnd) - Number(clip.clipStart));
+
+  // ── Resolve media assets to local files ────────────────────────────
+  const resolveAsset = async (assetId: number): Promise<{ path: string; kind: string } | null> => {
+    try {
+      const asset = await storage.getMediaAsset(assetId);
+      if (!asset || asset.deletedAt) return null;
+      const key = String(asset.storagePath);
+      const local = await downloadToTempFile(key, workDir);
+      return local ? { path: local, kind: String(asset.kind) } : null;
+    } catch (err: any) {
+      console.warn(`[EditStack] Asset ${assetId} resolve failed: ${err?.message}`);
+      return null;
+    }
+  };
+
+  const resolvedStack: import("./editStack").EditStack = { ...stack };
+
+  if (stack!.broll?.length) {
+    const cuts: NonNullable<import("./editStack").EditStack["broll"]> = [];
+    for (const cut of stack!.broll) {
+      const asset = await resolveAsset(cut.assetId);
+      if (!asset) {
+        warnings.push(`B-roll at ${Number(cut.start).toFixed(1)}s skipped — its media is missing.`);
+        continue;
+      }
+      cuts.push({ ...cut, localPath: asset.path, kind: asset.kind === "broll_image" ? "image" : "video" });
+    }
+    resolvedStack.broll = cuts;
+  }
+
+  if (stack!.music) {
+    const asset = await resolveAsset(stack!.music.assetId);
+    if (!asset) {
+      warnings.push("Music bed skipped — the track is missing.");
+      resolvedStack.music = null;
+    } else {
+      resolvedStack.music = { ...stack!.music, localPath: asset.path };
+    }
+  }
+
+  // ── Silence spans come from the cached analysis, padding applied at
+  //    compile time so the creator can retune it without re-analyzing.
+  if (resolvedStack.silenceCut?.enabled) {
+    const cached = (clip as any).silenceAnalysis;
+    if (cached?.spans?.length) {
+      resolvedStack.silenceCut = { ...resolvedStack.silenceCut, detected: cached.spans };
+    } else {
+      warnings.push("Silence removal is on but the clip hasn't been analyzed — run the silence analysis first.");
+      resolvedStack.silenceCut = null;
+    }
+  }
+
+  // ── vidstab detect pass (when the build has it and stabilization is on)
+  let vidstabTransformsPath: string | null = null;
+  if (resolvedStack.stabilization?.enabled) {
+    const { analyzeStabilization } = await import("./silenceAnalysis");
+    vidstabTransformsPath = await analyzeStabilization(
+      videoLocalPath,
+      Number(clip.clipStart),
+      clipDuration,
+      path.join(workDir, `vidstab-${clip.id}.trf`),
+      Number(resolvedStack.stabilization.strength) || 5,
+    );
+  }
+
+  // ── Text overlays rasterize to PNGs in output pixels ───────────────
+  const { rasterizeTextOverlays } = await import("./textOverlay");
+  const textImages = await rasterizeTextOverlays(
+    resolvedStack.textOverlays,
+    platformConfig.targetWidth,
+    platformConfig.targetHeight,
+    workDir,
+  );
+
+  // ── Does the source actually have audio? A retime graph that names
+  //    [0:a] on a silent video fails the whole render.
+  let hasAudio = true;
+  try {
+    const { execFile } = await import("child_process");
+    const { promisify } = await import("util");
+    const execFileP = promisify(execFile);
+    const probe = await execFileP("ffprobe", [
+      "-v", "quiet", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0", videoLocalPath,
+    ], { timeout: 20000 });
+    hasAudio = probe.stdout.trim().length > 0;
+  } catch { /* assume audio present — the common case */ }
+
+  const graph = await buildEditGraph({
+    stack: resolvedStack,
+    clipDurationSec: clipDuration,
+    outWidth: platformConfig.targetWidth,
+    outHeight: platformConfig.targetHeight,
+    nextInputIndex: 1,
+    textImages,
+    vidstabTransformsPath,
+    hasAudio,
+  });
+  warnings.push(...graph.warnings);
+  return { graph: graph.isEmpty ? null : graph, warnings };
+}
+
 // ── Single Clip Render (for search results / manual adds) ─────────
 
 /**
@@ -1116,6 +1258,19 @@ export async function renderSingleEditorialClip(
     // so fetch it before the branch (previously only the reframe branch had it).
     const transcriptRecord = await storage.getVideoTranscript(videoId);
     const speakerSegments = transcriptRecord?.segments as any[] | undefined;
+
+    // ── The creator's edit stack: b-roll, music, ducking, speed, silence
+    // removal, stabilization. Compiled here so a brand-approval re-render
+    // reproduces the creator's cut, not a stripped default.
+    const { graph: editGraph, warnings: editWarnings } =
+      await prepareEditGraphForClip(clip, videoLocalPath, platformConfig, renderOutputDir);
+    if (editWarnings.length > 0) {
+      console.warn(`[RenderSingle] Clip ${clip.id} edit warnings: ${editWarnings.join(" | ")}`);
+    }
+    // Persist even when empty: stale warnings from a previous render must
+    // not survive a render where everything applied cleanly.
+    await storage.updateEditorialClipEdit(clip.id, { renderWarnings: editWarnings }).catch(() => {});
+
     await renderEditorialClipOutput(clip, outputPath, {
       videoLocalPath,
       platformConfig,
@@ -1123,6 +1278,7 @@ export async function renderSingleEditorialClip(
       needsReframe,
       speakerSegments,
       brandOverlays,
+      editGraph,
       // The clip's own saved caption choices — a re-render must reproduce
       // what the creator set, not revert to the pipeline defaults.
       captionOpts: {

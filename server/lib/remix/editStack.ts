@@ -280,6 +280,11 @@ export async function buildEditGraph(opts: {
   textImages?: Array<{ path: string; w: number; h: number; overlay: TextOverlay }>;
   /** Path to the vidstab transform file when a detect pass already ran. */
   vidstabTransformsPath?: string | null;
+  /** False when the source has no audio stream — a graph naming [0:a] on a
+   *  silent video fails the whole render with "Stream specifier matches no
+   *  streams". Retime then runs video-only; a music bed becomes the output
+   *  audio outright. */
+  hasAudio?: boolean;
 }): Promise<EditGraphResult> {
   const caps = await getFfmpegCapabilities();
   const { stack, clipDurationSec, outWidth, outHeight } = opts;
@@ -327,6 +332,8 @@ export async function buildEditGraph(opts: {
   let audio: string[] | null = null;
   let audioOutLabel: string | null = null;
 
+  const hasAudio = opts.hasAudio !== false;
+
   if (retimes) {
     if (!caps.trim || !caps.concat) {
       warnings.push("Silence removal and speed ramps skipped — this ffmpeg lacks trim/concat.");
@@ -356,6 +363,8 @@ export async function buildEditGraph(opts: {
       label = vconcat;
 
       // Audio: the identical segmentation, so A/V stay locked by construction.
+      // Silent sources skip this leg entirely — there is nothing to retime.
+      if (hasAudio) {
       audio = [];
       audio.push(`[0:a]asplit=${segments.length}${segments.map((_, i) => `[asplit${i}]`).join("")}`);
       segments.forEach((seg, i) => {
@@ -374,6 +383,7 @@ export async function buildEditGraph(opts: {
       }
       if (!caps.atempo && (stack.speedRamps ?? []).length > 0) {
         warnings.push("Speed ramps applied to video only — this ffmpeg lacks atempo, so audio pitch/length is unchanged.");
+      }
       }
     }
   }
@@ -448,7 +458,7 @@ export async function buildEditGraph(opts: {
       extraInputs.push({ path: music.localPath });
       const idx = inputIdx++;
       audio = audio ?? [];
-      const speech = audioOutLabel ?? "[0:a]";
+      const speech = audioOutLabel ?? (hasAudio ? "[0:a]" : null);
       const vol = Math.min(1, Math.max(0, Number(music.volume) || 0.2));
       const dur = outputDurationSec > 0 ? outputDurationSec : clipDurationSec;
       const fadeIn = Math.max(0, Number(music.fadeInSec) || 0);
@@ -461,7 +471,11 @@ export async function buildEditGraph(opts: {
       if (fadeOut > 0) bed += `,afade=t=out:st=${Math.max(0, dur - fadeOut).toFixed(2)}:d=${fadeOut.toFixed(2)}`;
       audio.push(`${bed}[bed]`);
 
-      if (music.ducking && caps.sidechaincompress) {
+      if (!speech) {
+        // Silent source: the bed IS the audio. Ducking has nothing to duck under.
+        if (music.ducking) warnings.push("Ducking skipped — the source video has no audio to duck under.");
+        audio.push(`[bed]anull[aout]`);
+      } else if (music.ducking && caps.sidechaincompress) {
         // Speech drives the compressor's sidechain, so the bed drops itself
         // whenever someone talks. The speech leg is split because it is both
         // the control signal and half the final mix.

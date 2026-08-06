@@ -16,8 +16,38 @@
  * narrative structure the analysis chose; a new trim can't preserve them.
  */
 import { useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
-import { Scissors, Type, Loader2, RotateCcw, AlertTriangle } from "lucide-react";
+import {
+  Scissors, Type, Loader2, RotateCcw, AlertTriangle, Music, Film,
+  Gauge, AudioLines, Anchor, Plus, Trash2, Upload,
+} from "lucide-react";
+
+// ── The edit stack, as the server's EditStack shape ──────────────────────
+
+interface SpeedRampUI { start: number; end: number; rate: number }
+interface TextOverlayUI {
+  start: number; end: number; text: string;
+  x: number; y: number; size: number;
+  color: string; background: string | null;
+  weight: "regular" | "bold"; align: "left" | "center" | "right";
+}
+interface BrollCutUI {
+  assetId: number; start: number; end: number;
+  fit: "cover" | "contain"; scale: number; x: number; y: number; muted: boolean;
+}
+export interface EditStackUI {
+  stabilization?: { enabled: boolean; strength: number } | null;
+  silenceCut?: { enabled: boolean; thresholdDb: number; minDurationSec: number; paddingSec: number } | null;
+  speedRamps?: SpeedRampUI[];
+  textOverlays?: TextOverlayUI[];
+  broll?: BrollCutUI[];
+  music?: { assetId: number; volume: number; ducking: boolean; duckAmountDb: number; fadeInSec: number; fadeOutSec: number } | null;
+}
+
+interface MediaAssetRow {
+  id: number; kind: string; name: string; url: string; durationSec: string | null;
+}
 
 export interface ClipEditSettings {
   clipStart: number;
@@ -30,6 +60,8 @@ export interface ClipEditSettings {
   wordsPerPhrase: number;
   outline: number;
   accentHex: string;
+  /** The full stack — b-roll, music, ducking, speed, silence, stabilization. */
+  edits: EditStackUI;
 }
 
 interface Props {
@@ -43,6 +75,9 @@ interface Props {
     captionStyle?: string | null;
     captionSettings?: Record<string, number | string | undefined> | null;
     segments?: Array<{ start: number; end: number; role?: string }> | null;
+    edits?: EditStackUI | null;
+    silenceAnalysis?: { spans: Array<{ start: number; end: number }>; totalSilentSec: number } | null;
+    renderWarnings?: string[] | null;
   };
   /** Source video length in seconds, when known — bounds the trim. */
   sourceDurationSec?: number;
@@ -79,8 +114,78 @@ export default function ClipEditorPanel({ clip, sourceDurationSec, onApply, onCl
     wordsPerPhrase: Number(cs.wordsPerPhrase ?? 4),
     outline: Number(cs.outline ?? 3),
     accentHex: String(cs.accentHex ?? "#FFE500"),
+    edits: {
+      stabilization: clip.edits?.stabilization ?? null,
+      silenceCut: clip.edits?.silenceCut ?? null,
+      speedRamps: clip.edits?.speedRamps ?? [],
+      textOverlays: clip.edits?.textOverlays ?? [],
+      broll: clip.edits?.broll ?? [],
+      music: clip.edits?.music ?? null,
+    },
   });
   const [busy, setBusy] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [silenceResult, setSilenceResult] = useState<{ spans: number; totalSilentSec: number } | null>(
+    clip.silenceAnalysis ? { spans: clip.silenceAnalysis.spans.length, totalSilentSec: clip.silenceAnalysis.totalSilentSec } : null,
+  );
+  const queryClient = useQueryClient();
+
+  // The creator's uploaded ingredients — b-roll and music live in
+  // media_assets, deliberately outside the video library.
+  const { data: musicAssets } = useQuery<{ assets: MediaAssetRow[] }>({
+    queryKey: ["/api/media-assets", "music"],
+    queryFn: async () => (await fetch("/api/media-assets?kind=music", { credentials: "include" })).json(),
+  });
+  const { data: brollAssets } = useQuery<{ assets: MediaAssetRow[] }>({
+    queryKey: ["/api/media-assets", "broll"],
+    queryFn: async () => {
+      const [v, i] = await Promise.all([
+        fetch("/api/media-assets?kind=broll_video", { credentials: "include" }).then((r) => r.json()),
+        fetch("/api/media-assets?kind=broll_image", { credentials: "include" }).then((r) => r.json()),
+      ]);
+      return { assets: [...(v.assets ?? []), ...(i.assets ?? [])] };
+    },
+  });
+
+  const uploadAsset = async (file: File, kind: string) => {
+    const form = new FormData();
+    form.append("file", file);
+    const res = await fetch(`/api/media-assets?kind=${kind}`, {
+      method: "POST", credentials: "include", body: form,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || "Upload failed");
+    }
+    await queryClient.invalidateQueries({ queryKey: ["/api/media-assets"] });
+    return (await res.json()).asset as MediaAssetRow;
+  };
+
+  const analyzeSilenceNow = async () => {
+    setAnalyzing(true);
+    try {
+      const res = await fetch(`/api/editorial-clips/${clip.id}/analyze-silence`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          thresholdDb: s.edits.silenceCut?.thresholdDb,
+          minDurationSec: s.edits.silenceCut?.minDurationSec,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Analysis failed");
+      }
+      const data = await res.json();
+      setSilenceResult({ spans: data.spans.length, totalSilentSec: data.totalSilentSec });
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  const setEdits = (patch: Partial<EditStackUI>) =>
+    setS((prev) => ({ ...prev, edits: { ...prev.edits, ...patch } }));
 
   const set = <K extends keyof ClipEditSettings>(k: K, v: ClipEditSettings[K]) =>
     setS((prev) => ({ ...prev, [k]: v }));
@@ -106,6 +211,7 @@ export default function ClipEditorPanel({ clip, sourceDurationSec, onApply, onCl
       wordsPerPhrase: 4,
       outline: 3,
       accentHex: "#FFE500",
+      edits: { stabilization: null, silenceCut: null, speedRamps: [], textOverlays: [], broll: [], music: null },
     });
 
   const apply = async () => {
@@ -299,6 +405,380 @@ export default function ClipEditorPanel({ clip, sourceDurationSec, onApply, onCl
         )}
       </section>
 
+      {/* ── Pace: silence removal + speed ramps ── */}
+      <section className="space-y-3">
+        <div className="flex items-center gap-2">
+          <Gauge className="w-3.5 h-3.5 text-purple-400" />
+          <h4 className="text-xs font-semibold text-gray-200">Pace</h4>
+          <button
+            onClick={() => setEdits({
+              silenceCut: s.edits.silenceCut?.enabled
+                ? null
+                : { enabled: true, thresholdDb: -35, minDurationSec: 0.6, paddingSec: 0.15 },
+            })}
+            className={`ml-auto px-2 py-0.5 rounded text-[11px] font-medium border transition-colors ${
+              s.edits.silenceCut?.enabled
+                ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+                : "bg-gray-800 text-gray-400 border-gray-700"
+            }`}
+            data-testid={`silence-toggle-${clip.id}`}
+          >
+            Silence removal {s.edits.silenceCut?.enabled ? "on" : "off"}
+          </button>
+        </div>
+
+        {s.edits.silenceCut?.enabled && (
+          <div className="space-y-2">
+            <div className="grid grid-cols-3 gap-3">
+              <Row label="Threshold" value={`${s.edits.silenceCut.thresholdDb}dB`}>
+                <input type="range" min={-50} max={-20} step={1} value={s.edits.silenceCut.thresholdDb}
+                  onChange={(e) => setEdits({ silenceCut: { ...s.edits.silenceCut!, thresholdDb: Number(e.target.value) } })}
+                  className="w-full accent-purple-500" />
+              </Row>
+              <Row label="Min gap" value={`${s.edits.silenceCut.minDurationSec.toFixed(1)}s`}>
+                <input type="range" min={0.2} max={2} step={0.1} value={s.edits.silenceCut.minDurationSec}
+                  onChange={(e) => setEdits({ silenceCut: { ...s.edits.silenceCut!, minDurationSec: Number(e.target.value) } })}
+                  className="w-full accent-purple-500" />
+              </Row>
+              <Row label="Breathing room" value={`${s.edits.silenceCut.paddingSec.toFixed(2)}s`}>
+                <input type="range" min={0} max={0.5} step={0.05} value={s.edits.silenceCut.paddingSec}
+                  onChange={(e) => setEdits({ silenceCut: { ...s.edits.silenceCut!, paddingSec: Number(e.target.value) } })}
+                  className="w-full accent-purple-500" />
+              </Row>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button size="sm" variant="outline" onClick={analyzeSilenceNow} disabled={analyzing}
+                className="text-xs border-gray-700" data-testid={`analyze-silence-${clip.id}`}>
+                {analyzing ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <AudioLines className="w-3 h-3 mr-1" />}
+                {silenceResult ? "Re-analyze" : "Find the dead air"}
+              </Button>
+              {silenceResult && (
+                <span className="text-[11px] text-gray-400">
+                  {silenceResult.spans} gap{silenceResult.spans === 1 ? "" : "s"} · {silenceResult.totalSilentSec.toFixed(1)}s removable
+                </span>
+              )}
+              {!silenceResult && (
+                <span className="text-[11px] text-amber-300/80">Analyze first — the render only cuts measured gaps.</span>
+              )}
+            </div>
+          </div>
+        )}
+
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <label className="text-[11px] text-gray-400">Speed ramps</label>
+            <Button size="sm" variant="ghost" className="text-[11px] text-purple-300 h-6 px-2"
+              onClick={() => setEdits({
+                speedRamps: [...(s.edits.speedRamps ?? []), { start: 0, end: Math.min(5, newDuration), rate: 1.5 }],
+              })}
+              data-testid={`add-ramp-${clip.id}`}>
+              <Plus className="w-3 h-3 mr-0.5" /> Add
+            </Button>
+          </div>
+          {(s.edits.speedRamps ?? []).map((r, i) => (
+            <div key={i} className="grid grid-cols-[1fr_1fr_1fr_auto] gap-2 items-end">
+              <Row label="From" value={`${r.start.toFixed(1)}s`}>
+                <input type="range" min={0} max={newDuration} step={0.1} value={r.start}
+                  onChange={(e) => {
+                    const ramps = [...s.edits.speedRamps!];
+                    ramps[i] = { ...r, start: Math.min(Number(e.target.value), r.end - 0.2) };
+                    setEdits({ speedRamps: ramps });
+                  }} className="w-full accent-purple-500" />
+              </Row>
+              <Row label="To" value={`${r.end.toFixed(1)}s`}>
+                <input type="range" min={0} max={newDuration} step={0.1} value={r.end}
+                  onChange={(e) => {
+                    const ramps = [...s.edits.speedRamps!];
+                    ramps[i] = { ...r, end: Math.max(Number(e.target.value), r.start + 0.2) };
+                    setEdits({ speedRamps: ramps });
+                  }} className="w-full accent-purple-500" />
+              </Row>
+              <Row label="Speed" value={`${r.rate.toFixed(2)}x`}>
+                <input type="range" min={0.25} max={4} step={0.05} value={r.rate}
+                  onChange={(e) => {
+                    const ramps = [...s.edits.speedRamps!];
+                    ramps[i] = { ...r, rate: Number(e.target.value) };
+                    setEdits({ speedRamps: ramps });
+                  }} className="w-full accent-purple-500" />
+              </Row>
+              <button onClick={() => setEdits({ speedRamps: s.edits.speedRamps!.filter((_, j) => j !== i) })}
+                className="text-gray-500 hover:text-red-400 pb-1" aria-label="Remove ramp">
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ))}
+          <p className="text-[10px] text-gray-600">
+            Times are in the finished clip. Audio keeps pitch; silence cuts and ramps stay in sync by design.
+          </p>
+        </div>
+      </section>
+
+      {/* ── Music bed + ducking ── */}
+      <section className="space-y-3">
+        <div className="flex items-center gap-2">
+          <Music className="w-3.5 h-3.5 text-purple-400" />
+          <h4 className="text-xs font-semibold text-gray-200">Music</h4>
+          <AssetControl
+            kind="music"
+            assets={musicAssets?.assets ?? []}
+            selectedId={s.edits.music?.assetId ?? null}
+            onPick={(id) => setEdits({
+              music: id == null ? null : {
+                assetId: id,
+                volume: s.edits.music?.volume ?? 0.2,
+                ducking: s.edits.music?.ducking ?? true,
+                duckAmountDb: s.edits.music?.duckAmountDb ?? 12,
+                fadeInSec: s.edits.music?.fadeInSec ?? 1,
+                fadeOutSec: s.edits.music?.fadeOutSec ?? 2,
+              },
+            })}
+            onUpload={(f) => uploadAsset(f, "music")}
+          />
+        </div>
+        {s.edits.music && (
+          <div className="grid grid-cols-2 gap-3">
+            <Row label="Bed volume" value={`${Math.round(s.edits.music.volume * 100)}%`}>
+              <input type="range" min={0} max={1} step={0.05} value={s.edits.music.volume}
+                onChange={(e) => setEdits({ music: { ...s.edits.music!, volume: Number(e.target.value) } })}
+                className="w-full accent-purple-500" />
+            </Row>
+            <Row label={s.edits.music.ducking ? "Duck under speech" : "Ducking off"} value={`${s.edits.music.duckAmountDb}dB`}>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setEdits({ music: { ...s.edits.music!, ducking: !s.edits.music!.ducking } })}
+                  className={`px-2 py-0.5 rounded text-[10px] border shrink-0 ${
+                    s.edits.music.ducking
+                      ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+                      : "bg-gray-800 text-gray-400 border-gray-700"
+                  }`}
+                >
+                  {s.edits.music.ducking ? "On" : "Off"}
+                </button>
+                <input type="range" min={6} max={24} step={1} value={s.edits.music.duckAmountDb}
+                  disabled={!s.edits.music.ducking}
+                  onChange={(e) => setEdits({ music: { ...s.edits.music!, duckAmountDb: Number(e.target.value) } })}
+                  className="w-full accent-purple-500 disabled:opacity-40" />
+              </div>
+            </Row>
+            <Row label="Fade in" value={`${s.edits.music.fadeInSec.toFixed(1)}s`}>
+              <input type="range" min={0} max={5} step={0.5} value={s.edits.music.fadeInSec}
+                onChange={(e) => setEdits({ music: { ...s.edits.music!, fadeInSec: Number(e.target.value) } })}
+                className="w-full accent-purple-500" />
+            </Row>
+            <Row label="Fade out" value={`${s.edits.music.fadeOutSec.toFixed(1)}s`}>
+              <input type="range" min={0} max={5} step={0.5} value={s.edits.music.fadeOutSec}
+                onChange={(e) => setEdits({ music: { ...s.edits.music!, fadeOutSec: Number(e.target.value) } })}
+                className="w-full accent-purple-500" />
+            </Row>
+          </div>
+        )}
+      </section>
+
+      {/* ── B-roll ── */}
+      <section className="space-y-3">
+        <div className="flex items-center gap-2">
+          <Film className="w-3.5 h-3.5 text-purple-400" />
+          <h4 className="text-xs font-semibold text-gray-200">B-roll</h4>
+          <AssetControl
+            kind="broll_video"
+            assets={brollAssets?.assets ?? []}
+            selectedId={null}
+            pickLabel="Add cut"
+            onPick={(id) => {
+              if (id == null) return;
+              setEdits({
+                broll: [...(s.edits.broll ?? []), {
+                  assetId: id, start: 0, end: Math.min(3, newDuration),
+                  fit: "cover", scale: 1, x: 1, y: 0, muted: true,
+                }],
+              });
+            }}
+            onUpload={(f) => uploadAsset(f, f.type.startsWith("image/") ? "broll_image" : "broll_video")}
+          />
+        </div>
+        {(s.edits.broll ?? []).map((c, i) => {
+          const asset = (brollAssets?.assets ?? []).find((a) => a.id === c.assetId);
+          return (
+            <div key={i} className="rounded border border-gray-700/60 p-2 space-y-2">
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] text-gray-300 truncate flex-1">{asset?.name ?? `asset #${c.assetId}`}</span>
+                <button
+                  onClick={() => {
+                    const cuts = [...s.edits.broll!];
+                    cuts[i] = { ...c, scale: c.scale >= 1 ? 0.4 : 1 };
+                    setEdits({ broll: cuts });
+                  }}
+                  className="px-2 py-0.5 rounded text-[10px] border bg-gray-800 text-gray-300 border-gray-700"
+                >
+                  {c.scale >= 1 ? "Full frame" : "Picture-in-picture"}
+                </button>
+                <button onClick={() => setEdits({ broll: s.edits.broll!.filter((_, j) => j !== i) })}
+                  className="text-gray-500 hover:text-red-400" aria-label="Remove b-roll">
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <Row label="From" value={`${c.start.toFixed(1)}s`}>
+                  <input type="range" min={0} max={newDuration} step={0.1} value={c.start}
+                    onChange={(e) => {
+                      const cuts = [...s.edits.broll!];
+                      cuts[i] = { ...c, start: Math.min(Number(e.target.value), c.end - 0.3) };
+                      setEdits({ broll: cuts });
+                    }} className="w-full accent-purple-500" />
+                </Row>
+                <Row label="To" value={`${c.end.toFixed(1)}s`}>
+                  <input type="range" min={0} max={newDuration} step={0.1} value={c.end}
+                    onChange={(e) => {
+                      const cuts = [...s.edits.broll!];
+                      cuts[i] = { ...c, end: Math.max(Number(e.target.value), c.start + 0.3) };
+                      setEdits({ broll: cuts });
+                    }} className="w-full accent-purple-500" />
+                </Row>
+              </div>
+            </div>
+          );
+        })}
+      </section>
+
+      {/* ── Text on video ── */}
+      <section className="space-y-3">
+        <div className="flex items-center gap-2">
+          <Type className="w-3.5 h-3.5 text-purple-400" />
+          <h4 className="text-xs font-semibold text-gray-200">Text on video</h4>
+          <Button size="sm" variant="ghost" className="ml-auto text-[11px] text-purple-300 h-6 px-2"
+            onClick={() => setEdits({
+              textOverlays: [...(s.edits.textOverlays ?? []), {
+                start: 0, end: Math.min(3, newDuration), text: "",
+                x: 0.5, y: 0.12, size: 0.06,
+                color: "#ffffff", background: null, weight: "bold", align: "center",
+              }],
+            })}
+            data-testid={`add-text-${clip.id}`}>
+            <Plus className="w-3 h-3 mr-0.5" /> Add
+          </Button>
+        </div>
+        {(s.edits.textOverlays ?? []).map((t, i) => (
+          <div key={i} className="rounded border border-gray-700/60 p-2 space-y-2">
+            <div className="flex items-center gap-2">
+              <input
+                value={t.text}
+                onChange={(e) => {
+                  const list = [...s.edits.textOverlays!];
+                  list[i] = { ...t, text: e.target.value.slice(0, 200) };
+                  setEdits({ textOverlays: list });
+                }}
+                placeholder="Headline…"
+                className="flex-1 h-8 px-2 rounded bg-gray-800 border border-gray-700 text-xs"
+              />
+              <select
+                value={t.y <= 0.2 ? "top" : t.y >= 0.6 ? "lower" : "center"}
+                onChange={(e) => {
+                  const y = e.target.value === "top" ? 0.08 : e.target.value === "center" ? 0.45 : 0.72;
+                  const list = [...s.edits.textOverlays!];
+                  list[i] = { ...t, y };
+                  setEdits({ textOverlays: list });
+                }}
+                className="h-8 px-1 rounded bg-gray-800 border border-gray-700 text-[11px] text-gray-300"
+              >
+                <option value="top">Top</option>
+                <option value="center">Center</option>
+                <option value="lower">Lower third</option>
+              </select>
+              <button
+                onClick={() => {
+                  const list = [...s.edits.textOverlays!];
+                  list[i] = { ...t, background: t.background ? null : "#000000" };
+                  setEdits({ textOverlays: list });
+                }}
+                className={`px-2 py-0.5 rounded text-[10px] border shrink-0 ${
+                  t.background ? "bg-gray-700 text-white border-gray-500" : "bg-gray-800 text-gray-400 border-gray-700"
+                }`}
+                title="Background plate"
+              >
+                Plate
+              </button>
+              <button onClick={() => setEdits({ textOverlays: s.edits.textOverlays!.filter((_, j) => j !== i) })}
+                className="text-gray-500 hover:text-red-400" aria-label="Remove text">
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <Row label="From" value={`${t.start.toFixed(1)}s`}>
+                <input type="range" min={0} max={newDuration} step={0.1} value={t.start}
+                  onChange={(e) => {
+                    const list = [...s.edits.textOverlays!];
+                    list[i] = { ...t, start: Math.min(Number(e.target.value), t.end - 0.3) };
+                    setEdits({ textOverlays: list });
+                  }} className="w-full accent-purple-500" />
+              </Row>
+              <Row label="To" value={`${t.end.toFixed(1)}s`}>
+                <input type="range" min={0} max={newDuration} step={0.1} value={t.end}
+                  onChange={(e) => {
+                    const list = [...s.edits.textOverlays!];
+                    list[i] = { ...t, end: Math.max(Number(e.target.value), t.start + 0.3) };
+                    setEdits({ textOverlays: list });
+                  }} className="w-full accent-purple-500" />
+              </Row>
+              <Row label="Size" value={`${Math.round(t.size * 100)}%`}>
+                <input type="range" min={0.03} max={0.15} step={0.01} value={t.size}
+                  onChange={(e) => {
+                    const list = [...s.edits.textOverlays!];
+                    list[i] = { ...t, size: Number(e.target.value) };
+                    setEdits({ textOverlays: list });
+                  }} className="w-full accent-purple-500" />
+              </Row>
+            </div>
+          </div>
+        ))}
+      </section>
+
+      {/* ── Stabilize ── */}
+      <section className="space-y-2">
+        <div className="flex items-center gap-2">
+          <Anchor className="w-3.5 h-3.5 text-purple-400" />
+          <h4 className="text-xs font-semibold text-gray-200">Stabilize</h4>
+          <button
+            onClick={() => setEdits({
+              stabilization: s.edits.stabilization?.enabled ? null : { enabled: true, strength: 5 },
+            })}
+            className={`ml-auto px-2 py-0.5 rounded text-[11px] font-medium border transition-colors ${
+              s.edits.stabilization?.enabled
+                ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+                : "bg-gray-800 text-gray-400 border-gray-700"
+            }`}
+            data-testid={`stabilize-toggle-${clip.id}`}
+          >
+            {s.edits.stabilization?.enabled ? "On" : "Off"}
+          </button>
+        </div>
+        {s.edits.stabilization?.enabled && (
+          <Row label="Strength" value={String(s.edits.stabilization.strength)}>
+            <input type="range" min={1} max={10} step={1} value={s.edits.stabilization.strength}
+              onChange={(e) => setEdits({ stabilization: { enabled: true, strength: Number(e.target.value) } })}
+              className="w-full accent-purple-500" />
+          </Row>
+        )}
+      </section>
+
+      {/* What the last render could NOT do — a dropped effect must never be
+          mistaken for an applied one. */}
+      {(clip.renderWarnings?.length ?? 0) > 0 && (
+        <div className="rounded border border-amber-500/25 bg-amber-500/5 p-2.5 space-y-1">
+          {clip.renderWarnings!.map((w, i) => (
+            <p key={i} className="text-[11px] text-amber-300/90 leading-snug flex gap-1.5">
+              <AlertTriangle className="w-3 h-3 shrink-0 mt-px" />{w}
+            </p>
+          ))}
+        </div>
+      )}
+
+      {hasBeats && (
+        <p className="text-[11px] text-amber-300/80 leading-snug">
+          This is an assembled narrative clip — pace, music, b-roll, text and stabilization
+          apply to single-range clips. Re-trim it to one range to unlock them.
+        </p>
+      )}
+
       {/* ── Apply ── */}
       <div className="flex items-center gap-2 pt-1">
         <Button
@@ -322,6 +802,77 @@ export default function ClipEditorPanel({ clip, sourceDurationSec, onApply, onCl
         Re-rendering replaces this clip's output. Any brand placement already framed on it is
         re-composited with your saved positioning.
       </p>
+    </div>
+  );
+}
+
+/**
+ * Asset picker + inline upload for one kind of media ingredient.
+ * A select over the creator's own uploads plus an Upload button; the
+ * upload posts multipart to /api/media-assets and refreshes the list.
+ */
+function AssetControl({
+  kind,
+  assets,
+  selectedId,
+  onPick,
+  onUpload,
+  pickLabel,
+}: {
+  kind: string;
+  assets: MediaAssetRow[];
+  selectedId: number | null;
+  onPick: (id: number | null) => void;
+  onUpload: (file: File) => Promise<MediaAssetRow>;
+  pickLabel?: string;
+}) {
+  const [uploading, setUploading] = useState(false);
+  const accept = kind === "music" ? "audio/*" : "video/*,image/*";
+  const inputId = `asset-upload-${kind}-${Math.abs(kind.length)}`;
+
+  return (
+    <div className="ml-auto flex items-center gap-1.5">
+      <select
+        value={selectedId ?? ""}
+        onChange={(e) => onPick(e.target.value ? Number(e.target.value) : null)}
+        className="h-7 px-1.5 rounded bg-gray-800 border border-gray-700 text-[11px] text-gray-300 max-w-[160px]"
+        data-testid={`asset-pick-${kind}`}
+      >
+        <option value="">{pickLabel ?? (kind === "music" ? "No music" : "Choose…")}</option>
+        {assets.map((a) => (
+          <option key={a.id} value={a.id}>
+            {a.name.slice(0, 32)}{a.durationSec ? ` (${Math.round(Number(a.durationSec))}s)` : ""}
+          </option>
+        ))}
+      </select>
+      <label
+        htmlFor={inputId}
+        className="cursor-pointer flex items-center gap-1 px-2 h-7 rounded border border-gray-700 bg-gray-800 text-[11px] text-gray-300 hover:border-gray-500"
+        title="Upload a new file"
+      >
+        {uploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
+        {uploading ? "Uploading…" : "Upload"}
+      </label>
+      <input
+        id={inputId}
+        type="file"
+        accept={accept}
+        className="hidden"
+        onChange={async (e) => {
+          const file = e.target.files?.[0];
+          e.target.value = "";
+          if (!file) return;
+          setUploading(true);
+          try {
+            const asset = await onUpload(file);
+            onPick(asset.id);
+          } catch (err: any) {
+            alert(err?.message || "Upload failed");
+          } finally {
+            setUploading(false);
+          }
+        }}
+      />
     </div>
   );
 }
