@@ -8,6 +8,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { useHybridMode } from "@/hooks/use-hybrid-mode";
 import { usePitchMode } from "@/contexts/pitch-mode-context";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { fetchWithTimeout } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -839,7 +840,7 @@ export default function Library() {
   // Version key to force refetch when demo data changes - increment when adding new videos
   const DEMO_DATA_VERSION = 2;
   
-  const { data: videoData, isLoading: isLoadingVideos, isError: isVideosError, isFetching: isFetchingVideos, refetch: refetchVideos } = useQuery<VideoIndexResponse>({
+  const { data: videoData, isLoading: isLoadingVideos, isError: isVideosError, error: videosError, isFetching: isFetchingVideos, refetch: refetchVideos } = useQuery<VideoIndexResponse>({
     queryKey: ["videos", isPitchMode, mode, DEMO_DATA_VERSION, isAdminUser, userEmail, viewAsEmail] as const,
     queryFn: async ({ queryKey }) => {
       // Extract isPitchMode and mode from queryKey to avoid stale closure
@@ -869,8 +870,15 @@ export default function Library() {
       console.log(`[Library] FINAL endpoint: ${endpoint}`);
       console.log(`[Library] Expected: /api/video-index/with-opportunities?admin_email=...`);
       
-      const res = await fetch(endpoint, { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch videos");
+      const res = await fetchWithTimeout(endpoint, { credentials: "include" });
+      if (!res.ok) {
+        // Keeping the server's message matters: a hardcoded string here made
+        // every backend failure indistinguishable, and the render below turns
+        // any error into the "connect your channel" empty state — so a broken
+        // library and an empty one looked identical for the whole outage.
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.error || `Failed to load your library (${res.status})`);
+      }
       const data = await res.json();
       
       console.log(`[Library] Videos fetched: ${data.videos?.length} items`);
@@ -1522,7 +1530,19 @@ export default function Library() {
           <div className="flex items-center justify-center py-20">
             <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
           </div>
-        ) : isRealMode && (videos.length === 0 || isVideosError) ? (
+        ) : isRealMode && isVideosError ? (
+          // An error is NOT an empty library. Showing "sync your channel" for
+          // a failed request told the creator to fix the wrong thing.
+          <div className="max-w-lg mx-auto text-center py-16">
+            <p className="text-sm font-medium mb-1">Couldn't load your library</p>
+            <p className="text-xs text-muted-foreground leading-relaxed mb-4">
+              {(videosError as Error)?.message || "Unknown error"}
+            </p>
+            <Button variant="outline" size="sm" onClick={() => refetchVideos()}>
+              Try again
+            </Button>
+          </div>
+        ) : isRealMode && videos.length === 0 ? (
           <EmptyLibrary onSync={() => syncMutation.mutate()} isSyncing={syncMutation.isPending} />
         ) : (
           <motion.div

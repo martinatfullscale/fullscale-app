@@ -6,6 +6,7 @@ import session from "express-session";
 import type { Express, RequestHandler } from "express";
 import memoize from "memoizee";
 import connectPg from "connect-pg-simple";
+import pg from "pg";
 import { authStorage } from "./storage";
 
 const getOidcConfig = memoize(
@@ -49,8 +50,24 @@ export function getSession() {
   // session hygiene — the cookie is still httpOnly + secure + sameSite=lax.
   const sessionTtl = 30 * 24 * 60 * 60 * 1000;
   const pgStore = connectPg(session);
+  // Passing `conString` makes connect-pg-simple build its OWN pool with pg's
+  // bare defaults — and pg's default connectionTimeoutMillis is UNSET, which
+  // means a waiter for a connection is queued with no timer and can hang
+  // forever. Session lookup is on the path of every authenticated request, so
+  // that pool hanging hangs the whole app. Give it an explicit, bounded pool.
+  const sessionPool = new pg.Pool({
+    connectionString: dbUrl,
+    max: 4,                          // session reads are tiny and frequent
+    idleTimeoutMillis: 20_000,
+    connectionTimeoutMillis: 5_000,  // fail fast instead of queueing forever
+    statement_timeout: 10_000,
+    query_timeout: 10_000,
+  });
+  sessionPool.on("error", (err) => {
+    console.error("[SessionPool] idle client error:", err.message);
+  });
   const sessionStore = new pgStore({
-    conString: dbUrl,
+    pool: sessionPool,
     createTableIfMissing: true,
     ttl: sessionTtl,
     tableName: "sessions",

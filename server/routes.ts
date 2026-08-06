@@ -16745,8 +16745,18 @@ export async function registerRoutes(
     }
   });
 
-  // Seed Data
-  await seedDatabase();
+  // Seed Data.
+  // NON-FATAL, and this matters more than it looks: registerRoutes is awaited
+  // BEFORE httpServer.listen(), and the boot catch calls process.exit(1). So
+  // an unguarded throw here — a slow database, an exhausted pool, one bad row
+  // — stops the process before it ever binds the port, Replit restarts it,
+  // and it fails the same way: a crash loop in which the site does not load
+  // at all rather than loading degraded. Demo seed data is never worth that.
+  try {
+    await seedDatabase();
+  } catch (seedErr: any) {
+    console.error(`[Boot] Seeding failed (non-fatal, server still starting): ${seedErr?.message ?? seedErr}`);
+  }
 
   return httpServer;
 }
