@@ -156,6 +156,59 @@ export function marginReport(): Array<{
   });
 }
 
+/**
+ * FREE DAILY IMAGE ALLOWANCE — the conversion mechanic, not a giveaway.
+ *
+ * A creator who has never generated an image does not want one, so paywalling
+ * the first generation paywalls the demo. Five images a day costs us ~$0.025
+ * at full burn — roughly $0.75 per creator per month if they max it every
+ * single day, which nobody does. The upgrade prompt then fires at the cap, in
+ * the editor, at the moment of intent, against work they can already see.
+ *
+ * VIDEO IS NEVER FREE. At ~$0.35 a clip it is 70x an image; one free video a
+ * day per creator would cost more than the entire image allowance for a month.
+ * Video is what the credits are FOR.
+ */
+export const DAILY_FREE_IMAGES = 5;
+
+export interface Allowance {
+  freeImagesPerDay: number;
+  freeImagesUsedToday: number;
+  freeImagesLeft: number;
+  balance: number;
+}
+
+export async function getAllowance(userId: string): Promise<Allowance> {
+  const [used, balance] = await Promise.all([
+    storage.countFreeImagesUsedToday(userId),
+    storage.getCreditBalance(userId),
+  ]);
+  return {
+    freeImagesPerDay: DAILY_FREE_IMAGES,
+    freeImagesUsedToday: used,
+    freeImagesLeft: Math.max(0, DAILY_FREE_IMAGES - used),
+    balance,
+  };
+}
+
+/** What one generation will actually cost this creator right now. */
+export async function priceFor(userId: string, model: GenModel): Promise<{
+  credits: number; free: boolean; reason: string;
+}> {
+  if (model.kind !== "image") {
+    return { credits: model.creditsPerGeneration, free: false, reason: "AI video is credit-only." };
+  }
+  const a = await getAllowance(userId);
+  if (a.freeImagesLeft > 0) {
+    return { credits: 0, free: true, reason: `${a.freeImagesLeft} of ${DAILY_FREE_IMAGES} free images left today.` };
+  }
+  return {
+    credits: model.creditsPerGeneration,
+    free: false,
+    reason: `Today's ${DAILY_FREE_IMAGES} free images are used — this one costs credits.`,
+  };
+}
+
 export function modelById(id: string): GenModel | undefined {
   return GEN_MODELS.find((m) => m.id === id);
 }
@@ -217,6 +270,10 @@ export interface GenerateResult {
   assetId?: number;
   url?: string;
   error?: string;
+  /** Set when the block was affordability, not a fault — the client shows the
+   *  upgrade path rather than a generic failure. */
+  needsCredits?: boolean;
+  creditsRequired?: number;
 }
 
 /**
@@ -266,11 +323,25 @@ export async function runGeneration(args: {
   }
 
   const cost = costMicrosFor(model);
-  const credits = model.creditsPerGeneration;
 
-  const charged = await storage.spendCredits(args.userId, credits);
-  if (!charged.ok) {
-    return { ok: false, generationId: 0, error: `Not enough credits — this costs ${credits}, you have ${charged.balance}.` };
+  // Price at request time, not from the client: a client-supplied "this is
+  // free" would be a way to mint unlimited generations.
+  const pricing = await priceFor(args.userId, model);
+  const credits = pricing.credits;
+
+  if (credits > 0) {
+    const charged = await storage.spendCredits(args.userId, credits);
+    if (!charged.ok) {
+      return {
+        ok: false,
+        generationId: 0,
+        error: model.kind === "video"
+          ? `AI video needs ${credits} credits — you have ${charged.balance}.`
+          : `Today's ${DAILY_FREE_IMAGES} free images are used. This one costs ${credits} credit${credits === 1 ? "" : "s"} and you have ${charged.balance}.`,
+        needsCredits: true,
+        creditsRequired: credits,
+      };
+    }
   }
 
   const gen = await storage.createAiGeneration({
@@ -290,7 +361,11 @@ export async function runGeneration(args: {
 
   const startedAt = Date.now();
   const refund = async (message: string) => {
-    await storage.grantCredits(args.userId, credits, "refund", `Failed generation #${gen.id}`).catch(() => {});
+    // A free generation paid nothing, so there is nothing to give back — and
+    // granting credits here would turn a provider error into free currency.
+    if (credits > 0) {
+      await storage.grantCredits(args.userId, credits, "refund", `Failed generation #${gen.id}`).catch(() => {});
+    }
     await storage.completeAiGeneration(gen.id, {
       status: "failed",
       errorMessage: message.slice(0, 500),

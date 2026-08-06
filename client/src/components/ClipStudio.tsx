@@ -1408,18 +1408,28 @@ function AiGenerateTool(props: {
   // Video animates a still the creator already approved, so it needs one
   // selected. Their own generated images are the natural candidates.
   const [seedAssetId, setSeedAssetId] = useState<number | null>(null);
+  const [showUpgrade, setShowUpgrade] = useState(false);
   const { data: ownAssets } = useAssets(["broll_image"]);
 
   const { data: opts, refetch } = useQuery<{
     available: boolean; detail: string | null; balance: number;
-    models: Array<{ id: string; kind: string; label: string; credits: number; typicalSeconds: number; outputSeconds: number | null; seedsFromImage: boolean; notes: string }>;
+    allowance: { freeImagesPerDay: number; freeImagesUsedToday: number; freeImagesLeft: number; balance: number };
+    models: Array<{
+      id: string; kind: string; label: string;
+      credits: number; listCredits: number; free: boolean; priceReason: string;
+      typicalSeconds: number; outputSeconds: number | null; seedsFromImage: boolean; notes: string;
+    }>;
   }>({
     queryKey: ["/api/ai/generation/options"],
     queryFn: async () => (await fetchWithTimeout("/api/ai/generation/options", { credentials: "include" })).json(),
   });
 
   const model = opts?.models.find((m) => m.id === modelId);
-  const affordable = (opts?.balance ?? 0) >= (model?.credits ?? 0);
+  const affordable = model?.free || (opts?.balance ?? 0) >= (model?.credits ?? 0);
+  const allowance = opts?.allowance;
+  // The paywall moment: free images spent, on an image model. This is where
+  // the upgrade prompt earns its keep — against work they can already see.
+  const atImageCap = !!model && model.kind === "image" && !model.free;
 
   const seedFromTranscript = async () => {
     if (!props.spokenAtPlayhead) return;
@@ -1450,7 +1460,12 @@ function AiGenerateTool(props: {
         // Video generation runs for minutes; the request has to outlast it.
       }, (model?.typicalSeconds ?? 30) * 1000 * 3 + 60_000);
       const body = await res.json();
-      if (!res.ok || !body.ok) { setErr(body.error || "Generation failed"); return; }
+      if (!res.ok || !body.ok) {
+        setErr(body.error || "Generation failed");
+        if (res.status === 402) setShowUpgrade(true);
+        await refetch();
+        return;
+      }
       await refetch();
       props.onGenerated(body.assetId);
     } catch (e: any) {
@@ -1472,10 +1487,27 @@ function AiGenerateTool(props: {
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <span className="text-[11px] text-gray-400">Credits</span>
-        <span className="text-[11px] tabular-nums text-emerald-300">{opts?.balance ?? "—"}</span>
-      </div>
+      {/* Allowance first — a creator should know what's free before choosing. */}
+      {allowance && (
+        <div className="rounded border border-gray-700/60 p-2 space-y-1">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] text-gray-400">Free images today</span>
+            <span className="text-[11px] tabular-nums text-emerald-300">
+              {allowance.freeImagesLeft} / {allowance.freeImagesPerDay}
+            </span>
+          </div>
+          <div className="h-1 rounded-full bg-gray-800 overflow-hidden">
+            <div
+              className="h-full bg-emerald-500/70"
+              style={{ width: `${(allowance.freeImagesLeft / Math.max(1, allowance.freeImagesPerDay)) * 100}%` }}
+            />
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] text-gray-500">Credits</span>
+            <span className="text-[11px] tabular-nums text-gray-300">{allowance.balance}</span>
+          </div>
+        </div>
+      )}
 
       <div className="space-y-1.5">
         {(opts?.models ?? []).map((m) => (
@@ -1491,8 +1523,10 @@ function AiGenerateTool(props: {
           >
             <div className="flex items-center justify-between gap-2">
               <span className="text-[11px] font-medium">{m.label}</span>
-              <span className="text-[10px] text-gray-500 shrink-0">
-                {m.credits} credit{m.credits === 1 ? "" : "s"} · ~{m.typicalSeconds}s
+              <span className={`text-[10px] shrink-0 ${m.free ? "text-emerald-300" : "text-gray-500"}`}>
+                {m.free
+                  ? `Free · ~${m.typicalSeconds}s`
+                  : `${m.credits} credit${m.credits === 1 ? "" : "s"} · ~${m.typicalSeconds}s`}
               </span>
             </div>
             <p className="text-[10px] text-gray-500 mt-0.5 leading-snug">{m.notes}</p>
@@ -1546,6 +1580,29 @@ function AiGenerateTool(props: {
         />
       </div>
 
+      {/* The paywall, in context. It appears where the intent is, against a
+          prompt they've already written — not on a separate screen. */}
+      {(showUpgrade || (atImageCap && (allowance?.balance ?? 0) < (model?.credits ?? 1))) && (
+        <div className="rounded border border-purple-500/40 bg-purple-500/10 p-2.5 space-y-1.5">
+          <p className="text-[11px] font-medium text-purple-200">
+            {model?.kind === "video" ? "AI video runs on credits" : "You've used today's free images"}
+          </p>
+          <p className="text-[10px] text-gray-400 leading-snug">
+            {model?.kind === "video"
+              ? "Video generation is metered — each 5-second clip costs 10 credits. Images stay free, 5 a day."
+              : `Your ${allowance?.freeImagesPerDay} free images reset tomorrow. Credits cover more today, and unlock AI video.`}
+          </p>
+          <Button
+            size="sm"
+            onClick={() => window.open("/settings?tab=credits", "_blank")}
+            className="w-full bg-purple-600 hover:bg-purple-500 text-white text-[11px] h-7"
+            data-testid="gen-upgrade"
+          >
+            Get credits
+          </Button>
+        </div>
+      )}
+
       {err && <p className="text-[11px] text-amber-300/90 leading-snug">{err}</p>}
 
       <Button
@@ -1559,12 +1616,15 @@ function AiGenerateTool(props: {
           ? `Generating… (~${model?.typicalSeconds ?? 30}s)`
           : !affordable
             ? `Needs ${model?.credits} credits`
-            : `Generate for ${model?.credits} credit${model?.credits === 1 ? "" : "s"}`}
+            : model?.free
+              ? "Generate — free"
+              : `Generate for ${model?.credits} credit${model?.credits === 1 ? "" : "s"}`}
       </Button>
 
       <p className="text-[10px] text-gray-600 leading-snug">
-        Lands in your uploads and drops at the playhead. Credits are refunded automatically
-        if a generation fails.
+        Lands in your uploads and drops at the playhead as a full-frame cutaway with a slow
+        push. Failed generations never cost you — credits are refunded, and a free image
+        doesn't count against your daily five.
       </p>
     </div>
   );

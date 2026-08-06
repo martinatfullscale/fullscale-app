@@ -715,6 +715,37 @@ export class DatabaseStorage implements IStorage {
       .limit(limit);
   }
 
+  /**
+   * Image generations this creator has used against today's free allowance.
+   *
+   * Counted from ai_generations rather than a separate counter table: the
+   * rows already exist, so there is no second source of truth to drift.
+   *
+   * FAILED generations are excluded. They were refunded, and charging a
+   * creator's daily allowance for our provider erroring is the kind of small
+   * unfairness that generates support tickets and distrust of the whole
+   * meter. Queued/running DO count, so a burst of concurrent requests cannot
+   * all read "0 used" before any completes.
+   *
+   * Day boundary is UTC — chosen so it matches how the rest of the platform
+   * buckets days (video_daily_metrics), not the creator's local midnight.
+   */
+  async countFreeImagesUsedToday(userId: string): Promise<number> {
+    const startOfDayUtc = new Date();
+    startOfDayUtc.setUTCHours(0, 0, 0, 0);
+    const [row] = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(aiGenerations)
+      .where(and(
+        eq(aiGenerations.userId, userId),
+        eq(aiGenerations.kind, "image"),
+        eq(aiGenerations.creditsCharged, 0),
+        gte(aiGenerations.createdAt, startOfDayUtc),
+        ne(aiGenerations.status, "failed"),
+      ));
+    return Number(row?.n ?? 0);
+  }
+
   async getCreditBalance(userId: string): Promise<number> {
     const [row] = await db.select().from(creatorCredits).where(eq(creatorCredits.userId, userId));
     return row?.balance ?? 0;

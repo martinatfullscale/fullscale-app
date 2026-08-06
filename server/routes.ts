@@ -10789,18 +10789,27 @@ export async function registerRoutes(
 
   app.get("/api/ai/generation/options", isFlexibleAuthenticated, async (req: any, res) => {
     try {
-      const { GEN_MODELS, generationAvailable } = await import("./lib/aiGeneration");
-      const balance = await storage.getCreditBalance(String(req.authUserId));
+      const { GEN_MODELS, generationAvailable, getAllowance, priceFor } = await import("./lib/aiGeneration");
+      const allowance = await getAllowance(String(req.authUserId));
+      // Price every model for THIS creator right now, so the button can say
+      // "Free" or "10 credits" truthfully instead of the client guessing.
+      const priced = await Promise.all(
+        GEN_MODELS.map(async (m) => ({ m, p: await priceFor(String(req.authUserId), m) })),
+      );
       res.json({
         available: generationAvailable(),
         detail: generationAvailable()
           ? null
           : "AI generation isn't configured on this server (FAL_KEY missing in this environment).",
-        balance,
+        balance: allowance.balance,
+        allowance,
         // Creators see credits and latency, never our unit cost.
-        models: GEN_MODELS.map((m) => ({
+        models: priced.map(({ m, p }) => ({
           id: m.id, kind: m.kind, label: m.label,
-          credits: m.creditsPerGeneration,
+          credits: p.credits,
+          listCredits: m.creditsPerGeneration,
+          free: p.free,
+          priceReason: p.reason,
           typicalSeconds: Math.round(m.typicalLatencyMs / 1000),
           outputSeconds: m.outputSeconds ?? null,
           seedsFromImage: !!m.seedsFromImage,
@@ -10824,9 +10833,12 @@ export async function registerRoutes(
         aspectRatio: req.body?.aspectRatio === "16:9" ? "16:9" : "9:16",
         seedAssetId: Number.isFinite(Number(req.body?.seedAssetId)) ? Number(req.body.seedAssetId) : null,
       });
-      if (!result.ok) return res.status(400).json(result);
-      const balance = await storage.getCreditBalance(String(req.authUserId));
-      res.json({ ...result, balance });
+      const { getAllowance } = await import("./lib/aiGeneration");
+      const allowance = await getAllowance(String(req.authUserId));
+      // 402 for "you need to pay", so the client can branch to the upgrade
+      // path rather than treating affordability as a generic failure.
+      if (!result.ok) return res.status(result.needsCredits ? 402 : 400).json({ ...result, allowance });
+      res.json({ ...result, balance: allowance.balance, allowance });
     } catch (err: any) {
       console.error("[AiGen] route error:", err?.message);
       res.status(500).json({ error: err?.message || "Generation failed" });
