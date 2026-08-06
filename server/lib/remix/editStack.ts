@@ -68,6 +68,14 @@ export interface TextOverlay {
 export interface BrollCut {
   start: number;
   end: number;
+  /**
+   * Ken Burns move for STILLS. A generated image held full-frame for three
+   * seconds with no motion reads as a freeze — the viewer thinks the video
+   * stalled. A slow push is what makes a still cutaway read as filmed
+   * material, and it is the entire reason a $0.005 image can stand in for a
+   * $0.35 video clip. Ignored for video sources, which already move.
+   */
+  motion?: "push" | "pull" | "none";
   /** media_assets.id — a video or image the creator uploaded. */
   assetId: number;
   /** Resolved by the caller before the graph is built. */
@@ -462,7 +470,30 @@ export async function buildEditGraph(opts: {
       ? `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=black@0`
       : `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h}`;
     extraInputs[extraInputs.length - 1].loop = isImage;
-    videoPre.push(`[${idx}:v]${fitChain},setsar=1${prepped}`);
+
+    // ── Ken Burns, stills only ──────────────────────────────────────
+    // zoompan is jittery when it scales the source directly — it rounds the
+    // crop origin to integers each frame, which reads as a stutter on a slow
+    // move. Upscaling FIRST and letting zoompan work inside the larger image
+    // keeps sub-pixel steps below one output pixel, so the move is smooth.
+    const motion = cut.motion ?? "push";
+    let brollChain = `${fitChain},setsar=1`;
+    if (isImage && motion !== "none") {
+      const fps = 30;
+      const frames = Math.max(1, Math.round((cut.end - cut.start) * fps));
+      const OVERSAMPLE = 4;
+      const ZOOM = 0.10; // 10% travel — noticeable as life, not as a zoom
+      // z must be expressed per-frame; `on` is the output frame index.
+      const z = motion === "push"
+        ? `1+${ZOOM}*on/${frames}`
+        : `${(1 + ZOOM).toFixed(3)}-${ZOOM}*on/${frames}`;
+      brollChain =
+        `${fitChain},scale=${w * OVERSAMPLE}:${h * OVERSAMPLE},` +
+        `zoompan=z='${z}':d=${frames}:` +
+        `x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':` +
+        `s=${w}x${h}:fps=${fps},setsar=1`;
+    }
+    videoPre.push(`[${idx}:v]${brollChain}${prepped}`);
     const px = scale >= 0.999 ? 0 : Math.round(Math.min(1, Math.max(0, cut.x)) * (outWidth - w));
     const py = scale >= 0.999 ? 0 : Math.round(Math.min(1, Math.max(0, cut.y)) * (outHeight - h));
     const out = nextLabel();

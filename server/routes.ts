@@ -14144,6 +14144,7 @@ export async function registerRoutes(
                 assetId: Number(c.assetId),
                 start: num(c.start, 0, 36000, 0), end: num(c.end, 0, 36000, 0),
                 fit: c.fit === "contain" ? "contain" : "cover",
+                motion: ["push", "pull", "none"].includes(c.motion) ? c.motion : "push",
                 scale: num(c.scale, 0.1, 1, 1),
                 x: num(c.x, 0, 1, 1), y: num(c.y, 0, 1, 0),
                 muted: c.muted !== false,

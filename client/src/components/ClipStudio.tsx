@@ -56,7 +56,12 @@ export interface StudioEdits {
   silenceCut?: { enabled: boolean; thresholdDb: number; minDurationSec: number; paddingSec: number } | null;
   speedRamps?: Array<{ start: number; end: number; rate: number }>;
   textOverlays?: Array<Record<string, unknown>>;
-  broll?: Array<{ assetId: number; start: number; end: number; fit: string; scale: number; x: number; y: number; muted: boolean }>;
+  broll?: Array<{
+    assetId: number; start: number; end: number; fit: string;
+    scale: number; x: number; y: number; muted: boolean;
+    /** Ken Burns for stills — a static full-frame image reads as a freeze. */
+    motion?: "push" | "pull" | "none";
+  }>;
   music?: { assetId: number; volume: number; ducking: boolean; duckAmountDb: number; fadeInSec: number; fadeOutSec: number } | null;
   stabilization?: { enabled: boolean; strength: number } | null;
 }
@@ -1026,7 +1031,9 @@ function BrollTool(props: {
     const start = Math.min(props.playhead, Math.max(0, props.duration - 3));
     props.onChange([
       ...props.cuts,
-      { assetId, start, end: Math.min(props.duration, start + 3), fit: "cover", scale: 1, x: 1, y: 0, muted: true },
+      // Full frame by default — a cutaway takes over the shot. PiP is the
+      // deliberate exception, not the norm.
+      { assetId, start, end: Math.min(props.duration, start + 3), fit: "cover", scale: 1, x: 1, y: 0, muted: true, motion: "push" },
     ]);
   };
 
@@ -1201,8 +1208,20 @@ function BrollTool(props: {
                 <button
                   onClick={() => props.onChange(props.cuts.map((x, j) => (j === i ? { ...x, scale: x.scale >= 1 ? 0.4 : 1 } : x)))}
                   className="text-[9px] px-1.5 py-0.5 rounded border border-gray-700 text-gray-400 shrink-0"
+                  title={c.scale >= 1 ? "Full-frame cutaway — tap for picture-in-picture" : "Picture-in-picture — tap for full frame"}
                 >
-                  {c.scale >= 1 ? "full" : "PiP"}
+                  {c.scale >= 1 ? "full frame" : "PiP"}
+                </button>
+                {/* Stills need a move or they read as a freeze. Video already
+                    moves, so the control is simply unused there. */}
+                <button
+                  onClick={() => props.onChange(props.cuts.map((x, j) => (j === i
+                    ? { ...x, motion: x.motion === "push" ? "pull" : x.motion === "pull" ? "none" : "push" }
+                    : x)))}
+                  className="text-[9px] px-1.5 py-0.5 rounded border border-gray-700 text-gray-400 shrink-0"
+                  title="Ken Burns move, for still images"
+                >
+                  {c.motion === "none" ? "static" : c.motion === "pull" ? "pull out" : "push in"}
                 </button>
                 <button onClick={() => props.onChange(props.cuts.filter((_, j) => j !== i))} className="text-gray-500 hover:text-red-400 shrink-0">
                   <Trash2 className="w-3 h-3" />
