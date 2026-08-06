@@ -37,17 +37,26 @@ export interface GenModel {
   falModel: string;
   kind: GenKind;
   label: string;
-  /** What this costs US. In ten-thousandths of a cent: 1 = $0.000001.
-   *  For video this is per SECOND; for images, per image.
-   *  VERIFY against provider billing — treat as configuration, not truth. */
-  costMicrosPerUnit: number;
-  /** Credits we charge the creator, per generation. */
+  /** Total cost to US of ONE generation, in ten-thousandths of a cent
+   *  (1 = $0.000001). Not per-second or per-megapixel — those are internal
+   *  details of how a provider bills, and pricing a product on them is how
+   *  you ship a tier whose cost you cannot predict. VERIFY against real fal
+   *  invoices before selling; this is configuration, not fact. */
+  costMicros: number;
+  /** Credits charged. Weighted per model — a single flat credit across image
+   *  and video is arbitraged instantly by anyone who always picks video. */
   creditsPerGeneration: number;
-  /** Typical wall-clock, which decides inline vs queued UX. */
+  /** Typical wall-clock. Under ~15s can be inline; minutes must be a job. */
   typicalLatencyMs: number;
-  /** Video only: seconds produced per generation. */
+  /** Video only: seconds produced. Providers sell a MINIMUM clip length —
+   *  budget on it, because you cannot buy less. */
   outputSeconds?: number;
-  native916: boolean;
+  /** Exact pixel dimensions we request. Load-bearing for image models billed
+   *  per megapixel — see the note on the image model below. */
+  width?: number;
+  height?: number;
+  /** Video models that animate a still rather than generating from text. */
+  seedsFromImage?: boolean;
   notes: string;
 }
 
@@ -60,39 +69,92 @@ export interface GenModel {
 export const GEN_MODELS: GenModel[] = [
   {
     id: "image-fast",
-    falModel: "fal-ai/flux/schnell",
+    falModel: "fal-ai/flux-2/flash",
     kind: "image",
-    label: "Image — fast",
-    costMicrosPerUnit: 3_000,        // ~$0.003 per image
+    label: "Cutaway image",
+    // ── THE RESOLUTION IS A COST DECISION, NOT A QUALITY ONE ──
+    // This model bills per megapixel, ROUNDED UP. 720x1280 is exactly 9:16
+    // and 0.92 MP, so it bills in the 1-MP bucket. 1080x1920 is 2.07 MP and
+    // bills in the 2- or 3-MP bucket depending on how the provider defines a
+    // megapixel — i.e. 2–3x the cost, for a frame that receives a ~2% Ken
+    // Burns push and is on screen for three seconds. Nobody can see the
+    // difference; the P&L can.
+    width: 720,
+    height: 1280,
+    costMicros: 5_000,               // ~$0.005 — 1 MP bucket
     creditsPerGeneration: 1,
-    typicalLatencyMs: 3_000,
-    native916: true,
-    notes: "Few seconds, cheap. The default for a cutaway still.",
+    typicalLatencyMs: 4_000,
+    notes: "Sub-second model. The right default — a still with a slow push reads as well as video in a 3s cutaway.",
   },
   {
-    id: "image-quality",
-    falModel: "fal-ai/flux/dev",
+    id: "image-sharp",
+    falModel: "fal-ai/flux-2/flash",
     kind: "image",
-    label: "Image — higher quality",
-    costMicrosPerUnit: 25_000,       // ~$0.025 per image
-    creditsPerGeneration: 3,
-    typicalLatencyMs: 12_000,
-    native916: true,
-    notes: "Slower and sharper; worth it when the cutaway holds on screen.",
+    label: "Cutaway image — sharp",
+    // 1008x1792 is exactly 9:16 and 1.81 MP, so it lands in the 2-MP bucket
+    // under EITHER megapixel definition. Deliberate: it makes the cost
+    // predictable rather than dependent on the provider's rounding.
+    width: 1008,
+    height: 1792,
+    costMicros: 10_000,              // ~$0.010 — 2 MP bucket
+    creditsPerGeneration: 2,
+    typicalLatencyMs: 6_000,
+    notes: "Higher resolution, for a cutaway that holds on screen longer.",
   },
   {
     id: "video-short",
-    falModel: "fal-ai/kling-video/v1/standard/text-to-video",
+    falModel: "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
     kind: "video",
-    label: "Video — 5s clip",
-    costMicrosPerUnit: 50_000,       // ~$0.05 per second
-    outputSeconds: 5,
-    creditsPerGeneration: 30,
-    typicalLatencyMs: 150_000,
-    native916: true,
-    notes: "Real motion. Minutes to generate, so it runs as a background job.",
+    label: "Animate into 5s video",
+    // IMAGE-TO-VIDEO, not text-to-video. The seed is a still the creator has
+    // already looked at and accepted, which means: they never spend video
+    // money on a composition they'd reject, 9:16 comes free from the input
+    // image, and the upgrade is a click on an asset already in the timeline.
+    seedsFromImage: true,
+    outputSeconds: 5,                // the provider's MINIMUM — cannot buy 3s
+    costMicros: 350_000,             // ~$0.35 for the 5s minimum
+    creditsPerGeneration: 10,
+    typicalLatencyMs: 180_000,
+    notes: "Real motion — worth it when the movement IS the subject (traffic, water, crowds). Runs in the background for a few minutes.",
   },
 ];
+
+/**
+ * Minimum credits a model may be sold for and still clear the margin floor.
+ *
+ * Priced against the DEEPEST pack discount, because that is the price a
+ * heavy user actually pays and therefore the one margin has to survive.
+ * Any new model must be weighted with this, or whoever always picks the
+ * most expensive option arbitrages a flat credit price.
+ */
+export const DEEPEST_CREDIT_PRICE_USD = 0.111;   // 800 credits for $89
+export const MARGIN_FLOOR = 0.68;                // 68% gross
+
+export function minimumCreditsFor(costMicros: number): number {
+  const costUsd = costMicros / 1_000_000;
+  return Math.ceil(costUsd / ((1 - MARGIN_FLOOR) * DEEPEST_CREDIT_PRICE_USD));
+}
+
+/** Margin check for the configured registry — surfaced to admins so a
+ *  mispriced model is visible rather than discovered in a monthly invoice. */
+export function marginReport(): Array<{
+  id: string; costUsd: number; credits: number; minCredits: number;
+  revenueAtDeepestUsd: number; grossMarginPct: number; ok: boolean;
+}> {
+  return GEN_MODELS.map((m) => {
+    const costUsd = m.costMicros / 1_000_000;
+    const revenue = m.creditsPerGeneration * DEEPEST_CREDIT_PRICE_USD;
+    return {
+      id: m.id,
+      costUsd,
+      credits: m.creditsPerGeneration,
+      minCredits: minimumCreditsFor(m.costMicros),
+      revenueAtDeepestUsd: Number(revenue.toFixed(4)),
+      grossMarginPct: Number((((revenue - costUsd) / revenue) * 100).toFixed(1)),
+      ok: m.creditsPerGeneration >= minimumCreditsFor(m.costMicros),
+    };
+  });
+}
 
 export function modelById(id: string): GenModel | undefined {
   return GEN_MODELS.find((m) => m.id === id);
@@ -102,11 +164,9 @@ export function generationAvailable(): boolean {
   return !!process.env.FAL_KEY;
 }
 
-/** Total cost of one generation with this model, in ten-thousandths of a cent. */
+/** Total cost of one generation. Already whole-generation, not per-unit. */
 export function costMicrosFor(model: GenModel): number {
-  return model.kind === "video"
-    ? model.costMicrosPerUnit * (model.outputSeconds ?? 5)
-    : model.costMicrosPerUnit;
+  return model.costMicros;
 }
 
 /** Human-readable dollars, for admin surfaces. Never shown to creators —
@@ -175,6 +235,11 @@ export async function runGeneration(args: {
   promptSource?: "manual" | "transcript";
   editorialClipId?: number | null;
   aspectRatio?: string;
+  /** For image-to-video: the media asset to animate. Required by any model
+   *  with seedsFromImage — animating from text would be a different (and
+   *  worse) product, because the creator would be paying video prices for a
+   *  composition they have not seen. */
+  seedAssetId?: number | null;
 }): Promise<GenerateResult> {
   const model = modelById(args.modelId);
   if (!model) return { ok: false, generationId: 0, error: `Unknown model "${args.modelId}"` };
@@ -183,6 +248,22 @@ export async function runGeneration(args: {
   }
   const prompt = String(args.prompt ?? "").trim();
   if (prompt.length < 3) return { ok: false, generationId: 0, error: "Give it something to work with — a few words at least." };
+
+  // Resolve the seed BEFORE charging: a missing seed is the creator's most
+  // likely mistake, and charging then refunding for it is a bad first
+  // experience of a paid feature.
+  let seedUrl: string | undefined;
+  if (model.seedsFromImage) {
+    if (!args.seedAssetId) {
+      return { ok: false, generationId: 0, error: "Pick an image to animate first — video starts from a still you've already approved." };
+    }
+    const asset = await storage.getMediaAsset(Number(args.seedAssetId));
+    if (!asset || asset.deletedAt || String(asset.userId) !== String(args.userId)) {
+      return { ok: false, generationId: 0, error: "That image isn't available to animate." };
+    }
+    const { storageServeUrl } = await import("./objectStorage");
+    seedUrl = storageServeUrl(asset.storagePath);
+  }
 
   const cost = costMicrosFor(model);
   const credits = model.creditsPerGeneration;
@@ -223,12 +304,18 @@ export async function runGeneration(args: {
 
     const input: Record<string, unknown> = { prompt };
     if (model.kind === "image") {
-      // 9:16 is the target frame; asking for it natively beats cropping a
-      // square, which reliably loses the subject.
-      input.image_size = args.aspectRatio === "16:9" ? "landscape_16_9" : "portrait_16_9";
+      // EXPLICIT pixel dimensions, not a named preset. The preset's actual
+      // size is the provider's choice, and this model bills per megapixel
+      // rounded up — so letting them pick the size is letting them pick our
+      // unit cost. Landscape swaps the axes to stay on the same MP bucket.
+      const w = model.width ?? 720;
+      const h = model.height ?? 1280;
+      input.image_size = args.aspectRatio === "16:9" ? { width: h, height: w } : { width: w, height: h };
       input.num_images = 1;
     } else {
-      input.aspect_ratio = args.aspectRatio === "16:9" ? "16:9" : "9:16";
+      // Aspect ratio is inherited from the seed image, so it is not sent —
+      // one fewer place for the output shape to disagree with the input.
+      input.image_url = seedUrl;
       if (model.outputSeconds) input.duration = String(model.outputSeconds);
     }
 

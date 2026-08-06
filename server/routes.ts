@@ -10803,6 +10803,7 @@ export async function registerRoutes(
           credits: m.creditsPerGeneration,
           typicalSeconds: Math.round(m.typicalLatencyMs / 1000),
           outputSeconds: m.outputSeconds ?? null,
+          seedsFromImage: !!m.seedsFromImage,
           notes: m.notes,
         })),
       });
@@ -10821,6 +10822,7 @@ export async function registerRoutes(
         promptSource: req.body?.promptSource === "transcript" ? "transcript" : "manual",
         editorialClipId: Number.isFinite(Number(req.body?.editorialClipId)) ? Number(req.body.editorialClipId) : null,
         aspectRatio: req.body?.aspectRatio === "16:9" ? "16:9" : "9:16",
+        seedAssetId: Number.isFinite(Number(req.body?.seedAssetId)) ? Number(req.body.seedAssetId) : null,
       });
       if (!result.ok) return res.status(400).json(result);
       const balance = await storage.getCreditBalance(String(req.authUserId));
@@ -10850,11 +10852,14 @@ export async function registerRoutes(
       }
       const days = Math.min(365, Math.max(1, parseInt(String(req.query.days ?? "30")) || 30));
       const econ = await storage.getGenerationEconomics(days);
-      const { micosToUsd } = await import("./lib/aiGeneration");
+      const { micosToUsd, marginReport } = await import("./lib/aiGeneration");
       res.json({
         windowDays: days,
         ...econ,
         costUsd: micosToUsd(econ.costMicros),
+        // Configured margin per model, so an underpriced model is visible
+        // here rather than discovered in a monthly invoice.
+        pricing: marginReport(),
         // Margin needs a credit price, which is a business decision — the
         // endpoint reports units and cost, and leaves pricing to the caller
         // rather than inventing a number.

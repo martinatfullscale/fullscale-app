@@ -1386,10 +1386,14 @@ function AiGenerateTool(props: {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [seeded, setSeeded] = useState(false);
+  // Video animates a still the creator already approved, so it needs one
+  // selected. Their own generated images are the natural candidates.
+  const [seedAssetId, setSeedAssetId] = useState<number | null>(null);
+  const { data: ownAssets } = useAssets(["broll_image"]);
 
   const { data: opts, refetch } = useQuery<{
     available: boolean; detail: string | null; balance: number;
-    models: Array<{ id: string; kind: string; label: string; credits: number; typicalSeconds: number; outputSeconds: number | null; notes: string }>;
+    models: Array<{ id: string; kind: string; label: string; credits: number; typicalSeconds: number; outputSeconds: number | null; seedsFromImage: boolean; notes: string }>;
   }>({
     queryKey: ["/api/ai/generation/options"],
     queryFn: async () => (await fetchWithTimeout("/api/ai/generation/options", { credentials: "include" })).json(),
@@ -1422,6 +1426,7 @@ function AiGenerateTool(props: {
           modelId, prompt,
           promptSource: seeded ? "transcript" : "manual",
           editorialClipId: props.clipId,
+          seedAssetId,
         }),
         // Video generation runs for minutes; the request has to outlast it.
       }, (model?.typicalSeconds ?? 30) * 1000 * 3 + 60_000);
@@ -1476,9 +1481,32 @@ function AiGenerateTool(props: {
         ))}
       </div>
 
+      {model?.seedsFromImage && (
+        <div className="space-y-1 rounded border border-purple-500/25 bg-purple-500/5 p-2">
+          <label className="text-[11px] text-purple-200">Which image should move?</label>
+          <select
+            value={seedAssetId ?? ""}
+            onChange={(e) => setSeedAssetId(e.target.value ? Number(e.target.value) : null)}
+            className="w-full h-8 px-1.5 rounded bg-gray-800 border border-gray-700 text-[11px] text-gray-300"
+            data-testid="gen-seed"
+          >
+            <option value="">Choose a still…</option>
+            {(ownAssets?.assets ?? []).map((a) => (
+              <option key={a.id} value={a.id}>{a.name.slice(0, 44)}</option>
+            ))}
+          </select>
+          <p className="text-[10px] text-gray-500 leading-snug">
+            Video starts from a still you've already seen — so you never spend video credits
+            on a composition you'd reject.
+          </p>
+        </div>
+      )}
+
       <div className="space-y-1.5">
         <div className="flex items-center justify-between">
-          <label className="text-[11px] text-gray-400">What should the cutaway show?</label>
+          <label className="text-[11px] text-gray-400">
+            {model?.seedsFromImage ? "How should it move?" : "What should the cutaway show?"}
+          </label>
           {props.spokenAtPlayhead && (
             <button
               onClick={seedFromTranscript}
@@ -1503,7 +1531,7 @@ function AiGenerateTool(props: {
 
       <Button
         onClick={generate}
-        disabled={busy || prompt.trim().length < 3 || !affordable}
+        disabled={busy || prompt.trim().length < 3 || !affordable || (!!model?.seedsFromImage && !seedAssetId)}
         className="w-full bg-purple-600 hover:bg-purple-500 text-white text-xs"
         data-testid="gen-run"
       >
