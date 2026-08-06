@@ -2668,6 +2668,39 @@ export class DatabaseStorage implements IStorage {
    * are absent from the map, so the caller yields null and the client falls
    * back to the raw surface count.
    */
+  /**
+   * The set of owner keys (emails AND user ids) whose content may be served to
+   * ANONYMOUS visitors — i.e. creators who opted into a public profile via
+   * is_featured. Cached for 60s: the stream/frame endpoints are hot (every
+   * thumbnail on a public profile hits them) and the set changes rarely.
+   *
+   * video_index.userId is a mixed-key column (users.id or email), so the set
+   * carries both forms for each featured creator.
+   */
+  private featuredOwnerCache: { keys: Set<string>; expiresAt: number } | null = null;
+  async getFeaturedOwnerKeys(): Promise<Set<string>> {
+    const now = Date.now();
+    if (this.featuredOwnerCache && this.featuredOwnerCache.expiresAt > now) {
+      return this.featuredOwnerCache.keys;
+    }
+    const keys = new Set<string>();
+    try {
+      const featured = await this.getFeaturedCreators();
+      for (const f of featured) {
+        if (!f.email) continue;
+        keys.add(f.email.toLowerCase());
+        const user = await this.getUserByEmail(f.email).catch(() => undefined);
+        if (user?.id) keys.add(user.id);
+      }
+    } catch (err: any) {
+      // On failure serve an EMPTY set — anonymous access fails closed rather
+      // than open. Authenticated users are unaffected.
+      console.warn(`[Storage.getFeaturedOwnerKeys] ${err?.message}`);
+    }
+    this.featuredOwnerCache = { keys, expiresAt: now + 60_000 };
+    return keys;
+  }
+
   async getSceneSummaries(ids: number[]): Promise<Map<number, { sceneCount: number; surfaceCount: number; trackedMinutes: number }>> {
     const unique = Array.from(new Set(ids.filter((n) => Number.isFinite(n))));
     if (unique.length === 0) return new Map();

@@ -68,7 +68,7 @@ import {
   fetchYoutubeAudience,
   fetchFacebookPageAudience,
 } from "./lib/audienceFetcher";
-import { authLimiter, scanLimiter, uploadLimiter } from "./middleware/rateLimit";
+import { authLimiter, scanLimiter, uploadLimiter, rateLimit } from "./middleware/rateLimit";
 import { rankClips, deduplicateClips } from "./lib/remix/clipRanker";
 
 // Configure multer for video uploads (temp dir, then uploaded to Object Storage)
@@ -6670,13 +6670,68 @@ export async function registerRoutes(
   // Get detected surfaces for a video (Ad Opportunities)
   // On-demand frame extraction: generate a single frame thumbnail from a video if it doesn't exist
   // This ensures the Scene Analysis Modal always has a frame to show
-  app.get("/api/video/:id/frame/:timestamp", async (req: any, res) => {
+  const softAuth = async (req: any, _res: any, next: any) => {
+    try {
+      const googleUser = req.session?.googleUser;
+      if (googleUser?.email) {
+        req.authEmail = googleUser.email;
+        req.authUserId = (await storage.getUserByEmail(googleUser.email))?.id || googleUser.email;
+        return next();
+      }
+      if (req.isAuthenticated && req.isAuthenticated() && req.user?.claims) {
+        const claims = req.user.claims;
+        req.authEmail = claims.email;
+        req.authUserId = claims.sub || (await storage.getUserByEmail(claims.email))?.id || claims.email;
+        return next();
+      }
+      const sessionUserId = req.session?.userId;
+      if (sessionUserId) {
+        const user = await storage.getUserById(sessionUserId);
+        if (user?.email) {
+          req.authEmail = user.email;
+          req.authUserId = user.id;
+          return next();
+        }
+      }
+    } catch (err) {
+      // Auth failures here are not fatal — endpoint just runs as anonymous.
+      console.warn("[softAuth] auth lookup failed (continuing anonymously):", (err as any)?.message);
+    }
+    next();
+  };
+
+  // Media access policy, shared by the frame and stream endpoints.
+  //
+  // These were fully open: any visitor could enumerate sequential video ids
+  // and download the ENTIRE platform's library — including content from
+  // creators who never opted into a public profile. And the frame endpoint
+  // spawns ffmpeg on a cache miss, so anonymous traffic could burn CPU and
+  // fill the disk at will.
+  //
+  // Policy now: any logged-in user may fetch (this is a closed marketplace —
+  // brands browse creator content in-app); ANONYMOUS visitors may only fetch
+  // videos whose owner opted into a public profile (is_featured). Denials are
+  // 404, not 403, so an unauthenticated probe cannot confirm an id exists.
+  const mediaLimiter = rateLimit({ windowMs: 60_000, max: 120, bucket: "public-media" });
+  const canServeVideo = async (req: any, ownerUserId: string): Promise<boolean> => {
+    if (req.authEmail || req.authUserId) return true;
+    const featured = await storage.getFeaturedOwnerKeys();
+    return featured.has(ownerUserId) || featured.has(String(ownerUserId).toLowerCase());
+  };
+
+  app.get("/api/video/:id/frame/:timestamp", mediaLimiter, softAuth, async (req: any, res) => {
     const videoId = parseInt(req.params.id);
-    const timestamp = parseInt(req.params.timestamp) || 0;
+    // Clamp: negative timestamps and absurd seeks are attacker input, not use
+    // cases. Each distinct timestamp mints a new frame file on disk.
+    const timestamp = Math.max(0, Math.min(parseInt(req.params.timestamp) || 0, 21_600));
     if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
 
-    const video = await storage.getVideoById(videoId);
+    // Projected row — no scene jsonb on an unauthenticated hot path.
+    const video = (await storage.getVideoSummaries([videoId])).get(videoId);
     if (!video) return res.status(404).json({ error: "Video not found" });
+    if (!(await canServeVideo(req, video.userId))) {
+      return res.status(404).json({ error: "Video not found" });
+    }
 
     const framesDir = path.join(process.cwd(), "public", "uploads", "frames", videoId.toString());
     const frameFilename = `frame_${timestamp}s.jpg`;
@@ -6733,15 +6788,19 @@ export async function registerRoutes(
     }
   });
 
-  // Stream a video file by ID (no auth required — for public creator profiles)
-  // Resolves filePath from DB and serves from Object Storage or local filesystem
-  app.get("/api/video/:id/stream", async (req: any, res) => {
+  // Stream a video file by ID. Logged-in users pass; anonymous visitors only
+  // reach videos owned by featured (public-profile) creators — see the media
+  // access policy above the frame endpoint.
+  app.get("/api/video/:id/stream", mediaLimiter, softAuth, async (req: any, res) => {
     const videoId = parseInt(req.params.id);
     if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
 
     try {
-      const video = await storage.getVideoById(videoId);
+      const video = (await storage.getVideoSummaries([videoId])).get(videoId);
       if (!video || !video.filePath) {
+        return res.status(404).json({ error: "Video file not found" });
+      }
+      if (!(await canServeVideo(req, video.userId))) {
         return res.status(404).json({ error: "Video file not found" });
       }
 
@@ -6800,35 +6859,6 @@ export async function registerRoutes(
   // when a session is present so downstream owner-aware logic can work, but
   // anonymous callers still pass through (used by endpoints that are public
   // for brands but want owner-only behavior for the creator).
-  const softAuth = async (req: any, _res: any, next: any) => {
-    try {
-      const googleUser = req.session?.googleUser;
-      if (googleUser?.email) {
-        req.authEmail = googleUser.email;
-        req.authUserId = (await storage.getUserByEmail(googleUser.email))?.id || googleUser.email;
-        return next();
-      }
-      if (req.isAuthenticated && req.isAuthenticated() && req.user?.claims) {
-        const claims = req.user.claims;
-        req.authEmail = claims.email;
-        req.authUserId = claims.sub || (await storage.getUserByEmail(claims.email))?.id || claims.email;
-        return next();
-      }
-      const sessionUserId = req.session?.userId;
-      if (sessionUserId) {
-        const user = await storage.getUserById(sessionUserId);
-        if (user?.email) {
-          req.authEmail = user.email;
-          req.authUserId = user.id;
-          return next();
-        }
-      }
-    } catch (err) {
-      // Auth failures here are not fatal — endpoint just runs as anonymous.
-      console.warn("[softAuth] auth lookup failed (continuing anonymously):", (err as any)?.message);
-    }
-    next();
-  };
 
   app.get("/api/video/:id/surfaces", softAuth, async (req: any, res) => {
     const videoId = parseInt(req.params.id);
@@ -9100,7 +9130,10 @@ export async function registerRoutes(
           title: v.title,
           thumbnail,
           videoUrl,
-          filePath: v.filePath || null,
+          // Internal server path — never published. The client streams via
+          // videoUrl; its filePath fallback only fired when videoUrl was null,
+          // and videoUrl is set whenever a filePath exists.
+          filePath: null,
           platform: v.platform || "youtube",
           viewCount: v.viewCount || 0,
           surfaceCount: v.surfaceCount || 0,
@@ -9144,7 +9177,9 @@ export async function registerRoutes(
       res.json({
         creator: {
           name: creator.name || email.split("@")[0],
-          email: creator.email,
+          // email deliberately absent: this response is world-readable and the
+          // client never renders it. Brands reach creators through the
+          // platform, not by scraping addresses off profiles.
           slug: creator.slug || slug,
           profileImage: userProfile?.profileImageUrl || null,
           cardImageUrl: (creator as any).cardImageUrl || null,
