@@ -13,8 +13,10 @@ import {
   Sparkles, Clock, TrendingUp, Tag, ChevronDown, ChevronUp,
   Loader2, Mic, Brain, Zap, Eye, Heart, Shield, MessageSquare,
   RefreshCw, Play, DollarSign, Filter, X, Wand2, AlertCircle, Search, SlidersHorizontal,
+  PackageOpen, ScanSearch,
 } from "lucide-react";
 import ClipEditorPanel, { type ClipEditSettings } from "@/components/ClipEditorPanel";
+import ClipPlacementPreview from "@/components/ClipPlacementPreview";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
@@ -61,6 +63,11 @@ interface RankedClip {
   captionStyle?: string | null;
   captionSettings?: Record<string, any> | null;
   segments?: Array<{ start: number; end: number; role?: string }> | null;
+  // Placement-inventory state, computed server-side from one surfaces load
+  surfaceCount?: number;
+  surfaceGroupCount?: number;
+  videoScanned?: boolean;
+  scanInFlight?: boolean;
 }
 
 interface TranscriptStatus {
@@ -163,6 +170,56 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
   // Source length bounds the trim sliders. Absent (0) = unknown; the editor
   // falls back to a window around the clip rather than guessing a hard cap.
   const [sourceDurationSec, setSourceDurationSec] = useState<number>(0);
+  // Placement preview modal + clips currently scanning (optimistic — the
+  // list endpoint confirms via scanInFlight on the next refetch).
+  const [previewClip, setPreviewClip] = useState<RankedClip | null>(null);
+  const [scanningClips, setScanningClips] = useState<Set<number>>(new Set());
+
+  const scanClip = useCallback(async (clipId: number) => {
+    setScanningClips((prev) => new Set(prev).add(clipId));
+    try {
+      const res = await fetch(`/api/editorial-clips/${clipId}/scan`, { method: "POST", credentials: "include" });
+      const body = await res.json().catch(() => ({}));
+      if (res.status === 202) {
+        toast({
+          title: body.mode === "full_scan" ? "Scanning source video" : "Scanning clip range",
+          description: body.message || "Surfaces appear here when the scan finishes.",
+        });
+      } else if (res.status === 409) {
+        toast({ title: "Already scanning", description: "This clip's scan is still running." });
+      } else {
+        setScanningClips((prev) => { const nx = new Set(prev); nx.delete(clipId); return nx; });
+        toast({ title: "Scan failed", description: body.error || "Try again", variant: "destructive" });
+      }
+    } catch (err: any) {
+      setScanningClips((prev) => { const nx = new Set(prev); nx.delete(clipId); return nx; });
+      toast({ title: "Scan failed", description: err.message, variant: "destructive" });
+    }
+  }, [toast]);
+
+  // While anything is scanning, poll the clip list so counts land as the
+  // scan writes them — and clear our optimistic flag when the server says done.
+  useEffect(() => {
+    if (scanningClips.size === 0) return;
+    const iv = setInterval(async () => {
+      await refetchClips();
+    }, 10000);
+    return () => clearInterval(iv);
+  }, [scanningClips.size]);
+
+  useEffect(() => {
+    if (scanningClips.size === 0) return;
+    setScanningClips((prev) => {
+      const nx = new Set<number>();
+      for (const id of Array.from(prev)) {
+        const row = clips.find((c) => (c as any).id === id) as any;
+        // Keep the flag while the server reports in-flight OR hasn't
+        // reported yet; drop it once the server says the scan ended.
+        if (!row || row.scanInFlight !== false) nx.add(id);
+      }
+      return nx.size === prev.size ? prev : nx;
+    });
+  }, [clips]);
 
   useEffect(() => {
     let cancelled = false;
@@ -878,6 +935,9 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
                   onBuy={onBuyPlacement ? () => onBuyPlacement(clip) : undefined}
                   onPlay={clip.exportPath ? () => setPlayingClip(clip) : undefined}
                   sourceDurationSec={sourceDurationSec}
+                  onPreviewPlacement={(clip as any).id ? () => setPreviewClip(clip) : undefined}
+                  onScan={(clip as any).id ? () => scanClip((clip as any).id) : undefined}
+                  isScanning={(clip as any).id ? scanningClips.has((clip as any).id) : false}
                   onApplyEdit={(clip as any).id ? async (settings) => {
                     const res = await fetch(`/api/editorial-clips/${(clip as any).id}/rerender`, {
                       method: "POST",
@@ -926,6 +986,18 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
             </AnimatePresence>
           </div>
         </>
+      )}
+
+      {/* Placement preview — source-space frames + product sprites */}
+      {previewClip && (previewClip as any).id && (
+        <ClipPlacementPreview
+          clipId={(previewClip as any).id}
+          videoId={videoId}
+          clipTitle={previewClip.suggestedTitle}
+          onClose={() => setPreviewClip(null)}
+          onScan={() => scanClip((previewClip as any).id)}
+          scanInFlight={scanningClips.has((previewClip as any).id) || !!(previewClip as any).scanInFlight}
+        />
       )}
 
       {/* No clips found */}
@@ -1024,6 +1096,9 @@ function EditorialClipCard({
   onRerenderAspect,
   onApplyEdit,
   sourceDurationSec,
+  onPreviewPlacement,
+  onScan,
+  isScanning,
 }: {
   clip: RankedClip;
   rank: number;
@@ -1037,6 +1112,9 @@ function EditorialClipCard({
   onRerenderAspect?: (aspect: "9:16" | "16:9") => void;
   onApplyEdit?: (settings: ClipEditSettings) => Promise<void>;
   sourceDurationSec?: number;
+  onPreviewPlacement?: () => void;
+  onScan?: () => void;
+  isScanning?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const viralPct = Math.round(clip.finalScore * 100);
@@ -1176,6 +1254,44 @@ function EditorialClipCard({
                   );
                 })}
               </div>
+            )}
+            {onPreviewPlacement && (clip as any).id && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={onPreviewPlacement}
+                className="text-emerald-300 hover:text-emerald-200 text-xs"
+                title="Where a brand's product sits in this clip"
+                data-testid={`button-preview-placement-${(clip as any).id ?? rank}`}
+              >
+                <PackageOpen className="w-3 h-3 mr-1" />
+                Placement
+                {typeof (clip as any).surfaceGroupCount === "number" && (clip as any).surfaceGroupCount > 0 && (
+                  <span className="ml-1 text-[10px] text-gray-500">({(clip as any).surfaceGroupCount})</span>
+                )}
+              </Button>
+            )}
+            {onScan && mode !== "brand" && (clip as any).id && (
+              (isScanning || (clip as any).scanInFlight) ? (
+                <span className="flex items-center gap-1 text-[11px] text-purple-300 px-2" title="Scanning for placement surfaces">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  Scanning…
+                </span>
+              ) : ((clip as any).surfaceCount ?? 0) === 0 ? (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={onScan}
+                  className="text-amber-300 hover:text-amber-200 text-xs"
+                  title={(clip as any).videoScanned === false
+                    ? "Source video was never scanned — no placement inventory exists yet"
+                    : "Nothing found in this range — run a denser scan"}
+                  data-testid={`button-scan-${(clip as any).id ?? rank}`}
+                >
+                  <ScanSearch className="w-3 h-3 mr-1" />
+                  {(clip as any).videoScanned === false ? "Scan video" : "Scan range"}
+                </Button>
+              ) : null
             )}
             {onApplyEdit && mode !== "brand" && (clip as any).id && (
               <Button

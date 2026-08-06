@@ -129,6 +129,12 @@ const STATUS_CONFIG: Record<string, { color: string; icon: any; label: string }>
 // "cancelled" MUST be here: without it a cancelled job reads as still-active and
 // permanently disables the Auto-Remix tab for that video.
 const TERMINAL_STATUSES = ["completed", "failed", "cancelled"];
+
+// Auto-Remix and Highlight Reel are HIDDEN, not removed — product call
+// (2026-08-05): editorial clips are the one path until they're perfect.
+// All state, polling and render code stays live behind this flag so
+// re-enabling is a one-line change and in-flight jobs still resolve.
+const SHOW_LEGACY_TABS = false;
 const isTerminalStatus = (status?: string | null) =>
   !!status && TERMINAL_STATUSES.includes(status);
 
@@ -498,13 +504,13 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
             // output" were both true at once.
             const produced = data.clips?.length ?? 0;
             if (data.job.status === "completed" && produced > 0) {
-              setActiveTab("auto");
+              if (SHOW_LEGACY_TABS) setActiveTab("auto");
               toast({
                 title: `${produced} clip${produced === 1 ? "" : "s"} ready`,
                 description: "Job #" + data.job.id + " finished — they're in the Auto-Remix tab.",
               });
             } else if (data.job.status === "failed") {
-              setActiveTab("auto");
+              if (SHOW_LEGACY_TABS) setActiveTab("auto");
               toast({
                 title: `Job #${data.job.id} produced no clips`,
                 description: data.job.errorMessage || "The render step failed. Details are on the job below.",
@@ -776,28 +782,32 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
                 <Brain className="w-4 h-4" />
                 Editorial Clips
               </button>
-              <button
-                onClick={() => setActiveTab("auto")}
-                className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all ${
-                  activeTab === "auto"
-                    ? "bg-pink-600 text-white"
-                    : "text-gray-400 hover:text-white"
-                }`}
-              >
-                <Scissors className="w-4 h-4" />
-                Auto-Remix
-              </button>
-              <button
-                onClick={() => setActiveTab("highlight")}
-                className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all ${
-                  activeTab === "highlight"
-                    ? "bg-amber-600 text-white"
-                    : "text-gray-400 hover:text-white"
-                }`}
-              >
-                <Layers className="w-4 h-4" />
-                Highlight Reel
-              </button>
+              {SHOW_LEGACY_TABS && (
+                <button
+                  onClick={() => setActiveTab("auto")}
+                  className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all ${
+                    activeTab === "auto"
+                      ? "bg-pink-600 text-white"
+                      : "text-gray-400 hover:text-white"
+                  }`}
+                >
+                  <Scissors className="w-4 h-4" />
+                  Auto-Remix
+                </button>
+              )}
+              {SHOW_LEGACY_TABS && (
+                <button
+                  onClick={() => setActiveTab("highlight")}
+                  className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all ${
+                    activeTab === "highlight"
+                      ? "bg-amber-600 text-white"
+                      : "text-gray-400 hover:text-white"
+                  }`}
+                >
+                  <Layers className="w-4 h-4" />
+                  Highlight Reel
+                </button>
+              )}
             </div>
 
             {/* Editorial Clips Tab — transcript-first viral clip identification */}
@@ -821,55 +831,56 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
                   toast({ title: "Copilot target set", description: `"${clip.suggestedTitle || `Clip #${clip.id}`}" — ask the copilot or apply its suggestions.` });
                 }}
                 onGenerateClip={(clip) => {
-                  if (Array.isArray((clip as any).segments) && (clip as any).segments.length > 1) {
-                    // clipRange would extract the contiguous ENVELOPE — for an
-                    // assembled clip that includes the cut-out tangent. The
-                    // auto-pipeline already rendered the assembled version.
-                    toast({
-                      title: "Already assembled",
-                      description: "This is a multi-beat narrative clip — its rendered version is in the clip list. Per-platform re-targeting for assembled clips is coming.",
-                    });
-                    return;
-                  }
+                  // Renders go through the EDITORIAL pipeline and land on the
+                  // editorial clip row itself. This used to start an Auto-Remix
+                  // job whose output lived in a different table shown in a
+                  // different (now hidden) tab — which is how "generate" could
+                  // succeed while the creator saw nothing appear here.
+                  const clipId = (clip as any).id;
+                  const req = clipId
+                    ? fetch(`/api/editorial-clips/${clipId}/rerender`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        credentials: "include",
+                        body: JSON.stringify({ aspect: (clip as any).aspectRatio === "16:9" ? "16:9" : "9:16" }),
+                      })
+                    : fetch(`/api/videos/${videoId}/editorial-clip/render`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        credentials: "include",
+                        body: JSON.stringify({
+                          clipStart: clip.clipStart,
+                          clipEnd: clip.clipEnd,
+                          suggestedTitle: clip.suggestedTitle,
+                          topicTags: clip.topicTags,
+                          reasoning: clip.reasoning,
+                          scores: clip.scores,
+                          compositeScore: clip.finalScore,
+                          segments: (clip as any).segments ?? undefined,
+                        }),
+                      });
                   toast({
-                    title: "Generating clip",
-                    description: `"${clip.suggestedTitle}" (${clip.clipStart.toFixed(1)}s - ${clip.clipEnd.toFixed(1)}s)`,
+                    title: "Rendering clip",
+                    description: `"${clip.suggestedTitle || "Clip"}" — it appears in this list when ready.`,
                   });
-                  // Start a remix job targeting this specific clip's time range
-                  fetch(`/api/remix/${videoId}/start`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    credentials: "include",
-                    body: JSON.stringify({
-                      platformTargets: platforms,
-                      maxClips: 1,
-                      captionsEnabled,
-                      clipRange: {
-                        start: clip.clipStart,
-                        end: clip.clipEnd,
-                      },
-                    }),
-                  })
+                  req
                     .then(async (res) => {
-                      if (res.ok) {
-                        const data = await res.json();
-                        setActiveJobId(data.jobId);
-                        setActiveTab("auto"); // Switch to auto tab to see progress
-                        toast({ title: "Remix Started", description: `Generating clip from editorial moment` });
-                        await loadData();
-                      } else {
-                        const err = await res.json();
-                        toast({ title: "Error", description: err.error || "Failed to start remix", variant: "destructive" });
+                      if (!res.ok) {
+                        const err = await res.json().catch(() => ({}));
+                        toast({ title: "Render failed", description: err.error || "Try again", variant: "destructive" });
+                        return;
                       }
+                      setEditorialRefreshKey((k) => k + 1);
                     })
                     .catch((err) => {
-                      toast({ title: "Error", description: err.message, variant: "destructive" });
+                      toast({ title: "Render failed", description: err.message, variant: "destructive" });
                     });
                 }}
               />
             </div>
 
             {/* Auto-Remix Tab — existing config + generation flow */}
+            {SHOW_LEGACY_TABS && (
             <div className={activeTab === "auto" ? "block" : "hidden"}>
             <>
             {/* Config Section */}
@@ -1130,9 +1141,11 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
               );
             })()}
             </>
-            </div>{/* end auto-remix tab */}
+            </div>
+            )}{/* end auto-remix tab */}
 
             {/* Highlight Reel Tab — Phase 2B multi-segment stitching */}
+            {SHOW_LEGACY_TABS && (
             <div className={`space-y-4 ${activeTab === "highlight" ? "block" : "hidden"}`}>
                 <p className="text-xs text-gray-500">
                   AI identifies a narrative thread across your content and stitches non-contiguous moments into a highlight reel.
@@ -1299,7 +1312,8 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
                     </div>
                   </div>
                 )}
-              </div>{/* end highlight reel tab */}
+              </div>
+            )}{/* end highlight reel tab */}
           </div>
 
           {/* AI Co-Pilot Side Panel — always visible */}

@@ -460,6 +460,15 @@ function explainDbError(err: any, fallback: string): { status: number; error: st
   return { status: 500, error: fallback };
 }
 
+/**
+ * Clip-scan tracker. A clip "scan" is either a full source scan (video was
+ * never scanned) or a densify pass over the clip's range (video scanned,
+ * clip coverage sparse). Both run minutes; the UI polls the clip-surfaces
+ * endpoint, which reports this state. In-memory on purpose: a restart kills
+ * the child processes anyway, so persisted state would just go stale.
+ */
+const clipScansInFlight = new Map<number, { mode: "full_scan" | "densify"; startedAt: number }>();
+
 /** video_index.duration is a display string ("12:34", "1:02:03") or a bare
  *  seconds value depending on the import path. Returns 0 when unparseable —
  *  callers treat 0 as "unknown", never as "zero-length". */
@@ -10670,6 +10679,72 @@ export async function registerRoutes(
     }
   });
 
+  // POST /api/editorial-clips/:clipId/scan — make this clip's placement
+  // inventory real. Brands were browsing clips with zero products offered
+  // simply because the range had never been scanned; nothing said so.
+  app.post("/api/editorial-clips/:clipId/scan", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const clipId = parseInt(req.params.clipId);
+      if (isNaN(clipId)) return res.status(400).json({ error: "Invalid clip ID" });
+      const clip = await storage.getEditorialClipById(clipId);
+      if (!clip) return res.status(404).json({ error: "Clip not found" });
+      const video = await storage.getVideoById(clip.videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+      if (!(await isSameCreator(String(video.userId), req.authUserId)) && !req.isAdmin) {
+        return res.status(403).json({ error: "Not your clip" });
+      }
+
+      if (clipScansInFlight.has(clipId)) {
+        return res.status(409).json({ error: "This clip is already being scanned", ...clipScansInFlight.get(clipId) });
+      }
+
+      const { isVideoScanInFlight, denseScanRange } = await import("./scanner_v2");
+      const allSurfaces = await storage.getDetectedSurfaces(clip.videoId);
+
+      if (allSurfaces.length === 0) {
+        // The SOURCE was never scanned — no amount of range work helps. Run
+        // the full scan (fixture identity, scene inventory and room-model
+        // linkage all live there; a per-clip detector would fork the fixture
+        // model the research design depends on).
+        if (isVideoScanInFlight(clip.videoId)) {
+          return res.status(202).json({ mode: "full_scan", alreadyRunning: true, message: "The source video is already being scanned — this clip's surfaces appear when it finishes." });
+        }
+        clipScansInFlight.set(clipId, { mode: "full_scan", startedAt: Date.now() });
+        setImmediate(async () => {
+          try {
+            await processVideoScan(clip.videoId, true);
+          } catch (err: any) {
+            console.error(`[ClipScan] Full scan for clip ${clipId} (video ${clip.videoId}) failed: ${err?.message}`);
+          } finally {
+            clipScansInFlight.delete(clipId);
+          }
+        });
+        return res.status(202).json({ mode: "full_scan", message: "Source video was never scanned — running the full scan. This takes a while; the clip updates when it finishes." });
+      }
+
+      // Source is scanned — densify THIS range so coverage inside the clip is
+      // real placement inventory rather than whatever frames the sparse pass
+      // happened to sample.
+      clipScansInFlight.set(clipId, { mode: "densify", startedAt: Date.now() });
+      const rangeStart = Number(clip.clipStart);
+      const rangeEnd = Number(clip.clipEnd);
+      setImmediate(async () => {
+        try {
+          const result = await denseScanRange(clip.videoId, rangeStart, rangeEnd, allSurfaces.map((sf) => sf.id), 0.5);
+          console.log(`[ClipScan] Densify for clip ${clipId}: ${result.keyframesCreated} keyframe(s) over ${rangeStart.toFixed(1)}–${rangeEnd.toFixed(1)}s`);
+        } catch (err: any) {
+          console.error(`[ClipScan] Densify for clip ${clipId} failed: ${err?.message}`);
+        } finally {
+          clipScansInFlight.delete(clipId);
+        }
+      });
+      return res.status(202).json({ mode: "densify", message: "Scanning this clip's range for placement surfaces — usually a few minutes." });
+    } catch (err: any) {
+      console.error("[API] /api/editorial-clips/:clipId/scan error:", err.message);
+      res.status(500).json({ error: err.message || "Scan failed" });
+    }
+  });
+
   // GET /api/editorial-clips/:clipId/surfaces — Just the surfaces inside this clip's
   // time range. Used by BrandPlacementRequestModal when in clip-targeted mode.
   app.get("/api/editorial-clips/:clipId/surfaces", isFlexibleAuthenticated, async (req: any, res) => {
@@ -10704,7 +10779,25 @@ export async function registerRoutes(
         console.warn(`[API] clip ${clipId} scene-inventory projection failed (non-fatal): ${invErr?.message}`);
       }
 
-      res.json({ surfaces, sceneInventory, count: surfaces.length });
+      // Scan state rides along so the picker can explain an empty list —
+      // "no surfaces" and "never scanned" are different answers.
+      const clipForState = await storage.getEditorialClipById(clipId);
+      let videoScanned = surfaces.length > 0;
+      if (!videoScanned && clipForState) {
+        videoScanned = (await storage.getDetectedSurfaces(clipForState.videoId)).length > 0;
+      }
+      const inflight = clipScansInFlight.get(clipId) ?? null;
+      res.json({
+        surfaces,
+        sceneInventory,
+        count: surfaces.length,
+        scanState: {
+          inFlight: !!inflight,
+          mode: inflight?.mode ?? null,
+          startedAt: inflight?.startedAt ?? null,
+          videoScanned,
+        },
+      });
     } catch (err: any) {
       console.error("[API] /api/editorial-clips/:clipId/surfaces error:", err.message);
       res.status(500).json({ error: err.message || "Failed to fetch surfaces" });
@@ -13373,7 +13466,37 @@ export async function registerRoutes(
       if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
 
       const clips = await storage.getEditorialClipsByVideo(videoId);
-      res.json({ clips });
+
+      // Per-clip surface counts, computed from ONE surfaces load. The cards
+      // use this to show "N placement surfaces" vs "not scanned" without a
+      // request per clip. Segments-aware: an assembled clip only counts
+      // surfaces inside beats that actually play.
+      let withCounts = clips;
+      try {
+        const allSurfaces = await storage.getDetectedSurfaces(videoId);
+        withCounts = clips.map((c: any) => {
+          const segs = Array.isArray(c.segments) && c.segments.length > 0 ? c.segments : null;
+          const inClip = allSurfaces.filter((sf: any) => {
+            const t = parseFloat(String(sf.timestamp));
+            if (segs) return segs.some((sg: any) => t >= sg.start && t <= sg.end);
+            return t >= Number(c.clipStart) && t <= Number(c.clipEnd);
+          });
+          return {
+            ...c,
+            surfaceCount: inClip.length,
+            // Distinct physical fixtures: grouped rows count once per group;
+            // ungrouped rows (null gid) are each their own fixture — folding
+            // them into one Set entry would undercount by design.
+            surfaceGroupCount:
+              new Set(inClip.map((sf: any) => sf.surfaceGroupId).filter(Boolean)).size +
+              inClip.filter((sf: any) => !sf.surfaceGroupId).length,
+            videoScanned: allSurfaces.length > 0,
+            scanInFlight: clipScansInFlight.has(c.id),
+          };
+        });
+      } catch { /* counts are additive — the raw list still serves */ }
+
+      res.json({ clips: withCounts });
     } catch (err: any) {
       // Gracefully handle table not existing yet
       if (err.message?.includes("editorial_clips") && err.message?.includes("does not exist")) {
