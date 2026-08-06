@@ -77,6 +77,19 @@ try {
   if (probe.status === 0) {
     const versionLine = (probe.stdout || "").split("\n")[0]?.trim() || "unknown version";
     console.log(`[Boot] ffmpeg verified: ${versionLine} (resolved: ${resolvedFfmpeg ?? "unknown"})`);
+  } else if ((probe.error as any)?.code === "ETIMEDOUT") {
+    // NOT a failure. A cold container pages a ~78MB static binary off disk on
+    // first exec, which routinely exceeds a 1s budget — and this probe is
+    // spawnSYNC, so raising the budget would hold the whole event loop for
+    // that long before the server can even bind. Say what was actually
+    // observed; the previous wording declared every media feature dead on
+    // what is usually just a slow first read, and sent a live outage
+    // investigation chasing ffmpeg for hours.
+    console.warn(
+      `[Boot] ffmpeg -version did not answer within 1s (resolved=${resolvedFfmpeg ?? "not on PATH"}). ` +
+      `Usually just a cold-start page-in of the static binary, not a broken install — media features are ` +
+      `NOT known to be broken from this alone. The first real scan will confirm.`
+    );
   } else {
     console.error(
       `[Boot] ffmpeg -version FAILED (status=${probe.status ?? "null"}, error=${probe.error?.message ?? "none"}, ` +
@@ -290,9 +303,31 @@ app.use((req, res, next) => {
       req.path.endsWith('.js')) {
     return next();
   }
-  // If server not ready, serve loading page
+  // If server not ready, serve loading page.
+  //
+  // THIS MUST NEVER 500. Replit's GCE deployment target has no healthcheck
+  // path configured (.replit [deployment] sets only `run`), so it probes `/`
+  // — and a 500 here is read as "app is unhealthy", which restarts the
+  // container, which starts a cold boot, which serves `/` from this branch
+  // again. That is a self-sustaining restart loop, and while it runs EVERY
+  // request in the app dies mid-flight: forever spinners, an empty library,
+  // "social accounts not connected", a sign-out that never completes. None of
+  // those are the features being broken; they are a process being killed.
+  //
+  // res.sendFile with no callback forwards any error (missing file, permission,
+  // a deploy swapping the directory underneath us) straight to the 500 handler,
+  // so the fallback below is the thing that actually breaks the loop.
   if (!serverReady) {
-    return res.sendFile(path.join(process.cwd(), 'public', 'loading.html'));
+    return res.sendFile(path.join(process.cwd(), 'public', 'loading.html'), (err) => {
+      if (!err || res.headersSent) return;
+      console.warn(`[Boot] loading.html unavailable (${err.message}) — serving inline shell`);
+      res.status(200).type('html').send(
+        '<!doctype html><meta charset="utf-8"><title>Starting…</title>' +
+        '<meta http-equiv="refresh" content="3">' +
+        '<body style="font:16px system-ui;display:grid;place-items:center;height:100vh;margin:0">' +
+        '<p>Starting up — this page refreshes automatically.</p></body>',
+      );
+    });
   }
   next();
 });
