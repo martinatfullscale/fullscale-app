@@ -54,6 +54,10 @@ function stripeClient(): Stripe | null {
   if (cached) return cached;
   const key = process.env.STRIPE_SECRET_KEY;
   if (!key) return null;
+  // No explicit apiVersion: the installed SDK pins the version it was built
+  // for, which is the version this code's types describe. Naming a version
+  // here that disagrees with the SDK's types is how you get objects that
+  // typecheck but arrive with different fields at runtime.
   cached = new Stripe(key);
   return cached;
 }
@@ -171,9 +175,36 @@ export function verifyWebhook(rawBody: Buffer | string, signature: string): { ok
  * redelivered webhook is normal traffic, not an error — and returning 500
  * would make Stripe retry it forever.
  */
-export async function fulfilCheckout(session: Stripe.Checkout.Session): Promise<{
+export async function fulfilCheckout(webhookSession: Stripe.Checkout.Session): Promise<{
   fulfilled: boolean; alreadyFulfilled: boolean; reason?: string;
 }> {
+  // ── DO NOT TRUST THE WEBHOOK PAYLOAD'S SHAPE ──────────────────────
+  //
+  // Stripe serializes each event in the API version pinned to the webhook
+  // DESTINATION, which defaults to the account's version — and an account
+  // created years ago carries an old one. Checkout Sessions post-date many
+  // of those versions entirely, so fields this code depends on
+  // (payment_status, amount_total) can be absent or differently shaped, and
+  // fulfilment would silently never fire.
+  //
+  // Re-fetching by id with OUR SDK returns the object in the version this
+  // code was written against, whatever the destination is pinned to. The
+  // webhook's job is to tell us WHICH session changed; the authoritative
+  // state comes from the API. This also closes a replay gap: a stale
+  // payload cannot assert a payment that has since been refunded.
+  const stripe = stripeClient();
+  if (!stripe) return { fulfilled: false, alreadyFulfilled: false, reason: "payments not configured" };
+
+  let session: Stripe.Checkout.Session;
+  try {
+    session = await stripe.checkout.sessions.retrieve(webhookSession.id);
+  } catch (err: any) {
+    // A retrieve failure is transient (network, rate limit) — surface it so
+    // the caller 500s and Stripe redelivers, rather than silently dropping a
+    // real payment.
+    throw new Error(`Could not re-fetch session ${webhookSession.id}: ${err?.message}`);
+  }
+
   if (session.metadata?.kind !== "credit_pack") {
     return { fulfilled: false, alreadyFulfilled: false, reason: "not a credit purchase" };
   }
