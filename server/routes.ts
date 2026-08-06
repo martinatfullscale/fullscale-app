@@ -9273,8 +9273,12 @@ export async function registerRoutes(
         const ytConnection = await storage.getYoutubeConnectionByEmail(creator.email);
         const videosWithSurfaces = await storage.getVideosWithSurfacesPublic(creator.email);
 
-        // Also get ALL videos for this creator (for thumbnails — not filtered by status/surfaces)
-        const allCreatorVideos = await storage.getVideoIndex(creator.email);
+        // Projected: getVideoIndex returns FULL rows, so this pulled every
+        // scanned video's scene_index + scene_inventory for every featured
+        // creator CONCURRENTLY — on an unauthenticated endpoint, which makes
+        // it a stall anyone on the internet can trigger. Only id, thumbnail,
+        // youtubeId and filePath are read below.
+        const allCreatorVideos = await storage.getCreatorVideoThumbRows(creator.email);
 
         const totalViews = videosWithSurfaces.reduce((sum: number, v: any) => sum + (v.viewCount || 0), 0);
         const totalSurfaces = videosWithSurfaces.reduce((sum: number, v: any) => sum + (v.surfaceCount || 0), 0);

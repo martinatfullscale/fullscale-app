@@ -369,7 +369,7 @@ export async function runEditorialAutoPipeline(
 
     for (const clip of savedClips) {
       // ── Cancellation check: bail if user cancelled ──
-      const freshVideo = await storage.getVideoById(videoId);
+      const freshVideo = await storage.getVideoEditorialState(videoId);
       if (freshVideo?.editorialStatus === "failed" && freshVideo?.editorialError === "Cancelled by user") {
         console.log(`[EditorialAuto] Cancelled by user — stopping render loop`);
         break;
@@ -601,7 +601,7 @@ async function renderClipsOnly(
 
     for (const clip of clipsToRender) {
       // Cancellation check
-      const freshVideo = await storage.getVideoById(videoId);
+      const freshVideo = await storage.getVideoEditorialState(videoId);
       if (freshVideo?.editorialStatus === "failed" && freshVideo?.editorialError === "Cancelled by user") {
         console.log(`[EditorialAuto:Resume] Cancelled by user — stopping`);
         break;

@@ -1,5 +1,6 @@
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
+import { startStallWatch, stallWatchMiddleware } from "./lib/stallWatch";
 import { serveStatic, waitForBuild } from "./static";
 import { createServer } from "http";
 import { db } from "./db";
@@ -88,6 +89,12 @@ try {
 }
 
 const app = express();
+
+// Stall instrumentation, registered before every other middleware so its timer
+// brackets the FULL cost of a request — body parsing, session lookup, handler
+// and all. Two outages this week were misdiagnosed because the page that spins
+// is rarely the endpoint at fault; this makes the process name it.
+app.use(stallWatchMiddleware);
 const httpServer = createServer(app);
 
 declare module "http" {
@@ -477,6 +484,7 @@ async function sweepStaleTempArtifacts(): Promise<void> {
             () => {
               httpServer.removeListener("error", onError);
               log(`Server listening on port ${port}`);
+              startStallWatch();
               resolve();
             },
           );

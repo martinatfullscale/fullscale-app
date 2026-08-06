@@ -2760,6 +2760,36 @@ export class DatabaseStorage implements IStorage {
     }
   }
 
+  /**
+   * Two status strings, for the cancellation check inside the render loops.
+   *
+   * Those loops called getVideoById once PER CLIP purely to read
+   * editorialStatus/editorialError — dragging scene_index and scene_inventory
+   * along each time, megabytes parsed synchronously by the pg driver, while a
+   * render is already competing for the same single thread. That is a periodic
+   * whole-process stall for the entire duration of a render job, on every page
+   * of the app, not just the one that started it.
+   */
+  async getVideoEditorialState(id: number): Promise<{ editorialStatus: string | null; editorialError: string | null } | undefined> {
+    const [row] = await db
+      .select({ editorialStatus: videoIndex.editorialStatus, editorialError: videoIndex.editorialError })
+      .from(videoIndex)
+      .where(eq(videoIndex.id, id))
+      .limit(1);
+    return row as any;
+  }
+
+  /** Thumbnail-shaped rows for a creator's library — no scene jsonb. */
+  async getCreatorVideoThumbRows(ownerKey: string): Promise<Array<{ id: number; title: string | null; thumbnailUrl: string | null; youtubeId: string | null; filePath: string | null; viewCount: number | null }>> {
+    return await db
+      .select({
+        id: videoIndex.id, title: videoIndex.title, thumbnailUrl: videoIndex.thumbnailUrl,
+        youtubeId: videoIndex.youtubeId, filePath: videoIndex.filePath, viewCount: videoIndex.viewCount,
+      })
+      .from(videoIndex)
+      .where(eq(videoIndex.userId, ownerKey)) as any;
+  }
+
   async getVideoSummaries(ids: number[]): Promise<Map<number, VideoSummaryRow>> {
     const unique = Array.from(new Set(ids.filter((n) => Number.isFinite(n))));
     if (unique.length === 0) return new Map();
