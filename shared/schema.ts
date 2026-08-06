@@ -835,6 +835,40 @@ export const creditGrants = pgTable("credit_grants", {
 ]);
 export type CreditGrant = typeof creditGrants.$inferSelect;
 
+/**
+ * Credit purchases — the receipt, and the idempotency key.
+ *
+ * Stripe webhooks are AT-LEAST-ONCE. The same checkout.session.completed will
+ * be redelivered on any non-2xx, on timeout, and on manual retry from the
+ * dashboard. Without a uniquely-constrained record of what has already been
+ * fulfilled, every redelivery grants the credits again — the customer is
+ * delighted and the margin is gone.
+ *
+ * The unique index on stripe_session_id is what makes fulfilment idempotent:
+ * the insert fails on the second attempt, and that failure is the signal to
+ * skip granting rather than an error.
+ */
+export const creditPurchases = pgTable("credit_purchases", {
+  id: serial("id").primaryKey(),
+  userId: varchar("user_id").notNull(),
+  /** The idempotency key. One fulfilment per checkout session, ever. */
+  stripeSessionId: varchar("stripe_session_id", { length: 255 }).notNull(),
+  stripePaymentIntentId: varchar("stripe_payment_intent_id", { length: 255 }),
+  packId: varchar("pack_id", { length: 32 }).notNull(),
+  credits: integer("credits").notNull(),
+  /** What they actually paid, in the smallest currency unit Stripe reported —
+   *  not what our pack table says, so a price change mid-session is visible. */
+  amountPaidCents: integer("amount_paid_cents").notNull(),
+  currency: varchar("currency", { length: 8 }).notNull().default("usd"),
+  status: varchar("status", { length: 24 }).notNull().default("pending"), // pending | fulfilled | refunded
+  fulfilledAt: timestamp("fulfilled_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  uniqueIndex("uq_credit_purchase_session").on(table.stripeSessionId),
+  index("idx_credit_purchases_user").on(table.userId, table.createdAt),
+]);
+export type CreditPurchase = typeof creditPurchases.$inferSelect;
+
 export type MediaAsset = typeof mediaAssets.$inferSelect;
 export type InsertMediaAsset = typeof mediaAssets.$inferInsert;
 

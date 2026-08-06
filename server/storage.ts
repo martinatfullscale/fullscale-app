@@ -113,6 +113,8 @@ import {
   type InsertAiGeneration,
   creatorCredits,
   creditGrants,
+  creditPurchases,
+  type CreditPurchase,
   roomModels,
   type RoomModel,
   type InsertRoomModel,
@@ -744,6 +746,61 @@ export class DatabaseStorage implements IStorage {
         ne(aiGenerations.status, "failed"),
       ));
     return Number(row?.n ?? 0);
+  }
+
+  async createCreditPurchase(row: any): Promise<void> {
+    // onConflictDoNothing: the pre-redirect insert and a fast webhook can
+    // race on the same session id, and neither should error.
+    await db.insert(creditPurchases).values(row).onConflictDoNothing();
+  }
+
+  /**
+   * Claim a session for fulfilment — the idempotency gate.
+   *
+   * ONE statement: flip pending → fulfilled, guarded on it still being
+   * pending. Concurrent webhook redeliveries both run this; exactly one
+   * matches a row and gets to grant. A read-then-write "have I fulfilled
+   * this?" check would let both pass before either wrote.
+   *
+   * Upserts first so a webhook arriving before (or instead of) the
+   * pre-redirect insert still fulfils — the pending row is a convenience,
+   * not a prerequisite.
+   */
+  async claimCreditPurchase(
+    sessionId: string,
+    data: { userId: string; packId: string; credits: number; stripePaymentIntentId?: string | null; amountPaidCents?: number; currency?: string },
+  ): Promise<boolean> {
+    await db.insert(creditPurchases).values({
+      userId: data.userId,
+      stripeSessionId: sessionId,
+      packId: data.packId,
+      credits: data.credits,
+      amountPaidCents: data.amountPaidCents ?? 0,
+      currency: data.currency ?? "usd",
+      status: "pending",
+    } as any).onConflictDoNothing();
+
+    const [row] = await db.update(creditPurchases)
+      .set({
+        status: "fulfilled",
+        fulfilledAt: new Date(),
+        stripePaymentIntentId: data.stripePaymentIntentId ?? null,
+        ...(data.amountPaidCents !== undefined ? { amountPaidCents: data.amountPaidCents } : {}),
+        ...(data.currency ? { currency: data.currency } : {}),
+      })
+      .where(and(
+        eq(creditPurchases.stripeSessionId, sessionId),
+        eq(creditPurchases.status, "pending"),
+      ))
+      .returning({ id: creditPurchases.id });
+    return !!row;
+  }
+
+  async getCreditPurchases(userId: string, limit = 25): Promise<CreditPurchase[]> {
+    return db.select().from(creditPurchases)
+      .where(eq(creditPurchases.userId, userId))
+      .orderBy(desc(creditPurchases.createdAt))
+      .limit(limit);
   }
 
   async getCreditBalance(userId: string): Promise<number> {

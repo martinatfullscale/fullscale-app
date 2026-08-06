@@ -10785,6 +10785,94 @@ export async function registerRoutes(
     }
   });
 
+  // ── Credits: Stripe Checkout ──────────────────────────────────────
+
+  app.get("/api/credits/packs", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const { CREDIT_PACKS, checkoutAvailable } = await import("./lib/creditCheckout");
+      const { getAllowance } = await import("./lib/aiGeneration");
+      const gate = checkoutAvailable();
+      const [allowance, purchases] = await Promise.all([
+        getAllowance(String(req.authUserId)),
+        storage.getCreditPurchases(String(req.authUserId), 10),
+      ]);
+      res.json({
+        checkoutAvailable: gate.ok,
+        checkoutDetail: gate.detail,
+        packs: CREDIT_PACKS,
+        allowance,
+        purchases: purchases.map((p) => ({
+          id: p.id, credits: p.credits, status: p.status,
+          amountPaidCents: p.amountPaidCents, currency: p.currency,
+          createdAt: p.createdAt, fulfilledAt: p.fulfilledAt,
+        })),
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Failed to load packs" });
+    }
+  });
+
+  app.post("/api/credits/checkout", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const { createCheckoutSession } = await import("./lib/creditCheckout");
+      // Origin from the request, not config: the app runs on a Replit preview
+      // URL and a custom domain, and a hardcoded return URL sends the customer
+      // to the wrong one after paying.
+      const proto = (req.headers["x-forwarded-proto"] as string)?.split(",")[0] || req.protocol || "https";
+      const host = req.headers["x-forwarded-host"] || req.headers.host;
+      const result = await createCheckoutSession({
+        userId: String(req.authUserId),
+        userEmail: req.authEmail ?? req.session?.googleUser?.email ?? null,
+        packId: String(req.body?.packId ?? ""),
+        origin: `${proto}://${host}`,
+      });
+      if (!result.ok) return res.status(400).json(result);
+      res.json(result);
+    } catch (err: any) {
+      console.error("[Credits] checkout error:", err?.message);
+      res.status(500).json({ error: err?.message || "Checkout failed" });
+    }
+  });
+
+  /**
+   * Stripe webhook — THE source of truth for granting credits.
+   *
+   * Deliberately NOT behind isFlexibleAuthenticated: Stripe has no session.
+   * Authenticity comes from the signature over the RAW body, which is why
+   * req.rawBody (captured by the express.json verify hook) is used rather
+   * than the parsed body — JSON.stringify of a parsed object does not
+   * byte-match what was signed, and verification would fail on any payload
+   * with unusual key ordering or unicode.
+   */
+  app.post("/api/credits/webhook", async (req: any, res) => {
+    const sig = req.headers["stripe-signature"] as string | undefined;
+    if (!sig) return res.status(400).json({ error: "Missing signature" });
+
+    const { verifyWebhook, fulfilCheckout } = await import("./lib/creditCheckout");
+    const verified = verifyWebhook(req.rawBody ?? req.body, sig);
+    if (!verified.ok) {
+      console.error(`[Credits Webhook] Signature verification failed: ${verified.error}`);
+      return res.status(400).json({ error: "Invalid signature" });
+    }
+
+    const event = verified.event;
+    try {
+      if (event.type === "checkout.session.completed" || event.type === "checkout.session.async_payment_succeeded") {
+        const result = await fulfilCheckout(event.data.object as any);
+        console.log(`[Credits Webhook] ${event.type} → ${JSON.stringify(result)}`);
+      }
+      // Everything else is acknowledged and ignored. A 2xx tells Stripe to
+      // stop retrying; a non-2xx on an event we simply don't handle would
+      // have it retry that event for days.
+      res.json({ received: true });
+    } catch (err: any) {
+      // A real failure DOES want a retry — 500 so Stripe redelivers, and the
+      // idempotency gate makes that safe.
+      console.error(`[Credits Webhook] Handling ${event.type} failed:`, err?.message);
+      res.status(500).json({ error: "Handler failed" });
+    }
+  });
+
   // ── AI b-roll generation (the paid tier) ──────────────────────────
 
   app.get("/api/ai/generation/options", isFlexibleAuthenticated, async (req: any, res) => {

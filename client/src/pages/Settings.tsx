@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { TopBar } from "@/components/TopBar";
-import { User, CreditCard, Bell, CheckCircle, ExternalLink, Save, Link2, Loader2, ChevronDown, RefreshCw, Trash2, Star, Mic, Globe } from "lucide-react";
+import { User, CreditCard, Bell, CheckCircle, ExternalLink, Save, Link2, Loader2, ChevronDown, RefreshCw, Trash2, Star, Mic, Globe, Coins } from "lucide-react";
+import CreditsPanel from "@/components/CreditsPanel";
 import { SiInstagram, SiFacebook, SiX, SiTiktok, SiYoutube, SiTwitch, SiLinkedin } from "react-icons/si";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
@@ -13,12 +14,13 @@ import { useToast } from "@/hooks/use-toast";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
-type TabType = "profile" | "creator" | "payouts" | "notifications" | "integrations";
+type TabType = "profile" | "creator" | "payouts" | "credits" | "notifications" | "integrations";
 
 const tabs = [
   { id: "profile" as const, label: "General Profile", icon: User },
   { id: "creator" as const, label: "Creator Profile", icon: Star },
   { id: "integrations" as const, label: "Social Integrations", icon: Link2 },
+  { id: "credits" as const, label: "Credits", icon: Coins },
   { id: "payouts" as const, label: "Payouts & Billing", icon: CreditCard },
   { id: "notifications" as const, label: "Notification Preferences", icon: Bell },
 ];
@@ -77,7 +79,15 @@ const initialSocialConnections: SocialConnection[] = [
 export default function Settings() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const [activeTab, setActiveTab] = useState<TabType>("profile");
+  // Deep-linkable: the in-editor paywall sends creators straight here with
+  // ?tab=credits, and Stripe returns to the same URL after checkout.
+  const [activeTab, setActiveTab] = useState<TabType>(() => {
+    const t = typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("tab")
+      : null;
+    const valid: TabType[] = ["profile", "creator", "payouts", "credits", "notifications", "integrations"];
+    return valid.includes(t as TabType) ? (t as TabType) : "profile";
+  });
   const [socialConnections, setSocialConnections] = useState<SocialConnection[]>(initialSocialConnections);
   const [isLoadingStatus, setIsLoadingStatus] = useState(true);
   
@@ -1362,6 +1372,8 @@ export default function Settings() {
                 </div>
               </motion.div>
             )}
+
+            {activeTab === "credits" && <CreditsPanel />}
 
             {activeTab === "notifications" && (
               <motion.div
