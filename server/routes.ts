@@ -1649,9 +1649,40 @@ export async function registerRoutes(
       }
       const { checkSchemaDrift } = await import("./lib/schemaCheck");
       const drift = await checkSchemaDrift();
-      res.status(drift.ok ? 200 : 503).json(drift);
+      res.status(drift.ok ? 200 : 503).json({
+        ...drift,
+        fixEndpoint: drift.ok ? null : "POST /api/admin/schema-fix { \"confirm\": true } applies the missing pieces from inside the app",
+      });
     } catch (err: any) {
       res.status(500).json({ error: err?.message || "Schema check failed" });
+    }
+  });
+
+  // POST /api/admin/schema-fix — the deployed app repairs its own database.
+  // Exists because the production connection string is unreachable from the
+  // workspace (Replit UI doesn't surface it; drizzle-kit isn't in the prod
+  // bundle). Strictly additive: CREATE TABLE / ADD COLUMN IF NOT EXISTS only,
+  // generated from the same Drizzle metadata the queries compile from.
+  // Without { confirm: true } it returns the plan and touches nothing.
+  app.post("/api/admin/schema-fix", async (req: any, res) => {
+    try {
+      const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
+      if (!callerEmail || !ADMIN_EMAILS.includes(String(callerEmail).toLowerCase())) {
+        return res.status(403).json({ error: "Admin access required" });
+      }
+      const { checkSchemaDrift, buildSchemaFixPlan, applySchemaFix } = await import("./lib/schemaCheck");
+      if (req.body?.confirm !== true) {
+        const drift = await checkSchemaDrift();
+        const plan = buildSchemaFixPlan(drift);
+        return res.json({ dryRun: true, drift, plan });
+      }
+      console.log(`[SchemaFix] ${callerEmail} confirmed schema self-repair`);
+      const result = await applySchemaFix();
+      const failed = result.applied.filter((a) => !a.ok).length;
+      res.status(result.driftAfter.ok ? 200 : failed > 0 ? 500 : 200).json(result);
+    } catch (err: any) {
+      console.error("[SchemaFix] error:", err?.message);
+      res.status(500).json({ error: err?.message || "Schema fix failed" });
     }
   });
 

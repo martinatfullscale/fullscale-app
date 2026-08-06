@@ -117,6 +117,41 @@ export default function AdminPlacements() {
     onError: (err: Error) => toast({ title: "Update failed", description: err.message, variant: "destructive" }),
   });
 
+  const [fixingSchema, setFixingSchema] = useState(false);
+  const fixSchema = async () => {
+    setFixingSchema(true);
+    try {
+      const res = await fetch("/api/admin/schema-fix", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ confirm: true }),
+      });
+      const body = await res.json();
+      const okCount = (body.applied ?? []).filter((a: any) => a.ok).length;
+      const failCount = (body.applied ?? []).filter((a: any) => !a.ok).length;
+      if (body.driftAfter?.ok) {
+        toast({
+          title: "Database repaired",
+          description: `${okCount} change(s) applied — the schema now matches the code.`,
+        });
+      } else {
+        toast({
+          title: failCount > 0 ? "Repair incomplete" : "Repair ran",
+          description: failCount > 0
+            ? `${okCount} applied, ${failCount} failed — check the server log.`
+            : body.error || "Schema still reports drift — check the server log.",
+          variant: failCount > 0 ? "destructive" : undefined,
+        });
+      }
+      queryClient.invalidateQueries();
+    } catch (err: any) {
+      toast({ title: "Repair failed", description: err?.message, variant: "destructive" });
+    } finally {
+      setFixingSchema(false);
+    }
+  };
+
   const rows = data?.placements ?? [];
   const queue = rows.filter((r) => r.reviewStatus === "submitted" || r.reviewStatus === "in_review" || r.reviewStatus === "needs_changes");
   // render_ready is waiting on the creator to post; live is measuring.
@@ -238,9 +273,23 @@ export default function AdminPlacements() {
           <Card className="border-destructive/30 bg-destructive/5">
             <CardContent className="p-4">
               <p className="text-sm font-medium mb-1">Couldn't load the review queue</p>
-              <p className="text-xs text-muted-foreground leading-relaxed">
+              <p className="text-xs text-muted-foreground leading-relaxed mb-3">
                 {(error as Error)?.message || "Unknown error"}
               </p>
+              {/* Schema drift has a one-click repair: the deployed app holds
+                  the right DATABASE_URL, so it applies the missing tables and
+                  columns itself. Additive-only DDL — safe to run twice. */}
+              {/schema|db:push|does not exist/i.test(String((error as Error)?.message)) && (
+                <Button
+                  size="sm"
+                  disabled={fixingSchema}
+                  onClick={fixSchema}
+                  data-testid="button-fix-schema"
+                >
+                  {fixingSchema ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : null}
+                  {fixingSchema ? "Repairing database…" : "Repair database schema"}
+                </Button>
+              )}
             </CardContent>
           </Card>
         ) : (
