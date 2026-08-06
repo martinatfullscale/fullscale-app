@@ -363,6 +363,12 @@ export default function ClipStudio({ clip, videoId, onClose, onApply }: Props) {
     () => clipWords.findIndex((w) => t >= w.start && t < w.end),
     [clipWords, t],
   );
+  // The words around the playhead — what a generated cutaway should be ABOUT.
+  const spokenAtPlayhead = useMemo(() => {
+    const window = clipWords.filter((w) => w.start >= t - 4 && w.end <= t + 4);
+    return window.map((w) => w.word).join(" ").trim();
+  }, [clipWords, t]);
+
   const activeRef = useRef<HTMLSpanElement>(null);
   useEffect(() => {
     if (playing) activeRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
@@ -514,6 +520,8 @@ export default function ClipStudio({ clip, videoId, onClose, onApply }: Props) {
                   cuts={edits.broll ?? []}
                   duration={clip.duration}
                   playhead={t}
+                  clipId={clip.id}
+                  spokenAtPlayhead={spokenAtPlayhead}
                   onChange={(broll) => setEdits((p) => ({ ...p, broll }))}
                   queryClient={queryClient}
                 />
@@ -948,6 +956,9 @@ function BrollTool(props: {
   cuts: NonNullable<StudioEdits["broll"]>;
   duration: number;
   playhead: number;
+  clipId: number;
+  /** What's being said at the playhead — the seed for a generated cutaway. */
+  spokenAtPlayhead: string;
   onChange: (b: NonNullable<StudioEdits["broll"]>) => void;
   queryClient: ReturnType<typeof useQueryClient>;
 }) {
@@ -960,7 +971,7 @@ function BrollTool(props: {
   // Uploading your own b-roll is the wrong default: the point of a b-roll cut
   // is generic filler over a talking head, and nobody wants to go shoot
   // "person typing at a desk".
-  const [tab, setTab] = useState<"mine" | "stock">("stock");
+  const [tab, setTab] = useState<"mine" | "stock" | "ai">("stock");
   const [q, setQ] = useState("");
   const [stock, setStock] = useState<any[]>([]);
   const [searching, setSearching] = useState(false);
@@ -1022,7 +1033,7 @@ function BrollTool(props: {
   return (
     <div className="space-y-3">
       <div className="flex gap-1 p-0.5 rounded bg-gray-800">
-        {(["stock", "mine"] as const).map((k) => (
+        {(["stock", "ai", "mine"] as const).map((k) => (
           <button
             key={k}
             onClick={() => setTab(k)}
@@ -1031,12 +1042,23 @@ function BrollTool(props: {
             }`}
             data-testid={`broll-tab-${k}`}
           >
-            {k === "stock" ? "Search stock" : `My uploads${assets.length ? ` (${assets.length})` : ""}`}
+            {k === "stock" ? "Stock" : k === "ai" ? "Generate" : `Uploads${assets.length ? ` (${assets.length})` : ""}`}
           </button>
         ))}
       </div>
 
-      {tab === "stock" ? (
+      {tab === "ai" ? (
+        <AiGenerateTool
+          playhead={props.playhead}
+          spokenAtPlayhead={props.spokenAtPlayhead}
+          clipId={props.clipId}
+          onGenerated={(assetId) => {
+            props.queryClient.invalidateQueries({ queryKey: ["/api/media-assets"] });
+            addAt(assetId);
+            setTab("mine");
+          }}
+        />
+      ) : tab === "stock" ? (
         <>
           <form
             onSubmit={(e) => { e.preventDefault(); runSearch(); }}
@@ -1332,6 +1354,171 @@ function Slider(props: {
         onChange={(e) => props.onChange(Number(e.target.value))}
         className="w-full accent-purple-500"
       />
+    </div>
+  );
+}
+
+/**
+ * AI-generated cutaways — the paid tier.
+ *
+ * Two deliberate product choices visible here:
+ *
+ * 1. IMAGES ARE THE DEFAULT, not video. A cutaway is on screen for two or
+ *    three seconds under a talking head; a generated still with a slow push
+ *    is usually indistinguishable from generated video at a fraction of the
+ *    cost and seconds instead of minutes. The video option exists, priced
+ *    honestly, for when motion actually matters.
+ *
+ * 2. THE PROMPT IS SEEDED FROM WHAT THEY'RE SAYING. The transcript is right
+ *    there, so "use what's being said" turns the spoken line into a scene
+ *    description. Feeding a model the raw sentence produces literal, useless
+ *    results — the derivation keeps the concrete nouns and drops the
+ *    scaffolding a speaker uses to think.
+ */
+function AiGenerateTool(props: {
+  playhead: number;
+  spokenAtPlayhead: string;
+  clipId: number;
+  onGenerated: (assetId: number) => void;
+}) {
+  const [prompt, setPrompt] = useState("");
+  const [modelId, setModelId] = useState("image-fast");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [seeded, setSeeded] = useState(false);
+
+  const { data: opts, refetch } = useQuery<{
+    available: boolean; detail: string | null; balance: number;
+    models: Array<{ id: string; kind: string; label: string; credits: number; typicalSeconds: number; outputSeconds: number | null; notes: string }>;
+  }>({
+    queryKey: ["/api/ai/generation/options"],
+    queryFn: async () => (await fetchWithTimeout("/api/ai/generation/options", { credentials: "include" })).json(),
+  });
+
+  const model = opts?.models.find((m) => m.id === modelId);
+  const affordable = (opts?.balance ?? 0) >= (model?.credits ?? 0);
+
+  const seedFromTranscript = async () => {
+    if (!props.spokenAtPlayhead) return;
+    const res = await fetchWithTimeout("/api/ai/prompt-from-transcript", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ text: props.spokenAtPlayhead }),
+    });
+    const body = await res.json();
+    if (body.prompt) { setPrompt(body.prompt); setSeeded(true); }
+  };
+
+  const generate = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await fetchWithTimeout("/api/ai/generation", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          modelId, prompt,
+          promptSource: seeded ? "transcript" : "manual",
+          editorialClipId: props.clipId,
+        }),
+        // Video generation runs for minutes; the request has to outlast it.
+      }, (model?.typicalSeconds ?? 30) * 1000 * 3 + 60_000);
+      const body = await res.json();
+      if (!res.ok || !body.ok) { setErr(body.error || "Generation failed"); return; }
+      await refetch();
+      props.onGenerated(body.assetId);
+    } catch (e: any) {
+      setErr(e?.message || "Generation failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (opts && !opts.available) {
+    return (
+      <div className="text-center py-8 px-2">
+        <Sparkles className="w-8 h-8 text-gray-700 mx-auto mb-2" />
+        <p className="text-xs text-gray-400 mb-1">AI generation isn't switched on here</p>
+        <p className="text-[11px] text-gray-600 leading-snug">{opts.detail}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] text-gray-400">Credits</span>
+        <span className="text-[11px] tabular-nums text-emerald-300">{opts?.balance ?? "—"}</span>
+      </div>
+
+      <div className="space-y-1.5">
+        {(opts?.models ?? []).map((m) => (
+          <button
+            key={m.id}
+            onClick={() => setModelId(m.id)}
+            className={`w-full text-left px-2.5 py-2 rounded-md border transition-colors ${
+              modelId === m.id
+                ? "bg-purple-500/20 text-purple-200 border-purple-500/50"
+                : "bg-gray-800 text-gray-400 border-gray-700 hover:border-gray-500"
+            }`}
+            data-testid={`gen-model-${m.id}`}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] font-medium">{m.label}</span>
+              <span className="text-[10px] text-gray-500 shrink-0">
+                {m.credits} credit{m.credits === 1 ? "" : "s"} · ~{m.typicalSeconds}s
+              </span>
+            </div>
+            <p className="text-[10px] text-gray-500 mt-0.5 leading-snug">{m.notes}</p>
+          </button>
+        ))}
+      </div>
+
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between">
+          <label className="text-[11px] text-gray-400">What should the cutaway show?</label>
+          {props.spokenAtPlayhead && (
+            <button
+              onClick={seedFromTranscript}
+              className="text-[10px] text-purple-300 hover:text-purple-200"
+              data-testid="seed-from-transcript"
+            >
+              Use what's being said
+            </button>
+          )}
+        </div>
+        <textarea
+          value={prompt}
+          onChange={(e) => { setPrompt(e.target.value); setSeeded(false); }}
+          rows={3}
+          placeholder="a quiet city street at dawn, shot on film…"
+          className="w-full px-2 py-1.5 rounded bg-gray-800 border border-gray-700 text-[11px] resize-none"
+          data-testid="gen-prompt"
+        />
+      </div>
+
+      {err && <p className="text-[11px] text-amber-300/90 leading-snug">{err}</p>}
+
+      <Button
+        onClick={generate}
+        disabled={busy || prompt.trim().length < 3 || !affordable}
+        className="w-full bg-purple-600 hover:bg-purple-500 text-white text-xs"
+        data-testid="gen-run"
+      >
+        {busy ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 mr-1.5" />}
+        {busy
+          ? `Generating… (~${model?.typicalSeconds ?? 30}s)`
+          : !affordable
+            ? `Needs ${model?.credits} credits`
+            : `Generate for ${model?.credits} credit${model?.credits === 1 ? "" : "s"}`}
+      </Button>
+
+      <p className="text-[10px] text-gray-600 leading-snug">
+        Lands in your uploads and drops at the playhead. Credits are refunded automatically
+        if a generation fails.
+      </p>
     </div>
   );
 }

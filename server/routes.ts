@@ -10785,6 +10785,112 @@ export async function registerRoutes(
     }
   });
 
+  // ── AI b-roll generation (the paid tier) ──────────────────────────
+
+  app.get("/api/ai/generation/options", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const { GEN_MODELS, generationAvailable } = await import("./lib/aiGeneration");
+      const balance = await storage.getCreditBalance(String(req.authUserId));
+      res.json({
+        available: generationAvailable(),
+        detail: generationAvailable()
+          ? null
+          : "AI generation isn't configured on this server (FAL_KEY missing in this environment).",
+        balance,
+        // Creators see credits and latency, never our unit cost.
+        models: GEN_MODELS.map((m) => ({
+          id: m.id, kind: m.kind, label: m.label,
+          credits: m.creditsPerGeneration,
+          typicalSeconds: Math.round(m.typicalLatencyMs / 1000),
+          outputSeconds: m.outputSeconds ?? null,
+          notes: m.notes,
+        })),
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Failed to load generation options" });
+    }
+  });
+
+  app.post("/api/ai/generation", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const { runGeneration } = await import("./lib/aiGeneration");
+      const result = await runGeneration({
+        userId: String(req.authUserId),
+        modelId: String(req.body?.modelId ?? "image-fast"),
+        prompt: String(req.body?.prompt ?? ""),
+        promptSource: req.body?.promptSource === "transcript" ? "transcript" : "manual",
+        editorialClipId: Number.isFinite(Number(req.body?.editorialClipId)) ? Number(req.body.editorialClipId) : null,
+        aspectRatio: req.body?.aspectRatio === "16:9" ? "16:9" : "9:16",
+      });
+      if (!result.ok) return res.status(400).json(result);
+      const balance = await storage.getCreditBalance(String(req.authUserId));
+      res.json({ ...result, balance });
+    } catch (err: any) {
+      console.error("[AiGen] route error:", err?.message);
+      res.status(500).json({ error: err?.message || "Generation failed" });
+    }
+  });
+
+  // POST /api/ai/prompt-from-transcript — turn what's SAID into what to SHOW.
+  app.post("/api/ai/prompt-from-transcript", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const { promptFromTranscript } = await import("./lib/aiGeneration");
+      res.json({ prompt: promptFromTranscript(String(req.body?.text ?? "")) });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Failed" });
+    }
+  });
+
+  // Admin: what this tier actually earns. Cost and revenue from the same rows.
+  app.get("/api/admin/ai-economics", async (req: any, res) => {
+    try {
+      const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
+      if (!callerEmail || !ADMIN_EMAILS.includes(String(callerEmail).toLowerCase())) {
+        return res.status(403).json({ error: "Admin access required" });
+      }
+      const days = Math.min(365, Math.max(1, parseInt(String(req.query.days ?? "30")) || 30));
+      const econ = await storage.getGenerationEconomics(days);
+      const { micosToUsd } = await import("./lib/aiGeneration");
+      res.json({
+        windowDays: days,
+        ...econ,
+        costUsd: micosToUsd(econ.costMicros),
+        // Margin needs a credit price, which is a business decision — the
+        // endpoint reports units and cost, and leaves pricing to the caller
+        // rather than inventing a number.
+        note: "creditsCharged counts SUCCEEDED generations only; costMicros includes failures, which is where margin leaks.",
+        byModel: econ.byModel.map((m) => ({ ...m, costUsd: micosToUsd(m.costMicros) })),
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Failed" });
+    }
+  });
+
+  // Admin: grant credits (plan allowance, purchase, goodwill).
+  app.post("/api/admin/credits/grant", async (req: any, res) => {
+    try {
+      const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
+      if (!callerEmail || !ADMIN_EMAILS.includes(String(callerEmail).toLowerCase())) {
+        return res.status(403).json({ error: "Admin access required" });
+      }
+      const { userId, amount, reason, note } = req.body || {};
+      const amt = parseInt(String(amount));
+      if (!userId || !Number.isFinite(amt) || amt <= 0) {
+        return res.status(400).json({ error: "userId and a positive amount are required" });
+      }
+      const balance = await storage.grantCredits(
+        String(userId), amt,
+        ["plan", "purchase", "manual", "refund"].includes(String(reason)) ? String(reason) : "manual",
+        note ? String(note).slice(0, 300) : undefined,
+        String(callerEmail),
+      );
+      console.log(`[Credits] ${callerEmail} granted ${amt} to ${userId} → ${balance}`);
+      res.json({ ok: true, balance });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Grant failed" });
+    }
+  });
+
   // GET /api/media-assets/stock/status — is stock search actually configured
   // IN THIS ENVIRONMENT? Replit secrets set on the workspace are not
   // automatically present in a Deployment, which is the same dev/prod split

@@ -108,6 +108,11 @@ import {
   mediaAssets,
   type MediaAsset,
   type InsertMediaAsset,
+  aiGenerations,
+  type AiGeneration,
+  type InsertAiGeneration,
+  creatorCredits,
+  creditGrants,
   roomModels,
   type RoomModel,
   type InsertRoomModel,
@@ -686,6 +691,99 @@ export class DatabaseStorage implements IStorage {
   }
 
   // ── Media assets (b-roll + music beds for the clip editor) ──
+
+  // ── AI generation ledger + credits ──
+
+  async createAiGeneration(row: InsertAiGeneration): Promise<AiGeneration> {
+    const [r] = await db.insert(aiGenerations).values(row).returning();
+    return r;
+  }
+
+  async completeAiGeneration(
+    id: number,
+    updates: { status: string; mediaAssetId?: number; errorMessage?: string; latencyMs?: number },
+  ): Promise<void> {
+    await db.update(aiGenerations)
+      .set({ ...updates, completedAt: new Date() })
+      .where(eq(aiGenerations.id, id));
+  }
+
+  async getAiGenerationsForUser(userId: string, limit = 50): Promise<AiGeneration[]> {
+    return db.select().from(aiGenerations)
+      .where(eq(aiGenerations.userId, userId))
+      .orderBy(desc(aiGenerations.createdAt))
+      .limit(limit);
+  }
+
+  async getCreditBalance(userId: string): Promise<number> {
+    const [row] = await db.select().from(creatorCredits).where(eq(creatorCredits.userId, userId));
+    return row?.balance ?? 0;
+  }
+
+  /**
+   * Debit credits atomically.
+   *
+   * The balance check and the decrement are ONE statement with a guard in the
+   * WHERE clause, so two concurrent generations cannot both read the same
+   * balance and both proceed. Read-then-write here would let a creator with 1
+   * credit fire ten generations, all of which we pay the provider for.
+   */
+  async spendCredits(userId: string, amount: number): Promise<{ ok: boolean; balance: number }> {
+    if (amount <= 0) return { ok: true, balance: await this.getCreditBalance(userId) };
+    const [row] = await db.update(creatorCredits)
+      .set({
+        balance: sql`${creatorCredits.balance} - ${amount}`,
+        lifetimeSpent: sql`${creatorCredits.lifetimeSpent} + ${amount}`,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(creatorCredits.userId, userId), gte(creatorCredits.balance, amount)))
+      .returning({ balance: creatorCredits.balance });
+    if (row) return { ok: true, balance: row.balance };
+    return { ok: false, balance: await this.getCreditBalance(userId) };
+  }
+
+  async grantCredits(userId: string, amount: number, reason: string, note?: string, grantedBy?: string): Promise<number> {
+    if (amount <= 0) return this.getCreditBalance(userId);
+    await db.insert(creatorCredits)
+      .values({ userId, balance: amount, lifetimeGranted: amount })
+      .onConflictDoUpdate({
+        target: creatorCredits.userId,
+        set: {
+          balance: sql`${creatorCredits.balance} + ${amount}`,
+          lifetimeGranted: sql`${creatorCredits.lifetimeGranted} + ${amount}`,
+          updatedAt: new Date(),
+        },
+      });
+    await db.insert(creditGrants).values({ userId, amount, reason, note, grantedByUserId: grantedBy });
+    return this.getCreditBalance(userId);
+  }
+
+  /** Margin readout: cost vs revenue over a window, from the same rows. */
+  async getGenerationEconomics(sinceDays = 30): Promise<{
+    total: number; succeeded: number; failed: number;
+    costMicros: number; creditsCharged: number; byModel: Array<{ model: string; n: number; costMicros: number; credits: number }>;
+  }> {
+    const since = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000);
+    const rows = await db.select().from(aiGenerations).where(gte(aiGenerations.createdAt, since));
+    const byModel = new Map<string, { model: string; n: number; costMicros: number; credits: number }>();
+    let costMicros = 0, creditsCharged = 0, succeeded = 0, failed = 0;
+    for (const r of rows) {
+      // Failed generations that were refunded contribute cost but not revenue —
+      // which is exactly the number that quietly destroys margin.
+      const c = Number(r.costMicros ?? 0);
+      const cr = r.status === "succeeded" ? Number(r.creditsCharged ?? 0) : 0;
+      if (r.status === "succeeded") succeeded++; else if (r.status === "failed") failed++;
+      costMicros += c; creditsCharged += cr;
+      const key = String(r.model);
+      const agg = byModel.get(key) ?? { model: key, n: 0, costMicros: 0, credits: 0 };
+      agg.n++; agg.costMicros += c; agg.credits += cr;
+      byModel.set(key, agg);
+    }
+    return {
+      total: rows.length, succeeded, failed, costMicros, creditsCharged,
+      byModel: Array.from(byModel.values()).sort((a, b) => b.costMicros - a.costMicros),
+    };
+  }
 
   async createMediaAsset(row: InsertMediaAsset): Promise<MediaAsset> {
     const [result] = await db.insert(mediaAssets).values(row).returning();

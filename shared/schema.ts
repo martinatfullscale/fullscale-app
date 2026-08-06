@@ -755,6 +755,86 @@ export const mediaAssets = pgTable("media_assets", {
 }, (table) => [
   index("idx_media_assets_user_kind").on(table.userId, table.kind),
 ]);
+/**
+ * AI generations — the ledger that makes a resold tier accountable.
+ *
+ * One row per generation attempt, carrying BOTH what it cost us and what we
+ * charged. Without both on the same row, margin is a spreadsheet exercise
+ * done from memory: provider invoices arrive monthly and in aggregate, so
+ * per-generation unit economics are unrecoverable after the fact. Failed
+ * generations are recorded too — a provider that bills for failures, or a
+ * prompt that reliably fails after being charged for, is invisible otherwise.
+ *
+ * Cost is stored in TEN-THOUSANDTHS of a cent (1 = $0.000001). Image models
+ * price around $0.003/image and video around $0.05/second; cents would round
+ * a single image to zero and lose the entire signal.
+ */
+export const aiGenerations = pgTable("ai_generations", {
+  id: serial("id").primaryKey(),
+  userId: varchar("user_id").notNull(),
+  /** The clip this was generated for, when generated inside the editor. */
+  editorialClipId: integer("editorial_clip_id"),
+  kind: varchar("kind", { length: 16 }).notNull(),        // image | video
+  provider: varchar("provider", { length: 32 }).notNull(), // fal | ...
+  model: varchar("model", { length: 120 }).notNull(),
+  prompt: text("prompt").notNull(),
+  /** Where the prompt came from — a transcript-derived prompt performing
+   *  differently from a hand-written one is a product signal worth keeping. */
+  promptSource: varchar("prompt_source", { length: 16 }).notNull().default("manual"), // manual | transcript
+  aspectRatio: varchar("aspect_ratio", { length: 10 }),
+  durationSec: numeric("duration_sec"),
+  status: varchar("status", { length: 16 }).notNull().default("queued"), // queued | running | succeeded | failed
+  errorMessage: text("error_message"),
+  /** The asset it produced, once stored. */
+  mediaAssetId: integer("media_asset_id"),
+  /** OUR cost, in ten-thousandths of a cent. */
+  costMicros: bigint("cost_micros", { mode: "number" }),
+  /** What the creator was charged, in credits. */
+  creditsCharged: integer("credits_charged"),
+  /** Wall-clock, so the inline-vs-async UX decision stays evidence-based. */
+  latencyMs: integer("latency_ms"),
+  createdAt: timestamp("created_at").defaultNow(),
+  completedAt: timestamp("completed_at"),
+}, (table) => [
+  index("idx_ai_gen_user_time").on(table.userId, table.createdAt),
+  index("idx_ai_gen_status").on(table.status),
+]);
+export type AiGeneration = typeof aiGenerations.$inferSelect;
+export type InsertAiGeneration = typeof aiGenerations.$inferInsert;
+
+/**
+ * Creator credit balance for metered AI features.
+ *
+ * A single balance row per creator rather than a ledger of transactions:
+ * the ledger is `ai_generations` (spend) plus `credit_grants` (top-ups), and
+ * this is the running total so a generation request doesn't have to sum the
+ * whole history to check affordability.
+ */
+export const creatorCredits = pgTable("creator_credits", {
+  userId: varchar("user_id").primaryKey(),
+  balance: integer("balance").notNull().default(0),
+  /** Lifetime totals, for support conversations and cohort analysis. */
+  lifetimeGranted: integer("lifetime_granted").notNull().default(0),
+  lifetimeSpent: integer("lifetime_spent").notNull().default(0),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+export type CreatorCredits = typeof creatorCredits.$inferSelect;
+
+export const creditGrants = pgTable("credit_grants", {
+  id: serial("id").primaryKey(),
+  userId: varchar("user_id").notNull(),
+  amount: integer("amount").notNull(),
+  /** plan = included with their tier, purchase = they bought a pack,
+   *  manual = an operator granted it, refund = a failed generation returned. */
+  reason: varchar("reason", { length: 24 }).notNull(),
+  note: text("note"),
+  grantedByUserId: varchar("granted_by_user_id"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_credit_grants_user").on(table.userId, table.createdAt),
+]);
+export type CreditGrant = typeof creditGrants.$inferSelect;
+
 export type MediaAsset = typeof mediaAssets.$inferSelect;
 export type InsertMediaAsset = typeof mediaAssets.$inferInsert;
 
