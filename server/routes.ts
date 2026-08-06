@@ -10785,6 +10785,27 @@ export async function registerRoutes(
     }
   });
 
+  // GET /api/media-assets/stock/status — is stock search actually configured
+  // IN THIS ENVIRONMENT? Replit secrets set on the workspace are not
+  // automatically present in a Deployment, which is the same dev/prod split
+  // that made DATABASE_URL so painful to diagnose. Answer it directly rather
+  // than making someone infer it from a failed search.
+  app.get("/api/media-assets/stock/status", isFlexibleAuthenticated, async (_req: any, res) => {
+    try {
+      const { stockSearchAvailable } = await import("./lib/stockFootage");
+      const available = stockSearchAvailable();
+      res.json({
+        available,
+        provider: "pexels",
+        detail: available
+          ? "PEXELS_API_KEY is present in this environment — stock search is live."
+          : "PEXELS_API_KEY is NOT set in THIS environment. A secret added to the Replit workspace is not automatically available to a Deployment — add it there too, then redeploy.",
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Status check failed" });
+    }
+  });
+
   // GET /api/media-assets/stock/search?q= — Pexels b-roll search.
   // Registered BEFORE /api/media-assets/:id-shaped routes so "stock" is never
   // parsed as an id.

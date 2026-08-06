@@ -1056,7 +1056,19 @@ function BrollTool(props: {
             </Button>
           </form>
 
-          {stockErr && <p className="text-[11px] text-amber-300/90 leading-snug">{stockErr}</p>}
+          {stockErr && (
+            <div className="rounded border border-amber-500/25 bg-amber-500/5 p-2">
+              <p className="text-[11px] text-amber-300/90 leading-snug">{stockErr}</p>
+              {/* The env-var case has a specific, checkable cause — say it,
+                  rather than leaving "search failed" to be interpreted. */}
+              {/PEXELS_API_KEY/i.test(stockErr) && (
+                <p className="text-[10px] text-gray-500 leading-snug mt-1">
+                  A secret added to the Replit workspace isn't automatically available to a
+                  Deployment — check it's set there too, then redeploy.
+                </p>
+              )}
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-1.5">
             {stock.map((v) => (
