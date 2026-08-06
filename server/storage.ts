@@ -2567,6 +2567,77 @@ export class DatabaseStorage implements IStorage {
     return row;
   }
 
+  /**
+   * Titles for a set of videos, and NOTHING else.
+   *
+   * The obvious `getVideoById` in a loop is a trap here: it selects every
+   * column, including scene_index and scene_inventory. Those jsonb blobs hold
+   * per-shot perceptual hashes and per-scene surface inventories and run to
+   * megabytes on a scanned video — and node-postgres parses jsonb with a
+   * synchronous JSON.parse, so each row BLOCKS THE EVENT LOOP. Loop that over
+   * a dozen videos and the whole process stops serving anything: the page that
+   * triggered it hangs, and so does every unrelated request behind it.
+   *
+   * One query, two scalar columns, no jsonb.
+   */
+  /**
+   * The three video fields the placement inboxes actually render.
+   *
+   * Same trap as getVideoTitles, but worse at the call site: the inboxes ran
+   * getVideoById inside a Promise.all over every placement, so N heavy rows
+   * were fetched CONCURRENTLY — each holding one of only 10 pool connections
+   * and each blocking the event loop on jsonb parse. A creator with a dozen
+   * pending placements could stall the entire process by opening their inbox.
+   */
+  async getVideoSummaries(ids: number[]): Promise<Map<number, { id: number; title: string; thumbnailUrl: string | null }>> {
+    const unique = Array.from(new Set(ids.filter((n) => Number.isFinite(n))));
+    if (unique.length === 0) return new Map();
+    const rows = await db
+      .select({ id: videoIndex.id, title: videoIndex.title, thumbnailUrl: videoIndex.thumbnailUrl })
+      .from(videoIndex)
+      .where(inArray(videoIndex.id, unique));
+    return new Map(rows.map((r) => [r.id, r]));
+  }
+
+  async getVideoTitles(ids: number[]): Promise<Map<number, string>> {
+    const unique = Array.from(new Set(ids.filter((n) => Number.isFinite(n))));
+    if (unique.length === 0) return new Map();
+    const rows = await db
+      .select({ id: videoIndex.id, title: videoIndex.title })
+      .from(videoIndex)
+      .where(inArray(videoIndex.id, unique));
+    return new Map(rows.map((r) => [r.id, r.title]));
+  }
+
+  /**
+   * The admin review queue's rows — only the columns it renders.
+   *
+   * `select()` on saved_placements drags transform, blend, keyframes and
+   * applies_to_group_ids jsonb across for every row. Keyframe arrays on a
+   * motion-tracked placement are long, and none of it reaches the response.
+   */
+  async getReviewQueuePlacements(): Promise<Array<{
+    id: number; videoId: number; createdBy: string;
+    productImageUrl: string; harmonizedImageUrl: string | null;
+    reviewStatus: string | null; reviewNote: string | null; createdAt: Date | null;
+  }>> {
+    return db
+      .select({
+        id: savedPlacements.id,
+        videoId: savedPlacements.videoId,
+        createdBy: savedPlacements.createdBy,
+        productImageUrl: savedPlacements.productImageUrl,
+        harmonizedImageUrl: savedPlacements.harmonizedImageUrl,
+        reviewStatus: savedPlacements.reviewStatus,
+        reviewNote: savedPlacements.reviewNote,
+        createdAt: savedPlacements.createdAt,
+      })
+      .from(savedPlacements)
+      .where(eq(savedPlacements.status, "active"))
+      .orderBy(desc(savedPlacements.createdAt))
+      .limit(500);
+  }
+
   async getAllActivePlacements(): Promise<SavedPlacement[]> {
     return await db
       .select()

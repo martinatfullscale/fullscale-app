@@ -1693,13 +1693,14 @@ export async function registerRoutes(
       if (!callerEmail || !adminEmails.map((e: string) => e.toLowerCase()).includes(callerEmail.toLowerCase())) {
         return res.status(403).json({ error: "Admin access required" });
       }
-      const all = await storage.getAllActivePlacements();
-      const videoIds = [...new Set(all.map((p) => p.videoId))];
-      const titles = new Map<number, string>();
-      for (const vid of videoIds) {
-        const v = await storage.getVideoById(vid).catch(() => undefined);
-        if (v) titles.set(vid, v.title);
-      }
+      // Two lean queries, not 1 + N heavy ones. The previous version called
+      // getVideoById per distinct video, and that returns scene_index and
+      // scene_inventory jsonb — megabytes on a scanned video, parsed
+      // synchronously by the pg driver. It blocked the event loop long enough
+      // to stall every other request in the process, which is why opening
+      // this page appeared to take the whole site down.
+      const all = await storage.getReviewQueuePlacements();
+      const titles = await storage.getVideoTitles(all.map((p) => p.videoId));
       const order: Record<string, number> = { submitted: 0, in_review: 1, needs_changes: 2, render_ready: 3 };
       const rows = all
         .map((p: any) => ({
@@ -10089,11 +10090,16 @@ export async function registerRoutes(
 
       // Hydrate with product + video summaries (mirrors the creator inbox)
       // so the brand tracking UI doesn't need N round-trips.
+      // Video summaries fetched ONCE for the whole list, not per placement.
+      // getVideoById inside this Promise.all pulled scene_index and
+      // scene_inventory jsonb concurrently for every row — N pool connections
+      // and N synchronous JSON.parses, which stalls the whole process.
+      const videoSummaries = await storage.getVideoSummaries(placements.map((p) => p.videoId));
       const hydrated = await Promise.all(
         placements.map(async (p) => {
-          const [product, video, clip] = await Promise.all([
+          const video = videoSummaries.get(p.videoId) ?? null;
+          const [product, clip] = await Promise.all([
             p.brandProductId != null ? storage.getBrandProduct(p.brandProductId) : Promise.resolve(undefined),
-            storage.getVideoById(p.videoId),
             p.editorialClipId ? storage.getEditorialClipById(p.editorialClipId) : Promise.resolve(null),
           ]);
           return {
@@ -10195,11 +10201,12 @@ export async function registerRoutes(
       const placements = await storage.getCreatorPlacements(creatorUserId, status);
 
       // Hydrate with product + video + surface details so the inbox UI doesn't need 4 round-trips
+      const videoSummaries = await storage.getVideoSummaries(placements.map((p) => p.videoId));
       const hydrated = await Promise.all(
         placements.map(async (p) => {
-          const [product, video, surfaces, clip, savedForVideo] = await Promise.all([
+          const video = videoSummaries.get(p.videoId) ?? null;
+          const [product, surfaces, clip, savedForVideo] = await Promise.all([
             p.brandProductId != null ? storage.getBrandProduct(p.brandProductId) : Promise.resolve(undefined),
-            storage.getVideoById(p.videoId),
             storage.getDetectedSurfaces(p.videoId),
             p.editorialClipId ? storage.getEditorialClipById(p.editorialClipId) : Promise.resolve(null),
             storage.getPlacementsForVideo(p.videoId).catch(() => [] as any[]),
