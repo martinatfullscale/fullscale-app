@@ -1120,11 +1120,10 @@ function BrollTool(props: {
                    className="text-purple-300 hover:underline">Pixabay</a>.
                 Each result credits its creator; click through from the tile for the source.
               </p>
-              {/* The one that matters for THIS product. */}
-              <p className="text-[10px] text-amber-300/80 leading-snug">
-                For brand placements, avoid clips with recognisable faces — free-library
-                footage carries no model release, and a stock person appearing to endorse a
-                sponsor's product isn't covered by the licence.
+              <p className="text-[10px] text-gray-600 leading-snug">
+                B-roll is story footage — a cutaway illustrating what's being said. Brand
+                placements stay on your own footage: a full-frame cutaway automatically
+                hides any placement while it's on screen.
               </p>
             </div>
           )}

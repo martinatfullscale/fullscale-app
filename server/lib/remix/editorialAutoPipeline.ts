@@ -1843,13 +1843,26 @@ async function runFFmpegRenderUngated(opts: RenderOptions): Promise<void> {
       for (const ov of brandOverlays!) {
         inputArgs.push("-i", ov.baked?.spritePath ?? ov.imagePath);
       }
+      // Suppress placements while a full-frame cutaway owns the frame.
+      // B-roll is STORY footage — a stranger with no model release — and a
+      // sponsor's product painted onto it would read as their endorsement.
+      // PiP insets are excluded: the creator's own scene is still visible
+      // underneath, so the placement is still on their footage.
+      const brollWindows = eg!.fullFrameBrollWindows ?? [];
+      const suppress = brollWindows.length > 0
+        ? `:enable='${brollWindows.map((w) => `not(between(t,${w.start.toFixed(3)},${w.end.toFixed(3)}))`).join("*")}'`
+        : "";
+      if (brollWindows.length > 0) {
+        console.log(`[RenderSingle] Suppressing ${brandOverlays!.length} placement(s) across ${brollWindows.length} full-frame b-roll window(s)`);
+      }
+
       brandOverlays!.forEach((ov, idx) => {
         const inputIdx = productBase + idx;
         const scaled = `[pov${idx}]`;
         const out = `[pv${idx}]`;
         if (ov.baked) {
           filterParts.push(`[${inputIdx}:v]scale=${ov.baked.w}:${ov.baked.h}${scaled}`);
-          filterParts.push(`${cur}${scaled}overlay=x=${ov.baked.x}:y=${ov.baked.y}:eof_action=pass${out}`);
+          filterParts.push(`${cur}${scaled}overlay=x=${ov.baked.x}:y=${ov.baked.y}:eof_action=pass${suppress}${out}`);
         } else {
           const pad = ov.padding ?? 0.10;
           const w = Math.max(20, Math.round(ov.bboxWidth * srcWidth * (1 - 2 * pad)));
@@ -1857,7 +1870,7 @@ async function runFFmpegRenderUngated(opts: RenderOptions): Promise<void> {
           const x = Math.round((ov.bboxX + ov.bboxWidth * pad) * srcWidth);
           const y = Math.round((ov.bboxY + ov.bboxHeight * pad) * srcHeight);
           filterParts.push(`[${inputIdx}:v]scale=${w}:${h}:force_original_aspect_ratio=decrease${scaled}`);
-          filterParts.push(`${cur}${scaled}overlay=x=${x}:y=${y}:eof_action=pass${out}`);
+          filterParts.push(`${cur}${scaled}overlay=x=${x}:y=${y}:eof_action=pass${suppress}${out}`);
         }
         cur = out;
       });

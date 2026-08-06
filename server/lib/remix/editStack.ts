@@ -14,6 +14,14 @@
  *
  *   [0:v] stabilize ─► retime(segments) ─► b-roll ─► product overlays
  *          ─► crop/scale ─► text ─► captions ─► [vout]
+ *
+ * B-ROLL AND PLACEMENTS ARE MUTUALLY EXCLUSIVE. Product overlays composite
+ * AFTER b-roll, so without a gate a sponsor's product would be painted onto
+ * a stock cutaway — footage of a stranger, carrying no model release, now
+ * appearing to endorse a paying brand. B-roll here is STORY (a cutaway
+ * illustrating what is being said); placements belong on the creator's own
+ * fixtures. `fullFrameBrollWindows()` returns the spans where a cutaway owns
+ * the frame, and the render suppresses product overlays across them.
  *   [0:a] retime(segments) ─► duck(under speech) ─► mix(music bed) ─► [aout]
  *
  * RETIMING IS THE HARD PART. Silence removal and speed ramps are the same
@@ -301,6 +309,9 @@ export interface EditGraphResult {
   warnings: string[];
   /** True when nothing in the stack applies — caller can take the old path. */
   isEmpty: boolean;
+  /** Spans where a full-frame cutaway owns the frame; the render suppresses
+   *  brand placements across them. */
+  fullFrameBrollWindows: Array<{ start: number; end: number }>;
 }
 
 const hex = (h: string | null | undefined, fallback = "000000"): string => {
@@ -541,6 +552,11 @@ export async function buildEditGraph(opts: {
     }
   }
 
+  // Windows are computed from the RESOLVED stack: a b-roll cut whose asset
+  // failed to resolve was dropped from the graph, so it must not suppress a
+  // placement for a cutaway that will not appear.
+  const resolvedForWindows: EditStack = { ...stack, broll: (stack.broll ?? []).filter((b) => b.localPath) };
+
   const isEmpty =
     videoPre.length === 0 &&
     textInputs.length === 0 &&
@@ -556,7 +572,22 @@ export async function buildEditGraph(opts: {
     outputDurationSec: retimes ? outputDurationSec : clipDurationSec,
     warnings,
     isEmpty,
+    fullFrameBrollWindows: fullFrameBrollWindows(resolvedForWindows),
   };
+}
+
+/**
+ * Spans where a b-roll cut owns the WHOLE frame.
+ *
+ * Only full-frame cutaways qualify: a picture-in-picture inset leaves the
+ * creator's own scene — and their fixtures — visible underneath, so a
+ * placement is still legitimately on their footage there.
+ */
+export function fullFrameBrollWindows(stack: EditStack | null | undefined): Array<{ start: number; end: number }> {
+  return (stack?.broll ?? [])
+    .filter((b) => (Number(b.scale) || 1) >= 0.999 && Number(b.end) > Number(b.start))
+    .map((b) => ({ start: Number(b.start), end: Number(b.end) }))
+    .sort((a, b) => a.start - b.start);
 }
 
 /** Are any of the stack's features actually turned on? */
