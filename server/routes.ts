@@ -10785,6 +10785,66 @@ export async function registerRoutes(
     }
   });
 
+  // GET /api/media-assets/stock/search?q= — Pexels b-roll search.
+  // Registered BEFORE /api/media-assets/:id-shaped routes so "stock" is never
+  // parsed as an id.
+  app.get("/api/media-assets/stock/search", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const { searchStockVideos } = await import("./lib/stockFootage");
+      const result = await searchStockVideos(String(req.query.q ?? ""), {
+        orientation: req.query.orientation === "landscape" ? "landscape" : "portrait",
+      });
+      if ("error" in result) {
+        return res.status(result.needsKey ? 501 : 502).json(result);
+      }
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Stock search failed" });
+    }
+  });
+
+  // POST /api/media-assets/stock/import — pull a chosen stock clip into the
+  // creator's own assets. Downloaded, not hotlinked: ffmpeg needs a local
+  // file, and a CDN URL could change or 404 under a saved edit later.
+  app.post("/api/media-assets/stock/import", isFlexibleAuthenticated, async (req: any, res) => {
+    const tmpPath = `/tmp/stock-${Date.now()}-${Math.random().toString(36).slice(2)}.mp4`;
+    try {
+      const { fileUrl, name, durationSec, photographer, pageUrl } = req.body || {};
+      // Only our own provider's host — this endpoint downloads whatever URL
+      // it is handed, so it must not become a general-purpose fetcher (SSRF).
+      // Hostname is parsed and compared exactly; a regex here would accept
+      // notpexels.com and pexels.com.evil.com.
+      const { downloadStockVideo, isPexelsUrl } = await import("./lib/stockFootage");
+      if (typeof fileUrl !== "string" || !isPexelsUrl(fileUrl)) {
+        return res.status(400).json({ error: "Only Pexels video URLs can be imported" });
+      }
+      const dl = await downloadStockVideo(fileUrl, tmpPath);
+      if (!dl.ok) return res.status(502).json({ error: dl.error });
+
+      const safeName = String(name ?? "Stock clip").replace(/[^\w\s.-]/g, "").slice(0, 120) || "Stock clip";
+      const objectKey = `public/media-assets/${encodeURIComponent(String(req.authUserId))}/${Date.now()}-stock.mp4`;
+      const serveUrl = await uploadFileToStorage(tmpPath, objectKey);
+
+      const asset = await storage.createMediaAsset({
+        userId: String(req.authUserId),
+        kind: "broll_video",
+        name: photographer ? `${safeName} — ${String(photographer).slice(0, 60)}` : safeName,
+        storagePath: objectKey,
+        mimeType: "video/mp4",
+        fileSizeBytes: dl.bytes,
+        durationSec: Number.isFinite(Number(durationSec)) ? String(Number(durationSec).toFixed(2)) : null,
+      } as any);
+
+      console.log(`[Stock] ${req.authUserId} imported Pexels clip (${(dl.bytes / 1024 / 1024).toFixed(1)}MB) from ${pageUrl ?? fileUrl}`);
+      res.json({ asset: { ...asset, url: serveUrl } });
+    } catch (err: any) {
+      console.error("[Stock] import error:", err?.message);
+      res.status(500).json({ error: err?.message || "Import failed" });
+    } finally {
+      try { fs.unlinkSync(tmpPath); } catch { /* already gone */ }
+    }
+  });
+
   app.get("/api/media-assets", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const kind = typeof req.query.kind === "string" ? req.query.kind : undefined;

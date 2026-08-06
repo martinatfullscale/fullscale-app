@@ -22,11 +22,17 @@
  * mean. Struck words compile to `wordCuts`, which feed the same segment
  * timeline as silence removal, so audio and video stay locked by construction.
  *
- * PREVIEW HONESTY. The player shows the last RENDERED clip. Pending edits are
- * drawn over the timeline as cut markers rather than faked in the video,
- * because we cannot apply an ffmpeg filtergraph in the browser and a preview
- * that silently lied about the output would be worse than no preview. The
- * duration readout updates live so the effect of a cut is still immediate.
+ * LIVE PREVIEW. Most of the stack CAN be previewed in the browser, and is:
+ * playback skips over cut spans as it reaches them, speed ramps drive
+ * video.playbackRate, b-roll composites as a second video element, and
+ * captions render from the transcript. What you see is what the render will
+ * produce.
+ *
+ * Two things are honestly approximate and labelled as such in the UI, because
+ * they need real pixel processing that only ffmpeg can do:
+ *   - stabilization: not previewable at all
+ *   - caption typography: HTML text, not the ASS renderer's exact metrics
+ * Everything else is the actual edit, played back.
  */
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -54,6 +60,8 @@ export interface StudioEdits {
   music?: { assetId: number; volume: number; ducking: boolean; duckAmountDb: number; fadeInSec: number; fadeOutSec: number } | null;
   stabilization?: { enabled: boolean; strength: number } | null;
 }
+
+interface AssetRow { id: number; kind: string; name: string; url: string; durationSec: string | null }
 
 interface ClipShape {
   id: number;
@@ -126,6 +134,23 @@ export default function ClipStudio({ clip, videoId, onClose, onApply }: Props) {
   );
 
   const hasBeats = Array.isArray(clip.segments) && clip.segments.length > 1;
+
+  // Asset urls for the b-roll preview layer. Loaded here (not in the tool
+  // panel) because the preview must work whichever tool is open.
+  const { data: brollAssetData } = useQuery<{ assets: AssetRow[] }>({
+    queryKey: ["/api/media-assets", "broll_video,broll_image"],
+    queryFn: async () => {
+      const [v, i] = await Promise.all([
+        fetchWithTimeout("/api/media-assets?kind=broll_video", { credentials: "include" }).then((r) => r.json()),
+        fetchWithTimeout("/api/media-assets?kind=broll_image", { credentials: "include" }).then((r) => r.json()),
+      ]);
+      return { assets: [...(v.assets ?? []), ...(i.assets ?? [])] };
+    },
+  });
+  const brollUrlById = useMemo(
+    () => new Map((brollAssetData?.assets ?? []).map((a) => [a.id, a.url])),
+    [brollAssetData],
+  );
 
   // ── Transcript, sliced to this clip and rebased to clip-relative time ──
   const { data: transcript, isLoading: loadingTranscript } = useQuery<{ segments: Segment[] }>({
@@ -236,16 +261,91 @@ export default function ClipStudio({ clip, videoId, onClose, onApply }: Props) {
     }
   };
 
-  // ── Player wiring ──────────────────────────────────────────────────
+  // ── Live preview ───────────────────────────────────────────────────
+  // Every removal, merged and sorted once. Playback consults this to jump
+  // over cuts, which is what makes the preview the actual edit rather than a
+  // description of one.
+  const previewCuts = useMemo(() => {
+    const spans = [...cuts.map((c) => ({ start: c.start, end: c.end }))];
+    if (edits.silenceCut?.enabled && clip.silenceAnalysis?.spans) {
+      const pad = edits.silenceCut.paddingSec ?? 0;
+      for (const s of clip.silenceAnalysis.spans) {
+        const st = s.start + pad;
+        const en = s.end - pad;
+        if (en > st) spans.push({ start: st, end: en });
+      }
+    }
+    const sorted = spans.filter((s) => s.end > s.start).sort((a, b) => a.start - b.start);
+    const merged: Array<{ start: number; end: number }> = [];
+    for (const s of sorted) {
+      const last = merged[merged.length - 1];
+      if (last && s.start <= last.end + 0.02) last.end = Math.max(last.end, s.end);
+      else merged.push({ ...s });
+    }
+    return merged;
+  }, [cuts, edits.silenceCut, clip.silenceAnalysis]);
+
+  const rampAt = useCallback(
+    (time: number) => (edits.speedRamps ?? []).find((r) => time >= r.start && time < r.end)?.rate ?? 1,
+    [edits.speedRamps],
+  );
+
+  const brollAt = useCallback(
+    (time: number) => (edits.broll ?? []).find((b) => time >= b.start && time < b.end) ?? null,
+    [edits.broll],
+  );
+
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
-    const onTime = () => setT(v.currentTime);
+    const onTime = () => {
+      const now = v.currentTime;
+      // Skip a cut the moment playback reaches it. This IS the preview of a
+      // cut — the gap closes exactly the way the render will close it.
+      const inCut = previewCuts.find((c) => now >= c.start - 0.03 && now < c.end - 0.03);
+      if (inCut) {
+        if (inCut.end >= clip.duration - 0.05) { v.pause(); setPlaying(false); }
+        else v.currentTime = inCut.end;
+        setT(inCut.end);
+        return;
+      }
+      // Speed ramps are just playbackRate over their span.
+      const rate = rampAt(now);
+      if (Math.abs(v.playbackRate - rate) > 0.01) v.playbackRate = rate;
+      setT(now);
+    };
     const onEnd = () => setPlaying(false);
     v.addEventListener("timeupdate", onTime);
     v.addEventListener("ended", onEnd);
     return () => { v.removeEventListener("timeupdate", onTime); v.removeEventListener("ended", onEnd); };
-  }, [clip.exportPath]);
+  }, [clip.exportPath, previewCuts, rampAt, clip.duration]);
+
+  // The b-roll layer follows the main video's clock.
+  const brollRef = useRef<HTMLVideoElement>(null);
+  const activeBroll = brollAt(t);
+  useEffect(() => {
+    const b = brollRef.current;
+    if (!b || !activeBroll) return;
+    const local = Math.max(0, t - activeBroll.start);
+    if (Math.abs(b.currentTime - local) > 0.3) b.currentTime = local;
+    if (playing && b.paused) b.play().catch(() => {});
+    if (!playing && !b.paused) b.pause();
+  }, [t, playing, activeBroll]);
+
+  // Caption line under the playhead, straight from the transcript — the same
+  // words the ASS renderer will burn in.
+  const captionLine = useMemo(() => {
+    if (!captionsEnabled) return null;
+    const perPhrase = Number(cs.wordsPerPhrase ?? 4);
+    const visible = clipWords.filter((w) => !isCut(w));
+    const idx = visible.findIndex((w) => t >= w.start && t < w.end);
+    if (idx < 0) return null;
+    const from = Math.floor(idx / perPhrase) * perPhrase;
+    return {
+      words: visible.slice(from, from + perPhrase),
+      activeIdx: idx - from,
+    };
+  }, [captionsEnabled, clipWords, isCut, t, cs.wordsPerPhrase]);
 
   const seek = (sec: number) => {
     const v = videoRef.current;
@@ -441,15 +541,94 @@ export default function ClipStudio({ clip, videoId, onClose, onApply }: Props) {
           <div className="flex-1 flex flex-col min-h-0 bg-black/30">
             <div className="flex-1 flex items-center justify-center p-4 min-h-0">
               {clip.exportPath ? (
-                <video
-                  ref={videoRef}
-                  key={clip.exportPath}
-                  src={clip.exportPath}
-                  poster={clip.thumbnailPath || undefined}
-                  playsInline
-                  className={`max-h-full rounded-lg bg-black ${aspect === "9:16" ? "aspect-[9/16]" : "aspect-video"}`}
-                  onClick={togglePlay}
-                />
+                <div
+                  className={`relative max-h-full rounded-lg overflow-hidden bg-black ${aspect === "9:16" ? "aspect-[9/16]" : "aspect-video"}`}
+                  style={{ height: "100%", containerType: "inline-size" }}
+                >
+                  <video
+                    ref={videoRef}
+                    key={clip.exportPath}
+                    src={clip.exportPath}
+                    poster={clip.thumbnailPath || undefined}
+                    playsInline
+                    className="w-full h-full object-contain"
+                    onClick={togglePlay}
+                  />
+
+                  {/* B-roll layer — a real second video, composited exactly
+                      where the render will composite it. */}
+                  {activeBroll && brollUrlById.get(activeBroll.assetId) && (
+                    <video
+                      ref={brollRef}
+                      key={`broll-${activeBroll.assetId}-${activeBroll.start}`}
+                      src={brollUrlById.get(activeBroll.assetId)}
+                      muted
+                      playsInline
+                      className="absolute object-cover pointer-events-none"
+                      style={
+                        activeBroll.scale >= 0.999
+                          ? { inset: 0, width: "100%", height: "100%" }
+                          : {
+                              width: `${activeBroll.scale * 100}%`,
+                              height: `${activeBroll.scale * 100}%`,
+                              left: `${activeBroll.x * (1 - activeBroll.scale) * 100}%`,
+                              top: `${activeBroll.y * (1 - activeBroll.scale) * 100}%`,
+                              borderRadius: 6,
+                            }
+                      }
+                    />
+                  )}
+
+                  {/* Captions — the same words, the same phrase grouping and
+                      the same word-by-word highlight the ASS renderer uses.
+                      Typography is HTML, so treat the LOOK as approximate. */}
+                  {captionLine && captionLine.words.length > 0 && (
+                    <div
+                      className="absolute left-0 right-0 flex justify-center px-4 pointer-events-none"
+                      style={{ bottom: `${Number(cs.positionRatio ?? 0.14) * 100}%` }}
+                    >
+                      <p
+                        className="text-center font-bold leading-tight"
+                        style={{
+                          fontSize: `clamp(12px, ${Number(cs.sizeScale ?? 1) * 5.5}cqw, 42px)`,
+                          textShadow: "0 2px 6px rgba(0,0,0,.85), 0 0 2px rgba(0,0,0,1)",
+                        }}
+                      >
+                        {captionLine.words.map((w, i) => (
+                          <span
+                            key={i}
+                            style={{
+                              color: i === captionLine.activeIdx
+                                ? String(cs.accentHex ?? "#FFE500")
+                                : "#ffffff",
+                            }}
+                          >
+                            {w.word}{" "}
+                          </span>
+                        ))}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Live badges for what the preview cannot show truthfully. */}
+                  <div className="absolute top-2 left-2 flex flex-col gap-1 pointer-events-none">
+                    {rampAt(t) !== 1 && (
+                      <span className="px-1.5 py-0.5 rounded bg-black/70 text-[10px] text-purple-200">
+                        {rampAt(t).toFixed(2)}x speed
+                      </span>
+                    )}
+                    {edits.stabilization?.enabled && (
+                      <span className="px-1.5 py-0.5 rounded bg-black/70 text-[10px] text-gray-300">
+                        stabilize on — applied at render
+                      </span>
+                    )}
+                    {edits.music && (
+                      <span className="px-1.5 py-0.5 rounded bg-black/70 text-[10px] text-gray-300">
+                        music bed — added at render
+                      </span>
+                    )}
+                  </div>
+                </div>
               ) : (
                 <div className="text-center px-6">
                   <Film className="w-10 h-10 text-gray-700 mx-auto mb-3" />
@@ -715,8 +894,6 @@ function CaptionsTool(props: { enabled: boolean; style: string; onToggle: () => 
 
 // ── Shared asset picker (b-roll + music) ────────────────────────────────
 
-interface AssetRow { id: number; kind: string; name: string; url: string; durationSec: string | null }
-
 function useAssets(kinds: string[]) {
   return useQuery<{ assets: AssetRow[] }>({
     queryKey: ["/api/media-assets", kinds.join(",")],
@@ -779,6 +956,61 @@ function BrollTool(props: {
   const [filter, setFilter] = useState("");
   const shown = assets.filter((a) => a.name.toLowerCase().includes(filter.toLowerCase()));
 
+  // ── Stock search ──────────────────────────────────────────────────
+  // Uploading your own b-roll is the wrong default: the point of a b-roll cut
+  // is generic filler over a talking head, and nobody wants to go shoot
+  // "person typing at a desk".
+  const [tab, setTab] = useState<"mine" | "stock">("stock");
+  const [q, setQ] = useState("");
+  const [stock, setStock] = useState<any[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [stockErr, setStockErr] = useState<string | null>(null);
+  const [importing, setImporting] = useState<number | null>(null);
+
+  const runSearch = async () => {
+    if (!q.trim()) return;
+    setSearching(true);
+    setStockErr(null);
+    try {
+      const res = await fetchWithTimeout(
+        `/api/media-assets/stock/search?q=${encodeURIComponent(q.trim())}`,
+        { credentials: "include" },
+      );
+      const body = await res.json();
+      if (!res.ok) { setStockErr(body.error || "Search failed"); setStock([]); return; }
+      setStock(body.videos ?? []);
+      if ((body.videos ?? []).length === 0) setStockErr(`Nothing found for "${q.trim()}".`);
+    } catch (err: any) {
+      setStockErr(err?.message || "Search failed");
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const importStock = async (v: any) => {
+    setImporting(v.id);
+    try {
+      const res = await fetchWithTimeout("/api/media-assets/stock/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          fileUrl: v.fileUrl, name: q.trim() || "Stock clip",
+          durationSec: v.durationSec, photographer: v.photographer, pageUrl: v.pageUrl,
+        }),
+      }, 180_000);
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || "Import failed");
+      props.queryClient.invalidateQueries({ queryKey: ["/api/media-assets"] });
+      addAt(body.asset.id);
+      setTab("mine");
+    } catch (err: any) {
+      alert(err?.message || "Import failed");
+    } finally {
+      setImporting(null);
+    }
+  };
+
   const addAt = (assetId: number) => {
     const start = Math.min(props.playhead, Math.max(0, props.duration - 3));
     props.onChange([
@@ -789,37 +1021,103 @@ function BrollTool(props: {
 
   return (
     <div className="space-y-3">
-      <UploadButton
-        kind="broll_video" accept="video/*,image/*" label="Upload footage or a still"
-        onDone={(a) => { props.queryClient.invalidateQueries({ queryKey: ["/api/media-assets"] }); addAt(a.id); }}
-      />
-      <div className="relative">
-        <Search className="w-3 h-3 absolute left-2 top-1/2 -translate-y-1/2 text-gray-500" />
-        <input
-          value={filter} onChange={(e) => setFilter(e.target.value)}
-          placeholder="Filter your library…"
-          className="w-full h-8 pl-7 pr-2 rounded bg-gray-800 border border-gray-700 text-[11px]"
-        />
+      <div className="flex gap-1 p-0.5 rounded bg-gray-800">
+        {(["stock", "mine"] as const).map((k) => (
+          <button
+            key={k}
+            onClick={() => setTab(k)}
+            className={`flex-1 py-1 rounded text-[11px] transition-colors ${
+              tab === k ? "bg-purple-600/30 text-purple-200" : "text-gray-500 hover:text-gray-300"
+            }`}
+            data-testid={`broll-tab-${k}`}
+          >
+            {k === "stock" ? "Search stock" : `My uploads${assets.length ? ` (${assets.length})` : ""}`}
+          </button>
+        ))}
       </div>
 
-      {shown.length === 0 ? (
-        <p className="text-[11px] text-gray-600 py-4 text-center">
-          {assets.length === 0 ? "No b-roll uploaded yet." : "Nothing matches that filter."}
-        </p>
+      {tab === "stock" ? (
+        <>
+          <form
+            onSubmit={(e) => { e.preventDefault(); runSearch(); }}
+            className="flex gap-1.5"
+          >
+            <div className="relative flex-1">
+              <Search className="w-3 h-3 absolute left-2 top-1/2 -translate-y-1/2 text-gray-500" />
+              <input
+                value={q} onChange={(e) => setQ(e.target.value)}
+                placeholder="city street, laptop, coffee…"
+                className="w-full h-8 pl-7 pr-2 rounded bg-gray-800 border border-gray-700 text-[11px]"
+                data-testid="stock-query"
+              />
+            </div>
+            <Button type="submit" size="sm" disabled={searching || !q.trim()} className="h-8 text-[11px] bg-purple-600 hover:bg-purple-500">
+              {searching ? <Loader2 className="w-3 h-3 animate-spin" /> : "Search"}
+            </Button>
+          </form>
+
+          {stockErr && <p className="text-[11px] text-amber-300/90 leading-snug">{stockErr}</p>}
+
+          <div className="grid grid-cols-2 gap-1.5">
+            {stock.map((v) => (
+              <button
+                key={v.id}
+                onClick={() => importStock(v)}
+                disabled={importing !== null}
+                className="relative rounded overflow-hidden border border-gray-700 hover:border-purple-500/60 disabled:opacity-50 group"
+                title={`Insert at ${fmtTime(props.playhead)} — by ${v.photographer}`}
+                data-testid={`stock-result-${v.id}`}
+              >
+                <img src={v.previewUrl} alt="" className="w-full aspect-video object-cover" loading="lazy" />
+                <span className="absolute bottom-0 inset-x-0 bg-black/70 text-[9px] text-gray-300 px-1 py-0.5 truncate">
+                  {importing === v.id ? "Importing…" : `${Math.round(v.durationSec)}s · ${v.photographer}`}
+                </span>
+              </button>
+            ))}
+          </div>
+
+          {stock.length > 0 && (
+            <p className="text-[10px] text-gray-600 leading-snug">
+              Pexels — free for commercial use, no attribution required. Clicking imports the
+              file into your assets and drops it at the playhead.
+            </p>
+          )}
+        </>
       ) : (
-        <div className="grid grid-cols-2 gap-1.5">
-          {shown.map((a) => (
-            <button
-              key={a.id}
-              onClick={() => addAt(a.id)}
-              className="rounded border border-gray-700 p-1.5 text-left hover:border-purple-500/60"
-              title={`Insert at ${fmtTime(props.playhead)}`}
-            >
-              <p className="text-[10px] truncate text-gray-300">{a.name}</p>
-              {a.durationSec && <p className="text-[9px] text-gray-600">{Math.round(Number(a.durationSec))}s</p>}
-            </button>
-          ))}
-        </div>
+        <>
+          <UploadButton
+            kind="broll_video" accept="video/*,image/*" label="Upload footage or a still"
+            onDone={(a) => { props.queryClient.invalidateQueries({ queryKey: ["/api/media-assets"] }); addAt(a.id); }}
+          />
+          <div className="relative">
+            <Search className="w-3 h-3 absolute left-2 top-1/2 -translate-y-1/2 text-gray-500" />
+            <input
+              value={filter} onChange={(e) => setFilter(e.target.value)}
+              placeholder="Filter your library…"
+              className="w-full h-8 pl-7 pr-2 rounded bg-gray-800 border border-gray-700 text-[11px]"
+            />
+          </div>
+
+          {shown.length === 0 ? (
+            <p className="text-[11px] text-gray-600 py-4 text-center">
+              {assets.length === 0 ? "Nothing uploaded yet — try Search stock." : "Nothing matches that filter."}
+            </p>
+          ) : (
+            <div className="grid grid-cols-2 gap-1.5">
+              {shown.map((a) => (
+                <button
+                  key={a.id}
+                  onClick={() => addAt(a.id)}
+                  className="rounded border border-gray-700 p-1.5 text-left hover:border-purple-500/60"
+                  title={`Insert at ${fmtTime(props.playhead)}`}
+                >
+                  <p className="text-[10px] truncate text-gray-300">{a.name}</p>
+                  {a.durationSec && <p className="text-[9px] text-gray-600">{Math.round(Number(a.durationSec))}s</p>}
+                </button>
+              ))}
+            </div>
+          )}
+        </>
       )}
 
       {props.cuts.length > 0 && (
