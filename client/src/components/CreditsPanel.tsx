@@ -17,7 +17,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { fetchWithTimeout } from "@/lib/queryClient";
-import { Loader2, Sparkles, Check, AlertTriangle, Coins } from "lucide-react";
+import { Loader2, Sparkles, Check, AlertTriangle, Coins, Wrench } from "lucide-react";
 
 interface Pack {
   id: string;
@@ -66,6 +66,43 @@ export default function CreditsPanel() {
     const giveUp = setTimeout(() => setAwaitingFulfilment(false), 30_000);
     return () => clearTimeout(giveUp);
   }, [awaitingFulfilment, data?.purchases]);
+
+  // ── Admin: grant credits without Stripe ──────────────────────────
+  // Payments are gated on the webhook secret, but the credit system itself
+  // is not. This lets the team hand out credits to test the generation flow,
+  // comp a creator, or make good on a support issue — and it is the same
+  // audited path a purchase uses, so grants appear in the ledger too.
+  const { data: me } = useQuery<{ isAdmin?: boolean; email?: string }>({
+    queryKey: ["/api/auth/user-type"],
+  });
+  const [granting, setGranting] = useState(false);
+  const [grantAmount, setGrantAmount] = useState("50");
+  const [grantEmail, setGrantEmail] = useState("");
+
+  const grant = async () => {
+    setGranting(true);
+    setErr(null);
+    try {
+      const res = await fetchWithTimeout("/api/admin/credits/grant", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          userId: grantEmail.trim() || me?.email,
+          amount: parseInt(grantAmount) || 0,
+          reason: "manual",
+          note: "Granted from the Credits panel",
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) { setErr(body.error || "Grant failed"); return; }
+      await refetch();
+    } catch (e: any) {
+      setErr(e?.message || "Grant failed");
+    } finally {
+      setGranting(false);
+    }
+  };
 
   const buy = async (packId: string) => {
     setBuying(packId);
@@ -188,6 +225,45 @@ export default function CreditsPanel() {
       )}
 
       {err && <p className="text-sm text-destructive">{err}</p>}
+
+      {/* Admin-only. The server re-checks the allowlist — this is convenience,
+          not the authorization. */}
+      {me?.isAdmin && (
+        <div className="rounded-lg border border-border/60 p-4">
+          <div className="flex items-center gap-2 mb-1">
+            <Wrench className="w-3.5 h-3.5 text-muted-foreground" />
+            <p className="text-sm font-medium">Grant credits (admin)</p>
+          </div>
+          <p className="text-xs text-muted-foreground mb-3">
+            Works without Stripe — for testing the generation flow, comping a creator, or
+            fixing a support issue. Grants land in the same ledger as purchases.
+          </p>
+          <div className="flex gap-2 flex-wrap">
+            <input
+              value={grantEmail}
+              onChange={(e) => setGrantEmail(e.target.value)}
+              placeholder={me.email ? `${me.email} (you)` : "creator@example.com"}
+              className="h-9 px-3 rounded-md bg-muted/40 border border-border text-sm flex-1 min-w-[200px]"
+              data-testid="grant-email"
+            />
+            <input
+              value={grantAmount}
+              onChange={(e) => setGrantAmount(e.target.value.replace(/\D/g, ""))}
+              className="h-9 px-3 rounded-md bg-muted/40 border border-border text-sm w-24"
+              data-testid="grant-amount"
+            />
+            <Button
+              variant="outline"
+              disabled={granting || !(parseInt(grantAmount) > 0)}
+              onClick={grant}
+              data-testid="grant-submit"
+            >
+              {granting ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : null}
+              Grant
+            </Button>
+          </div>
+        </div>
+      )}
 
       <p className="text-[11px] text-muted-foreground leading-relaxed max-w-xl">
         Payment is handled by Stripe — card details never reach FullScale. A failed generation
