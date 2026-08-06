@@ -15,8 +15,8 @@ import {
   RefreshCw, Play, DollarSign, Filter, X, Wand2, AlertCircle, Search, SlidersHorizontal,
   PackageOpen, ScanSearch,
 } from "lucide-react";
-import ClipEditorPanel, { type ClipEditSettings } from "@/components/ClipEditorPanel";
 import ClipPlacementPreview from "@/components/ClipPlacementPreview";
+import ClipStudio from "@/components/ClipStudio";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
@@ -173,6 +173,7 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
   // Placement preview modal + clips currently scanning (optimistic — the
   // list endpoint confirms via scanInFlight on the next refetch).
   const [previewClip, setPreviewClip] = useState<RankedClip | null>(null);
+  const [studioClip, setStudioClip] = useState<RankedClip | null>(null);
   const [scanningClips, setScanningClips] = useState<Set<number>>(new Set());
 
   const scanClip = useCallback(async (clipId: number) => {
@@ -934,39 +935,10 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
                   onCopilot={onSelectForCopilot ? () => onSelectForCopilot(clip) : undefined}
                   onBuy={onBuyPlacement ? () => onBuyPlacement(clip) : undefined}
                   onPlay={clip.exportPath ? () => setPlayingClip(clip) : undefined}
-                  sourceDurationSec={sourceDurationSec}
                   onPreviewPlacement={(clip as any).id ? () => setPreviewClip(clip) : undefined}
                   onScan={(clip as any).id ? () => scanClip((clip as any).id) : undefined}
                   isScanning={(clip as any).id ? scanningClips.has((clip as any).id) : false}
-                  onApplyEdit={(clip as any).id ? async (settings) => {
-                    const res = await fetch(`/api/editorial-clips/${(clip as any).id}/rerender`, {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      credentials: "include",
-                      body: JSON.stringify({
-                        aspect: settings.aspect,
-                        clipStart: settings.clipStart,
-                        clipEnd: settings.clipEnd,
-                        captionsEnabled: settings.captionsEnabled,
-                        captionStyle: settings.captionStyle,
-                        captionSettings: {
-                          sizeScale: settings.sizeScale,
-                          positionRatio: settings.positionRatio,
-                          wordsPerPhrase: settings.wordsPerPhrase,
-                          outline: settings.outline,
-                          accentHex: settings.accentHex,
-                        },
-                        edits: settings.edits,
-                      }),
-                    });
-                    if (res.ok) {
-                      toast({ title: "Re-rendering your edit", description: "The clip refreshes here when the new cut is ready." });
-                      await refetchClips();
-                    } else {
-                      const err = await res.json().catch(() => ({}));
-                      toast({ title: "Re-render failed", description: err.error || "Try again", variant: "destructive" });
-                    }
-                  } : undefined}
+                  onOpenStudio={(clip as any).id ? () => setStudioClip(clip) : undefined}
                   onRerenderAspect={(clip as any).id ? async (aspect) => {
                     const res = await fetch(`/api/editorial-clips/${(clip as any).id}/rerender`, {
                       method: "POST",
@@ -987,6 +959,30 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
             </AnimatePresence>
           </div>
         </>
+      )}
+
+      {/* The editor: video at the centre, transcript as the edit surface */}
+      {studioClip && (studioClip as any).id && (
+        <ClipStudio
+          clip={studioClip as any}
+          videoId={videoId}
+          onClose={() => setStudioClip(null)}
+          onApply={async (payload) => {
+            const res = await fetch(`/api/editorial-clips/${(studioClip as any).id}/rerender`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              credentials: "include",
+              body: JSON.stringify(payload),
+            });
+            if (res.ok) {
+              toast({ title: "Re-rendering your edit", description: "The clip refreshes here when the new cut is ready." });
+              await refetchClips();
+            } else {
+              const err = await res.json().catch(() => ({}));
+              toast({ title: "Re-render failed", description: err.error || "Try again", variant: "destructive" });
+            }
+          }}
+        />
       )}
 
       {/* Placement preview — source-space frames + product sprites */}
@@ -1095,8 +1091,7 @@ function EditorialClipCard({
   onPlay,
   onCopilot,
   onRerenderAspect,
-  onApplyEdit,
-  sourceDurationSec,
+  onOpenStudio,
   onPreviewPlacement,
   onScan,
   isScanning,
@@ -1111,13 +1106,12 @@ function EditorialClipCard({
   onPlay?: () => void;
   onCopilot?: () => void;
   onRerenderAspect?: (aspect: "9:16" | "16:9") => void;
-  onApplyEdit?: (settings: ClipEditSettings) => Promise<void>;
-  sourceDurationSec?: number;
+  onOpenStudio?: () => void;
   onPreviewPlacement?: () => void;
   onScan?: () => void;
   isScanning?: boolean;
 }) {
-  const [editing, setEditing] = useState(false);
+
   const viralPct = Math.round(clip.finalScore * 100);
   const tierBadge = getTierBadge(clip.monetizationTier);
   const isRendered = clip.renderStatus === "rendered" && !!clip.exportPath;
@@ -1201,8 +1195,11 @@ function EditorialClipCard({
             )}
           </div>
 
-          {/* Viral Score + Actions */}
-          <div className="flex items-center gap-2 flex-shrink-0">
+          {/* Viral Score + Actions.
+              flex-wrap + justify-end, not flex-shrink-0: the action row grew
+              (Placement, Scan, Edit) past the card width and the last button
+              was clipped off the right edge with no way to reach it. */}
+          <div className="flex items-center gap-2 flex-wrap justify-end max-w-full">
             {/* Viral Score Circle */}
             <div className="text-center">
               <div className={`text-lg font-bold ${getViralColor(clip.finalScore)}`}>
@@ -1294,13 +1291,13 @@ function EditorialClipCard({
                 </Button>
               ) : null
             )}
-            {onApplyEdit && mode !== "brand" && (clip as any).id && (
+            {onOpenStudio && mode !== "brand" && (clip as any).id && (
               <Button
                 size="sm"
-                variant={editing ? "default" : "ghost"}
-                onClick={() => setEditing((v) => !v)}
-                className={editing ? "bg-purple-600 hover:bg-purple-500 text-white text-xs" : "text-gray-300 hover:text-white text-xs"}
-                title="Trim, captions and shape for this clip"
+                variant="ghost"
+                onClick={onOpenStudio}
+                className="text-gray-200 hover:text-white text-xs"
+                title="Open the editor: transcript, captions, b-roll, audio, motion"
                 data-testid={`button-edit-${(clip as any).id ?? rank}`}
               >
                 <SlidersHorizontal className="w-3 h-3 mr-1" />
@@ -1354,29 +1351,6 @@ function EditorialClipCard({
           </div>
         </div>
       </div>
-
-      {/* Editing toolkit — trim, shape and captions for this clip */}
-      {editing && onApplyEdit && (clip as any).id && (
-        <ClipEditorPanel
-          clip={{
-            id: (clip as any).id,
-            clipStart: clip.clipStart,
-            clipEnd: clip.clipEnd,
-            duration: clip.duration,
-            aspectRatio: clip.aspectRatio ?? null,
-            captionsEnabled: clip.captionsEnabled ?? null,
-            captionStyle: clip.captionStyle ?? null,
-            captionSettings: clip.captionSettings ?? null,
-            segments: clip.segments ?? null,
-            edits: (clip as any).edits ?? null,
-            silenceAnalysis: (clip as any).silenceAnalysis ?? null,
-            renderWarnings: (clip as any).renderWarnings ?? null,
-          }}
-          sourceDurationSec={sourceDurationSec}
-          onApply={onApplyEdit}
-          onClose={() => setEditing(false)}
-        />
-      )}
 
       {/* Expanded Details */}
       <AnimatePresence>

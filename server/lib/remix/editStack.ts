@@ -107,9 +107,30 @@ export interface SilenceCut {
   detected?: Array<{ start: number; end: number }>;
 }
 
+/**
+ * Spans the creator cut by deleting WORDS in the transcript.
+ *
+ * This is the same operation as silence removal — remove a span, close the
+ * gap — so it feeds the same segment timeline rather than a parallel one.
+ * Keeping them separate in the model matters only for provenance: silence is
+ * measured, word cuts are chosen, and a creator retuning silence padding must
+ * not wipe out their editorial deletions.
+ */
+export interface WordCut {
+  /** Clip-relative seconds. */
+  start: number;
+  end: number;
+  /** What was said there, for the UI to show and for auditability. */
+  text?: string;
+  /** filler = auto-detected um/uh/like; manual = the creator struck it. */
+  reason?: "filler" | "manual";
+}
+
 export interface EditStack {
   stabilization?: Stabilization | null;
   silenceCut?: SilenceCut | null;
+  /** Transcript-driven deletions. Merged with silence spans at compile time. */
+  wordCuts?: WordCut[] | null;
   speedRamps?: SpeedRamp[] | null;
   broll?: BrollCut[] | null;
   textOverlays?: TextOverlay[] | null;
@@ -140,23 +161,47 @@ export function compileTimeline(
   clipDurationSec: number,
   silence: SilenceCut | null | undefined,
   ramps: SpeedRamp[] | null | undefined,
+  wordCuts?: WordCut[] | null,
 ): { segments: TimelineSegment[]; outputDurationSec: number; removedSec: number } {
   const duration = Math.max(0, Number(clipDurationSec) || 0);
   if (duration <= 0) return { segments: [], outputDurationSec: 0, removedSec: 0 };
 
-  // 1. Keep-spans = the clip minus the padded silent spans.
+  // 1. Keep-spans = the clip minus everything removed. Silence spans get the
+  //    creator's padding (so a cut doesn't clip a breath); word cuts do NOT —
+  //    a struck word's boundaries came from the transcript and padding them
+  //    would eat the neighbouring words.
   let keeps: Array<{ start: number; end: number }> = [{ start: 0, end: duration }];
   let removedSec = 0;
 
+  const removals: Array<{ start: number; end: number }> = [];
   if (silence?.enabled && silence.detected?.length) {
     const pad = Math.max(0, Number(silence.paddingSec) || 0);
-    const cuts = silence.detected
-      .map((s) => ({
+    for (const s of silence.detected) {
+      removals.push({
         start: Math.max(0, Number(s.start) + pad),
         end: Math.min(duration, Number(s.end) - pad),
-      }))
+      });
+    }
+  }
+  for (const w of wordCuts ?? []) {
+    removals.push({
+      start: Math.max(0, Number(w.start)),
+      end: Math.min(duration, Number(w.end)),
+    });
+  }
+
+  if (removals.length > 0) {
+    // Overlapping removals (a struck word inside a silent gap) must merge, or
+    // the second one's subtraction runs against an already-moved cursor.
+    const sorted = removals
       .filter((s) => s.end - s.start > EPS)
       .sort((a, b) => a.start - b.start);
+    const cuts: Array<{ start: number; end: number }> = [];
+    for (const r of sorted) {
+      const last = cuts[cuts.length - 1];
+      if (last && r.start <= last.end + EPS) last.end = Math.max(last.end, r.end);
+      else cuts.push({ ...r });
+    }
 
     const next: Array<{ start: number; end: number }> = [];
     let cursor = 0;
@@ -326,7 +371,7 @@ export async function buildEditGraph(opts: {
 
   // ── 2. Retiming: silence removal + speed ramps, compiled together ──
   const { segments, outputDurationSec, removedSec } = compileTimeline(
-    clipDurationSec, stack.silenceCut, stack.speedRamps,
+    clipDurationSec, stack.silenceCut, stack.speedRamps, stack.wordCuts,
   );
   const retimes = segments.length > 0 && !timelineIsIdentity(segments, clipDurationSec);
   let audio: string[] | null = null;
@@ -520,6 +565,7 @@ export function editStackIsActive(stack: EditStack | null | undefined): boolean 
   return !!(
     stack.stabilization?.enabled ||
     (stack.silenceCut?.enabled && stack.silenceCut.detected?.length) ||
+    (stack.wordCuts ?? []).length > 0 ||
     (stack.speedRamps ?? []).length > 0 ||
     (stack.broll ?? []).length > 0 ||
     (stack.textOverlays ?? []).length > 0 ||

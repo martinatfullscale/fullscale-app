@@ -13906,6 +13906,18 @@ export async function registerRoutes(
               paddingSec: num(e.silenceCut.paddingSec, 0, 0.5, 0.15),
             };
           }
+          // Transcript-driven cuts. Capped generously — a heavily-edited
+          // 60s clip legitimately has dozens of struck words.
+          if (Array.isArray(e.wordCuts)) {
+            clean.wordCuts = e.wordCuts.slice(0, 400)
+              .map((w: any) => ({
+                start: num(w.start, 0, 36000, 0),
+                end: num(w.end, 0, 36000, 0),
+                text: typeof w.text === "string" ? w.text.slice(0, 80) : undefined,
+                reason: w.reason === "filler" ? "filler" : "manual",
+              }))
+              .filter((w: any) => w.end > w.start);
+          }
           if (Array.isArray(e.speedRamps)) {
             clean.speedRamps = e.speedRamps.slice(0, 8)
               .map((r: any) => ({ start: num(r.start, 0, 36000, 0), end: num(r.end, 0, 36000, 0), rate: num(r.rate, 0.25, 4, 1) }))

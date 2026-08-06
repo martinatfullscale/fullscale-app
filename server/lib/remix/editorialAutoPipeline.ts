@@ -1099,6 +1099,8 @@ async function prepareEditGraphForClip(
 
   // ── Silence spans come from the cached analysis, padding applied at
   //    compile time so the creator can retune it without re-analyzing.
+  // Word cuts come straight off the clip's stored stack — no analysis pass,
+  // because the transcript already gave exact word boundaries.
   if (resolvedStack.silenceCut?.enabled) {
     const cached = (clip as any).silenceAnalysis;
     if (cached?.spans?.length) {
