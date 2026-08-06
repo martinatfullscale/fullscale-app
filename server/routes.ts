@@ -10792,14 +10792,12 @@ export async function registerRoutes(
   // than making someone infer it from a failed search.
   app.get("/api/media-assets/stock/status", isFlexibleAuthenticated, async (_req: any, res) => {
     try {
-      const { stockSearchAvailable } = await import("./lib/stockFootage");
-      const available = stockSearchAvailable();
+      const { providerStatuses, anyProviderConfigured } = await import("./lib/stockProviders");
+      const providers = providerStatuses();
       res.json({
-        available,
-        provider: "pexels",
-        detail: available
-          ? "PEXELS_API_KEY is present in this environment — stock search is live."
-          : "PEXELS_API_KEY is NOT set in THIS environment. A secret added to the Replit workspace is not automatically available to a Deployment — add it there too, then redeploy.",
+        available: anyProviderConfigured(),
+        providers,
+        detail: providers.map((p) => `${p.label}: ${p.configured ? "live" : "not configured"}`).join(" · "),
       });
     } catch (err: any) {
       res.status(500).json({ error: err?.message || "Status check failed" });
@@ -10811,14 +10809,22 @@ export async function registerRoutes(
   // parsed as an id.
   app.get("/api/media-assets/stock/search", isFlexibleAuthenticated, async (req: any, res) => {
     try {
-      const { searchStockVideos } = await import("./lib/stockFootage");
-      const result = await searchStockVideos(String(req.query.q ?? ""), {
+      const { searchAllProviders, providerStatuses } = await import("./lib/stockProviders");
+      const statuses = providerStatuses();
+      const result = await searchAllProviders(String(req.query.q ?? ""), {
         orientation: req.query.orientation === "landscape" ? "landscape" : "portrait",
       });
-      if ("error" in result) {
-        return res.status(result.needsKey ? 501 : 502).json(result);
+      if (result.configuredCount === 0) {
+        // No provider configured is a setup problem, not a search failure —
+        // 501 so the client can say what to do instead of "no results".
+        return res.status(501).json({
+          error: statuses.map((s) => s.detail).join(" "),
+          providers: statuses,
+        });
       }
-      res.json(result);
+      // Partial failure still returns results: one dead key must not take the
+      // other library down with it.
+      res.json({ videos: result.videos, errors: result.errors, providers: statuses });
     } catch (err: any) {
       res.status(500).json({ error: err?.message || "Stock search failed" });
     }
@@ -10835,9 +10841,9 @@ export async function registerRoutes(
       // it is handed, so it must not become a general-purpose fetcher (SSRF).
       // Hostname is parsed and compared exactly; a regex here would accept
       // notpexels.com and pexels.com.evil.com.
-      const { downloadStockVideo, isPexelsUrl } = await import("./lib/stockFootage");
-      if (typeof fileUrl !== "string" || !isPexelsUrl(fileUrl)) {
-        return res.status(400).json({ error: "Only Pexels video URLs can be imported" });
+      const { downloadStockVideo, isAllowedStockUrl } = await import("./lib/stockProviders");
+      if (typeof fileUrl !== "string" || !isAllowedStockUrl(fileUrl)) {
+        return res.status(400).json({ error: "That URL isn't from a supported stock provider" });
       }
       const dl = await downloadStockVideo(fileUrl, tmpPath);
       if (!dl.ok) return res.status(502).json({ error: dl.error });

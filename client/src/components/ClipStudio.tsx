@@ -965,7 +965,7 @@ function BrollTool(props: {
   const [stock, setStock] = useState<any[]>([]);
   const [searching, setSearching] = useState(false);
   const [stockErr, setStockErr] = useState<string | null>(null);
-  const [importing, setImporting] = useState<number | null>(null);
+  const [importing, setImporting] = useState<string | null>(null);
 
   const runSearch = async () => {
     if (!q.trim()) return;
@@ -988,7 +988,7 @@ function BrollTool(props: {
   };
 
   const importStock = async (v: any) => {
-    setImporting(v.id);
+    setImporting(v.uid);
     try {
       const res = await fetchWithTimeout("/api/media-assets/stock/import", {
         method: "POST",
@@ -996,7 +996,7 @@ function BrollTool(props: {
         credentials: "include",
         body: JSON.stringify({
           fileUrl: v.fileUrl, name: q.trim() || "Stock clip",
-          durationSec: v.durationSec, photographer: v.photographer, pageUrl: v.pageUrl,
+          durationSec: v.durationSec, photographer: v.author, pageUrl: v.pageUrl,
         }),
       }, 180_000);
       const body = await res.json();
@@ -1073,16 +1073,19 @@ function BrollTool(props: {
           <div className="grid grid-cols-2 gap-1.5">
             {stock.map((v) => (
               <button
-                key={v.id}
+                key={v.uid}
                 onClick={() => importStock(v)}
                 disabled={importing !== null}
                 className="relative rounded overflow-hidden border border-gray-700 hover:border-purple-500/60 disabled:opacity-50 group"
-                title={`Insert at ${fmtTime(props.playhead)} — by ${v.photographer}`}
-                data-testid={`stock-result-${v.id}`}
+                title={`Insert at ${fmtTime(props.playhead)} — ${v.providerLabel}, by ${v.author}`}
+                data-testid={`stock-result-${v.uid}`}
               >
                 <img src={v.previewUrl} alt="" className="w-full aspect-video object-cover" loading="lazy" />
+                <span className="absolute top-1 left-1 bg-black/70 text-[8px] text-gray-300 px-1 rounded">
+                  {v.providerLabel}
+                </span>
                 <span className="absolute bottom-0 inset-x-0 bg-black/70 text-[9px] text-gray-300 px-1 py-0.5 truncate">
-                  {importing === v.id ? "Importing…" : `${Math.round(v.durationSec)}s · ${v.photographer}`}
+                  {importing === v.uid ? "Importing…" : `${Math.round(v.durationSec)}s · ${v.author}`}
                 </span>
               </button>
             ))}
@@ -1090,8 +1093,8 @@ function BrollTool(props: {
 
           {stock.length > 0 && (
             <p className="text-[10px] text-gray-600 leading-snug">
-              Pexels — free for commercial use, no attribution required. Clicking imports the
-              file into your assets and drops it at the playhead.
+              Free for commercial use, no attribution required. Clicking imports the file
+              into your assets and drops it at the playhead.
             </p>
           )}
         </>
