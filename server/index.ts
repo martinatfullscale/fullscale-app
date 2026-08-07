@@ -583,9 +583,31 @@ async function sweepStaleTempArtifacts(): Promise<void> {
       // every column explicitly, so one un-pushed migration fails every query
       // touching that table and the whole app reads as "laggy, everything
       // spins". Loud at boot beats diagnosing it from symptoms again.
+      //
+      // And REPAIR it, not just report it. This build shipped with four tables
+      // (creator_credits, credit_grants, ai_generations, credit_purchases)
+      // absent from the deployment database — logged loudly, then left broken,
+      // because the fix lived behind an admin button nobody knew to press
+      // while the app was misbehaving. A deployment that can heal itself is
+      // worth more than a deployment that describes its own illness.
+      //
+      // Safe to run unattended: the plan is STRICTLY ADDITIVE by construction
+      // — CREATE TABLE IF NOT EXISTS and ADD COLUMN IF NOT EXISTS only, never
+      // a DROP, never a type change — so it cannot destroy data and is a no-op
+      // when the schema already matches. Set SCHEMA_AUTOREPAIR=false to
+      // disable.
       try {
-        const { logSchemaDriftAtBoot } = await import("./lib/schemaCheck");
-        await logSchemaDriftAtBoot();
+        const { logSchemaDriftAtBoot, applySchemaFix } = await import("./lib/schemaCheck");
+        const drift = await logSchemaDriftAtBoot();
+        const needsRepair = (drift?.missingTables?.length ?? 0) > 0 || (drift?.missingColumns?.length ?? 0) > 0;
+        if (needsRepair && process.env.SCHEMA_AUTOREPAIR !== "false") {
+          log("Schema drift detected — applying additive repair...");
+          const result = await applySchemaFix();
+          const ok = (result?.applied ?? []).filter((a: any) => a.ok).length;
+          const failed = (result?.applied ?? []).filter((a: any) => !a.ok);
+          log(`Schema repair: ${ok} statement(s) applied, ${failed.length} failed`);
+          for (const f of failed) log(`  repair FAILED: ${f.sql} -> ${f.error}`);
+        }
       } catch (schemaErr) {
         log(`Schema check failed to run: ${schemaErr}`);
       }
