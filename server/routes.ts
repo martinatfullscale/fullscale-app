@@ -1836,6 +1836,104 @@ export async function registerRoutes(
     }
   });
 
+  /**
+   * Everything needed to actually REVIEW one placement.
+   *
+   * The queue could start and finish a review but never SHOW the thing being
+   * reviewed — the operator was asked to approve a creator's choice with a
+   * 40x40 thumbnail and a row title. This returns the placement in context:
+   * where in the video it sits, what surface it occupies, which product, and
+   * the creator's own framing values.
+   *
+   * The image blobs stay out of the payload as always; the composite is
+   * fetched from the /thumb route, which streams one image on demand.
+   */
+  app.get("/api/admin/placements/:id/detail", async (req: any, res) => {
+    try {
+      const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
+      if (!callerEmail || !ADMIN_EMAILS.map((e: string) => e.toLowerCase()).includes(String(callerEmail).toLowerCase())) {
+        return res.status(403).json({ error: "Admin access required" });
+      }
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ error: "Invalid placement id" });
+
+      const placement: any = await storage.getPlacementById(id);
+      if (!placement) return res.status(404).json({ error: "Placement not found" });
+
+      const [video, surfaces, product, clip] = await Promise.all([
+        storage.getVideoSummaries([placement.videoId]).then((m) => m.get(placement.videoId) ?? null),
+        storage.getDetectedSurfaces(placement.videoId).catch(() => [] as any[]),
+        placement.productId != null
+          ? storage.getBrandProduct(placement.productId).catch(() => undefined)
+          : Promise.resolve(undefined),
+        placement.editorialClipId
+          ? storage.getEditorialClipById(placement.editorialClipId).catch(() => null)
+          : Promise.resolve(null),
+      ]);
+      const surface: any = (surfaces as any[]).find((s) => s.id === placement.surfaceId) ?? null;
+
+      // Where to seek the player. An editorial placement is scoped to the clip,
+      // so its timestamp is relative to the clip's start in the source video.
+      const surfaceSec = surface ? Number(surface.timestamp) : null;
+      const seekSec = clip ? Number((clip as any).clipStart ?? 0) : (surfaceSec ?? 0);
+
+      res.json({
+        placement: {
+          id: placement.id,
+          videoId: placement.videoId,
+          createdBy: placement.createdBy,
+          role: placement.role,
+          reviewStatus: placement.reviewStatus ?? "submitted",
+          reviewNote: placement.reviewNote ?? null,
+          isHarmonized: !!placement.isHarmonized,
+          createdAt: placement.createdAt,
+          transform: placement.transform ?? null,
+          blend: placement.blend ?? null,
+        },
+        video: video
+          ? {
+              id: video.id,
+              title: video.title,
+              // Ownership-gated stream; admins pass the media policy.
+              streamUrl: video.filePath ? `/api/video/${video.id}/stream` : null,
+              platform: (video as any).platform ?? null,
+              duration: (video as any).duration ?? null,
+            }
+          : null,
+        surface: surface
+          ? {
+              id: surface.id,
+              surfaceType: surface.surfaceType,
+              timestamp: surfaceSec,
+              sceneContext: surface.sceneContext ?? null,
+              box: {
+                x: Number(surface.boundingBoxX),
+                y: Number(surface.boundingBoxY),
+                w: Number(surface.boundingBoxWidth),
+                h: Number(surface.boundingBoxHeight),
+              },
+            }
+          : null,
+        clip: clip
+          ? {
+              id: (clip as any).id,
+              suggestedTitle: (clip as any).suggestedTitle ?? null,
+              clipStart: (clip as any).clipStart ?? null,
+              clipEnd: (clip as any).clipEnd ?? null,
+              aspectRatio: (clip as any).aspectRatio ?? null,
+              exportPath: (clip as any).exportPath ?? null,
+            }
+          : null,
+        product: product ? { id: (product as any).id, name: (product as any).name ?? null } : null,
+        seekSec,
+        compositeUrl: `/api/admin/placements/${id}/thumb`,
+      });
+    } catch (err: any) {
+      console.error("[Admin Placements] Detail error:", err?.message);
+      res.status(500).json({ error: "Failed to load placement detail" });
+    }
+  });
+
   app.post("/api/admin/placements/:id/review", async (req: any, res) => {
     try {
       const adminEmails = ADMIN_EMAILS; // canonical list — see server/lib/adminEmails.ts

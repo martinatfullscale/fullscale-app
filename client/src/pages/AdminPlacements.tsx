@@ -5,7 +5,7 @@
  * creator sees where their placement stands (chip on Saved Placements +
  * bell notification).
  */
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { fetchWithTimeout } from "@/lib/queryClient";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -41,6 +41,7 @@ const STATUS_META: Record<string, { label: string; cls: string }> = {
 export default function AdminPlacements() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const [reviewFor, setReviewFor] = useState<number | null>(null);
   const [noteFor, setNoteFor] = useState<number | null>(null);
   const [noteText, setNoteText] = useState("");
   const [deliverFor, setDeliverFor] = useState<number | null>(null);
@@ -156,9 +157,138 @@ export default function AdminPlacements() {
   };
 
   const rows = data?.placements ?? [];
-  const queue = rows.filter((r) => r.reviewStatus === "submitted" || r.reviewStatus === "in_review" || r.reviewStatus === "needs_changes");
+  // The row you are actively reviewing belongs at the TOP. The server sorts
+  // submitted(0) before in_review(1), so pressing "Start review" used to push
+  // the placement DOWN the list and look like the button had done nothing.
+  const queue = rows
+    .filter((r) => r.reviewStatus === "submitted" || r.reviewStatus === "in_review" || r.reviewStatus === "needs_changes")
+    .sort((a, b) => {
+      const rank = (st: string) => (st === "in_review" ? 0 : st === "submitted" ? 1 : 2);
+      return rank(a.reviewStatus) - rank(b.reviewStatus) || b.id - a.id;
+    });
   // render_ready is waiting on the creator to post; live is measuring.
   const done = rows.filter((r) => r.reviewStatus === "render_ready" || r.reviewStatus === "live");
+
+  /**
+   * The thing you actually review with.
+   *
+   * The queue could START and FINISH a review but never SHOW the placement:
+   * a 40x40 thumbnail and a row title were the whole basis for approving a
+   * creator's choice. This puts the video, the surface, and the composite in
+   * front of the operator, seeked to the moment the placement occupies.
+   */
+  const ReviewPanel = ({ id }: { id: number }) => {
+    const { data, isLoading, isError, error } = useQuery<any>({
+      queryKey: [`/api/admin/placements/${id}/detail`],
+      queryFn: async () => {
+        const res = await fetchWithTimeout(`/api/admin/placements/${id}/detail`, { credentials: "include" });
+        if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || "Failed to load");
+        return res.json();
+      },
+    });
+    const videoRef = useRef<HTMLVideoElement | null>(null);
+
+    // Seek once the media is ready. Setting currentTime before metadata loads
+    // is silently ignored, which is why this waits for the event.
+    const onLoaded = () => {
+      const v = videoRef.current;
+      if (v && data?.seekSec != null) { try { v.currentTime = Number(data.seekSec) || 0; } catch { /* seek unsupported */ } }
+    };
+
+    if (isLoading) {
+      return <div className="mt-3 py-6 text-center"><Loader2 className="w-4 h-4 animate-spin mx-auto text-primary" /></div>;
+    }
+    if (isError) {
+      return <p className="mt-3 text-xs text-destructive">{(error as any)?.message || "Could not load this placement."}</p>;
+    }
+
+    const box = data?.surface?.box;
+    return (
+      <div className="mt-3 p-3 rounded-lg border border-white/10 bg-white/[0.02] grid grid-cols-1 lg:grid-cols-2 gap-3">
+        <div>
+          <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">In the video</p>
+          {data?.video?.streamUrl ? (
+            <div className="relative">
+              <video
+                ref={videoRef}
+                src={data.video.streamUrl}
+                controls
+                preload="metadata"
+                onLoadedMetadata={onLoaded}
+                className="w-full rounded bg-black aspect-video"
+                data-testid={`review-video-${id}`}
+              />
+              {/* Where the creator put it, drawn over the frame. */}
+              {box && (
+                <div
+                  className="absolute border-2 border-primary/80 rounded pointer-events-none"
+                  style={{
+                    left: `${box.x * 100}%`, top: `${box.y * 100}%`,
+                    width: `${box.w * 100}%`, height: `${box.h * 100}%`,
+                  }}
+                />
+              )}
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              No playable source on file for this video — review from the composite.
+            </p>
+          )}
+          {data?.seekSec != null && (
+            <p className="text-[11px] text-muted-foreground mt-1">
+              Seeked to {Math.floor(data.seekSec / 60)}:{String(Math.floor(data.seekSec % 60)).padStart(2, "0")}
+              {data?.clip ? " — clip start" : " — surface timestamp"}
+            </p>
+          )}
+        </div>
+
+        <div className="space-y-2">
+          <p className="text-[11px] uppercase tracking-wider text-muted-foreground">The placement</p>
+          <img
+            src={data.compositeUrl}
+            alt="Placement composite"
+            loading="lazy"
+            className="w-full rounded border border-white/10 bg-black/30 object-contain max-h-56"
+            data-testid={`review-composite-${id}`}
+          />
+          <dl className="text-xs space-y-1">
+            {data?.surface && (
+              <div className="flex gap-2">
+                <dt className="text-muted-foreground w-20 shrink-0">Surface</dt>
+                <dd>{data.surface.surfaceType}{data.surface.timestamp != null ? ` @ ${Math.round(data.surface.timestamp)}s` : ""}</dd>
+              </div>
+            )}
+            {data?.product?.name && (
+              <div className="flex gap-2">
+                <dt className="text-muted-foreground w-20 shrink-0">Product</dt>
+                <dd>{data.product.name}</dd>
+              </div>
+            )}
+            {data?.clip && (
+              <div className="flex gap-2">
+                <dt className="text-muted-foreground w-20 shrink-0">Clip</dt>
+                <dd className="truncate">{data.clip.suggestedTitle || `#${data.clip.id}`} ({data.clip.aspectRatio || "16:9"})</dd>
+              </div>
+            )}
+            <div className="flex gap-2">
+              <dt className="text-muted-foreground w-20 shrink-0">Harmonized</dt>
+              <dd>{data?.placement?.isHarmonized ? "Yes — AI composite" : "No — flat overlay"}</dd>
+            </div>
+            <div className="flex gap-2">
+              <dt className="text-muted-foreground w-20 shrink-0">Chosen by</dt>
+              <dd className="truncate">{data?.placement?.createdBy} ({data?.placement?.role})</dd>
+            </div>
+            {data?.surface?.sceneContext && (
+              <div className="flex gap-2">
+                <dt className="text-muted-foreground w-20 shrink-0">Scene</dt>
+                <dd className="text-muted-foreground">{data.surface.sceneContext}</dd>
+              </div>
+            )}
+          </dl>
+        </div>
+      </div>
+    );
+  };
 
   const RowCard = ({ row }: { row: ReviewRow }) => {
     const meta = STATUS_META[row.reviewStatus] ?? STATUS_META.submitted;
@@ -186,8 +316,21 @@ export default function AdminPlacements() {
           {row.reviewStatus !== "in_review" && row.reviewStatus !== "render_ready" && row.reviewStatus !== "live" && (
             <Button size="sm" variant="outline" className="h-7 text-xs gap-1"
               disabled={reviewMutation.isPending}
-              onClick={() => reviewMutation.mutate({ id: row.id, reviewStatus: "in_review" })}>
+              onClick={() => {
+                // Open the review panel AND mark it in_review. Previously this
+                // only flipped the status, so the visible result was a row that
+                // moved and nothing else — no way to actually review anything.
+                setReviewFor(row.id);
+                reviewMutation.mutate({ id: row.id, reviewStatus: "in_review" });
+              }}>
               <Eye className="w-3 h-3" /> Start review
+            </Button>
+          )}
+          {(row.reviewStatus === "in_review" || row.reviewStatus === "render_ready") && (
+            <Button size="sm" variant="outline" className="h-7 text-xs gap-1"
+              onClick={() => setReviewFor(reviewFor === row.id ? null : row.id)}
+              data-testid={`toggle-review-${row.id}`}>
+              <Eye className="w-3 h-3" /> {reviewFor === row.id ? "Hide" : "Open"} review
             </Button>
           )}
           {row.reviewStatus !== "live" && (
@@ -205,6 +348,8 @@ export default function AdminPlacements() {
             </Button>
           )}
         </div>
+        {reviewFor === row.id && <ReviewPanel id={row.id} />}
+
         {deliverFor === row.id && (
           <div className="mt-3 p-3 rounded-lg border border-white/10 bg-white/[0.02] space-y-2">
             <p className="text-xs text-muted-foreground">
