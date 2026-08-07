@@ -4491,16 +4491,16 @@ export async function registerRoutes(
       // EVERY page. Nothing was blocked: the loop was free and the pool sat
       // idle the whole time, because latency x N is neither of those things.
       // They are independent, so they run together.
-      const [userRow, videoFlags, placements, ytById, ytByEmail] = await Promise.all([
+      const [userRow, videoFlags, placementCount, ytById, ytByEmail] = await Promise.all([
         storage.getUserById(userId).catch(() => undefined),
         storage.getVideoScanFlags(userId, req.authEmail).catch(() => ({ hasVideo: false, hasScan: false })),
-        storage.getPlacementsByCreator(req.authEmail).catch(() => []),
+        storage.countPlacementsByCreator(req.authEmail).catch(() => 0),
         storage.getYoutubeConnection(userId).catch(() => null),
         req.authEmail ? storage.getYoutubeConnectionByEmail(req.authEmail).catch(() => null) : Promise.resolve(null),
       ]);
       const hasVideo = videoFlags.hasVideo;
       const hasScan = videoFlags.hasScan;
-      const hasPlacement = placements.length > 0;
+      const hasPlacement = placementCount > 0;
       const hasConnection = !!(userRow?.facebookPageId || userRow?.instagramBusinessId || ytById || ytByEmail);
       res.json({
         hasConnection,
@@ -10345,15 +10345,23 @@ export async function registerRoutes(
       const placements = await storage.getCreatorPlacements(creatorUserId, status);
 
       // Hydrate with product + video + surface details so the inbox UI doesn't need 4 round-trips
-      const videoSummaries = await storage.getVideoSummaries(placements.map((p) => p.videoId));
+      const videoIds = placements.map((p) => p.videoId);
+      // Both batched ONCE for the whole inbox. getPlacementsForVideo was called
+      // per placement AND is unprojected, so it dragged harmonized_image_url —
+      // multi-megabyte base64 PNG composites — across the wire N times, purely
+      // to compute the `framed` boolean below, which reads four scalar fields.
+      const [videoSummaries, framingByVideo] = await Promise.all([
+        storage.getVideoSummaries(videoIds),
+        storage.getPlacementIdentityForVideos(videoIds).catch(() => new Map()),
+      ]);
       const hydrated = await Promise.all(
         placements.map(async (p) => {
           const video = videoSummaries.get(p.videoId) ?? null;
-          const [product, surfaces, clip, savedForVideo] = await Promise.all([
+          const savedForVideo = framingByVideo.get(p.videoId) ?? [];
+          const [product, surfaces, clip] = await Promise.all([
             p.brandProductId != null ? storage.getBrandProduct(p.brandProductId) : Promise.resolve(undefined),
             storage.getDetectedSurfaces(p.videoId),
             p.editorialClipId ? storage.getEditorialClipById(p.editorialClipId) : Promise.resolve(null),
-            storage.getPlacementsForVideo(p.videoId).catch(() => [] as any[]),
           ]);
           const surface = surfaces.find((s) => s.id === p.surfaceId);
           // Has the creator actually FRAMED this yet? Without a saved

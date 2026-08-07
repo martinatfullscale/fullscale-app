@@ -2935,6 +2935,56 @@ export class DatabaseStorage implements IStorage {
     return row as any;
   }
 
+  /**
+   * Does this creator have ANY placement? A count, not the rows.
+   *
+   * The onboarding checklist called getPlacementsByCreator — an unprojected
+   * select() — and then evaluated `placements.length > 0`. Unprojected means
+   * harmonized_image_url comes too, and that column holds multi-megabyte
+   * base64 PNG composites, so answering one boolean pulled the creator's
+   * entire harmonized image history across the wire from a remote Postgres.
+   * On every page load.
+   */
+  async countPlacementsByCreator(email: string): Promise<number> {
+    const [row] = await db
+      .select({ n: sql<number>`COUNT(*)::int` })
+      .from(savedPlacements)
+      .where(eq(savedPlacements.createdBy, email));
+    return Number(row?.n ?? 0);
+  }
+
+  /**
+   * Placement identity for a set of videos, batched and WITHOUT the image
+   * columns — enough to answer "has the creator framed this surface yet?".
+   * The inbox asked that question with a per-placement unprojected fetch, so
+   * it paid N round trips AND N image blobs to compute a boolean per row.
+   */
+  async getPlacementIdentityForVideos(videoIds: number[]): Promise<Map<number, Array<{
+    id: number; videoId: number; surfaceId: number | null; editorialClipId: number | null;
+    productId: number | null; status: string;
+  }>>> {
+    const unique = Array.from(new Set(videoIds.filter((n) => Number.isFinite(n))));
+    if (unique.length === 0) return new Map();
+    const rows = await db
+      .select({
+        id: savedPlacements.id,
+        videoId: savedPlacements.videoId,
+        surfaceId: savedPlacements.surfaceId,
+        editorialClipId: savedPlacements.editorialClipId,
+        productId: savedPlacements.productId,
+        status: savedPlacements.status,
+      })
+      .from(savedPlacements)
+      .where(inArray(savedPlacements.videoId, unique));
+    const out = new Map<number, any[]>();
+    for (const r of rows) {
+      const list = out.get(r.videoId) ?? [];
+      list.push(r);
+      out.set(r.videoId, list);
+    }
+    return out as any;
+  }
+
   async getAllActivePlacements(): Promise<SavedPlacement[]> {
     return await db
       .select()
