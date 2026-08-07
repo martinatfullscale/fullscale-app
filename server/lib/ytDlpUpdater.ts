@@ -79,7 +79,28 @@ type ProbeResult =
   | { ok: true; version: string }
   | { ok: false; reason: "timeout" | "spawn-error" | "exit" };
 
+/**
+ * One probe at a time, per binary path.
+ *
+ * yt-dlp_linux is a ~38MB PyInstaller bundle: the FIRST exec unpacks an
+ * embedded Python runtime into /tmp before it can print a version. Two of
+ * those running concurrently on a small instance contend for the same unpack
+ * and the same disk, and BOTH blow the 30s budget — observed at boot as two
+ * identical "probeVersion timeout after 30s" lines at the same millisecond,
+ * immediately followed by a probe that succeeded in ~4s once the unpack was
+ * warm. Serializing turns two 30s failures into one short success.
+ */
+const probeInFlight = new Map<string, Promise<ProbeResult>>();
+
 async function probeVersion(binPath: string): Promise<ProbeResult> {
+  const running = probeInFlight.get(binPath);
+  if (running) return running;
+  const p = probeVersionUncached(binPath).finally(() => probeInFlight.delete(binPath));
+  probeInFlight.set(binPath, p);
+  return p;
+}
+
+async function probeVersionUncached(binPath: string): Promise<ProbeResult> {
   return new Promise((resolve) => {
     let out = "";
     let err = "";
@@ -103,11 +124,15 @@ async function probeVersion(binPath: string): Promise<ProbeResult> {
       console.warn(`[yt-dlp] probeVersion error for ${binPath}: ${e.message}`);
       done({ ok: false, reason: "spawn-error" });
     });
-    setTimeout(() => {
+    const timer = setTimeout(() => {
       console.warn(`[yt-dlp] probeVersion timeout for ${binPath} after ${PROBE_TIMEOUT_MS / 1000}s`);
       try { proc.kill(); } catch {}
       done({ ok: false, reason: "timeout" });
     }, PROBE_TIMEOUT_MS);
+    // Release the timer as soon as the probe settles — otherwise a fast probe
+    // still pins the child process object for the full 30s.
+    proc.on("close", () => clearTimeout(timer));
+    proc.on("error", () => clearTimeout(timer));
   });
 }
 
