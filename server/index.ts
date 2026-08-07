@@ -614,13 +614,21 @@ async function sweepStaleTempArtifacts(): Promise<void> {
         const { logSchemaDriftAtBoot, applySchemaFix } = await import("./lib/schemaCheck");
         const drift = await logSchemaDriftAtBoot();
         const needsRepair = (drift?.missingTables?.length ?? 0) > 0 || (drift?.missingColumns?.length ?? 0) > 0;
-        if (needsRepair && process.env.SCHEMA_AUTOREPAIR !== "false") {
-          log("Schema drift detected — applying additive repair...");
+        // OPT-IN, not default. Automatic DDL at boot changes startup behaviour,
+        // and a deploy failed to start immediately after this shipped. Whether
+        // or not it was the cause, running unattended migrations by default is
+        // not something to leave on while startup is the thing under
+        // investigation. Set SCHEMA_AUTOREPAIR=true to enable, or click
+        // "Repair database schema" in the admin placements page.
+        if (needsRepair && process.env.SCHEMA_AUTOREPAIR === "true") {
+          log("Schema drift detected — applying additive repair (SCHEMA_AUTOREPAIR=true)...");
           const result = await applySchemaFix();
           const ok = (result?.applied ?? []).filter((a: any) => a.ok).length;
           const failed = (result?.applied ?? []).filter((a: any) => !a.ok);
           log(`Schema repair: ${ok} statement(s) applied, ${failed.length} failed`);
           for (const f of failed) log(`  repair FAILED: ${f.sql} -> ${f.error}`);
+        } else if (needsRepair) {
+          log("Schema drift detected — NOT auto-repairing (set SCHEMA_AUTOREPAIR=true, or use the admin Repair button).");
         }
       } catch (schemaErr) {
         log(`Schema check failed to run: ${schemaErr}`);

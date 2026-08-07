@@ -469,12 +469,13 @@ export const VIDEO_LIST_COLUMNS = {
   userId: videoIndex.userId,
   youtubeId: videoIndex.youtubeId,
   title: videoIndex.title,
-  // Truncated on the LIST path. Podcast descriptions run to thousands of
-  // characters (show notes, links, hashtag walls), and the library ships 81 of
-  // them on a 15s poll — roughly 150KB per refresh of text that NO list view
-  // renders. The detail path uses the full row, so nothing that displays a
-  // description loses one.
-  description: sql<string>`LEFT(${videoIndex.description}, 300)`.as("description"),
+  // NOT truncated here, despite the payload cost (podcast show notes run to
+  // thousands of characters and the library ships 81 of them on a 15s poll).
+  // This map is also passed to .returning() on the upsert write paths below,
+  // so a SQL expression here lands in INSERT/UPDATE ... RETURNING too. Trimming
+  // belongs in the list ROUTE, where the blast radius is one response shape,
+  // not every write that returns a video.
+  description: videoIndex.description,
   viewCount: videoIndex.viewCount,
   thumbnailUrl: videoIndex.thumbnailUrl,
   status: videoIndex.status,
