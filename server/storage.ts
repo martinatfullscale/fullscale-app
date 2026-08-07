@@ -2890,16 +2890,28 @@ export class DatabaseStorage implements IStorage {
    */
   async getReviewQueuePlacements(): Promise<Array<{
     id: number; videoId: number; createdBy: string;
-    productImageUrl: string; harmonizedImageUrl: string | null;
+    hasImage: boolean;
     reviewStatus: string | null; reviewNote: string | null; createdAt: Date | null;
   }>> {
+    // THE IMAGE COLUMNS DO NOT LEAVE THE DATABASE HERE.
+    //
+    // harmonization.ts stores its output as `data:image/png;base64,...` — a
+    // FULL-SCENE PNG composite inlined into the column, base64 (+33%), so a
+    // single row can carry several megabytes. This query selected both image
+    // columns for up to 500 rows and the route serialised the lot into one
+    // JSON response. Twenty harmonized placements is already tens of
+    // megabytes; the client gives up at 30s having rendered nothing.
+    //
+    // The queue draws these at 40x40. It needs to know an image EXISTS, not
+    // what it contains — so the row carries a boolean and the <img> points at
+    // the per-placement thumbnail route, which serves one image, cacheable,
+    // on demand.
     return db
       .select({
         id: savedPlacements.id,
         videoId: savedPlacements.videoId,
         createdBy: savedPlacements.createdBy,
-        productImageUrl: savedPlacements.productImageUrl,
-        harmonizedImageUrl: savedPlacements.harmonizedImageUrl,
+        hasImage: sql<boolean>`(${savedPlacements.harmonizedImageUrl} IS NOT NULL OR ${savedPlacements.productImageUrl} IS NOT NULL)`,
         reviewStatus: savedPlacements.reviewStatus,
         reviewNote: savedPlacements.reviewNote,
         createdAt: savedPlacements.createdAt,
@@ -2907,7 +2919,20 @@ export class DatabaseStorage implements IStorage {
       .from(savedPlacements)
       .where(eq(savedPlacements.status, "active"))
       .orderBy(desc(savedPlacements.createdAt))
-      .limit(500);
+      .limit(200);
+  }
+
+  /** One placement's review image, fetched only when a thumbnail asks for it. */
+  async getPlacementReviewImage(id: number): Promise<{ harmonizedImageUrl: string | null; productImageUrl: string | null } | undefined> {
+    const [row] = await db
+      .select({
+        harmonizedImageUrl: savedPlacements.harmonizedImageUrl,
+        productImageUrl: savedPlacements.productImageUrl,
+      })
+      .from(savedPlacements)
+      .where(eq(savedPlacements.id, id))
+      .limit(1);
+    return row as any;
   }
 
   async getAllActivePlacements(): Promise<SavedPlacement[]> {

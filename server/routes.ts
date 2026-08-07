@@ -1781,8 +1781,8 @@ export async function registerRoutes(
           videoId: p.videoId,
           videoTitle: titles.get(p.videoId) ?? `video ${p.videoId}`,
           createdBy: p.createdBy,
-          productImageUrl: p.productImageUrl,
-          harmonizedImageUrl: p.harmonizedImageUrl,
+          // A pointer, not the bytes. See getReviewQueuePlacements.
+          thumbUrl: p.hasImage ? `/api/admin/placements/${p.id}/thumb` : null,
           reviewStatus: p.reviewStatus ?? "submitted",
           reviewNote: p.reviewNote ?? null,
           createdAt: p.createdAt,
@@ -1793,6 +1793,46 @@ export async function registerRoutes(
       console.error("[Admin Placements] List error:", err?.message);
       const { status, error } = explainDbError(err, "Failed to list placements");
       res.status(status).json({ error });
+    }
+  });
+
+  /**
+   * One placement's review thumbnail.
+   *
+   * Exists so the queue list can stay small. The stored value is either an
+   * ordinary URL (redirect to it) or a `data:image/png;base64,...` composite
+   * from the harmonizer (decode and stream it). Either way ONE image crosses
+   * the wire, only when a thumbnail actually asks for it, and it is cacheable
+   * — instead of 200 of them inlined into a JSON list.
+   */
+  app.get("/api/admin/placements/:id/thumb", async (req: any, res) => {
+    try {
+      const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
+      if (!callerEmail || !ADMIN_EMAILS.map((e: string) => e.toLowerCase()).includes(String(callerEmail).toLowerCase())) {
+        return res.status(403).json({ error: "Admin access required" });
+      }
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ error: "Invalid placement id" });
+
+      const row = await storage.getPlacementReviewImage(id);
+      const src = row?.harmonizedImageUrl || row?.productImageUrl;
+      if (!src) return res.status(404).json({ error: "No image" });
+
+      // [\s\S] rather than the /s flag — this file's TS target predates dotAll,
+      // and a base64 payload contains no newlines anyway.
+      const m = /^data:([\w/+.-]+);base64,([\s\S]*)$/.exec(src);
+      if (m) {
+        const buf = Buffer.from(m[2], "base64");
+        res.setHeader("Content-Type", m[1]);
+        res.setHeader("Content-Length", String(buf.length));
+        // Immutable in practice: a re-harmonize writes a new placement row.
+        res.setHeader("Cache-Control", "private, max-age=86400");
+        return res.end(buf);
+      }
+      return res.redirect(302, src);
+    } catch (err: any) {
+      console.error("[Admin Placements] Thumb error:", err?.message);
+      return res.status(500).json({ error: "Failed to load thumbnail" });
     }
   });
 

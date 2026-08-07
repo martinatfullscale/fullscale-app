@@ -21,8 +21,10 @@ interface ReviewRow {
   videoId: number;
   videoTitle: string;
   createdBy: string;
-  productImageUrl: string;
-  harmonizedImageUrl: string | null;
+  // A pointer, never the image itself: harmonized composites are stored as
+  // multi-megabyte base64 data URLs, and inlining 200 of them into this list
+  // is what made the queue time out.
+  thumbUrl: string | null;
   reviewStatus: string;
   reviewNote: string | null;
   createdAt: string | null;
@@ -163,11 +165,17 @@ export default function AdminPlacements() {
     return (
       <div className="py-3 px-4 border-b border-white/5 last:border-b-0" data-testid={`placement-row-${row.id}`}>
         <div className="flex items-center gap-3">
-          <img
-            src={row.harmonizedImageUrl || row.productImageUrl}
-            alt=""
-            className="w-10 h-10 rounded object-contain bg-black/30 border border-white/10 shrink-0"
-          />
+          {row.thumbUrl ? (
+            <img
+              src={row.thumbUrl}
+              alt=""
+              loading="lazy"
+              decoding="async"
+              className="w-10 h-10 rounded object-contain bg-black/30 border border-white/10 shrink-0"
+            />
+          ) : (
+            <div className="w-10 h-10 rounded bg-black/30 border border-white/10 shrink-0" />
+          )}
           <div className="min-w-0 flex-1">
             <p className="text-sm font-medium truncate">#{row.id} — {row.videoTitle}</p>
             <p className="text-xs text-muted-foreground truncate">{row.createdBy}</p>
