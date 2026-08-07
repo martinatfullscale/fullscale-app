@@ -71,15 +71,44 @@ export function getSession() {
     createTableIfMissing: true,
     ttl: sessionTtl,
     tableName: "sessions",
-    pruneSessionInterval: 60,
+    // Was 60s. Pruning is a DELETE over a table that only grows slowly, and at
+    // a 30-day TTL there is nothing to collect most minutes — so a once-a-
+    // minute write against the same table every authenticated request reads
+    // was pure contention. Quarter-hourly is ample for expiry hygiene.
+    pruneSessionInterval: 900,
     errorLog: (err: any) => {
-      if (err && typeof err === 'object') {
-        console.error("[Session Store] PostgreSQL error:", err.message || err.code || JSON.stringify(err).slice(0, 200));
-      } else {
-        console.error("[Session Store] PostgreSQL error:", String(err));
+      // connect-pg-simple calls this with a STRING it has already built
+      // ("Failed to prune sessions: " + err.message). When the underlying
+      // error carries no message — a timeout, a killed connection — that
+      // produced the useless line we shipped for weeks:
+      //     [Session Store] PostgreSQL error: Failed to prune sessions:
+      // ...with nothing after the colon and no way to act on it. Surface
+      // every field the driver might have populated instead.
+      if (typeof err === "string") {
+        console.error(`[Session Store] ${err.trim().replace(/:$/, "") || "error with no message"}`);
+        return;
       }
+      if (err && typeof err === "object") {
+        const parts = [err.message, err.code && `code=${err.code}`, err.detail && `detail=${err.detail}`,
+                       err.severity && `severity=${err.severity}`, err.routine && `routine=${err.routine}`]
+          .filter(Boolean);
+        console.error(`[Session Store] ${parts.length ? parts.join(" | ") : JSON.stringify(err).slice(0, 300)}`);
+        return;
+      }
+      console.error("[Session Store] error:", String(err));
     },
   });
+
+  // The prune DELETE filters on `expire`. connect-pg-simple's bundled DDL
+  // creates an index for its DEFAULT table name, and this store is configured
+  // with tableName "sessions" — so the index may never have been created here,
+  // making every prune a full scan of a table that grows with every login.
+  // Idempotent and additive; failure is non-fatal because sessions still work
+  // without it, just slower to prune.
+  sessionPool
+    .query('CREATE INDEX IF NOT EXISTS "idx_sessions_expire" ON "sessions" ("expire")')
+    .then(() => console.log("[Session] expire index present"))
+    .catch((err: any) => console.warn(`[Session] could not ensure expire index: ${err?.message}`));
   
   console.log("[Session] Session store created successfully");
   
