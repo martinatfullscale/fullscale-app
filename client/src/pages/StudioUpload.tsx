@@ -2,6 +2,9 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { fetchWithTimeout } from "@/lib/queryClient";
 import { Upload, FileVideo, Loader2, CheckCircle, AlertCircle, Download, Play, Rocket, ShoppingCart, Users, Megaphone } from "lucide-react";
 
+const UPLOAD_TIMEOUT_MS = 30 * 60_000; // files, not JSON — see AdminPlacements
+
+
 type PipelineStatus = "idle" | "uploading" | "extracting" | "script_ready" | "queued" | "processing" | "parsing" | "generating" | "adding-voice" | "assembling" | "complete" | "failed";
 
 interface StoryScene {
@@ -145,7 +148,7 @@ export default function StudioUpload() {
       const response = await fetchWithTimeout("/api/studio/extract", {
         method: "POST",
         body: formData,
-      });
+      }, UPLOAD_TIMEOUT_MS);
 
       if (!response.ok) {
         const data = await response.json();

@@ -7,6 +7,21 @@
  */
 import { useState, useRef } from "react";
 import { fetchWithTimeout } from "@/lib/queryClient";
+
+/**
+ * Uploads get their own budget. The default 30s is right for a JSON request
+ * and catastrophically wrong for a file: a finished render is hundreds of MB,
+ * and 30s covers ~35MB on a 10Mbit uplink.
+ *
+ * The abort is worse than a slow failure here, because the request body has
+ * usually ALREADY reached the server by the time the timer fires. The server
+ * finishes the transaction — writes the row, supersedes the previous version,
+ * notifies the creator — while the operator sees "failed" and uploads again.
+ * Every retry ships another version and another notification for a delivery
+ * they believe never happened.
+ */
+const UPLOAD_TIMEOUT_MS = 30 * 60_000;
+
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -62,7 +77,7 @@ export default function AdminPlacements() {
         method: "POST",
         credentials: "include",
         body: form,
-      });
+      }, UPLOAD_TIMEOUT_MS);
       const body = await res.json();
       if (!res.ok) throw new Error(body?.error || "Delivery failed");
       toast({

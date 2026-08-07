@@ -39,6 +39,9 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { fetchWithTimeout } from "@/lib/queryClient";
+
+const UPLOAD_TIMEOUT_MS = 30 * 60_000; // files, not JSON — see AdminPlacements
+
 import {
   X as XIcon, Play, Pause, Loader2, Type, Film, Music, Sparkles,
   Scissors, Undo2, Wand2, Search, Upload, Trash2, AlertTriangle, Gauge,
@@ -924,7 +927,7 @@ function useAssets(kinds: string[]) {
 async function uploadAsset(file: File, kind: string): Promise<AssetRow> {
   const form = new FormData();
   form.append("file", file);
-  const res = await fetchWithTimeout(`/api/media-assets?kind=${kind}`, { method: "POST", credentials: "include", body: form });
+  const res = await fetchWithTimeout(`/api/media-assets?kind=${kind}`, { method: "POST", credentials: "include", body: form }, UPLOAD_TIMEOUT_MS);
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Upload failed");
   return (await res.json()).asset;
 }

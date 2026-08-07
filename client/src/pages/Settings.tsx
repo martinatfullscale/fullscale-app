@@ -15,6 +15,9 @@ import { useToast } from "@/hooks/use-toast";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
+const UPLOAD_TIMEOUT_MS = 30 * 60_000; // files, not JSON — see AdminPlacements
+
+
 type TabType = "profile" | "creator" | "payouts" | "credits" | "notifications" | "integrations";
 
 const tabs = [
@@ -231,7 +234,7 @@ export default function Settings() {
         method: "POST",
         credentials: "include",
         body: fd,
-      });
+      }, UPLOAD_TIMEOUT_MS);
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || "Upload failed");

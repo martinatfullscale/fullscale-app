@@ -31,6 +31,9 @@ import {
 } from "lucide-react";
 import { apiRequest, fetchWithTimeout } from "@/lib/queryClient";
 
+const UPLOAD_TIMEOUT_MS = 30 * 60_000; // files, not JSON — see AdminPlacements
+
+
 interface BrandProduct {
   id: number;
   userId: string;
@@ -89,7 +92,7 @@ export default function BrandProducts() {
         method: "POST",
         body: formData,
         credentials: "include",
-      });
+      }, UPLOAD_TIMEOUT_MS);
       if (!res.ok) {
         const err = await res.json();
         throw new Error(err.error || "Upload failed");
