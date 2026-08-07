@@ -4445,16 +4445,23 @@ export async function registerRoutes(
       if ((viewRole || allowedUser?.userType) === "brand") {
         return res.json({ hasConnection: false, hasVideo: false, hasScan: false, hasPlacement: false, dismissedAt: null, complete: true });
       }
-      const userRow = await storage.getUserById(userId).catch(() => undefined);
-      const videos = await storage.getVideoIndex(userId, req.authEmail).catch(() => [] as any[]);
-      const hasVideo = videos.length > 0;
-      const hasScan = videos.some((v: any) =>
-        (typeof v.status === "string" && v.status.startsWith("Ready")) || v.status === "Scan Complete");
-      const placements = await storage.getPlacementsByCreator(req.authEmail).catch(() => []);
+      // These were SEQUENTIAL awaits, each paying a full round trip to a
+      // remote Postgres, several doing their own nested user lookups — 7.6s
+      // measured to return six booleans, on an endpoint the shell loads on
+      // EVERY page. Nothing was blocked: the loop was free and the pool sat
+      // idle the whole time, because latency x N is neither of those things.
+      // They are independent, so they run together.
+      const [userRow, videoFlags, placements, ytById, ytByEmail] = await Promise.all([
+        storage.getUserById(userId).catch(() => undefined),
+        storage.getVideoScanFlags(userId, req.authEmail).catch(() => ({ hasVideo: false, hasScan: false })),
+        storage.getPlacementsByCreator(req.authEmail).catch(() => []),
+        storage.getYoutubeConnection(userId).catch(() => null),
+        req.authEmail ? storage.getYoutubeConnectionByEmail(req.authEmail).catch(() => null) : Promise.resolve(null),
+      ]);
+      const hasVideo = videoFlags.hasVideo;
+      const hasScan = videoFlags.hasScan;
       const hasPlacement = placements.length > 0;
-      const hasConnection = !!(userRow?.facebookPageId || userRow?.instagramBusinessId ||
-        (await storage.getYoutubeConnection(userId).catch(() => null)) ||
-        (req.authEmail && await storage.getYoutubeConnectionByEmail(req.authEmail).catch(() => null)));
+      const hasConnection = !!(userRow?.facebookPageId || userRow?.instagramBusinessId || ytById || ytByEmail);
       res.json({
         hasConnection,
         hasVideo,
@@ -7560,13 +7567,18 @@ export async function registerRoutes(
   // MARKETPLACE: Get count of active opportunities (for Dashboard)
   app.get("/api/marketplace/stats", isGoogleAuthenticated, async (req: any, res) => {
     const userId = req.googleUser.email;
-    const opportunities = await storage.getVideosWithOpportunities(userId);
-    const activeBids = await storage.getActiveBidsForCreator(userId);
-    
-    res.json({ 
-      videosWithOpportunities: opportunities.length,
-      totalSurfaces: opportunities.reduce((sum, v) => sum + v.surfaceCount, 0),
-      activeBids: activeBids.length
+    // Two round trips, not 1+N. This endpoint keeps three integers, so the
+    // per-video surface fan-out was pure latency — 4.1s measured on a shell
+    // endpoint that loads on every page.
+    const [stats, activeBids] = await Promise.all([
+      storage.getMarketplaceStats(userId),
+      storage.getActiveBidsForCreator(userId),
+    ]);
+
+    res.json({
+      videosWithOpportunities: stats.videosWithOpportunities,
+      totalSurfaces: stats.totalSurfaces,
+      activeBids: activeBids.length,
     });
   });
 

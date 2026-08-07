@@ -1643,6 +1643,60 @@ export class DatabaseStorage implements IStorage {
     return surfaces.filter((s) => s.surfaceType !== "Filtered");
   }
 
+  /**
+   * Marketplace headline counts, in ONE round trip.
+   *
+   * getVideosWithOpportunities ran a getActiveSurfaces query PER VIDEO, and
+   * /api/marketplace/stats then threw the rows away and kept three integers.
+   * With 25 videos that is 25 sequential round trips to a remote Postgres:
+   * ~4.1s measured, on an endpoint the app shell loads on EVERY page. It never
+   * tripped the event-loop or pool alarms because it is neither — each query
+   * completes and releases its connection before the next begins, so the pool
+   * reads idle throughout while the request wall-clock grows linearly.
+   *
+   * Latency x N is its own failure mode, distinct from CPU and from pool
+   * contention, and it is the one that was actually happening.
+   */
+  async getMarketplaceStats(userId: string): Promise<{ videosWithOpportunities: number; totalSurfaces: number }> {
+    const ids = await this.identityMatchValues(userId);
+    const res: any = await db.execute(sql`
+      SELECT
+        COUNT(DISTINCT v.id)::int AS videos,
+        COUNT(s.id)::int          AS surfaces
+      FROM ${videoIndex} v
+      JOIN ${detectedSurfaces} s
+        ON s.video_id = v.id AND s.surface_type <> 'Filtered'
+      WHERE v.user_id IN (${sql.join(ids.map((i) => sql`${i}`), sql`, `)})
+    `);
+    const row = (res.rows ?? res)[0] ?? {};
+    return {
+      videosWithOpportunities: Number(row.videos ?? 0),
+      totalSurfaces: Number(row.surfaces ?? 0),
+    };
+  }
+
+  /**
+   * "Has any video?" and "has any completed scan?" as one aggregate.
+   *
+   * The onboarding checklist called getVideoIndex — which resolves the user,
+   * then SELECTs the creator's entire library — purely to read .length and
+   * test .status on the rows. Two booleans out of a whole library fetch, on
+   * every page load.
+   */
+  async getVideoScanFlags(userId: string, authEmail?: string): Promise<{ hasVideo: boolean; hasScan: boolean }> {
+    const ids = await this.identityMatchValues(userId);
+    if (authEmail) ids.push(authEmail);
+    const res: any = await db.execute(sql`
+      SELECT
+        COUNT(*)::int AS total,
+        COUNT(*) FILTER (WHERE status LIKE 'Ready%' OR status = 'Scan Complete')::int AS scanned
+      FROM ${videoIndex}
+      WHERE user_id IN (${sql.join(Array.from(new Set(ids)).map((i) => sql`${i}`), sql`, `)})
+    `);
+    const row = (res.rows ?? res)[0] ?? {};
+    return { hasVideo: Number(row.total ?? 0) > 0, hasScan: Number(row.scanned ?? 0) > 0 };
+  }
+
   async getVideosWithOpportunities(userId: string): Promise<VideoWithOpportunities[]> {
     // Dual-form match: callers pass either users.id or an email, and rows may
     // hold either form (the boot sweep converges them to users.id over time).

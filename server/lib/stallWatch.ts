@@ -15,14 +15,62 @@
  *   [Stall] SLOW GET /api/admin/placements 8140ms  pool{total:10 idle:0 waiting:7}
  *   [Stall] POOL SATURATED — 7 waiting on 10 connections
  *
- * Deliberately cheap: one 500ms timer and two counters. It measures the two
- * things that actually cause this failure mode — the single thread being held,
- * and the connection pool being drained — because those are what make ONE slow
- * request take down every unrelated one.
+ * It measures the THREE independent ways one request ruins the others:
+ *   - the single thread being held (synchronous work)
+ *   - the connection pool being drained (contention)
+ *   - latency x N (an N+1: many sequential round trips)
+ *
+ * The third was added after a real 7.6s request sailed past the first two
+ * silently — the loop was free and the pool sat idle the entire time, because
+ * its cost was neither. Measuring only the first two is how that request stayed
+ * invisible through several rounds of diagnosis.
  */
 
 import type { Request, Response, NextFunction } from "express";
-import { poolStats } from "../db";
+import { AsyncLocalStorage } from "async_hooks";
+import { poolStats, pool } from "../db";
+
+/**
+ * Per-request database round-trip accounting.
+ *
+ * The first version of this file measured only two things: the event loop
+ * being held, and the pool being drained. A real 7.6s request then sailed past
+ * BOTH alarms silently — because its cost was neither. It was ~7 sequential
+ * awaits, each paying a full round trip to a remote Postgres. Every query
+ * completed and released its connection before the next began, so the pool
+ * read idle the whole time and the loop was never blocked for even 500ms.
+ *
+ * Latency x N is a third, independent failure mode, and it is the one that was
+ * actually happening. Counting queries per request makes it obvious on sight:
+ * "4113ms queries:27" is an N+1, and no amount of staring at CPU or pool
+ * graphs would ever have said so.
+ */
+interface ReqDb { queries: number; dbMs: number }
+const dbStore = new AsyncLocalStorage<ReqDb>();
+
+let patched = false;
+function patchPoolCounter(): void {
+  if (patched) return;
+  patched = true;
+  const orig = (pool as any).query.bind(pool);
+  (pool as any).query = function (...args: any[]) {
+    const store = dbStore.getStore();
+    if (!store) return orig(...args);
+    const t0 = Date.now();
+    const done = () => { store.queries += 1; store.dbMs += Date.now() - t0; };
+    try {
+      const out = orig(...args);
+      if (out && typeof out.then === "function") {
+        return out.then(
+          (r: any) => { done(); return r; },
+          (e: any) => { done(); throw e; },
+        );
+      }
+      done();
+      return out;
+    } catch (e) { done(); throw e; }
+  };
+}
 
 /** Requests still in flight, so a stall can name what was running during it. */
 const inFlight = new Map<number, { method: string; path: string; startedAt: number }>();
@@ -99,6 +147,7 @@ export function stallWatchMiddleware(req: Request, res: Response, next: NextFunc
   const id = ++seq;
   const startedAt = Date.now();
   inFlight.set(id, { method: req.method, path: p, startedAt });
+  const db: ReqDb = { queries: 0, dbMs: 0 };
 
   let settled = false;
   const done = () => {
@@ -107,7 +156,19 @@ export function stallWatchMiddleware(req: Request, res: Response, next: NextFunc
     inFlight.delete(id);
     const ms = Date.now() - startedAt;
     if (ms >= SLOW_REQUEST_MS) {
-      console.warn(`[Stall] SLOW ${req.method} ${p} ${ms}ms ${fmtPool()}`);
+      // queries:N alongside the wall clock is what identifies an N+1. If dbMs
+      // is most of ms and queries is large, the request is not slow — it is
+      // slow N times, and batching is the fix rather than optimising any one
+      // query.
+      const perQuery = db.queries ? Math.round(db.dbMs / db.queries) : 0;
+      console.warn(
+        `[Stall] SLOW ${req.method} ${p} ${ms}ms queries:${db.queries} dbMs:${db.dbMs} (~${perQuery}ms each) ${fmtPool()}`,
+      );
+      if (db.queries >= 10) {
+        console.warn(
+          `[Stall]   ^ ${db.queries} round trips in one request — this is an N+1. Batch it; the pool and event loop will both look healthy while this happens.`,
+        );
+      }
     }
   };
 
@@ -123,5 +184,7 @@ export function stallWatchMiddleware(req: Request, res: Response, next: NextFunc
     done();
   });
 
-  next();
+  // Everything downstream runs inside the query-accounting context.
+  patchPoolCounter();
+  dbStore.run(db, () => next());
 }
