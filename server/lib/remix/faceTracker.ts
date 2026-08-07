@@ -149,23 +149,50 @@ async function detectFacesInClipInner(
       }
 
       const batch = orderedTimes.slice(i, i + DETECTION_BATCH_SIZE);
-      const batchResults = await Promise.all(
-        batch.map(async (clipTime) => {
-          const absTime = startTime + clipTime;
-          const framePath = path.join(tmpDir, `frame_${clipTime.toFixed(2)}.jpg`);
 
-          // Extract single frame
-          await extractFrame(videoPath, absTime, framePath);
+      // SEQUENTIAL, WITH A YIELD AFTER EVERY FRAME.
+      //
+      // This was Promise.all over the batch, which reads like parallelism but
+      // is not: cocoSsd.detect() is TensorFlow.js on the CPU backend —
+      // synchronous compute wearing a Promise. Promise.all just queues those
+      // inferences back-to-back on the ONE thread with nothing between them,
+      // so the loop was held for the whole batch at once. Measured in
+      // production as a continuous run of
+      //   [Stall] EVENT LOOP BLOCKED 4534ms — in-flight: nothing in flight
+      // with the pool idle: no request, no query, just this. Every HTTP
+      // request in the process waits behind it, which is what "the website has
+      // locked up" was.
+      //
+      // setImmediate between frames does not make the work faster or truly
+      // parallel — a single inference still blocks. What it does is bound the
+      // block to ONE inference instead of a whole batch, so queued requests
+      // get served in the gaps and the app stays usable while a clip renders.
+      //
+      // The real fix is running detection off the main thread entirely (worker
+      // thread or child process). That is a larger change; this makes the
+      // difference between "slow" and "down".
+      const batchResults: FaceDetectionFrame[] = [];
+      for (const clipTime of batch) {
+        const absTime = startTime + clipTime;
+        const framePath = path.join(tmpDir, `frame_${clipTime.toFixed(2)}.jpg`);
 
-          if (!fs.existsSync(framePath)) {
-            return { time: clipTime, faces: [] };
-          }
+        await extractFrame(videoPath, absTime, framePath);
 
-          // Run detection
+        if (!fs.existsSync(framePath)) {
+          batchResults.push({ time: clipTime, faces: [] });
+        } else {
           const faces = await detectFacesInFrame(loadedModel, framePath);
-          return { time: clipTime, faces };
-        })
-      );
+          batchResults.push({ time: clipTime, faces });
+        }
+
+        // Hand the loop back so pending I/O callbacks — every queued HTTP
+        // request — get a turn before the next inference starts.
+        await new Promise((r) => setImmediate(r));
+
+        // Deadline is checked per FRAME now, not per batch: a batch that
+        // overruns used to blow past the soft deadline by its whole remainder.
+        if (deadlineMs && Date.now() - started > deadlineMs) break;
+      }
       results.push(...batchResults);
     }
 
