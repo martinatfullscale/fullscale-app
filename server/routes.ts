@@ -11135,7 +11135,30 @@ export async function registerRoutes(
   app.get("/api/ai/generation/options", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const { GEN_MODELS, generationAvailable, getAllowance, priceFor } = await import("./lib/aiGeneration");
-      const allowance = await getAllowance(String(req.authUserId));
+
+      // A DEAD BUTTON IS THE WORST FAILURE MODE HERE. getAllowance reads
+      // creator_credits, and when that table has not been pushed to this
+      // environment the whole endpoint 500s — so the panel gets no models, the
+      // generate button renders permanently disabled, and the operator is told
+      // nothing at all. Degrade to an unavailable-with-a-reason response
+      // instead, which the panel already knows how to render.
+      let allowance;
+      try {
+        allowance = await getAllowance(String(req.authUserId));
+      } catch (allowErr: any) {
+        const msg = String(allowErr?.message ?? allowErr);
+        const missingTable = /relation .* does not exist|does not exist/i.test(msg);
+        console.error(`[AI] generation options unavailable: ${msg}`);
+        return res.json({
+          available: false,
+          detail: missingTable
+            ? "The credits tables are not in this environment's database yet. An admin can fix it from the placements page (\"Repair database schema\") or by running `npm run db:push` against this deployment."
+            : `Credits are unavailable right now: ${msg}`,
+          balance: 0,
+          allowance: { freeImagesPerDay: 0, freeImagesUsedToday: 0, freeImagesLeft: 0, balance: 0 },
+          models: [],
+        });
+      }
       // Price every model for THIS creator right now, so the button can say
       // "Free" or "10 credits" truthfully instead of the client guessing.
       const priced = await Promise.all(
