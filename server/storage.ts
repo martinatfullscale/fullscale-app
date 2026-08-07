@@ -469,7 +469,12 @@ export const VIDEO_LIST_COLUMNS = {
   userId: videoIndex.userId,
   youtubeId: videoIndex.youtubeId,
   title: videoIndex.title,
-  description: videoIndex.description,
+  // Truncated on the LIST path. Podcast descriptions run to thousands of
+  // characters (show notes, links, hashtag walls), and the library ships 81 of
+  // them on a 15s poll — roughly 150KB per refresh of text that NO list view
+  // renders. The detail path uses the full row, so nothing that displays a
+  // description loses one.
+  description: sql<string>`LEFT(${videoIndex.description}, 300)`.as("description"),
   viewCount: videoIndex.viewCount,
   thumbnailUrl: videoIndex.thumbnailUrl,
   status: videoIndex.status,
@@ -2798,7 +2803,7 @@ export class DatabaseStorage implements IStorage {
              ), 0) AS tracked_sec
       FROM video_index v
       LEFT JOIN LATERAL jsonb_array_elements(v.scene_inventory->'scenes') s ON TRUE
-      WHERE v.id = ANY(${unique})
+      WHERE v.id IN (${sql.join(unique.map((n) => sql`${n}`), sql`, `)})
         AND jsonb_typeof(v.scene_inventory->'scenes') = 'array'
       GROUP BY v.id
     `);

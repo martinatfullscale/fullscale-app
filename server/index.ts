@@ -280,7 +280,21 @@ app.use((req, res, next) => {
     if (reqPath.startsWith("/api")) {
       let logLine = `${req.method} ${reqPath} ${res.statusCode} in ${duration}ms`;
       if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
+        // TRUNCATED, and deliberately so. This used to JSON.stringify the WHOLE
+        // response body on every /api request — a library page serialises 81
+        // videos with full descriptions, tens of thousands of characters, into
+        // a single synchronous stdout write, per request. On Replit stdout is a
+        // pipe to the log collector, so a slow consumer applies backpressure
+        // and the write blocks the only thread we have. The app then pays that
+        // cost on its BIGGEST responses, which are exactly the slow ones we
+        // were trying to debug — the logging made the symptom it was reporting.
+        //
+        // 300 chars keeps the shape of the payload (which is all it was ever
+        // useful for) at a fixed, tiny cost.
+        try {
+          const body = JSON.stringify(capturedJsonResponse);
+          logLine += ` :: ${body.length > 300 ? body.slice(0, 300) + `…(${body.length} chars)` : body}`;
+        } catch { /* circular or unserialisable — the line is fine without it */ }
       }
       log(logLine);
     }
