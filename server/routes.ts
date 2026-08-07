@@ -12030,12 +12030,52 @@ export async function registerRoutes(
   });
 
   // Get all saved placements (enriched with video info)
+  /**
+   * One placement's image, owner- or admin-gated. Mirrors the admin queue's
+   * thumb route: decode a stored data: URL, redirect an ordinary one. Exists so
+   * the list above can ship pointers instead of base64.
+   */
+  app.get("/api/placements/:id/thumb", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ error: "Invalid placement id" });
+      const row: any = await storage.getPlacementById(id);
+      if (!row) return res.status(404).json({ error: "Not found" });
+
+      const isOwner = row.createdBy === req.authEmail || row.createdBy === req.authUserId;
+      if (!isOwner && !req.isAdmin) return res.status(404).json({ error: "Not found" });
+
+      const wantHarmonized = req.query.harmonized === "1";
+      const src = wantHarmonized
+        ? (row.harmonizedImageUrl || row.productImageUrl)
+        : (row.productImageUrl || row.harmonizedImageUrl);
+      if (!src) return res.status(404).json({ error: "No image" });
+
+      const m = /^data:([\w/+.-]+);base64,([\s\S]*)$/.exec(src);
+      if (m) {
+        const buf = Buffer.from(m[2], "base64");
+        res.setHeader("Content-Type", m[1]);
+        res.setHeader("Content-Length", String(buf.length));
+        res.setHeader("Cache-Control", "private, max-age=86400");
+        return res.end(buf);
+      }
+      return res.redirect(302, src);
+    } catch (err: any) {
+      console.error("[Placements] Thumb error:", err?.message);
+      return res.status(500).json({ error: "Failed to load image" });
+    }
+  });
+
   app.get("/api/placements", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       // Admins see the platform; everyone else sees THEIR placements only.
       // This endpoint was unauthenticated and returned every placement on
       // the platform (incl. creator emails in the client's preview modal).
-      const all = await storage.getAllActivePlacements();
+      // Projected + bounded. The unprojected version carried a full-scene
+      // harmonized PNG and a raw creator upload — both base64 — for EVERY
+      // active placement on the platform, with no limit. Same defect that made
+      // the review queue time out, except it grows without bound.
+      const all = await storage.getActivePlacementsLean();
       const placements = req.isAdmin
         ? all
         : all.filter((p: any) =>
@@ -12048,8 +12088,13 @@ export async function registerRoutes(
       const videoIds = [...new Set(placements.map(p => p.videoId))];
       const videoMap = await storage.getVideoSummaries(videoIds);
 
-      const enriched = placements.map(p => ({
+      const enriched = placements.map((p: any) => ({
         ...p,
+        // Same field name the client already renders as an <img src>, but a
+        // POINTER rather than the bytes — so the preview modal and the cards
+        // keep working unchanged while the payload stops carrying megabytes.
+        productImageUrl: p.hasProductImage ? `/api/placements/${p.id}/thumb` : null,
+        harmonizedImageUrl: p.hasHarmonized ? `/api/placements/${p.id}/thumb?harmonized=1` : null,
         videoTitle: videoMap.get(p.videoId)?.title || "Unknown Video",
         videoThumbnailUrl: videoMap.get(p.videoId)?.thumbnailUrl || null,
         videoYoutubeId: videoMap.get(p.videoId)?.youtubeId || null,

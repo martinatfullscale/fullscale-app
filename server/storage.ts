@@ -2985,6 +2985,49 @@ export class DatabaseStorage implements IStorage {
     return out as any;
   }
 
+  /**
+   * Active placements WITHOUT the two image columns.
+   *
+   * getAllActivePlacements is an unprojected select() with no limit, so
+   * /api/placements pulled every active placement on the platform — each
+   * carrying a full-scene harmonized PNG and a raw creator upload, both base64
+   * — out of Postgres and into one JSON response. That is the same defect that
+   * made the review queue time out, except unbounded: it grows with platform
+   * age until res.json() hits V8's max string length and throws outright.
+   *
+   * Callers get booleans; the bytes come from the per-placement thumb route.
+   */
+  async getActivePlacementsLean(limit = 500): Promise<any[]> {
+    const rows = await db
+      .select({
+        id: savedPlacements.id,
+        videoId: savedPlacements.videoId,
+        surfaceId: savedPlacements.surfaceId,
+        editorialClipId: savedPlacements.editorialClipId,
+        productId: savedPlacements.productId,
+        createdBy: savedPlacements.createdBy,
+        role: savedPlacements.role,
+        bidId: savedPlacements.bidId,
+        sceneGroupId: savedPlacements.sceneGroupId,
+        appliesToGroupIds: savedPlacements.appliesToGroupIds,
+        transform: savedPlacements.transform,
+        blend: savedPlacements.blend,
+        keyframes: savedPlacements.keyframes,
+        status: savedPlacements.status,
+        reviewStatus: savedPlacements.reviewStatus,
+        reviewNote: savedPlacements.reviewNote,
+        isHarmonized: savedPlacements.isHarmonized,
+        createdAt: savedPlacements.createdAt,
+        hasProductImage: sql<boolean>`(${savedPlacements.productImageUrl} IS NOT NULL)`,
+        hasHarmonized: sql<boolean>`(${savedPlacements.harmonizedImageUrl} IS NOT NULL)`,
+      })
+      .from(savedPlacements)
+      .where(eq(savedPlacements.status, "active"))
+      .orderBy(desc(savedPlacements.createdAt))
+      .limit(limit);
+    return rows as any[];
+  }
+
   async getAllActivePlacements(): Promise<SavedPlacement[]> {
     return await db
       .select()
