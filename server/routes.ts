@@ -9880,9 +9880,38 @@ export async function registerRoutes(
   });
 
   // Get single product detail
-  app.get("/api/brand-products/catalog", isFlexibleAuthenticated, async (_req: any, res) => {
+  /**
+   * The catalog, scoped to who is asking.
+   *
+   * This returned EVERY brand's products to anyone logged in, which let a
+   * creator pull a brand they had no relationship with into their content —
+   * seen in production as a placement test for a brand that had never engaged
+   * that creator. Brands choose creators; creators then place. Browsing the
+   * whole catalog is the creator choosing the brand, which is the mechanic
+   * backwards.
+   *
+   *   admin   — everything, because they operate the review queue
+   *   brand   — their own products
+   *   creator — only brands that requested a placement with them or bid on
+   *             their inventory
+   */
+  app.get("/api/brand-products/catalog", isFlexibleAuthenticated, async (req: any, res) => {
     try {
-      const products = await storage.getAllBrandProducts();
+      if (req.isAdmin) {
+        return res.json(await storage.getAllBrandProducts());
+      }
+      const viewRole = (req.session as any)?.viewRole;
+      const allowed = req.authEmail
+        ? await storage.getAllowedUser(req.authEmail).catch(() => undefined)
+        : undefined;
+      const isBrand = (viewRole || (allowed as any)?.userType) === "brand";
+
+      if (isBrand) {
+        // A brand's own shelf. Not the platform's.
+        return res.json(await storage.getBrandProducts(req.authUserId));
+      }
+
+      const products = await storage.getBrandProductsForCreator(req.authUserId, req.authEmail);
       res.json(products);
     } catch (err: any) {
       console.error("[Brand Products] Catalog error:", err.message);
@@ -11773,6 +11802,34 @@ export async function registerRoutes(
         const effectiveRole = viewRole || allowedUser?.userType || "creator";
         if (effectiveRole !== "brand") {
           return res.status(403).json({ error: "You can only place products on your own videos" });
+        }
+      }
+
+      // BRAND SCOPING — the boundary the catalog listing only hints at.
+      //
+      // Restricting which products a creator can SEE is presentation; this is
+      // the rule. A creator may place a brand's product only if that brand
+      // selected them — requested a placement, or bid on their inventory.
+      // Without this, the previous open catalog could be replayed with a
+      // productId straight to this endpoint, which is how a brand ended up in
+      // a creator's content having never engaged them.
+      //
+      // Brands placing into their own flow, and admins, are unaffected.
+      if (productId != null && !req.isAdmin) {
+        const viewRoleForProduct = (req.session as any)?.viewRole;
+        const allowedForProduct = req.authEmail
+          ? await storage.getAllowedUser(req.authEmail).catch(() => undefined)
+          : undefined;
+        const actingAsBrand = (viewRoleForProduct || (allowedForProduct as any)?.userType) === "brand";
+        if (!actingAsBrand) {
+          const permitted = await storage.getBrandProductsForCreator(req.authUserId, req.authEmail);
+          const ok = permitted.some((p: any) => Number(p.id) === Number(productId));
+          if (!ok) {
+            console.warn(`[Placements] ${userEmail} tried to place product ${productId} with no brand relationship`);
+            return res.status(403).json({
+              error: "That brand hasn't selected you yet. Brands choose creators first — once one requests a placement or bids on your video, their products appear here.",
+            });
+          }
         }
       }
 

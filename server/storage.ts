@@ -1890,6 +1890,62 @@ export class DatabaseStorage implements IStorage {
     return result;
   }
 
+  /**
+   * The catalog a CREATOR is allowed to place from.
+   *
+   * getAllBrandProducts returns every product on the platform, and
+   * /api/brand-products/catalog served it to anyone logged in. So any creator
+   * could pull any brand into their content — observed in production as a
+   * placement test for a brand by a creator that brand had never engaged.
+   * That inverts the whole mechanic: brands choose creators, then creators
+   * place. A creator browsing the full catalog is choosing the brand.
+   *
+   * Access derives from a real relationship, not a role:
+   *   - the brand REQUESTED a placement with this creator
+   *     (brand_placement_assignments), or
+   *   - the brand BID on one of this creator's videos (monetization_items)
+   *
+   * Both are acts of selection by the brand. Nothing else grants a catalog.
+   */
+  async getBrandProductsForCreator(creatorUserId: string, creatorEmail?: string): Promise<BrandProduct[]> {
+    const aliases = await this.identityMatchValues(creatorUserId);
+    if (creatorEmail) aliases.push(creatorEmail);
+    const keys = Array.from(new Set(aliases.filter(Boolean)));
+    if (keys.length === 0) return [];
+
+    // Brands that requested a placement with this creator.
+    const assigned = await db
+      .selectDistinct({ brandUserId: brandPlacementAssignments.brandUserId })
+      .from(brandPlacementAssignments)
+      .where(inArray(brandPlacementAssignments.creatorUserId, keys));
+
+    // Brands that bid on this creator's inventory. Bids carry an email, so
+    // these resolve to user ids below.
+    const bid = await db
+      .selectDistinct({ brandEmail: monetizationItems.brandEmail })
+      .from(monetizationItems)
+      .where(inArray(monetizationItems.creatorUserId, keys));
+
+    const brandIds = new Set<string>(assigned.map((a) => a.brandUserId).filter(Boolean) as string[]);
+    const brandEmails = bid.map((b) => b.brandEmail).filter(Boolean) as string[];
+    if (brandEmails.length > 0) {
+      const rows = await db
+        .select({ id: users.id })
+        .from(users)
+        .where(inArray(users.email, brandEmails));
+      for (const r of rows) if (r.id) brandIds.add(r.id);
+      // brand_products.userId is the same mixed-key column shape as elsewhere,
+      // so an email-keyed product row still resolves.
+      for (const e of brandEmails) brandIds.add(e);
+    }
+
+    if (brandIds.size === 0) return [];
+    return await db
+      .select()
+      .from(brandProducts)
+      .where(inArray(brandProducts.userId, Array.from(brandIds)));
+  }
+
   async getAllBrandProducts(): Promise<BrandProduct[]> {
     return await db
       .select()

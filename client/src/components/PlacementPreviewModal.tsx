@@ -3605,7 +3605,13 @@ export default function PlacementPreviewModal({
                             {!catalogProducts || catalogProducts.length === 0 ? (
                               <div className="p-4 text-center">
                                 <Package className="w-6 h-6 text-muted-foreground mx-auto mb-1.5" />
-                                <p className="text-xs text-muted-foreground">No products in catalog</p>
+                                <div className="text-xs text-muted-foreground space-y-1">
+                                  <p className="font-medium text-foreground">No brands have selected you yet</p>
+                                  <p className="leading-snug">
+                                    Brands choose creators first. When one requests a placement on your
+                                    video or bids on your inventory, their products appear here.
+                                  </p>
+                                </div>
                                 <p className="text-[10px] text-muted-foreground/60 mt-0.5">
                                   Brands can upload products in Product Catalog
                                 </p>

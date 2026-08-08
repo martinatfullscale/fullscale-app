@@ -1706,7 +1706,13 @@ export default function RemixEngine() {
                 {(!catalogProducts || catalogProducts.length === 0) ? (
                   <div className="text-center py-8">
                     <Package className="w-8 h-8 text-muted-foreground/30 mx-auto mb-2" />
-                    <p className="text-xs text-muted-foreground">No products in catalog</p>
+                    <div className="text-xs text-muted-foreground space-y-1">
+                      <p className="font-medium text-foreground">No brands have selected you yet</p>
+                      <p className="leading-snug">
+                        Brands choose creators first. When one requests a placement on your
+                        video or bids on your inventory, their products appear here.
+                      </p>
+                    </div>
                     <p className="text-[10px] text-muted-foreground/60 mt-1">Upload at /brand-products</p>
                   </div>
                 ) : (
