@@ -28,6 +28,7 @@
  */
 
 import { storage } from "../storage";
+import { keyValue, hasKey, KEY_ALIASES } from "./envKeys";
 
 export type GenKind = "image" | "video";
 
@@ -214,7 +215,7 @@ export function modelById(id: string): GenModel | undefined {
 }
 
 export function generationAvailable(): boolean {
-  return !!process.env.FAL_KEY;
+  return hasKey(KEY_ALIASES.fal);
 }
 
 /** Total cost of one generation. Already whole-generation, not per-unit. */
@@ -375,7 +376,7 @@ export async function runGeneration(args: {
 
   try {
     const { fal } = await import("@fal-ai/client");
-    fal.config({ credentials: process.env.FAL_KEY! });
+    fal.config({ credentials: keyValue(KEY_ALIASES.fal)! });
 
     const input: Record<string, unknown> = { prompt };
     if (model.kind === "image") {

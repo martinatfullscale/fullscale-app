@@ -13,6 +13,8 @@
  * added without its hosts is a provider whose imports fail closed, which is
  * the correct direction to fail.
  */
+import { keyValue, hasKey, KEY_ALIASES } from "./envKeys";
+
 
 export type ProviderId = "pexels" | "pixabay";
 
@@ -76,7 +78,7 @@ const pexels: Provider = {
   envVar: "PEXELS_API_KEY",
   hosts: ["pexels.com"],
   attributionRequired: false,
-  configured: () => !!process.env.PEXELS_API_KEY,
+  configured: () => hasKey(KEY_ALIASES.pexels),
   missingDetail: () =>
     "PEXELS_API_KEY is not set in this environment. It's free at pexels.com/api — note that a secret added to the Replit workspace is NOT automatically present in a Deployment.",
   async search(query, opts) {
@@ -87,7 +89,7 @@ const pexels: Provider = {
     if (opts.orientation) params.set("orientation", opts.orientation);
     try {
       const res = await fetch(`https://api.pexels.com/videos/search?${params}`, {
-        headers: { Authorization: process.env.PEXELS_API_KEY! },
+        headers: { Authorization: keyValue(KEY_ALIASES.pexels)! },
         signal: AbortSignal.timeout(15_000),
       });
       if (res.status === 401) return { error: "Pexels rejected the API key." };
@@ -132,12 +134,12 @@ const pixabay: Provider = {
   envVar: "PIXABAY_API_KEY",
   hosts: ["pixabay.com", "cdn.pixabay.com"],
   attributionRequired: false,
-  configured: () => !!process.env.PIXABAY_API_KEY,
+  configured: () => hasKey(KEY_ALIASES.pixabay),
   missingDetail: () =>
     "PIXABAY_API_KEY is not set. It's free at pixabay.com/api/docs — adding it roughly doubles the searchable library at no cost.",
   async search(query, opts) {
     const params = new URLSearchParams({
-      key: process.env.PIXABAY_API_KEY!,
+      key: keyValue(KEY_ALIASES.pixabay)!,
       q: query.slice(0, 100),
       per_page: String(Math.max(3, opts.perPage)), // Pixabay rejects per_page < 3
       safesearch: "true",

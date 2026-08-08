@@ -21,6 +21,7 @@
 
 import Stripe from "stripe";
 import { storage } from "../storage";
+import { keyValue, hasKey, KEY_ALIASES } from "./envKeys";
 
 export interface CreditPack {
   id: string;
@@ -52,7 +53,7 @@ export function packById(id: string): CreditPack | undefined {
 let cached: Stripe | null = null;
 function stripeClient(): Stripe | null {
   if (cached) return cached;
-  const key = process.env.STRIPE_SECRET_KEY;
+  const key = keyValue(KEY_ALIASES.stripeSecret);
   if (!key) return null;
   // No explicit apiVersion: the installed SDK pins the version it was built
   // for, which is the version this code's types describe. Naming a version
@@ -63,9 +64,9 @@ function stripeClient(): Stripe | null {
 }
 
 export function checkoutAvailable(): { ok: boolean; detail: string } {
-  const hasKey = !!process.env.STRIPE_SECRET_KEY;
-  const hasHook = !!process.env.STRIPE_WEBHOOK_SECRET;
-  if (!hasKey) {
+  const hasSecret = hasKey(KEY_ALIASES.stripeSecret);
+  const hasHook = hasKey(KEY_ALIASES.stripeWebhook);
+  if (!hasSecret) {
     return { ok: false, detail: "STRIPE_SECRET_KEY is not set in this environment." };
   }
   if (!hasHook) {
@@ -159,7 +160,7 @@ export async function createCheckoutSession(args: {
 /** Verify a webhook payload. Returns the event or an error to 400 with. */
 export function verifyWebhook(rawBody: Buffer | string, signature: string): { ok: true; event: Stripe.Event } | { ok: false; error: string } {
   const stripe = stripeClient();
-  const secret = process.env.STRIPE_WEBHOOK_SECRET;
+  const secret = keyValue(KEY_ALIASES.stripeWebhook);
   if (!stripe || !secret) return { ok: false, error: "Payments not configured" };
   try {
     return { ok: true, event: stripe.webhooks.constructEvent(rawBody, signature, secret) };

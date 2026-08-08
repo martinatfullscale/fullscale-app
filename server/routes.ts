@@ -11226,6 +11226,91 @@ export async function registerRoutes(
    * say "stock isn't configured" instead of returning an empty list that looks
    * like the feature is broken.
    */
+  /**
+   * Which features are actually switched on in THIS environment.
+   *
+   * Exists because "is the key set?" has cost several round trips: I cannot see
+   * the deployment's env, and a Replit WORKSPACE secret is not automatically
+   * present in a Deployment — so a key can be genuinely set and still absent
+   * where it matters. This reports what the running process can see, grouped by
+   * the feature it unlocks, and never returns a key's value.
+   */
+  app.get("/api/admin/config-status", async (req: any, res) => {
+    try {
+      const callerEmail = req.session?.googleUser?.email || req.user?.claims?.email;
+      if (!callerEmail || !ADMIN_EMAILS.map((e: string) => e.toLowerCase()).includes(String(callerEmail).toLowerCase())) {
+        return res.status(403).json({ error: "Admin access required" });
+      }
+      const { resolveKey, KEY_ALIASES } = await import("./lib/envKeys");
+      // Resolved the same way the features themselves resolve, so this screen
+      // can never disagree with the code it is reporting on.
+      const look = (names: readonly string[]) => resolveKey(names);
+      const features = [
+        {
+          feature: "Cutaway suggestions",
+          why: "Reads the transcript and proposes what to show and when.",
+          groups: [KEY_ALIASES.anthropic],
+          alsoOk: ["AI_INTEGRATIONS_ANTHROPIC_BASE_URL"],
+        },
+        {
+          feature: "Stock b-roll search",
+          why: "Pexels / Pixabay footage in the editor. Either provider alone is enough.",
+          groups: [KEY_ALIASES.pexels, KEY_ALIASES.pixabay],
+          anyGroup: true,
+        },
+        {
+          feature: "AI image + video generation",
+          why: "The paid cutaway tier. Without it every generate button is dead.",
+          groups: [KEY_ALIASES.fal],
+        },
+        {
+          feature: "Buying credits (Stripe)",
+          why: "Checkout stays OFF without the webhook secret — we will not take money we cannot fulfil. Admin credit grants work regardless.",
+          groups: [KEY_ALIASES.stripeSecret, KEY_ALIASES.stripeWebhook],
+        },
+        {
+          feature: "Video scanning (Gemini)",
+          why: "Surface detection. Falls back to edge detection without it.",
+          groups: [["GEMINI_API_KEY", "GOOGLE_GEMINI_API_KEY", "AI_INTEGRATIONS_GEMINI_API_KEY"]],
+        },
+        {
+          feature: "Transcription (Deepgram)",
+          why: "Word timings — the editorial pipeline and captions depend on these.",
+          groups: [KEY_ALIASES.deepgram],
+        },
+      ].map((f: any) => {
+        const found = (f.groups as readonly string[][]).map((g) => look(g));
+        const envFallback = (f.alsoOk ?? []).some((v: string) => !!process.env[v]);
+        const live = f.anyGroup
+          ? found.some(Boolean) || envFallback
+          : found.every(Boolean) || (found.every((x) => !x) && envFallback);
+        return {
+          feature: f.feature,
+          why: f.why,
+          live,
+          // The NAME each secret was found under — this is the whole point.
+          // A key spelled "Fal_API_Key" is invisible to an exact match on
+          // FAL_KEY, and that is exactly what happened here.
+          foundAs: found.filter(Boolean).map((r: any) => r.source),
+          missing: f.groups
+            .filter((_g: any, i: number) => !found[i])
+            .map((g: readonly string[]) => g[0]),
+          accepts: f.groups.map((g: readonly string[]) => g.join(" | ")),
+        };
+      });
+
+      res.json({
+        // So it is obvious WHICH environment answered.
+        environment: process.env.NODE_ENV || "development",
+        build: process.env.BUILD_COMMIT || "dev",
+        features,
+        note: "A Replit workspace secret is NOT automatically present in a Deployment. This reflects the process that served this request.",
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Failed" });
+    }
+  });
+
   app.post("/api/ai/suggest-cutaways", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const { suggestCutaways, suggestAvailable } = await import("./lib/ai/cutawaySuggest");

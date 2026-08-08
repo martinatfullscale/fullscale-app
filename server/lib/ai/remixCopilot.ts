@@ -26,6 +26,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { RubricScores } from "../remix/clipScoringRubric";
 import type { TranscriptSegment } from "../remix/speechToText";
 import type { CaptionSegment } from "../remix/clipGenerator";
+import { keyValue, KEY_ALIASES } from "../envKeys";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -214,7 +215,7 @@ let anthropicClient: Anthropic | null = null;
 function getClient(): Anthropic {
   if (!anthropicClient) {
     // Support Replit AI Integrations sidecar if available
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = keyValue(KEY_ALIASES.anthropic);
     const baseURL = process.env.AI_INTEGRATIONS_ANTHROPIC_BASE_URL || process.env.ANTHROPIC_BASE_URL;
 
     const config: Record<string, any> = {};

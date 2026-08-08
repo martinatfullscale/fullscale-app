@@ -18,6 +18,7 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
+import { keyValue, hasKey, KEY_ALIASES } from "../envKeys";
 
 const MODEL = "claude-sonnet-4-5-20250929";
 /** Above this the clip stops being a talking head with support and becomes a slideshow. */
@@ -47,7 +48,7 @@ export interface CutawaySuggestion {
 let client: Anthropic | null = null;
 function anthropic(): Anthropic {
   if (!client) {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = keyValue(KEY_ALIASES.anthropic);
     const baseURL = process.env.AI_INTEGRATIONS_ANTHROPIC_BASE_URL || process.env.ANTHROPIC_BASE_URL;
     const config: Record<string, any> = {};
     if (apiKey) config.apiKey = apiKey;
@@ -58,7 +59,7 @@ function anthropic(): Anthropic {
 }
 
 export function suggestAvailable(): boolean {
-  return !!(process.env.ANTHROPIC_API_KEY || process.env.AI_INTEGRATIONS_ANTHROPIC_BASE_URL);
+  return hasKey(KEY_ALIASES.anthropic) || !!process.env.AI_INTEGRATIONS_ANTHROPIC_BASE_URL;
 }
 
 const SYSTEM = `You place cutaways in short-form video.
