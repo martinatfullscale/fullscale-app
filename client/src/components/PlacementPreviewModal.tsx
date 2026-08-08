@@ -814,6 +814,11 @@ export default function PlacementPreviewModal({
   // the picker — it never paints — so unplaced surfaces stay null and
   // render the outline-only ghost.
   const [productSource, setProductSource] = useState<"user" | "saved" | null>(null);
+  // Mirror for effects whose dep arrays deliberately exclude productSource —
+  // the surface-switch loader needs the CURRENT provenance without
+  // re-running on every provenance change.
+  const productSourceRef = useRef<"user" | "saved" | null>(null);
+  useEffect(() => { productSourceRef.current = productSource; }, [productSource]);
   // Identity of the saved placement currently painted on the selected
   // surface (null when the paint is an unsaved preview). source tells us
   // whether this surface IS the anchor ("direct") or merely inherits the
@@ -1232,10 +1237,20 @@ export default function PlacementPreviewModal({
         if (!res.ok) return;
         const data = await res.json();
         if (!data.placement) {
-          // No saved placement on THIS surface: whatever product carried
-          // over from a same-fixture switch is a preview here, not a saved
-          // fixture — the badge must not claim otherwise.
-          setProductSource((prev) => (prev === "saved" ? "user" : prev));
+          // No saved placement on THIS surface. Two provenances, two fates:
+          //   - A product the creator picked THIS SESSION stays on screen —
+          //     carrying your own pick from surface to surface while you
+          //     decide is the point of the preview.
+          //   - A product that arrived via auto-load from a SAVED row is
+          //     cleared. It used to be kept and relabeled "user", which put
+          //     someone else's old test placement on every surface the
+          //     creator clicked — reported as "it identifies the nightstand
+          //     and drops in a logo I never placed". A saved row earns
+          //     exactly its own surfaces, nothing more.
+          if (productSourceRef.current === "saved") {
+            setProductImage(null);
+            setProductSource(null);
+          }
           setLoadedPlacement(null);
           return;
         }

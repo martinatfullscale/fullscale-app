@@ -11932,11 +11932,22 @@ export async function registerRoutes(
         keyframes: validatedKeyframes,
       });
 
-      // Auto-propagate to matching surfaces in the same scene group (scene persistence)
-      // Uses fuzzy spatial matching: same surface type + bounding box center within 20% tolerance
+      // Auto-propagate to sibling rows of the SAME PHYSICAL FIXTURE.
       // Skipped entirely when the creator sent an explicit scope — the single
       // anchor row plus its appliesToGroupIds list already says where the
       // placement applies; cloning rows would reintroduce the fan-out.
+      //
+      // This block used to say "same scene group" and then match the WHOLE
+      // VIDEO: every surface of the anchor's type whose center sat within
+      // ±20% of frame, across every scene — sceneId was never consulted.
+      // Since every clone is a DIRECT row on its surface, one placement
+      // stamped the product onto distinct fixtures the creator never chose
+      // (observed as a brand logo on a nightstand nobody placed it on: a
+      // dresser two scenes away carried it at a similar frame position, and
+      // ±20% of frame is a quarter of the screen). Propagation now requires
+      // fixture identity — same surfaceGroupId — or, for legacy scans with
+      // no group ids, same scene AND same type AND nearby center. Cross-
+      // scene propagation without identity does not happen at all.
       let propagatedCount = 0;
       if (computedGroupId && !scopeProvided) {
         const allSurfaces = await storage.getDetectedSurfaces(videoId);
@@ -11948,12 +11959,22 @@ export async function registerRoutes(
         const anchorCX = anchorBBX + anchorBBW / 2;
         const anchorCY = anchorBBY + anchorBBH / 2;
         const anchorType = anchorSurface?.surfaceType?.toLowerCase() || "";
+        const anchorGroupId = (anchorSurface as any)?.surfaceGroupId ?? null;
+        const anchorSceneId = (anchorSurface as any)?.sceneId;
         const FUZZY_TOLERANCE = 0.20; // 20% of frame
 
         const matchingSurfaces = allSurfaces.filter(s => {
           if (s.id === surfaceId) return false;
           if (s.surfaceType === "Filtered") return false;
           if (s.surfaceType.toLowerCase() !== anchorType) return false;
+          // Fixture identity is decisive when the anchor carries it: the
+          // scanner stamps one surfaceGroupId per canonical surface, so
+          // sharing it IS being the same desk. Nothing else qualifies.
+          if (anchorGroupId) return (s as any).surfaceGroupId === anchorGroupId;
+          // Legacy anchor (pre-groupId scan): same scene + nearby center.
+          // A surface in a different scene — or an unknown one — is not
+          // provably the same fixture, so it gets nothing.
+          if (typeof anchorSceneId !== "number" || (s as any).sceneId !== anchorSceneId) return false;
           const sBBX = parseFloat(String(s.boundingBoxX));
           const sBBY = parseFloat(String(s.boundingBoxY));
           const sBBW = parseFloat(String(s.boundingBoxWidth));
@@ -12185,10 +12206,25 @@ export async function registerRoutes(
           return res.json({ placement: null });
         }
 
-        // SCENE MATCH (preferred): same sceneId + same surfaceType. Scene
-        // clustering means :08 and :46 in a podcast that flips host↔guest
-        // both resolve to the same coffee table. Drop a mug at :08, click
-        // :46, you see the mug — no re-establishing required.
+        // SCENE MATCH (preferred): same sceneId + same surfaceType + nearby
+        // center. Scene clustering means :08 and :46 in a podcast that flips
+        // host↔guest both resolve to the same coffee table. Drop a mug at
+        // :08, click :46, you see the mug — no re-establishing required.
+        //
+        // The center gate is load-bearing: without it this tier handed ANY
+        // same-type placement in the scene to the target — a nightstand
+        // inherits the dresser's logo because both are "Table" in scene 3.
+        // Same fixture across shots sits at a similar frame position; a
+        // different fixture across the room does not. (The fuzzy tier below
+        // always had this gate; this tier predates it and was looser than
+        // its own fallback.)
+        const tBBXs = parseFloat(String(targetSurface.boundingBoxX));
+        const tBBYs = parseFloat(String(targetSurface.boundingBoxY));
+        const tBBWs = parseFloat(String(targetSurface.boundingBoxWidth));
+        const tBBHs = parseFloat(String(targetSurface.boundingBoxHeight));
+        const tCXs = tBBXs + tBBWs / 2;
+        const tCYs = tBBYs + tBBHs / 2;
+        const SCENE_TOLERANCE = 0.20;
         if (typeof tSceneId === "number") {
           for (const p of videoplacements) {
             if ((p as any).appliesToGroupIds != null) continue; // scoped rows decided above
@@ -12196,6 +12232,9 @@ export async function registerRoutes(
             if (!pSurface) continue;
             if ((pSurface as any).sceneId !== tSceneId) continue;
             if (pSurface.surfaceType.toLowerCase() !== tType) continue;
+            const pCX = parseFloat(String(pSurface.boundingBoxX)) + parseFloat(String(pSurface.boundingBoxWidth)) / 2;
+            const pCY = parseFloat(String(pSurface.boundingBoxY)) + parseFloat(String(pSurface.boundingBoxHeight)) / 2;
+            if (Math.abs(tCXs - pCX) >= SCENE_TOLERANCE || Math.abs(tCYs - pCY) >= SCENE_TOLERANCE) continue;
             return res.json({ placement: p, source: "scene_match" });
           }
         }
