@@ -19,7 +19,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   Loader2, ShieldAlert, Database, Users, Clock, Megaphone,
-  ChevronDown, ChevronRight, Instagram, Facebook,
+  ChevronDown, ChevronRight, Instagram, Facebook, Youtube,
   ArrowUp, ArrowDown, ArrowUpDown,
 } from "lucide-react";
 import {
@@ -109,9 +109,11 @@ function CreatorDetailPanel({ userId }: { userId: string }) {
         return (
           <div key={acct.id} data-testid={`detail-account-${acct.platform}`}>
             <p className="font-medium text-white flex items-center gap-2 mb-3">
-              {acct.platform === "instagram" ? <Instagram className="w-4 h-4" /> : <Facebook className="w-4 h-4" />}
+              {acct.platform === "instagram" ? <Instagram className="w-4 h-4" />
+                : acct.platform === "youtube" ? <Youtube className="w-4 h-4" />
+                : <Facebook className="w-4 h-4" />}
               {acct.handle || acct.displayName || acct.platform}
-              <span className="text-xs text-muted-foreground font-normal">{fmt(acct.followers)} followers</span>
+              <span className="text-xs text-muted-foreground font-normal">{fmt(acct.followers)} {acct.platform === "youtube" ? "subscribers" : "followers"}</span>
               {acct.lastCapturedAt && (
                 <span className="text-xs text-muted-foreground font-normal">
                   · synced {new Date(acct.lastCapturedAt).toLocaleString()}

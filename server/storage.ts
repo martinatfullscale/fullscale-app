@@ -708,11 +708,15 @@ export class DatabaseStorage implements IStorage {
 
   /** All Meta accounts with a stored token — the snapshot job's work list. */
   async getAllMetaSocialAccounts(): Promise<SocialAccount[]> {
+    // Name predates YouTube joining the snapshot cycle: this is "every
+    // account the insight snapshotter covers", and excluding YouTube here is
+    // WHY the analytics tab's trend charts had nothing to draw for it — no
+    // rows were ever captured.
     const rows = await db
       .select()
       .from(socialAccounts)
       .where(and(
-        inArray(socialAccounts.platform, ["instagram", "facebook"]),
+        inArray(socialAccounts.platform, ["instagram", "facebook", "youtube"]),
         sql`${socialAccounts.accessToken} IS NOT NULL`
       ));
     return rows.map(r => this.decryptSocialAccount(r));

@@ -86,6 +86,35 @@ export async function runSocialInsightSnapshots(): Promise<{ captured: number; s
         });
         captured++;
         captured += await captureFacebookPostSnapshots(acct, token);
+      } else if (acct.platform === "youtube") {
+        // No live API call here — the daily audience cron already refreshes
+        // audience_data (90-day views, watch time, subs gained) via
+        // fetchYoutubeAudience with the youtube_connections token dance,
+        // which this module deliberately doesn't reimplement. The snapshot's
+        // job is to give those numbers a TIME AXIS: one row per cycle, so
+        // the analytics trend charts have a series to draw. Before this
+        // branch, YouTube accounts were `skipped++` and the charts promised
+        // "trend appears after a few snapshot cycles" forever.
+        const eng = ((acct as any).audienceData?.engagement ?? {}) as Record<string, number | null>;
+        await storage.insertSocialInsightSnapshot({
+          socialAccountId: acct.id,
+          userId: acct.userId,
+          platform: "youtube",
+          platformAccountId: acct.platformAccountId,
+          followers: acct.followers ?? null,
+          metrics: {
+            // "reach" is where fetchYoutubeAudience stores 90-day channel
+            // views; mirror it under "views" too because the trend series
+            // reads metrics.views.
+            views: eng.reach ?? 0,
+            reach: eng.reach ?? 0,
+            estimated_minutes_watched: eng.estimated_minutes_watched ?? 0,
+            subscribers_gained: eng.subscribers_gained ?? 0,
+          },
+          demographics: null,
+          stories: null,
+        });
+        captured++;
       } else {
         skipped++;
       }

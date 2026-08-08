@@ -16713,6 +16713,107 @@ export async function registerRoutes(
       interactions: (s.metrics as any)?.total_interactions ?? (s.metrics as any)?.page_post_engagements ?? 0,
     }));
 
+    // ── YouTube: assembled from what the platform already holds ─────────
+    // The tab "pulled nothing from YouTube" because this function never had
+    // a YouTube branch and both consumers filtered to Meta before calling
+    // it. The data was all here: subscribers + channel totals on the
+    // account row (synced from youtube_connections), 90-day channel
+    // engagement + demographics in audience_data (daily cron via
+    // fetchYoutubeAudience), and the creator's own videos in video_index.
+    if (acct.platform === "youtube") {
+      const aud = (acct.audienceData ?? {}) as any;
+      const eng = (aud.engagement ?? {}) as Record<string, number | null>;
+
+      // audience_data → the follower_demographics.* shape the client's
+      // chips and bars read. Values are proportions; the UI normalizes by
+      // sum, so proportions and absolute counts render identically.
+      const demographics: Record<string, Array<{ dimension: string; value: number }>> = {};
+      const dist = (obj: Record<string, number> | null | undefined) =>
+        obj ? Object.entries(obj).map(([dimension, v]) => ({ dimension, value: Number(v) || 0 })).filter((r) => r.value > 0) : [];
+      const age = dist(aud.age_distribution);
+      if (age.length) demographics["follower_demographics.age"] = age;
+      const gender = dist(aud.gender_distribution);
+      if (gender.length) demographics["follower_demographics.gender"] = gender;
+      if (Array.isArray(aud.top_countries) && aud.top_countries.length) {
+        demographics["follower_demographics.country"] = aud.top_countries
+          .map((c: any) => ({ dimension: String(c.code ?? ""), value: Number(c.percent) || 0 }))
+          .filter((r: any) => r.dimension && r.value > 0);
+      }
+
+      // Top videos from the library. getVideoIndex resolves the dual-id
+      // problem and dedupes; synthetic ids (uploads, IG/FB imports) don't
+      // get YouTube permalinks or count as YouTube media.
+      const isRealYtId = (id: string) =>
+        !!id && !/^(upload-|ig-|fb-|demo-|hero-)/.test(id);
+      let recentMedia: any[] = [];
+      try {
+        const vids = (await storage.getVideoIndex(acct.userId)) as any[];
+        const ytVids = vids
+          .filter((v) => (v.platform ?? "youtube") === "youtube" && isRealYtId(v.youtubeId))
+          .sort((a, b) => (b.viewCount ?? 0) - (a.viewCount ?? 0))
+          .slice(0, mediaCount);
+
+        // Live stats for those ids — one bounded API call, so the numbers
+        // are today's rather than import-day's. Falls back to stored counts.
+        const liveById = new Map<string, { viewCount: number; likeCount: number; commentCount: number }>();
+        if (ytVids.length > 0) {
+          const token = await withTimeout(getFreshYoutubeToken(acct.userId, acct.platformAccountId), 6000);
+          if (token) {
+            const stats = await withTimeout(fetchYouTubeVideoStats(ytVids.map((v) => v.youtubeId), token), 8000);
+            for (const s of stats ?? []) liveById.set(s.videoId, s);
+          }
+        }
+
+        recentMedia = ytVids.map((v) => {
+          const live = liveById.get(v.youtubeId);
+          return {
+            mediaId: v.youtubeId,
+            mediaType: "video",
+            permalink: `https://www.youtube.com/watch?v=${v.youtubeId}`,
+            thumbnailUrl: v.thumbnailUrl ?? null,
+            caption: v.title ?? null,
+            timestamp: v.publishedAt ?? v.createdAt ?? null,
+            views: live?.viewCount ?? v.viewCount ?? 0,
+            reach: 0,
+            avgWatchTimeMs: 0,
+            totalWatchTimeMs: 0,
+            likeCount: live?.likeCount ?? 0,
+            commentsCount: live?.commentCount ?? 0,
+            saved: 0,
+            shares: 0,
+            totalInteractions: (live?.likeCount ?? 0) + (live?.commentCount ?? 0),
+          };
+        });
+      } catch (err: any) {
+        console.warn(`[Analytics] YouTube media assembly failed (non-fatal): ${err?.message}`);
+      }
+
+      // Explicit yt_* keys — the generic KPI tiles are labeled for Meta's
+      // 24h windows, and lifetime channel views under a "Views (24h)" label
+      // would be a lie. The client renders YouTube-specific tiles.
+      const metrics: Record<string, number> = { subscribers: acct.followers ?? 0 };
+      if (typeof eng.reach === "number") metrics.yt_views_90d = eng.reach;
+      if (typeof eng.estimated_minutes_watched === "number") metrics.yt_watch_minutes_90d = eng.estimated_minutes_watched;
+      if (typeof eng.average_view_duration === "number") metrics.yt_avg_view_sec = eng.average_view_duration;
+      if (typeof eng.subscribers_gained === "number") metrics.yt_subs_gained_90d = eng.subscribers_gained;
+      if (typeof acct.totalViews === "number" && acct.totalViews > 0) metrics.channel_total_views = acct.totalViews;
+
+      return {
+        id: acct.id,
+        platform: acct.platform,
+        handle: acct.handle,
+        displayName: acct.displayName,
+        avatarUrl: acct.avatarUrl,
+        followers: acct.followers ?? latest?.followers ?? 0,
+        lastCapturedAt: latest?.capturedAt ?? null,
+        metrics,
+        demographics,
+        stories: [],
+        series,
+        recentMedia,
+      };
+    }
+
     // Live recent-media performance (best-effort; token may be stale).
     // Bounded: the fan-out is ~2 Graph calls per media with no native timeout.
     let recentMedia: any[] = [];
@@ -16749,8 +16850,10 @@ export async function registerRoutes(
   app.get("/api/analytics/social", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const accounts = await storage.getSocialAccountsByUser(req.authUserId, req.authEmail);
-      const metaAccounts = accounts.filter((a) => a.platform === "instagram" || a.platform === "facebook");
-      const out = await Promise.all(metaAccounts.map((acct) => assembleAccountAnalytics(acct, 6)));
+      // "The Analytics tab isn't pulling anything from YouTube" — correct,
+      // this line filtered it out before assembly ever ran.
+      const supported = accounts.filter((a) => a.platform === "instagram" || a.platform === "facebook" || a.platform === "youtube");
+      const out = await Promise.all(supported.map((acct) => assembleAccountAnalytics(acct, 6)));
       res.json({ accounts: out });
     } catch (err: any) {
       console.error("[API] /api/analytics/social error:", err.message);
@@ -16771,8 +16874,8 @@ export async function registerRoutes(
       let user = await storage.getUserById(targetId);
       if (!user && targetId.includes("@")) user = await storage.getUserByEmail(targetId);
       const accounts = await storage.getSocialAccountsByUser(user?.id ?? targetId, user?.email ?? undefined);
-      const metaAccounts = accounts.filter((a) => a.platform === "instagram" || a.platform === "facebook");
-      const out = await Promise.all(metaAccounts.map((acct) => assembleAccountAnalytics(acct, 12)));
+      const supported = accounts.filter((a) => a.platform === "instagram" || a.platform === "facebook" || a.platform === "youtube");
+      const out = await Promise.all(supported.map((acct) => assembleAccountAnalytics(acct, 12)));
 
       let placements: any[] = [];
       try {

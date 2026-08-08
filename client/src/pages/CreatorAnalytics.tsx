@@ -14,7 +14,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
-  Loader2, BarChart3, Instagram, Facebook, Eye, Users, Heart,
+  Loader2, BarChart3, Instagram, Facebook, Youtube, Eye, Users, Heart,
   TrendingUp, Clock, Link2, Globe2,
 } from "lucide-react";
 import { Link } from "wouter";
@@ -25,6 +25,16 @@ const KPI_DEFS: Array<{ key: string; fbKey?: string; label: string; icon: any }>
   { key: "reach", fbKey: "page_total_media_view_unique", label: "Reach (24h)", icon: Users },
   { key: "total_interactions", fbKey: "page_post_engagements", label: "Interactions", icon: Heart },
   { key: "accounts_engaged", fbKey: "page_total_actions", label: "Engaged", icon: TrendingUp },
+];
+
+// YouTube reports 90-day channel windows (see fetchYoutubeAudience), not
+// Meta's 24h insights — reusing the tiles above would put lifetime/90-day
+// numbers under "(24h)" labels. Same layout, honestly labeled.
+const YT_KPI_DEFS: Array<{ key: string; label: string; icon: any }> = [
+  { key: "yt_views_90d", label: "Views (90d)", icon: Eye },
+  { key: "subscribers", label: "Subscribers", icon: Users },
+  { key: "yt_watch_minutes_90d", label: "Watch minutes (90d)", icon: Clock },
+  { key: "yt_subs_gained_90d", label: "Subs gained (90d)", icon: TrendingUp },
 ];
 
 export default function CreatorAnalytics() {
@@ -65,10 +75,10 @@ export default function CreatorAnalytics() {
           <CardContent className="py-16 text-center">
             <Link2 className="w-10 h-10 text-gray-600 mx-auto mb-3" />
             <p className="font-medium text-gray-300">
-              {isError ? "Couldn't load analytics" : "No connected Meta accounts yet"}
+              {isError ? "Couldn't load analytics" : "No connected accounts yet"}
             </p>
             <p className="text-sm text-muted-foreground mt-1 mb-4">
-              Connect Facebook and confirm your Page — analytics start flowing within a few minutes.
+              Connect YouTube, Instagram, or Facebook — analytics start flowing within a few minutes.
             </p>
             <Link href="/dashboard">
               <Button variant="outline" size="sm">Go to Dashboard</Button>
@@ -96,7 +106,9 @@ export default function CreatorAnalytics() {
                     <img src={acct.avatarUrl} alt="" className="w-11 h-11 rounded-full object-cover" />
                   ) : (
                     <div className="w-11 h-11 rounded-full bg-white/10 flex items-center justify-center">
-                      {acct.platform === "instagram" ? <Instagram className="w-5 h-5" /> : <Facebook className="w-5 h-5" />}
+                      {acct.platform === "instagram" ? <Instagram className="w-5 h-5" />
+                        : acct.platform === "youtube" ? <Youtube className="w-5 h-5" />
+                        : <Facebook className="w-5 h-5" />}
                     </div>
                   )}
                   <div>
@@ -105,7 +117,7 @@ export default function CreatorAnalytics() {
                       <Badge variant="secondary" className="text-[10px] capitalize">{acct.platform}</Badge>
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      {fmt(acct.followers)} followers
+                      {fmt(acct.followers)} {acct.platform === "youtube" ? "subscribers" : "followers"}
                       {acct.lastCapturedAt && (
                         <> · <Clock className="w-3 h-3 inline -mt-0.5" /> synced {new Date(acct.lastCapturedAt).toLocaleString()}</>
                       )}
@@ -115,7 +127,7 @@ export default function CreatorAnalytics() {
 
                 {/* KPI tiles */}
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-                  {KPI_DEFS.map((kpi) => {
+                  {(acct.platform === "youtube" ? YT_KPI_DEFS : KPI_DEFS).map((kpi: any) => {
                     const value = acct.metrics[kpi.key] ?? (kpi.fbKey ? acct.metrics[kpi.fbKey] : undefined);
                     const Icon = kpi.icon;
                     return (
