@@ -11214,6 +11214,69 @@ export async function registerRoutes(
   });
 
   // POST /api/ai/prompt-from-transcript — turn what's SAID into what to SHOW.
+  /**
+   * Review the clip, then say what belongs on screen and when.
+   *
+   * Answers the question the editor could not: the stock search and the
+   * generator both started from a blank box, so the creator had to invent both
+   * the moment and the query. This reads the transcript and hands back timed
+   * proposals with the search terms and the prompt already written.
+   *
+   * Also reports which downstream tools are actually live, so the panel can
+   * say "stock isn't configured" instead of returning an empty list that looks
+   * like the feature is broken.
+   */
+  app.post("/api/ai/suggest-cutaways", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const { suggestCutaways, suggestAvailable } = await import("./lib/ai/cutawaySuggest");
+      const { anyProviderConfigured } = await import("./lib/stockProviders");
+      const { generationAvailable } = await import("./lib/aiGeneration");
+
+      const lines = Array.isArray(req.body?.lines) ? req.body.lines : [];
+      const clean = lines
+        .filter((l: any) => Number.isFinite(Number(l?.start)) && Number.isFinite(Number(l?.end)) && String(l?.text ?? "").trim())
+        .map((l: any) => ({ start: Number(l.start), end: Number(l.end), text: String(l.text) }))
+        .slice(0, 400);
+
+      if (!suggestAvailable()) {
+        return res.json({
+          suggestions: [],
+          available: false,
+          detail: "Cutaway suggestions need ANTHROPIC_API_KEY (or the Replit AI integration) in this environment.",
+          stockLive: anyProviderConfigured(),
+          aiLive: generationAvailable(),
+        });
+      }
+      if (clean.length === 0) {
+        return res.json({
+          suggestions: [],
+          available: true,
+          detail: "No transcript for this clip yet — cutaway suggestions read the words to find the moments.",
+          stockLive: anyProviderConfigured(),
+          aiLive: generationAvailable(),
+        });
+      }
+
+      const suggestions = await suggestCutaways(clean, {
+        clipStart: Number.isFinite(Number(req.body?.clipStart)) ? Number(req.body.clipStart) : undefined,
+        clipEnd: Number.isFinite(Number(req.body?.clipEnd)) ? Number(req.body.clipEnd) : undefined,
+      });
+
+      res.json({
+        suggestions,
+        available: true,
+        detail: suggestions.length === 0
+          ? "Nothing in this clip clearly needs a cutaway — that is a normal answer for a strong talking-head cut."
+          : null,
+        stockLive: anyProviderConfigured(),
+        aiLive: generationAvailable(),
+      });
+    } catch (err: any) {
+      console.error("[AI] suggest-cutaways error:", err?.message);
+      res.status(500).json({ error: err?.message || "Failed to suggest cutaways" });
+    }
+  });
+
   app.post("/api/ai/prompt-from-transcript", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const { promptFromTranscript } = await import("./lib/aiGeneration");

@@ -530,6 +530,8 @@ export default function ClipStudio({ clip, videoId, onClose, onApply }: Props) {
                   playhead={t}
                   clipId={clip.id}
                   spokenAtPlayhead={spokenAtPlayhead}
+                  lines={(transcript?.segments ?? []).map((sg) => ({ start: sg.start, end: sg.end, text: sg.text }))}
+                  onSeek={(sec) => seek(sec)}
                   onChange={(broll) => setEdits((p) => ({ ...p, broll }))}
                   queryClient={queryClient}
                 />
@@ -967,6 +969,9 @@ function BrollTool(props: {
   clipId: number;
   /** What's being said at the playhead — the seed for a generated cutaway. */
   spokenAtPlayhead: string;
+  /** The clip's words, so cutaways can be proposed against what is actually said. */
+  lines: Array<{ start: number; end: number; text: string }>;
+  onSeek: (sec: number) => void;
   onChange: (b: NonNullable<StudioEdits["broll"]>) => void;
   queryClient: ReturnType<typeof useQueryClient>;
 }) {
@@ -986,19 +991,24 @@ function BrollTool(props: {
   const [stockErr, setStockErr] = useState<string | null>(null);
   const [importing, setImporting] = useState<string | null>(null);
 
-  const runSearch = async () => {
-    if (!q.trim()) return;
+  const runSearch = () => runSearchWith(q);
+
+  /** Search an explicit term, so an accepted suggestion can drive it without
+   *  waiting a render for the input's state to settle. */
+  const runSearchWith = async (term: string) => {
+    const query = (term ?? "").trim();
+    if (!query) return;
     setSearching(true);
     setStockErr(null);
     try {
       const res = await fetchWithTimeout(
-        `/api/media-assets/stock/search?q=${encodeURIComponent(q.trim())}`,
+        `/api/media-assets/stock/search?q=${encodeURIComponent(query)}`,
         { credentials: "include" },
       );
       const body = await res.json();
       if (!res.ok) { setStockErr(body.error || "Search failed"); setStock([]); return; }
       setStock(body.videos ?? []);
-      if ((body.videos ?? []).length === 0) setStockErr(`Nothing found for "${q.trim()}".`);
+      if ((body.videos ?? []).length === 0) setStockErr(`Nothing found for "${query}".`);
     } catch (err: any) {
       setStockErr(err?.message || "Search failed");
     } finally {
@@ -1021,7 +1031,9 @@ function BrollTool(props: {
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || "Import failed");
       props.queryClient.invalidateQueries({ queryKey: ["/api/media-assets"] });
-      addAt(body.asset.id);
+      // Land it where the suggestion said, if one is driving this search.
+      addAt(body.asset.id, pendingWindow ?? undefined);
+      setPendingWindow(null);
       setTab("mine");
     } catch (err: any) {
       alert(err?.message || "Import failed");
@@ -1030,8 +1042,78 @@ function BrollTool(props: {
     }
   };
 
-  const addAt = (assetId: number) => {
-    const start = Math.min(props.playhead, Math.max(0, props.duration - 3));
+  // ── Suggested cutaways ────────────────────────────────────────────
+  // The seam this editor was missing. Stock search and generation both start
+  // from a blank box, which means the creator has to watch their own clip,
+  // decide a visual belongs at 0:14, and invent the search terms. This reads
+  // the transcript and proposes the moments WITH the query and the prompt
+  // already written, each anchored to the seconds it covers.
+  const [sugs, setSugs] = useState<any[] | null>(null);
+  const [sugBusy, setSugBusy] = useState(false);
+  const [sugNote, setSugNote] = useState<string | null>(null);
+
+  const runSuggest = async () => {
+    setSugBusy(true);
+    setSugNote(null);
+    try {
+      const res = await fetchWithTimeout("/api/ai/suggest-cutaways", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ lines: props.lines }),
+      }, 90_000);
+      const body = await res.json();
+      if (!res.ok) { setSugNote(body.error || "Could not read the clip."); return; }
+      setSugs(body.suggestions ?? []);
+      setSugNote(body.detail ?? null);
+      // Say plainly when a downstream tool is off, rather than letting the
+      // creator click Find/Generate into an error.
+      const off: string[] = [];
+      if (!body.stockLive) off.push("stock search");
+      if (!body.aiLive) off.push("AI generation");
+      if (off.length) {
+        setSugNote((n) => [n, `Not configured on this server: ${off.join(" and ")}.`].filter(Boolean).join(" "));
+      }
+    } catch (err: any) {
+      setSugNote(err?.message || "Could not read the clip.");
+    } finally {
+      setSugBusy(false);
+    }
+  };
+
+  /** Take a suggestion into whichever tool it prefers, pre-filled. */
+  const useSuggestion = (sg: any) => {
+    props.onSeek(sg.tStart);
+    if (sg.prefer === "ai") {
+      setTab("ai");
+      setPendingWindow({ start: sg.tStart, end: sg.tEnd });
+      setPrefillPrompt(sg.aiPrompt);
+    } else {
+      setTab("stock");
+      setQ(sg.stockQuery);
+      setPendingWindow({ start: sg.tStart, end: sg.tEnd });
+      setTimeout(() => runSearchWith(sg.stockQuery), 0);
+    }
+  };
+
+  // Where an accepted suggestion should land, remembered across the search so
+  // importing a result drops it at the proposed moment rather than wherever
+  // the playhead happens to be.
+  const [pendingWindow, setPendingWindow] = useState<{ start: number; end: number } | null>(null);
+  const [prefillPrompt, setPrefillPrompt] = useState<string>("");
+
+  const addAt = (assetId: number, at?: { start: number; end: number }) => {
+    const start = at
+      ? Math.max(0, Math.min(at.start, Math.max(0, props.duration - 1)))
+      : Math.min(props.playhead, Math.max(0, props.duration - 3));
+    if (at) {
+      props.onChange([
+        ...props.cuts,
+        { assetId, start, end: Math.min(props.duration, Math.max(start + 1, at.end)),
+          fit: "cover", scale: 1, x: 1, y: 0, muted: true, motion: "push" },
+      ]);
+      return;
+    }
     props.onChange([
       ...props.cuts,
       // Full frame by default — a cutaway takes over the shot. PiP is the
@@ -1042,6 +1124,57 @@ function BrollTool(props: {
 
   return (
     <div className="space-y-3">
+      {/* Review first, then suggest — the flow the editor was missing. */}
+      <div className="rounded border border-purple-500/25 bg-purple-500/[0.06] p-2">
+        <div className="flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <p className="text-[11px] font-medium text-purple-200">Suggested cutaways</p>
+            <p className="text-[10px] text-gray-500 leading-snug">
+              Reads what's said and picks the moments a visual helps.
+            </p>
+          </div>
+          <Button
+            size="sm" onClick={runSuggest} disabled={sugBusy || props.lines.length === 0}
+            className="h-7 text-[11px] bg-purple-600 hover:bg-purple-500 shrink-0"
+            data-testid="suggest-cutaways"
+          >
+            {sugBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : sugs ? "Again" : "Suggest"}
+          </Button>
+        </div>
+
+        {sugNote && <p className="text-[10px] text-amber-300/90 mt-1.5 leading-snug">{sugNote}</p>}
+
+        {sugs && sugs.length > 0 && (
+          <div className="mt-2 space-y-1.5">
+            {sugs.map((sg, i) => (
+              <div key={i} className="rounded bg-black/30 border border-white/5 p-1.5" data-testid={`suggestion-${i}`}>
+                <div className="flex items-start gap-2">
+                  <button
+                    onClick={() => props.onSeek(sg.tStart)}
+                    className="text-[10px] font-mono text-purple-300 hover:text-purple-200 shrink-0 pt-0.5"
+                    title="Jump here"
+                  >
+                    {Math.floor(sg.tStart / 60)}:{String(Math.floor(sg.tStart % 60)).padStart(2, "0")}
+                  </button>
+                  <div className="min-w-0 flex-1">
+                    {sg.quote && <p className="text-[10px] text-gray-400 italic truncate">"{sg.quote}"</p>}
+                    <p className="text-[10px] text-gray-500 leading-snug">{sg.why}</p>
+                  </div>
+                  <Button
+                    size="sm" variant="outline"
+                    onClick={() => useSuggestion(sg)}
+                    className="h-6 text-[10px] px-2 shrink-0"
+                    data-testid={`use-suggestion-${i}`}
+                  >
+                    {sg.prefer === "ai" ? "Generate" : "Find"}
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       <div className="flex gap-1 p-0.5 rounded bg-gray-800">
         {(["stock", "ai", "mine"] as const).map((k) => (
           <button
@@ -1062,9 +1195,13 @@ function BrollTool(props: {
           playhead={props.playhead}
           spokenAtPlayhead={props.spokenAtPlayhead}
           clipId={props.clipId}
+          prefillPrompt={prefillPrompt}
           onGenerated={(assetId) => {
             props.queryClient.invalidateQueries({ queryKey: ["/api/media-assets"] });
-            addAt(assetId);
+            // Land it at the suggested moment when a suggestion drove this.
+            addAt(assetId, pendingWindow ?? undefined);
+            setPendingWindow(null);
+            setPrefillPrompt("");
             setTab("mine");
           }}
         />
@@ -1398,12 +1535,26 @@ function Slider(props: {
  *    scaffolding a speaker uses to think.
  */
 function AiGenerateTool(props: {
+  /** Pre-written prompt from an accepted cutaway suggestion. */
+  prefillPrompt?: string;
   playhead: number;
   spokenAtPlayhead: string;
   clipId: number;
   onGenerated: (assetId: number) => void;
 }) {
   const [prompt, setPrompt] = useState("");
+
+  // A suggestion arrives with its prompt already written. Only overwrite what
+  // the creator has not started editing — clobbering their typing would be
+  // worse than not prefilling at all.
+  const lastPrefill = useRef<string>("");
+  useEffect(() => {
+    const incoming = props.prefillPrompt ?? "";
+    if (incoming && incoming !== lastPrefill.current) {
+      lastPrefill.current = incoming;
+      setPrompt(incoming);
+    }
+  }, [props.prefillPrompt]);
   const [modelId, setModelId] = useState("image-fast");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
