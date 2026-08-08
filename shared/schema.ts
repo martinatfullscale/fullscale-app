@@ -291,7 +291,24 @@ export const detectedSurfaces = pgTable("detected_surfaces", {
   // sceneId) composite when null, never treat raw rows as distinct surfaces.
   surfaceGroupId: text("surface_group_id"),
   createdAt: timestamp("created_at").defaultNow(),
-});
+}, (table) => [
+  // This table had NO indexes, and it is the highest-volume table the scanner
+  // writes: one row per SUPPORTING FRAME of a consensus surface, so a single
+  // desk contributes a dozen rows and a scanned video contributes hundreds.
+  //
+  // Every `where video_id = ?` was therefore a sequential scan of every
+  // surface of every video ever scanned — and there are 58 call sites, the
+  // scanner's inner loops among them. The admin review detail route pays it
+  // to fetch ONE surface, which is what "Request timed out after 30s" on the
+  // placement review was: not an overloaded server, an unindexed lookup that
+  // grows with the whole platform's scan history.
+  index("idx_detected_surfaces_video").on(table.videoId),
+  // The full-video fetch is always ordered by timestamp; this serves the
+  // filter and the sort from one index instead of scan-then-sort.
+  index("idx_detected_surfaces_video_time").on(table.videoId, table.timestamp),
+  // Grouping rows back into canonical surfaces is the other hot access path.
+  index("idx_detected_surfaces_group").on(table.surfaceGroupId),
+]);
 
 export const insertDetectedSurfaceSchema = createInsertSchema(detectedSurfaces).omit({
   id: true,
@@ -570,6 +587,12 @@ export const savedPlacements = pgTable("saved_placements", {
   updatedAt: timestamp("updated_at").defaultNow(),
 }, (table) => [
   index("idx_saved_placements_clip").on(table.editorialClipId),
+  // The admin review queue reads exactly this shape — status='active'
+  // ordered by created_at desc, limit 200 — and had to scan and sort the
+  // whole table to produce it.
+  index("idx_saved_placements_status_created").on(table.status, table.createdAt),
+  // Review-queue filtering by pipeline position (submitted/in_review/...).
+  index("idx_saved_placements_review_status").on(table.reviewStatus),
 ]);
 
 export const insertSavedPlacementSchema = createInsertSchema(savedPlacements).omit({

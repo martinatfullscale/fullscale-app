@@ -1575,11 +1575,11 @@ export default function RemixEngine() {
             {/* Surface hotkeys + Scene markers */}
             <div className="flex items-center gap-6 flex-wrap">
               {/* Surface-type hotkey buttons — jump to first frame with that surface */}
-              {trackNames.length > 0 && (
+              {trackKeys.length > 0 && (
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-muted-foreground shrink-0">Jump to:</span>
                   <div className="flex flex-wrap gap-1">
-                    {trackNames.map((name) => {
+                    {trackKeys.map((name) => {
                       const track = surfaceTracks.get(name);
                       const firstTs = track?.keyframes[0]?.timestamp ?? 0;
                       const hasAssignment = assignments.has(name);
@@ -1625,11 +1625,11 @@ export default function RemixEngine() {
                 </div>
               )}
 
-              {trackNames.length > 0 && (
+              {trackKeys.length > 0 && (
                 <div className="flex items-center gap-2">
                   <Layers className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
                   <div className="flex flex-wrap gap-1">
-                    {trackNames.map((name) => {
+                    {trackKeys.map((name) => {
                       const isSelected = name === selectedTrack;
                       const hasAssignment = assignments.has(name);
                       return (

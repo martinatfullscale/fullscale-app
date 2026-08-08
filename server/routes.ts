@@ -1860,17 +1860,20 @@ export async function registerRoutes(
       const placement: any = await storage.getPlacementById(id);
       if (!placement) return res.status(404).json({ error: "Placement not found" });
 
-      const [video, surfaces, product, clip] = await Promise.all([
+      // One surface by primary key. This used to call getDetectedSurfaces and
+      // .find() the anchor out of it — every supporting-frame row for the
+      // whole video, on an unindexed video_id, to render a single bounding
+      // box. That was the 30s timeout on this page.
+      const [video, surface, product, clip] = await Promise.all([
         storage.getVideoSummaries([placement.videoId]).then((m) => m.get(placement.videoId) ?? null),
-        storage.getDetectedSurfaces(placement.videoId).catch(() => [] as any[]),
+        storage.getDetectedSurfaceById(placement.surfaceId).then((s) => s ?? null).catch(() => null),
         placement.productId != null
           ? storage.getBrandProduct(placement.productId).catch(() => undefined)
           : Promise.resolve(undefined),
         placement.editorialClipId
           ? storage.getEditorialClipById(placement.editorialClipId).catch(() => null)
           : Promise.resolve(null),
-      ]);
-      const surface: any = (surfaces as any[]).find((s) => s.id === placement.surfaceId) ?? null;
+      ]) as [any, any, any, any];
 
       // Where to seek the player. An editorial placement is scoped to the clip,
       // so its timestamp is relative to the clip's start in the source video.

@@ -195,6 +195,7 @@ export interface IStorage {
   insertDetectedSurface(surface: InsertDetectedSurface): Promise<DetectedSurface>;
   updateDetectedSurface(surfaceId: number, updates: { surfaceType?: string; sceneContext?: string; surroundings?: string[]; boundingBoxX?: string; boundingBoxY?: string; boundingBoxWidth?: string; boundingBoxHeight?: string; surfaceGroupId?: string }): Promise<void>;
   getDetectedSurfaces(videoId: number): Promise<DetectedSurface[]>;
+  getDetectedSurfaceById(surfaceId: number): Promise<DetectedSurface | undefined>;
   getSurfaceCountByVideo(videoId: number): Promise<number>;
   getSurfaceCountsForVideos(videoIds: number[]): Promise<Map<number, number>>;
   clearDetectedSurfaces(videoId: number): Promise<void>;
@@ -1576,6 +1577,24 @@ export class DatabaseStorage implements IStorage {
       .from(detectedSurfaces)
       .where(eq(detectedSurfaces.videoId, videoId))
       .orderBy(detectedSurfaces.timestamp);
+  }
+
+  /**
+   * ONE surface, by primary key.
+   *
+   * Callers that need a single surface were reaching for getDetectedSurfaces
+   * and `.find(s => s.id === ...)` — loading every supporting-frame row for
+   * the entire video (hundreds on a scanned one) to keep one of them. The
+   * admin review detail route did exactly that on every open, which is a
+   * primary-key lookup dressed up as a full-video scan.
+   */
+  async getDetectedSurfaceById(surfaceId: number): Promise<DetectedSurface | undefined> {
+    const [row] = await db
+      .select()
+      .from(detectedSurfaces)
+      .where(eq(detectedSurfaces.id, surfaceId))
+      .limit(1);
+    return row;
   }
 
   async getSurfaceCountsForVideos(videoIds: number[]): Promise<Map<number, number>> {
