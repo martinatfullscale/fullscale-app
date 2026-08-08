@@ -90,14 +90,17 @@ Return ONLY a JSON array. No prose, no code fence. Each element:
 /**
  * Propose timed cutaways for one clip.
  *
- * Fails soft and returns [] — this is an assistive layer over an editor that
- * works without it, so a model outage should cost the creator a suggestion
- * list, never the ability to edit.
+ * Fails soft — this is an assistive layer over an editor that works without
+ * it, so a model outage should cost the creator a suggestion list, never the
+ * ability to edit. BUT failure is null, not []: an empty array is the model's
+ * considered "nothing here earns a cutaway", and reporting a timeout as that
+ * editorial judgment sends the creator away thinking their clip was read
+ * when it never was.
  */
 export async function suggestCutaways(
   lines: TranscriptLine[],
   opts: { clipStart?: number; clipEnd?: number; max?: number } = {},
-): Promise<CutawaySuggestion[]> {
+): Promise<CutawaySuggestion[] | null> {
   if (!suggestAvailable() || lines.length === 0) return [];
 
   const lo = opts.clipStart ?? lines[0].start;
@@ -125,11 +128,16 @@ export async function suggestCutaways(
         role: "user",
         content: `Clip is ${(hi - lo).toFixed(1)}s long. At most ${cap} cutaways, fewer if fewer are earned.\n\n${script}`,
       }],
-    });
+      // The SDK's default timeout is 10 MINUTES; the browser gives up at 90s
+      // and Replit's proxy can cut the connection before that — which the
+      // client sees as a bare "Load failed" with no explanation. Answering
+      // inside the client's window, even with a failure, keeps the error
+      // ours to phrase.
+    }, { timeout: 25_000, maxRetries: 1 });
     raw = res.content.map((c: any) => (c.type === "text" ? c.text : "")).join("");
   } catch (err: any) {
     console.warn(`[CutawaySuggest] model call failed: ${err?.message}`);
-    return [];
+    return null;
   }
 
   // Models sometimes wrap JSON in a fence despite instructions. Take the first
@@ -137,7 +145,7 @@ export async function suggestCutaways(
   const match = raw.match(/\[[\s\S]*\]/);
   if (!match) {
     console.warn("[CutawaySuggest] no JSON array in response");
-    return [];
+    return null;
   }
 
   let parsed: any[];
@@ -145,9 +153,9 @@ export async function suggestCutaways(
     parsed = JSON.parse(match[0]);
   } catch (err: any) {
     console.warn(`[CutawaySuggest] unparseable JSON: ${err?.message}`);
-    return [];
+    return null;
   }
-  if (!Array.isArray(parsed)) return [];
+  if (!Array.isArray(parsed)) return null;
 
   const clipLen = hi - lo;
   const out: CutawaySuggestion[] = [];

@@ -87,6 +87,24 @@ async function buildAll() {
     external: externals,
     logLevel: "info",
   });
+
+  // Face-detection child. TensorFlow inference runs in a forked process so
+  // its synchronous compute can't block the server's event loop (see
+  // faceTracker.ts); the fork target has to exist as its own bundle next to
+  // index.cjs. Same externals — tfjs-node and sharp are native and resolve
+  // from node_modules at runtime either way.
+  console.log("building face-detection child...");
+  await esbuild({
+    entryPoints: ["server/lib/remix/faceDetectChild.ts"],
+    platform: "node",
+    bundle: true,
+    format: "cjs",
+    outfile: "dist/facetrack-child.cjs",
+    define: { "process.env.NODE_ENV": '"production"' },
+    minify: false,
+    external: externals,
+    logLevel: "info",
+  });
 }
 
 /**

@@ -1,40 +1,31 @@
 /**
  * Face Tracker — Smart reframing for portrait clips.
  *
- * Detects people in sampled frames using COCO-SSD (already loaded for surface detection),
- * computes a smooth crop trajectory, and generates an FFmpeg crop filter expression
- * that pans to follow the speaker instead of padding with black bars.
+ * Detects people in sampled frames using COCO-SSD, computes a smooth crop
+ * trajectory, and generates an FFmpeg crop filter expression that pans to
+ * follow the speaker instead of padding with black bars.
+ *
+ * DETECTION RUNS IN A CHILD PROCESS. TensorFlow's native init and every CPU
+ * inference are synchronous compute; run in the server process they held the
+ * event loop — first bounded per-batch, then per-inference (the setImmediate
+ * yield below in history), and still measured in production as
+ *   [Stall] EVENT LOOP BLOCKED 12820ms — nothing else ran.
+ * the moment a render lazily imported tfjs-node. The comment that added the
+ * yield named this exact move as "the real fix"; this is that fix. The child
+ * also isolates OOM: TF allocating past this instance's free memory now
+ * kills a disposable pid instead of the server holding every connection —
+ * which is what mid-render "Load failed" on unrelated requests was.
+ *
+ * This module keeps the public API and all the pure trajectory math. The TF
+ * side lives in faceDetectCore.ts, reached via faceDetectChild.ts.
  */
-
-// TensorFlow is LAZY-LOADED: the tfjs-node native binding takes 30-60s+ to
-// initialize on small instances, and a module-scope import puts that on the
-// server BOOT path (this module is statically imported by the render
-// pipeline) — blocking listen and causing deploy healthcheck 500 storms.
-// Type-only imports are erased at compile time, so they're free.
-import type * as tfType from "@tensorflow/tfjs-node";
-import type * as cocoSsd from "@tensorflow-models/coco-ssd";
-import sharp from "sharp";
-import { spawn } from "child_process";
-import * as fs from "fs";
+import { spawn, fork, type ChildProcess } from "child_process";
 import * as path from "path";
-import * as os from "os";
 
-// ── Types ──────────────────────────────────────────────────────
-
-export interface FaceBox {
-  /** Normalized 0-1 coordinates relative to frame dimensions */
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  confidence: number;
-}
-
-export interface FaceDetectionFrame {
-  /** Time in seconds (clip-relative) */
-  time: number;
-  faces: FaceBox[];
-}
+// Types live with the detection core; re-exported so callers keep importing
+// them from here.
+export type { FaceBox, FaceDetectionFrame } from "./faceDetectCore";
+import type { FaceDetectionFrame } from "./faceDetectCore";
 
 export interface CropKeyframe {
   time: number;
@@ -50,40 +41,163 @@ export interface CropTrajectory {
   cropH: number;
 }
 
-// ── Model Singleton ────────────────────────────────────────────
+// ── Detection child manager ────────────────────────────────────
+//
+// One long-lived child per server process, forked on first use, retired
+// after an idle period so ~300MB of TF memory is not held between renders
+// (in-process it was held forever — the model singleton had no release
+// path). Requests are matched to responses by id; a dead or wedged child
+// resolves every pending request to undefined and the wrapper returns the
+// caller's degraded value ([] / null), which the pipeline already treats
+// as "no tracking, center-crop" — the same contract as before.
 
-let model: cocoSsd.ObjectDetection | null = null;
-let modelLoading: Promise<cocoSsd.ObjectDetection> | null = null;
-let tfMod: typeof tfType | null = null;
+const CHILD_IDLE_MS = 120_000;
 
-async function loadModel(): Promise<cocoSsd.ObjectDetection> {
-  if (model) return model;
-  if (modelLoading) return modelLoading;
+type Pending = { resolve: (v: unknown) => void; timer: NodeJS.Timeout };
 
-  console.log("[FaceTracker] Loading TensorFlow + COCO-SSD model (lazy)...");
-  modelLoading = (async () => {
-    tfMod = await import("@tensorflow/tfjs-node");
-    const cocoSsdMod = await import("@tensorflow-models/coco-ssd");
-    return cocoSsdMod.load({ base: "mobilenet_v2" });
-  })();
-  model = await modelLoading;
-  console.log("[FaceTracker] COCO-SSD model loaded");
-  return model;
+let child: ChildProcess | null = null;
+let childBroken = false;      // could never start — environment can't fork this
+let childEverReady = false;   // saw {ready} at least once this process
+let reqSeq = 0;
+const pending = new Map<number, Pending>();
+let idleTimer: NodeJS.Timeout | null = null;
+
+function childEntryPath(): string {
+  // Production runs the esbuild bundle; the child is its sibling bundle
+  // (script/build.ts builds both). Dev forks the TS file directly — fork
+  // inherits execArgv, which under `tsx server/index.ts` carries the tsx
+  // loader, so a .ts entry resolves.
+  if (process.env.NODE_ENV === "production") {
+    return path.resolve(path.dirname(process.argv[1] ?? "dist/index.cjs"), "facetrack-child.cjs");
+  }
+  return path.resolve(process.cwd(), "server/lib/remix/faceDetectChild.ts");
 }
 
-// ── Face Detection ─────────────────────────────────────────────
+function settleAll(reason: string) {
+  if (pending.size > 0) {
+    console.warn(`[FaceTracker] child ${reason} with ${pending.size} request(s) in flight — degrading those to no-tracking`);
+  }
+  for (const p of Array.from(pending.values())) {
+    clearTimeout(p.timer);
+    p.resolve(undefined);
+  }
+  pending.clear();
+}
 
-const MAX_SAMPLES = 60;
-const DETECTION_WIDTH = 480; // Reduced from 640 — faster inference, still accurate for person bbox
-const MIN_PERSON_CONFIDENCE = 0.35;
-const FACE_REGION_RATIO = 0.35; // Upper 35% of person bbox is face
-const DETECTION_BATCH_SIZE = 6; // Parallel frame processing (was 4)
+function stopChild(reason: string) {
+  if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+  if (!child) return;
+  console.log(`[FaceTracker] stopping detection child (${reason})`);
+  try { child.kill("SIGKILL"); } catch {}
+  child = null;
+  settleAll(reason);
+}
+
+function ensureChild(): ChildProcess | null {
+  if (childBroken) return null;
+  if (child) return child;
+  const entry = childEntryPath();
+  try {
+    const c = fork(entry, [], {
+      env: { ...process.env, FACETRACK_CHILD: "1" },
+      stdio: ["ignore", "pipe", "pipe", "ipc"],
+    });
+    // Keep TF's init chatter visible, but attributed — those oneDNN lines in
+    // the server log used to read as the server itself grinding.
+    c.stdout?.on("data", (d) => process.stdout.write(`[FaceTrack:child] ${d}`));
+    c.stderr?.on("data", (d) => process.stderr.write(`[FaceTrack:child] ${d}`));
+    c.on("message", (msg: any) => {
+      if (msg?.ready) { childEverReady = true; return; }
+      const p = typeof msg?.id === "number" ? pending.get(msg.id) : undefined;
+      if (!p) return;
+      pending.delete(msg.id);
+      clearTimeout(p.timer);
+      if (msg.ok) p.resolve(msg.result);
+      else {
+        console.warn(`[FaceTracker] child request failed: ${msg.error}`);
+        p.resolve(undefined);
+      }
+      armIdleTimer();
+    });
+    c.on("error", (err) => {
+      console.error(`[FaceTracker] detection child error: ${err?.message}`);
+    });
+    c.on("exit", (code, signal) => {
+      const clean = code === 0 && !signal;
+      if (!clean) console.warn(`[FaceTracker] detection child exited (code ${code}, signal ${signal})`);
+      if (child === c) child = null;
+      // Died before ever reaching ready and never served a request: the
+      // environment can't run the child (bad entry path, missing loader).
+      // Mark broken so callers use the in-process fallback for this server's
+      // lifetime instead of paying a doomed fork per render.
+      if (!childEverReady) {
+        childBroken = true;
+        console.error(
+          `[FaceTracker] detection child could not start (entry ${entry}) — falling back to IN-PROCESS detection. ` +
+          `Renders will work but may briefly stall other requests.`,
+        );
+      }
+      settleAll("exited");
+    });
+    child = c;
+    return c;
+  } catch (err: any) {
+    childBroken = true;
+    console.error(`[FaceTracker] fork failed (${err?.message}) — falling back to IN-PROCESS detection`);
+    return null;
+  }
+}
+
+function armIdleTimer() {
+  if (idleTimer) clearTimeout(idleTimer);
+  if (pending.size > 0) return;
+  idleTimer = setTimeout(() => {
+    if (pending.size === 0 && child) stopChild("idle — releasing TensorFlow memory");
+  }, CHILD_IDLE_MS);
+  // Never hold the process open just to time out an idle child.
+  idleTimer.unref?.();
+}
+
+function childRequest(payload: Record<string, unknown>, timeoutMs: number): Promise<unknown> {
+  const c = ensureChild();
+  if (!c) return Promise.resolve(undefined);
+  if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+  const id = ++reqSeq;
+  return new Promise<unknown>((resolve) => {
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      resolve(undefined);
+      // A child past its hard timeout is wedged or grinding a hopeless input;
+      // killing it frees the memory and the next request re-forks cleanly.
+      stopChild(`request ${id} exceeded ${timeoutMs}ms`);
+    }, timeoutMs);
+    pending.set(id, { resolve, timer });
+    c.send({ id, ...payload }, (err) => {
+      if (err) {
+        const p = pending.get(id);
+        if (p) { pending.delete(id); clearTimeout(p.timer); p.resolve(undefined); }
+      }
+    });
+  });
+}
+
+/** Escape hatch, and the dev fallback when the child can't start. */
+function forceInProcess(): boolean {
+  return process.env.FACETRACK_IN_PROCESS === "1" || childBroken;
+}
 
 /**
  * Detect faces/people in sampled frames from a video clip.
- * @param deadlineMs — Soft deadline in milliseconds. When exceeded, returns partial
- * results collected so far instead of throwing. Better than center-crop fallback on
- * long clips where some samples DID succeed.
+ *
+ * Runs in the detection child process; this wrapper only forwards and
+ * degrades. Any failure — child died (OOM), hard timeout, couldn't fork —
+ * returns [] and the render falls back to a center crop, exactly the
+ * degraded path it always had. It never crashes the remix pipeline and it
+ * never blocks the server's event loop.
+ *
+ * @param deadlineMs — Soft deadline, enforced INSIDE the child (partial
+ * results come back, coarse-to-fine order makes any prefix span the whole
+ * clip). The parent holds a harder timeout above it for a wedged child.
  */
 export async function detectFacesInClip(
   videoPath: string,
@@ -92,251 +206,54 @@ export async function detectFacesInClip(
   sampleIntervalSec: number = 0.5,
   deadlineMs?: number
 ): Promise<FaceDetectionFrame[]> {
-  try {
-    return await detectFacesInClipInner(videoPath, startTime, duration, sampleIntervalSec, deadlineMs);
-  } catch (err: any) {
-    // Never let face detection crash the remix pipeline
-    console.warn(`[FaceTracker] Face detection failed (non-fatal): ${err.message}`);
-    return [];
-  }
-}
-
-async function detectFacesInClipInner(
-  videoPath: string,
-  startTime: number,
-  duration: number,
-  sampleIntervalSec: number,
-  deadlineMs?: number
-): Promise<FaceDetectionFrame[]> {
-  const started = Date.now();
-  // Auto-increase interval for long clips to cap at MAX_SAMPLES
-  const numSamples = Math.ceil(duration / sampleIntervalSec);
-  if (numSamples > MAX_SAMPLES) {
-    sampleIntervalSec = duration / MAX_SAMPLES;
-  }
-
-  const sampleTimes: number[] = [];
-  for (let t = 0; t < duration; t += sampleIntervalSec) {
-    sampleTimes.push(t);
-  }
-
-  // Process samples coarse-to-fine (whole-clip passes at increasing density)
-  // instead of sequentially from t=0. With a soft deadline, sequential order
-  // meant a cutoff left the clip's TAIL completely untracked — observed in
-  // prod as "42/60 samples" = the last ~30% of a 58s clip had no data, so the
-  // crop froze wherever it was (wrong person on screen when the speaker
-  // switched late in the clip). Coarse-to-fine makes any prefix of the work
-  // span the full duration at reduced density. Results are time-sorted on
-  // return, so downstream trajectory math is unaffected.
-  const orderedTimes = coarseToFineOrder(sampleTimes);
-
-  const tmpDir = path.join(os.tmpdir(), `facetrack-${Date.now()}`);
-  fs.mkdirSync(tmpDir, { recursive: true });
-
-  const loadedModel = await loadModel();
-
-  try {
-    // Extract frames in parallel
-    const results: FaceDetectionFrame[] = [];
-
-    for (let i = 0; i < orderedTimes.length; i += DETECTION_BATCH_SIZE) {
-      // Soft deadline check — return partial results rather than throwing
-      if (deadlineMs && Date.now() - started > deadlineMs) {
-        console.warn(
-          `[FaceTracker] Soft deadline hit (${deadlineMs}ms) with ${results.length}/${orderedTimes.length} samples — using partial (full-duration coverage, reduced density)`
-        );
-        break;
-      }
-
-      const batch = orderedTimes.slice(i, i + DETECTION_BATCH_SIZE);
-
-      // SEQUENTIAL, WITH A YIELD AFTER EVERY FRAME.
-      //
-      // This was Promise.all over the batch, which reads like parallelism but
-      // is not: cocoSsd.detect() is TensorFlow.js on the CPU backend —
-      // synchronous compute wearing a Promise. Promise.all just queues those
-      // inferences back-to-back on the ONE thread with nothing between them,
-      // so the loop was held for the whole batch at once. Measured in
-      // production as a continuous run of
-      //   [Stall] EVENT LOOP BLOCKED 4534ms — in-flight: nothing in flight
-      // with the pool idle: no request, no query, just this. Every HTTP
-      // request in the process waits behind it, which is what "the website has
-      // locked up" was.
-      //
-      // setImmediate between frames does not make the work faster or truly
-      // parallel — a single inference still blocks. What it does is bound the
-      // block to ONE inference instead of a whole batch, so queued requests
-      // get served in the gaps and the app stays usable while a clip renders.
-      //
-      // The real fix is running detection off the main thread entirely (worker
-      // thread or child process). That is a larger change; this makes the
-      // difference between "slow" and "down".
-      const batchResults: FaceDetectionFrame[] = [];
-      for (const clipTime of batch) {
-        const absTime = startTime + clipTime;
-        const framePath = path.join(tmpDir, `frame_${clipTime.toFixed(2)}.jpg`);
-
-        await extractFrame(videoPath, absTime, framePath);
-
-        if (!fs.existsSync(framePath)) {
-          batchResults.push({ time: clipTime, faces: [] });
-        } else {
-          const faces = await detectFacesInFrame(loadedModel, framePath);
-          batchResults.push({ time: clipTime, faces });
-        }
-
-        // Hand the loop back so pending I/O callbacks — every queued HTTP
-        // request — get a turn before the next inference starts.
-        await new Promise((r) => setImmediate(r));
-
-        // Deadline is checked per FRAME now, not per batch: a batch that
-        // overruns used to blow past the soft deadline by its whole remainder.
-        if (deadlineMs && Date.now() - started > deadlineMs) break;
-      }
-      results.push(...batchResults);
-    }
-
-    return results.sort((a, b) => a.time - b.time);
-  } finally {
-    // Clean up temp frames
+  if (forceInProcess()) {
     try {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    } catch {}
-  }
-}
-
-/**
- * Reorder sample times so processing covers the whole clip first at coarse
- * granularity, then progressively fills in: endpoints, then midpoints, then
- * finer strides. Any prefix of the output spans the full input range.
- */
-function coarseToFineOrder(times: number[]): number[] {
-  const n = times.length;
-  if (n <= 2) return times.slice();
-  const picked = new Array<boolean>(n).fill(false);
-  const out: number[] = [];
-  let stride = n - 1;
-  while (true) {
-    for (let i = 0; i < n; i += stride) {
-      if (!picked[i]) {
-        picked[i] = true;
-        out.push(times[i]);
-      }
+      const core = await import("./faceDetectCore");
+      return await core.detectFacesInClipCore(videoPath, startTime, duration, sampleIntervalSec, deadlineMs);
+    } catch (err: any) {
+      console.warn(`[FaceTracker] in-process face detection failed (non-fatal): ${err?.message}`);
+      return [];
     }
-    if (stride === 1) break;
-    stride = Math.max(1, Math.floor(stride / 2));
   }
-  return out;
-}
-
-/**
- * Extract a single JPEG frame from a video at a given timestamp.
- */
-async function extractFrame(videoPath: string, time: number, outputPath: string): Promise<void> {
-  return new Promise((resolve) => {
-    const proc = spawn("ffmpeg", [
-      "-nostdin", "-y",
-      "-ss", String(time),
-      "-i", videoPath,
-      "-vframes", "1",
-      "-vf", `scale=${DETECTION_WIDTH}:-2`,
-      "-q:v", "4",
-      outputPath,
-    ]);
-
-    const timeout = setTimeout(() => {
-      proc.kill("SIGKILL");
-      resolve();
-    }, 10000);
-
-    proc.on("close", () => { clearTimeout(timeout); resolve(); });
-    proc.on("error", () => { clearTimeout(timeout); resolve(); });
-  });
-}
-
-/**
- * Detect people in a single frame and derive face regions.
- */
-async function detectFacesInFrame(
-  cocoModel: cocoSsd.ObjectDetection,
-  framePath: string
-): Promise<FaceBox[]> {
-  try {
-    const { data, info } = await sharp(framePath)
-      .resize(DETECTION_WIDTH, undefined, { fit: "inside", withoutEnlargement: true })
-      .removeAlpha()
-      .raw()
-      .toBuffer({ resolveWithObject: true });
-
-    // tfMod is set by loadModel(), which necessarily ran before any
-    // detection call (the model instance comes from it).
-    const tensor = tfMod!.tensor3d(
-      new Uint8Array(data),
-      [info.height, info.width, info.channels]
-    );
-
-    const predictions = await cocoModel.detect(tensor);
-    tensor.dispose();
-
-    // Filter to "person" class with sufficient confidence
-    const people = predictions.filter(
-      (p) => p.class === "person" && p.score >= MIN_PERSON_CONFIDENCE
-    );
-
-    // Derive face region from upper portion of person bounding box
-    return people.map((p) => {
-      const [bx, by, bw, bh] = p.bbox; // pixels
-      return {
-        x: bx / info.width,
-        y: by / info.height,
-        width: bw / info.width,
-        height: (bh * FACE_REGION_RATIO) / info.height,
-        confidence: p.score,
-      };
-    });
-  } catch {
+  // Hard timeout: the soft deadline plus headroom for first-use model load
+  // (30-60s of tfjs-node init on a starved instance) and IPC.
+  const hardTimeout = (deadlineMs ?? 180_000) + 90_000;
+  const result = await childRequest(
+    { type: "clip", videoPath, startTime, duration, sampleIntervalSec, deadlineMs },
+    hardTimeout,
+  );
+  if (!Array.isArray(result)) {
+    if (result !== undefined) console.warn(`[FaceTracker] unexpected child result shape — degrading to no-tracking`);
     return [];
   }
+  return result as FaceDetectionFrame[];
 }
 
 /**
  * Tier 2 (scanner): tight FULL-BODY person boxes for a single frame image.
- * Unlike detectFacesInFrame this returns the whole person bbox (no
- * FACE_REGION_RATIO truncation) — the scanner's occlusion-remainder ghost
- * filter needs the true person envelope, and COCO-SSD's boxes are
- * deterministic frame-to-frame where Gemini's "generous" envelopes vary.
- * Normalized 0-1 coordinates. Fail-open: any error (model load OOM, decode
- * failure) returns null so the caller falls back to Gemini's people boxes.
+ * Unlike the clip path this returns the whole person bbox (no face-region
+ * truncation) — the scanner's occlusion-remainder ghost filter needs the
+ * true person envelope, and COCO-SSD's boxes are deterministic
+ * frame-to-frame where Gemini's "generous" envelopes vary. Normalized 0-1
+ * coordinates. Fail-open: any error (child OOM, decode failure) returns
+ * null so the caller falls back to Gemini's people boxes.
  */
 export async function detectPeopleInFrame(
   framePath: string
 ): Promise<Array<{ x: number; y: number; width: number; height: number; confidence: number }> | null> {
-  try {
-    const loadedModel = await loadModel();
-    const { data, info } = await sharp(framePath)
-      .resize(DETECTION_WIDTH, undefined, { fit: "inside", withoutEnlargement: true })
-      .removeAlpha()
-      .raw()
-      .toBuffer({ resolveWithObject: true });
-    const tensor = tfMod!.tensor3d(new Uint8Array(data), [info.height, info.width, info.channels]);
-    const predictions = await loadedModel.detect(tensor);
-    tensor.dispose();
-    return predictions
-      .filter((p) => p.class === "person" && p.score >= MIN_PERSON_CONFIDENCE)
-      .map((p) => {
-        const [bx, by, bw, bh] = p.bbox;
-        return {
-          x: bx / info.width,
-          y: by / info.height,
-          width: bw / info.width,
-          height: bh / info.height,
-          confidence: p.score,
-        };
-      });
-  } catch (err: any) {
-    console.warn(`[FaceTracker] detectPeopleInFrame failed (non-fatal): ${err?.message || err}`);
-    return null;
+  if (forceInProcess()) {
+    try {
+      const core = await import("./faceDetectCore");
+      return await core.detectPeopleInFrameCore(framePath);
+    } catch (err: any) {
+      console.warn(`[FaceTracker] detectPeopleInFrame failed (non-fatal): ${err?.message || err}`);
+      return null;
+    }
   }
+  // Generous first-call budget: model load happens on whichever request
+  // arrives first, and the scanner calls this with .catch(() => null) anyway.
+  const result = await childRequest({ type: "frame", framePath }, 90_000);
+  return Array.isArray(result) ? (result as Array<{ x: number; y: number; width: number; height: number; confidence: number }>) : null;
 }
 
 // ── Crop Trajectory Computation ────────────────────────────────

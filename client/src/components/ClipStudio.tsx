@@ -1075,7 +1075,17 @@ function BrollTool(props: {
         setSugNote((n) => [n, `Not configured on this server: ${off.join(" and ")}.`].filter(Boolean).join(" "));
       }
     } catch (err: any) {
-      setSugNote(err?.message || "Could not read the clip.");
+      // A fetch that dies at the network layer surfaces as Safari's bare
+      // "Load failed" / Chrome's "Failed to fetch" — seen in the wild when
+      // the server was busy with a render. Name the likely cause and the
+      // remedy instead of parroting the browser's shrug; the button already
+      // reads "Again", so retrying is one press.
+      const transportDeath = /load failed|failed to fetch|networkerror/i.test(String(err?.message ?? ""));
+      setSugNote(
+        transportDeath
+          ? "The server dropped the connection — it may be busy rendering a clip. Press Again in a moment."
+          : (err?.message || "Could not read the clip."),
+      );
     } finally {
       setSugBusy(false);
     }
@@ -1565,7 +1575,7 @@ function AiGenerateTool(props: {
   const [showUpgrade, setShowUpgrade] = useState(false);
   const { data: ownAssets } = useAssets(["broll_image"]);
 
-  const { data: opts, refetch } = useQuery<{
+  const { data: opts, refetch, isError: optsError, isFetching: optsFetching } = useQuery<{
     available: boolean; detail: string | null; balance: number;
     allowance: { freeImagesPerDay: number; freeImagesUsedToday: number; freeImagesLeft: number; balance: number };
     models: Array<{
@@ -1575,7 +1585,18 @@ function AiGenerateTool(props: {
     }>;
   }>({
     queryKey: ["/api/ai/generation/options"],
-    queryFn: async () => (await fetchWithTimeout("/api/ai/generation/options", { credentials: "include" })).json(),
+    queryFn: async () => {
+      const res = await fetchWithTimeout("/api/ai/generation/options", { credentials: "include" });
+      if (!res.ok) throw new Error(`options ${res.status}`);
+      return res.json();
+    },
+    // The app-wide default is retry: false, which here meant ONE dropped
+    // fetch (server busy rendering) left this panel with no models, no
+    // allowance, and a Generate button disabled forever with no explanation
+    // — reported as "the free images aren't pressable". Retry, and when
+    // that still fails, render a Retry button instead of a dead panel.
+    retry: 2,
+    retryDelay: (attempt) => 1500 * (attempt + 1),
   });
 
   const model = opts?.models.find((m) => m.id === modelId);
@@ -1635,6 +1656,31 @@ function AiGenerateTool(props: {
         <Sparkles className="w-8 h-8 text-gray-700 mx-auto mb-2" />
         <p className="text-xs text-gray-400 mb-1">AI generation isn't switched on here</p>
         <p className="text-[11px] text-gray-600 leading-snug">{opts.detail}</p>
+      </div>
+    );
+  }
+
+  // The options request failed outright (not "generation is off" — we never
+  // heard). Without this branch the panel rendered with zero model buttons
+  // and a permanently disabled Generate: nothing to press and nothing saying
+  // why. Failure gets a face and a Retry.
+  if (!opts && optsError) {
+    return (
+      <div className="text-center py-8 px-2">
+        <Sparkles className="w-8 h-8 text-gray-700 mx-auto mb-2" />
+        <p className="text-xs text-gray-400 mb-1">Couldn't load the generation options</p>
+        <p className="text-[11px] text-gray-600 leading-snug mb-3">
+          The server didn't answer — it may be busy rendering. Your free images are still there.
+        </p>
+        <Button
+          size="sm"
+          onClick={() => refetch()}
+          disabled={optsFetching}
+          className="h-7 text-[11px] bg-purple-600 hover:bg-purple-500"
+          data-testid="gen-options-retry"
+        >
+          {optsFetching ? <Loader2 className="w-3 h-3 animate-spin" /> : "Retry"}
+        </Button>
       </div>
     );
   }

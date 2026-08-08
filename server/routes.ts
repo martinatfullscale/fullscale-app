@@ -11379,6 +11379,18 @@ export async function registerRoutes(
         clipEnd: Number.isFinite(Number(req.body?.clipEnd)) ? Number(req.body.clipEnd) : undefined,
       });
 
+      // null = the model call FAILED (timeout, outage, unparseable reply).
+      // That must not wear the "nothing here needs a cutaway" line — a
+      // failure phrased as editorial judgment sends the creator away
+      // believing their clip was read when it never was.
+      if (suggestions === null) {
+        return res.status(503).json({
+          error: "The suggestion model didn't answer in time — try again in a moment.",
+          stockLive: anyProviderConfigured(),
+          aiLive: generationAvailable(),
+        });
+      }
+
       res.json({
         suggestions,
         available: true,
