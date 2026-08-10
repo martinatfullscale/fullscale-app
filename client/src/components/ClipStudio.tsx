@@ -40,6 +40,16 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { fetchWithTimeout } from "@/lib/queryClient";
 
+/** Words that make a useless stock query. Kept short on purpose — the seed is
+ *  a starting point the creator edits, not a search engine. */
+const STOP_WORDS = new Set([
+  "this", "that", "there", "these", "those", "with", "from", "have", "been",
+  "were", "what", "when", "where", "which", "would", "could", "should", "about",
+  "them", "they", "their", "your", "just", "like", "really", "going", "gonna",
+  "know", "think", "thing", "things", "into", "than", "then", "very", "much",
+]);
+
+
 const UPLOAD_TIMEOUT_MS = 30 * 60_000; // files, not JSON — see AdminPlacements
 
 import {
@@ -987,9 +997,35 @@ function BrollTool(props: {
   const [tab, setTab] = useState<"mine" | "stock" | "ai">("stock");
   const [q, setQ] = useState("");
   const [stock, setStock] = useState<any[]>([]);
+  // Is stock search even switched on here? Without this the panel can only
+  // fail AFTER a search, and a provider that was never configured is
+  // indistinguishable from a query with no results.
+  const { data: stockStatus } = useQuery<{ available: boolean; detail: string; providers: any[] }>({
+    queryKey: ["/api/media-assets/stock/status"],
+    queryFn: async () => (await fetchWithTimeout("/api/media-assets/stock/status", { credentials: "include" })).json(),
+    staleTime: 5 * 60_000,
+  });
+
   const [searching, setSearching] = useState(false);
   const [stockErr, setStockErr] = useState<string | null>(null);
   const [importing, setImporting] = useState<string | null>(null);
+
+  // Seed from the transcript at the playhead the first time the tab opens.
+  // A Search button greyed out because the box is empty reads as broken —
+  // "the stock button is not depressable" — and the words on screen are a
+  // better starting query than a blank box anyway.
+  const seeded = useRef(false);
+  useEffect(() => {
+    if (tab !== "stock" || seeded.current || q.trim()) return;
+    seeded.current = true;
+    const words = (props.spokenAtPlayhead || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w.length > 3 && !STOP_WORDS.has(w))
+      .slice(0, 3);
+    if (words.length) setQ(words.join(" "));
+  }, [tab, props.spokenAtPlayhead, q]);
 
   const runSearch = () => runSearchWith(q);
 
@@ -997,7 +1033,10 @@ function BrollTool(props: {
    *  waiting a render for the input's state to settle. */
   const runSearchWith = async (term: string) => {
     const query = (term ?? "").trim();
-    if (!query) return;
+    if (!query) {
+      setStockErr("Type what you want to see — a place, an object, an action. Try \"city street\" or \"coffee pour\".");
+      return;
+    }
     setSearching(true);
     setStockErr(null);
     try {
@@ -1230,10 +1269,26 @@ function BrollTool(props: {
                 data-testid="stock-query"
               />
             </div>
-            <Button type="submit" size="sm" disabled={searching || !q.trim()} className="h-8 text-[11px] bg-purple-600 hover:bg-purple-500">
+            <Button
+              type="submit" size="sm"
+              // Only ever disabled while a search is genuinely in flight. An
+              // empty box is not an error state — clicking with nothing typed
+              // now explains itself rather than presenting a dead control.
+              disabled={searching}
+              className="h-8 text-[11px] bg-purple-600 hover:bg-purple-500"
+              data-testid="stock-search"
+            >
               {searching ? <Loader2 className="w-3 h-3 animate-spin" /> : "Search"}
             </Button>
           </form>
+
+          {stockStatus && !stockStatus.available && (
+            <div className="rounded border border-amber-500/25 bg-amber-500/5 p-2">
+              <p className="text-[11px] text-amber-300/90 leading-snug">
+                Stock search isn't configured on this server. {stockStatus.detail}
+              </p>
+            </div>
+          )}
 
           {stockErr && (
             <div className="rounded border border-amber-500/25 bg-amber-500/5 p-2">
