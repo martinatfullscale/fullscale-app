@@ -135,8 +135,7 @@ function readRetryAfterMs(error: unknown, currentTimeMs: number): number | undef
     if (typeof direct === "number" && direct >= 0) return direct;
 
     const response = isRecord(candidate.response) ? candidate.response : undefined;
-    const headers = response && isRecord(response.headers) ? response.headers : undefined;
-    const raw = headers?.["retry-after"] ?? headers?.["Retry-After"] ?? candidate.retryAfter;
+    const raw = readHeader(response?.headers, "retry-after") ?? candidate.retryAfter;
     if (typeof raw !== "string" && typeof raw !== "number") continue;
 
     const seconds = Number(raw);
@@ -147,6 +146,18 @@ function readRetryAfterMs(error: unknown, currentTimeMs: number): number | undef
     }
   }
   return undefined;
+}
+
+function readHeader(headers: unknown, name: string): unknown {
+  if (!isRecord(headers)) return undefined;
+  if (typeof headers.get === "function") {
+    try {
+      return headers.get.call(headers, name);
+    } catch {
+      return undefined;
+    }
+  }
+  return headers[name] ?? headers[name.toLowerCase()] ?? headers[name.toUpperCase()];
 }
 
 function abortableSleep(delayMs: number, signal: AbortSignal): Promise<void> {

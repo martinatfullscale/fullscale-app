@@ -114,7 +114,7 @@ test("honors Retry-After for rate limits", async () => {
       if (attempts === 1) {
         throw Object.assign(new Error("Rate limited"), {
           status: 429,
-          response: { headers: { "retry-after": "2" } },
+          response: { headers: new Headers({ "Retry-After": "2" }) },
         });
       }
       return "ready";
