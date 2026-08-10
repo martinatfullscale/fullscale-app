@@ -663,6 +663,58 @@ export class DatabaseStorage implements IStorage {
     }
   }
 
+  /**
+   * Social accounts INCLUDING YouTube channels that only exist as a
+   * youtube_connections row.
+   *
+   * YouTube is connected through its own table and mirrored into
+   * social_accounts by POST /api/social-accounts/backfill-from-legacy — an
+   * endpoint nothing calls automatically, and which acts on the CALLER, so an
+   * admin could never have run it for someone else. Every creator who
+   * connected YouTube before that mirror existed therefore has a live channel,
+   * visible subscriber counts elsewhere in the product, and NO social_accounts
+   * row — which is why Creator Intelligence said "No connected platform data
+   * for this creator yet" about creators whose data we plainly hold.
+   *
+   * Reading the connection directly makes the analytics surfaces correct
+   * regardless of whether the backfill was ever run. The synthesized row is
+   * marked isSynthetic so writers can tell it apart from a real row and never
+   * try to update it in place.
+   */
+  async getSocialAccountsWithYouTube(userId: string, userEmail?: string): Promise<Array<SocialAccount & { isSynthetic?: boolean }>> {
+    const accounts = await this.getSocialAccountsByUser(userId, userEmail);
+    if (accounts.some((a) => a.platform === "youtube")) return accounts;
+
+    // Connections key on the Replit auth user id; try both forms for the same
+    // dual-id reason everything else here does.
+    let conn = await this.getYoutubeConnection(userId).catch(() => null);
+    if (!conn && userEmail) conn = await this.getYoutubeConnectionByEmail(userEmail).catch(() => null);
+    if (!conn?.channelId) return accounts;
+
+    const synthetic: any = {
+      // Negative id so it can never collide with a real social_accounts row,
+      // and so anything that tries to write by id fails loudly rather than
+      // corrupting an unrelated record.
+      id: `yt:${conn.channelId}`,
+      userId: (conn as any).userId ?? userId,
+      platform: "youtube",
+      accountType: "business",
+      platformAccountId: conn.channelId,
+      handle: conn.channelTitle ?? null,
+      displayName: conn.channelTitle ?? null,
+      avatarUrl: null,
+      followers: conn.subscriberCount ?? 0,
+      totalViews: conn.totalViewCount ?? 0,
+      accessToken: (conn as any).accessToken ?? null,
+      // The daily cron writes demographics against the CHANNEL id, so a
+      // snapshot may exist even with no social_accounts row.
+      audienceData: null,
+      audienceSyncedAt: null,
+      isSynthetic: true,
+    };
+    return [...accounts, synthetic];
+  }
+
   async getSocialAccountsByUser(userId: string, userEmail?: string): Promise<SocialAccount[]> {
     // Match either userId — same dual-id problem as videoIndex (some records
     // keyed by UUID, others by email). Pass both when available.

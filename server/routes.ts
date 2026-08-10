@@ -16949,7 +16949,11 @@ export async function registerRoutes(
   // deliberately lives on the admin side, not here.
   app.get("/api/analytics/social", isFlexibleAuthenticated, async (req: any, res) => {
     try {
-      const accounts = await storage.getSocialAccountsByUser(req.authUserId, req.authEmail);
+      // WithYouTube: a channel connected before the social_accounts mirror
+      // existed has no row there, only a youtube_connections record — see the
+      // accessor. Reading the connection directly is what makes this correct
+      // without depending on a backfill nobody ran.
+      const accounts = await storage.getSocialAccountsWithYouTube(req.authUserId, req.authEmail);
       // "The Analytics tab isn't pulling anything from YouTube" — correct,
       // this line filtered it out before assembly ever ran.
       const supported = accounts.filter((a) => a.platform === "instagram" || a.platform === "facebook" || a.platform === "youtube");
@@ -16973,7 +16977,11 @@ export async function registerRoutes(
       if (!targetId) return res.status(400).json({ error: "userId required" });
       let user = await storage.getUserById(targetId);
       if (!user && targetId.includes("@")) user = await storage.getUserByEmail(targetId);
-      const accounts = await storage.getSocialAccountsByUser(user?.id ?? targetId, user?.email ?? undefined);
+      // Same reason as the creator tab: "No connected platform data for this
+      // creator yet" was shown for creators whose YouTube channel we can see
+      // the subscriber count of elsewhere in the product. The data was never
+      // missing — it was in youtube_connections and this read social_accounts.
+      const accounts = await storage.getSocialAccountsWithYouTube(user?.id ?? targetId, user?.email ?? undefined);
       const supported = accounts.filter((a) => a.platform === "instagram" || a.platform === "facebook" || a.platform === "youtube");
       const out = await Promise.all(supported.map((acct) => assembleAccountAnalytics(acct, 12)));
 
