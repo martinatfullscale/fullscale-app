@@ -1,3 +1,5 @@
+import { redactSensitive } from "./redact.js";
+
 export type ProviderErrorCode =
   | "authentication"
   | "authorization"
@@ -89,13 +91,15 @@ export class ProviderError extends Error {
     return {
       name: "ProviderError",
       code: this.code,
-      message: this.message,
+      message: redactSensitive(this.message) as string,
       provider: this.provider,
       operation: this.operation,
       ...(this.status === undefined ? {} : { status: this.status }),
       retryable: this.retryable,
       ...(this.attempt === undefined ? {} : { attempt: this.attempt }),
-      ...(this.details === undefined ? {} : { details: this.details }),
+      ...(this.details === undefined
+        ? {}
+        : { details: redactSensitive(this.details) as Record<string, unknown> }),
     };
   }
 }

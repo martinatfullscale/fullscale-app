@@ -35,6 +35,26 @@ test("ProviderError serializes safe fields without exposing its cause", () => {
   assert.equal(error.cause, cause);
 });
 
+test("ProviderError redacts unsafe messages and details during serialization", () => {
+  const error = new ProviderError({
+    code: "unknown",
+    message: "Request used Authorization: Bearer abc.def.ghi",
+    provider: "gemini",
+    operation: "generate-image",
+    details: { apiKey: "private-key", requestId: "req_123" },
+  });
+
+  assert.deepEqual(error.toJSON(), {
+    name: "ProviderError",
+    code: "unknown",
+    message: "Request used Authorization: Bearer [REDACTED]",
+    provider: "gemini",
+    operation: "generate-image",
+    retryable: false,
+    details: { apiKey: "[REDACTED]", requestId: "req_123" },
+  });
+});
+
 test("classifies authentication failures as non-retryable", () => {
   const error = classifyProviderError(
     Object.assign(new Error("Unauthorized"), { status: 401 }),
