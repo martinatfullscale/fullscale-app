@@ -9,7 +9,7 @@ export interface FalQueueHandle {
 export interface FalQueueTransport {
   submit(endpoint: string, input: unknown, signal?: AbortSignal): Promise<{ request_id?: unknown }>;
   status(endpoint: string, requestId: string, signal?: AbortSignal): Promise<{ status?: unknown }>;
-  result<T>(endpoint: string, requestId: string, signal?: AbortSignal): Promise<{ data?: T }>;
+  result(endpoint: string, requestId: string, signal?: AbortSignal): Promise<{ data?: unknown }>;
   cancel(endpoint: string, requestId: string, signal?: AbortSignal): Promise<void>;
 }
 
@@ -51,8 +51,8 @@ function sdkTransport(credentials: string): FalQueueTransport {
     async status(endpoint, requestId, signal) {
       return (await client).queue.status(endpoint, { requestId, abortSignal: signal });
     },
-    async result<T>(endpoint: string, requestId: string, signal?: AbortSignal) {
-      return (await client).queue.result(endpoint, { requestId, abortSignal: signal }) as Promise<{ data?: T }>;
+    async result(endpoint: string, requestId: string, signal?: AbortSignal) {
+      return (await client).queue.result(endpoint, { requestId, abortSignal: signal }) as Promise<{ data?: unknown }>;
     },
     async cancel(endpoint, requestId, signal) {
       await (await client).queue.cancel(endpoint, { requestId, abortSignal: signal });
@@ -200,7 +200,7 @@ export function createFalQueueClient(options: FalQueueClientOptions): FalQueueCl
         true,
         timeoutMs,
         signal,
-        (attemptSignal) => transport.result<T>(handle.endpoint, handle.requestId, attemptSignal),
+        (attemptSignal) => transport.result(handle.endpoint, handle.requestId, attemptSignal),
       );
       if (!("data" in response)) throw invalidResponse("result", "FAL queue returned no result data");
       return { ...handle, data: response.data as T };
