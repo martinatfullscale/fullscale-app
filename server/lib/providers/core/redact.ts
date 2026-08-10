@@ -86,7 +86,9 @@ function redactUrl(value: string): string {
   if (!/^https?:\/\//i.test(value)) return value;
   try {
     const url = new URL(value);
-    for (const key of [...url.searchParams.keys()]) {
+    const keys: string[] = [];
+    url.searchParams.forEach((_queryValue, key) => keys.push(key));
+    for (const key of keys) {
       if (SENSITIVE_QUERY_KEY.test(key)) {
         url.searchParams.set(key, "[REDACTED]");
       }

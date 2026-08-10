@@ -197,10 +197,11 @@ function readStatus(error: unknown): number | undefined {
 }
 
 function hasNetworkCode(error: unknown): boolean {
-  for (const code of NETWORK_CODES) {
-    if (hasNestedCode(error, code)) return true;
-  }
-  return false;
+  let found = false;
+  NETWORK_CODES.forEach((code) => {
+    if (hasNestedCode(error, code)) found = true;
+  });
+  return found;
 }
 
 function hasNestedCode(error: unknown, expected: string): boolean {
