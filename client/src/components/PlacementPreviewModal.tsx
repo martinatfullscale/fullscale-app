@@ -3621,10 +3621,10 @@ export default function PlacementPreviewModal({
                               <div className="p-4 text-center">
                                 <Package className="w-6 h-6 text-muted-foreground mx-auto mb-1.5" />
                                 <div className="text-xs text-muted-foreground space-y-1">
-                                  <p className="font-medium text-foreground">No brands have selected you yet</p>
+                                  <p className="font-medium text-foreground">No brands available yet</p>
                                   <p className="leading-snug">
-                                    Brands choose creators first. When one requests a placement on your
-                                    video or bids on your inventory, their products appear here.
+                                    You'll see brands that selected you, brands open to any creator,
+                                    and any partnership you upload yourself.
                                   </p>
                                 </div>
                                 <p className="text-[10px] text-muted-foreground/60 mt-0.5">

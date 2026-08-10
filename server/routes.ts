@@ -9845,8 +9845,25 @@ export async function registerRoutes(
         // Non-fatal — product still uploads, just without analysis data
       }
 
+      // WHO uploaded this decides who may ever place it.
+      //
+      // A brand uploading to its own shelf gets the default 'selected' — only
+      // creators it engages. A CREATOR uploading one of their own partnerships
+      // gets 'private', because some brands a creator works with have no
+      // interest in being on FullScale and must never become browsable, or
+      // visible to other brands, as a side effect of the creator using our
+      // editor. They can invite that brand to claim an account later; until
+      // then the row belongs to the creator alone.
+      const viewRoleForUpload = (req.session as any)?.viewRole;
+      const allowedForUpload = req.authEmail
+        ? await storage.getAllowedUser(req.authEmail).catch(() => undefined)
+        : undefined;
+      const uploaderIsBrand = (viewRoleForUpload || (allowedForUpload as any)?.userType) === "brand";
+
       const product = await storage.createBrandProduct({
         userId,
+        visibility: uploaderIsBrand ? "selected" : "private",
+        uploadedByCreator: !uploaderIsBrand,
         name,
         imageUrl,
         thumbnailUrl,
@@ -9898,6 +9915,45 @@ export async function registerRoutes(
    *   creator — only brands that requested a placement with them or bid on
    *             their inventory
    */
+  /**
+   * A brand opening (or closing) a product to the whole creator pool.
+   *
+   * Auto-listed on purpose: the brand's approval of the finished render is
+   * already the gate, so an open listing costs them nothing but a look at
+   * cuts they can still refuse. Requiring an admin in the middle would make
+   * the pool empty and the feature pointless.
+   */
+  app.patch("/api/brand-products/:id/visibility", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ error: "Invalid product id" });
+      const visibility = String(req.body?.visibility ?? "");
+      if (!["open", "selected", "private"].includes(visibility)) {
+        return res.status(400).json({ error: "visibility must be open, selected or private" });
+      }
+      const product: any = await storage.getBrandProduct(id);
+      if (!product) return res.status(404).json({ error: "Product not found" });
+
+      const owns = await isSameCreator(String(product.userId ?? ""), String(req.authUserId ?? ""))
+        || String(product.userId) === String(req.authEmail);
+      if (!owns && !req.isAdmin) {
+        return res.status(403).json({ error: "That isn't your product" });
+      }
+      // A creator's own uploaded partnership can only ever be private — it is
+      // not theirs to list on the brand's behalf.
+      if (product.uploadedByCreator && visibility !== "private") {
+        return res.status(400).json({
+          error: "This is your own partnership, not a FullScale brand. To list it publicly, invite the brand to claim their account.",
+        });
+      }
+      await storage.setProductVisibility(id, visibility as any);
+      res.json({ ok: true, visibility });
+    } catch (err: any) {
+      console.error("[Brand Products] Visibility error:", err?.message);
+      res.status(500).json({ error: "Failed to update visibility" });
+    }
+  });
+
   app.get("/api/brand-products/catalog", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       if (req.isAdmin) {
@@ -9914,7 +9970,10 @@ export async function registerRoutes(
         return res.json(await storage.getBrandProducts(req.authUserId));
       }
 
-      const products = await storage.getBrandProductsForCreator(req.authUserId, req.authEmail);
+      // All three tiers, each labelled with WHY it is placeable. The picker
+      // groups on this — "a brand chose you", "open to pitch", and "your own
+      // partner" are different invitations and must not read as equivalent.
+      const products = await storage.getPlaceableProductsForCreator(req.authUserId, req.authEmail);
       res.json(products);
     } catch (err: any) {
       console.error("[Brand Products] Catalog error:", err.message);
@@ -11837,12 +11896,14 @@ export async function registerRoutes(
           : undefined;
         const actingAsBrand = (viewRoleForProduct || (allowedForProduct as any)?.userType) === "brand";
         if (!actingAsBrand) {
-          const permitted = await storage.getBrandProductsForCreator(req.authUserId, req.authEmail);
+          // Same resolver the catalog uses, so what a creator can SEE and what
+          // they can SAVE can never drift apart.
+          const permitted = await storage.getPlaceableProductsForCreator(req.authUserId, req.authEmail);
           const ok = permitted.some((p: any) => Number(p.id) === Number(productId));
           if (!ok) {
-            console.warn(`[Placements] ${userEmail} tried to place product ${productId} with no brand relationship`);
+            console.warn(`[Placements] ${userEmail} tried to place product ${productId} with no relationship`);
             return res.status(403).json({
-              error: "That brand hasn't selected you yet. Brands choose creators first — once one requests a placement or bids on your video, their products appear here.",
+              error: "You can't place that brand. Brands you can use are ones that selected you, ones listed as open to any creator, or your own uploaded partnerships.",
             });
           }
         }

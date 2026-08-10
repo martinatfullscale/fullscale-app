@@ -399,9 +399,38 @@ export const brandProducts = pgTable("brand_products", {
   subjectBoundsH: numeric("subject_bounds_h"), // Normalized 0-1: Height of non-transparent subject
   dominantColor: varchar("dominant_color"), // Hex color e.g. "#FF6B2B"
   backgroundType: varchar("background_type"), // 'transparent' | 'solid' | 'complex'
+  // ── WHO MAY PLACE THIS ────────────────────────────────────────────
+  //
+  // Three tiers, because the marketplace has three genuinely different
+  // relationships and collapsing them is what let a creator place a brand
+  // that had never heard of them:
+  //
+  //   'open'     the brand said "any creator may run this". Browsable by
+  //              everyone. The brand's approval of the FINISHED RENDER is the
+  //              checkpoint — they see the cut before it ships, so an open
+  //              listing is an invitation to pitch, not a blank cheque.
+  //   'selected' the default. Only creators this brand actually engaged —
+  //              requested a placement with, or bid on.
+  //   'private'  a CREATOR's own partnership, uploaded by them. Some brands
+  //              a creator works with do not want to be on FullScale at all,
+  //              and that has to stay possible. Only the uploader can place
+  //              it; it is never browsable and never shown to other brands.
+  visibility: varchar("visibility", { length: 12 }).notNull().default("selected"),
+  // Set when a creator uploaded this as their own partnership. Distinguishes
+  // a private row from a brand's own row, since userId alone cannot — both
+  // are "the owner".
+  uploadedByCreator: boolean("uploaded_by_creator").default(false),
+  // When a creator invites their private brand to claim a real account. Null
+  // until they ask; the claim flow itself is not built yet.
+  claimInviteSentAt: timestamp("claim_invite_sent_at"),
+  claimInviteEmail: varchar("claim_invite_email"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
-});
+}, (table) => ({
+  // The catalog query filters on visibility first, every time.
+  visibilityIdx: index("idx_brand_products_visibility").on(table.visibility),
+  ownerIdx: index("idx_brand_products_user").on(table.userId),
+}));
 
 export const insertBrandProductSchema = createInsertSchema(brandProducts).omit({
   id: true,

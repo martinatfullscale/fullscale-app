@@ -1930,6 +1930,61 @@ export class DatabaseStorage implements IStorage {
    *
    * Both are acts of selection by the brand. Nothing else grants a catalog.
    */
+  /**
+   * Everything a creator may place, labelled by WHY they may place it.
+   *
+   * Three tiers, resolved in one pass so the picker can group them and the
+   * write gate can reuse the exact same answer:
+   *
+   *   open      the brand listed itself as open to any creator. The brand's
+   *             approval of the finished render is the checkpoint, so this is
+   *             an invitation to pitch rather than a blank cheque.
+   *   selected  the brand engaged THIS creator — requested a placement or bid
+   *             on their inventory.
+   *   own       the creator's own partnership, uploaded by them. Never
+   *             browsable by anyone else, never shown to other brands.
+   *
+   * The `source` label travels with each product because the UI must not
+   * present these as equivalent: "a brand chose you" and "you may pitch this"
+   * are different invitations, and the creator's own partner is neither.
+   */
+  async getPlaceableProductsForCreator(
+    creatorUserId: string,
+    creatorEmail?: string,
+  ): Promise<Array<BrandProduct & { source: "open" | "selected" | "own" }>> {
+    const aliases = await this.identityMatchValues(creatorUserId);
+    if (creatorEmail) aliases.push(creatorEmail);
+    const keys = Array.from(new Set(aliases.filter(Boolean)));
+
+    const [openRows, selectedRows, ownRows] = await Promise.all([
+      db.select().from(brandProducts).where(eq(brandProducts.visibility, "open")),
+      this.getBrandProductsForCreator(creatorUserId, creatorEmail),
+      keys.length
+        ? db.select().from(brandProducts).where(
+            and(
+              inArray(brandProducts.userId, keys),
+              eq(brandProducts.uploadedByCreator, true),
+            ),
+          )
+        : Promise.resolve([] as BrandProduct[]),
+    ]);
+
+    // A brand that both listed openly AND engaged this creator should read as
+    // SELECTED — the stronger relationship — so dedupe with selected winning.
+    const out = new Map<number, BrandProduct & { source: "open" | "selected" | "own" }>();
+    for (const r of openRows) out.set(r.id, { ...(r as any), source: "open" });
+    for (const r of selectedRows) out.set(r.id, { ...(r as any), source: "selected" });
+    for (const r of ownRows) out.set(r.id, { ...(r as any), source: "own" });
+    return Array.from(out.values());
+  }
+
+  /** A creator's own uploaded partnerships. Never leaves their account. */
+  async setProductVisibility(id: number, visibility: "open" | "selected" | "private"): Promise<void> {
+    await db.update(brandProducts)
+      .set({ visibility, updatedAt: new Date() })
+      .where(eq(brandProducts.id, id));
+  }
+
   async getBrandProductsForCreator(creatorUserId: string, creatorEmail?: string): Promise<BrandProduct[]> {
     const aliases = await this.identityMatchValues(creatorUserId);
     if (creatorEmail) aliases.push(creatorEmail);
@@ -1963,10 +2018,16 @@ export class DatabaseStorage implements IStorage {
     }
 
     if (brandIds.size === 0) return [];
+    // A brand's PRIVATE rows are not theirs to hand out — a creator's own
+    // uploaded partnership lives under that creator's key and must never
+    // surface through a brand relationship.
     return await db
       .select()
       .from(brandProducts)
-      .where(inArray(brandProducts.userId, Array.from(brandIds)));
+      .where(and(
+        inArray(brandProducts.userId, Array.from(brandIds)),
+        ne(brandProducts.visibility, "private"),
+      ));
   }
 
   async getAllBrandProducts(): Promise<BrandProduct[]> {
