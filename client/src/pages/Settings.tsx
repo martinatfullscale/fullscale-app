@@ -469,9 +469,44 @@ export default function Settings() {
   // logins. Without this they see Facebook's own "Feature Unavailable" screen,
   // which never mentions FullScale and offers only a Reload that fails the
   // same way — so it reads as our bug rather than a review state.
-  const metaUnavailable =
-    typeof window !== "undefined" &&
-    new URLSearchParams(window.location.search).get("connect") === "meta_unavailable";
+  const connectResult =
+    typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("connect")
+      : null;
+  const metaUnavailable = connectResult === "meta_unavailable";
+
+  // Instagram Login outcomes. Worth naming individually: "you declined" and
+  // "it broke" and "sign in first" are three different things, and one generic
+  // failure message for all three sends people to support for a problem they
+  // could have solved themselves.
+  const IG_MESSAGES: Record<string, { title: string; body: string; tone: "ok" | "warn" }> = {
+    ig_success: {
+      title: "Instagram connected",
+      body: "Your account is linked. Follower counts and insights will populate within a few minutes.",
+      tone: "ok",
+    },
+    ig_declined: {
+      title: "Instagram connection cancelled",
+      body: "You closed Instagram's permission screen. Nothing changed — try again whenever you're ready.",
+      tone: "warn",
+    },
+    ig_signin_first: {
+      title: "Sign in to FullScale first",
+      body: "We couldn't tell which account to attach Instagram to. Sign in, then connect.",
+      tone: "warn",
+    },
+    ig_not_configured: {
+      title: "Instagram Login isn't switched on here",
+      body: "This server is missing its Instagram app credentials. Nothing is wrong with your account.",
+      tone: "warn",
+    },
+    ig_failed: {
+      title: "Instagram connection didn't complete",
+      body: "Instagram returned an error. If your account is Personal, switch it to a Creator or Business account in the Instagram app — Settings → Account type — then try again. It's free and keeps your posts and followers.",
+      tone: "warn",
+    },
+  };
+  const igMessage = connectResult ? IG_MESSAGES[connectResult] : undefined;
 
   const handleConnectSocial = async (id: string) => {
     const connection = socialConnections.find((c) => c.id === id);
@@ -979,6 +1014,16 @@ export default function Settings() {
                   </Button>
                 </div>
                 <p className="text-muted-foreground text-sm mb-2">Connect your social accounts to unlock multi-platform monetization</p>
+                {igMessage && (
+                  <div className={`mb-3 rounded-lg border p-3 ${
+                    igMessage.tone === "ok"
+                      ? "border-emerald-500/30 bg-emerald-500/5"
+                      : "border-amber-500/30 bg-amber-500/5"
+                  }`}>
+                    <p className="text-sm font-medium">{igMessage.title}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5 leading-snug">{igMessage.body}</p>
+                  </div>
+                )}
                 {metaUnavailable && (
                   <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
                     <p className="text-sm font-medium">Facebook and Instagram connections are paused</p>

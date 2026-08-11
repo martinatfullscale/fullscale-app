@@ -775,6 +775,77 @@ export async function setupPlatformAuth(app: Express) {
     })(req, res, next);
   });
 
+  // ── Instagram Login: connecting without a Facebook Page ───────────
+  //
+  // The Facebook route below requires a Page with a linked IG Business
+  // account. Plenty of creators have neither — an Instagram Creator account
+  // and no Page is an entirely normal setup — and for them the Facebook flow
+  // cannot work no matter what we fix on it. This is the other door.
+  app.get("/auth/instagram", async (req: any, res) => {
+    const { instagramLoginConfig, authorizeUrl } = await import("./instagramLogin");
+    const cfg = instagramLoginConfig(BASE_URL);
+    if (!cfg) {
+      console.warn("[InstagramLogin] INSTAGRAM_APP_ID / INSTAGRAM_APP_SECRET not set");
+      return res.redirect("/settings?connect=ig_not_configured");
+    }
+    // The session id doubles as CSRF state — it is already unguessable and
+    // already bound to this browser, and the callback compares it back.
+    const state = req.sessionID;
+    req.session.igLoginState = state;
+    req.session.save(() => res.redirect(authorizeUrl(cfg, state)));
+  });
+
+  app.get("/auth/instagram/callback", async (req: any, res) => {
+    const { instagramLoginConfig, exchangeCode } = await import("./instagramLogin");
+    const cfg = instagramLoginConfig(BASE_URL);
+    if (!cfg) return res.redirect("/settings?connect=ig_not_configured");
+
+    // The creator declining on Instagram's screen is a normal outcome, not an
+    // error to shout about.
+    if (req.query.error) {
+      console.log(`[InstagramLogin] declined: ${req.query.error_description || req.query.error}`);
+      return res.redirect("/settings?connect=ig_declined");
+    }
+    if (!req.query.code || req.query.state !== req.session?.igLoginState) {
+      return res.redirect("/settings?connect=ig_failed");
+    }
+    delete req.session.igLoginState;
+
+    try {
+      const { storage } = await import("../storage");
+      const authEmail = req.session?.googleUser?.email || req.user?.claims?.email;
+      const user = authEmail ? await storage.getUserByEmail(authEmail) : null;
+      if (!user) return res.redirect("/settings?connect=ig_signin_first");
+
+      const profile = await exchangeCode(cfg, String(req.query.code));
+
+      // accountType "creator" distinguishes this from the Page-linked
+      // "business" rows, so the unique index treats them as separate
+      // connections and a creator can hold both without one clobbering the
+      // other.
+      await storage.upsertSocialAccount({
+        userId: user.id,
+        platform: "instagram",
+        accountType: "creator",
+        platformAccountId: profile.igUserId,
+        handle: profile.username,
+        displayName: profile.username,
+        avatarUrl: profile.profilePictureUrl,
+        followers: profile.followers,
+        totalViews: 0,
+        accessToken: profile.accessToken,
+        scopes: ["instagram_business_basic", "instagram_business_manage_insights"],
+        tokenExpiresAt: new Date(Date.now() + profile.expiresInSec * 1000),
+      } as any);
+
+      console.log(`[InstagramLogin] connected @${profile.username} (${profile.followers} followers) for ${authEmail}`);
+      return res.redirect("/settings?connect=ig_success");
+    } catch (err: any) {
+      console.error(`[InstagramLogin] callback failed: ${err?.message}`);
+      return res.redirect("/settings?connect=ig_failed");
+    }
+  });
+
   // Facebook auth routes - works for both login and account linking
   app.get("/auth/facebook", (req: any, res, next) => {
     // KILL SWITCH for the window where Meta itself is refusing the flow.
