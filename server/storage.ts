@@ -685,10 +685,21 @@ export class DatabaseStorage implements IStorage {
     const accounts = await this.getSocialAccountsByUser(userId, userEmail);
     if (accounts.some((a) => a.platform === "youtube")) return accounts;
 
-    // Connections key on the Replit auth user id; try both forms for the same
-    // dual-id reason everything else here does.
-    let conn = await this.getYoutubeConnection(userId).catch(() => null);
-    if (!conn && userEmail) conn = await this.getYoutubeConnectionByEmail(userEmail).catch(() => null);
+    // Try EVERY identity form this person is known by, because
+    // youtube_connections.user_id is a mixed-key column — users.id on newer
+    // rows, the email on older ones, and occasionally a raw auth subject.
+    // identityMatchValues is the same resolution the rest of storage uses, so
+    // this cannot drift from it the way a hand-written pair of lookups did.
+    const candidates = await this.identityMatchValues(userId).catch(() => [userId]);
+    if (userEmail) {
+      candidates.push(userEmail, userEmail.toLowerCase().trim());
+    }
+
+    let conn: any = null;
+    for (const key of Array.from(new Set(candidates.filter(Boolean)))) {
+      conn = await this.getYoutubeConnection(key).catch(() => null);
+      if (conn?.channelId) break;
+    }
     if (!conn?.channelId) return accounts;
 
     const synthetic: any = {
@@ -1915,10 +1926,27 @@ export class DatabaseStorage implements IStorage {
   // YouTube stats methods
   async getYoutubeConnectionByEmail(email: string): Promise<YoutubeConnection | undefined> {
     const normalizedEmail = email.toLowerCase().trim();
-    // Find the user by email, then get their YouTube connection
+    // Find the user by email, then get their YouTube connection.
     const user = await this.getUserByEmail(normalizedEmail);
-    if (!user) return undefined;
-    return this.getYoutubeConnection(user.id);
+    if (user) {
+      const byId = await this.getYoutubeConnection(user.id);
+      if (byId) return byId;
+    }
+    // ...and if that misses, try the EMAIL as the connection key directly.
+    //
+    // youtube_connections.user_id is the same mixed-key column as everything
+    // else here: some rows hold users.id, older ones hold the email. Resolving
+    // email -> user -> id and stopping there cannot see an email-keyed row, so
+    // a creator with a live channel read as having no connection at all.
+    //
+    // The roster already handled this — it builds an alias map from BOTH
+    // users.id and users.email and resolves connection keys through it, which
+    // is why Creator Intelligence could show "8.6k" on the list and "no
+    // connected platform data" on the drill-down for the same person, in the
+    // same view. Two code paths, two different notions of identity.
+    const direct = await this.getYoutubeConnection(normalizedEmail);
+    if (direct) return direct;
+    return email !== normalizedEmail ? this.getYoutubeConnection(email) : undefined;
   }
 
   async updateYoutubeStats(connectionId: number, stats: { subscriberCount: number; totalViewCount: number }): Promise<void> {
