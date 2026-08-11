@@ -16237,6 +16237,70 @@ export async function registerRoutes(
   // Distribution Profiles (connected social accounts)
 
   // GET /api/distribution/profiles — List user's connected platforms
+  /**
+   * Connections that COULD publish but have no distribution profile yet.
+   *
+   * Third instance of the same bug in this codebase. A distribution profile is
+   * created only by an explicit POST — /profiles, /profiles/from-youtube,
+   * /profiles/from-instagram — and NOTHING calls those when a creator connects
+   * an account. So a creator connects YouTube, connects Facebook, sees them
+   * listed as connected in Settings, opens the Distribution hub and is told
+   * they have no social platform connected. Both statements are true about
+   * different tables.
+   *
+   * (The other two were social_accounts, where YouTube lived only in
+   * youtube_connections, and the placement catalog. Same shape every time: a
+   * bridge that exists as a manual endpoint nobody knows to call.)
+   *
+   * This reports what is connectable so the hub can offer a one-click enable
+   * rather than claiming nothing is connected. Deliberately NOT auto-creating
+   * the profile: a publishing profile is permission to post on someone's
+   * account, and that should be a thing the creator switches on knowingly,
+   * not a side effect of reading a page.
+   */
+  app.get("/api/distribution/profiles/available", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const userId = stableUserIntId(req.authUserId ?? req.user?.id);
+      const existing = await storage.getDistributionProfiles(userId);
+      const havePlatform = new Set(existing.map((p: any) => String(p.platform)));
+
+      const available: Array<{ platform: string; label: string; handle: string | null; enableVia: string }> = [];
+
+      // YouTube: a connection is enough — the same token publishes.
+      if (!havePlatform.has("youtube")) {
+        const yt = await storage.getYoutubeConnection(String(req.authUserId)).catch(() => null)
+          ?? (req.authEmail ? await storage.getYoutubeConnectionByEmail(req.authEmail).catch(() => null) : null);
+        if (yt?.channelId) {
+          available.push({
+            platform: "youtube",
+            label: "YouTube",
+            handle: (yt as any).channelTitle ?? null,
+            enableVia: "/api/distribution/profiles/from-youtube",
+          });
+        }
+      }
+
+      // Instagram Reels: needs the Facebook connection AND a linked IG
+      // Business account, which is what the provisioning route checks.
+      if (!havePlatform.has("instagram_reels") && !havePlatform.has("instagram")) {
+        const user = req.authEmail ? await storage.getUserByEmail(req.authEmail).catch(() => null) : null;
+        if ((user as any)?.facebookAccessToken && (user as any)?.instagramBusinessId) {
+          available.push({
+            platform: "instagram_reels",
+            label: "Instagram Reels",
+            handle: (user as any)?.instagramHandle ?? null,
+            enableVia: "/api/distribution/profiles/from-instagram",
+          });
+        }
+      }
+
+      res.json({ available });
+    } catch (err: any) {
+      console.error("[Distribution] Available profiles error:", err?.message);
+      res.status(500).json({ error: "Failed to check connectable accounts" });
+    }
+  });
+
   app.get("/api/distribution/profiles", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const userId = stableUserIntId(req.authUserId ?? req.user?.id);

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { fetchWithTimeout } from "@/lib/queryClient";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -102,20 +102,47 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
   const [selectedClipId, setSelectedClipId] = useState<number | null>(null);
   const [selectedProfileId, setSelectedProfileId] = useState<number | null>(null);
   const [customCaption, setCustomCaption] = useState("");
+  const [available, setAvailable] = useState<Array<{ platform: string; label: string; handle: string | null; enableVia: string }>>([]);
+  const [enabling, setEnabling] = useState<string | null>(null);
+
+  /** Turn a connected account into a publishing profile. Explicit, because a
+   *  publishing profile is permission to post on someone's account. */
+  const enableProfile = async (a: { platform: string; enableVia: string }) => {
+    setEnabling(a.platform);
+    try {
+      const res = await fetchWithTimeout(a.enableVia, { method: "POST", credentials: "include" });
+      if (res.ok) await loadDataRef.current?.();
+      else {
+        const b = await res.json().catch(() => ({}));
+        console.error("[Distribution] enable failed:", b?.error);
+      }
+    } finally {
+      setEnabling(null);
+    }
+  };
+
   const [showCaptionPreview, setShowCaptionPreview] = useState(false);
   const [captionPreview, setCaptionPreview] = useState<{ caption: string; hashtags: string[] } | null>(null);
+
+  const loadDataRef = useRef<null | (() => Promise<void>)>(null);
 
   const loadData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [profilesRes, postsRes, clipsRes, metricsRes] = await Promise.all([
+      const [profilesRes, postsRes, clipsRes, metricsRes, availableRes] = await Promise.all([
         fetchWithTimeout("/api/distribution/profiles", { credentials: "include" }),
         fetchWithTimeout(`/api/distribution/posts/video/${videoId}`, { credentials: "include" }),
         fetchWithTimeout(`/api/remix/clips/${videoId}`, { credentials: "include" }),
         fetchWithTimeout(`/api/distribution/analytics/video/${videoId}`, { credentials: "include" }),
+        // Accounts that are CONNECTED but have no publishing profile. Without
+        // this the hub says "no social platform connected" to a creator who
+        // connected one — the connection and the publishing profile live in
+        // different tables and nothing bridges them automatically.
+        fetchWithTimeout("/api/distribution/profiles/available", { credentials: "include" }),
       ]);
 
       if (profilesRes.ok) setProfiles(await profilesRes.json());
+      if (availableRes.ok) setAvailable((await availableRes.json()).available ?? []);
       if (postsRes.ok) setPosts(await postsRes.json());
       if (clipsRes.ok) {
         const allClips = await clipsRes.json();
@@ -127,6 +154,10 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
     }
     setIsLoading(false);
   }, [videoId]);
+
+  useEffect(() => {
+    loadDataRef.current = loadData;
+  }, [loadData]);
 
   useEffect(() => {
     if (open) loadData();
@@ -262,7 +293,16 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
               </div>
             ) : (
               <>
-                {tab === "overview" && <OverviewTab metrics={metrics} posts={posts} profiles={profiles} />}
+                {tab === "overview" && (
+                  <OverviewTab
+                    metrics={metrics}
+                    posts={posts}
+                    profiles={profiles}
+                    available={available}
+                    enabling={enabling}
+                    onEnable={enableProfile}
+                  />
+                )}
                 {tab === "publish" && (
                   <PublishTab
                     clips={clips}
@@ -296,14 +336,23 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
 
 // ─── Tab Components ─────────────────────────────────────────────
 
+interface AvailableAccount { platform: string; label: string; handle: string | null; enableVia: string }
+
 function OverviewTab({
   metrics,
   posts,
   profiles,
+  available,
+  enabling,
+  onEnable,
 }: {
   metrics: AggregateMetrics | null;
   posts: PublishedPost[];
   profiles: DistributionProfile[];
+  /** Connected accounts with no publishing profile yet. */
+  available: AvailableAccount[];
+  enabling: string | null;
+  onEnable: (a: AvailableAccount) => void;
 }) {
   return (
     <div className="space-y-6">
@@ -318,11 +367,41 @@ function OverviewTab({
       {/* Connected Platforms */}
       <div>
         <h3 className="text-sm font-semibold text-gray-300 mb-3">Connected Platforms</h3>
-        {profiles.length === 0 ? (
+        {profiles.length === 0 && available.length > 0 ? (
+          // CONNECTED, just not enabled for publishing. Saying "no platforms
+          // connected" to someone who connected one is the bug being fixed:
+          // the connection and the publishing profile are different records,
+          // and nothing bridged them.
+          <div className="bg-gray-800/50 rounded-xl p-4">
+            <p className="text-gray-300 text-sm font-medium">Ready to enable</p>
+            <p className="text-gray-500 text-xs mt-0.5 mb-3">
+              These accounts are connected. Turn on publishing to send clips to them.
+            </p>
+            <div className="space-y-2">
+              {available.map((a) => (
+                <div key={a.platform} className="flex items-center gap-3 bg-gray-900/60 rounded-lg px-3 py-2">
+                  <Globe className="w-4 h-4 text-gray-400 shrink-0" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm text-gray-200">{a.label}</p>
+                    {a.handle && <p className="text-xs text-gray-500 truncate">{a.handle}</p>}
+                  </div>
+                  <Button
+                    size="sm"
+                    disabled={enabling !== null}
+                    onClick={() => onEnable(a)}
+                    data-testid={`enable-${a.platform}`}
+                  >
+                    {enabling === a.platform ? "Enabling…" : "Enable"}
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : profiles.length === 0 ? (
           <div className="bg-gray-800/50 rounded-xl p-6 text-center">
             <Globe className="w-8 h-8 text-gray-600 mx-auto mb-2" />
             <p className="text-gray-400 text-sm">No platforms connected yet</p>
-            <p className="text-gray-500 text-xs mt-1">Connect your social accounts to start distributing clips</p>
+            <p className="text-gray-500 text-xs mt-1">Connect your social accounts in Settings to start distributing clips</p>
           </div>
         ) : (
           <div className="flex flex-wrap gap-2">
