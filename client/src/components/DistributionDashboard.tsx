@@ -121,6 +121,42 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
     }
   };
 
+  const [disconnecting, setDisconnecting] = useState<number | null>(null);
+
+  /**
+   * Disconnect a platform. Confirms first when posts are queued to it, because
+   * disconnecting cancels them — silently publishing to a disconnected account
+   * later would be worse, but so would cancelling without saying so.
+   */
+  const disconnectProfile = async (p: DistributionProfile) => {
+    const queued = posts.filter((x: any) => x.profileId === p.id && x.status === "scheduled").length;
+    const label = p.accountName || p.platform;
+    const warning = queued > 0
+      ? `Disconnect ${label}?\n\n${queued} scheduled post${queued === 1 ? "" : "s"} will be cancelled. Posts already published stay in your history.`
+      : `Disconnect ${label}?\n\nPosts already published stay in your history.`;
+    if (!window.confirm(warning)) return;
+
+    setDisconnecting(p.id);
+    try {
+      const res = await fetchWithTimeout(`/api/distribution/profiles/${p.id}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (res.ok) {
+        const body = await res.json().catch(() => ({}));
+        if (body?.cancelledSchedules > 0) {
+          console.log(`[Distribution] cancelled ${body.cancelledSchedules} scheduled post(s)`);
+        }
+        await loadDataRef.current?.();
+      } else {
+        const b = await res.json().catch(() => ({}));
+        window.alert(b?.error || "Could not disconnect that account.");
+      }
+    } finally {
+      setDisconnecting(null);
+    }
+  };
+
   const [showCaptionPreview, setShowCaptionPreview] = useState(false);
   const [captionPreview, setCaptionPreview] = useState<{ caption: string; hashtags: string[] } | null>(null);
 
@@ -301,6 +337,8 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
                     available={available}
                     enabling={enabling}
                     onEnable={enableProfile}
+                    disconnecting={disconnecting}
+                    onDisconnect={disconnectProfile}
                   />
                 )}
                 {tab === "publish" && (
@@ -345,6 +383,8 @@ function OverviewTab({
   available,
   enabling,
   onEnable,
+  disconnecting,
+  onDisconnect,
 }: {
   metrics: AggregateMetrics | null;
   posts: PublishedPost[];
@@ -353,6 +393,8 @@ function OverviewTab({
   available: AvailableAccount[];
   enabling: string | null;
   onEnable: (a: AvailableAccount) => void;
+  disconnecting: number | null;
+  onDisconnect: (p: DistributionProfile) => void;
 }) {
   return (
     <div className="space-y-6">
@@ -413,6 +455,21 @@ function OverviewTab({
                   <Icon className={`w-4 h-4 ${config.color}`} />
                   <span className="text-sm text-gray-200">{p.accountName || config.label}</span>
                   <CheckCircle className="w-3 h-3 text-green-400" />
+                  {/* Enabling a platform with no way to leave it is a trap —
+                      switching platforms is a normal thing to want. */}
+                  <button
+                    onClick={() => onDisconnect(p)}
+                    disabled={disconnecting !== null}
+                    title={`Disconnect ${config.label}`}
+                    className="ml-1 text-gray-500 hover:text-red-400 disabled:opacity-50 transition-colors"
+                    data-testid={`disconnect-${p.platform}`}
+                  >
+                    {disconnecting === p.id ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <X className="w-3.5 h-3.5" />
+                    )}
+                  </button>
                 </div>
               );
             })}

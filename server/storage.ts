@@ -4006,6 +4006,41 @@ export class DatabaseStorage implements IStorage {
     return result;
   }
 
+  /**
+   * Make a distribution profile safe to delete.
+   *
+   * publishing_schedules.profile_id is NOT NULL with a foreign key, so any
+   * queued post blocks the delete outright. published_posts.profile_id is
+   * nullable and holds the creator's own posting history, which must survive
+   * them switching platforms.
+   */
+  async detachProfileReferences(profileId: number): Promise<{ cancelledSchedules: number; keptPosts: number }> {
+    // Anything already sent keeps its row; it just stops pointing at a profile
+    // that no longer exists.
+    const posts = await db
+      .update(publishedPosts)
+      .set({ profileId: null })
+      .where(eq(publishedPosts.profileId, profileId))
+      .returning({ id: publishedPosts.id });
+
+    // Anything NOT yet sent is cancelled — silently publishing to a
+    // disconnected account later would be worse than not publishing.
+    const pending = await db
+      .delete(publishingSchedules)
+      .where(and(
+        eq(publishingSchedules.profileId, profileId),
+        inArray(publishingSchedules.status, ["pending", "processing"]),
+      ))
+      .returning({ id: publishingSchedules.id });
+
+    // Terminal rows (completed / failed / cancelled) still hold the FK, and
+    // NOT NULL means they cannot be detached — so they go too. Their outcome
+    // is already recorded in published_posts, which survives above.
+    await db.delete(publishingSchedules).where(eq(publishingSchedules.profileId, profileId));
+
+    return { cancelledSchedules: pending.length, keptPosts: posts.length };
+  }
+
   async deleteDistributionProfile(id: number): Promise<void> {
     await db.update(distributionProfiles)
       .set({ isActive: false, updatedAt: new Date() })

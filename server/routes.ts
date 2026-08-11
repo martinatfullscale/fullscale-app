@@ -16495,6 +16495,26 @@ export async function registerRoutes(
   });
 
   // DELETE /api/distribution/profiles/:id — Disconnect a platform
+  /**
+   * Disconnect a publishing profile.
+   *
+   * The endpoint existed but nothing in the UI called it, so a creator who
+   * enabled a platform could never switch away from it. Exposing it needed
+   * this to be safe first, because profile_id is a FOREIGN KEY from two
+   * tables and one of them is NOT NULL:
+   *
+   *   publishing_schedules.profile_id  NOT NULL  -> a bare DELETE raises a
+   *     foreign-key violation the moment anything is queued, so the button
+   *     would have failed exactly when someone had most reason to press it.
+   *   published_posts.profile_id       nullable  -> history, which must
+   *     SURVIVE. A creator's record of what they posted is not ours to delete
+   *     because they switched platforms.
+   *
+   * So: cancel what has not gone out, detach what already has, then remove the
+   * profile. The response says what happened rather than a bare success, since
+   * "3 scheduled posts were cancelled" is something the creator needs to know
+   * before they wonder why a post never appeared.
+   */
   app.delete("/api/distribution/profiles/:id", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const id = parseInt(req.params.id);
@@ -16503,8 +16523,16 @@ export async function registerRoutes(
       if (existing.userId !== stableUserIntId(req.authUserId ?? req.user?.id)) {
         return res.status(403).json({ error: "Not your profile" });
       }
+
+      const detached = await storage.detachProfileReferences(id);
       await storage.deleteDistributionProfile(id);
-      res.json({ success: true });
+      console.log(`[Distribution] Disconnected ${existing.platform} profile ${id} — cancelled ${detached.cancelledSchedules} schedule(s), kept ${detached.keptPosts} published post(s)`);
+      res.json({
+        success: true,
+        platform: existing.platform,
+        cancelledSchedules: detached.cancelledSchedules,
+        keptPosts: detached.keptPosts,
+      });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "Delete failed" });
     }
