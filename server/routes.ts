@@ -8355,13 +8355,30 @@ export async function registerRoutes(
       }
       
       const totalFacebookImported = personalImported + facebookImported;
+
+      // Connected, but Meta granted no Page access — until now this was a
+      // console.log and the creator saw a "success" with zero content and no
+      // reason. It has two very different causes and they need different
+      // actions, so say which rather than leaving them to guess:
+      //
+      //   - the app's Page/IG permissions are still at "Ready for testing", so
+      //     Meta silently omits them for anyone without a role on the app. The
+      //     login SUCCEEDS and grants nothing. This is the normal state until
+      //     App Review completes.
+      //   - or they genuinely have no Page / no linked IG Business account.
+      const grantedNothing = totalFacebookImported === 0 && instagramImported === 0;
       res.json({
         success: true,
         personalVideos: personalImported,
         pageVideos: facebookImported,
         facebookVideos: totalFacebookImported,
         instagramVideos: instagramImported,
-        message: `Imported ${personalImported} personal videos, ${facebookImported} Page videos, and ${instagramImported} Instagram videos/reels`
+        warning: grantedNothing
+          ? "Facebook connected, but no Pages or Instagram accounts came back. Either this account manages no Facebook Page with a linked Instagram Business account, or our Page permissions are still pending Meta's review — in which case Meta grants them only to accounts we've added as testers. If you have an Instagram Creator account, connecting Instagram directly works without a Page."
+          : null,
+        message: grantedNothing
+          ? "Facebook connected — no content found to import yet"
+          : `Imported ${personalImported} personal videos, ${facebookImported} Page videos, and ${instagramImported} Instagram videos/reels`,
       });
     } catch (error: any) {
       console.error("[Sync] Error syncing Facebook/Instagram:", error);
