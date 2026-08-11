@@ -535,6 +535,11 @@ export async function setupPlatformAuth(app: Express) {
             clientID: FACEBOOK_APP_ID,
             clientSecret: FACEBOOK_APP_SECRET,
             callbackURL: `${BASE_URL}/auth/facebook/callback`,
+            // "email" stays in profileFields deliberately: if the permission
+            // is ever granted the field populates and account-linking improves,
+            // and without it the field is simply absent — which the callback
+            // already handles. Requesting the FIELD is free; requesting the
+            // SCOPE is what review scrutinises.
             profileFields: ["id", "displayName", "email", "photos"],
             passReqToCallback: true,
           },
@@ -799,7 +804,21 @@ export async function setupPlatformAuth(app: Express) {
       //   reach, plays for Reels, engagement). REQUIRED for analytics dashboard.
       passport.authenticate("facebook", {
         scope: [
-          "email",
+          // NO "email".
+          //
+          // App Review showed it at 0 API calls, so Meta offers only "increase
+          // usage" — it will not grant Advanced Access to a permission we have
+          // never demonstrably used. And we have not used it because we cannot:
+          // by the time this callback runs, the creator is ALREADY signed in
+          // with Google, and the callback returns early on that path before
+          // fbEmail is ever read. It only matters for Facebook-FIRST signup,
+          // which is not how onboarding works here.
+          //
+          // The fallback was already in place for the common case where Meta
+          // returns no email at all (users with none, or who decline it): the
+          // new-user id becomes `facebook:<profile.id>`. Dropping the scope
+          // just makes that the norm for a path almost nobody takes, and
+          // removes an unjustifiable item from the review submission.
           "public_profile",
           "pages_show_list",            // List of managed Pages
           "pages_read_engagement",      // Page content/followers + IG Business Account discovery
