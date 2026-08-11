@@ -4327,9 +4327,60 @@ export async function registerRoutes(
           instagramFollowers: null,
           instagramId: null,
         }).where(eq(users.id, user[0].id));
-        console.log(`[Facebook Disconnect] Cleared Facebook/Instagram data for user ${user[0].id}`);
+
+        // ── AND EVERYTHING THAT DEPENDED ON THOSE FIELDS ──────────────
+        //
+        // Nulling the users row was the whole disconnect, which left three
+        // things alive and caused two separate reported bugs:
+        //
+        //   social_accounts rows survived, so Settings re-derived the
+        //     connection on next load — "disconnect doesn't do it completely,
+        //     it shows back up". Only signing out appeared to work, because
+        //     that dropped the session copy too.
+        //
+        //   session.facebookProfile survived, same effect within the session.
+        //
+        //   distribution profiles survived. Instagram publishing resolves its
+        //     token by re-reading users.facebookAccessToken at publish time
+        //     (platformPublisher.ts:657, via metadata.igUserKey) — which
+        //     disconnect had just set to null. The profile stayed on screen,
+        //     looked connected, and every publish failed. That is the
+        //     "distribution to Instagram failed" report: not a publishing bug,
+        //     a disconnect that left a live profile pointing at a deleted
+        //     credential.
+        const removedAccounts = await storage.deleteSocialAccountsByPlatforms(
+          user[0].id, ["facebook", "instagram"],
+        ).catch((e: any) => { console.warn(`[Facebook Disconnect] social_accounts: ${e?.message}`); return 0; });
+
+        let removedProfiles = 0;
+        try {
+          const profiles = await storage.getDistributionProfiles(stableUserIntId(userId));
+          for (const prof of profiles) {
+            if (prof.platform === "instagram" || prof.platform === "instagram_reels" || prof.platform === "facebook") {
+              await storage.detachProfileReferences(prof.id);
+              await storage.deleteDistributionProfile(prof.id);
+              removedProfiles++;
+            }
+          }
+        } catch (e: any) {
+          console.warn(`[Facebook Disconnect] distribution profiles: ${e?.message}`);
+        }
+
+        if (req.session) {
+          delete (req.session as any).facebookProfile;
+          delete (req.session as any).instagramProfile;
+        }
+
+        console.log(`[Facebook Disconnect] Cleared user ${user[0].id}: ${removedAccounts} social account(s), ${removedProfiles} publishing profile(s)`);
       }
-      
+
+      // Persist the session edit before answering, or the next request reads
+      // the old copy and the connection reappears — the exact symptom this is
+      // fixing.
+      await new Promise<void>((resolve) => {
+        if (!req.session?.save) return resolve();
+        req.session.save(() => resolve());
+      });
       res.json({ success: true });
     } catch (error) {
       console.error("[Facebook Disconnect] Error:", error);
@@ -16562,7 +16613,21 @@ export async function registerRoutes(
       const { resolvePublishAccessToken } = await import("./lib/distribution/platformPublisher");
       const publishToken = await resolvePublishAccessToken(profile);
       if (!publishToken) {
-        return res.status(404).json({ error: "No usable access token for this profile" });
+        // "No usable access token" is true and tells the creator nothing they
+        // can act on. The realistic cause is that the underlying social
+        // connection was disconnected while this publishing profile stayed
+        // behind — Instagram resolves its token by re-reading the user's
+        // Facebook credential, so clearing that makes every publish fail while
+        // the profile still looks connected.
+        const isMeta = String(profile.platform).startsWith("instagram") || profile.platform === "facebook";
+        console.warn(`[Distribution] no token for ${profile.platform} profile ${profile.id}`);
+        return res.status(409).json({
+          error: isMeta
+            ? "This Instagram profile has lost its connection — the Facebook account it publishes through was disconnected. Reconnect Facebook in Settings, then enable Instagram publishing again."
+            : `This ${profile.platform} profile has lost its connection. Disconnect it here and reconnect the account in Settings.`,
+          reconnectRequired: true,
+          platform: profile.platform,
+        });
       }
 
       // Find clip

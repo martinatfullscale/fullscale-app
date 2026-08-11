@@ -4014,6 +4014,19 @@ export class DatabaseStorage implements IStorage {
    * nullable and holds the creator's own posting history, which must survive
    * them switching platforms.
    */
+  /** Remove a user's connections for specific platforms. Returns the count. */
+  async deleteSocialAccountsByPlatforms(userId: string, platforms: string[]): Promise<number> {
+    if (platforms.length === 0) return 0;
+    const rows = await db
+      .delete(socialAccounts)
+      .where(and(
+        eq(socialAccounts.userId, userId),
+        inArray(socialAccounts.platform, platforms),
+      ))
+      .returning({ id: socialAccounts.id });
+    return rows.length;
+  }
+
   async detachProfileReferences(profileId: number): Promise<{ cancelledSchedules: number; keptPosts: number }> {
     // Anything already sent keeps its row; it just stops pointing at a profile
     // that no longer exists.
