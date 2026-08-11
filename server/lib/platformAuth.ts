@@ -528,13 +528,35 @@ export async function setupPlatformAuth(app: Express) {
       const facebookModule = await import("passport-facebook");
       const FacebookStrategy = facebookModule.Strategy;
       
-      passport.use(
-        "facebook",
-        new FacebookStrategy(
+      // Facebook Login for Business, when a config id is provided.
+      //
+      // passport-facebook defaults to graphAPIVersion v3.2 — a 2018 version —
+      // and calls the CLASSIC https://www.facebook.com/<v>/dialog/oauth. Every
+      // permission this app holds is a business permission (pages_*,
+      // instagram_*, Business Asset User Profile Access) and the dashboard uses
+      // the Use Cases model, which is Facebook Login FOR BUSINESS. That flow is
+      // entered with a config_id identifying the configuration; the classic
+      // dialog cannot serve it, and Meta answers a published, unrestricted,
+      // fully-permissioned app with:
+      //
+      //   "Facebook Login is currently unavailable for this app, since we are
+      //    updating additional details for this app."
+      //
+      // which reads like a restriction and is actually a wrong-door error.
+      //
+      // META_LOGIN_CONFIG_ID comes from the dashboard: the Facebook Login for
+      // Business use case → the configuration → its ID. With it set we send
+      // config_id and OMIT scope, because the configuration defines the
+      // permission set and sending both is rejected. Without it, behaviour is
+      // exactly as before apart from a current API version.
+      const fbStrategy = new FacebookStrategy(
           {
             clientID: FACEBOOK_APP_ID,
             clientSecret: FACEBOOK_APP_SECRET,
             callbackURL: `${BASE_URL}/auth/facebook/callback`,
+            // Pinned. v3.2 has been unsupported for years; a deprecated dialog
+            // is its own source of opaque failures.
+            graphAPIVersion: "v21.0",
             // "email" stays in profileFields deliberately: if the permission
             // is ever granted the field populates and account-linking improves,
             // and without it the field is simply absent — which the callback
@@ -712,9 +734,24 @@ export async function setupPlatformAuth(app: Express) {
               done(error as Error);
             }
           }
-        )
-      );
-      console.log("[PlatformAuth] Facebook strategy configured");
+        );
+
+      // Attach config_id to the authorization request when configured. This is
+      // what turns the classic dialog into the Login-for-Business one; passport
+      // has no option for it, so we extend the params builder.
+      const META_LOGIN_CONFIG_ID = process.env.META_LOGIN_CONFIG_ID;
+      if (META_LOGIN_CONFIG_ID) {
+        const base = (fbStrategy as any).authorizationParams?.bind(fbStrategy);
+        (fbStrategy as any).authorizationParams = function (options: any) {
+          const params = base ? base(options) : {};
+          params.config_id = META_LOGIN_CONFIG_ID;
+          return params;
+        };
+        console.log(`[PlatformAuth] Facebook Login for Business — config_id ${META_LOGIN_CONFIG_ID}`);
+      }
+
+      passport.use("facebook", fbStrategy);
+      console.log(`[PlatformAuth] Facebook strategy configured (v21.0, ${META_LOGIN_CONFIG_ID ? "Login for Business" : "classic Login"})`);
     } catch (err) {
       console.error("[PlatformAuth] Failed to initialize Facebook strategy:", err);
     }
@@ -802,6 +839,12 @@ export async function setupPlatformAuth(app: Express) {
       // - instagram_basic [App Review]: IG profile + media metadata
       // - instagram_manage_insights [App Review]: IG media insights (impressions,
       //   reach, plays for Reels, engagement). REQUIRED for analytics dashboard.
+      // With Login for Business the configuration owns the permission set, so
+      // scope must NOT be sent alongside config_id.
+      const cfgId = process.env.META_LOGIN_CONFIG_ID;
+      if (cfgId) {
+        return passport.authenticate("facebook")(req, res, next);
+      }
       passport.authenticate("facebook", {
         scope: [
           // NO "email".
