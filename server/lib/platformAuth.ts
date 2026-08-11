@@ -735,6 +735,25 @@ export async function setupPlatformAuth(app: Express) {
 
   // Facebook auth routes - works for both login and account linking
   app.get("/auth/facebook", (req: any, res, next) => {
+    // KILL SWITCH for the window where Meta itself is refusing the flow.
+    //
+    // A creator clicking Connect while the Meta app is not Live — mid App
+    // Review, or missing a required dashboard field — is bounced to Meta's own
+    // wall: "Facebook Login is currently unavailable for this app, since we
+    // are updating additional details for this app." That page says nothing
+    // about FullScale, offers only a Reload button that fails identically, and
+    // leaves the creator believing OUR product is broken. Every scope this
+    // flow requests (pages_show_list, pages_read_engagement, read_insights,
+    // instagram_basic, instagram_manage_insights) needs App Review, so this is
+    // not a state we can code our way out of — but we can decline to send
+    // people into it.
+    //
+    // Set META_CONNECT_ENABLED=false while the app is under review; unset it
+    // (or "true") the moment Meta approves.
+    if (process.env.META_CONNECT_ENABLED === "false") {
+      console.log("[PlatformAuth] Facebook connect disabled by META_CONNECT_ENABLED");
+      return res.redirect("/settings?connect=meta_unavailable");
+    }
     console.log("[PlatformAuth] Starting Facebook OAuth flow...");
     console.log("[PlatformAuth] Callback URL will be:", `${BASE_URL}/auth/facebook/callback`);
     console.log("[PlatformAuth] Session ID at start:", req.sessionID);

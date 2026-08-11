@@ -465,6 +465,14 @@ export default function Settings() {
     }
   };
 
+  // Meta bounced the creator back because the app is not currently accepting
+  // logins. Without this they see Facebook's own "Feature Unavailable" screen,
+  // which never mentions FullScale and offers only a Reload that fails the
+  // same way — so it reads as our bug rather than a review state.
+  const metaUnavailable =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("connect") === "meta_unavailable";
+
   const handleConnectSocial = async (id: string) => {
     const connection = socialConnections.find((c) => c.id === id);
     if (!connection) return;
@@ -971,6 +979,17 @@ export default function Settings() {
                   </Button>
                 </div>
                 <p className="text-muted-foreground text-sm mb-2">Connect your social accounts to unlock multi-platform monetization</p>
+                {metaUnavailable && (
+                  <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+                    <p className="text-sm font-medium">Facebook and Instagram connections are paused</p>
+                    <p className="text-xs text-muted-foreground mt-0.5 leading-snug">
+                      Meta is reviewing our app's access to Page and Instagram insights. Connecting
+                      is switched off until that clears, so you don't land on an error page. Nothing
+                      is wrong with your account — YouTube and Twitch still connect normally, and
+                      we'll turn this back on as soon as review completes.
+                    </p>
+                  </div>
+                )}
                 <div className="mb-6 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-200/90 leading-relaxed">
                   <span className="font-medium text-emerald-300">Your content stays yours.</span>{" "}
                   We use read-only access to identify placement opportunities — we never post on your behalf,
