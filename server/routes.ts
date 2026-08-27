@@ -16455,20 +16455,33 @@ export async function registerRoutes(
         }
       }
 
-      // Platforms a creator may be connected to but CANNOT publish to from
-      // here, so the hub can say so instead of leaving an unexplained absence.
-      // There is no FacebookAdapter in platformPublisher's registry — Page
-      // publishing was never built — and a creator with Facebook connected
-      // reasonably expects to see it listed. Silence reads as a bug.
+      // Facebook Page publishing — offered when a Page with a stored PAGE
+      // token exists. Without that token the profile can be created but every
+      // publish fails as a permission error naming the wrong permission, so
+      // the absence of a token is treated as not-connectable rather than
+      // offered and left to fail later.
       const unsupported: Array<{ platform: string; label: string; reason: string }> = [];
       try {
         const user = req.authEmail ? await storage.getUserByEmail(req.authEmail).catch(() => null) : null;
-        if ((user as any)?.facebookAccessToken) {
-          unsupported.push({
-            platform: "facebook",
-            label: "Facebook Page",
-            reason: "Publishing to a Facebook Page isn't supported yet. Your Page is connected for analytics, and Instagram Reels publishing works through the same connection.",
-          });
+        if ((user as any)?.facebookAccessToken && !havePlatform.has("facebook")) {
+          const accounts = await storage
+            .getSocialAccountsByUser((user as any).id, req.authEmail)
+            .catch(() => [] as any[]);
+          const page: any = (accounts as any[]).find((a) => a.platform === "facebook" && a.platformAccountId);
+          if (page?.accessToken) {
+            available.push({
+              platform: "facebook",
+              label: "Facebook Page",
+              handle: page.displayName ?? page.handle ?? null,
+              enableVia: "/api/distribution/profiles/from-facebook",
+            });
+          } else if (page) {
+            unsupported.push({
+              platform: "facebook",
+              label: "Facebook Page",
+              reason: "This Page has no stored Page token — disconnect and reconnect Facebook in Settings to refresh it, then Page publishing becomes available.",
+            });
+          }
         }
       } catch { /* advisory only */ }
 
@@ -16579,6 +16592,60 @@ export async function registerRoutes(
   // The stored token is exchanged for a long-lived (~60 day) one; publishers
   // additionally re-read the user's current FB token at publish time via
   // metadata.igUserKey.
+  /**
+   * Provision a Facebook Page publishing profile.
+   *
+   * Stores the PAGE access token, not the user token — a Page video posted
+   * with a user token is refused as a permission error naming a permission the
+   * creator already has, which is among the least debuggable errors Meta
+   * returns. The Page token lives on the social_accounts row written when the
+   * creator connected and picked their Page.
+   */
+  app.post("/api/distribution/profiles/from-facebook", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const user = await storage.getUserByEmail(req.authEmail);
+      if (!user?.facebookAccessToken) {
+        return res.status(404).json({ error: "No Facebook connection found — connect Facebook in Settings first" });
+      }
+
+      const accounts = await storage.getSocialAccountsByUser(user.id, req.authEmail);
+      const page: any = accounts.find((a: any) => a.platform === "facebook" && a.platformAccountId);
+      if (!page) {
+        return res.status(404).json({
+          error: "No Facebook Page found on your connection — pick a Page in Settings, then try again.",
+        });
+      }
+      if (!page.accessToken) {
+        return res.status(409).json({
+          error: "That Page has no stored Page token. Disconnect and reconnect Facebook in Settings to refresh it.",
+        });
+      }
+
+      const userId = stableUserIntId(req.authUserId ?? req.user?.id);
+      const existing = (await storage.getDistributionProfiles(userId))
+        .find((p: any) => p.platform === "facebook");
+
+      const profileData = {
+        platform: "facebook",
+        accountName: page.displayName || page.handle || "Facebook Page",
+        accountId: String(page.platformAccountId),
+        accessToken: page.accessToken,
+        isActive: true,
+        metadata: { pageUserKey: user.id, pageName: page.displayName ?? null },
+      } as any;
+
+      const profile = existing
+        ? await storage.updateDistributionProfile(existing.id, profileData)
+        : await storage.createDistributionProfile({ userId, ...profileData });
+
+      console.log(`[Distribution] Facebook Page profile ready for ${req.authEmail}: ${profileData.accountName}`);
+      res.json({ ...profile, accessToken: "••••••", refreshToken: undefined });
+    } catch (err: any) {
+      console.error("[Distribution] from-facebook error:", err?.message);
+      res.status(500).json({ error: err?.message || "Could not enable Facebook publishing" });
+    }
+  });
+
   app.post("/api/distribution/profiles/from-instagram", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const user = await storage.getUserByEmail(req.authEmail);

@@ -940,6 +940,11 @@ export async function setupPlatformAuth(app: Express) {
           "instagram_basic",            // IG profile + media metadata [App Review]
           "instagram_manage_insights",  // IG analytics (views, reach, watch time, demographics) [App Review]
           "instagram_content_publish",  // Publish Reels via distribution scheduler [App Review]
+          // Publish video to a Page the creator manages. Meta grants this only
+          // after App Review, and omits it silently for anyone without a role
+          // on the app — so a creator can connect successfully and still not
+          // be able to post, which the publisher reports in words.
+          "pages_manage_posts",         // Page video publishing [App Review]
         ],
       })(req, res, next);
     });

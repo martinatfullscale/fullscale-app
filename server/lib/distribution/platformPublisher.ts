@@ -600,10 +600,125 @@ class LinkedInAdapter implements PlatformAdapter {
 
 // ─── Adapter Registry ────────────────────────────────────────────
 
+// ─── Facebook Page Adapter ───────────────────────────────────────
+//
+// Publishes a video to a Facebook Page the creator manages.
+//
+// TWO THINGS DIFFER FROM EVERY OTHER ADAPTER HERE and both bite silently:
+//
+// 1. THE HOST. Video uploads go to graph-VIDEO.facebook.com, not
+//    graph.facebook.com. The normal host accepts the request and then fails in
+//    ways that read like permission errors.
+// 2. THE TOKEN. A Page video needs the PAGE access token, not the user token.
+//    The user token returns "(#200) Requires either publish_to_groups
+//    permission..." which sends you hunting for a scope you already hold. The
+//    Page token is stored on the social_accounts row at connect time.
+//
+// Requires pages_manage_posts, which Meta grants only after App Review — so
+// until that is approved this works for accounts with a role on the app and
+// returns a clear error for everyone else, rather than a bare 403.
+class FacebookPageAdapter implements PlatformAdapter {
+  platform = "facebook";
+  private baseUrl = "https://graph.facebook.com/v25.0";
+  private videoUrl = "https://graph-video.facebook.com/v25.0";
+
+  async publish(input: PublishInput): Promise<PublishResult> {
+    try {
+      const description = [input.caption, "", input.hashtags.map((h) => `#${h}`).join(" ")]
+        .join("\n")
+        .trim();
+
+      const stat = fs.statSync(input.clipPath);
+      const form = new FormData();
+      form.append("access_token", input.accessToken);
+      form.append("description", description);
+      // A Page video is published immediately unless told otherwise; the
+      // scheduler owns timing, so nothing is scheduled Facebook-side.
+      form.append("published", "true");
+      form.append(
+        "source",
+        new Blob([fs.readFileSync(input.clipPath)], { type: "video/mp4" }),
+        path.basename(input.clipPath),
+      );
+
+      const res = await fetch(`${this.videoUrl}/${input.accountId}/videos`, {
+        method: "POST",
+        body: form as any,
+        // A Page video upload is a large body on a slow link; the SDK-less
+        // fetch has no default timeout, so bound it generously rather than
+        // leaving a hung socket.
+        signal: AbortSignal.timeout(15 * 60_000),
+      });
+
+      const body: any = await res.json().catch(() => ({}));
+      if (!res.ok || !body?.id) {
+        const msg = body?.error?.message || `Facebook upload failed (${res.status})`;
+        // 200 and 10 are the permission family. Name the actual cause: the
+        // creator cannot act on "(#200) Requires ... permission".
+        const isPerm = body?.error?.code === 200 || body?.error?.code === 10;
+        return {
+          success: false,
+          platformPostId: null,
+          postUrl: null,
+          error: isPerm
+            ? "Facebook refused the post — publishing to Pages needs the pages_manage_posts permission, which is still under App Review. It works today for accounts added as testers on the app."
+            : msg,
+        };
+      }
+
+      return {
+        success: true,
+        platformPostId: String(body.id),
+        postUrl: `https://www.facebook.com/${body.id}`,
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        platformPostId: null,
+        postUrl: null,
+        error: err?.name === "TimeoutError"
+          ? "Facebook upload timed out — the clip may be too large or the connection too slow."
+          : err?.message || "Facebook publish failed",
+      };
+    }
+  }
+
+  async getPostStatus(postId: string, accessToken: string) {
+    try {
+      const res = await fetch(
+        `${this.baseUrl}/${postId}?fields=status,permalink_url&access_token=${encodeURIComponent(accessToken)}`,
+        { signal: AbortSignal.timeout(15_000) },
+      );
+      const body: any = await res.json().catch(() => ({}));
+      if (!res.ok) return { status: "unknown" };
+      const phase = body?.status?.video_status;
+      return {
+        status: phase === "ready" ? "published" : phase || "processing",
+        url: body?.permalink_url ? `https://www.facebook.com${body.permalink_url}` : undefined,
+      };
+    } catch {
+      return { status: "unknown" };
+    }
+  }
+
+  async deletePost(postId: string, accessToken: string): Promise<boolean> {
+    try {
+      const res = await fetch(
+        `${this.baseUrl}/${postId}?access_token=${encodeURIComponent(accessToken)}`,
+        { method: "DELETE", signal: AbortSignal.timeout(15_000) },
+      );
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+}
+
 const adapters: Record<string, PlatformAdapter> = {
   tiktok: new TikTokAdapter(),
   youtube: new YouTubeAdapter(),
   youtube_shorts: new YouTubeAdapter(),
+  facebook: new FacebookPageAdapter(),
   instagram: new InstagramAdapter(),
   instagram_reels: new InstagramAdapter(),
   twitter: new TwitterAdapter(),
@@ -645,6 +760,24 @@ export async function resolvePublishAccessToken(profile: {
       const { getFreshYoutubeTokenForUser } = await import("../youtubeAuth");
       const fresh = await getFreshYoutubeTokenForUser(String(ytUserId));
       if (fresh) return fresh;
+    }
+  }
+
+  if (profile.platform === "facebook") {
+    // The PAGE token, never the user token — a Page video posted with a user
+    // token fails as a permission error that names the wrong permission. The
+    // Page token is stored on the profile at provisioning time.
+    if (profile.accessToken) return profile.accessToken;
+    const pageKey = profile.metadata?.pageUserKey;
+    if (pageKey) {
+      try {
+        const { storage } = await import("../../storage");
+        const accounts = await storage.getSocialAccountsByUser(String(pageKey));
+        const fb = accounts.find((a: any) => a.platform === "facebook" && a.accessToken);
+        if (fb?.accessToken) return fb.accessToken as string;
+      } catch (err: any) {
+        console.error("[Publisher] Facebook token resolution failed:", err.message);
+      }
     }
   }
 

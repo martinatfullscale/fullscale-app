@@ -84,6 +84,7 @@ const PLATFORM_CONFIG: Record<string, { label: string; icon: any; color: string;
   tiktok: { label: "TikTok", icon: Smartphone, color: "text-pink-400", bgColor: "bg-pink-500/20" },
   instagram_reels: { label: "Instagram", icon: Smartphone, color: "text-purple-400", bgColor: "bg-purple-500/20" },
   instagram: { label: "Instagram", icon: Smartphone, color: "text-purple-400", bgColor: "bg-purple-500/20" },
+  facebook: { label: "Facebook Page", icon: Users, color: "text-blue-400", bgColor: "bg-blue-600/20" },
   youtube_shorts: { label: "YouTube", icon: Tv, color: "text-red-400", bgColor: "bg-red-500/20" },
   youtube: { label: "YouTube", icon: Tv, color: "text-red-400", bgColor: "bg-red-500/20" },
   twitter: { label: "Twitter/X", icon: Globe, color: "text-blue-400", bgColor: "bg-blue-500/20" },
