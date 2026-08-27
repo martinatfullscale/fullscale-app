@@ -3752,7 +3752,21 @@ export async function registerRoutes(
   });
 
   // Initiate YouTube OAuth flow
-  app.get("/api/auth/youtube", isGoogleAuthenticated, (req: any, res) => {
+  // NOT isGoogleAuthenticated as middleware here, deliberately.
+  //
+  // This is a TOP-LEVEL BROWSER NAVIGATION — Settings and the Dashboard both
+  // do window.location.href = "/api/auth/youtube". The middleware answers an
+  // unauthenticated caller with 401 JSON, which in a full-page navigation
+  // renders as raw {"message":"Unauthorized..."} in the address bar instead of
+  // a consent screen. Indistinguishable, to the creator, from "connect is
+  // broken". A browser navigation deserves a redirect, not an API error body.
+  app.get("/api/auth/youtube", (req: any, res) => {
+    const googleUser = req.session?.googleUser;
+    if (!googleUser?.email) {
+      console.log("[YouTube OAuth] no Google session — redirecting to sign in");
+      return res.redirect("/settings?connect=yt_signin_first");
+    }
+    req.googleUser = googleUser;
     try {
       console.log("[YouTube OAuth] ========== INITIATING ==========");
       const baseUrl = process.env.BASE_URL;
@@ -4070,7 +4084,53 @@ export async function registerRoutes(
     await storage.deleteYoutubeConnection(userId, userEmail);
     // Pass both userId and email to ensure all videos are deleted (handles legacy data)
     await storage.deleteVideoIndex(userId, userEmail);
-    res.json({ success: true });
+
+    // ── AND EVERYTHING ELSE THAT SAYS "CONNECTED" ────────────────────
+    //
+    // Deleting the youtube_connections row was the whole disconnect, which
+    // left the connection visibly alive — reported as "when I try to
+    // disconnect YouTube in social integrations settings, it doesn't
+    // disconnect". Exactly the shape of the Facebook bug fixed in abe31fa:
+    // one record removed, every other source of truth untouched.
+    //
+    //   social_accounts — Settings derives connection state from these, so a
+    //     surviving youtube row keeps reporting connected.
+    //   distribution profiles — a YouTube publishing profile outlives its
+    //     token and every publish then fails against a credential that no
+    //     longer exists.
+    //   the session copy — read by the next request before anything refetches.
+    let removedAccounts = 0;
+    let removedProfiles = 0;
+    try {
+      const user = userEmail ? await storage.getUserByEmail(userEmail).catch(() => null) : null;
+      const ownerKey = (user as any)?.id ?? userId;
+      removedAccounts = await storage.deleteSocialAccountsByPlatforms(ownerKey, ["youtube"]).catch(() => 0);
+
+      const profiles = await storage.getDistributionProfiles(stableUserIntId(userId)).catch(() => [] as any[]);
+      for (const prof of profiles as any[]) {
+        if (String(prof.platform).startsWith("youtube")) {
+          await storage.detachProfileReferences(prof.id);
+          await storage.deleteDistributionProfile(prof.id);
+          removedProfiles++;
+        }
+      }
+    } catch (e: any) {
+      console.warn(`[YouTube Disconnect] cleanup: ${e?.message}`);
+    }
+
+    if (req.session) {
+      delete (req.session as any).youtubeProfile;
+      delete (req.session as any).googleTokens;
+    }
+    console.log(`[YouTube Disconnect] Cleared ${removedAccounts} social account(s), ${removedProfiles} publishing profile(s)`);
+
+    // Persist the session edit before answering, or the next request reads the
+    // stale copy and the connection reappears.
+    await new Promise<void>((resolve) => {
+      if (!req.session?.save) return resolve();
+      req.session.save(() => resolve());
+    });
+    res.json({ success: true, removedAccounts, removedProfiles });
   });
 
   // Clear all videos from library (for removing ghost/orphaned videos)

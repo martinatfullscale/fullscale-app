@@ -500,6 +500,11 @@ export default function Settings() {
       body: "This server is missing its Instagram app credentials. Nothing is wrong with your account.",
       tone: "warn",
     },
+    yt_signin_first: {
+      title: "Sign in with Google first",
+      body: "Connecting YouTube needs an active Google sign-in on FullScale. Sign in, then connect — the consent screen will follow.",
+      tone: "warn",
+    },
     ig_failed: {
       title: "Instagram connection didn't complete",
       body: "Instagram returned an error. If your account is Personal, switch it to a Creator or Business account in the Instagram app — Settings → Account type — then try again. It's free and keeps your posts and followers.",
