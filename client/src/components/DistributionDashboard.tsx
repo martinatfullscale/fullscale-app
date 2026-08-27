@@ -108,6 +108,9 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
   const [selectedProfileId, setSelectedProfileId] = useState<number | null>(null);
   const [customCaption, setCustomCaption] = useState("");
   const [available, setAvailable] = useState<Array<{ platform: string; label: string; handle: string | null; enableVia: string }>>([]);
+  /** Connected, but no publisher exists for it. Named so its absence from the
+   *  list above is explained rather than looking like a missing feature. */
+  const [unsupported, setUnsupported] = useState<Array<{ platform: string; label: string; reason: string }>>([]);
   const [enabling, setEnabling] = useState<string | null>(null);
 
   /** Turn a connected account into a publishing profile. Explicit, because a
@@ -183,7 +186,11 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
       ]);
 
       if (profilesRes.ok) setProfiles(await profilesRes.json());
-      if (availableRes.ok) setAvailable((await availableRes.json()).available ?? []);
+      if (availableRes.ok) {
+        const a = await availableRes.json();
+        setAvailable(a.available ?? []);
+        setUnsupported(a.unsupported ?? []);
+      }
       if (postsRes.ok) setPosts(await postsRes.json());
       if (clipsRes.ok) {
         const allClips = await clipsRes.json();
@@ -350,6 +357,7 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
                     posts={posts}
                     profiles={profiles}
                     available={available}
+                    unsupported={unsupported}
                     enabling={enabling}
                     onEnable={enableProfile}
                     disconnecting={disconnecting}
@@ -396,6 +404,7 @@ function OverviewTab({
   posts,
   profiles,
   available,
+  unsupported,
   enabling,
   onEnable,
   disconnecting,
@@ -406,6 +415,7 @@ function OverviewTab({
   profiles: DistributionProfile[];
   /** Connected accounts with no publishing profile yet. */
   available: AvailableAccount[];
+  unsupported: Array<{ platform: string; label: string; reason: string }>;
   enabling: string | null;
   onEnable: (a: AvailableAccount) => void;
   disconnecting: number | null;
@@ -488,6 +498,16 @@ function OverviewTab({
                 </div>
               );
             })}
+          </div>
+        )}
+
+        {unsupported.length > 0 && (
+          <div className="mt-2 space-y-1">
+            {unsupported.map((u) => (
+              <p key={u.platform} className="text-[11px] text-gray-500 leading-snug">
+                <span className="text-gray-400">{u.label}:</span> {u.reason}
+              </p>
+            ))}
           </div>
         )}
       </div>

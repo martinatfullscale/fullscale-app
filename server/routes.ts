@@ -16414,9 +16414,23 @@ export async function registerRoutes(
       const available: Array<{ platform: string; label: string; handle: string | null; enableVia: string }> = [];
 
       // YouTube: a connection is enough — the same token publishes.
-      if (!havePlatform.has("youtube")) {
-        const yt = await storage.getYoutubeConnection(String(req.authUserId)).catch(() => null)
-          ?? (req.authEmail ? await storage.getYoutubeConnectionByEmail(req.authEmail).catch(() => null) : null);
+      //
+      // Resolved through getSocialAccountsWithYouTube rather than a narrow
+      // getYoutubeConnection lookup, because youtube_connections.user_id is a
+      // mixed-key column (users.id on newer rows, the email on older ones) and
+      // a point lookup on one key silently misses the other. That exact blind
+      // spot is why Creator Intelligence reported "no connected platform" for
+      // a creator whose channel it was displaying (5f216d0) — the same two
+      // lookups were wrong here, so a connected channel was never offered as a
+      // publish target.
+      if (!havePlatform.has("youtube") && !havePlatform.has("youtube_shorts")) {
+        const accounts = await storage
+          .getSocialAccountsWithYouTube(String(req.authUserId), req.authEmail)
+          .catch(() => [] as any[]);
+        const ytAccount = (accounts as any[]).find((a) => a.platform === "youtube");
+        const yt = ytAccount
+          ? { channelId: ytAccount.platformAccountId, channelTitle: ytAccount.handle }
+          : null;
         if (yt?.channelId) {
           available.push({
             platform: "youtube",
@@ -16441,7 +16455,24 @@ export async function registerRoutes(
         }
       }
 
-      res.json({ available });
+      // Platforms a creator may be connected to but CANNOT publish to from
+      // here, so the hub can say so instead of leaving an unexplained absence.
+      // There is no FacebookAdapter in platformPublisher's registry — Page
+      // publishing was never built — and a creator with Facebook connected
+      // reasonably expects to see it listed. Silence reads as a bug.
+      const unsupported: Array<{ platform: string; label: string; reason: string }> = [];
+      try {
+        const user = req.authEmail ? await storage.getUserByEmail(req.authEmail).catch(() => null) : null;
+        if ((user as any)?.facebookAccessToken) {
+          unsupported.push({
+            platform: "facebook",
+            label: "Facebook Page",
+            reason: "Publishing to a Facebook Page isn't supported yet. Your Page is connected for analytics, and Instagram Reels publishing works through the same connection.",
+          });
+        }
+      } catch { /* advisory only */ }
+
+      res.json({ available, unsupported });
     } catch (err: any) {
       console.error("[Distribution] Available profiles error:", err?.message);
       res.status(500).json({ error: "Failed to check connectable accounts" });
