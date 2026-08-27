@@ -15442,7 +15442,26 @@ export async function registerRoutes(
   app.get("/api/remix/clips/:videoId", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const videoId = parseInt(req.params.videoId);
-      const clips = await storage.getClipsByVideo(videoId);
+      // BOTH clip families. The Distribution panel listed only remix clips, so
+      // editorial clips — the ones the editor actually produces — were absent
+      // from publishing with no explanation on screen.
+      const [remix, editorial] = await Promise.all([
+        storage.getClipsByVideo(videoId),
+        storage.getEditorialClipsByVideo(videoId).catch(() => [] as any[]),
+      ]);
+      const clips = [
+        ...remix.map((c: any) => ({ ...c, clipSource: "remix" })),
+        // Only rendered editorial clips can be published; an unrendered one has
+        // no file to upload, and listing it would offer an action that fails.
+        ...(editorial as any[])
+          .filter((c) => c.exportPath)
+          .map((c: any) => ({
+            ...c,
+            clipSource: "editorial",
+            status: c.renderStatus === "complete" ? "ready" : c.renderStatus,
+            title: c.suggestedTitle ?? `Clip ${c.id}`,
+          })),
+      ];
       res.json(clips);
     } catch (err: any) {
       res.status(500).json({ error: err.message || "Failed to fetch clips" });
@@ -15492,7 +15511,9 @@ export async function registerRoutes(
   app.get("/api/remix/clips/:clipId/download", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const clipId = parseInt(req.params.clipId);
-      const clip = await findClipById(clipId);
+      // ?source=editorial for an editorial clip; ids collide across the two
+      // clip tables, so the caller has to say which one it means.
+      const clip = await findClipById(clipId, req.query.source === "editorial" ? "editorial" : "remix");
       if (!clip || !clip.exportPath) {
         return res.status(404).json({ error: "Clip not found or not exported" });
       }
@@ -16594,7 +16615,8 @@ export async function registerRoutes(
   // POST /api/distribution/publish — Publish a clip to a platform
   app.post("/api/distribution/publish", isFlexibleAuthenticated, async (req: any, res) => {
     try {
-      const { clipId, profileId, caption, hashtags } = req.body;
+      const { clipId, profileId, caption, hashtags, clipSource } = req.body;
+      const source = clipSource === "editorial" ? "editorial" : "remix";
       if (!clipId || !profileId) {
         return res.status(400).json({ error: "clipId and profileId are required" });
       }
@@ -16631,7 +16653,7 @@ export async function registerRoutes(
       }
 
       // Find clip
-      const clip = await findClipById(clipId);
+      const clip = await findClipById(clipId, source);
       if (!clip || !clip.exportPath) {
         return res.status(404).json({ error: "Clip not found or not exported" });
       }
@@ -18000,14 +18022,38 @@ export async function registerRoutes(
 }
 
 // Helper to find a clip by ID across all jobs
-async function findClipById(clipId: number) {
-  // Get all videos, then search clips — not ideal but works without a dedicated storage method
+/**
+ * Find a clip for publishing, from EITHER clip table.
+ *
+ * generated_clips (remix) and editorial_clips are separate tables, and the
+ * publish path only ever knew the first — so a clip produced by the editorial
+ * pipeline, the one the product actually leads with, could never be published.
+ * There was no bug to see: the clip simply never appeared in the Distribution
+ * list, and nothing explained why.
+ *
+ * Both tables use serial ids, so id 5 exists in both. `source` disambiguates,
+ * and defaults to "remix" so every existing caller keeps working.
+ */
+async function findClipById(clipId: number, source: "remix" | "editorial" = "remix") {
   try {
     const { db } = await import("./db");
-    const { generatedClips } = await import("../shared/schema");
+    const { generatedClips, editorialClips } = await import("../shared/schema");
     const { eq } = await import("drizzle-orm");
+
+    if (source === "editorial") {
+      const [ec] = await db.select().from(editorialClips).where(eq(editorialClips.id, clipId)).limit(1);
+      if (!ec) return null;
+      // Normalised to the shape the publisher reads, so platformPublisher and
+      // the download route need no knowledge of which table it came from.
+      return {
+        ...ec,
+        status: (ec as any).renderStatus === "complete" ? "ready" : (ec as any).renderStatus,
+        clipSource: "editorial" as const,
+      } as any;
+    }
+
     const [clip] = await db.select().from(generatedClips).where(eq(generatedClips.id, clipId)).limit(1);
-    return clip || null;
+    return clip ? ({ ...clip, clipSource: "remix" as const } as any) : null;
   } catch {
     return null;
   }

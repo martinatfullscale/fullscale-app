@@ -606,7 +606,20 @@ export default function Settings() {
       return;
     }
     if (id === "youtube") {
-      window.location.href = "/api/auth/google";
+      // /api/auth/youtube, NOT /api/auth/google.
+      //
+      // These are different flows and only one of them connects a channel:
+      //   /api/auth/google  — SIGN IN. access_type=online, prompt=select_account,
+      //                       and only the login scopes. No YouTube scopes are
+      //                       requested, so no consent screen appears and no
+      //                       refresh token is issued — the "connection" cannot
+      //                       outlive its first access token.
+      //   /api/auth/youtube — CONNECT. access_type=offline, prompt=consent, and
+      //                       the three YouTube scopes.
+      //
+      // Settings pointed at the first one, which is why reconnecting here never
+      // showed the consent form while reconnecting from the Dashboard did.
+      window.location.href = "/api/auth/youtube";
       return;
     }
 

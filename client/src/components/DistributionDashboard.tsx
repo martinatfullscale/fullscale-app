@@ -41,6 +41,11 @@ interface GeneratedClip {
   exportPath: string | null;
   thumbnailPath: string | null;
   status: string | null;
+  /** Which table this id belongs to — both use serial ids, so it is ambiguous
+   *  on its own. "editorial" clips come from the transcript-first editor. */
+  clipSource?: "remix" | "editorial";
+  title?: string | null;
+  aspectRatio?: string | null;
 }
 
 interface AggregateMetrics {
@@ -209,6 +214,9 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
         credentials: "include",
         body: JSON.stringify({
           clipId: selectedClipId,
+          // Which table the id belongs to. generated_clips and editorial_clips
+          // both use serial ids, so id alone is ambiguous.
+          clipSource: clips.find((c: any) => c.id === selectedClipId)?.clipSource ?? "remix",
           profileId: selectedProfileId,
           caption: customCaption || undefined,
         }),
@@ -254,6 +262,9 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
         body: JSON.stringify({
           platform,
           clipId: selectedClipId,
+          // Which table the id belongs to. generated_clips and editorial_clips
+          // both use serial ids, so id alone is ambiguous.
+          clipSource: clips.find((c: any) => c.id === selectedClipId)?.clipSource ?? "remix",
           customCaption: customCaption || undefined,
         }),
       });
@@ -551,7 +562,8 @@ function PublishTab({
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
             {clips.map(clip => (
               <button
-                key={clip.id}
+                // Both tables use serial ids, so id alone can collide.
+                key={`${clip.clipSource ?? "remix"}:${clip.id}`}
                 onClick={() => onSelectClip(clip.id === selectedClipId ? null : clip.id)}
                 className={`relative rounded-lg overflow-hidden border-2 transition-all ${
                   clip.id === selectedClipId
@@ -567,9 +579,21 @@ function PublishTab({
                   )}
                 </div>
                 <div className="p-2 bg-gray-800/90">
-                  <div className="flex items-center justify-between">
+                  {clip.title && (
+                    <p className="text-[11px] text-gray-300 truncate text-left mb-0.5">{clip.title}</p>
+                  )}
+                  <div className="flex items-center justify-between gap-1">
                     <span className="text-xs text-gray-400">{clip.duration?.toFixed(1)}s</span>
-                    <span className="text-xs text-gray-400">{clip.platformTarget}</span>
+                    {/* Which pipeline produced this. Editorial clips come from
+                        the transcript-first editor and were previously absent
+                        from this list entirely. */}
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                      clip.clipSource === "editorial"
+                        ? "bg-purple-500/20 text-purple-300"
+                        : "bg-gray-700 text-gray-400"
+                    }`}>
+                      {clip.clipSource === "editorial" ? "Editorial" : (clip.aspectRatio || clip.platformTarget || "Remix")}
+                    </span>
                   </div>
                 </div>
                 {clip.id === selectedClipId && (
