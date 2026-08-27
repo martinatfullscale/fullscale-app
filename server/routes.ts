@@ -4082,8 +4082,18 @@ export async function registerRoutes(
     const userEmail = req.authEmail;
     console.log(`[YouTube Disconnect] Disconnecting for userId: ${userId}, email: ${userEmail}`);
     await storage.deleteYoutubeConnection(userId, userEmail);
-    // Pass both userId and email to ensure all videos are deleted (handles legacy data)
-    await storage.deleteVideoIndex(userId, userEmail);
+
+    // THE LIBRARY IS NOT TOUCHED HERE, deliberately.
+    //
+    // This used to call deleteVideoIndex — a hard DELETE of every video the
+    // creator had imported, unrecoverable, fired by a button labelled
+    // "Disconnect" with no warning. Revoking our access to a platform is not
+    // the same act as destroying the work already brought into FullScale:
+    // clips, scans, surfaces and placements all hang off those rows, and a
+    // creator reconnecting five minutes later would find everything gone.
+    //
+    // Clearing the library is now its own button in Settings, which calls
+    // DELETE /api/video-index/clear-all and confirms first.
 
     // ── AND EVERYTHING ELSE THAT SAYS "CONNECTED" ────────────────────
     //

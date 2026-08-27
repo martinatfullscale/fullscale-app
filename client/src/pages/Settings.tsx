@@ -690,7 +690,11 @@ export default function Settings() {
   const [isClearingLibrary, setIsClearingLibrary] = useState(false);
   
   const handleClearLibrary = async () => {
-    if (!confirm("Are you sure you want to clear all videos from your library? This cannot be undone.")) {
+    // Names the collateral. "All videos" understates it — clips, scans,
+    // surfaces and placements are all built on those rows.
+    if (!confirm(
+      "Clear your entire library?\n\nEvery imported video is deleted permanently, along with the clips, scans and placements built from them. This cannot be undone.\n\nDisconnecting a platform does NOT do this — only this button does."
+    )) {
       return;
     }
     
@@ -1380,7 +1384,10 @@ export default function Settings() {
                 <div className="mt-8 bg-black/30 rounded-xl border border-destructive/20 p-6">
                   <h3 className="text-lg font-semibold text-white mb-2">Data Management</h3>
                   <p className="text-sm text-muted-foreground mb-4">
-                    Clear orphaned videos from your library. Use this if you see videos that shouldn't be there after disconnecting platforms.
+                    Remove every imported video from your library. Disconnecting a platform no
+                    longer does this — your content stays until you clear it here on purpose.
+                    Permanent, and it takes the clips, scans and placements built from those
+                    videos with it.
                   </p>
                   <Button
                     variant="destructive"
