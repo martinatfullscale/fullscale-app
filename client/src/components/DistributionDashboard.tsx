@@ -187,7 +187,11 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
       if (postsRes.ok) setPosts(await postsRes.json());
       if (clipsRes.ok) {
         const allClips = await clipsRes.json();
-        setClips(allClips.filter((c: GeneratedClip) => c.status === "ready" || c.status === "generated"));
+        // "rendered" is the editorial pipeline's finished state. Accept it
+        // directly as well as the server's normalisation, so a mismatch on
+        // either side cannot silently empty this list again.
+        setClips(allClips.filter((c: GeneratedClip) =>
+          c.status === "ready" || c.status === "generated" || c.status === "rendered"));
       }
       if (metricsRes.ok) setMetrics(await metricsRes.json());
     } catch (err) {

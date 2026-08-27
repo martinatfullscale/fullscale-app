@@ -10,12 +10,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { fetchWithTimeout } from "@/lib/queryClient";
 import { motion, AnimatePresence } from "framer-motion";
-import {
-  Sparkles, Clock, TrendingUp, Tag, ChevronDown, ChevronUp,
-  Loader2, Mic, Brain, Zap, Eye, Heart, Shield, MessageSquare,
-  RefreshCw, Play, DollarSign, Filter, X, Wand2, AlertCircle, Search, SlidersHorizontal,
-  PackageOpen, ScanSearch,
-} from "lucide-react";
+import { Sparkles, Clock, TrendingUp, Tag, ChevronDown, ChevronUp, Loader2, Mic, Brain, Zap, Eye, Heart, Shield, MessageSquare, RefreshCw, Play, DollarSign, Filter, X, Wand2, AlertCircle, Search, SlidersHorizontal, PackageOpen, ScanSearch, Send } from "lucide-react";
 import ClipPlacementPreview from "@/components/ClipPlacementPreview";
 import ClipStudio from "@/components/ClipStudio";
 import { Button } from "@/components/ui/button";
@@ -105,6 +100,8 @@ export interface EditorialClipsProps {
   onBuyPlacement?: (clip: RankedClip) => void;
   /** Remix-tab: make this clip the AI copilot's target */
   onSelectForCopilot?: (clip: RankedClip) => void;
+  /** Open the Distribution hub on this clip. Only offered once it has rendered. */
+  onPublishClip?: (clip: RankedClip) => void;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -160,7 +157,7 @@ function ScoreBar({ label, value, icon: Icon }: { label: string; value: number; 
 
 // ── Main Component ─────────────────────────────────────────────────
 
-export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPlacement, onSelectForCopilot }: EditorialClipsProps) {
+export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPlacement, onSelectForCopilot, onPublishClip }: EditorialClipsProps) {
   const { toast } = useToast();
 
   const [transcriptStatus, setTranscriptStatus] = useState<TranscriptStatus>({ status: "none" });
@@ -940,6 +937,7 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
                   onScan={(clip as any).id ? () => scanClip((clip as any).id) : undefined}
                   isScanning={(clip as any).id ? scanningClips.has((clip as any).id) : false}
                   onOpenStudio={(clip as any).id ? () => setStudioClip(clip) : undefined}
+                  onPublish={(clip as any).id && onPublishClip ? () => onPublishClip(clip) : undefined}
                   onRerenderAspect={(clip as any).id ? async (aspect) => {
                     const res = await fetchWithTimeout(`/api/editorial-clips/${(clip as any).id}/rerender`, {
                       method: "POST",
@@ -1093,6 +1091,7 @@ function EditorialClipCard({
   onCopilot,
   onRerenderAspect,
   onOpenStudio,
+  onPublish,
   onPreviewPlacement,
   onScan,
   isScanning,
@@ -1108,6 +1107,8 @@ function EditorialClipCard({
   onCopilot?: () => void;
   onRerenderAspect?: (aspect: "9:16" | "16:9") => void;
   onOpenStudio?: () => void;
+  /** Open the Distribution hub focused on this clip. */
+  onPublish?: () => void;
   onPreviewPlacement?: () => void;
   onScan?: () => void;
   isScanning?: boolean;
@@ -1291,6 +1292,24 @@ function EditorialClipCard({
                   {(clip as any).videoScanned === false ? "Scan video" : "Scan range"}
                 </Button>
               ) : null
+            )}
+            {/* Send to publishing. A rendered clip previously had no route out
+                of this list — the Distribution hub was somewhere else entirely
+                and did not list editorial clips at all, so a finished clip
+                simply had nowhere to go. Only shown once a render exists,
+                because there is no file to publish before that. */}
+            {onPublish && mode !== "brand" && (clip as any).id && (clip as any).exportPath && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={onPublish}
+                className="text-emerald-300 hover:text-emerald-200 text-xs"
+                title="Send this clip to the Distribution hub to publish"
+                data-testid={`button-publish-${(clip as any).id ?? rank}`}
+              >
+                <Send className="w-3 h-3 mr-1" />
+                Publish
+              </Button>
             )}
             {onOpenStudio && mode !== "brand" && (clip as any).id && (
               <Button

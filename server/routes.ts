@@ -15528,7 +15528,12 @@ export async function registerRoutes(
           .map((c: any) => ({
             ...c,
             clipSource: "editorial",
-            status: c.renderStatus === "complete" ? "ready" : c.renderStatus,
+            // editorial_clips.render_status is pending | rendering | rendered |
+            // failed. I previously mapped "complete", which never matches, so
+            // every editorial clip arrived as "rendered" and the client's
+            // ready/generated filter dropped all of them — the Distribution
+            // list was empty with nothing to explain it.
+            status: c.renderStatus === "rendered" ? "ready" : c.renderStatus,
             title: c.suggestedTitle ?? `Clip ${c.id}`,
           })),
       ];
@@ -18117,7 +18122,7 @@ async function findClipById(clipId: number, source: "remix" | "editorial" = "rem
       // the download route need no knowledge of which table it came from.
       return {
         ...ec,
-        status: (ec as any).renderStatus === "complete" ? "ready" : (ec as any).renderStatus,
+        status: (ec as any).renderStatus === "rendered" ? "ready" : (ec as any).renderStatus,
         clipSource: "editorial" as const,
       } as any;
     }

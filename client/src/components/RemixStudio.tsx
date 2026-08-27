@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import EditorialClips from "@/components/EditorialClips";
 import RemixCopilot from "@/components/RemixCopilot";
+import DistributionDashboard from "@/components/DistributionDashboard";
 
 interface RemixJob {
   id: number;
@@ -170,6 +171,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
   const [copilotClipType, setCopilotClipType] = useState<"remix" | "editorial">("remix");
   const [copilotEditorialClip, setCopilotEditorialClip] = useState<any | null>(null);
   const [editorialRefreshKey, setEditorialRefreshKey] = useState(0);
+  const [showDistribution, setShowDistribution] = useState(false);
 
   // Load existing jobs, clips, and stitch plans
   const loadData = useCallback(async (): Promise<GeneratedClip[]> => {
@@ -821,6 +823,10 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
                 videoId={videoId}
                 key={editorialRefreshKey}
                 mode="remix"
+                // A rendered clip had no route to publishing from here — the
+                // Distribution hub lived elsewhere and did not list editorial
+                // clips at all. This opens it directly on this video.
+                onPublishClip={() => setShowDistribution(true)}
                 onSelectForCopilot={(clip: any) => {
                   if (!clip?.id) {
                     toast({ title: "Clip not saved yet", description: "Only saved clips can be copilot targets." });
@@ -1342,6 +1348,14 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
 
           </div>{/* end two-panel layout */}
         </motion.div>
+
+        {/* Distribution, opened by a clip's Publish button. Mounted here so the
+            creator never has to leave the studio to send a finished clip. */}
+        <DistributionDashboard
+          videoId={videoId}
+          open={showDistribution}
+          onClose={() => setShowDistribution(false)}
+        />
       </motion.div>
     </AnimatePresence>
   );
