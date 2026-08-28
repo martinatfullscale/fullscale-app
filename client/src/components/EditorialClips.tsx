@@ -1120,6 +1120,44 @@ function EditorialClipCard({
   const isRendering = clip.renderStatus === "rendering" || clip.renderStatus === "pending";
   const renderFailed = clip.renderStatus === "failed";
 
+  /**
+   * Exactly one solid button per row, derived from state.
+   *
+   * The row used to render up to eleven controls at identical weight, so it
+   * never said what to do next — the emptiness around them was the space left
+   * over when nothing was allowed to be bigger than anything else. What the
+   * creator should do is entirely determined by where the clip is: an unrendered
+   * clip needs a render, a failed one needs a retry, a finished one needs
+   * publishing. So derive it rather than showing every possibility at once.
+   *
+   * A clip mid-render gets NO primary at all. There is nothing useful to press
+   * while the job runs, and offering a bright button next to a progress bar
+   * invites a second click on work already in flight.
+   */
+  /** Tier 2, hoisted: the segmented group needs these three times over —
+   *  to decide whether it exists at all, per button, and for the divider. */
+  const showEdit = !!onOpenStudio && mode !== "brand" && !!(clip as any).id;
+  const showCopilot = mode === "remix" && !!onCopilot;
+
+  const primaryAction: { label: string; icon: typeof Send; onClick: () => void; className: string } | null =
+    mode === "brand"
+      ? (onBuy && clip.monetizationTier !== "organic"
+          ? { label: "Buy placement", icon: DollarSign, onClick: onBuy, className: "bg-green-600 hover:bg-green-500 border-green-500" }
+          : null)
+      : isRendering
+        ? null
+        : isRendered && onPublish && (clip as any).id
+          ? { label: "Publish", icon: Send, onClick: onPublish, className: "bg-emerald-600 hover:bg-emerald-500 border-emerald-500" }
+          // Rendering stays gated on remix mode. The parent passes onGenerate
+          // whenever it has a handler at all, so testing the prop alone would
+          // put a Generate button in creator mode where the old row
+          // deliberately showed none.
+          : renderFailed && onGenerate && mode === "remix"
+            ? { label: "Retry render", icon: RefreshCw, onClick: onGenerate, className: "bg-purple-600 hover:bg-purple-500 border-purple-500" }
+            : onGenerate && mode === "remix"
+              ? { label: "Generate", icon: Play, onClick: onGenerate, className: "bg-purple-600 hover:bg-purple-500 border-purple-500" }
+              : null;
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 10 }}
@@ -1129,249 +1167,289 @@ function EditorialClipCard({
         isRendered ? "border-emerald-500/30" : "border-gray-700/50"
       } overflow-hidden`}
     >
-      {/* Main Row */}
-      <div className="p-4">
-        <div className="flex items-start gap-3">
-          {/* Thumbnail or Rank Badge */}
-          {clip.thumbnailPath && isRendered ? (
-            <button
-              onClick={onPlay}
-              className="relative w-16 h-20 rounded-lg overflow-hidden flex-shrink-0 group"
-              aria-label="Play clip"
-            >
+      {/* Main Row.
+          Redesigned from three hierarchies explored in Claude Design; this is
+          option 1a, "Split — identity left, action ladder right".
+
+          The problem it solves: eleven controls at identical weight, so the row
+          never said what to do next, and the wide empty gaps were what was left
+          over when nothing was allowed to dominate. Now there are three tiers —
+          one derived primary CTA, Edit/Copilot as a segmented pair, and the
+          monetisation controls demoted to small unfilled chips — and the
+          thumbnail absorbs the space by becoming the play target rather than
+          sitting next to a Play button. */}
+      <div className="p-3.5">
+        <div className="flex items-start gap-3 sm:gap-4">
+          {/* Preview. Not a button beside the row — the row's image IS the
+              play control, which removes one control from the bar entirely.
+              9:16 because that is what these clips actually are. */}
+          <button
+            type="button"
+            onClick={isRendered ? onPlay : undefined}
+            disabled={!isRendered || !onPlay}
+            aria-label={isRendered ? `Play ${clip.suggestedTitle}` : "Not rendered yet"}
+            className={`relative flex-none w-16 h-24 sm:w-[88px] sm:h-[132px] rounded-lg overflow-hidden border group ${
+              renderFailed
+                ? "border-red-500/40 bg-red-500/5"
+                : isRendered
+                  ? "border-white/10 cursor-pointer"
+                  : "border-gray-700/60 bg-gray-800/40 cursor-default"
+            }`}
+            data-testid={`thumb-${(clip as any).id ?? rank}`}
+          >
+            {clip.thumbnailPath && isRendered && (
               <img
                 src={clip.thumbnailPath}
-                alt={clip.suggestedTitle}
+                alt=""
                 className="w-full h-full object-cover"
                 loading="lazy"
               />
-              <div className="absolute inset-0 bg-black/30 group-hover:bg-black/50 flex items-center justify-center transition-colors">
-                <Play className="w-5 h-5 text-white fill-white" />
-              </div>
-              <div className="absolute bottom-0 left-0 right-0 bg-black/70 text-white text-[10px] px-1 py-0.5 text-center font-semibold">
-                #{rank}
-              </div>
-            </button>
-          ) : (
-            <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 border ${getViralBg(clip.finalScore)}`}>
-              <span className={`text-sm font-bold ${getViralColor(clip.finalScore)}`}>{rank}</span>
-            </div>
-          )}
+            )}
 
-          {/* Title + Meta */}
-          <div className="flex-1 min-w-0">
-            <h4 className="text-sm font-semibold text-white truncate">{clip.suggestedTitle}</h4>
-            <div className="flex items-center gap-2 mt-1 flex-wrap">
-              <span className="text-xs text-gray-400">
-                <Clock className="w-3 h-3 inline mr-0.5" />
-                {Array.isArray((clip as any).segments) && (clip as any).segments.length > 1
-                  ? `Assembled · ${(clip as any).segments.length} beats`
-                  : `${formatTime(clip.clipStart)} - ${formatTime(clip.clipEnd)}`}
-              </span>
-              <span className="text-xs text-gray-500">({clip.duration.toFixed(0)}s)</span>
-              <Badge className={`${tierBadge.className} text-xs border`}>
-                {tierBadge.label}
-              </Badge>
-              {clip.surfaces.length > 0 && (
-                <span className="text-xs text-gray-500">
-                  {clip.surfaces.length} surface{clip.surfaces.length !== 1 ? "s" : ""}
+            <span className="absolute top-1 left-1 text-[10px] font-semibold font-mono text-white bg-black/65 px-1.5 py-0.5 rounded">
+              #{rank}
+            </span>
+
+            {isRendered && (
+              <>
+                <span className="absolute bottom-1 right-1 text-[10px] font-medium font-mono text-white bg-black/65 px-1.5 py-0.5 rounded">
+                  {clip.duration.toFixed(0)}s
                 </span>
+                <span className="absolute inset-0 flex items-center justify-center bg-black/25 group-hover:bg-black/40 transition-colors">
+                  <span className="w-9 h-9 rounded-full bg-emerald-600/90 flex items-center justify-center shadow-lg">
+                    <Play className="w-3.5 h-3.5 text-white fill-white ml-0.5" />
+                  </span>
+                </span>
+              </>
+            )}
+            {isRendering && (
+              <span className="absolute inset-0 flex items-center justify-center">
+                <Loader2 className="w-6 h-6 text-purple-400 animate-spin" />
+              </span>
+            )}
+            {renderFailed && (
+              <span className="absolute inset-0 flex items-center justify-center">
+                <AlertCircle className="w-6 h-6 text-red-400" />
+              </span>
+            )}
+            {!isRendered && !isRendering && !renderFailed && (
+              <span className="absolute inset-0 flex items-center justify-center px-1 text-center text-[9px] leading-tight text-gray-500 uppercase tracking-wide">
+                No render yet
+              </span>
+            )}
+          </button>
+
+          {/* Identity and actions. Stacks below 640px so the action column
+              wraps under the metadata instead of squeezing the title. */}
+          <div className="flex-1 min-w-0 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+            <div className="min-w-0 flex-1 flex flex-col gap-1.5">
+              {/* Identity line. suggestedTitle is the row's name — it already
+                  existed on every clip and was never rendered, which is why
+                  the list read as "Clip #130 · 1460–1520s" and was impossible
+                  to scan. */}
+              <div className="flex items-center gap-2.5 min-w-0">
+                <span className="flex items-baseline gap-1 flex-none">
+                  <span className={`text-2xl font-bold font-mono leading-none ${isRendered ? "text-emerald-400" : getViralColor(clip.finalScore)}`}>
+                    {viralPct}
+                  </span>
+                  <span className="text-[9px] font-semibold font-mono uppercase tracking-wider text-gray-500">viral</span>
+                </span>
+                <span className="w-px h-5 bg-white/10 flex-none" />
+                <h4 className="text-[15px] font-bold text-white truncate min-w-0" title={clip.suggestedTitle}>
+                  {clip.suggestedTitle}
+                </h4>
+              </div>
+
+              {/* Meta line */}
+              <div className="flex items-center gap-2 flex-wrap text-xs">
+                <span className="font-mono text-gray-400">
+                  {Array.isArray((clip as any).segments) && (clip as any).segments.length > 1
+                    ? `Assembled · ${(clip as any).segments.length} beats`
+                    : `${formatTime(clip.clipStart)}–${formatTime(clip.clipEnd)}`}
+                </span>
+                <span className="text-gray-600">·</span>
+                <span className="font-mono text-gray-400">{clip.duration.toFixed(0)}s</span>
+                <span className="text-gray-600">·</span>
+                <Badge className={`${tierBadge.className} text-[10px] border py-0`}>{tierBadge.label}</Badge>
+                {clip.surfaces.length > 0 && (
+                  <span className="text-gray-500">
+                    {clip.surfaces.length} surface{clip.surfaces.length !== 1 ? "s" : ""}
+                  </span>
+                )}
+              </div>
+
+              {/* Render state as content, not as a badge in the action bar.
+                  A failed render carries renderError, which nothing displayed
+                  anywhere — the creator saw "Render failed" and had no idea
+                  why or what to change. */}
+              {isRendering && (
+                <div className="flex items-center gap-2 mt-0.5">
+                  <div className="h-1 flex-1 max-w-[220px] rounded-full bg-gray-700/60 overflow-hidden">
+                    <div className="h-full w-1/3 bg-purple-500 animate-pulse rounded-full" />
+                  </div>
+                  <span className="text-[11px] font-mono text-purple-300">
+                    Rendering {(clip as any).aspectRatio || "9:16"}
+                  </span>
+                </div>
+              )}
+              {renderFailed && (
+                <div className="mt-0.5 rounded-lg border border-red-500/30 bg-red-500/10 px-2.5 py-1.5">
+                  <span className="text-[10px] font-semibold font-mono uppercase tracking-wide text-red-400">Render failed</span>
+                  {clip.renderError && (
+                    <p className="text-[11px] text-red-200/80 leading-snug mt-0.5">{clip.renderError}</p>
+                  )}
+                </div>
+              )}
+
+              {/* Tags. Three plus an overflow count — four wrapped to a second
+                  line on the narrower title column. */}
+              {clip.topicTags.length > 0 && (
+                <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+                  {clip.topicTags.slice(0, 3).map((tag) => (
+                    <span key={tag} className="text-[11px] text-gray-400 bg-white/5 px-2 py-0.5 rounded">
+                      {tag}
+                    </span>
+                  ))}
+                  {clip.topicTags.length > 3 && (
+                    <span className="text-[11px] text-gray-500">+{clip.topicTags.length - 3}</span>
+                  )}
+                </div>
               )}
             </div>
 
-            {/* Topic Tags */}
-            {clip.topicTags.length > 0 && (
-              <div className="flex items-center gap-1 mt-2 flex-wrap">
-                {clip.topicTags.slice(0, 4).map((tag) => (
-                  <span
-                    key={tag}
-                    className="text-xs bg-gray-700/50 text-gray-400 px-2 py-0.5 rounded-full"
+            {/* Action ladder */}
+            <div className="flex-none flex flex-col gap-2 sm:items-end">
+              <div className="flex items-center gap-2 flex-wrap">
+                {/* Tier 2: Edit and Copilot read as siblings of each other and
+                    subordinate to the primary, so they share one bordered
+                    group rather than floating as two more peers. */}
+                {(showEdit || showCopilot) && (
+                  <div className="flex items-stretch border border-gray-700 rounded-lg overflow-hidden">
+                    {showEdit && onOpenStudio && (
+                      <button
+                        type="button"
+                        onClick={onOpenStudio}
+                        title="Open the editor: transcript, captions, b-roll, audio, motion"
+                        className="px-3 py-1.5 text-xs font-semibold text-gray-300 hover:bg-white/5 hover:text-white transition-colors"
+                        data-testid={`button-edit-${(clip as any).id ?? rank}`}
+                      >
+                        <SlidersHorizontal className="w-3 h-3 inline mr-1.5 -mt-px" />
+                        Edit
+                      </button>
+                    )}
+                    {showEdit && showCopilot && (
+                      <span className="w-px bg-gray-700" />
+                    )}
+                    {showCopilot && onCopilot && (
+                      <button
+                        type="button"
+                        onClick={onCopilot}
+                        title="Make this clip the AI copilot's target"
+                        className="px-3 py-1.5 text-xs font-semibold text-violet-300 hover:bg-violet-500/10 hover:text-violet-200 transition-colors"
+                        data-testid={`button-copilot-${(clip as any).id ?? rank}`}
+                      >
+                        <Sparkles className="w-3 h-3 inline mr-1.5 -mt-px" />
+                        Copilot
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* Tier 1: the one solid button. */}
+                {primaryAction && (
+                  <Button
+                    size="sm"
+                    onClick={primaryAction.onClick}
+                    className={`${primaryAction.className} text-white text-xs font-bold border`}
+                    data-testid={`button-primary-${(clip as any).id ?? rank}`}
                   >
-                    {tag}
-                  </span>
-                ))}
-                {clip.topicTags.length > 4 && (
-                  <span className="text-xs text-gray-500">+{clip.topicTags.length - 4}</span>
+                    <primaryAction.icon className="w-3.5 h-3.5 mr-1.5" />
+                    {primaryAction.label}
+                  </Button>
                 )}
-              </div>
-            )}
-          </div>
 
-          {/* Viral Score + Actions.
-              flex-wrap + justify-end, not flex-shrink-0: the action row grew
-              (Placement, Scan, Edit) past the card width and the last button
-              was clipped off the right edge with no way to reach it. */}
-          <div className="flex items-center gap-2 flex-wrap justify-end max-w-full">
-            {/* Viral Score Circle */}
-            <div className="text-center">
-              <div className={`text-lg font-bold ${getViralColor(clip.finalScore)}`}>
-                {viralPct}
-              </div>
-              <div className="text-xs text-gray-500">viral</div>
-            </div>
-
-            {/* Render status indicator */}
-            {isRendering && (
-              <div className="flex items-center gap-1 text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-2 py-1 rounded-lg">
-                <Loader2 className="w-3 h-3 animate-spin" />
-                <span>Rendering</span>
-              </div>
-            )}
-            {renderFailed && (
-              <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 px-2 py-1 rounded-lg">
-                Render failed
-              </div>
-            )}
-
-            {/* Action Buttons */}
-            {isRendered && onPlay && (
-              <Button
-                size="sm"
-                onClick={onPlay}
-                className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs"
-              >
-                <Play className="w-3 h-3 mr-1 fill-white" />
-                Play
-              </Button>
-            )}
-            {isRendered && onRerenderAspect && mode !== "brand" && (
-              <div className="flex items-center gap-1" data-testid={`aspect-picker-${(clip as any).id ?? rank}`}>
-                {(["9:16", "16:9"] as const).map((aspect) => {
-                  const active = ((clip as any).aspectRatio || "9:16") === aspect;
-                  return (
-                    <button
-                      key={aspect}
-                      onClick={() => !active && onRerenderAspect(aspect)}
-                      title={active ? `Current output is ${aspect}` : `Re-render as ${aspect}`}
-                      className={`px-1.5 py-0.5 rounded text-[10px] font-medium border transition-colors ${
-                        active
-                          ? "bg-purple-500/25 text-purple-300 border-purple-500/50 cursor-default"
-                          : "bg-gray-800 text-gray-400 border-gray-700 hover:border-gray-500 hover:text-gray-200"
-                      }`}
-                    >
-                      {aspect}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-            {onPreviewPlacement && (clip as any).id && (
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={onPreviewPlacement}
-                className="text-emerald-300 hover:text-emerald-200 text-xs"
-                title="Where a brand's product sits in this clip"
-                data-testid={`button-preview-placement-${(clip as any).id ?? rank}`}
-              >
-                <PackageOpen className="w-3 h-3 mr-1" />
-                Placement
-                {typeof (clip as any).surfaceGroupCount === "number" && (clip as any).surfaceGroupCount > 0 && (
-                  <span className="ml-1 text-[10px] text-gray-500">({(clip as any).surfaceGroupCount})</span>
-                )}
-              </Button>
-            )}
-            {onScan && mode !== "brand" && (clip as any).id && (
-              (isScanning || (clip as any).scanInFlight) ? (
-                <span className="flex items-center gap-1 text-[11px] text-purple-300 px-2" title="Scanning for placement surfaces">
-                  <Loader2 className="w-3 h-3 animate-spin" />
-                  Scanning…
-                </span>
-              ) : ((clip as any).surfaceCount ?? 0) === 0 ? (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={onScan}
-                  className="text-amber-300 hover:text-amber-200 text-xs"
-                  title={(clip as any).videoScanned === false
-                    ? "Source video was never scanned — no placement inventory exists yet"
-                    : "Nothing found in this range — run a denser scan"}
-                  data-testid={`button-scan-${(clip as any).id ?? rank}`}
+                <button
+                  type="button"
+                  onClick={onToggleExpand}
+                  aria-label={isExpanded ? "Hide score breakdown" : "Show score breakdown"}
+                  className="w-7 h-7 flex items-center justify-center rounded-md text-gray-500 hover:text-white hover:bg-white/5 transition-colors"
                 >
-                  <ScanSearch className="w-3 h-3 mr-1" />
-                  {(clip as any).videoScanned === false ? "Scan video" : "Scan range"}
-                </Button>
-              ) : null
-            )}
-            {/* Send to publishing. A rendered clip previously had no route out
-                of this list — the Distribution hub was somewhere else entirely
-                and did not list editorial clips at all, so a finished clip
-                simply had nowhere to go. Only shown once a render exists,
-                because there is no file to publish before that. */}
-            {onPublish && mode !== "brand" && (clip as any).id && (clip as any).exportPath && (
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={onPublish}
-                className="text-emerald-300 hover:text-emerald-200 text-xs"
-                title="Send this clip to the Distribution hub to publish"
-                data-testid={`button-publish-${(clip as any).id ?? rank}`}
-              >
-                <Send className="w-3 h-3 mr-1" />
-                Publish
-              </Button>
-            )}
-            {onOpenStudio && mode !== "brand" && (clip as any).id && (
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={onOpenStudio}
-                className="text-gray-200 hover:text-white text-xs"
-                title="Open the editor: transcript, captions, b-roll, audio, motion"
-                data-testid={`button-edit-${(clip as any).id ?? rank}`}
-              >
-                <SlidersHorizontal className="w-3 h-3 mr-1" />
-                Edit
-              </Button>
-            )}
-            {mode === "remix" && onCopilot && (
-              <Button
-                size="sm"
-                onClick={onCopilot}
-                variant="ghost"
-                className="text-violet-300 hover:text-violet-200 text-xs"
-                title="Make this clip the AI copilot's target"
-                data-testid={`button-copilot-${(clip as any).id ?? rank}`}
-              >
-                <Sparkles className="w-3 h-3 mr-1" />
-                Copilot
-              </Button>
-            )}
-            {mode === "remix" && onGenerate && (
-              <Button
-                size="sm"
-                onClick={onGenerate}
-                variant={isRendered ? "ghost" : "default"}
-                className={isRendered ? "text-gray-400 hover:text-white text-xs" : "bg-purple-600 hover:bg-purple-500 text-white text-xs"}
-              >
-                <Play className="w-3 h-3 mr-1" />
-                Generate
-              </Button>
-            )}
-            {mode === "brand" && onBuy && clip.monetizationTier !== "organic" && (
-              <Button
-                size="sm"
-                onClick={onBuy}
-                className="bg-green-600 hover:bg-green-500 text-white text-xs"
-              >
-                <DollarSign className="w-3 h-3 mr-1" />
-                Buy Placement
-              </Button>
-            )}
+                  {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                </button>
+              </div>
 
-            {/* Expand */}
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={onToggleExpand}
-              className="text-gray-400 hover:text-white"
-            >
-              {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-            </Button>
+              {/* Tier 3: aspect, placement, scan. Small and unfilled — real
+                  controls, but never competing with the primary. */}
+              <div className="flex items-center gap-2 flex-wrap sm:justify-end">
+                {isRendered && onRerenderAspect && mode !== "brand" && (
+                  <div className="flex border border-gray-700 rounded-md overflow-hidden" data-testid={`aspect-picker-${(clip as any).id ?? rank}`}>
+                    {(["9:16", "16:9"] as const).map((aspect) => {
+                      const active = ((clip as any).aspectRatio || "9:16") === aspect;
+                      return (
+                        <button
+                          key={aspect}
+                          type="button"
+                          onClick={() => !active && onRerenderAspect(aspect)}
+                          title={active ? `Current output is ${aspect}` : `Re-render as ${aspect}`}
+                          className={`px-2 py-0.5 text-[11px] font-semibold font-mono transition-colors ${
+                            active
+                              ? "bg-purple-500/20 text-purple-300 cursor-default"
+                              : "text-gray-500 hover:text-gray-200 hover:bg-white/5"
+                          }`}
+                        >
+                          {aspect}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {onPreviewPlacement && (clip as any).id && (
+                  <button
+                    type="button"
+                    onClick={onPreviewPlacement}
+                    title="Where a brand's product sits in this clip"
+                    className="flex items-center gap-1.5 px-2 py-0.5 rounded-md border border-emerald-500/30 text-[11px] font-semibold text-emerald-300 hover:bg-emerald-500/10 transition-colors"
+                    data-testid={`button-preview-placement-${(clip as any).id ?? rank}`}
+                  >
+                    <PackageOpen className="w-3 h-3" />
+                    Placement
+                    {typeof (clip as any).surfaceGroupCount === "number" && (clip as any).surfaceGroupCount > 0 && (
+                      <span className="font-mono text-gray-500">{(clip as any).surfaceGroupCount}</span>
+                    )}
+                  </button>
+                )}
+
+                {onScan && mode !== "brand" && (clip as any).id && (
+                  (isScanning || (clip as any).scanInFlight) ? (
+                    <span className="flex items-center gap-1.5 px-2 py-0.5 text-[11px] text-purple-300" title="Scanning for placement surfaces">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      Scanning…
+                    </span>
+                  ) : ((clip as any).surfaceCount ?? 0) === 0 ? (
+                    <button
+                      type="button"
+                      onClick={onScan}
+                      title={(clip as any).videoScanned === false
+                        ? "Source video was never scanned — no placement inventory exists yet"
+                        : "Nothing found in this range — run a denser scan"}
+                      className="flex items-center gap-1.5 px-2 py-0.5 rounded-md border border-amber-500/30 text-[11px] font-semibold text-amber-300 hover:bg-amber-500/10 transition-colors"
+                      data-testid={`button-scan-${(clip as any).id ?? rank}`}
+                    >
+                      <ScanSearch className="w-3 h-3" />
+                      {(clip as any).videoScanned === false ? "Scan video" : "Scan range"}
+                    </button>
+                  ) : null
+                )}
+
+                {isRendering && (
+                  <span className="text-[11px] text-gray-600">actions unlock when the file lands</span>
+                )}
+              </div>
+            </div>
           </div>
         </div>
       </div>
-
       {/* Expanded Details */}
       <AnimatePresence>
         {isExpanded && (
