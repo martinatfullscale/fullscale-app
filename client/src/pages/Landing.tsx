@@ -1365,13 +1365,34 @@ export default function Landing() {
           style={{ paddingTop: 'env(safe-area-inset-top)' }}
         >
           <div className="flex items-center">
-            <img 
-              src={logoUrl} 
-              alt="FullScale Creator Portal" 
-              className="h-8 md:h-10 w-auto" 
-              data-testid="img-landing-logo" 
+            <img
+              src={logoUrl}
+              alt="FullScale Creator Portal"
+              className="h-7 sm:h-8 md:h-10 w-auto"
+              data-testid="img-landing-logo"
             />
-            <span className="ml-3 pl-3 border-l border-white/20 text-[10px] font-medium tracking-[0.2em] uppercase text-white/50 hidden sm:inline">FullScale Creator Portal</span>
+            {/* The app's name, visible at every width.
+                This was `hidden sm:inline` — display:none below 640px — so on
+                a phone the only thing naming the app was the logo artwork. A
+                Google OAuth reviewer recorded the name as absent from the page
+                for exactly that reason.
+                It cannot simply be un-hidden: at 375px the left group has 219px
+                and the full string needs 195.7px after a 110px logo and 25px of
+                chrome, so it silently wraps to three lines. Instead the logo
+                (itself the "FullScale" wordmark) carries the brand on phones
+                and the text supplies "Creator Portal"; the full string switches
+                on at 460px, where it measurably fits on one line.
+                white/50 was also a real contrast failure, not just a
+                visibility one — the nav sits over an autoplaying video behind
+                only a black/70 gradient, so on a bright frame it fell to
+                3.87:1 against the 4.5:1 AA floor that applies at 10px. */}
+            <span
+              className="hidden min-[354px]:inline ml-2 pl-2 md:ml-3 md:pl-3 border-l border-white/30 text-[10px] md:text-[11px] font-semibold tracking-[0.08em] md:tracking-[0.15em] uppercase text-white/90 whitespace-nowrap [text-shadow:0_1px_2px_rgb(0_0_0/0.8)]"
+              aria-hidden="true"
+              data-testid="text-landing-wordmark"
+            >
+              <span className="hidden min-[460px]:inline">FullScale </span>Creator Portal
+            </span>
           </div>
           
           {/* Desktop Navigation - visible at 600px and above.
@@ -1400,7 +1421,10 @@ export default function Landing() {
           </div>
 
           {/* Mobile Icon Buttons - visible below 600px with 1.5rem spacing from logo */}
-          <div className="flex min-[600px]:hidden items-center gap-3 ml-6">
+          {/* ml-6 -> ml-2: justify-between already separates the two groups, so
+              the extra 16px bought nothing visually and was the last of the
+              budget the wordmark needed to stay on one line down to 354px. */}
+          <div className="flex min-[600px]:hidden items-center gap-3 ml-2">
             <a
               href="/brands"
               className="p-2 rounded-lg border border-emerald-400/40 text-emerald-300 bg-emerald-400/5 backdrop-blur-sm hover:bg-emerald-400/15 transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center"
@@ -1711,10 +1735,80 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* App Name & Legal Links for Google Verification - Bot-crawlable section */}
-      <section className="py-6 bg-background border-t border-white/5">
-        <div className="container mx-auto px-6 text-center">
-          <p className="text-lg font-semibold text-white mb-2">FullScale Creator Portal</p>
+      {/* App Name, Purpose & Legal Links for Google Verification.
+          Bot-crawlable, and deliberately plain.
+
+          Google's OAuth review found that this page "does not explain the
+          purpose of your app", and they were right: every other section
+          describes AI product placement and brand revenue, so a reviewer
+          assessing youtube.upload had nothing to connect the requested
+          permissions to. Rather than rewrite the marketing above, the
+          explanation lives here in the section that already exists for this
+          audience.
+
+          Every sentence below was checked against the code that actually runs.
+          Do not add a capability claim here without verifying it — this text is
+          submitted to Google, and a statement the product does not back is a
+          worse finding than a vague one. */}
+      <section className="py-10 bg-background border-t border-white/5">
+        <div className="container mx-auto px-6 max-w-3xl">
+          <p className="text-lg font-semibold text-white mb-3 text-center">FullScale Creator Portal</p>
+
+          <p className="text-sm text-muted-foreground leading-relaxed mb-6 text-center">
+            FullScale is a tool for video creators. It connects to a creator's own YouTube
+            channel, reads their long-form videos, uses AI to find the strongest moments
+            inside them, and turns those moments into short clips. The creator reviews and
+            edits each clip — trimming it, restyling the captions, adding b-roll — and can
+            then publish it to their own channel from inside FullScale.
+          </p>
+
+          <h3 className="text-sm font-semibold text-white mb-3 text-center">
+            How FullScale uses your Google account
+          </h3>
+          <dl className="text-sm text-muted-foreground space-y-3 mb-6">
+            <div>
+              <dt className="text-white/90 font-medium">Viewing your YouTube account</dt>
+              <dd className="leading-relaxed">
+                Identifies the channel you connected and lists the videos on it, so you can
+                confirm the right account and choose which of your videos to work from. We
+                also read each video's public statistics, and viewer comments on your videos
+                to summarise audience response.
+              </dd>
+            </div>
+            <div>
+              <dt className="text-white/90 font-medium">Viewing your YouTube Analytics</dt>
+              <dd className="leading-relaxed">
+                Reads views, watch time, retention and audience demographics for your own
+                channel, shown to you in FullScale and summarised on the media-kit page you
+                can share with brands.
+              </dd>
+            </div>
+            <div>
+              <dt className="text-white/90 font-medium">Managing your YouTube videos</dt>
+              <dd className="leading-relaxed">
+                Used only to upload a finished clip to your channel, and only when you press
+                Publish or schedule that clip yourself. You choose whether each upload is
+                private, unlisted or public. FullScale never edits, retitles, re-tags,
+                re-describes or deletes a video already on your channel, and never changes
+                your playlists.
+              </dd>
+            </div>
+          </dl>
+
+          <p className="text-xs text-muted-foreground/70 leading-relaxed mb-6 text-center">
+            FullScale's use of information received from Google APIs adheres to the{" "}
+            <a
+              href="https://developers.google.com/terms/api-services-user-data-policy"
+              className="underline hover:text-white transition-colors"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Google API Services User Data Policy
+            </a>
+            , including the Limited Use requirements. You can disconnect your Google account
+            at any time from Settings, which removes our access.
+          </p>
+
           <div className="flex items-center justify-center gap-4 text-sm text-muted-foreground">
             <a href="/privacy" className="hover:text-white transition-colors underline">Privacy Policy</a>
             <span>|</span>
