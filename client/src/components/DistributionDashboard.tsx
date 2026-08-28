@@ -108,6 +108,12 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
   const [selectedClipId, setSelectedClipId] = useState<number | null>(null);
   const [selectedProfileId, setSelectedProfileId] = useState<number | null>(null);
   const [customCaption, setCustomCaption] = useState("");
+  /**
+   * Who can see the video once it lands. Defaults to "private" so an
+   * accidental publish is recoverable — the creator opts into an audience
+   * rather than being given one.
+   */
+  const [privacyStatus, setPrivacyStatus] = useState<"public" | "unlisted" | "private">("private");
   const [available, setAvailable] = useState<Array<{ platform: string; label: string; handle: string | null; enableVia: string }>>([]);
   /** Connected, but no publisher exists for it. Named so its absence from the
    *  list above is explained rather than looking like a missing feature. */
@@ -235,6 +241,7 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
           clipSource: clips.find((c: any) => c.id === selectedClipId)?.clipSource ?? "remix",
           profileId: selectedProfileId,
           caption: customCaption || undefined,
+          privacyStatus,
           force: force || undefined,
         }),
       });
@@ -409,6 +416,8 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
                     // to publishClip's `force` parameter — a truthy value that
                     // would force-publish on every ordinary click and silently
                     // disable the duplicate guard.
+                    privacyStatus={privacyStatus}
+                    onPrivacyChange={setPrivacyStatus}
                     onPublish={() => publishClip()}
                     onPreviewCaption={previewCaption}
                     onToggleCaptionPreview={() => setShowCaptionPreview(!showCaptionPreview)}
@@ -589,6 +598,7 @@ function PublishTab({
   clips, profiles, selectedClipId, selectedProfileId, customCaption,
   isPublishing, captionPreview, showCaptionPreview,
   onSelectClip, onSelectProfile, onCaptionChange, onPublish, onPreviewCaption, onToggleCaptionPreview,
+  privacyStatus, onPrivacyChange,
 }: {
   clips: GeneratedClip[];
   profiles: DistributionProfile[];
@@ -602,6 +612,8 @@ function PublishTab({
   onSelectProfile: (id: number | null) => void;
   onCaptionChange: (v: string) => void;
   onPublish: () => void;
+  privacyStatus: "public" | "unlisted" | "private";
+  onPrivacyChange: (v: "public" | "unlisted" | "private") => void;
   onPreviewCaption: (platform: string) => void;
   onToggleCaptionPreview: () => void;
 }) {
@@ -732,6 +744,41 @@ function PublishTab({
               </div>
             </motion.div>
           )}
+        </div>
+      )}
+
+      {/* Visibility.
+          The creator decides who sees the video. Before this existed the
+          setting lived only in server code and took a stored default nobody
+          could see or change, which made "a privacy status they control" a
+          claim the product did not back. Ordered least-exposed first, and
+          Private is preselected — publishing is not reversible from here. */}
+      {selectedClipId && selectedProfileId && (
+        <div>
+          <h3 className="text-sm font-semibold text-gray-300 mb-3">4. Visibility</h3>
+          <div className="grid grid-cols-3 gap-2">
+            {([
+              { value: "private", label: "Private", hint: "Only you" },
+              { value: "unlisted", label: "Unlisted", hint: "Anyone with the link" },
+              { value: "public", label: "Public", hint: "Everyone" },
+            ] as const).map(opt => (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => onPrivacyChange(opt.value)}
+                aria-pressed={privacyStatus === opt.value}
+                className={`rounded-lg border p-3 text-left transition-colors ${
+                  privacyStatus === opt.value
+                    ? "bg-green-500/15 border-green-500/60 text-white"
+                    : "bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-500 hover:text-gray-200"
+                }`}
+                data-testid={`button-privacy-${opt.value}`}
+              >
+                <span className="block text-sm font-medium">{opt.label}</span>
+                <span className="block text-[11px] text-gray-500 mt-0.5">{opt.hint}</span>
+              </button>
+            ))}
+          </div>
         </div>
       )}
 

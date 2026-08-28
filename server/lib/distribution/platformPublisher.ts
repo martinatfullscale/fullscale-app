@@ -181,11 +181,19 @@ class YouTubeAdapter implements PlatformAdapter {
               categoryId: "22", // People & Blogs
             },
             status: {
-              // Overridable per profile (metadata.privacyStatus) so tests
-              // and cautious creators can land uploads as private/unlisted.
+              // Chosen by the creator at publish time, falling back to the
+              // profile's stored default.
+              //
+              // The fallback is "private", and that direction matters: it used
+              // to be "public", so any path that reached here without an
+              // explicit value put a creator's video in front of their whole
+              // audience. Defaulting an irreversible disclosure to the most
+              // exposed setting is the wrong way round — an unintended private
+              // upload is an inconvenience, an unintended public one cannot be
+              // taken back.
               privacyStatus: ["public", "unlisted", "private"].includes(input.metadata?.privacyStatus)
                 ? input.metadata!.privacyStatus
-                : "public",
+                : "private",
               selfDeclaredMadeForKids: false,
               madeForKids: false,
             },

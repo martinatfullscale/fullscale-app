@@ -16805,7 +16805,7 @@ export async function registerRoutes(
   app.post("/api/distribution/publish", isFlexibleAuthenticated, async (req: any, res) => {
     let inFlightKey: string | null = null;
     try {
-      const { clipId, profileId, caption, hashtags, clipSource, force } = req.body;
+      const { clipId, profileId, caption, hashtags, clipSource, force, privacyStatus } = req.body;
       const source = clipSource === "editorial" ? "editorial" : "remix";
       if (!clipId || !profileId) {
         return res.status(400).json({ error: "clipId and profileId are required" });
@@ -16919,6 +16919,14 @@ export async function registerRoutes(
       // Publish
       const { publishToPlaftorm } = await import("./lib/distribution/platformPublisher");
       const publishMetadata: Record<string, any> = { ...(profile.metadata as Record<string, any> || {}) };
+      // The creator's per-upload visibility choice wins over the profile
+      // default. Until now no such choice existed anywhere in the product —
+      // privacyStatus appeared only in server code, so every upload took a
+      // stored default the creator never saw and could not change. We told
+      // Google this was "a privacy status they control"; this is the control.
+      if (["public", "unlisted", "private"].includes(privacyStatus)) {
+        publishMetadata.privacyStatus = privacyStatus;
+      }
       // Instagram's API pulls the video from a public URL instead of
       // accepting an upload — point it at the clip's public export path.
       if (profile.platform.startsWith("instagram") && !publishMetadata.publicVideoUrl && clip.exportPath) {
