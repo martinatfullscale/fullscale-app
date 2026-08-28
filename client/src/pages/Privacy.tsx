@@ -150,6 +150,31 @@ export default function Privacy() {
                 To display your YouTube channel and video metadata within your FullScale library
                 so you can manage placement opportunities.
               </li>
+              {/* Third-party data, and the only entry here that is not about
+                  the account holder. The comment authors did not consent to
+                  FullScale processing anything, so this use has to be stated
+                  explicitly rather than folded into "video metadata" — and it
+                  is the one YouTube read that was previously undisclosed on
+                  this page and in our OAuth scope justification. */}
+              <li>
+                To read public viewer comments on your own videos and summarise them into an
+                audience-response view — overall sentiment and any mentions of brands. We store
+                the comment text, the commenter's public display name as YouTube supplies it, and
+                the date, and we use them only to produce that summary for you. We do not use
+                them to build profiles of the people who wrote the comments, and we do not sell
+                or share them. You can have them deleted by contacting us (Section 8).
+              </li>
+              <li>
+                To read your channel's YouTube Analytics — views, watch time, retention and
+                aggregate audience demographics — to show you how your content performs. Aggregate
+                figures (top age band, top country) also appear on your FullScale media-kit page,
+                which is viewable by anyone you give the link to.
+              </li>
+              <li>
+                To upload a clip to your channel when you publish or schedule it. You choose
+                whether each upload is private, unlisted or public. We never modify or delete
+                videos already on your channel.
+              </li>
             </ul>
 
             <p className="text-foreground font-medium mt-2">How we protect Google user data</p>
