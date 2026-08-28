@@ -367,6 +367,7 @@ export interface IStorage {
   createPublishedPost(data: InsertPublishedPost): Promise<PublishedPost>;
   getPublishedPost(id: number): Promise<PublishedPost | undefined>;
   getPublishedPostsByClip(clipId: number): Promise<PublishedPost[]>;
+  findPublishedPostForClip(clipId: number, source: "remix" | "editorial", profileId: number): Promise<PublishedPost | undefined>;
   getPublishedPostsByVideo(videoId: number): Promise<PublishedPost[]>;
   getPublishedPostsByUser(userId: number): Promise<PublishedPost[]>;
   updatePublishedPostStatus(postId: number, status: string, platformPostId?: string, postUrl?: string, errorMessage?: string): Promise<PublishedPost | undefined>;
@@ -4105,6 +4106,37 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(publishedPosts)
       .where(eq(publishedPosts.clipId, clipId))
       .orderBy(desc(publishedPosts.createdAt));
+  }
+
+  /**
+   * The last SUCCESSFUL publish of one clip to one profile, or undefined.
+   *
+   * Exists to answer "have we already uploaded this?" before uploading again.
+   * Source-aware on purpose: remix and editorial clips have independent serial
+   * ids, so editorial clip 130 and remix clip 130 both exist and are different
+   * videos. Matching on the id alone would refuse a legitimate publish because
+   * an unrelated clip happened to share a number.
+   *
+   * Only published/dry_run count. A previous FAILED attempt should not block a
+   * retry — that is the case the creator is explicitly trying to fix.
+   */
+  async findPublishedPostForClip(
+    clipId: number,
+    source: "remix" | "editorial",
+    profileId: number,
+  ): Promise<PublishedPost | undefined> {
+    const clipMatch = source === "editorial"
+      ? eq(publishedPosts.editorialClipId, clipId)
+      : eq(publishedPosts.clipId, clipId);
+    const [result] = await db.select().from(publishedPosts)
+      .where(and(
+        clipMatch,
+        eq(publishedPosts.profileId, profileId),
+        inArray(publishedPosts.status, ["published", "dry_run"]),
+      ))
+      .orderBy(desc(publishedPosts.createdAt))
+      .limit(1);
+    return result;
   }
 
   async getPublishedPostsByVideo(videoId: number): Promise<PublishedPost[]> {

@@ -277,22 +277,44 @@ export async function processScheduledPosts(): Promise<number> {
         }
 
         if (result.success) {
-          // Create published post record. Dry runs are labeled so they never
-          // masquerade as real published posts in analytics/UI.
-          const post = await storage.createPublishedPost({
-            clipId: schedule.clipId,
-            videoId: clip.videoId,
-            profileId: schedule.profileId,
-            platform: schedule.platform,
-            platformPostId: result.platformPostId,
-            postUrl: result.postUrl,
-            caption,
-            hashtags,
-            publishedAt: new Date(),
-            status: (result as any).dryRun ? "dry_run" : "published",
-          });
+          // THE UPLOAD HAS HAPPENED — the schedule is completed no matter what
+          // happens next. Awaiting this insert bare meant a bookkeeping error
+          // fell through to the outer catch, which marked the schedule FAILED
+          // for a post that is live on the platform. A creator looking at a
+          // failed schedule republishes, and now there are two.
+          //
+          // The id also goes in the column whose foreign key can hold it: the
+          // read path above already resolves editorial clips, but this write
+          // put their id in clip_id, whose FK points at generated_clips. Every
+          // scheduled editorial clip therefore uploaded and then failed to
+          // record.
+          const isEditorial = schedule.clipId == null && (schedule as any).editorialClipId != null;
+          let post: any = null;
+          try {
+            // Dry runs are labeled so they never masquerade as real published
+            // posts in analytics/UI.
+            post = await storage.createPublishedPost({
+              clipId: isEditorial ? null : schedule.clipId,
+              editorialClipId: isEditorial ? (schedule as any).editorialClipId : null,
+              clipSource: isEditorial ? "editorial" : "remix",
+              videoId: clip.videoId,
+              profileId: schedule.profileId,
+              platform: schedule.platform,
+              platformPostId: result.platformPostId,
+              postUrl: result.postUrl,
+              caption,
+              hashtags,
+              publishedAt: new Date(),
+              status: (result as any).dryRun ? "dry_run" : "published",
+            });
+          } catch (recErr: any) {
+            console.error(
+              `[Scheduler] UPLOAD SUCCEEDED BUT WAS NOT RECORDED — ${schedule.platform} ` +
+              `postId=${result.platformPostId} url=${result.postUrl} schedule=${schedule.id}: ${recErr?.message}`,
+            );
+          }
 
-          await storage.updateScheduleStatus(schedule.id, "completed", post.id);
+          await storage.updateScheduleStatus(schedule.id, "completed", post?.id);
           processed++;
         } else {
           await storage.updateScheduleStatus(schedule.id, "failed", undefined, result.error);

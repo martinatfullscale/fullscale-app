@@ -216,7 +216,11 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
     if (open) loadData();
   }, [open, loadData]);
 
-  const publishClip = async () => {
+  /**
+   * @param force Re-publish a clip the server already has a published record
+   *   for. Only ever set from the confirmation below — never on a first click.
+   */
+  const publishClip = async (force = false) => {
     if (!selectedClipId || !selectedProfileId) return;
     setIsPublishing(true);
     try {
@@ -231,15 +235,37 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
           clipSource: clips.find((c: any) => c.id === selectedClipId)?.clipSource ?? "remix",
           profileId: selectedProfileId,
           caption: customCaption || undefined,
+          force: force || undefined,
         }),
       });
 
       const data = await res.json();
       if (data.success) {
-        toast({ title: "Published!", description: `Clip posted to ${data.post.platform}` });
+        // post can be null: the upload succeeded but recording it failed. The
+        // video is live either way, so this is a success with a caveat — never
+        // an error, because an error here is what makes people publish twice.
+        if (data.recordingFailed) {
+          toast({
+            title: "Published — but not saved to your history",
+            description: data.warning || "The video is live. Don't publish it again.",
+          });
+        } else {
+          toast({ title: "Published!", description: `Clip posted to ${data.post?.platform ?? "your account"}` });
+        }
         await loadData();
         setSelectedClipId(null);
         setCustomCaption("");
+      } else if (data.alreadyPublished && data.canForce) {
+        // Not a failure — a question. Republishing is legitimate (the creator
+        // may have deleted the video on the platform), so the answer is a
+        // confirmation rather than a dead end.
+        const again = window.confirm(
+          `${data.error}\n\nPublish it again anyway? This will upload a second copy to the platform.`,
+        );
+        if (again) {
+          setIsPublishing(false);
+          return publishClip(true);
+        }
       } else {
         toast({ title: "Failed", description: data.error, variant: "destructive" });
       }
@@ -378,7 +404,12 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
                     onSelectClip={setSelectedClipId}
                     onSelectProfile={setSelectedProfileId}
                     onCaptionChange={setCustomCaption}
-                    onPublish={publishClip}
+                    // Wrapped, NOT passed bare: the button below is
+                    // onClick={onPublish}, so React would hand the MouseEvent
+                    // to publishClip's `force` parameter — a truthy value that
+                    // would force-publish on every ordinary click and silently
+                    // disable the duplicate guard.
+                    onPublish={() => publishClip()}
                     onPreviewCaption={previewCaption}
                     onToggleCaptionPreview={() => setShowCaptionPreview(!showCaptionPreview)}
                   />

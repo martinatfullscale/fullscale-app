@@ -16785,10 +16785,27 @@ export async function registerRoutes(
 
   // Publishing
 
+  /**
+   * Uploads currently running, keyed `${source}:${clipId}:${profileId}`.
+   *
+   * A YouTube upload takes tens of seconds with no feedback beyond a spinner,
+   * which is exactly how long a creator waits before clicking Publish again.
+   * The database cannot catch that second click: no row exists until the
+   * upload FINISHES, so a duplicate-check against published_posts sees nothing
+   * and the second click uploads the same video a second time.
+   *
+   * In-process only, which is the honest scope: it stops double-clicks and
+   * impatient retries from one server, not two servers racing. That is the
+   * failure that actually happened, and a distributed lock for a
+   * human-triggered button is not worth the operational weight.
+   */
+  const publishInFlight = new Set<string>();
+
   // POST /api/distribution/publish — Publish a clip to a platform
   app.post("/api/distribution/publish", isFlexibleAuthenticated, async (req: any, res) => {
+    let inFlightKey: string | null = null;
     try {
-      const { clipId, profileId, caption, hashtags, clipSource } = req.body;
+      const { clipId, profileId, caption, hashtags, clipSource, force } = req.body;
       const source = clipSource === "editorial" ? "editorial" : "remix";
       if (!clipId || !profileId) {
         return res.status(400).json({ error: "clipId and profileId are required" });
@@ -16805,6 +16822,39 @@ export async function registerRoutes(
       if (profile.userId !== stableUserIntId(req.authUserId ?? req.user?.id)) {
         return res.status(403).json({ error: "Not your profile" });
       }
+
+      // Nothing below may upload the same clip to the same account twice.
+      //
+      // This endpoint had no duplicate protection of any kind, and the cost
+      // was real: a publish that uploaded successfully and then failed while
+      // RECORDING the result reported plain failure, the creator clicked
+      // Publish again, and a second copy went up. Two guards, because the two
+      // windows are different — one before the row exists, one after.
+      const dupKey = `${source}:${Number(clipId)}:${Number(profileId)}`;
+      if (publishInFlight.has(dupKey)) {
+        return res.status(409).json({
+          error: "This clip is already uploading to that account. Give it a moment — publishing a video can take a minute.",
+          alreadyPublishing: true,
+        });
+      }
+      if (!force) {
+        const existing = await storage.findPublishedPostForClip(Number(clipId), source, Number(profileId));
+        if (existing) {
+          return res.status(409).json({
+            error: `This clip was already published to ${profile.platform} on ${existing.publishedAt?.toLocaleString() ?? "an earlier date"}.`,
+            alreadyPublished: true,
+            post: existing,
+            postUrl: existing.postUrl,
+            // Republishing is legitimate — a creator who deleted the video on
+            // the platform and wants it back needs exactly this. So it is a
+            // confirmation, not a prohibition.
+            canForce: true,
+          });
+        }
+      }
+      publishInFlight.add(dupKey);
+      inFlightKey = dupKey;
+
       const { resolvePublishAccessToken } = await import("./lib/distribution/platformPublisher");
       const publishToken = await resolvePublishAccessToken(profile);
       if (!publishToken) {
@@ -16889,30 +16939,69 @@ export async function registerRoutes(
       }
 
       if (result.success) {
+        // THE UPLOAD HAS HAPPENED. The video is live on the platform, and
+        // nothing below can undo that — so nothing below may report failure.
+        //
+        // The previous version awaited this insert bare. When it threw (an
+        // editorial clip's id written into clip_id, violating
+        // published_posts_clip_id_generated_clips_id_fk) the creator saw a
+        // raw constraint error, concluded the publish had failed, and clicked
+        // Publish again — putting a second copy of the same video on their
+        // channel. A bookkeeping failure was converted into a duplicate
+        // upload purely by how it was reported.
+        let post: any = null;
+        let recordingError: string | null = null;
+        try {
+          post = await storage.createPublishedPost({
+            // The id goes in the column whose foreign key can hold it. Remix
+            // and editorial clips live in different tables with independent
+            // serial ids; clip_id's FK points at generated_clips only.
+            clipId: source === "editorial" ? null : clipId,
+            editorialClipId: source === "editorial" ? clipId : null,
+            clipSource: source,
+            videoId: clip.videoId,
+            profileId,
+            platform: profile.platform,
+            platformPostId: result.platformPostId,
+            postUrl: result.postUrl,
+            caption: finalCaption,
+            hashtags: finalHashtags,
+            publishedAt: new Date(),
+            status: result.dryRun ? "dry_run" : "published",
+          });
+        } catch (recErr: any) {
+          recordingError = recErr?.message || String(recErr);
+          // Loud, and with the platform's own id in it: this line is the only
+          // remaining record that the upload happened, and it is what makes
+          // the row recoverable by hand.
+          console.error(
+            `[Publish] UPLOAD SUCCEEDED BUT WAS NOT RECORDED — ${profile.platform} ` +
+            `postId=${result.platformPostId} url=${result.postUrl} ` +
+            `clip=${source}:${clipId} profile=${profileId}: ${recordingError}`,
+          );
+        }
+        res.json({
+          success: true,
+          post,
+          postUrl: result.postUrl,
+          dryRun: !!result.dryRun,
+          // Surfaced rather than hidden — the creator should know the post
+          // will be missing from their history — but explicitly NOT an error,
+          // so the UI does not invite a retry that would upload again.
+          recordingFailed: recordingError ? true : undefined,
+          warning: recordingError
+            ? "Published successfully, but we couldn't save it to your post history. The video is live — don't publish again."
+            : undefined,
+        });
+      } else {
+        // Same split as the success path. This branch wrote clipId
+        // unconditionally, so a FAILED editorial publish hit the very same
+        // foreign-key violation and buried the real reason the publish failed
+        // underneath a constraint error.
         const post = await storage.createPublishedPost({
-          // The id goes in the column whose foreign key can hold it. Writing
-          // an editorial clip's id into clip_id is what produced
-          //   violates foreign key constraint
-          //   "published_posts_clip_id_generated_clips_id_fk"
-          // at the end of an otherwise successful publish — the clip uploaded,
-          // and then we failed to record it.
           clipId: source === "editorial" ? null : clipId,
           editorialClipId: source === "editorial" ? clipId : null,
           clipSource: source,
-          videoId: clip.videoId,
-          profileId,
-          platform: profile.platform,
-          platformPostId: result.platformPostId,
-          postUrl: result.postUrl,
-          caption: finalCaption,
-          hashtags: finalHashtags,
-          publishedAt: new Date(),
-          status: result.dryRun ? "dry_run" : "published",
-        });
-        res.json({ success: true, post, postUrl: result.postUrl, dryRun: !!result.dryRun });
-      } else {
-        const post = await storage.createPublishedPost({
-          clipId,
           videoId: clip.videoId,
           profileId,
           platform: profile.platform,
@@ -16926,6 +17015,8 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("[Publish] Error:", err.message);
       res.status(500).json({ error: err.message || "Publishing failed" });
+    } finally {
+      if (inFlightKey) publishInFlight.delete(inFlightKey);
     }
   });
 
