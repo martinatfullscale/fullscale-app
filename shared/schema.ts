@@ -1336,7 +1336,19 @@ export type InsertDistributionProfile = z.infer<typeof insertDistributionProfile
 
 export const publishedPosts = pgTable('published_posts', {
   id: serial('id').primaryKey(),
-  clipId: integer('clip_id').references(() => generatedClips.id).notNull(),
+  // NULLABLE, with editorialClipId beside it.
+  //
+  // A clip can come from EITHER generated_clips (remix) or editorial_clips —
+  // two tables with independent serial ids. This column carried a NOT NULL
+  // foreign key to generated_clips alone, so publishing an editorial clip
+  // failed at the insert with:
+  //   violates foreign key constraint "..._clip_id_generated_clips_id_fk"
+  // The publish path could find the clip in either table but could only RECORD
+  // one of them. Exactly one of the two id columns is set; clipSource says
+  // which, so readers do not have to infer it from which column is null.
+  clipId: integer('clip_id').references(() => generatedClips.id),
+  editorialClipId: integer('editorial_clip_id').references(() => editorialClips.id),
+  clipSource: varchar('clip_source', { length: 12 }).default('remix'),
   videoId: integer('video_id').references(() => videoIndex.id).notNull(),
   profileId: integer('profile_id').references(() => distributionProfiles.id),
   platform: varchar('platform', { length: 30 }).notNull(),
@@ -1362,7 +1374,19 @@ export type InsertPublishedPost = z.infer<typeof insertPublishedPostSchema>;
 export const clipAnalytics = pgTable('clip_analytics', {
   id: serial('id').primaryKey(),
   postId: integer('post_id').references(() => publishedPosts.id).notNull(),
-  clipId: integer('clip_id').references(() => generatedClips.id).notNull(),
+  // NULLABLE, with editorialClipId beside it.
+  //
+  // A clip can come from EITHER generated_clips (remix) or editorial_clips —
+  // two tables with independent serial ids. This column carried a NOT NULL
+  // foreign key to generated_clips alone, so publishing an editorial clip
+  // failed at the insert with:
+  //   violates foreign key constraint "..._clip_id_generated_clips_id_fk"
+  // The publish path could find the clip in either table but could only RECORD
+  // one of them. Exactly one of the two id columns is set; clipSource says
+  // which, so readers do not have to infer it from which column is null.
+  clipId: integer('clip_id').references(() => generatedClips.id),
+  editorialClipId: integer('editorial_clip_id').references(() => editorialClips.id),
+  clipSource: varchar('clip_source', { length: 12 }).default('remix'),
   platform: varchar('platform', { length: 30 }).notNull(),
   views: integer('views').default(0),
   likes: integer('likes').default(0),
@@ -1391,7 +1415,19 @@ export type InsertClipAnalytics = z.infer<typeof insertClipAnalyticsSchema>;
 export const publishingSchedules = pgTable('publishing_schedules', {
   id: serial('id').primaryKey(),
   userId: integer('user_id').notNull(),
-  clipId: integer('clip_id').references(() => generatedClips.id).notNull(),
+  // NULLABLE, with editorialClipId beside it.
+  //
+  // A clip can come from EITHER generated_clips (remix) or editorial_clips —
+  // two tables with independent serial ids. This column carried a NOT NULL
+  // foreign key to generated_clips alone, so publishing an editorial clip
+  // failed at the insert with:
+  //   violates foreign key constraint "..._clip_id_generated_clips_id_fk"
+  // The publish path could find the clip in either table but could only RECORD
+  // one of them. Exactly one of the two id columns is set; clipSource says
+  // which, so readers do not have to infer it from which column is null.
+  clipId: integer('clip_id').references(() => generatedClips.id),
+  editorialClipId: integer('editorial_clip_id').references(() => editorialClips.id),
+  clipSource: varchar('clip_source', { length: 12 }).default('remix'),
   profileId: integer('profile_id').references(() => distributionProfiles.id).notNull(),
   platform: varchar('platform', { length: 30 }).notNull(),
   scheduledFor: timestamp('scheduled_for').notNull(),

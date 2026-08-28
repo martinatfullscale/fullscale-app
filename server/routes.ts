@@ -16890,7 +16890,15 @@ export async function registerRoutes(
 
       if (result.success) {
         const post = await storage.createPublishedPost({
-          clipId,
+          // The id goes in the column whose foreign key can hold it. Writing
+          // an editorial clip's id into clip_id is what produced
+          //   violates foreign key constraint
+          //   "published_posts_clip_id_generated_clips_id_fk"
+          // at the end of an otherwise successful publish — the clip uploaded,
+          // and then we failed to record it.
+          clipId: source === "editorial" ? null : clipId,
+          editorialClipId: source === "editorial" ? clipId : null,
+          clipSource: source,
           videoId: clip.videoId,
           profileId,
           platform: profile.platform,

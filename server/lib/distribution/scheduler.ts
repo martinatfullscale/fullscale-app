@@ -53,10 +53,17 @@ const OPTIMAL_HOURS: Record<string, number[]> = {
 /**
  * Create a single scheduled post.
  */
-export async function schedulePost(input: ScheduleInput) {
+export async function schedulePost(input: ScheduleInput & { clipSource?: "remix" | "editorial" }) {
+  // Same split as published_posts: the id goes in the column whose foreign key
+  // can hold it. Writing an editorial clip's id into clip_id violates the FK
+  // to generated_clips, and would do so at SCHEDULE time — before the creator
+  // has any way to know the post will never fire.
+  const isEditorial = (input as any).clipSource === "editorial";
   const schedule = await storage.createPublishingSchedule({
     userId: input.userId,
-    clipId: input.clipId,
+    clipId: isEditorial ? null : input.clipId,
+    editorialClipId: isEditorial ? input.clipId : null,
+    clipSource: isEditorial ? "editorial" : "remix",
     profileId: input.profileId,
     platform: input.platform,
     scheduledFor: input.scheduledFor,
@@ -161,11 +168,25 @@ export async function processScheduledPosts(): Promise<number> {
         const claimed = await storage.claimSchedule(schedule.id);
         if (!claimed) continue;
 
-        // Get the clip
+        // Get the clip — from EITHER table.
+        //
+        // A schedule now carries clipId (remix) or editorialClipId, never
+        // both, because the two tables have independent serial ids. Reading
+        // generated_clips alone meant a scheduled editorial clip failed at
+        // fire time as "Clip not found", hours after the creator scheduled it
+        // and with no way to tell why.
         const { db } = await import("../../db");
-        const { generatedClips } = await import("../../../shared/schema");
+        const { generatedClips, editorialClips } = await import("../../../shared/schema");
         const { eq } = await import("drizzle-orm");
-        const [clip] = await db.select().from(generatedClips).where(eq(generatedClips.id, schedule.clipId)).limit(1);
+
+        let clip: any = null;
+        if (schedule.clipId != null) {
+          [clip] = await db.select().from(generatedClips).where(eq(generatedClips.id, schedule.clipId)).limit(1);
+        } else if ((schedule as any).editorialClipId != null) {
+          const [ec] = await db.select().from(editorialClips)
+            .where(eq(editorialClips.id, (schedule as any).editorialClipId)).limit(1);
+          clip = ec ?? null;
+        }
 
         if (!clip || !clip.exportPath) {
           await storage.updateScheduleStatus(schedule.id, "failed", undefined, "Clip not found or not exported");

@@ -362,7 +362,11 @@ export async function computeAggregateMetrics(videoId: number): Promise<Aggregat
   for (const a of latestAnalytics) {
     const post = posts.find(p => p.id === a.postId);
     if (post) {
-      const duration = clipDurations.get(post.clipId) || 0;
+      // clipId is nullable now: an editorial post records editorialClipId
+      // instead, so a post can legitimately carry either. Duration is only
+      // tracked for remix clips, so an editorial post contributes 0 rather
+      // than keying the map on null.
+      const duration = post.clipId != null ? (clipDurations.get(post.clipId) || 0) : 0;
       metrics.brandExposureMinutes += ((a.views || 0) * duration) / 60;
     }
   }
@@ -371,10 +375,13 @@ export async function computeAggregateMetrics(videoId: number): Promise<Aggregat
   const clipViewMap = new Map<number, { views: number; platform: string; rate: number }>();
   for (const a of latestAnalytics) {
     const post = posts.find(p => p.id === a.postId);
-    if (post) {
-      const existing = clipViewMap.get(post.clipId);
+    // A post now points at EITHER clip table; key the top-clips map on
+    // whichever id it actually carries.
+    const clipKey = post ? (post.clipId ?? post.editorialClipId) : null;
+    if (post && clipKey != null) {
+      const existing = clipViewMap.get(clipKey);
       if (!existing || (a.views || 0) > existing.views) {
-        clipViewMap.set(post.clipId, {
+        clipViewMap.set(clipKey, {
           views: a.views || 0,
           platform: a.platform,
           rate: a.engagementRate || 0,
