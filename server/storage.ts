@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { eq, desc, and, or, sql, inArray, ne, isNull, isNotNull, lte, gt, gte, asc } from "drizzle-orm";
+import { eq, desc, and, or, sql, inArray, notInArray, ne, isNull, isNotNull, lte, gt, gte, asc } from "drizzle-orm";
 import {
   monetizationItems,
   youtubeConnections,
@@ -3853,8 +3853,32 @@ export class DatabaseStorage implements IStorage {
   // ── Editorial Clips Methods ──
 
   async saveEditorialClips(videoId: number, userId: number, clips: any[]): Promise<EditorialClip[]> {
-    // Delete existing clips for this video first (re-analysis replaces old results)
-    await db.delete(editorialClips).where(eq(editorialClips.videoId, videoId));
+    // Re-analysis replaces old results — but NOT clips that other rows now
+    // point at. published_posts, clip_analytics and publishing_schedules gained
+    // real FK constraints to editorial_clips.id (with no onDelete), so a blanket
+    // `DELETE WHERE video_id = X` throws a foreign-key violation the moment a
+    // video has ever had an editorial clip published, scheduled, or measured —
+    // which bricked Regenerate on exactly the creator's most active videos.
+    //
+    // Keep referenced clips (they are the creator's real publish/schedule
+    // history and must survive) and delete only the unreferenced candidates.
+    const referenced = new Set<number>();
+    for (const table of [publishedPosts, clipAnalytics, publishingSchedules]) {
+      const rows = await db
+        .select({ id: (table as any).editorialClipId })
+        .from(table as any)
+        .where(isNotNull((table as any).editorialClipId));
+      for (const r of rows) if (r.id != null) referenced.add(r.id as number);
+    }
+
+    if (referenced.size === 0) {
+      await db.delete(editorialClips).where(eq(editorialClips.videoId, videoId));
+    } else {
+      await db.delete(editorialClips).where(and(
+        eq(editorialClips.videoId, videoId),
+        notInArray(editorialClips.id, [...referenced]),
+      ));
+    }
 
     if (clips.length === 0) return [];
 

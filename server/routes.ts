@@ -18131,9 +18131,22 @@ export async function registerRoutes(
   });
 
   // GET /api/distribution/analytics/video/:videoId — Get aggregate analytics for a video
+  // Ownership gate for the distribution analytics surface. These routes take a
+  // videoId and were guarded only by isFlexibleAuthenticated, so any signed-in
+  // user could read another creator's metrics and published-post URLs by
+  // walking ids — and the /refresh route would fire live YouTube/Meta calls
+  // against a video the caller does not own, burning the owner's API quota.
+  const ownsVideo = async (req: any, videoId: number): Promise<boolean> => {
+    if (req.isAdmin) return true;
+    const video = await storage.getVideoById(videoId).catch(() => undefined);
+    if (!video) return false;
+    return await isSameCreator(String((video as any).userId ?? ""), String(req.authUserId ?? ""));
+  };
+
   app.get("/api/distribution/analytics/video/:videoId", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const videoId = parseInt(req.params.videoId);
+      if (!(await ownsVideo(req, videoId))) return res.status(404).json({ error: "Video not found" });
       const { computeAggregateMetrics } = await import("./lib/distribution/analyticsCollector");
       const metrics = await computeAggregateMetrics(videoId);
       res.json(metrics);
@@ -18146,6 +18159,7 @@ export async function registerRoutes(
   app.post("/api/distribution/analytics/video/:videoId/refresh", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const videoId = parseInt(req.params.videoId);
+      if (!(await ownsVideo(req, videoId))) return res.status(404).json({ error: "Video not found" });
       const { collectVideoAnalytics, computeAggregateMetrics } = await import("./lib/distribution/analyticsCollector");
 
       await collectVideoAnalytics(videoId);
@@ -18161,6 +18175,10 @@ export async function registerRoutes(
     try {
       const clipId = parseInt(req.params.clipId);
       const analytics = await storage.getAnalyticsByClip(clipId);
+      // Authorize via the analytics rows' own videoId — no rows, nothing to leak.
+      if (analytics.length > 0 && !(await ownsVideo(req, (analytics[0] as any).videoId))) {
+        return res.status(404).json({ error: "Not found" });
+      }
       res.json(analytics);
     } catch (err: any) {
       res.status(500).json({ error: err.message || "Failed to fetch clip analytics" });
@@ -18173,6 +18191,7 @@ export async function registerRoutes(
   app.get("/api/distribution/posts/video/:videoId", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const videoId = parseInt(req.params.videoId);
+      if (!(await ownsVideo(req, videoId))) return res.status(404).json({ error: "Video not found" });
       const posts = await storage.getPublishedPostsByVideo(videoId);
       res.json(posts);
     } catch (err: any) {

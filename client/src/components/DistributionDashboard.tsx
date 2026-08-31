@@ -106,6 +106,17 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
 
   // Publishing state
   const [selectedClipId, setSelectedClipId] = useState<number | null>(null);
+  // Selection must carry the SOURCE, not just the id. generated_clips and
+  // editorial_clips are independent serial-id tables, so a video can hold a
+  // remix clip and an editorial clip that share the same number. Resolving the
+  // source with clips.find(c => c.id === selectedClipId) returned whichever came
+  // first in the merged list (remix), so picking the editorial clip published
+  // the remix one. Track the pair.
+  const [selectedClipSource, setSelectedClipSource] = useState<"remix" | "editorial">("remix");
+  const selectClip = (id: number | null, source: "remix" | "editorial" = "remix") => {
+    setSelectedClipId(id);
+    if (id != null) setSelectedClipSource(source);
+  };
   const [selectedProfileId, setSelectedProfileId] = useState<number | null>(null);
   const [customCaption, setCustomCaption] = useState("");
   /**
@@ -236,9 +247,9 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
         credentials: "include",
         body: JSON.stringify({
           clipId: selectedClipId,
-          // Which table the id belongs to. generated_clips and editorial_clips
-          // both use serial ids, so id alone is ambiguous.
-          clipSource: clips.find((c: any) => c.id === selectedClipId)?.clipSource ?? "remix",
+          // Which table the id belongs to — tracked with the selection, since
+          // remix and editorial ids collide (see selectedClipSource).
+          clipSource: selectedClipSource,
           profileId: selectedProfileId,
           caption: customCaption || undefined,
           privacyStatus,
@@ -307,9 +318,9 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
         body: JSON.stringify({
           platform,
           clipId: selectedClipId,
-          // Which table the id belongs to. generated_clips and editorial_clips
-          // both use serial ids, so id alone is ambiguous.
-          clipSource: clips.find((c: any) => c.id === selectedClipId)?.clipSource ?? "remix",
+          // Which table the id belongs to — tracked with the selection (remix
+          // and editorial ids collide).
+          clipSource: selectedClipSource,
           customCaption: customCaption || undefined,
         }),
       });
@@ -403,12 +414,13 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
                     clips={clips}
                     profiles={profiles}
                     selectedClipId={selectedClipId}
+                    selectedClipSource={selectedClipSource}
                     selectedProfileId={selectedProfileId}
                     customCaption={customCaption}
                     isPublishing={isPublishing}
                     captionPreview={captionPreview}
                     showCaptionPreview={showCaptionPreview}
-                    onSelectClip={setSelectedClipId}
+                    onSelectClip={selectClip}
                     onSelectProfile={setSelectedProfileId}
                     onCaptionChange={setCustomCaption}
                     // Wrapped, NOT passed bare: the button below is
@@ -598,7 +610,7 @@ function OverviewTab({
 }
 
 function PublishTab({
-  clips, profiles, selectedClipId, selectedProfileId, customCaption,
+  clips, profiles, selectedClipId, selectedClipSource, selectedProfileId, customCaption,
   isPublishing, captionPreview, showCaptionPreview,
   onSelectClip, onSelectProfile, onCaptionChange, onPublish, onPreviewCaption, onToggleCaptionPreview,
   privacyStatus, onPrivacyChange,
@@ -606,12 +618,13 @@ function PublishTab({
   clips: GeneratedClip[];
   profiles: DistributionProfile[];
   selectedClipId: number | null;
+  selectedClipSource: "remix" | "editorial";
   selectedProfileId: number | null;
   customCaption: string;
   isPublishing: boolean;
   captionPreview: { caption: string; hashtags: string[] } | null;
   showCaptionPreview: boolean;
-  onSelectClip: (id: number | null) => void;
+  onSelectClip: (id: number | null, source?: "remix" | "editorial") => void;
   onSelectProfile: (id: number | null) => void;
   onCaptionChange: (v: string) => void;
   onPublish: () => void;
@@ -631,13 +644,18 @@ function PublishTab({
           <p className="text-gray-500 text-sm">No clips ready for publishing. Generate clips in Remix Studio first.</p>
         ) : (
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-            {clips.map(clip => (
+            {clips.map(clip => {
+              // Match on BOTH id and source — a remix and an editorial clip can
+              // share the same id, and comparing id alone selected both cards
+              // and published the wrong one.
+              const clipSrc = clip.clipSource ?? "remix";
+              const isSelected = clip.id === selectedClipId && clipSrc === selectedClipSource;
+              return (
               <button
-                // Both tables use serial ids, so id alone can collide.
-                key={`${clip.clipSource ?? "remix"}:${clip.id}`}
-                onClick={() => onSelectClip(clip.id === selectedClipId ? null : clip.id)}
+                key={`${clipSrc}:${clip.id}`}
+                onClick={() => onSelectClip(isSelected ? null : clip.id, clipSrc)}
                 className={`relative rounded-lg overflow-hidden border-2 transition-all ${
-                  clip.id === selectedClipId
+                  isSelected
                     ? "border-green-500 ring-2 ring-green-500/30"
                     : "border-gray-700 hover:border-gray-500"
                 }`}
@@ -667,13 +685,13 @@ function PublishTab({
                     </span>
                   </div>
                 </div>
-                {clip.id === selectedClipId && (
+                {isSelected && (
                   <div className="absolute top-2 right-2">
                     <CheckCircle className="w-5 h-5 text-green-400" />
                   </div>
                 )}
               </button>
-            ))}
+            );})}
           </div>
         )}
       </div>
