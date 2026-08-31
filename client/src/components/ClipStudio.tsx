@@ -55,6 +55,7 @@ const UPLOAD_TIMEOUT_MS = 30 * 60_000; // files, not JSON — see AdminPlacement
 import {
   X as XIcon, Play, Pause, Loader2, Type, Film, Music, Sparkles,
   Scissors, Undo2, Wand2, Search, Upload, Trash2, AlertTriangle, Gauge,
+  Text as TextIcon, Plus, Camera,
 } from "lucide-react";
 
 // ── Types ───────────────────────────────────────────────────────────────
@@ -64,11 +65,19 @@ interface Segment { start: number; end: number; text: string; speaker?: string; 
 
 export interface WordCut { start: number; end: number; text?: string; reason?: "filler" | "manual" }
 
+export interface TextOverlayEdit {
+  start: number; end: number; text: string;
+  x: number; y: number; size: number;
+  color: string; background: string | null;
+  weight: "regular" | "bold"; align: "left" | "center" | "right";
+}
+
 export interface StudioEdits {
   wordCuts?: WordCut[];
   silenceCut?: { enabled: boolean; thresholdDb: number; minDurationSec: number; paddingSec: number } | null;
   speedRamps?: Array<{ start: number; end: number; rate: number }>;
-  textOverlays?: Array<Record<string, unknown>>;
+  captionEdits?: Array<{ start: number; end: number; text: string }>;
+  textOverlays?: TextOverlayEdit[];
   broll?: Array<{
     assetId: number; start: number; end: number; fit: string;
     scale: number; x: number; y: number; muted: boolean;
@@ -123,7 +132,7 @@ const fmtTime = (s: number) => {
   return `${String(m).padStart(2, "0")}:${sec.toFixed(2).padStart(5, "0")}`;
 };
 
-type Tool = "transcript" | "captions" | "broll" | "audio" | "motion";
+type Tool = "transcript" | "captions" | "text" | "broll" | "audio" | "motion";
 
 export default function ClipStudio({ clip, videoId, onClose, onApply }: Props) {
   const queryClient = useQueryClient();
@@ -133,8 +142,23 @@ export default function ClipStudio({ clip, videoId, onClose, onApply }: Props) {
   const [t, setT] = useState(0);            // player time, clip-relative
   const [busy, setBusy] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
+  const [settingCover, setSettingCover] = useState(false);
+  // Local override so the chosen cover shows immediately, before a reload.
+  const [coverOverride, setCoverOverride] = useState<string | null>(null);
 
-  const cs = clip.captionSettings ?? {};
+  // Editable caption look. Was `const cs = clip.captionSettings ?? {}` —
+  // read-only, so apply() always sent the clip's stored values (or defaults)
+  // and the size/position/colour controls the renderer honors had no writer
+  // anywhere in the product. Now local state, seeded from the clip, mutated by
+  // CaptionsTool, and read by both the live preview and apply().
+  const cs0 = (clip.captionSettings ?? {}) as Record<string, any>;
+  const [cs, setCs] = useState<Record<string, number | string>>({
+    sizeScale: Number(cs0.sizeScale ?? 1),
+    positionRatio: Number(cs0.positionRatio ?? 0.14),
+    wordsPerPhrase: Number(cs0.wordsPerPhrase ?? 4),
+    outline: Number(cs0.outline ?? 3),
+    accentHex: String(cs0.accentHex ?? "#FFE500"),
+  });
   const [captionsEnabled, setCaptionsEnabled] = useState(clip.captionsEnabled !== false);
   const [captionStyle, setCaptionStyle] = useState(String(clip.captionStyle || "highlight"));
   const [aspect, setAspect] = useState<"9:16" | "16:9">(clip.aspectRatio === "16:9" ? "16:9" : "9:16");
@@ -142,6 +166,7 @@ export default function ClipStudio({ clip, videoId, onClose, onApply }: Props) {
     wordCuts: clip.edits?.wordCuts ?? [],
     silenceCut: clip.edits?.silenceCut ?? null,
     speedRamps: clip.edits?.speedRamps ?? [],
+    captionEdits: clip.edits?.captionEdits ?? [],
     textOverlays: clip.edits?.textOverlays ?? [],
     broll: clip.edits?.broll ?? [],
     music: clip.edits?.music ?? null,
@@ -262,6 +287,23 @@ export default function ClipStudio({ clip, videoId, onClose, onApply }: Props) {
         wordCuts: [...(p.wordCuts ?? []), { start: w.start, end: w.end, text: w.word, reason: "manual" }],
       }));
     }
+  };
+
+  // The creator's correction for a word, if any (matched on clip-relative start).
+  const correctionFor = (w: Word): string | null => {
+    const e = (edits.captionEdits ?? []).find((c) => Math.abs(c.start - w.start) < 0.05);
+    return e ? e.text : null;
+  };
+
+  // Correct a mis-transcribed word in the burned caption without cutting it.
+  // Empty or unchanged text removes the correction.
+  const editWord = (w: Word, text: string) => {
+    const trimmed = text.trim();
+    setEdits((p) => {
+      const rest = (p.captionEdits ?? []).filter((c) => Math.abs(c.start - w.start) >= 0.05);
+      if (!trimmed || trimmed === w.word.trim()) return { ...p, captionEdits: rest };
+      return { ...p, captionEdits: [...rest, { start: w.start, end: w.end, text: trimmed }] };
+    });
   };
 
   const removeAllFillers = () => {
@@ -388,6 +430,27 @@ export default function ClipStudio({ clip, videoId, onClose, onApply }: Props) {
     setT(sec);
     if (v) v.currentTime = sec;
   };
+  // Set the clip's cover to the frame at the current playhead.
+  const setCover = async () => {
+    if (!clip.exportPath) return;
+    setSettingCover(true);
+    try {
+      const res = await fetchWithTimeout(`/api/editorial-clips/${clip.id}/cover`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ atSec: t }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.thumbnailPath) {
+        // Cache-bust so the <img>/poster re-fetches the new frame at the same URL.
+        setCoverOverride(`${data.thumbnailPath}${data.thumbnailPath.includes("?") ? "&" : "?"}v=${Date.now()}`);
+      }
+    } finally {
+      setSettingCover(false);
+    }
+  };
+
   const togglePlay = () => {
     const v = videoRef.current;
     if (!v) return;
@@ -449,6 +512,7 @@ export default function ClipStudio({ clip, videoId, onClose, onApply }: Props) {
   const TOOLS: Array<{ id: Tool; label: string; icon: any }> = [
     { id: "transcript", label: "Transcript", icon: Type },
     { id: "captions", label: "Captions", icon: Sparkles },
+    { id: "text", label: "Text", icon: TextIcon },
     { id: "broll", label: "B-Roll", icon: Film },
     { id: "audio", label: "Audio", icon: Music },
     { id: "motion", label: "Motion", icon: Gauge },
@@ -522,6 +586,8 @@ export default function ClipStudio({ clip, videoId, onClose, onApply }: Props) {
                   words={clipWords}
                   isCut={isCut}
                   onToggle={toggleWord}
+                  correctionFor={correctionFor}
+                  onEditWord={editWord}
                   onSeek={seek}
                   activeIdx={activeWordIdx}
                   activeRef={activeRef}
@@ -549,6 +615,17 @@ export default function ClipStudio({ clip, videoId, onClose, onApply }: Props) {
                   style={captionStyle}
                   onToggle={() => setCaptionsEnabled((v) => !v)}
                   onStyle={setCaptionStyle}
+                  settings={cs}
+                  onSettings={(patch) => setCs((p) => ({ ...p, ...patch }))}
+                />
+              )}
+              {tool === "text" && (
+                <TextTool
+                  overlays={edits.textOverlays ?? []}
+                  playhead={t}
+                  duration={clip.duration}
+                  onChange={(o) => setEdits((p) => ({ ...p, textOverlays: o }))}
+                  onSeek={(sec) => seek(sec)}
                 />
               )}
               {tool === "broll" && (
@@ -595,7 +672,7 @@ export default function ClipStudio({ clip, videoId, onClose, onApply }: Props) {
                     ref={videoRef}
                     key={clip.exportPath}
                     src={clip.exportPath}
-                    poster={clip.thumbnailPath || undefined}
+                    poster={coverOverride || clip.thumbnailPath || undefined}
                     playsInline
                     className="w-full h-full object-contain"
                     onClick={togglePlay}
@@ -656,6 +733,39 @@ export default function ClipStudio({ clip, videoId, onClose, onApply }: Props) {
                     </div>
                   )}
 
+                  {/* Text overlays — shown at their window so the preview
+                      matches the render (the studio's whole principle). */}
+                  {(edits.textOverlays ?? []).map((raw, i) => {
+                    const o = raw;
+                    if (!(t >= o.start && t <= o.end) || !o.text?.trim()) return null;
+                    return (
+                      <div
+                        key={i}
+                        className="absolute pointer-events-none"
+                        style={{
+                          left: `${o.x * 100}%`, top: `${o.y * 100}%`,
+                          transform: `translate(-50%, -50%)`,
+                          textAlign: o.align,
+                        }}
+                      >
+                        <span
+                          style={{
+                            display: "inline-block",
+                            color: o.color,
+                            fontWeight: o.weight === "bold" ? 800 : 500,
+                            fontSize: `clamp(10px, ${o.size * 90}cqw, 60px)`,
+                            lineHeight: 1.1,
+                            padding: o.background ? "0.1em 0.3em" : 0,
+                            background: o.background ?? "transparent",
+                            textShadow: o.background ? "none" : "0 2px 6px rgba(0,0,0,.85), 0 0 2px rgba(0,0,0,1)",
+                          }}
+                        >
+                          {o.text}
+                        </span>
+                      </div>
+                    );
+                  })}
+
                   {/* Live badges for what the preview cannot show truthfully. */}
                   <div className="absolute top-2 left-2 flex flex-col gap-1 pointer-events-none">
                     {rampAt(t) !== 1 && (
@@ -700,6 +810,16 @@ export default function ClipStudio({ clip, videoId, onClose, onApply }: Props) {
                 <span className="text-xs tabular-nums text-gray-300">{fmtTime(t)}</span>
                 <span className="text-[11px] text-gray-600">/ {fmtTime(clip.duration)}</span>
                 <div className="ml-auto flex items-center gap-2">
+                  <button
+                    onClick={setCover}
+                    disabled={!clip.exportPath || settingCover}
+                    className="flex items-center gap-1 text-[11px] px-2 py-1 rounded border border-gray-700 text-gray-300 hover:border-gray-500 hover:text-white disabled:opacity-30"
+                    title="Use the current frame as the clip's cover image"
+                    data-testid="set-cover"
+                  >
+                    {settingCover ? <Loader2 className="w-3 h-3 animate-spin" /> : <Camera className="w-3 h-3" />}
+                    Set as cover
+                  </button>
                   {removedSec > 0.05 && (
                     <Badge variant="outline" className="text-[10px] text-amber-300 border-amber-500/30">
                       −{removedSec.toFixed(1)}s cut
@@ -800,6 +920,8 @@ function TranscriptTool(props: {
   words: Word[];
   isCut: (w: Word) => boolean;
   onToggle: (w: Word) => void;
+  correctionFor: (w: Word) => string | null;
+  onEditWord: (w: Word, text: string) => void;
   onSeek: (s: number) => void;
   activeIdx: number;
   activeRef: React.RefObject<HTMLSpanElement>;
@@ -813,6 +935,10 @@ function TranscriptTool(props: {
   onAnalyzeSilence: () => void;
   onToggleSilence: () => void;
 }) {
+  const [fixMode, setFixMode] = useState(false);
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+
   if (props.loading) {
     return <div className="flex justify-center py-10"><Loader2 className="w-5 h-5 animate-spin text-purple-400" /></div>;
   }
@@ -854,6 +980,15 @@ function TranscriptTool(props: {
               ? `${props.silenceOn ? "Keeping" : "Cut"} ${props.silenceInfo.totalSilentSec.toFixed(1)}s silence`
               : "Find silence"}
         </Button>
+        <Button
+          size="sm" variant="outline"
+          onClick={() => { setFixMode((v) => !v); setEditingKey(null); }}
+          className={`text-[11px] h-7 border-gray-700 ${fixMode ? "text-sky-300 border-sky-500/40" : ""}`}
+          data-testid="fix-text-mode"
+        >
+          <Type className="w-3 h-3 mr-1" />
+          {fixMode ? "Fixing text" : "Fix text"}
+        </Button>
         {props.cutCount > 0 && (
           <Button size="sm" variant="ghost" onClick={props.onClearCuts} className="text-[11px] h-7 text-gray-400">
             <Undo2 className="w-3 h-3 mr-1" />
@@ -863,29 +998,59 @@ function TranscriptTool(props: {
       </div>
 
       <p className="text-[11px] text-gray-500 leading-snug">
-        Click any word to cut it. Struck words are removed from the clip and the gap closes.
+        {fixMode
+          ? "Click a word to correct how it's spelled in the caption — the audio is untouched. Useful for names and brand words."
+          : "Click any word to cut it. Struck words are removed from the clip and the gap closes."}
       </p>
 
       <p className="text-[13px] leading-[1.9] select-none">
         {props.words.map((w, i) => {
           const cut = props.isCut(w);
           const active = i === props.activeIdx;
+          const key = `${w.start}-${i}`;
+          const correction = props.correctionFor(w);
+
+          if (fixMode && editingKey === key) {
+            return (
+              <input
+                key={key}
+                autoFocus
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onBlur={() => { props.onEditWord(w, draft); setEditingKey(null); }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") { props.onEditWord(w, draft); setEditingKey(null); }
+                  if (e.key === "Escape") setEditingKey(null);
+                }}
+                className="inline-block bg-gray-900 text-sky-200 text-[13px] rounded px-1 mx-0.5 border border-sky-500/60 focus:outline-none"
+                style={{ width: `${Math.max(4, draft.length + 1)}ch` }}
+              />
+            );
+          }
+
           return (
             <span
-              key={`${w.start}-${i}`}
+              key={key}
               ref={active ? props.activeRef : undefined}
-              onClick={() => props.onToggle(w)}
+              onClick={() => {
+                if (fixMode) { setDraft(correction ?? w.word.trim()); setEditingKey(key); }
+                else props.onToggle(w);
+              }}
               onDoubleClick={() => props.onSeek(w.start)}
-              title={`${w.start.toFixed(2)}s — click to ${cut ? "restore" : "cut"}, double-click to seek`}
+              title={fixMode
+                ? `${w.start.toFixed(2)}s — click to correct the caption text`
+                : `${w.start.toFixed(2)}s — click to ${cut ? "restore" : "cut"}, double-click to seek`}
               className={`cursor-pointer rounded px-0.5 transition-colors ${
                 cut
                   ? "line-through text-gray-600 decoration-red-500/70"
-                  : active
-                    ? "bg-purple-500/40 text-white"
-                    : "text-gray-200 hover:bg-gray-700/60"
+                  : correction
+                    ? "text-sky-200 underline decoration-sky-400/70 decoration-dotted"
+                    : active
+                      ? "bg-purple-500/40 text-white"
+                      : "text-gray-200 hover:bg-gray-700/60"
               }`}
             >
-              {w.word}{" "}
+              {correction ?? w.word}{" "}
             </span>
           );
         })}
@@ -902,7 +1067,18 @@ const STYLE_LABELS: Record<string, string> = {
   narrative: "Narrative — longer lines, fade",
 };
 
-function CaptionsTool(props: { enabled: boolean; style: string; onToggle: () => void; onStyle: (s: string) => void }) {
+function CaptionsTool(props: {
+  enabled: boolean;
+  style: string;
+  onToggle: () => void;
+  onStyle: (s: string) => void;
+  settings: Record<string, number | string>;
+  onSettings: (patch: Record<string, number | string>) => void;
+}) {
+  const s = props.settings;
+  const size = Number(s.sizeScale ?? 1);
+  const pos = Number(s.positionRatio ?? 0.14);
+  const accent = String(s.accentHex ?? "#FFE500");
   return (
     <div className="space-y-3">
       <button
@@ -915,25 +1091,210 @@ function CaptionsTool(props: { enabled: boolean; style: string; onToggle: () => 
         Captions {props.enabled ? "on" : "off"}
       </button>
       {props.enabled && (
-        <div className="space-y-1.5">
-          {Object.entries(STYLE_LABELS).map(([k, label]) => (
-            <button
-              key={k}
-              onClick={() => props.onStyle(k)}
-              className={`w-full text-left px-3 py-2 rounded-md text-[11px] border transition-colors ${
-                props.style === k
-                  ? "bg-purple-500/20 text-purple-200 border-purple-500/50"
-                  : "bg-gray-800 text-gray-400 border-gray-700 hover:border-gray-500"
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-          <p className="text-[11px] text-gray-600 pt-1">
-            Size, position and colour live in the clip's Edit panel — this picks the look.
-          </p>
+        <div className="space-y-3">
+          <div className="space-y-1.5">
+            {Object.entries(STYLE_LABELS).map(([k, label]) => (
+              <button
+                key={k}
+                onClick={() => props.onStyle(k)}
+                className={`w-full text-left px-3 py-2 rounded-md text-[11px] border transition-colors ${
+                  props.style === k
+                    ? "bg-purple-500/20 text-purple-200 border-purple-500/50"
+                    : "bg-gray-800 text-gray-400 border-gray-700 hover:border-gray-500"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {/* Size / position / colour — the renderer honors all three
+              (sizeScale, positionRatio, accentHex); these are the writers. */}
+          <div className="space-y-2.5 pt-1 border-t border-gray-700/60">
+            <label className="block">
+              <span className="flex justify-between text-[11px] text-gray-400 mb-1">
+                <span>Size</span><span>{Math.round(size * 100)}%</span>
+              </span>
+              <input
+                type="range" min={0.6} max={1.8} step={0.05} value={size}
+                onChange={(e) => props.onSettings({ sizeScale: Number(e.target.value) })}
+                className="w-full accent-purple-500"
+                data-testid="caption-size"
+              />
+            </label>
+            <label className="block">
+              <span className="flex justify-between text-[11px] text-gray-400 mb-1">
+                <span>Vertical position</span><span>{Math.round(pos * 100)}% up</span>
+              </span>
+              <input
+                type="range" min={0.04} max={0.8} step={0.02} value={pos}
+                onChange={(e) => props.onSettings({ positionRatio: Number(e.target.value) })}
+                className="w-full accent-purple-500"
+                data-testid="caption-position"
+              />
+            </label>
+            <label className="flex items-center justify-between">
+              <span className="text-[11px] text-gray-400">Highlight colour</span>
+              <input
+                type="color" value={accent}
+                onChange={(e) => props.onSettings({ accentHex: e.target.value })}
+                className="w-8 h-6 rounded border border-gray-700 bg-transparent cursor-pointer"
+                data-testid="caption-accent"
+              />
+            </label>
+          </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Text / titles tool ──────────────────────────────────────────────────
+//
+// Writes edits.textOverlays, whose full render path already existed
+// (EditStack.textOverlays → burned in after crop by buildEditGraph) with no UI
+// to reach it. Shape matches the server's validator at
+// /api/editorial-clips/:id/rerender exactly.
+
+const TEXT_POSITIONS: Array<{ label: string; y: number }> = [
+  { label: "Top", y: 0.12 },
+  { label: "Middle", y: 0.5 },
+  { label: "Lower", y: 0.82 },
+];
+
+function TextTool(props: {
+  overlays: TextOverlayEdit[];
+  playhead: number;
+  duration: number;
+  onChange: (o: TextOverlayEdit[]) => void;
+  onSeek: (sec: number) => void;
+}) {
+  const { overlays, onChange } = props;
+  const patch = (i: number, p: Partial<TextOverlayEdit>) =>
+    onChange(overlays.map((o, idx) => (idx === i ? { ...o, ...p } : o)));
+  const add = () => {
+    const start = Math.min(props.playhead, Math.max(0, props.duration - 1));
+    onChange([
+      ...overlays,
+      {
+        start,
+        end: Math.min(props.duration, start + 3),
+        text: "Your title",
+        x: 0.5, y: 0.12, size: 0.07,
+        color: "#ffffff", background: null,
+        weight: "bold", align: "center",
+      },
+    ]);
+  };
+
+  return (
+    <div className="space-y-3">
+      <button
+        onClick={add}
+        className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-md border border-dashed border-gray-600 text-[11px] text-gray-300 hover:border-gray-400"
+        data-testid="add-text-overlay"
+      >
+        <Plus className="w-3 h-3" /> Add title / text
+      </button>
+
+      {overlays.length === 0 && (
+        <p className="text-[11px] text-gray-600">
+          On-screen titles, lower thirds, callouts. Each appears for the window you set and is burned into the render.
+        </p>
+      )}
+
+      {overlays.map((o, i) => (
+        <div key={i} className="rounded-lg border border-gray-700 bg-gray-800/50 p-2.5 space-y-2">
+          <div className="flex items-start gap-2">
+            <textarea
+              value={o.text}
+              onChange={(e) => patch(i, { text: e.target.value.slice(0, 200) })}
+              rows={2}
+              className="flex-1 bg-gray-900 text-white text-xs rounded p-2 border border-gray-700 focus:border-purple-500 focus:outline-none resize-none"
+              placeholder="Text…"
+            />
+            <button
+              onClick={() => onChange(overlays.filter((_, idx) => idx !== i))}
+              className="text-gray-500 hover:text-red-400 p-1"
+              title="Remove"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          {/* Timing */}
+          <div className="flex items-center gap-2 text-[11px] text-gray-400">
+            <button onClick={() => props.onSeek(o.start)} className="font-mono hover:text-white" title="Jump to start">
+              {o.start.toFixed(1)}s
+            </button>
+            <span>→</span>
+            <span className="font-mono">{o.end.toFixed(1)}s</span>
+            <button
+              onClick={() => patch(i, { start: Math.min(props.playhead, o.end - 0.3) })}
+              className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-gray-700 hover:bg-gray-600"
+              title="Set start to playhead"
+            >
+              Start here
+            </button>
+            <button
+              onClick={() => patch(i, { end: Math.max(props.playhead, o.start + 0.3) })}
+              className="text-[10px] px-1.5 py-0.5 rounded bg-gray-700 hover:bg-gray-600"
+              title="Set end to playhead"
+            >
+              End here
+            </button>
+          </div>
+
+          {/* Position */}
+          <div className="flex gap-1">
+            {TEXT_POSITIONS.map((p) => (
+              <button
+                key={p.label}
+                onClick={() => patch(i, { y: p.y })}
+                className={`flex-1 text-[10px] py-1 rounded border ${
+                  Math.abs(o.y - p.y) < 0.02
+                    ? "bg-purple-500/20 text-purple-200 border-purple-500/50"
+                    : "bg-gray-800 text-gray-400 border-gray-700 hover:border-gray-500"
+                }`}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Size / colour / plate / weight */}
+          <div className="flex items-center gap-2">
+            <input
+              type="range" min={0.03} max={0.16} step={0.005} value={o.size}
+              onChange={(e) => patch(i, { size: Number(e.target.value) })}
+              className="flex-1 accent-purple-500" title="Size"
+            />
+            <input
+              type="color" value={o.color}
+              onChange={(e) => patch(i, { color: e.target.value })}
+              className="w-7 h-6 rounded border border-gray-700 bg-transparent cursor-pointer" title="Text colour"
+            />
+            <button
+              onClick={() => patch(i, { background: o.background ? null : "#000000" })}
+              className={`text-[10px] px-1.5 py-1 rounded border ${
+                o.background ? "bg-gray-700 text-white border-gray-600" : "bg-gray-800 text-gray-500 border-gray-700"
+              }`}
+              title="Background plate"
+            >
+              Plate
+            </button>
+            <button
+              onClick={() => patch(i, { weight: o.weight === "bold" ? "regular" : "bold" })}
+              className={`text-[10px] px-1.5 py-1 rounded border font-bold ${
+                o.weight === "bold" ? "bg-gray-700 text-white border-gray-600" : "bg-gray-800 text-gray-500 border-gray-700"
+              }`}
+              title="Bold"
+            >
+              B
+            </button>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }

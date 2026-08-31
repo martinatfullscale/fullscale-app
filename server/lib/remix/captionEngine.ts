@@ -38,6 +38,13 @@ export interface CaptionInput {
     speaker?: string;
     words?: Array<{ word: string; start: number; end: number; confidence?: number }>;
   }>;
+  /**
+   * Creator corrections to mis-transcribed words, clip-relative. Each replaces
+   * the spoken word(s) in its [start,end] window with `text` in the BURNED-IN
+   * caption only — the audio is untouched. This is how a creator fixes
+   * "full scale" → "FullScale" without cutting the word out of the clip.
+   */
+  captionEdits?: Array<{ start: number; end: number; text: string }>;
 }
 
 export interface CaptionOutput {
@@ -135,6 +142,30 @@ export function generateTranscriptCaptions(input: CaptionInput): CaptionOutput {
   }
 
   if (allWords.length === 0) return { segments: [], style: "transcript" };
+
+  // Apply creator caption corrections (clip-relative). A word whose midpoint
+  // falls inside an edit window takes the edit's text; the first such word in a
+  // multi-word window carries the full replacement and the rest blank out, so
+  // "full scale" → "FullScale" reads as one corrected token. Audio is untouched.
+  const edits = (input.captionEdits ?? []).filter((e) => e && typeof e.text === "string");
+  if (edits.length > 0) {
+    for (const e of edits) {
+      const lo = Math.min(e.start, e.end);
+      const hi = Math.max(e.start, e.end);
+      let first = true;
+      for (const w of allWords) {
+        const mid = (w.start + w.end) / 2;
+        if (mid >= lo - 0.05 && mid <= hi + 0.05) {
+          w.word = first ? e.text : "";
+          first = false;
+        }
+      }
+    }
+    // Drop any words blanked by a multi-word correction.
+    for (let i = allWords.length - 1; i >= 0; i--) {
+      if (allWords[i].word === "") allWords.splice(i, 1);
+    }
+  }
 
   // Group words into caption segments of 4-8 words
   const WORDS_PER_SEGMENT = 6;

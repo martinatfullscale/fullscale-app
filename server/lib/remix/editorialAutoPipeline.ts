@@ -815,6 +815,7 @@ interface EditorialRenderCtx {
     enabled?: boolean;
     style?: string;
     settings?: import("./captionStyler").CaptionOverrides | null;
+    captionEdits?: Array<{ start: number; end: number; text: string }>;
   };
   /** Compiled edit stack for this clip (b-roll, music, retiming, text,
    *  stabilization). Single-range clips only — see prepareEditGraphForClip. */
@@ -1295,6 +1296,7 @@ export async function renderSingleEditorialClip(
         enabled: (clip as any).captionsEnabled !== false,
         style: (clip as any).captionStyle || "highlight",
         settings: (clip as any).captionSettings ?? null,
+        captionEdits: (clip as any).edits?.captionEdits,
       },
       logTag: "EditorialAuto:Single",
     });
@@ -1718,6 +1720,7 @@ function buildEditorialCaptions(
     enabled?: boolean;
     style?: string;
     settings?: import("./captionStyler").CaptionOverrides | null;
+    captionEdits?: Array<{ start: number; end: number; text: string }>;
   },
 ): { drawtext: string | null; ass: string | null } {
   try {
@@ -1734,6 +1737,7 @@ function buildEditorialCaptions(
       brandNames: [],
       style: (captionOpts?.style as any) || "highlight",
       transcriptSegments: transcriptSegments as any,
+      captionEdits: captionOpts?.captionEdits,
     });
     if (result.segments.length === 0) return { drawtext: null, ass: null };
     console.log(`[EditorialAuto]   Captions: ${result.segments.length} segment(s) will be burned in (${captionOpts?.style || "highlight"})`);

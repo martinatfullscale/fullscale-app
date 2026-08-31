@@ -15025,6 +15025,18 @@ export async function registerRoutes(
               .map((r: any) => ({ start: num(r.start, 0, 36000, 0), end: num(r.end, 0, 36000, 0), rate: num(r.rate, 0.25, 4, 1) }))
               .filter((r: any) => r.end - r.start >= 0.2 && Math.abs(r.rate - 1) > 0.01);
           }
+          // Caption text corrections — clip-relative, burned into the caption
+          // only (audio untouched). Lets a creator fix a mis-transcribed word
+          // instead of cutting it out of the clip.
+          if (Array.isArray(e.captionEdits)) {
+            clean.captionEdits = e.captionEdits.slice(0, 200)
+              .map((c: any) => ({
+                start: num(c.start, 0, 36000, 0),
+                end: num(c.end, 0, 36000, 0),
+                text: String(c.text ?? "").slice(0, 120),
+              }))
+              .filter((c: any) => c.end >= c.start && c.text.trim().length > 0);
+          }
           if (Array.isArray(e.textOverlays)) {
             clean.textOverlays = e.textOverlays.slice(0, 12)
               .map((t: any) => ({
@@ -15102,6 +15114,58 @@ export async function registerRoutes(
         });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "Re-render failed" });
+    }
+  });
+
+  // POST /api/editorial-clips/:clipId/cover — Set the clip's cover to the frame
+  // at a chosen playhead time. The cover is the single biggest driver of the
+  // click on short-form, and it was auto-picked and unchangeable; this lets the
+  // creator scrub to a frame and make it the thumbnail. Extracts server-side
+  // from the rendered clip (no canvas/CORS fragility).
+  app.post("/api/editorial-clips/:clipId/cover", isFlexibleAuthenticated, async (req: any, res) => {
+    let tmpDir: string | null = null;
+    try {
+      const clipId = parseInt(req.params.clipId);
+      if (isNaN(clipId)) return res.status(400).json({ error: "Invalid clip ID" });
+      const atSec = Math.max(0, Number(req.body?.atSec) || 0);
+
+      const clip = await storage.getEditorialClipById(clipId);
+      if (!clip) return res.status(404).json({ error: "Clip not found" });
+      const video = await storage.getVideoById(clip.videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+      if (!(await isSameCreator(String(video.userId), req.authUserId)) && !req.isAdmin) {
+        return res.status(403).json({ error: "Not your clip" });
+      }
+      if (!clip.exportPath) return res.status(400).json({ error: "Clip isn't rendered yet — render it before choosing a cover." });
+
+      // Materialize the rendered clip to a local file (Object Storage clips
+      // live at /storage/... with the local copy deleted after upload).
+      tmpDir = path.join("/tmp/remix-videos", `cover-${clipId}-${Date.now()}`);
+      fs.mkdirSync(tmpDir, { recursive: true });
+      let localClip: string;
+      if (clip.exportPath.startsWith("/storage/")) {
+        localClip = await downloadToTempFile(objectKeyFromServeUrl(clip.exportPath), tmpDir);
+      } else {
+        localClip = path.join(process.cwd(), "public", clip.exportPath.replace(/^\//, ""));
+        if (!fs.existsSync(localClip)) return res.status(404).json({ error: "Clip file not found on disk" });
+      }
+
+      const { runFFmpegThumbnail } = await import("./lib/remix/editorialAutoPipeline");
+      const thumbLocal = path.join(tmpDir, `cover_${clipId}.jpg`);
+      const safeAt = Math.min(atSec, Math.max(0, Number(clip.duration) - 0.1));
+      await runFFmpegThumbnail(localClip, thumbLocal, safeAt);
+      if (!fs.existsSync(thumbLocal)) throw new Error("frame capture produced no image");
+
+      const objectKey = `public/editorial-clips/video-${clip.videoId}/cover_${clipId}_${Date.now()}.jpg`;
+      const thumbUrl = await uploadFileToStorage(thumbLocal, objectKey);
+      const updated = await storage.updateEditorialClipRender(clipId, { thumbnailPath: thumbUrl });
+
+      res.json({ success: true, thumbnailPath: updated?.thumbnailPath ?? thumbUrl });
+    } catch (err: any) {
+      console.error("[Cover] Error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to set cover" });
+    } finally {
+      if (tmpDir) { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {} }
     }
   });
 
