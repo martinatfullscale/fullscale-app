@@ -4248,6 +4248,30 @@ export async function registerRoutes(
     }
   });
 
+  // GET /api/videos/:videoId/audience-response — the creator-facing audience
+  // summary the privacy policy promises. Ownership-checked; aggregate only, so
+  // no commenter's name is ever returned. Until now this data existed but was
+  // reachable only through an admin measurement route, so the "summary for you"
+  // we disclosed did not actually exist for creators.
+  app.get("/api/videos/:videoId/audience-response", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+      if (!(await isSameCreator(String(video.userId), req.authUserId)) && !req.isAdmin) {
+        return res.status(404).json({ error: "Video not found" });
+      }
+
+      const summary = await storage.getAudienceResponseSummary(videoId);
+      res.json(summary);
+    } catch (err: any) {
+      console.error("[AudienceResponse] Error:", err.message);
+      res.status(500).json({ error: "Failed to load audience response" });
+    }
+  });
+
   // Rename / update a video title (also renames local file on disk)
   app.patch("/api/videos/:videoId", isFlexibleAuthenticated, async (req: any, res) => {
     try {

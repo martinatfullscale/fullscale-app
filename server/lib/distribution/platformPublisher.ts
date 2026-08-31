@@ -100,7 +100,7 @@ class TikTokAdapter implements PlatformAdapter {
       }
 
       // Step 2: Upload video binary
-      const videoBuffer = fs.readFileSync(input.clipPath);
+      const videoBuffer = await fs.promises.readFile(input.clipPath);
       const uploadRes = await fetch(uploadUrl, {
         method: "PUT",
         headers: {
@@ -159,7 +159,7 @@ class YouTubeAdapter implements PlatformAdapter {
 
   async publish(input: PublishInput): Promise<PublishResult> {
     try {
-      const videoBuffer = fs.readFileSync(input.clipPath);
+      const videoBuffer = await fs.promises.readFile(input.clipPath);
       const description = [input.caption, "", input.hashtags.map(h => `#${h}`).join(" ")].join("\n").trim();
 
       // Resumable upload: Step 1 — initiate
@@ -389,7 +389,7 @@ class TwitterAdapter implements PlatformAdapter {
 
   async publish(input: PublishInput): Promise<PublishResult> {
     try {
-      const videoBuffer = fs.readFileSync(input.clipPath);
+      const videoBuffer = await fs.promises.readFile(input.clipPath);
 
       // Step 1: INIT
       const initRes = await fetch(`${this.uploadUrl}/media/upload.json`, {
@@ -505,7 +505,7 @@ class LinkedInAdapter implements PlatformAdapter {
 
   async publish(input: PublishInput): Promise<PublishResult> {
     try {
-      const videoBuffer = fs.readFileSync(input.clipPath);
+      const videoBuffer = await fs.promises.readFile(input.clipPath);
 
       // Step 1: Register upload
       const registerRes = await fetch(`${this.baseUrl}/assets?action=registerUpload`, {
@@ -645,7 +645,7 @@ class FacebookPageAdapter implements PlatformAdapter {
       form.append("published", "true");
       form.append(
         "source",
-        new Blob([fs.readFileSync(input.clipPath)], { type: "video/mp4" }),
+        new Blob([await fs.promises.readFile(input.clipPath)], { type: "video/mp4" }),
         path.basename(input.clipPath),
       );
 
@@ -857,7 +857,31 @@ export async function publishToPlaftorm(
   }
 
   console.log(`[Publisher] Publishing to ${platform}...`);
-  const result = await adapter.publish(input);
+
+  // Hard outer deadline on the whole publish.
+  //
+  // Only the Facebook adapter times out its own fetches; the others issue bare
+  // fetch() calls with no AbortSignal, so a TCP-level stall on an upload PUT or
+  // a status poll never settles. The scheduler awaits this function inside a
+  // tickInFlight guard that only clears when it resolves, so one hung socket
+  // would freeze ALL scheduled publishing until the process restarts. This
+  // bounds every publish regardless of which inner call hangs — the underlying
+  // socket may linger, but the caller is freed and the next tick runs.
+  const DEADLINE_MS = 20 * 60_000; // long enough for a large upload on a slow link
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<PublishResult>((resolve) => {
+    timer = setTimeout(
+      () => resolve({ success: false, platformPostId: null, postUrl: null, error: `${platform} publish exceeded ${Math.round(DEADLINE_MS / 60000)}m deadline — treated as failed` }),
+      DEADLINE_MS,
+    );
+  });
+
+  let result: PublishResult;
+  try {
+    result = await Promise.race([adapter.publish(input), deadline]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 
   if (result.success) {
     console.log(`[Publisher] Published to ${platform}: ${result.platformPostId}`);

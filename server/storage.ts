@@ -256,6 +256,14 @@ export interface IStorage {
   getUnclassifiedComments(limit?: number): Promise<ContentComment[]>;
   applyCommentClassification(id: number, patch: { sentiment: string; mentionsBrand: boolean }): Promise<void>;
   getCommentsForVideo(videoId: number): Promise<ContentComment[]>;
+  getAudienceResponseSummary(videoId: number): Promise<{
+    total: number;
+    classified: number;
+    sentiment: { positive: number; neutral: number; negative: number; mixed: number };
+    brandMentions: number;
+    afterPlacement: number;
+    samples: Array<{ text: string; sentiment: string | null; likeCount: number | null; publishedAt: Date | null }>;
+  }>;
   getPlacementExposureForVideo(videoId: number): Promise<PlacementExposure | undefined>;
   insertRetentionCurve(row: InsertVideoRetentionCurve): Promise<void>;
   getLatestRetentionCurve(videoId: number): Promise<VideoRetentionCurve | undefined>;
@@ -501,6 +509,50 @@ export const VIDEO_LIST_COLUMNS = {
   createdAt: videoIndex.createdAt,
   updatedAt: videoIndex.updatedAt,
 } as const;
+
+/**
+ * OAuth token encryption for distribution_profiles, mirroring the
+ * youtube_connections helpers (upsert/getYoutubeConnection).
+ *
+ * These rows hold live posting credentials — the Facebook Page token, the
+ * ~60-day Instagram token, TikTok/Twitter refresh tokens — and
+ * resolvePublishAccessToken reads several of them straight off the profile at
+ * publish time. They were being written in plaintext while youtube_connections
+ * next to them encrypted the same class of secret, which also made the privacy
+ * policy's "encrypted at rest" claim untrue for this table.
+ *
+ * decrypt is tolerant of legacy plaintext: rows written before this change do
+ * not have the iv:tag:ciphertext shape, so decrypt throws and we return the
+ * value as-is. That lets existing profiles keep publishing and quietly upgrade
+ * to ciphertext the next time their token is rewritten (every token refresh),
+ * with no migration step and no window where a live profile stops working.
+ */
+function encryptProfileTokens<T extends { accessToken?: string | null; refreshToken?: string | null }>(data: T): T {
+  const out: any = { ...data };
+  if (typeof data.accessToken === "string" && data.accessToken) out.accessToken = encrypt(data.accessToken);
+  if (typeof data.refreshToken === "string" && data.refreshToken) out.refreshToken = encrypt(data.refreshToken);
+  return out;
+}
+
+function safeDecrypt(v: string | null | undefined): string | null {
+  if (!v) return v ?? null;
+  try {
+    return decrypt(v);
+  } catch {
+    // Not in encrypted form — a legacy plaintext token written before this
+    // table was encrypted. Return it unchanged so the profile still publishes.
+    return v;
+  }
+}
+
+function decryptProfileTokens<T extends { accessToken?: string | null; refreshToken?: string | null } | undefined>(row: T): T {
+  if (!row) return row;
+  return {
+    ...row,
+    accessToken: safeDecrypt(row.accessToken),
+    refreshToken: safeDecrypt(row.refreshToken),
+  };
+}
 
 export class DatabaseStorage implements IStorage {
   // User authentication methods
@@ -2806,6 +2858,48 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(contentComments.publishedAt));
   }
 
+  /**
+   * Audience-response summary for one video — the creator-facing view the
+   * privacy policy promises ("summarise audience response").
+   *
+   * Deliberately AGGREGATE ONLY: counts by sentiment, the brand-mention split,
+   * and the pre/post-placement split, plus a few representative comment texts.
+   * No author names leave this method, which is what keeps the feature
+   * consistent with our own claim that we do not build profiles of the people
+   * who wrote the comments. Sample texts are the highest-liked classified
+   * comments, author stripped.
+   */
+  async getAudienceResponseSummary(videoId: number): Promise<{
+    total: number;
+    classified: number;
+    sentiment: { positive: number; neutral: number; negative: number; mixed: number };
+    brandMentions: number;
+    afterPlacement: number;
+    samples: Array<{ text: string; sentiment: string | null; likeCount: number | null; publishedAt: Date | null }>;
+  }> {
+    const rows = await db
+      .select()
+      .from(contentComments)
+      .where(eq(contentComments.videoId, videoId));
+
+    const sentiment = { positive: 0, neutral: 0, negative: 0, mixed: 0 };
+    let classified = 0, brandMentions = 0, afterPlacement = 0;
+    for (const r of rows) {
+      if (r.classifiedAt) classified += 1;
+      if (r.sentiment && r.sentiment in sentiment) (sentiment as any)[r.sentiment] += 1;
+      if (r.mentionsBrand) brandMentions += 1;
+      if (r.afterPlacementLive) afterPlacement += 1;
+    }
+
+    const samples = rows
+      .filter(r => r.classifiedAt && r.text)
+      .sort((a, b) => (b.likeCount ?? 0) - (a.likeCount ?? 0))
+      .slice(0, 5)
+      .map(r => ({ text: r.text, sentiment: r.sentiment, likeCount: r.likeCount, publishedAt: r.publishedAt }));
+
+    return { total: rows.length, classified, sentiment, brandMentions, afterPlacement, samples };
+  }
+
   async insertRetentionCurve(row: InsertVideoRetentionCurve): Promise<void> {
     await db.insert(videoRetentionCurves).values(row);
   }
@@ -4011,28 +4105,29 @@ export class DatabaseStorage implements IStorage {
   // ── Distribution Profile Methods ──
 
   async createDistributionProfile(data: InsertDistributionProfile): Promise<DistributionProfile> {
-    const [result] = await db.insert(distributionProfiles).values(data).returning();
-    return result;
+    const [result] = await db.insert(distributionProfiles).values(encryptProfileTokens(data)).returning();
+    return decryptProfileTokens(result)!;
   }
 
   async getDistributionProfiles(userId: number): Promise<DistributionProfile[]> {
-    return db.select().from(distributionProfiles)
+    const rows = await db.select().from(distributionProfiles)
       .where(and(eq(distributionProfiles.userId, userId), eq(distributionProfiles.isActive, true)))
       .orderBy(desc(distributionProfiles.createdAt));
+    return rows.map(r => decryptProfileTokens(r)!);
   }
 
   async getDistributionProfile(id: number): Promise<DistributionProfile | undefined> {
     const [result] = await db.select().from(distributionProfiles)
       .where(eq(distributionProfiles.id, id)).limit(1);
-    return result;
+    return decryptProfileTokens(result);
   }
 
   async updateDistributionProfile(id: number, data: Partial<InsertDistributionProfile>): Promise<DistributionProfile | undefined> {
     const [result] = await db.update(distributionProfiles)
-      .set({ ...data, updatedAt: new Date() })
+      .set({ ...encryptProfileTokens(data), updatedAt: new Date() })
       .where(eq(distributionProfiles.id, id))
       .returning();
-    return result;
+    return decryptProfileTokens(result);
   }
 
   /**

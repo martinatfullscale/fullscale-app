@@ -248,6 +248,11 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
   const [isSearching, setIsSearching] = useState(false);
   const [searchResults, setSearchResults] = useState<RankedClip[] | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Bumped to restart the poll after Regenerate/Resume. The poll self-reschedules
+  // only while a pipeline is in flight, so once it settles on "ready"/"failed" it
+  // stops with no pending timer; starting new server work does not on its own wake
+  // it, which left the banner stuck at "Queued…" and new clips never appearing.
+  const [pollNonce, setPollNonce] = useState(0);
 
   // ── Helpers ────────────────────────────────────────────────────
   const refetchClips = useCallback(async () => {
@@ -307,7 +312,7 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
         pollTimerRef.current = null;
       }
     };
-  }, [videoId, fetchAutoStatus, refetchClips]);
+  }, [videoId, pollNonce, fetchAutoStatus, refetchClips]);
 
   const handleRegenerate = useCallback(async () => {
     setIsRegenerating(true);
@@ -334,6 +339,7 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
         completedAt: null,
         updatedAt: new Date().toISOString(),
       });
+      setPollNonce(n => n + 1); // restart the poll so the new run is tracked
     } catch (err: any) {
       toast({ title: "Error", description: err.message, variant: "destructive" });
     }
@@ -658,9 +664,11 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
                         title: "Resuming render",
                         description: `Picking up ${data.toRender ?? "remaining"} unrendered clips. Already-rendered clips kept.`,
                       });
-                      // Kick a fresh poll
+                      // Kick a fresh poll — and restart the polling loop, which
+                      // otherwise stays stopped after a settled run.
                       const next = await fetchAutoStatus();
                       if (next) setAutoStatus(next);
+                      setPollNonce(n => n + 1);
                     } else {
                       const err = await res.json().catch(() => ({}));
                       toast({

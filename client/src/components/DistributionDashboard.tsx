@@ -425,7 +425,10 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
                 )}
                 {tab === "schedule" && <ScheduleTab videoId={videoId} clips={clips} profiles={profiles} />}
                 {tab === "analytics" && (
-                  <AnalyticsTab metrics={metrics} isRefreshing={isRefreshing} onRefresh={refreshAnalytics} />
+                  <div className="space-y-6">
+                    <AnalyticsTab metrics={metrics} isRefreshing={isRefreshing} onRefresh={refreshAnalytics} />
+                    <AudienceResponseCard videoId={videoId} />
+                  </div>
                 )}
               </>
             )}
@@ -944,6 +947,122 @@ function ScheduleTab({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+interface AudienceResponse {
+  total: number;
+  classified: number;
+  sentiment: { positive: number; neutral: number; negative: number; mixed: number };
+  brandMentions: number;
+  afterPlacement: number;
+  samples: Array<{ text: string; sentiment: string | null; likeCount: number | null; publishedAt: string | null }>;
+}
+
+/**
+ * Creator-facing audience-response summary — the "we summarise audience
+ * response" the privacy policy and OAuth justification promise. Self-contained
+ * so it renders even before any distribution metrics exist (comments can be
+ * captured before the creator publishes anything). Aggregate only; the endpoint
+ * never returns commenter names.
+ */
+function AudienceResponseCard({ videoId }: { videoId: number }) {
+  const [data, setData] = useState<AudienceResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      try {
+        const res = await fetchWithTimeout(`/api/videos/${videoId}/audience-response`, { credentials: "include" });
+        if (!cancelled && res.ok) setData(await res.json());
+      } catch { /* leave null; card self-hides */ }
+      finally { if (!cancelled) setLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [videoId]);
+
+  // Nothing captured yet — say so quietly rather than showing an empty shell.
+  if (loading) return null;
+  if (!data || data.total === 0) {
+    return (
+      <div className="rounded-xl border border-gray-700/50 bg-gray-800/40 p-4">
+        <h3 className="text-sm font-semibold text-gray-300 flex items-center gap-2">
+          <MessageCircle className="w-4 h-4 text-violet-400" /> Audience Response
+        </h3>
+        <p className="text-xs text-gray-500 mt-2">
+          No viewer comments captured yet. Once this video's comments are collected, we'll summarise
+          the sentiment and any brand mentions here.
+        </p>
+      </div>
+    );
+  }
+
+  const s = data.sentiment;
+  const denom = Math.max(1, s.positive + s.neutral + s.negative + s.mixed);
+  const bars: Array<{ key: string; n: number; color: string; label: string }> = [
+    { key: "positive", n: s.positive, color: "bg-emerald-500", label: "Positive" },
+    { key: "neutral", n: s.neutral, color: "bg-gray-500", label: "Neutral" },
+    { key: "mixed", n: s.mixed, color: "bg-amber-500", label: "Mixed" },
+    { key: "negative", n: s.negative, color: "bg-red-500", label: "Negative" },
+  ];
+
+  return (
+    <div className="rounded-xl border border-gray-700/50 bg-gray-800/40 p-4 space-y-4">
+      <h3 className="text-sm font-semibold text-gray-300 flex items-center gap-2">
+        <MessageCircle className="w-4 h-4 text-violet-400" /> Audience Response
+        <span className="text-xs font-normal text-gray-500">
+          {data.classified} of {data.total} comments analysed
+        </span>
+      </h3>
+
+      {/* Sentiment bar */}
+      <div>
+        <div className="flex h-2.5 rounded-full overflow-hidden bg-gray-700">
+          {bars.map(b => b.n > 0 && (
+            <div key={b.key} className={b.color} style={{ width: `${(b.n / denom) * 100}%` }} title={`${b.label}: ${b.n}`} />
+          ))}
+        </div>
+        <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2">
+          {bars.map(b => (
+            <span key={b.key} className="flex items-center gap-1.5 text-[11px] text-gray-400">
+              <span className={`w-2 h-2 rounded-full ${b.color}`} />
+              {b.label} {b.n}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* Brand-mention + pre/post split */}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="rounded-lg bg-gray-800/60 p-3">
+          <div className="text-lg font-bold text-violet-300">{data.brandMentions}</div>
+          <div className="text-[11px] text-gray-500">mention the product or brand</div>
+        </div>
+        <div className="rounded-lg bg-gray-800/60 p-3">
+          <div className="text-lg font-bold text-emerald-300">{data.afterPlacement}</div>
+          <div className="text-[11px] text-gray-500">posted after the placement went live</div>
+        </div>
+      </div>
+
+      {/* Representative comments — text only, no author. */}
+      {data.samples.length > 0 && (
+        <div className="space-y-2">
+          <span className="text-[11px] font-medium text-gray-500 uppercase tracking-wide">What viewers said</span>
+          {data.samples.map((c, i) => (
+            <div key={i} className="text-xs text-gray-300 bg-gray-800/60 rounded-lg px-3 py-2 leading-snug">
+              <span className={`mr-1.5 ${
+                c.sentiment === "positive" ? "text-emerald-400"
+                  : c.sentiment === "negative" ? "text-red-400"
+                  : c.sentiment === "mixed" ? "text-amber-400" : "text-gray-500"
+              }`}>●</span>
+              {c.text.length > 240 ? c.text.slice(0, 240) + "…" : c.text}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

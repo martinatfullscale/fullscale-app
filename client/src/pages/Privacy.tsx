@@ -131,9 +131,21 @@ export default function Privacy() {
               </li>
               <li>
                 <span className="text-foreground font-medium">youtube.readonly</span> — read-only
-                access to your YouTube channel metadata, video listings, thumbnails, and basic
-                statistics, so that FullScale can list and import the videos you choose for
-                AI-powered scene analysis.
+                access to your YouTube channel metadata, video listings, thumbnails, basic
+                statistics, and public viewer comments on your videos, so that FullScale can list
+                and import the videos you choose for AI-powered scene analysis and summarise
+                audience response.
+              </li>
+              <li>
+                <span className="text-foreground font-medium">yt-analytics.readonly</span> —
+                read-only access to your YouTube Analytics (views, watch time, retention and
+                aggregate audience demographics for your own channel), shown to you in FullScale
+                and summarised on the media-kit page you can share with brands.
+              </li>
+              <li>
+                <span className="text-foreground font-medium">youtube.upload</span> — permission
+                to upload a finished clip to your own channel, used only when you press Publish or
+                schedule that clip. We never modify or delete videos already on your channel.
               </li>
             </ul>
 
@@ -143,8 +155,9 @@ export default function Privacy() {
               <li>To list and import the YouTube videos you select.</li>
               <li>
                 To temporarily download video files for AI scene analysis. Frames are extracted
-                and stored as part of your private library; the source video file is permanently
-                deleted from our servers after processing.
+                and stored as part of your private library; the source video file is held only
+                transiently — kept briefly in a working cache to support preview and re-analysis,
+                then automatically deleted, and never retained long-term.
               </li>
               <li>
                 To display your YouTube channel and video metadata within your FullScale library
@@ -187,8 +200,9 @@ export default function Privacy() {
                 All requests to Google APIs are made over <strong>TLS-encrypted connections</strong>.
               </li>
               <li>
-                We do not retain original YouTube video files. Files downloaded for analysis are
-                deleted immediately after the AI scene-analysis pipeline finishes.
+                We do not retain original YouTube video files long-term. Files downloaded for
+                analysis are held briefly in a working cache during and shortly after processing
+                (to support preview and re-analysis) and are then automatically deleted.
               </li>
               <li>
                 Access to Google user data within FullScale is limited to the systems that need
