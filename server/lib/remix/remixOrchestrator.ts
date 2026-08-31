@@ -25,6 +25,8 @@ import * as fs from "fs";
 import { storage } from "../../storage";
 import { detectClipCandidates, PLATFORM_CONFIGS, type ClipCandidate } from "./clipDetector";
 import { generateClip, type ClipPlacement } from "./clipGenerator";
+import { renderEditorialClipOutput, runFFmpegThumbnail } from "./editorialAutoPipeline";
+import { getVideoSize } from "./faceTracker";
 import { generateCaptions } from "./captionEngine";
 import { scoreClipQuality } from "./qualityScorer";
 import type { RankedClip } from "./clipRanker";
@@ -96,7 +98,78 @@ function rankedClipToCandidate(ranked: RankedClip, platform: string): ClipCandid
     primaryTone: ranked.monetizationTier, // Repurposed: "premium"/"standard"/"organic"
     narrativeSummary: ranked.suggestedTitle,
     platform,
+    // Carry the assembled beats through. Dropping them here is what made an
+    // assembled clip (hook@480s + body@210s + payoff@500s) render as a single
+    // flat 210s→260s slice — the analyzer's clipStart/clipEnd/duration are
+    // min/max/sum across beats, so -ss min -t sum reads the wrong window.
+    segments: ranked.segments,
   };
+}
+
+/**
+ * Render a candidate — assembled multi-beat when it carries ≥2 valid segments,
+ * otherwise the normal single-range generateClip.
+ *
+ * generateClip does one `-ss start -t duration` extraction, which is correct
+ * for a contiguous clip but plays the wrong footage for an assembled one (its
+ * start/duration are min/sum across beats). Multi-beat clips go through
+ * renderEditorialClipOutput — the same concat path the editorial auto-pipeline
+ * uses — so the beats render in order.
+ *
+ * Fails SAFE: any error in the assembled path falls back to generateClip, so a
+ * problem here is never worse than the single-range behavior that shipped
+ * before. Single-range clips (the majority) never touch the new path.
+ */
+async function renderCandidateClip(
+  input: Parameters<typeof generateClip>[0],
+  speakerSegments: any[] | undefined,
+): Promise<Awaited<ReturnType<typeof generateClip>>> {
+  const clip: any = input.clip;
+  const segs = Array.isArray(clip.segments)
+    ? clip.segments.filter((s: any) => typeof s?.start === "number" && typeof s?.end === "number" && s.end > s.start)
+    : [];
+  if (segs.length < 2) return generateClip(input);
+
+  try {
+    const pc: any = input.platformConfig;
+    let srcSize = { width: 1920, height: 1080 };
+    try { srcSize = await getVideoSize(input.videoPath); } catch { /* default */ }
+    const needsReframe = srcSize.width > srcSize.height && pc.aspectRatio === "9:16";
+
+    const outputFilename = `clip_j${input.jobId}_v${input.videoId}_${clip.platform}_assembled_${Date.now()}.mp4`;
+    const outputPath = path.join(input.outputDir, outputFilename);
+
+    await renderEditorialClipOutput({ ...clip, segments: segs }, outputPath, {
+      videoLocalPath: input.videoPath,
+      platformConfig: {
+        targetWidth: pc.targetWidth, targetHeight: pc.targetHeight,
+        targetFps: pc.targetFps, aspectRatio: pc.aspectRatio,
+      },
+      srcSize,
+      needsReframe,
+      speakerSegments,
+      captionOpts: { enabled: input.captionsEnabled, style: input.captionStyle },
+      logTag: "Remix",
+    });
+
+    if (!fs.existsSync(outputPath)) throw new Error("assembled render produced no file");
+    const stats = fs.statSync(outputPath);
+    const thumbnailPath = outputPath.replace(/\.mp4$/, "_thumb.jpg");
+    const totalDuration = segs.reduce((sum: number, s: any) => sum + (s.end - s.start), 0);
+    try { await runFFmpegThumbnail(outputPath, thumbnailPath, totalDuration * 0.25); } catch { /* non-fatal */ }
+
+    console.log(`[Remix]   Assembled ${segs.length}-beat clip: ${outputFilename} (${totalDuration.toFixed(1)}s)`);
+    return {
+      success: true,
+      clipPath: outputPath,
+      thumbnailPath: fs.existsSync(thumbnailPath) ? thumbnailPath : null,
+      duration: totalDuration,
+      fileSize: stats.size,
+    };
+  } catch (err: any) {
+    console.warn(`[Remix]   Assembled render failed (${err?.message}) — falling back to single-range extraction.`);
+    return generateClip(input);
+  }
 }
 
 /**
@@ -700,7 +773,13 @@ export async function runRemixPipeline(
       // Step 5: Generate the clip (with VFX motion tracking if available)
       console.log(`[Remix]   Generating clip #${i + 1}/${candidates.length} (${clip.platform})...`);
 
-      const clipResult = await generateClip({
+      // Speaker segments across the whole clip window, for the assembled path's
+      // own captioning (the concat renderer windows them per beat).
+      const speakerSegmentsForClip = (transcript && transcript.status === "completed" && transcript.segments)
+        ? (transcript.segments as any[]).filter((seg: any) => seg.start >= clip.startTime && seg.start <= clip.endTime)
+        : undefined;
+
+      const clipResult = await renderCandidateClip({
         videoPath,
         videoId,
         clip,
@@ -716,7 +795,7 @@ export async function runRemixPipeline(
           enabled: mergedConfig.faceTrackingEnabled ?? true,
           sampleIntervalSec: 0.5,
         },
-      });
+      }, speakerSegmentsForClip);
 
       if (!clipResult.success) {
         console.error(`[Remix]   Clip #${i + 1} generation failed: ${clipResult.error}`);

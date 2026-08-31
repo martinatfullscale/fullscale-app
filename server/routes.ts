@@ -16186,18 +16186,23 @@ export async function registerRoutes(
         editHistory: [],
       };
 
-      // Verify Anthropic API key is available before starting SSE stream
-      const apiKey = process.env.ANTHROPIC_API_KEY;
+      // Verify an Anthropic credential is available before starting the SSE
+      // stream — using the SAME resolver the copilot client itself uses
+      // (remixCopilot.ts builds its client from keyValue(KEY_ALIASES.anthropic)).
+      // The old preflight exact-matched process.env.ANTHROPIC_API_KEY and
+      // hard-500'd for CLAUDE_API_KEY, a case/separator variant, or the Replit
+      // AI sidecar (base URL only, no key) — configurations under which the
+      // stream it guards would actually work. That is the exact class of bug
+      // envKeys was written to end; this route was just never migrated.
+      const { hasKey, KEY_ALIASES } = await import("./lib/envKeys");
       const anthropicBaseURL = process.env.AI_INTEGRATIONS_ANTHROPIC_BASE_URL || process.env.ANTHROPIC_BASE_URL;
-      if (!apiKey) {
-        console.error("[CopilotRoute] ANTHROPIC_API_KEY is not set. Set it in Secrets/Environment.");
-        // Log all env vars that start with ANTHROPIC or AI_INTEGRATIONS for debugging
-        const relevantVars = Object.keys(process.env).filter(k => k.includes('ANTHROPIC') || k.includes('AI_INTEGRATIONS'));
+      const hasAnthropic = hasKey(KEY_ALIASES.anthropic) || !!anthropicBaseURL;
+      if (!hasAnthropic) {
+        console.error("[CopilotRoute] No Anthropic credential found (no key under any known spelling, no AI base URL).");
+        const relevantVars = Object.keys(process.env).filter(k => k.includes('ANTHROPIC') || k.includes('CLAUDE') || k.includes('AI_INTEGRATIONS'));
         console.error(`[CopilotRoute] Relevant env vars found: ${relevantVars.join(', ') || 'NONE'}`);
-        return res.status(500).json({ error: "AI Co-Pilot is not configured. Please add ANTHROPIC_API_KEY to your environment secrets." });
+        return res.status(500).json({ error: "AI Co-Pilot is not configured. Add an Anthropic API key to your environment secrets." });
       }
-      // Log key prefix for debugging (safe: only first 8 chars)
-      console.log(`[CopilotRoute] API key present: ${apiKey.substring(0, 8)}... (${apiKey.length} chars)`);
       if (anthropicBaseURL) console.log(`[CopilotRoute] Custom base URL: ${anthropicBaseURL}`);
       console.log(`[CopilotRoute] Starting SSE stream for video ${videoId}, trigger="${trigger}", user="${userId}", clipId=${clipId || "none"}`);
       console.log(`[CopilotRoute] Context: transcript=${transcript.length} segs, surfaces=${surfaces.length}, brands=${brandCatalog.length}, clips=${existingClips.length}`);

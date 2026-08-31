@@ -204,6 +204,24 @@ export default function ClipStudio({ clip, videoId, onClose, onApply }: Props) {
     return out.sort((a, b) => a.start - b.start);
   }, [transcript, clip.clipStart, clip.clipEnd, clip.duration]);
 
+  // Transcript lines scoped to THIS clip and rebased to clip-relative time —
+  // for the cutaway suggester. Previously it was handed every segment of the
+  // whole source video in absolute time, so a 30s clip cut from a 40-minute
+  // video fed the model ~40 minutes of transcript, told it "clip is ~2400s",
+  // and got back cutaway moments quoting unrelated parts of the video.
+  const clipLines = useMemo(
+    () =>
+      (transcript?.segments ?? [])
+        .filter((sg) => sg.end > clip.clipStart && sg.start < clip.clipEnd)
+        .map((sg) => ({
+          start: Math.max(0, sg.start - clip.clipStart),
+          end: Math.min(clip.duration, sg.end - clip.clipStart),
+          text: sg.text,
+        }))
+        .filter((l) => l.end > l.start),
+    [transcript, clip.clipStart, clip.clipEnd, clip.duration],
+  );
+
   const cuts = edits.wordCuts ?? [];
   const isCut = useCallback(
     (w: Word) => cuts.some((c) => w.start >= c.start - 0.01 && w.end <= c.end + 0.01),
@@ -540,7 +558,7 @@ export default function ClipStudio({ clip, videoId, onClose, onApply }: Props) {
                   playhead={t}
                   clipId={clip.id}
                   spokenAtPlayhead={spokenAtPlayhead}
-                  lines={(transcript?.segments ?? []).map((sg) => ({ start: sg.start, end: sg.end, text: sg.text }))}
+                  lines={clipLines}
                   onSeek={(sec) => seek(sec)}
                   onChange={(broll) => setEdits((p) => ({ ...p, broll }))}
                   queryClient={queryClient}

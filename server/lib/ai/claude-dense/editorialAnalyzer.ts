@@ -212,6 +212,36 @@ ${excludeRanges && excludeRanges.length > 0 ? `IMPORTANT — ALREADY COVERED: th
 
 // ── Response Parser ────────────────────────────────────────────────
 
+/**
+ * Recover the complete top-level objects from a JSON array string that was cut
+ * off mid-element (token-truncated). Scans for balanced `{...}` at array depth,
+ * honoring string literals and escapes, and JSON.parses each one individually.
+ * A trailing incomplete object is simply dropped.
+ */
+function salvageObjects(s: string): any[] {
+  const out: any[] = [];
+  let depth = 0, start = -1, inStr = false, esc = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') { inStr = true; continue; }
+    if (c === "{") { if (depth === 0) start = i; depth++; }
+    else if (c === "}") {
+      depth--;
+      if (depth === 0 && start >= 0) {
+        try { out.push(JSON.parse(s.slice(start, i + 1))); } catch { /* skip malformed */ }
+        start = -1;
+      }
+    }
+  }
+  return out;
+}
+
 function parseEditorialResponse(text: string): EditorialAnalysisOutput[] {
   try {
     let jsonStr = text.trim();
@@ -221,7 +251,18 @@ function parseEditorialResponse(text: string): EditorialAnalysisOutput[] {
     else if (jsonStr.startsWith("```")) jsonStr = jsonStr.slice(3);
     if (jsonStr.endsWith("```")) jsonStr = jsonStr.slice(0, -3);
 
-    const parsed = JSON.parse(jsonStr.trim()) as ClaudeEditorialResponse[];
+    let parsed: ClaudeEditorialResponse[];
+    try {
+      parsed = JSON.parse(jsonStr.trim()) as ClaudeEditorialResponse[];
+    } catch {
+      // Truncated mid-array (the model hit the token cap). Rather than throw the
+      // WHOLE batch away, recover every COMPLETE top-level object and keep those
+      // clips. Walks the string tracking brace depth and string state so nested
+      // objects don't confuse it.
+      parsed = salvageObjects(jsonStr.trim());
+      if (parsed.length === 0) throw new Error("no complete objects to salvage");
+      console.warn(`[EditorialAnalyzer] Recovered ${parsed.length} complete clip(s) from a truncated response.`);
+    }
 
     if (!Array.isArray(parsed)) {
       console.error("[EditorialAnalyzer] Response is not an array");
@@ -333,9 +374,17 @@ export async function analyzeEditorial(
       setTimeout(() => reject(new Error("Editorial analysis timeout")), EDITORIAL_CONFIG.timeout);
     });
 
+    // Scale the output budget with the number of clips requested. Each clip is
+    // a fat object (six sub-scores, per-brand reasoning, title, tags, a
+    // sentence of reasoning, optional segments) — roughly 450 tokens — so a
+    // fixed 4096 truncated the JSON mid-array for a 12-clip request and, with
+    // the all-or-nothing parse below now salvaging, was still leaving clips on
+    // the table. Bounded to a safe ceiling for the model.
+    const scaledMaxTokens = Math.min(8192, Math.max(EDITORIAL_CONFIG.maxTokens, maxClips * 450 + 600));
+
     const analysisPromise = client.messages.create({
       model: EDITORIAL_CONFIG.model,
-      max_tokens: EDITORIAL_CONFIG.maxTokens,
+      max_tokens: scaledMaxTokens,
       messages: [
         {
           role: "user",
@@ -349,6 +398,10 @@ export async function analyzeEditorial(
     if (!response) {
       console.error("[EditorialAnalyzer] Request timed out");
       return [];
+    }
+
+    if ((response as Anthropic.Message).stop_reason === "max_tokens") {
+      console.warn(`[EditorialAnalyzer] Response hit the ${scaledMaxTokens}-token cap for ${maxClips} clips — recovering the complete clips from the truncated array.`);
     }
 
     const textBlock = (response as Anthropic.Message).content.find(

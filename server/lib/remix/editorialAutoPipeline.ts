@@ -1111,6 +1111,14 @@ async function prepareEditGraphForClip(
     }
   }
 
+  // Re-gate on the RESOLVED stack. The initial editStackIsActive(stack) now
+  // passes for silence-enabled clips before the spans are merged (so the merge
+  // above can run); but if resolution left nothing to do — silence enabled yet
+  // never analyzed, or every b-roll asset missing — there is no edit to render,
+  // and this returns the clip to the no-edit path instead of building an empty
+  // graph.
+  if (!editStackIsActive(resolvedStack)) return { graph: null, warnings };
+
   // ── vidstab detect pass (when the build has it and stabilization is on)
   let vidstabTransformsPath: string | null = null;
   if (resolvedStack.stabilization?.enabled) {
@@ -2012,7 +2020,7 @@ async function runFFmpegRenderUngated(opts: RenderOptions): Promise<void> {
 /**
  * Generate a thumbnail JPEG from a rendered clip at the given seek time.
  */
-async function runFFmpegThumbnail(clipPath: string, outputPath: string, seekTime: number): Promise<void> {
+export async function runFFmpegThumbnail(clipPath: string, outputPath: string, seekTime: number): Promise<void> {
   return new Promise((resolve, reject) => {
     const proc = spawn("ffmpeg", [
       "-nostdin", "-y",

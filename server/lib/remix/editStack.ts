@@ -626,7 +626,14 @@ export function editStackIsActive(stack: EditStack | null | undefined): boolean 
   if (!stack) return false;
   return !!(
     stack.stabilization?.enabled ||
-    (stack.silenceCut?.enabled && stack.silenceCut.detected?.length) ||
+    // `enabled` alone, NOT `enabled && detected?.length`. The stored stack
+    // never carries `detected` — the spans live on the clip's separate
+    // silenceAnalysis field and are merged in at render time. Requiring
+    // detected here meant a silence-removal-only edit failed this gate and
+    // took the no-edit render path, so the dead air stayed in while the studio
+    // showed the cut. Callers re-check the resolved stack after the merge, so
+    // an enabled-but-unanalyzed clip still falls back to no-op safely.
+    stack.silenceCut?.enabled ||
     (stack.wordCuts ?? []).length > 0 ||
     (stack.speedRamps ?? []).length > 0 ||
     (stack.broll ?? []).length > 0 ||
