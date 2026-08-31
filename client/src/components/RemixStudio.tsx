@@ -454,10 +454,66 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
           .catch(() => toast({ title: "Asset generation failed", description: "Network error", variant: "destructive" }));
         break;
       }
+      case "stitch": {
+        // The copilot's highlight-reel proposal — the embodiment of the
+        // "assembled narrative" promise. Its Apply button used to fall through
+        // to `default` and do nothing but toast. The beats it returns
+        // (additionalSegments) already carry the {start,end} the /stitch
+        // endpoint needs, so this drives the exact endpoint + poll the manual
+        // Highlight Reel tab uses.
+        const beats = Array.isArray(data?.additionalSegments) ? data.additionalSegments : [];
+        const valid = beats.filter(
+          (s: any) => typeof s?.start === "number" && typeof s?.end === "number" && s.end > s.start,
+        );
+        if (valid.length < 2) {
+          toast({ title: "Not enough segments", description: "This highlight-reel suggestion needs at least two valid beats.", variant: "destructive" });
+          break;
+        }
+        setIsStitching(true);
+        fetchWithTimeout(`/api/remix/${videoId}/stitch`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            segments: valid,
+            transitions: data?.suggestedTransition ?? "crossfade",
+            platformTarget: stitchPlatform,
+            captionsEnabled,
+          }),
+        })
+          .then(async (res) => {
+            const body = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(body?.error || "Stitch failed");
+            toast({ title: "Building highlight reel", description: `Plan #${body.planId} — stitching ${valid.length} beats` });
+            // Same completion poll as the manual Highlight Reel path.
+            const pollStitch = setInterval(async () => {
+              try {
+                const planRes = await fetchWithTimeout(`/api/remix/stitch-plans/${body.planId}`, { credentials: "include" });
+                if (!planRes.ok) return;
+                const plan = await planRes.json();
+                if (plan.status === "completed" || plan.status === "failed") {
+                  clearInterval(pollStitch);
+                  setIsStitching(false);
+                  await loadData();
+                  toast(
+                    plan.status === "completed"
+                      ? { title: "Highlight Reel Ready", description: "Your stitched clip has been generated" }
+                      : { title: "Stitch Failed", description: plan.errorMessage || "Generation failed", variant: "destructive" },
+                  );
+                }
+              } catch { /* transient — next tick retries */ }
+            }, 3000);
+          })
+          .catch((err: any) => {
+            setIsStitching(false);
+            toast({ title: "Stitch failed", description: err?.message || "Network error", variant: "destructive" });
+          });
+        break;
+      }
       default:
         toast({ title: "Suggestion noted", description: suggestion.reason });
     }
-  }, [copilotClipId, copilotClipType, copilotEditorialClip, toast, loadData, scheduleReloads, videoId]);
+  }, [copilotClipId, copilotClipType, copilotEditorialClip, toast, loadData, scheduleReloads, videoId, stitchPlatform, captionsEnabled]);
 
   useEffect(() => {
     if (open) loadData();
