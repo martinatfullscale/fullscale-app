@@ -767,6 +767,12 @@ export interface LibraryThreadInput {
   videos: LibraryVideoInput[];
   targetDuration?: number;
   segmentCount?: number;
+  /**
+   * What the creator asked for, in their words: "a highlight reel", "moments
+   * of me smiling", "everything I said about pricing". Steers which moments the
+   * model picks. Absent = find the single strongest narrative across the videos.
+   */
+  query?: string;
 }
 export interface LibraryThreadSegment {
   videoId: number;
@@ -795,6 +801,7 @@ export async function analyzeLibraryThread(input: LibraryThreadInput): Promise<L
   // the model past its token cap and truncate the whole proposal.
   const targetDuration = Math.max(15, Math.min(300, Number(input.targetDuration) || 90));
   const segmentCount = Math.max(2, Math.min(10, Number(input.segmentCount) || 5));
+  const query = (input.query ?? "").trim().slice(0, 300);
 
   // Only videos that actually have transcript, capped so the corpus fits.
   const videos = input.videos.filter((v) => v.transcript && v.transcript.length > 0).slice(0, LIBRARY_MAX_VIDEOS);
@@ -831,7 +838,10 @@ Below are ${videos.length} videos, each with a timestamped transcript. Video ind
 ${corpus}
 
 TASK
-Find the ${segmentCount} strongest moments — pulled from ANY of these videos — that, placed in sequence, form one compelling narrative arc. Moments may come from different videos; that is the point. Total combined duration ~${targetDuration}s, each moment 12-30s.
+${query
+  ? `The creator asked for: "${query}". Find the ${segmentCount} moments — pulled from ANY of these videos — that BEST satisfy that request, in the order that tells the best story. Prioritize moments matching the request; if fewer than ${segmentCount} truly match, return only the ones that do (minimum 2).`
+  : `Find the ${segmentCount} strongest moments — pulled from ANY of these videos — that, placed in sequence, form one compelling narrative arc.`}
+Moments may come from different videos; that is the point. Total combined duration ~${targetDuration}s, each moment 12-30s.
 
 Each moment must serve a narrative role: "hook" (open strong), "development", "climax", "payoff", or "bridge".
 

@@ -67,6 +67,7 @@ export default function ReelBuilder({ open, onClose }: { open: boolean; onClose:
   const [title, setTitle] = useState("");
   const [building, setBuilding] = useState(false);
   const [finding, setFinding] = useState(false);
+  const [storyPrompt, setStoryPrompt] = useState("");
   const [narrativeArc, setNarrativeArc] = useState<string | null>(null);
   const [result, setResult] = useState<{ status: "building" | "completed" | "failed"; thumbnailPath?: string | null; error?: string } | null>(null);
   // Holds the build poll so closing the modal mid-build stops it — otherwise it
@@ -123,7 +124,7 @@ export default function ReelBuilder({ open, onClose }: { open: boolean; onClose:
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({}),
+        body: JSON.stringify({ query: storyPrompt.trim() || undefined }),
       }, 120_000);
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || "Couldn't analyze your library");
@@ -279,8 +280,16 @@ export default function ReelBuilder({ open, onClose }: { open: boolean; onClose:
                   {order.length > 0 && <span className="text-gray-600">{fmt(totalDuration)} · {sourceCount} source{sourceCount === 1 ? "" : "s"}</span>}
                 </div>
 
-                {/* Job #2 — AI proposes a cross-video reel. */}
-                <div className="px-3 pt-2.5">
+                {/* Job #2 — AI proposes a cross-video reel, prompt-driven. */}
+                <div className="px-3 pt-2.5 space-y-1.5">
+                  <input
+                    value={storyPrompt}
+                    onChange={(e) => setStoryPrompt(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter" && !finding) findStory(); }}
+                    placeholder="What kind of reel? e.g. me smiling, best advice, funniest moments"
+                    className="w-full bg-gray-800 text-white text-[11px] rounded-md px-2.5 py-2 border border-violet-500/30 focus:border-violet-500 focus:outline-none placeholder:text-gray-600"
+                    data-testid="story-prompt"
+                  />
                   <button
                     onClick={findStory}
                     disabled={finding}
@@ -288,7 +297,7 @@ export default function ReelBuilder({ open, onClose }: { open: boolean; onClose:
                     data-testid="find-story"
                   >
                     {finding ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
-                    {finding ? "Reading your videos…" : "Find a story across my videos"}
+                    {finding ? "Reading your videos…" : storyPrompt.trim() ? "Find these moments" : "Find a story across my videos"}
                   </button>
                   {narrativeArc && order.some((i) => i.kind === "moment") && (
                     <p className="text-[11px] text-violet-300/80 italic mt-1.5 leading-snug">{narrativeArc}</p>

@@ -16156,7 +16156,7 @@ export async function registerRoutes(
     try {
       const authUserId = req.authUserId ?? req.user?.id;
       const authEmail = req.authEmail ?? req.user?.email;
-      const { videoIds, targetDuration, segmentCount } = req.body || {};
+      const { videoIds, targetDuration, segmentCount, query } = req.body || {};
 
       // The candidate videos: an explicit list, or all of the creator's.
       const allVideos = await storage.getVideoIndex(String(authUserId ?? ""), authEmail);
@@ -16178,7 +16178,7 @@ export async function registerRoutes(
       }
 
       const { analyzeLibraryThread } = await import("./lib/ai/claude-dense/editorialAnalyzer");
-      const result = await analyzeLibraryThread({ videos, targetDuration, segmentCount });
+      const result = await analyzeLibraryThread({ videos, targetDuration, segmentCount, query });
       if (!result) {
         return res.status(502).json({ error: "The analysis didn't return a usable thread. Try again, or pick fewer videos." });
       }
