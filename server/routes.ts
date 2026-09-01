@@ -16103,6 +16103,262 @@ export async function registerRoutes(
     }
   });
 
+  // GET /api/remix/reel/clips — Every clip the creator has, across all their
+  // videos, as building blocks for a cross-video reel. Registered before the
+  // /api/remix/:videoId/* routes so "reel" is never parsed as a video id.
+  app.get("/api/remix/reel/clips", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const authUserId = req.authUserId ?? req.user?.id;
+      const authEmail = req.authEmail ?? req.user?.email;
+      const videos = await storage.getVideoIndex(String(authUserId ?? ""), authEmail);
+
+      const out: any[] = [];
+      const CAP = 400;
+      for (const v of videos) {
+        if (out.length >= CAP) break;
+        const [remix, editorial] = await Promise.all([
+          storage.getClipsByVideo(v.id).catch(() => [] as any[]),
+          storage.getEditorialClipsByVideo(v.id).catch(() => [] as any[]),
+        ]);
+        const push = (c: any, source: "remix" | "editorial") => {
+          const start = Number(c.clipStart), end = Number(c.clipEnd);
+          if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
+          out.push({
+            clipId: c.id,
+            clipSource: source,
+            videoId: v.id,
+            videoTitle: (v as any).title || `Video ${v.id}`,
+            title: c.suggestedTitle || c.title || null,
+            clipStart: start,
+            clipEnd: end,
+            duration: Number(c.duration) || (end - start),
+            thumbnailPath: c.thumbnailPath || null,
+            hasSegments: Array.isArray(c.segments) && c.segments.length >= 2,
+          });
+        };
+        for (const c of remix) push(c, "remix");
+        for (const c of editorial) push(c, "editorial");
+      }
+      res.json({ clips: out });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to list clips" });
+    }
+  });
+
+  // POST /api/remix/reel — Build one reel from hand-picked clips that may come
+  // from several different videos. The mechanical multi-source stitch: each
+  // picked clip contributes its beat(s), cut from ITS OWN source video, and the
+  // stitcher concatenates them with crossfades and per-segment loudness
+  // normalization so the seams between videos are not jarring.
+  app.post("/api/remix/reel", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const userId = stableUserIntId(req.authUserId ?? req.user?.id);
+      const { clips, platformTarget = "tiktok", captionsEnabled = true, title } = req.body || {};
+      if (!Array.isArray(clips) || clips.length < 2) {
+        return res.status(400).json({ error: "Pick at least 2 clips for a reel." });
+      }
+
+      // Resolve the picked clips, in order, to their source ranges.
+      const resolved: any[] = [];
+      for (const c of clips) {
+        const clip = await findClipById(Number(c.clipId), c?.clipSource === "editorial" ? "editorial" : "remix");
+        if (clip && clip.videoId != null) resolved.push(clip);
+      }
+      if (resolved.length < 2) {
+        return res.status(400).json({ error: "Could not resolve at least 2 of the selected clips." });
+      }
+
+      const videoIds = Array.from(new Set(resolved.map((r) => r.videoId)));
+      const multiSource = videoIds.length > 1;
+      const anchorVideoId = resolved[0].videoId;
+
+      // Expand each clip into its beats (assembled clips) or its single range,
+      // tagged with the source video. First beat of the reel is a hard cut.
+      const validSegs = (clip: any): Array<{ start: number; end: number }> | null => {
+        const s = clip?.segments;
+        if (!Array.isArray(s) || s.length < 2) return null;
+        return s.every((x: any) => typeof x?.start === "number" && typeof x?.end === "number" && x.end > x.start) ? s : null;
+      };
+      const planSegments: Array<{ start: number; end: number; sourceVideoId: number; suggestedTransition: string; enabled: boolean; role: string; narrativePurpose: string }> = [];
+      for (const clip of resolved) {
+        const beats = validSegs(clip) ?? [{ start: Number(clip.clipStart), end: Number(clip.clipEnd) }];
+        for (const b of beats) {
+          planSegments.push({
+            start: b.start, end: b.end,
+            sourceVideoId: clip.videoId,
+            suggestedTransition: "crossfade",
+            enabled: true,
+            role: "bridge",
+            narrativePurpose: clip.suggestedTitle || "",
+          });
+        }
+      }
+
+      const totalDuration = planSegments.reduce((sum, s) => sum + (s.end - s.start), 0);
+      const plan = await storage.createStitchPlan({
+        videoId: anchorVideoId,
+        userId,
+        status: "generating",
+        suggestedTitle: (title ? String(title).slice(0, 200) : null) || `Reel from ${videoIds.length} video${videoIds.length === 1 ? "" : "s"}`,
+        segments: planSegments as any,
+        totalDuration,
+        transitionStyle: "crossfade",
+        platformTarget,
+      });
+
+      res.json({ planId: plan.id, segmentCount: planSegments.length, sourceCount: videoIds.length });
+
+      // ── Async render ──────────────────────────────────────────────
+      (async () => {
+        let tempRoot: string | null = null;
+        try {
+          const { PLATFORM_CONFIGS } = await import("./lib/remix/clipDetector");
+          const { stitchSegments } = await import("./lib/remix/clipStitcher");
+          const platformConfig = PLATFORM_CONFIGS[platformTarget];
+          if (!platformConfig) throw new Error(`Unknown platform: ${platformTarget}`);
+
+          tempRoot = path.join("/tmp/remix-videos", `reel-${plan.id}`);
+          fs.mkdirSync(tempRoot, { recursive: true });
+
+          // Resolve each distinct source video to a local file ONCE.
+          const sourceMap = new Map<number, string>();
+          for (const vid of videoIds) {
+            const v = await storage.getVideoById(vid);
+            const fp = v?.filePath;
+            if (!fp) throw new Error(`Video ${vid} has no file path`);
+            if (fp.startsWith("/storage/")) {
+              const local = await downloadToTempFile(objectKeyFromServeUrl(fp), path.join(tempRoot, `src-${vid}`));
+              sourceMap.set(vid, local);
+            } else {
+              let local = fp;
+              if (fp.startsWith("/") && !fs.existsSync(fp)) {
+                const pub = path.join(process.cwd(), "public", fp);
+                if (fs.existsSync(pub)) local = pub;
+              }
+              sourceMap.set(vid, local);
+            }
+          }
+
+          // Per-source transcript cache for captions.
+          const transcriptCache = new Map<number, any[] | null>();
+          const transcriptFor = async (vid: number): Promise<any[] | null> => {
+            if (transcriptCache.has(vid)) return transcriptCache.get(vid)!;
+            let segs: any[] | null = null;
+            try {
+              const vt = await storage.getVideoTranscript(vid);
+              if (vt?.status === "completed" && Array.isArray(vt.segments)) segs = vt.segments as any[];
+            } catch { /* no captions for this source */ }
+            transcriptCache.set(vid, segs);
+            return segs;
+          };
+
+          // Build stitch segments (per-segment source + loudnorm) and their captions.
+          const { generateTranscriptCaptions } = await import("./lib/remix/captionEngine");
+          const stitchSegs: any[] = [];
+          const captionGroups: CaptionSegment[][] = [];
+          for (let i = 0; i < planSegments.length; i++) {
+            const ps = planSegments[i];
+            stitchSegs.push({
+              start: ps.start,
+              end: ps.end,
+              transitionIn: i === 0 ? "cut" : "crossfade",
+              transitionDuration: 0.5,
+              sourcePath: sourceMap.get(ps.sourceVideoId),
+              normalizeAudio: multiSource,
+            });
+            let group: CaptionSegment[] = [];
+            if (captionsEnabled) {
+              const segs = await transcriptFor(ps.sourceVideoId);
+              if (segs) {
+                const within = segs.filter((t: any) => t.start >= ps.start - 0.5 && t.start <= ps.end);
+                if (within.length > 0) {
+                  group = generateTranscriptCaptions({
+                    clipStart: ps.start, clipEnd: ps.end, duration: ps.end - ps.start,
+                    narrativeContext: "", emotionalTone: "neutral", brandNames: [],
+                    style: "highlight", transcriptSegments: within,
+                  }).segments;
+                }
+              }
+            }
+            captionGroups.push(group);
+          }
+          const captionsBySegment = captionGroups.some((g) => g.length > 0) ? captionGroups : undefined;
+
+          const outputDir = path.join(process.cwd(), "public", "exported-clips", `reel_${plan.id}`);
+          const result = await stitchSegments({
+            videoPath: sourceMap.get(anchorVideoId)!, // default; every segment overrides via sourcePath
+            videoId: anchorVideoId,
+            segments: stitchSegs,
+            platformConfig,
+            captionsEnabled,
+            captionsBySegment,
+            outputDir,
+            planId: plan.id,
+          });
+
+          if (!result.success) {
+            await storage.updateStitchPlanStatus(plan.id, "failed", { errorMessage: result.error || "Reel stitching failed" });
+            return;
+          }
+
+          // Upload output + thumbnail (mirrors the single-video stitch path).
+          let storagePath: string | null = null;
+          let thumbStoragePath: string | null = null;
+          if (result.outputPath && fs.existsSync(result.outputPath)) {
+            try {
+              const objectKey = `public/exported-clips/reel_${plan.id}/${path.basename(result.outputPath)}`;
+              storagePath = await uploadFileToStorage(result.outputPath, objectKey);
+              fs.unlinkSync(result.outputPath);
+            } catch { storagePath = "/" + path.relative(path.join(process.cwd(), "public"), result.outputPath); }
+          }
+          if (result.thumbnailPath && fs.existsSync(result.thumbnailPath)) {
+            try {
+              const objectKey = `public/exported-clips/reel_${plan.id}/${path.basename(result.thumbnailPath)}`;
+              thumbStoragePath = await uploadFileToStorage(result.thumbnailPath, objectKey);
+              fs.unlinkSync(result.thumbnailPath);
+            } catch { thumbStoragePath = "/" + path.relative(path.join(process.cwd(), "public"), result.thumbnailPath); }
+          }
+
+          // A reel is a publishable clip like any other.
+          const reelJob = await storage.createRemixJob({
+            videoId: anchorVideoId, userId, status: "completed",
+            config: { minClipDuration: 0, maxClipDuration: 600, maxClips: 1, platformTargets: [platformTarget], captionsEnabled },
+            platformTargets: [platformTarget],
+          });
+          const dbClip = await storage.createGeneratedClip({
+            remixJobId: reelJob.id,
+            videoId: anchorVideoId,
+            clipStart: planSegments[0].start,
+            clipEnd: planSegments[planSegments.length - 1].end,
+            duration: result.duration,
+            format: "mp4",
+            platformTarget,
+            captionsEnabled,
+            qualityScore: 0.8,
+            exportPath: storagePath,
+            thumbnailPath: thumbStoragePath,
+            status: "ready",
+          });
+
+          await storage.updateStitchPlanStatus(plan.id, "completed", {
+            outputPath: storagePath || undefined,
+            thumbnailPath: thumbStoragePath || undefined,
+            generatedClipId: dbClip.id,
+          });
+          console.log(`[Reel] Plan ${plan.id} complete — ${planSegments.length} segments from ${videoIds.length} video(s)`);
+        } catch (err: any) {
+          console.error(`[Reel] Plan ${plan.id} failed:`, err?.message);
+          await storage.updateStitchPlanStatus(plan.id, "failed", { errorMessage: err?.message || "Reel render failed" }).catch(() => {});
+        } finally {
+          if (tempRoot) { try { fs.rmSync(tempRoot, { recursive: true, force: true }); } catch {} }
+        }
+      })();
+    } catch (err: any) {
+      console.error("[Reel Route] Error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to build reel" });
+    }
+  });
+
   // GET /api/remix/:videoId/stitch-plans — List stitch plans for a video
   app.get("/api/remix/:videoId/stitch-plans", isFlexibleAuthenticated, async (req: any, res) => {
     try {

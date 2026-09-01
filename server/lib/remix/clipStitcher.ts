@@ -18,10 +18,23 @@ import { withRenderSlot } from "./renderQueue";
 // ── Types ──────────────────────────────────────────────────────────
 
 export interface StitchSegment {
-  start: number;    // absolute timestamp in source video (seconds)
-  end: number;      // absolute timestamp in source video (seconds)
+  start: number;    // absolute timestamp in the SEGMENT'S source video (seconds)
+  end: number;      // absolute timestamp in the SEGMENT'S source video (seconds)
   transitionIn: "cut" | "crossfade" | "branded_wipe";
   transitionDuration?: number; // seconds, default 0.5
+  /**
+   * Per-segment source. When set, this segment is cut from THIS file instead of
+   * the stitch's default videoPath — the one change that lets a reel pull beats
+   * from more than one video. Absent = the single-video default.
+   */
+  sourcePath?: string;
+  /**
+   * Normalize this segment's loudness to a fixed target (EBU R128) during
+   * extraction. Set on every segment of a MULTI-SOURCE reel so beats cut from
+   * different videos don't jump in volume at each junction — the audible seam
+   * that a hard cut between two sources otherwise produces.
+   */
+  normalizeAudio?: boolean;
 }
 
 export interface StitchInput {
@@ -293,14 +306,20 @@ async function extractSegment(
 ): Promise<void> {
   const duration = segment.end - segment.start;
   const filters = buildScaleFilters(config);
+  // Each segment cuts from its own source when one is set — this is what makes
+  // a multi-video reel possible. Falls back to the stitch's single videoPath.
+  const source = segment.sourcePath ?? videoPath;
 
   const args = [
     "-nostdin", "-y",
     "-ss", segment.start.toString(),
-    "-i", videoPath,
+    "-i", source,
     "-t", duration.toString(),
     "-vf", filters.join(","),
     "-r", config.targetFps.toString(),
+    // Loudness normalization for cross-source reels — each segment is brought
+    // to the same target so volume doesn't jump between videos.
+    ...(segment.normalizeAudio ? ["-af", "loudnorm=I=-16:TP=-1.5:LRA=11"] : []),
     "-c:v", "libx264", "-pix_fmt", "yuv420p",
     "-preset", STITCH_CONFIG.PRESET,
     "-crf", STITCH_CONFIG.CRF.toString(),
