@@ -3,6 +3,7 @@ import { fetchWithTimeout } from "@/lib/queryClient";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   X, Loader2, Film, Plus, ChevronLeft, ChevronRight, Trash2, Sparkles, CheckCircle, AlertCircle, Scissors,
+  Upload, Video, Circle, Square,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
@@ -38,10 +39,11 @@ interface ReelClip {
  */
 interface ReelItem {
   id: string;
-  source: "clip" | "moment";
+  source: "clip" | "moment" | "asset"; // asset = uploaded file or webcam recording
   clipId?: number;
   clipSource?: "remix" | "editorial";
-  videoId: number;
+  assetId?: number;
+  videoId: number; // 0 for asset items (no library video behind them)
   videoTitle: string;
   label: string;
   thumbnailPath?: string | null;
@@ -51,6 +53,9 @@ interface ReelItem {
   trimEnd: number;
   isAssembled?: boolean;
 }
+
+/** Distinct-source key so an asset and a video don't collide in counts. */
+const srcKey = (it: ReelItem) => (it.source === "asset" ? `a:${it.assetId}` : `v:${it.videoId}`);
 
 const PLATFORMS = [
   { id: "tiktok", label: "TikTok" },
@@ -88,8 +93,11 @@ export default function ReelBuilder({ open, onClose }: { open: boolean; onClose:
   const [storyPrompt, setStoryPrompt] = useState("");
   const [narrativeArc, setNarrativeArc] = useState<string | null>(null);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [recorderOpen, setRecorderOpen] = useState(false);
   const [result, setResult] = useState<{ status: "building" | "completed" | "failed"; thumbnailPath?: string | null; error?: string } | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
 
   const selected = new Set(
     order.filter((i) => i.source === "clip").map((i) => `${i.clipSource}:${i.clipId}`),
@@ -112,6 +120,7 @@ export default function ReelBuilder({ open, onClose }: { open: boolean; onClose:
       load();
       setOrder([]); setResult(null); setTitle(""); setNarrativeArc(null);
       setBuilding(false); setFinding(false); setStoryPrompt("");
+      setUploading(false); setRecorderOpen(false);
     }
     return () => {
       if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
@@ -200,8 +209,41 @@ export default function ReelBuilder({ open, onClose }: { open: boolean; onClose:
     setFinding(false);
   };
 
+  // Upload a video file (chosen file or a webcam recording) as a media asset,
+  // then drop it onto the timeline as an "asset" block.
+  const uploadClip = async (file: File, label: string) => {
+    setUploading(true);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetchWithTimeout("/api/media-assets?kind=broll_video", {
+        method: "POST", credentials: "include", body: form,
+      }, 5 * 60_000);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.asset) throw new Error(data.error || "Upload failed");
+      const a = data.asset;
+      const d = Number(a.durationSec) || 0;
+      const end = d > 0 ? d : 5;
+      setOrder((o) => [...o, {
+        id: newId(), source: "asset", assetId: a.id, videoId: 0,
+        videoTitle: label, label: a.name || label, thumbnailPath: a.thumbnailPath ?? null,
+        boundStart: 0, boundEnd: end, trimStart: 0, trimEnd: end,
+      }]);
+      toast({ title: `Added ${label.toLowerCase()}`, description: a.name || "" });
+    } catch (err: any) {
+      toast({ title: "Couldn't add clip", description: err.message, variant: "destructive" });
+    }
+    setUploading(false);
+  };
+
+  const onFilePicked = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = ""; // allow re-picking the same file
+    if (f) uploadClip(f, "Upload");
+  };
+
   const totalDuration = order.reduce((s, it) => s + dur(it), 0);
-  const sourceCount = new Set(order.map((i) => i.videoId)).size;
+  const sourceCount = new Set(order.map(srcKey)).size;
 
   const build = async () => {
     if (order.length < 2) return;
@@ -214,9 +256,11 @@ export default function ReelBuilder({ open, onClose }: { open: boolean; onClose:
         credentials: "include",
         body: JSON.stringify({
           items: order.map((it) =>
-            it.source === "clip" && !isTrimmed(it)
-              ? { clipId: it.clipId, clipSource: it.clipSource }
-              : { videoId: it.videoId, start: it.trimStart, end: it.trimEnd, reason: it.label }),
+            it.source === "asset"
+              ? { assetId: it.assetId, start: it.trimStart, end: it.trimEnd, label: it.label }
+              : it.source === "clip" && !isTrimmed(it)
+                ? { clipId: it.clipId, clipSource: it.clipSource }
+                : { videoId: it.videoId, start: it.trimStart, end: it.trimEnd, reason: it.label }),
           platformTarget: platform,
           captionsEnabled,
           title: title || undefined,
@@ -267,6 +311,15 @@ export default function ReelBuilder({ open, onClose }: { open: boolean; onClose:
           className="relative w-full max-w-5xl h-[88vh] bg-gray-900 border border-white/10 rounded-2xl overflow-hidden flex flex-col"
           onClick={(e) => e.stopPropagation()}
         >
+          {/* Hidden picker for uploads */}
+          <input ref={fileRef} type="file" accept="video/*" className="hidden" onChange={onFilePicked} />
+          {recorderOpen && (
+            <WebcamRecorder
+              onClose={() => setRecorderOpen(false)}
+              onCapture={(file) => { setRecorderOpen(false); uploadClip(file, "Recording"); }}
+            />
+          )}
+
           {/* Header */}
           <div className="flex items-center justify-between px-5 py-3.5 border-b border-white/10">
             <div className="flex items-center gap-2">
@@ -400,10 +453,27 @@ export default function ReelBuilder({ open, onClose }: { open: boolean; onClose:
               {/* Bottom: the timeline */}
               <div className="border-t border-white/10 bg-black/30 flex-none">
                 <div className="px-4 py-1.5 flex items-center justify-between text-[11px]">
-                  <span className="uppercase tracking-wider text-gray-500">Timeline</span>
+                  <div className="flex items-center gap-2">
+                    <span className="uppercase tracking-wider text-gray-500">Timeline</span>
+                    <button
+                      onClick={() => fileRef.current?.click()}
+                      disabled={uploading}
+                      className="flex items-center gap-1 px-2 py-1 rounded-md border border-gray-700 text-gray-300 hover:border-gray-500 hover:text-white disabled:opacity-50"
+                      data-testid="reel-upload"
+                    >
+                      {uploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />} Upload
+                    </button>
+                    <button
+                      onClick={() => setRecorderOpen(true)}
+                      className="flex items-center gap-1 px-2 py-1 rounded-md border border-gray-700 text-gray-300 hover:border-gray-500 hover:text-white"
+                      data-testid="reel-record"
+                    >
+                      <Video className="w-3 h-3" /> Record
+                    </button>
+                  </div>
                   {order.length > 0
                     ? <span className="text-gray-500">{order.length} clip{order.length === 1 ? "" : "s"} · {fmt(totalDuration)} · {sourceCount} source{sourceCount === 1 ? "" : "s"}</span>
-                    : <span className="text-gray-600">drag clips in · drag edges to trim</span>}
+                    : <span className="text-gray-600">add clips · drag edges to trim</span>}
                 </div>
                 <div className="h-[132px] overflow-x-auto overflow-y-hidden px-3 pb-3">
                   {order.length === 0 ? (
@@ -477,5 +547,105 @@ export default function ReelBuilder({ open, onClose }: { open: boolean; onClose:
         </motion.div>
       </motion.div>
     </AnimatePresence>
+  );
+}
+
+/**
+ * Webcam recorder overlay. Opens the laptop camera, records with MediaRecorder,
+ * and hands the parent a video File to upload. Self-contained: it acquires the
+ * stream on mount and tears every track down on unmount, so the camera light
+ * never lingers after the overlay closes.
+ */
+function WebcamRecorder({ onClose, onCapture }: { onClose: () => void; onCapture: (file: File) => void }) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<BlobPart[]>([]);
+  const [ready, setReady] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
+        streamRef.current = stream;
+        if (videoRef.current) { videoRef.current.srcObject = stream; videoRef.current.play().catch(() => {}); }
+        setReady(true);
+      } catch (err: any) {
+        setError(err?.name === "NotAllowedError" ? "Camera access was blocked. Allow it in your browser and try again." : (err?.message || "Couldn't open the camera."));
+      }
+    })();
+    return () => {
+      cancelled = true;
+      recorderRef.current?.state === "recording" && recorderRef.current.stop();
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!recording) return;
+    const t = setInterval(() => setElapsed((e) => e + 1), 1000);
+    return () => clearInterval(t);
+  }, [recording]);
+
+  const start = () => {
+    const stream = streamRef.current;
+    if (!stream) return;
+    chunksRef.current = [];
+    // Prefer mp4 when the browser offers it; fall back to webm (both ffmpeg-readable).
+    const mime = ["video/mp4", "video/webm;codecs=vp9,opus", "video/webm"].find((m) => (window as any).MediaRecorder?.isTypeSupported?.(m)) || "";
+    const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+    rec.ondataavailable = (ev) => { if (ev.data.size > 0) chunksRef.current.push(ev.data); };
+    rec.onstop = () => {
+      const type = rec.mimeType || "video/webm";
+      const ext = type.includes("mp4") ? "mp4" : "webm";
+      const blob = new Blob(chunksRef.current, { type });
+      onCapture(new File([blob], `recording-${Date.now()}.${ext}`, { type }));
+    };
+    recorderRef.current = rec;
+    rec.start();
+    setRecording(true);
+    setElapsed(0);
+  };
+  const stop = () => { recorderRef.current?.state === "recording" && recorderRef.current.stop(); setRecording(false); };
+
+  return (
+    <div className="absolute inset-0 z-10 bg-black/90 flex flex-col items-center justify-center p-6" onClick={(e) => e.stopPropagation()}>
+      <button onClick={() => { stop(); onClose(); }} className="absolute top-4 right-4 text-gray-400 hover:text-white"><X className="w-5 h-5" /></button>
+      {error ? (
+        <div className="text-center max-w-sm">
+          <AlertCircle className="w-10 h-10 text-red-400 mx-auto mb-3" />
+          <p className="text-sm text-gray-300">{error}</p>
+          <Button onClick={onClose} className="mt-4 bg-gray-700 hover:bg-gray-600">Close</Button>
+        </div>
+      ) : (
+        <>
+          <div className="relative rounded-xl overflow-hidden border border-white/10 bg-black">
+            <video ref={videoRef} muted playsInline className="max-h-[52vh] w-auto" style={{ transform: "scaleX(-1)" }} />
+            {recording && (
+              <div className="absolute top-3 left-3 flex items-center gap-1.5 px-2 py-1 rounded-full bg-red-600/90 text-white text-[11px] font-medium">
+                <span className="w-2 h-2 rounded-full bg-white animate-pulse" /> {fmt(elapsed)}
+              </div>
+            )}
+          </div>
+          <div className="mt-5 flex items-center gap-3">
+            {!recording ? (
+              <button onClick={start} disabled={!ready} className="flex items-center gap-2 px-5 py-2.5 rounded-full bg-red-600 hover:bg-red-500 text-white font-medium disabled:opacity-50">
+                <Circle className="w-4 h-4 fill-white" /> {ready ? "Start recording" : "Starting camera…"}
+              </button>
+            ) : (
+              <button onClick={stop} className="flex items-center gap-2 px-5 py-2.5 rounded-full bg-white text-gray-900 font-medium">
+                <Square className="w-4 h-4 fill-gray-900" /> Stop &amp; add to reel
+              </button>
+            )}
+          </div>
+          <p className="text-[11px] text-gray-500 mt-3">Records with sound. It's added to your timeline when you stop.</p>
+        </>
+      )}
+    </div>
   );
 }

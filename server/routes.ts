@@ -16228,14 +16228,19 @@ export async function registerRoutes(
       // here even though broader ownership work is on hold.
       const ownedVideos = await storage.getVideoIndex(String(req.authUserId ?? req.user?.id ?? ""), req.authEmail ?? req.user?.email);
       const ownedIds = new Set(ownedVideos.map((v) => v.id));
+      const callerId = String(req.authUserId ?? req.user?.id ?? "");
+      const callerEmail = String(req.authEmail ?? req.user?.email ?? "");
 
-      // Resolve, in order, to {sourceVideoId, beats[]}.
+      // Resolve, in order. A source is EITHER a library video (srcKey "v:<id>")
+      // OR an uploaded/recorded media asset (srcKey "a:<id>") — the latter is
+      // how upload and webcam clips join the reel. Both carry their own beats.
       const validSegs = (clip: any): Array<{ start: number; end: number }> | null => {
         const s = clip?.segments;
         if (!Array.isArray(s) || s.length < 2) return null;
         return s.every((x: any) => typeof x?.start === "number" && typeof x?.end === "number" && x.end > x.start) ? s : null;
       };
-      const resolved: Array<{ sourceVideoId: number; beats: Array<{ start: number; end: number }>; label: string }> = [];
+      type Resolved = { srcKey: string; videoId: number | null; assetId: number | null; beats: Array<{ start: number; end: number }>; label: string };
+      const resolved: Resolved[] = [];
       let skippedNotOwned = 0;
       for (const it of rawItems) {
         if (it?.clipId != null) {
@@ -16243,38 +16248,57 @@ export async function registerRoutes(
           if (!clip || clip.videoId == null) continue;
           if (!ownedIds.has(clip.videoId)) { skippedNotOwned++; continue; }
           resolved.push({
-            sourceVideoId: clip.videoId,
+            srcKey: `v:${clip.videoId}`, videoId: clip.videoId, assetId: null,
             beats: validSegs(clip) ?? [{ start: Number(clip.clipStart), end: Number(clip.clipEnd) }],
             label: clip.suggestedTitle || "",
+          });
+        } else if (it?.assetId != null) {
+          // Uploaded or webcam-recorded clip. Ownership is the asset's own
+          // userId, and the whole asset is one beat (trimmable client-side).
+          const asset = await storage.getMediaAsset(Number(it.assetId));
+          if (!asset || asset.deletedAt) { skippedNotOwned++; continue; }
+          if (String(asset.userId) !== callerId && String(asset.userId) !== callerEmail) { skippedNotOwned++; continue; }
+          const assetDur = Number(asset.durationSec) || 0;
+          const start = Number.isFinite(Number(it.start)) ? Math.max(0, Number(it.start)) : 0;
+          const end = Number.isFinite(Number(it.end)) ? Number(it.end) : (assetDur > 0 ? assetDur : start + 5);
+          if (end <= start) { skippedNotOwned++; continue; }
+          resolved.push({
+            srcKey: `a:${asset.id}`, videoId: null, assetId: asset.id,
+            beats: [{ start, end }],
+            label: String(it.label ?? asset.name ?? "Clip").slice(0, 120),
           });
         } else if (it?.videoId != null && Number.isFinite(Number(it.start)) && Number.isFinite(Number(it.end)) && Number(it.end) > Number(it.start)) {
           if (!ownedIds.has(Number(it.videoId))) { skippedNotOwned++; continue; }
           resolved.push({
-            sourceVideoId: Number(it.videoId),
+            srcKey: `v:${Number(it.videoId)}`, videoId: Number(it.videoId), assetId: null,
             beats: [{ start: Number(it.start), end: Number(it.end) }],
             label: String(it.reason ?? "").slice(0, 120),
           });
         }
       }
-      if (skippedNotOwned > 0) console.warn(`[Reel] Skipped ${skippedNotOwned} item(s) referencing videos not owned by the caller`);
+      if (skippedNotOwned > 0) console.warn(`[Reel] Skipped ${skippedNotOwned} item(s) not owned by the caller`);
       if (resolved.length < 2) {
-        return res.status(400).json({ error: "Could not resolve at least 2 of the selected items from your own videos." });
+        return res.status(400).json({ error: "Could not resolve at least 2 of the selected items from your own content." });
       }
 
-      const videoIds = Array.from(new Set(resolved.map((r) => r.sourceVideoId)));
-      const multiSource = videoIds.length > 1;
-      const anchorVideoId = resolved[0].sourceVideoId;
+      const srcKeys = Array.from(new Set(resolved.map((r) => r.srcKey)));
+      const multiSource = srcKeys.length > 1;
+      // The stitch plan / output clip must anchor to a videoIndex row (FK, NOT
+      // NULL). Use the first video-backed source, or fall back to any owned
+      // video for an all-uploads reel. Bookkeeping only — the content comes
+      // from each segment's own sourcePath.
+      const anchorVideoId = resolved.find((r) => r.videoId != null)?.videoId ?? ownedVideos[0]?.id ?? null;
+      if (anchorVideoId == null) {
+        return res.status(400).json({ error: "Add at least one clip from one of your videos to anchor the reel." });
+      }
 
-      const planSegments: Array<{ start: number; end: number; sourceVideoId: number; suggestedTransition: string; enabled: boolean; role: string; narrativePurpose: string }> = [];
+      const planSegments: Array<{ start: number; end: number; srcKey: string; sourceVideoId: number | null; sourceAssetId: number | null; suggestedTransition: string; enabled: boolean; role: string; narrativePurpose: string }> = [];
       for (const r of resolved) {
         for (const b of r.beats) {
           planSegments.push({
             start: b.start, end: b.end,
-            sourceVideoId: r.sourceVideoId,
-            suggestedTransition: "crossfade",
-            enabled: true,
-            role: "bridge",
-            narrativePurpose: r.label,
+            srcKey: r.srcKey, sourceVideoId: r.videoId, sourceAssetId: r.assetId,
+            suggestedTransition: "crossfade", enabled: true, role: "bridge", narrativePurpose: r.label,
           });
         }
       }
@@ -16284,14 +16308,14 @@ export async function registerRoutes(
         videoId: anchorVideoId,
         userId,
         status: "generating",
-        suggestedTitle: (title ? String(title).slice(0, 200) : null) || `Reel from ${videoIds.length} video${videoIds.length === 1 ? "" : "s"}`,
+        suggestedTitle: (title ? String(title).slice(0, 200) : null) || `Reel from ${srcKeys.length} source${srcKeys.length === 1 ? "" : "s"}`,
         segments: planSegments as any,
         totalDuration,
         transitionStyle: "crossfade",
         platformTarget,
       });
 
-      res.json({ planId: plan.id, segmentCount: planSegments.length, sourceCount: videoIds.length });
+      res.json({ planId: plan.id, segmentCount: planSegments.length, sourceCount: srcKeys.length });
 
       // ── Async render ──────────────────────────────────────────────
       (async () => {
@@ -16305,26 +16329,38 @@ export async function registerRoutes(
           tempRoot = path.join("/tmp/remix-videos", `reel-${plan.id}`);
           fs.mkdirSync(tempRoot, { recursive: true });
 
-          // Resolve each distinct source video to a local file ONCE.
-          const sourceMap = new Map<number, string>();
-          for (const vid of videoIds) {
-            const v = await storage.getVideoById(vid);
-            const fp = v?.filePath;
-            if (!fp) throw new Error(`Video ${vid} has no file path`);
+          // Resolve each distinct source (video OR uploaded asset) to a local
+          // file ONCE, keyed by srcKey ("v:<id>" / "a:<id>").
+          const sourceMap = new Map<string, string>();
+          for (const r of resolved) {
+            if (sourceMap.has(r.srcKey)) continue;
+            const scope = r.srcKey.replace(":", "-");
+            if (r.assetId != null) {
+              // A media asset's storagePath is ALREADY an object key
+              // ("public/media-assets/..."), so it goes straight to
+              // downloadToTempFile — NOT through objectKeyFromServeUrl (that
+              // is for "/storage/..." serve urls and would double the prefix).
+              const asset = await storage.getMediaAsset(r.assetId);
+              if (!asset?.storagePath) throw new Error(`Asset ${r.assetId} has no file`);
+              sourceMap.set(r.srcKey, await downloadToTempFile(asset.storagePath, path.join(tempRoot, scope)));
+              continue;
+            }
+            const fp = (await storage.getVideoById(r.videoId!))?.filePath ?? null;
+            if (!fp) throw new Error(`Video ${r.videoId} has no file`);
             if (fp.startsWith("/storage/")) {
-              const local = await downloadToTempFile(objectKeyFromServeUrl(fp), path.join(tempRoot, `src-${vid}`));
-              sourceMap.set(vid, local);
+              sourceMap.set(r.srcKey, await downloadToTempFile(objectKeyFromServeUrl(fp), path.join(tempRoot, scope)));
             } else {
               let local = fp;
               if (fp.startsWith("/") && !fs.existsSync(fp)) {
                 const pub = path.join(process.cwd(), "public", fp);
                 if (fs.existsSync(pub)) local = pub;
               }
-              sourceMap.set(vid, local);
+              sourceMap.set(r.srcKey, local);
             }
           }
 
-          // Per-source transcript cache for captions.
+          // Per-video transcript cache for captions. Asset sources have no
+          // transcript, so their beats simply carry no burned captions.
           const transcriptCache = new Map<number, any[] | null>();
           const transcriptFor = async (vid: number): Promise<any[] | null> => {
             if (transcriptCache.has(vid)) return transcriptCache.get(vid)!;
@@ -16348,11 +16384,11 @@ export async function registerRoutes(
               end: ps.end,
               transitionIn: i === 0 ? "cut" : "crossfade",
               transitionDuration: 0.5,
-              sourcePath: sourceMap.get(ps.sourceVideoId),
+              sourcePath: sourceMap.get(ps.srcKey),
               normalizeAudio: multiSource,
             });
             let group: CaptionSegment[] = [];
-            if (captionsEnabled) {
+            if (captionsEnabled && ps.sourceVideoId != null) {
               const segs = await transcriptFor(ps.sourceVideoId);
               if (segs) {
                 const within = segs.filter((t: any) => t.start >= ps.start - 0.5 && t.start <= ps.end);
@@ -16371,7 +16407,10 @@ export async function registerRoutes(
 
           const outputDir = path.join(process.cwd(), "public", "exported-clips", `reel_${plan.id}`);
           const result = await stitchSegments({
-            videoPath: sourceMap.get(anchorVideoId)!, // default; every segment overrides via sourcePath
+            // Default only — every segment overrides via its own sourcePath.
+            // Use the first resolved source (the anchor video may be a fallback
+            // that no segment actually references, so it need not be in the map).
+            videoPath: sourceMap.get(resolved[0].srcKey)!,
             videoId: anchorVideoId,
             segments: stitchSegs,
             platformConfig,
