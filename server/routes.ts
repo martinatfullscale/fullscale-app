@@ -16111,34 +16111,37 @@ export async function registerRoutes(
       const authUserId = req.authUserId ?? req.user?.id;
       const authEmail = req.authEmail ?? req.user?.email;
       const videos = await storage.getVideoIndex(String(authUserId ?? ""), authEmail);
+      const videoIds = videos.map((v) => v.id);
+      const titleById = new Map(videos.map((v) => [v.id, (v as any).title || `Video ${v.id}`]));
 
-      const out: any[] = [];
+      // Two batched queries for ALL videos, not two per video. This endpoint
+      // was an N+1 — 82 videos meant 166 round trips and a 3.4s response.
+      const [remixAll, editorialAll] = await Promise.all([
+        storage.getClipsByVideoIds(videoIds).catch(() => [] as any[]),
+        storage.getEditorialClipsByVideoIds(videoIds).catch(() => [] as any[]),
+      ]);
+
       const CAP = 400;
-      for (const v of videos) {
-        if (out.length >= CAP) break;
-        const [remix, editorial] = await Promise.all([
-          storage.getClipsByVideo(v.id).catch(() => [] as any[]),
-          storage.getEditorialClipsByVideo(v.id).catch(() => [] as any[]),
-        ]);
-        const push = (c: any, source: "remix" | "editorial") => {
-          const start = Number(c.clipStart), end = Number(c.clipEnd);
-          if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
-          out.push({
-            clipId: c.id,
-            clipSource: source,
-            videoId: v.id,
-            videoTitle: (v as any).title || `Video ${v.id}`,
-            title: c.suggestedTitle || c.title || null,
-            clipStart: start,
-            clipEnd: end,
-            duration: Number(c.duration) || (end - start),
-            thumbnailPath: c.thumbnailPath || null,
-            hasSegments: Array.isArray(c.segments) && c.segments.length >= 2,
-          });
-        };
-        for (const c of remix) push(c, "remix");
-        for (const c of editorial) push(c, "editorial");
-      }
+      const out: any[] = [];
+      const push = (c: any, source: "remix" | "editorial") => {
+        if (out.length >= CAP) return;
+        const start = Number(c.clipStart), end = Number(c.clipEnd);
+        if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
+        out.push({
+          clipId: c.id,
+          clipSource: source,
+          videoId: c.videoId,
+          videoTitle: titleById.get(c.videoId) || `Video ${c.videoId}`,
+          title: c.suggestedTitle || c.title || null,
+          clipStart: start,
+          clipEnd: end,
+          duration: Number(c.duration) || (end - start),
+          thumbnailPath: c.thumbnailPath || null,
+          hasSegments: Array.isArray(c.segments) && c.segments.length >= 2,
+        });
+      };
+      for (const c of remixAll) push(c, "remix");
+      for (const c of editorialAll) push(c, "editorial");
       res.json({ clips: out });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "Failed to list clips" });

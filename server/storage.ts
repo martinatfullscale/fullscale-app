@@ -3915,6 +3915,27 @@ export class DatabaseStorage implements IStorage {
   }
 
   /**
+   * Batched variants — one query for MANY videos, grouped by caller.
+   *
+   * The Reel Builder picker needs every clip across all a creator's videos.
+   * Fetching per-video (getClipsByVideo in a loop) is a textbook N+1: 82 videos
+   * became 166 round trips and a 3.4s response. One IN() query each instead.
+   */
+  async getClipsByVideoIds(videoIds: number[]): Promise<GeneratedClip[]> {
+    if (videoIds.length === 0) return [];
+    return db.select().from(generatedClips)
+      .where(inArray(generatedClips.videoId, videoIds))
+      .orderBy(desc(generatedClips.createdAt));
+  }
+
+  async getEditorialClipsByVideoIds(videoIds: number[]): Promise<EditorialClip[]> {
+    if (videoIds.length === 0) return [];
+    return db.select().from(editorialClips)
+      .where(inArray(editorialClips.videoId, videoIds))
+      .orderBy(desc(editorialClips.finalScore));
+  }
+
+  /**
    * Get a single editorial clip by ID — used by brand browsing flow when a
    * brand opens a clip's detail/placement-request modal.
    */
