@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { fetchWithTimeout } from "@/lib/queryClient";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -27,6 +27,23 @@ interface ReelClip {
   hasSegments: boolean;
 }
 
+/**
+ * A reel item is EITHER a picked clip (job #1) OR an AI-proposed cross-video
+ * moment (job #2). The build payload sends each as {clipId,clipSource} or
+ * {videoId,start,end} accordingly.
+ */
+type ReelItem =
+  | { kind: "clip"; clip: ReelClip }
+  | { kind: "moment"; videoId: number; videoTitle: string; start: number; end: number; role: string; reason: string };
+
+const itemKey = (it: ReelItem) =>
+  it.kind === "clip" ? clipKey(it.clip) : `moment:${it.videoId}:${it.start}:${it.end}`;
+const itemDuration = (it: ReelItem) => (it.kind === "clip" ? it.clip.duration : it.end - it.start);
+const itemVideoId = (it: ReelItem) => (it.kind === "clip" ? it.clip.videoId : it.videoId);
+const itemTitle = (it: ReelItem) =>
+  it.kind === "clip" ? (it.clip.title || `${it.clip.videoTitle} clip`) : it.reason || `${it.videoTitle} moment`;
+const itemVideoTitle = (it: ReelItem) => (it.kind === "clip" ? it.clip.videoTitle : it.videoTitle);
+
 const PLATFORMS = [
   { id: "tiktok", label: "TikTok" },
   { id: "youtube_shorts", label: "YouTube" },
@@ -44,14 +61,21 @@ export default function ReelBuilder({ open, onClose }: { open: boolean; onClose:
   const { toast } = useToast();
   const [loading, setLoading] = useState(false);
   const [clips, setClips] = useState<ReelClip[]>([]);
-  const [order, setOrder] = useState<ReelClip[]>([]); // the reel, in play order
+  const [order, setOrder] = useState<ReelItem[]>([]); // the reel, in play order
   const [platform, setPlatform] = useState("tiktok");
   const [captionsEnabled, setCaptionsEnabled] = useState(true);
   const [title, setTitle] = useState("");
   const [building, setBuilding] = useState(false);
+  const [finding, setFinding] = useState(false);
+  const [narrativeArc, setNarrativeArc] = useState<string | null>(null);
   const [result, setResult] = useState<{ status: "building" | "completed" | "failed"; thumbnailPath?: string | null; error?: string } | null>(null);
+  // Holds the build poll so closing the modal mid-build stops it — otherwise it
+  // hits /stitch-plans/:id every 3s forever, and a reopen is stranded with the
+  // Build button stuck disabled.
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const selected = new Set(order.map(clipKey));
+  // Only clip items appear in the picker, so selection tracks those.
+  const selected = new Set(order.filter((i) => i.kind === "clip").map((i: any) => clipKey(i.clip)));
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -68,12 +92,20 @@ export default function ReelBuilder({ open, onClose }: { open: boolean; onClose:
   useEffect(() => {
     if (open) {
       load();
-      setOrder([]); setResult(null); setTitle("");
+      setOrder([]); setResult(null); setTitle(""); setNarrativeArc(null);
+      setBuilding(false); setFinding(false);
     }
+    // Stop any in-flight build poll when the modal closes or unmounts.
+    return () => {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    };
   }, [open, load]);
 
-  const add = (c: ReelClip) => setOrder((o) => (o.some((x) => clipKey(x) === clipKey(c)) ? o : [...o, c]));
-  const remove = (c: ReelClip) => setOrder((o) => o.filter((x) => clipKey(x) !== clipKey(c)));
+  const toggleClip = (c: ReelClip) => setOrder((o) =>
+    o.some((x) => x.kind === "clip" && clipKey(x.clip) === clipKey(c))
+      ? o.filter((x) => !(x.kind === "clip" && clipKey(x.clip) === clipKey(c)))
+      : [...o, { kind: "clip", clip: c }]);
+  const removeAt = (i: number) => setOrder((o) => o.filter((_, idx) => idx !== i));
   const move = (i: number, dir: -1 | 1) => setOrder((o) => {
     const j = i + dir;
     if (j < 0 || j >= o.length) return o;
@@ -82,8 +114,36 @@ export default function ReelBuilder({ open, onClose }: { open: boolean; onClose:
     return next;
   });
 
-  const totalDuration = order.reduce((s, c) => s + c.duration, 0);
-  const sourceCount = new Set(order.map((c) => c.videoId)).size;
+  // Job #2 — let the AI propose a cross-video reel, which replaces the current
+  // order (the creator then tweaks and builds it).
+  const findStory = async () => {
+    setFinding(true);
+    try {
+      const res = await fetchWithTimeout("/api/remix/library-thread", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({}),
+      }, 120_000);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Couldn't analyze your library");
+      const moments: ReelItem[] = (data.segments ?? []).map((s: any) => ({
+        kind: "moment", videoId: s.videoId, videoTitle: s.videoTitle,
+        start: s.start, end: s.end, role: s.role, reason: s.reason,
+      }));
+      if (moments.length < 2) throw new Error("The analysis didn't find a strong cross-video thread.");
+      setOrder(moments);
+      setNarrativeArc(data.narrativeArc || null);
+      if (data.suggestedTitle && !title) setTitle(data.suggestedTitle);
+      toast({ title: "Found a story", description: `${moments.length} moments across your videos — tweak and build.` });
+    } catch (err: any) {
+      toast({ title: "Couldn't find a story", description: err.message, variant: "destructive" });
+    }
+    setFinding(false);
+  };
+
+  const totalDuration = order.reduce((s, it) => s + itemDuration(it), 0);
+  const sourceCount = new Set(order.map(itemVideoId)).size;
 
   const build = async () => {
     if (order.length < 2) return;
@@ -95,7 +155,10 @@ export default function ReelBuilder({ open, onClose }: { open: boolean; onClose:
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({
-          clips: order.map((c) => ({ clipId: c.clipId, clipSource: c.clipSource })),
+          items: order.map((it) =>
+            it.kind === "clip"
+              ? { clipId: it.clip.clipId, clipSource: it.clip.clipSource }
+              : { videoId: it.videoId, start: it.start, end: it.end, reason: it.reason }),
           platformTarget: platform,
           captionsEnabled,
           title: title || undefined,
@@ -114,6 +177,7 @@ export default function ReelBuilder({ open, onClose }: { open: boolean; onClose:
           const plan = await pr.json();
           if (plan.status === "completed" || plan.status === "failed") {
             clearInterval(poll);
+            pollRef.current = null;
             setBuilding(false);
             if (plan.status === "completed") {
               setResult({ status: "completed", thumbnailPath: plan.thumbnailPath });
@@ -125,6 +189,7 @@ export default function ReelBuilder({ open, onClose }: { open: boolean; onClose:
           }
         } catch { /* transient */ }
       }, 3000);
+      pollRef.current = poll;
     } catch (err: any) {
       setBuilding(false);
       setResult({ status: "failed", error: err.message });
@@ -184,7 +249,7 @@ export default function ReelBuilder({ open, onClose }: { open: boolean; onClose:
                       return (
                         <button
                           key={clipKey(c)}
-                          onClick={() => (isSel ? remove(c) : add(c))}
+                          onClick={() => toggleClip(c)}
                           className={`w-full flex items-center gap-3 p-2 rounded-lg border text-left transition-colors ${
                             isSel ? "bg-purple-500/15 border-purple-500/50" : "bg-gray-800/50 border-gray-700 hover:border-gray-500"
                           }`}
@@ -213,21 +278,42 @@ export default function ReelBuilder({ open, onClose }: { open: boolean; onClose:
                   <span>Reel — {order.length} clip{order.length === 1 ? "" : "s"}</span>
                   {order.length > 0 && <span className="text-gray-600">{fmt(totalDuration)} · {sourceCount} source{sourceCount === 1 ? "" : "s"}</span>}
                 </div>
+
+                {/* Job #2 — AI proposes a cross-video reel. */}
+                <div className="px-3 pt-2.5">
+                  <button
+                    onClick={findStory}
+                    disabled={finding}
+                    className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-md border border-violet-500/40 bg-violet-500/10 text-[11px] font-medium text-violet-200 hover:bg-violet-500/20 disabled:opacity-50"
+                    data-testid="find-story"
+                  >
+                    {finding ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                    {finding ? "Reading your videos…" : "Find a story across my videos"}
+                  </button>
+                  {narrativeArc && order.some((i) => i.kind === "moment") && (
+                    <p className="text-[11px] text-violet-300/80 italic mt-1.5 leading-snug">{narrativeArc}</p>
+                  )}
+                </div>
+
                 <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
                   {order.length === 0 ? (
-                    <p className="text-xs text-gray-500 text-center py-10">Click clips on the left to add them. Order top-to-bottom is play order.</p>
+                    <p className="text-xs text-gray-500 text-center py-10">Pick clips on the left, or let the AI find a story across your videos above.</p>
                   ) : (
-                    order.map((c, i) => (
-                      <div key={clipKey(c)} className="flex items-center gap-2 p-2 rounded-lg bg-gray-800/60 border border-gray-700">
+                    order.map((it, i) => (
+                      // Index-prefixed: two AI moments can share videoId+start+end.
+                      <div key={`${i}:${itemKey(it)}`} className="flex items-center gap-2 p-2 rounded-lg bg-gray-800/60 border border-gray-700">
                         <span className="text-[11px] font-mono text-gray-500 w-4 text-center">{i + 1}</span>
                         <div className="min-w-0 flex-1">
-                          <p className="text-xs text-white truncate">{c.title || `${c.videoTitle} clip`}</p>
-                          <p className="text-[11px] text-gray-500 truncate">{c.videoTitle} · {fmt(c.duration)}</p>
+                          <p className="text-xs text-white truncate">
+                            {it.kind === "moment" && <span className="text-violet-300 mr-1">✦</span>}
+                            {itemTitle(it)}
+                          </p>
+                          <p className="text-[11px] text-gray-500 truncate">{itemVideoTitle(it)} · {fmt(itemDuration(it))}</p>
                         </div>
                         <div className="flex items-center gap-0.5">
                           <button onClick={() => move(i, -1)} disabled={i === 0} className="p-1 text-gray-500 hover:text-white disabled:opacity-25"><ArrowUp className="w-3.5 h-3.5" /></button>
                           <button onClick={() => move(i, 1)} disabled={i === order.length - 1} className="p-1 text-gray-500 hover:text-white disabled:opacity-25"><ArrowDown className="w-3.5 h-3.5" /></button>
-                          <button onClick={() => remove(c)} className="p-1 text-gray-500 hover:text-red-400"><Trash2 className="w-3.5 h-3.5" /></button>
+                          <button onClick={() => removeAt(i)} className="p-1 text-gray-500 hover:text-red-400"><Trash2 className="w-3.5 h-3.5" /></button>
                         </div>
                       </div>
                     ))

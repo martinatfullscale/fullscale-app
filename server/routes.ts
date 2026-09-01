@@ -16145,6 +16145,55 @@ export async function registerRoutes(
     }
   });
 
+  // POST /api/remix/library-thread — Job #2: the AI reads a corpus of the
+  // creator's transcripts across videos and PROPOSES the strongest moments that
+  // assemble into one cross-video reel. Proposal only — the creator reviews and
+  // tweaks it in the Reel Builder, then POST /api/remix/reel renders it.
+  app.post("/api/remix/library-thread", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const authUserId = req.authUserId ?? req.user?.id;
+      const authEmail = req.authEmail ?? req.user?.email;
+      const { videoIds, targetDuration, segmentCount } = req.body || {};
+
+      // The candidate videos: an explicit list, or all of the creator's.
+      const allVideos = await storage.getVideoIndex(String(authUserId ?? ""), authEmail);
+      const wanted = Array.isArray(videoIds) && videoIds.length > 0
+        ? allVideos.filter((v) => videoIds.map(Number).includes(v.id))
+        : allVideos;
+
+      // Load transcripts; only transcribed videos can contribute.
+      const videos: Array<{ videoId: number; title: string; transcript: any[] }> = [];
+      for (const v of wanted) {
+        if (videos.length >= 8) break;
+        const t = await storage.getVideoTranscript(v.id).catch(() => null);
+        if (t?.status === "completed" && Array.isArray(t.segments) && t.segments.length > 0) {
+          videos.push({ videoId: v.id, title: (v as any).title || `Video ${v.id}`, transcript: t.segments as any[] });
+        }
+      }
+      if (videos.length < 2) {
+        return res.status(400).json({ error: "Need at least 2 videos with completed transcripts to find a cross-video story." });
+      }
+
+      const { analyzeLibraryThread } = await import("./lib/ai/claude-dense/editorialAnalyzer");
+      const result = await analyzeLibraryThread({ videos, targetDuration, segmentCount });
+      if (!result) {
+        return res.status(502).json({ error: "The analysis didn't return a usable thread. Try again, or pick fewer videos." });
+      }
+
+      // Attach the human-readable video title to each proposed beat.
+      const titleById = new Map(videos.map((v) => [v.videoId, v.title]));
+      res.json({
+        suggestedTitle: result.suggestedTitle,
+        narrativeArc: result.narrativeArc,
+        totalDuration: result.totalDuration,
+        segments: result.segments.map((s) => ({ ...s, videoTitle: titleById.get(s.videoId) || `Video ${s.videoId}` })),
+      });
+    } catch (err: any) {
+      console.error("[LibraryThread Route] Error:", err.message);
+      res.status(500).json({ error: err.message || "Failed to analyze library" });
+    }
+  });
+
   // POST /api/remix/reel — Build one reel from hand-picked clips that may come
   // from several different videos. The mechanical multi-source stitch: each
   // picked clip contributes its beat(s), cut from ITS OWN source video, and the
@@ -16153,43 +16202,76 @@ export async function registerRoutes(
   app.post("/api/remix/reel", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const userId = stableUserIntId(req.authUserId ?? req.user?.id);
-      const { clips, platformTarget = "tiktok", captionsEnabled = true, title } = req.body || {};
-      if (!Array.isArray(clips) || clips.length < 2) {
-        return res.status(400).json({ error: "Pick at least 2 clips for a reel." });
+      const { clips, segments, items, platformTarget = "tiktok", captionsEnabled = true, title } = req.body || {};
+
+      // Ordered building blocks, mixed. Each item is EITHER a picked clip
+      // ({clipId, clipSource}) — hand-picking, job #1 — OR a raw source range
+      // ({videoId, start, end}) — an AI-proposed cross-video beat, job #2.
+      // `clips`/`segments` are accepted as backward-compatible aliases.
+      const rawItems: any[] = Array.isArray(items) ? items
+        : [...(Array.isArray(clips) ? clips : []), ...(Array.isArray(segments) ? segments : [])];
+      if (rawItems.length < 2) {
+        return res.status(400).json({ error: "A reel needs at least 2 clips or moments." });
       }
 
-      // Resolve the picked clips, in order, to their source ranges.
-      const resolved: any[] = [];
-      for (const c of clips) {
-        const clip = await findClipById(Number(c.clipId), c?.clipSource === "editorial" ? "editorial" : "remix");
-        if (clip && clip.videoId != null) resolved.push(clip);
-      }
-      if (resolved.length < 2) {
-        return res.status(400).json({ error: "Could not resolve at least 2 of the selected clips." });
-      }
+      // Ownership allowlist. Every source video a reel pulls from must belong
+      // to the caller. The picker and the AI thread only ever surface the
+      // creator's own videos, so this costs nothing in normal use — but the
+      // raw {videoId,start,end} path trusts client input, and video ids are
+      // sequential, so without this any signed-in user could stitch (and then
+      // download) another creator's raw footage by enumerating ids. This is a
+      // cross-tenant data-exfiltration hole, a different class from the
+      // clip-level publish-ownership checks deferred earlier — so it is closed
+      // here even though broader ownership work is on hold.
+      const ownedVideos = await storage.getVideoIndex(String(req.authUserId ?? req.user?.id ?? ""), req.authEmail ?? req.user?.email);
+      const ownedIds = new Set(ownedVideos.map((v) => v.id));
 
-      const videoIds = Array.from(new Set(resolved.map((r) => r.videoId)));
-      const multiSource = videoIds.length > 1;
-      const anchorVideoId = resolved[0].videoId;
-
-      // Expand each clip into its beats (assembled clips) or its single range,
-      // tagged with the source video. First beat of the reel is a hard cut.
+      // Resolve, in order, to {sourceVideoId, beats[]}.
       const validSegs = (clip: any): Array<{ start: number; end: number }> | null => {
         const s = clip?.segments;
         if (!Array.isArray(s) || s.length < 2) return null;
         return s.every((x: any) => typeof x?.start === "number" && typeof x?.end === "number" && x.end > x.start) ? s : null;
       };
+      const resolved: Array<{ sourceVideoId: number; beats: Array<{ start: number; end: number }>; label: string }> = [];
+      let skippedNotOwned = 0;
+      for (const it of rawItems) {
+        if (it?.clipId != null) {
+          const clip = await findClipById(Number(it.clipId), it?.clipSource === "editorial" ? "editorial" : "remix");
+          if (!clip || clip.videoId == null) continue;
+          if (!ownedIds.has(clip.videoId)) { skippedNotOwned++; continue; }
+          resolved.push({
+            sourceVideoId: clip.videoId,
+            beats: validSegs(clip) ?? [{ start: Number(clip.clipStart), end: Number(clip.clipEnd) }],
+            label: clip.suggestedTitle || "",
+          });
+        } else if (it?.videoId != null && Number.isFinite(Number(it.start)) && Number.isFinite(Number(it.end)) && Number(it.end) > Number(it.start)) {
+          if (!ownedIds.has(Number(it.videoId))) { skippedNotOwned++; continue; }
+          resolved.push({
+            sourceVideoId: Number(it.videoId),
+            beats: [{ start: Number(it.start), end: Number(it.end) }],
+            label: String(it.reason ?? "").slice(0, 120),
+          });
+        }
+      }
+      if (skippedNotOwned > 0) console.warn(`[Reel] Skipped ${skippedNotOwned} item(s) referencing videos not owned by the caller`);
+      if (resolved.length < 2) {
+        return res.status(400).json({ error: "Could not resolve at least 2 of the selected items from your own videos." });
+      }
+
+      const videoIds = Array.from(new Set(resolved.map((r) => r.sourceVideoId)));
+      const multiSource = videoIds.length > 1;
+      const anchorVideoId = resolved[0].sourceVideoId;
+
       const planSegments: Array<{ start: number; end: number; sourceVideoId: number; suggestedTransition: string; enabled: boolean; role: string; narrativePurpose: string }> = [];
-      for (const clip of resolved) {
-        const beats = validSegs(clip) ?? [{ start: Number(clip.clipStart), end: Number(clip.clipEnd) }];
-        for (const b of beats) {
+      for (const r of resolved) {
+        for (const b of r.beats) {
           planSegments.push({
             start: b.start, end: b.end,
-            sourceVideoId: clip.videoId,
+            sourceVideoId: r.sourceVideoId,
             suggestedTransition: "crossfade",
             enabled: true,
             role: "bridge",
-            narrativePurpose: clip.suggestedTitle || "",
+            narrativePurpose: r.label,
           });
         }
       }
@@ -16328,8 +16410,14 @@ export async function registerRoutes(
           const dbClip = await storage.createGeneratedClip({
             remixJobId: reelJob.id,
             videoId: anchorVideoId,
-            clipStart: planSegments[0].start,
-            clipEnd: planSegments[planSegments.length - 1].end,
+            // OUTPUT-relative range, not source times. The first and last beats
+            // come from different videos (or a reordered pick), so deriving
+            // clipStart/clipEnd from their source timestamps produces
+            // clipStart > clipEnd — which the reel/clips picker drops via its
+            // `end <= start` guard, hiding the finished reel. 0..duration is the
+            // only internally-consistent range for a stitched output.
+            clipStart: 0,
+            clipEnd: result.duration,
             duration: result.duration,
             format: "mp4",
             platformTarget,
