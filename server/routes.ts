@@ -16239,7 +16239,7 @@ export async function registerRoutes(
         if (!Array.isArray(s) || s.length < 2) return null;
         return s.every((x: any) => typeof x?.start === "number" && typeof x?.end === "number" && x.end > x.start) ? s : null;
       };
-      type Resolved = { srcKey: string; videoId: number | null; assetId: number | null; beats: Array<{ start: number; end: number }>; label: string };
+      type Resolved = { srcKey: string; videoId: number | null; assetId: number | null; isImage: boolean; beats: Array<{ start: number; end: number }>; label: string };
       const resolved: Resolved[] = [];
       let skippedNotOwned = 0;
       for (const it of rawItems) {
@@ -16248,29 +16248,38 @@ export async function registerRoutes(
           if (!clip || clip.videoId == null) continue;
           if (!ownedIds.has(clip.videoId)) { skippedNotOwned++; continue; }
           resolved.push({
-            srcKey: `v:${clip.videoId}`, videoId: clip.videoId, assetId: null,
+            srcKey: `v:${clip.videoId}`, videoId: clip.videoId, assetId: null, isImage: false,
             beats: validSegs(clip) ?? [{ start: Number(clip.clipStart), end: Number(clip.clipEnd) }],
             label: clip.suggestedTitle || "",
           });
         } else if (it?.assetId != null) {
-          // Uploaded or webcam-recorded clip. Ownership is the asset's own
-          // userId, and the whole asset is one beat (trimmable client-side).
+          // Uploaded, webcam-recorded, or AI-generated clip. Ownership is the
+          // asset's own userId. A video asset carries its own range; an IMAGE
+          // asset (AI still) has no duration and is HELD for the requested
+          // window (1-30s), rendered as a still with a slow zoom.
           const asset = await storage.getMediaAsset(Number(it.assetId));
           if (!asset || asset.deletedAt) { skippedNotOwned++; continue; }
           if (String(asset.userId) !== callerId && String(asset.userId) !== callerEmail) { skippedNotOwned++; continue; }
-          const assetDur = Number(asset.durationSec) || 0;
-          const start = Number.isFinite(Number(it.start)) ? Math.max(0, Number(it.start)) : 0;
-          const end = Number.isFinite(Number(it.end)) ? Number(it.end) : (assetDur > 0 ? assetDur : start + 5);
+          const isImage = asset.kind === "broll_image";
+          let start: number, end: number;
+          if (isImage) {
+            start = 0;
+            end = Math.min(30, Math.max(1, Number.isFinite(Number(it.end)) ? Number(it.end) - (Number.isFinite(Number(it.start)) ? Number(it.start) : 0) : 4));
+          } else {
+            const assetDur = Number(asset.durationSec) || 0;
+            start = Number.isFinite(Number(it.start)) ? Math.max(0, Number(it.start)) : 0;
+            end = Number.isFinite(Number(it.end)) ? Number(it.end) : (assetDur > 0 ? assetDur : start + 5);
+          }
           if (end <= start) { skippedNotOwned++; continue; }
           resolved.push({
-            srcKey: `a:${asset.id}`, videoId: null, assetId: asset.id,
+            srcKey: `a:${asset.id}`, videoId: null, assetId: asset.id, isImage,
             beats: [{ start, end }],
             label: String(it.label ?? asset.name ?? "Clip").slice(0, 120),
           });
         } else if (it?.videoId != null && Number.isFinite(Number(it.start)) && Number.isFinite(Number(it.end)) && Number(it.end) > Number(it.start)) {
           if (!ownedIds.has(Number(it.videoId))) { skippedNotOwned++; continue; }
           resolved.push({
-            srcKey: `v:${Number(it.videoId)}`, videoId: Number(it.videoId), assetId: null,
+            srcKey: `v:${Number(it.videoId)}`, videoId: Number(it.videoId), assetId: null, isImage: false,
             beats: [{ start: Number(it.start), end: Number(it.end) }],
             label: String(it.reason ?? "").slice(0, 120),
           });
@@ -16292,12 +16301,12 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Add at least one clip from one of your videos to anchor the reel." });
       }
 
-      const planSegments: Array<{ start: number; end: number; srcKey: string; sourceVideoId: number | null; sourceAssetId: number | null; suggestedTransition: string; enabled: boolean; role: string; narrativePurpose: string }> = [];
+      const planSegments: Array<{ start: number; end: number; srcKey: string; sourceVideoId: number | null; sourceAssetId: number | null; isImage: boolean; suggestedTransition: string; enabled: boolean; role: string; narrativePurpose: string }> = [];
       for (const r of resolved) {
         for (const b of r.beats) {
           planSegments.push({
             start: b.start, end: b.end,
-            srcKey: r.srcKey, sourceVideoId: r.videoId, sourceAssetId: r.assetId,
+            srcKey: r.srcKey, sourceVideoId: r.videoId, sourceAssetId: r.assetId, isImage: r.isImage,
             suggestedTransition: "crossfade", enabled: true, role: "bridge", narrativePurpose: r.label,
           });
         }
@@ -16385,7 +16394,8 @@ export async function registerRoutes(
               transitionIn: i === 0 ? "cut" : "crossfade",
               transitionDuration: 0.5,
               sourcePath: sourceMap.get(ps.srcKey),
-              normalizeAudio: multiSource,
+              normalizeAudio: multiSource && !ps.isImage, // a synthesised-silence still has nothing to normalize
+              isImage: ps.isImage,
             });
             let group: CaptionSegment[] = [];
             if (captionsEnabled && ps.sourceVideoId != null) {

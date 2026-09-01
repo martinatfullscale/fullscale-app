@@ -52,6 +52,7 @@ interface ReelItem {
   trimStart: number;
   trimEnd: number;
   isAssembled?: boolean;
+  isImage?: boolean; // AI-generated (or uploaded) still, held for its duration
 }
 
 /** Distinct-source key so an asset and a video don't collide in counts. */
@@ -95,6 +96,9 @@ export default function ReelBuilder({ open, onClose }: { open: boolean; onClose:
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [uploading, setUploading] = useState(false);
   const [recorderOpen, setRecorderOpen] = useState(false);
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiPrompt, setAiPrompt] = useState("");
+  const [aiGenerating, setAiGenerating] = useState(false);
   const [result, setResult] = useState<{ status: "building" | "completed" | "failed"; thumbnailPath?: string | null; error?: string } | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -121,6 +125,7 @@ export default function ReelBuilder({ open, onClose }: { open: boolean; onClose:
       setOrder([]); setResult(null); setTitle(""); setNarrativeArc(null);
       setBuilding(false); setFinding(false); setStoryPrompt("");
       setUploading(false); setRecorderOpen(false);
+      setAiOpen(false); setAiPrompt(""); setAiGenerating(false);
     }
     return () => {
       if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
@@ -240,6 +245,37 @@ export default function ReelBuilder({ open, onClose }: { open: boolean; onClose:
     const f = e.target.files?.[0];
     e.target.value = ""; // allow re-picking the same file
     if (f) uploadClip(f, "Upload");
+  };
+
+  // Generate an AI image from a prompt and drop it on the timeline as a still
+  // held for a few seconds (with a slow zoom at render). Images are the fast,
+  // inline, default generation; animating a still into video is the next step.
+  const generateAi = async () => {
+    const p = aiPrompt.trim();
+    if (p.length < 3) return;
+    setAiGenerating(true);
+    try {
+      const res = await fetchWithTimeout("/api/ai/generation", {
+        method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include",
+        body: JSON.stringify({ modelId: "image-fast", prompt: p, aspectRatio: "9:16" }),
+      }, 60_000);
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 402 || data.needsCredits) {
+        toast({ title: "Out of AI credits", description: data.error || "Today's free images are used. Add credits to keep generating.", variant: "destructive" });
+        return;
+      }
+      if (!res.ok || !data.assetId) throw new Error(data.error || "Generation failed");
+      setOrder((o) => [...o, {
+        id: newId(), source: "asset", assetId: data.assetId, videoId: 0, isImage: true,
+        videoTitle: "AI", label: p.slice(0, 60), thumbnailPath: data.url ?? null,
+        boundStart: 0, boundEnd: 30, trimStart: 0, trimEnd: 4,
+      }]);
+      setAiPrompt("");
+      toast({ title: "AI image added", description: "Held 4s on the timeline — drag its right edge to hold it longer." });
+    } catch (err: any) {
+      toast({ title: "Couldn't generate", description: err.message, variant: "destructive" });
+    }
+    setAiGenerating(false);
   };
 
   const totalDuration = order.reduce((s, it) => s + dur(it), 0);
@@ -470,11 +506,40 @@ export default function ReelBuilder({ open, onClose }: { open: boolean; onClose:
                     >
                       <Video className="w-3 h-3" /> Record
                     </button>
+                    <button
+                      onClick={() => setAiOpen((v) => !v)}
+                      className={`flex items-center gap-1 px-2 py-1 rounded-md border ${aiOpen ? "border-violet-500/60 bg-violet-500/15 text-violet-200" : "border-violet-500/40 text-violet-300 hover:bg-violet-500/10"}`}
+                      data-testid="reel-ai"
+                    >
+                      <Sparkles className="w-3 h-3" /> AI
+                    </button>
                   </div>
                   {order.length > 0
                     ? <span className="text-gray-500">{order.length} clip{order.length === 1 ? "" : "s"} · {fmt(totalDuration)} · {sourceCount} source{sourceCount === 1 ? "" : "s"}</span>
                     : <span className="text-gray-600">add clips · drag edges to trim</span>}
                 </div>
+                {aiOpen && (
+                  <div className="px-3 pb-2 flex items-center gap-2">
+                    <Sparkles className="w-3.5 h-3.5 text-violet-400 flex-none" />
+                    <input
+                      value={aiPrompt}
+                      onChange={(e) => setAiPrompt(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter" && !aiGenerating) generateAi(); }}
+                      placeholder="Describe an image to generate — e.g. a city skyline at dusk, cinematic"
+                      className="flex-1 bg-gray-800 text-white text-[11px] rounded-md px-2.5 py-1.5 border border-violet-500/30 focus:border-violet-500 focus:outline-none placeholder:text-gray-600"
+                      data-testid="ai-prompt"
+                    />
+                    <button
+                      onClick={generateAi}
+                      disabled={aiGenerating || aiPrompt.trim().length < 3}
+                      className="flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-violet-600 hover:bg-violet-500 text-white text-[11px] font-medium disabled:opacity-50"
+                      data-testid="ai-generate"
+                    >
+                      {aiGenerating ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                      {aiGenerating ? "Generating…" : "Generate"}
+                    </button>
+                  </div>
+                )}
                 <div className="h-[132px] overflow-x-auto overflow-y-hidden px-3 pb-3">
                   {order.length === 0 ? (
                     <div className="h-full flex items-center justify-center text-xs text-gray-600 border border-dashed border-gray-700 rounded-lg">
@@ -515,13 +580,18 @@ export default function ReelBuilder({ open, onClose }: { open: boolean; onClose:
                               {isTrimmed(it) && <Scissors className="w-2.5 h-2.5 text-amber-300" />}
                             </div>
 
-                            {/* Trim handles */}
-                            <div
-                              onPointerDown={(e) => beginTrim(e, i, "left")}
-                              onDragStart={(e) => e.preventDefault()}
-                              className="absolute inset-y-0 left-0 w-2 bg-purple-400/0 hover:bg-purple-400/70 cursor-col-resize"
-                              title="Drag to trim the start"
-                            />
+                            {/* Trim handles. A still has no in-point — only its
+                                hold duration matters — so the left edge is hidden
+                                for image blocks; drag the right edge to hold it
+                                longer. */}
+                            {!it.isImage && (
+                              <div
+                                onPointerDown={(e) => beginTrim(e, i, "left")}
+                                onDragStart={(e) => e.preventDefault()}
+                                className="absolute inset-y-0 left-0 w-2 bg-purple-400/0 hover:bg-purple-400/70 cursor-col-resize"
+                                title="Drag to trim the start"
+                              />
+                            )}
                             <div
                               onPointerDown={(e) => beginTrim(e, i, "right")}
                               onDragStart={(e) => e.preventDefault()}

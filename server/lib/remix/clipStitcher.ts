@@ -35,6 +35,12 @@ export interface StitchSegment {
    * that a hard cut between two sources otherwise produces.
    */
   normalizeAudio?: boolean;
+  /**
+   * The source is a still image (AI-generated or uploaded), not a video. It is
+   * held for the segment's duration with a slow zoom and a silent audio track,
+   * rather than seeked/cut.
+   */
+  isImage?: boolean;
 }
 
 export interface StitchInput {
@@ -309,6 +315,34 @@ async function extractSegment(
   // Each segment cuts from its own source when one is set — this is what makes
   // a multi-video reel possible. Falls back to the stitch's single videoPath.
   const source = segment.sourcePath ?? videoPath;
+
+  // A still image (AI-generated or uploaded) is held as a clip: loop the frame
+  // for `duration`, over a synthesised silent track so the concat/xfade audio
+  // map lines up with the video segments around it. A gentle zoom gives it
+  // life instead of reading as a freeze.
+  if (segment.isImage) {
+    const w = config.targetWidth, h = config.targetHeight;
+    const frames = Math.max(1, Math.round(duration * config.targetFps));
+    // Scale up first so zoompan has pixels to push into, then a slow ~6% push.
+    const imgVf = `scale=${w * 2}:${h * 2},zoompan=z='min(zoom+0.0006,1.06)':d=${frames}:s=${w}x${h}:fps=${config.targetFps},setsar=1`;
+    await runFFmpeg([
+      "-nostdin", "-y",
+      "-loop", "1", "-i", source,
+      "-f", "lavfi", "-i", `anullsrc=channel_layout=stereo:sample_rate=${STITCH_CONFIG.AUDIO_SAMPLE_RATE}`,
+      "-t", duration.toString(),
+      "-vf", imgVf,
+      "-r", config.targetFps.toString(),
+      "-c:v", "libx264", "-pix_fmt", "yuv420p",
+      "-preset", STITCH_CONFIG.PRESET,
+      "-crf", STITCH_CONFIG.CRF.toString(),
+      "-c:a", "aac", "-b:a", STITCH_CONFIG.AUDIO_BITRATE,
+      "-ar", STITCH_CONFIG.AUDIO_SAMPLE_RATE, "-ac", STITCH_CONFIG.AUDIO_CHANNELS,
+      "-map", "0:v", "-map", "1:a",
+      "-movflags", "+faststart",
+      outputPath,
+    ]);
+    return;
+  }
 
   const args = [
     "-nostdin", "-y",
