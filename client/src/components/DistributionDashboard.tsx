@@ -255,7 +255,10 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
           privacyStatus,
           force: force || undefined,
         }),
-      });
+      // A platform upload is synchronous on the server and takes 30–90s for
+      // YouTube; the 30s default abandoned a WORKING publish as "Error" and the
+      // natural retry uploaded a second copy. Wait as long as the upload does.
+      }, 300_000);
 
       const data = await res.json();
       if (data.success) {
@@ -284,6 +287,24 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
           setIsPublishing(false);
           return publishClip(true);
         }
+      } else if (data.alreadyPublishing) {
+        // The first click's upload is still running. This is NOT a failure —
+        // rendering it as a destructive "Failed" is what taught creators to
+        // click Publish again. Say so, and poll for the row to appear.
+        toast({ title: "Still publishing", description: "Your first click is still uploading — this usually takes 30–90s. It'll appear below when it lands." });
+        const started = Date.now();
+        const poll = setInterval(async () => {
+          try {
+            const pr = await fetchWithTimeout(`/api/distribution/posts/video/${videoId}`, { credentials: "include" });
+            if (pr.ok) {
+              const posts = await pr.json();
+              const landed = Array.isArray(posts) && posts.some((p: any) =>
+                (p.clipId === selectedClipId || p.editorialClipId === selectedClipId) && p.profileId === selectedProfileId && p.status !== "failed");
+              if (landed) { clearInterval(poll); await loadData(); toast({ title: "Published!", description: "Your clip is live." }); }
+            }
+          } catch { /* transient */ }
+          if (Date.now() - started > 5 * 60_000) clearInterval(poll);
+        }, 5000);
       } else {
         toast({ title: "Failed", description: data.error, variant: "destructive" });
       }

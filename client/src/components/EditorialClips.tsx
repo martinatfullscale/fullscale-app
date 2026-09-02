@@ -353,12 +353,16 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
     }
     setIsSearching(true);
     try {
+      // A synchronous Claude call over a long transcript can run past the 30s
+      // default; the server allows 90s. Abandoning it early showed a fake
+      // "failed" while the server kept working — and invited a second paid call.
       const res = await fetchWithTimeout(`/api/videos/${videoId}/editorial-search`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({ query: searchQuery.trim(), maxClips: 10 }),
-      });
+      }, 120_000);
+      if (res.status === 409) throw new Error("An analysis is already running for this video — give it a moment.");
       if (!res.ok) throw new Error("Search failed");
       const data = await res.json();
       setSearchResults(
@@ -494,13 +498,20 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
   const handleAnalyze = async () => {
     setIsLoadingAnalysis(true);
     try {
+      // Synchronous model call; long transcripts run past the 30s default
+      // (server allows 90s). Abandoning early faked a failure and invited a
+      // second paid analysis while the first was still running.
       const res = await fetchWithTimeout(`/api/scenes/${videoId}/editorial-analysis`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({ maxClips: 10 }),
-      });
+      }, 120_000);
       const data = await res.json();
+      if (res.status === 409) {
+        toast({ title: "Already analyzing", description: data.error || "Give it a moment — results will appear when it finishes." });
+        return;
+      }
       if (res.ok && data.rankedClips) {
         setClips(data.rankedClips);
         setAnalysisComplete(true);

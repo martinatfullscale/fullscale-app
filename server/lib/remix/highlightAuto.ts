@@ -229,7 +229,8 @@ export async function autoGenerateHighlightReel(videoId: number, userId: number)
         type: "highlight_ready",
         title: "Your highlight reel is ready",
         body: `We assembled a ~${AUTO_REEL.targetDuration}s narrative reel from "${(video.title || "your video").slice(0, 80)}".`,
-        linkPath: "/library",
+        // Land on the video's clips/reels, not the bare Library grid.
+        linkPath: `/library?video=${videoId}&open=clips`,
         metadata: { videoId, planId: plan.id },
       });
       console.log(`[HighlightAuto] ✓ Reel completed for video ${videoId} (plan ${plan.id})`);

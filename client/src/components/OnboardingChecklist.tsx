@@ -55,7 +55,10 @@ export function OnboardingChecklist() {
       title: "Scan it for placement spots",
       detail: "Hit Scan on the video — our AI maps every scene and finds the walls, desks, and tables a brand could live on.",
       cta: "Go scan",
-      go: () => navigate("/library"),
+      // ?scan=first tells Library to start scanning the first pending video
+      // on arrival, instead of dropping the creator on the grid to find the
+      // button themselves.
+      go: () => navigate("/library?scan=first"),
     },
     {
       key: "place",

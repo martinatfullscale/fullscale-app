@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { TopBar } from "@/components/TopBar";
 import { Upload, Eye, CheckCircle, Loader2, AlertTriangle, X, Shield, Sun, Tag, Box, DollarSign, Sparkles, RefreshCw, Play, Globe, HardDrive, Scan, Video, Wand2, Trash2, Pencil, Brain, Scissors, Send } from "lucide-react";
 import { useLocation } from "wouter";
@@ -556,30 +556,62 @@ function AnalysisModal({ video, open, onClose }: { video: DisplayVideo | null; o
   );
 }
 
-function EmptyLibrary({ onSync, isSyncing }: { onSync: () => void; isSyncing: boolean }) {
-  return (
-    <div className="flex flex-col items-center justify-center py-20 px-8">
-      <div className="w-20 h-20 rounded-full bg-white/5 flex items-center justify-center mb-6">
-        <Play className="w-10 h-10 text-muted-foreground" />
+/**
+ * Empty state that knows whether YouTube is connected.
+ *
+ * The old version offered one button — "Sync YouTube Channel" — which cannot
+ * succeed for a creator who hasn't connected YouTube, and hid the two paths
+ * that DO work for them (paste a link, upload a file) even though both are on
+ * the page. Unconnected creators get three equal doors; connected ones get Sync.
+ */
+function EmptyLibrary({ connected, onSync, isSyncing, onConnect, onPaste, onUpload }: {
+  connected: boolean | null;
+  onSync: () => void;
+  isSyncing: boolean;
+  onConnect: () => void;
+  onPaste: () => void;
+  onUpload: () => void;
+}) {
+  if (connected) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 px-8">
+        <div className="w-20 h-20 rounded-full bg-white/5 flex items-center justify-center mb-6">
+          <Play className="w-10 h-10 text-muted-foreground" />
+        </div>
+        <h2 className="text-2xl font-bold text-white mb-2">Your Library is Empty</h2>
+        <p className="text-muted-foreground text-center max-w-md mb-8">
+          Your YouTube channel is connected. Sync it to pull in your videos, or paste a link / upload a file above.
+        </p>
+        <Button size="lg" className="gap-2" onClick={onSync} disabled={isSyncing} data-testid="button-sync-channel">
+          {isSyncing ? <Loader2 className="w-5 h-5 animate-spin" /> : <RefreshCw className="w-5 h-5" />}
+          {isSyncing ? "Syncing Channel..." : "Sync YouTube Channel"}
+        </Button>
       </div>
-      <h2 className="text-2xl font-bold text-white mb-2">Your Library is Empty</h2>
+    );
+  }
+  const Door = ({ icon: Icon, title, body, cta, onClick, testId }: { icon: any; title: string; body: string; cta: string; onClick: () => void; testId: string }) => (
+    <button
+      onClick={onClick}
+      className="flex flex-col items-start gap-3 p-5 rounded-xl border border-white/10 bg-white/[0.03] hover:bg-white/[0.06] hover:border-white/20 text-left transition-colors"
+      data-testid={testId}
+    >
+      <span className="w-10 h-10 rounded-lg bg-primary/15 text-primary flex items-center justify-center"><Icon className="w-5 h-5" /></span>
+      <span className="font-semibold text-white">{title}</span>
+      <span className="text-sm text-muted-foreground leading-snug">{body}</span>
+      <span className="mt-auto text-sm font-medium text-primary">{cta} →</span>
+    </button>
+  );
+  return (
+    <div className="flex flex-col items-center justify-center py-16 px-8">
+      <h2 className="text-2xl font-bold text-white mb-2">Bring in your first video</h2>
       <p className="text-muted-foreground text-center max-w-md mb-8">
-        Sync your YouTube channel to import your high-value videos and discover monetization opportunities.
+        Three ways in. Once a video is here, FullScale scans it and cuts your first clips automatically.
       </p>
-      <Button 
-        size="lg" 
-        className="gap-2" 
-        onClick={onSync}
-        disabled={isSyncing}
-        data-testid="button-sync-channel"
-      >
-        {isSyncing ? (
-          <Loader2 className="w-5 h-5 animate-spin" />
-        ) : (
-          <RefreshCw className="w-5 h-5" />
-        )}
-        {isSyncing ? "Syncing Channel..." : "Sync YouTube Channel"}
-      </Button>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 w-full max-w-3xl">
+        <Door icon={Video} title="Connect YouTube" body="Pull your whole channel in and keep it synced." cta="Connect" onClick={onConnect} testId="empty-connect-youtube" />
+        <Door icon={Globe} title="Paste a link" body="A YouTube, TikTok, Twitch or X video URL — no account needed." cta="Paste a link" onClick={onPaste} testId="empty-paste-link" />
+        <Door icon={Upload} title="Upload a file" body="An MP4 from your computer." cta="Upload" onClick={onUpload} testId="empty-upload-file" />
+      </div>
     </div>
   );
 }
@@ -842,6 +874,18 @@ export default function Library() {
   // Version key to force refetch when demo data changes - increment when adding new videos
   const DEMO_DATA_VERSION = 2;
   
+  // Is YouTube connected? Drives the empty state: "Sync" only makes sense
+  // when it is; otherwise the creator needs the other doors (paste / upload).
+  const { data: ytStatus } = useQuery<{ connected: boolean }>({
+    queryKey: ["/api/auth/youtube/status"],
+    queryFn: async () => {
+      const res = await fetchWithTimeout("/api/auth/youtube/status", { credentials: "include" });
+      if (!res.ok) return { connected: false };
+      return res.json();
+    },
+    staleTime: 60_000,
+  });
+
   const { data: videoData, isLoading: isLoadingVideos, isError: isVideosError, error: videosError, isFetching: isFetchingVideos, refetch: refetchVideos } = useQuery<VideoIndexResponse>({
     queryKey: ["videos", isPitchMode, mode, DEMO_DATA_VERSION, isAdminUser, userEmail, viewAsEmail] as const,
     queryFn: async ({ queryKey }) => {
@@ -902,11 +946,22 @@ export default function Library() {
 
   const syncMutation = useMutation({
     mutationFn: async () => {
-      const res = await fetchWithTimeout("/api/video-index/refresh", { 
+      const res = await fetchWithTimeout("/api/video-index/refresh", {
         method: "POST",
-        credentials: "include" 
+        credentials: "include"
       });
-      if (!res.ok) throw new Error("Failed to sync channel");
+      if (!res.ok) {
+        // The server now says WHY (409 not connected / 502 token refresh
+        // failed) instead of a 200 with indexed:0 that read as "no videos".
+        const body = await res.json().catch(() => ({}));
+        throw new Error(
+          body?.code === "not_connected"
+            ? "YouTube isn't connected yet — connect it in Settings, or paste a video link above."
+            : body?.code === "token_refresh_failed"
+              ? "Your YouTube connection expired. Reconnect it in Settings and sync again."
+              : body?.error || "Failed to sync channel",
+        );
+      }
       return res.json();
     },
     onSuccess: (data) => {
@@ -1074,6 +1129,39 @@ export default function Library() {
       });
     },
   });
+
+  // Deep links that land ON the thing they announce.
+  //   ?video=<id>&open=clips  — from the "Your clips are ready" notification:
+  //                              open Remix Studio on that video (defaults to
+  //                              the clips tab) instead of the bare grid.
+  //   ?scan=first             — from onboarding step 2: start scanning the
+  //                              first pending video on arrival, rather than
+  //                              dropping the creator here to find the button.
+  // Fires once per arrival, after the library has loaded, then strips the
+  // params so a refresh doesn't re-trigger.
+  const deepLinkHandled = useRef(false);
+  useEffect(() => {
+    if (deepLinkHandled.current || !videoData?.videos) return;
+    const params = new URLSearchParams(window.location.search);
+    const openClips = params.get("open") === "clips";
+    const videoParam = Number(params.get("video"));
+    const scanFirst = params.get("scan") === "first";
+    if (!openClips && !scanFirst) return;
+    deepLinkHandled.current = true;
+
+    if (openClips && Number.isFinite(videoParam) && videoParam > 0) {
+      setRemixVideoId(videoParam);
+      setRemixStudioOpen(true);
+    } else if (scanFirst) {
+      const first = (videoData.videos as any[]).find((v) => v.status === "Pending Scan");
+      if (first?.id) scanVideoMutation.mutate(first.id);
+    }
+
+    const url = new URL(window.location.href);
+    url.searchParams.delete("open"); url.searchParams.delete("video"); url.searchParams.delete("scan");
+    window.history.replaceState({}, "", url.toString());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoData]);
 
   const batchScanMutation = useMutation({
     mutationFn: async (limit: number) => {
@@ -1556,7 +1644,17 @@ export default function Library() {
             </Button>
           </div>
         ) : isRealMode && videos.length === 0 ? (
-          <EmptyLibrary onSync={() => syncMutation.mutate()} isSyncing={syncMutation.isPending} />
+          <EmptyLibrary
+            connected={ytStatus ? !!ytStatus.connected : null}
+            onSync={() => syncMutation.mutate()}
+            isSyncing={syncMutation.isPending}
+            onConnect={() => { window.location.href = "/api/auth/youtube"; }}
+            onPaste={() => {
+              const el = document.querySelector('[data-testid="import-url-bar"] input') as HTMLInputElement | null;
+              el?.focus(); el?.scrollIntoView({ block: "center", behavior: "smooth" });
+            }}
+            onUpload={() => setUploadModalOpen(true)}
+          />
         ) : (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
@@ -1738,13 +1836,37 @@ export default function Library() {
                           </Button>
                         </div>
                       )}
-                      {/* Social media (no local file): Show "Upload Required" indicator */}
-                      {!video.hasLocalFile && video.aiStatus === "pending" && (
-                        <div className="absolute bottom-12 right-2 z-20">
-                          <div className="px-2 py-1 rounded-md bg-zinc-700/90 text-zinc-300 text-xs font-medium flex items-center gap-1">
-                            <Upload className="w-3 h-3" />
-                            Upload to Scan
-                          </div>
+                      {/* YouTube / pasted-URL video (no local file): a REAL Scan
+                          button. This used to be a grey "Upload to Scan" badge
+                          left over from before the scanner learned to pull
+                          YouTube sources directly (f68d3a3) — so three pieces
+                          of copy told the creator to "hit Scan" on a card with
+                          no button, and a failed (retry) scan showed nothing
+                          at all. The cloud scan (/api/video-scan/:id) handles
+                          these; only the local-file variant needs the file. */}
+                      {!video.hasLocalFile && (video.aiStatus === "pending" || video.aiStatus === "retry" || scanningVideoIds.has(video.id)) && (
+                        <div
+                          className="absolute bottom-12 right-2 z-20"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (video.id && !scanningVideoIds.has(video.id)) scanVideoMutation.mutate(video.id);
+                          }}
+                        >
+                          <Button
+                            size="sm"
+                            variant="default"
+                            className="gap-1.5 bg-emerald-600 hover:bg-emerald-700"
+                            data-testid={`button-scan-${video.id}`}
+                            disabled={scanningVideoIds.has(video.id)}
+                          >
+                            {scanningVideoIds.has(video.id) ? (
+                              <><Loader2 className="w-3 h-3 animate-spin" /> Scanning...</>
+                            ) : video.aiStatus === "retry" ? (
+                              <><RefreshCw className="w-3 h-3" /> Retry scan</>
+                            ) : (
+                              <><Scan className="w-3 h-3" /> Scan</>
+                            )}
+                          </Button>
                         </div>
                       )}
                       {video.aiStatus === "ready" && (

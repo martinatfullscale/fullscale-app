@@ -1969,7 +1969,9 @@ export async function registerRoutes(
             type: "placement_review",
             title: msg.t,
             body: `${video?.title ? `"${video.title}" — ` : ""}${msg.b}`,
-            linkPath: "/placements",
+            // /placements does not exist as a creator route; Saved Placements is
+            // where a reviewed placement lives, and the id lands them on it.
+            linkPath: `/saved-placements?placement=${placementId}`,
             metadata: { placementId, reviewStatus },
           }).catch(() => {});
         }
@@ -5881,6 +5883,18 @@ export async function registerRoutes(
     const userId = req.googleUser.email;
     try {
       const result = await runIndexerForUser(userId);
+      // The indexer reports its own failures as {indexed:0, error} — returning
+      // that as a 200 made the client treat "YouTube isn't connected" and
+      // "your token expired" identically as "no videos found". Surface the
+      // real reason with a status the client can branch on.
+      if (result.error) {
+        const notConnected = /no youtube connection/i.test(result.error);
+        return res.status(notConnected ? 409 : 502).json({
+          success: false,
+          error: result.error,
+          code: notConnected ? "not_connected" : "token_refresh_failed",
+        });
+      }
       res.json({ success: true, ...result });
     } catch (error: any) {
       res.status(500).json({ success: false, error: error.message || "Indexing failed" });
@@ -14636,10 +14650,29 @@ export async function registerRoutes(
   });
 
   // POST /api/scenes/:videoId/editorial-analysis — Run Claude Dense editorial clip analysis
+  // One Claude analysis per video at a time. Both this endpoint and
+  // editorial-search run a synchronous model call the client used to abandon
+  // at 30s; the natural retry then started a SECOND paid call on the same
+  // transcript while the first was still running. Cleared on response finish
+  // or client disconnect, so an abandoned request never wedges the guard.
+  const analysisInFlight = new Set<number>();
+  const guardAnalysis = (videoId: number, res: any): boolean => {
+    if (analysisInFlight.has(videoId)) {
+      res.status(409).json({ error: "Analysis is already running for this video — give it a moment.", inFlight: true });
+      return false;
+    }
+    analysisInFlight.add(videoId);
+    const release = () => analysisInFlight.delete(videoId);
+    res.on("finish", release);
+    res.on("close", release);
+    return true;
+  };
+
   app.post("/api/scenes/:videoId/editorial-analysis", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const videoId = parseInt(req.params.videoId);
       const { maxClips = 10 } = req.body || {};
+      if (!guardAnalysis(videoId, res)) return;
 
       // Validate video exists
       const video = await storage.getVideoById(videoId);
@@ -14850,6 +14883,7 @@ export async function registerRoutes(
       if (!query || typeof query !== "string" || query.trim().length === 0) {
         return res.status(400).json({ error: "Query is required" });
       }
+      if (!guardAnalysis(videoId, res)) return;
 
       const video = await storage.getVideoById(videoId);
       if (!video) return res.status(404).json({ error: "Video not found" });
@@ -15333,7 +15367,10 @@ export async function registerRoutes(
         });
       }
 
-      const unrendered = existingClips.filter((c) => c.renderStatus !== "rendered");
+      // Exclude clips ALREADY rendering. Resume used to re-queue them, which
+      // spawned a second ffmpeg on the same clip and let the last writer win —
+      // a 16:9 re-render in flight was overwritten by the 9:16 default.
+      const unrendered = existingClips.filter((c) => c.renderStatus !== "rendered" && c.renderStatus !== "rendering");
       if (unrendered.length === 0) {
         return res.json({
           message: "All clips already rendered",
