@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
+import { useJobPoll } from "@/hooks/use-job-poll";
 
 /**
  * Reel Builder — assemble one reel from clips across the creator's videos on a
@@ -17,7 +18,7 @@ import { useToast } from "@/hooks/use-toast";
  * that upload, webcam capture, and AI generation will drop into next.
  */
 
-interface ReelClip {
+export interface ReelClip {
   clipId: number;
   clipSource: "remix" | "editorial";
   videoId: number;
@@ -81,7 +82,12 @@ const isTrimmed = (it: ReelItem) => it.trimStart !== it.boundStart || it.trimEnd
 let __rid = 0;
 const newId = () => `it${++__rid}`;
 
-export default function ReelBuilder({ open, onClose }: { open: boolean; onClose: () => void }) {
+export default function ReelBuilder({ open, onClose, initialClips }: {
+  open: boolean;
+  onClose: () => void;
+  /** Clips to drop onto the timeline when the builder opens ("Add to reel"). */
+  initialClips?: ReelClip[] | null;
+}) {
   const { toast } = useToast();
   const [loading, setLoading] = useState(false);
   const [clips, setClips] = useState<ReelClip[]>([]);
@@ -100,8 +106,32 @@ export default function ReelBuilder({ open, onClose }: { open: boolean; onClose:
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiGenerating, setAiGenerating] = useState(false);
   const [result, setResult] = useState<{ status: "building" | "completed" | "failed"; thumbnailPath?: string | null; error?: string } | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
+  // The build is a background job (stitch plan); this poll is the receipt.
+  const [stitchJob, setStitchJob] = useState<{ id: number } | null>(null);
+  useJobPoll<{ thumbnailPath?: string | null; errorMessage?: string | null }>(
+    stitchJob ? { kind: "stitch", id: stitchJob.id } : null,
+    {
+      intervalMs: 3000,
+      maxMs: 30 * 60_000,
+      onTerminal: (view) => {
+        setStitchJob(null);
+        setBuilding(false);
+        if (view.state === "succeeded") {
+          setResult({ status: "completed", thumbnailPath: view.result?.thumbnailPath ?? null });
+          toast({ title: "Reel ready", description: "Your reel is in Clips & Reels." });
+        } else {
+          setResult({ status: "failed", error: view.error ?? undefined });
+          toast({ title: "Reel failed", description: view.error || "Generation failed", variant: "destructive" });
+        }
+      },
+      onTimeout: () => {
+        setStitchJob(null);
+        setBuilding(false);
+        setResult({ status: "failed", error: "Still building — check Clips & Reels in a few minutes." });
+      },
+    },
+  );
 
   const selected = new Set(
     order.filter((i) => i.source === "clip").map((i) => `${i.clipSource}:${i.clipId}`),
@@ -122,14 +152,15 @@ export default function ReelBuilder({ open, onClose }: { open: boolean; onClose:
   useEffect(() => {
     if (open) {
       load();
-      setOrder([]); setResult(null); setTitle(""); setNarrativeArc(null);
+      // Seeded from "Add to reel" on Clips & Reels; otherwise an empty timeline.
+      setOrder((initialClips ?? []).map(clipToItem));
+      setResult(null); setTitle(""); setNarrativeArc(null);
       setBuilding(false); setFinding(false); setStoryPrompt("");
       setUploading(false); setRecorderOpen(false);
       setAiOpen(false); setAiPrompt(""); setAiGenerating(false);
+      setStitchJob(null);
     }
-    return () => {
-      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, load]);
 
   const clipToItem = (c: ReelClip): ReelItem => ({
@@ -305,27 +336,7 @@ export default function ReelBuilder({ open, onClose }: { open: boolean; onClose:
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.planId) throw new Error(data.error || "Could not start the reel");
       toast({ title: "Building your reel", description: `${data.segmentCount} segments from ${data.sourceCount} video${data.sourceCount === 1 ? "" : "s"}` });
-
-      const poll = setInterval(async () => {
-        try {
-          const pr = await fetchWithTimeout(`/api/remix/stitch-plans/${data.planId}`, { credentials: "include" });
-          if (!pr.ok) return;
-          const plan = await pr.json();
-          if (plan.status === "completed" || plan.status === "failed") {
-            clearInterval(poll);
-            pollRef.current = null;
-            setBuilding(false);
-            if (plan.status === "completed") {
-              setResult({ status: "completed", thumbnailPath: plan.thumbnailPath });
-              toast({ title: "Reel ready", description: "Your reel is in your library." });
-            } else {
-              setResult({ status: "failed", error: plan.errorMessage });
-              toast({ title: "Reel failed", description: plan.errorMessage || "Generation failed", variant: "destructive" });
-            }
-          }
-        } catch { /* transient */ }
-      }, 3000);
-      pollRef.current = poll;
+      setStitchJob({ id: data.planId });
     } catch (err: any) {
       setBuilding(false);
       setResult({ status: "failed", error: err.message });

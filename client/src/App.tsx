@@ -20,6 +20,7 @@ import AuthPage from "@/pages/AuthPage";
 import WaitlistPage from "@/pages/WaitlistPage";
 import Dashboard from "@/pages/Dashboard";
 import Library from "@/pages/Library";
+import ClipsAndReels from "@/pages/ClipsAndReels";
 import Opportunities from "@/pages/Opportunities";
 import BrandMarketplace from "@/pages/BrandMarketplace";
 import Campaigns from "@/pages/Campaigns";
@@ -145,7 +146,7 @@ function Router() {
   });
 
   // Protected routes that require approval
-  const protectedRoutes = ["/dashboard", "/library", "/opportunities", "/marketplace", "/campaigns", "/settings", "/earnings", "/upload"];
+  const protectedRoutes = ["/dashboard", "/library", "/clips", "/opportunities", "/marketplace", "/campaigns", "/settings", "/earnings", "/upload"];
   const isProtectedRoute = protectedRoutes.some(route => location === route || location === "/");
 
   // Redirect based on approval status (skip for admin bypass)
@@ -184,7 +185,7 @@ function Router() {
       new URLSearchParams(window.location.search).has("as");
     if (
       userTypeData?.userType === "brand" &&
-      (location === "/dashboard" || location === "/library" || location === "/opportunities") &&
+      (location === "/dashboard" || location === "/library" || location === "/clips" || location === "/opportunities") &&
       !(location === "/library" && hasViewAsParam)
     ) {
       window.location.href = "/marketplace";
@@ -296,6 +297,7 @@ function Router() {
               <Route path="/privacy" component={Privacy} />
               <Route path="/terms" component={Terms} />
               <Route path="/library" component={Library} />
+              <Route path="/clips" component={ClipsAndReels} />
               <Route path="/opportunities" component={Opportunities} />
               <Route path="/marketplace" component={BrandMarketplace} />
               <Route path="/campaigns" component={Campaigns} />

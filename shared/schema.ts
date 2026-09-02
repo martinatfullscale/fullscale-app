@@ -1242,6 +1242,10 @@ export const editorialClips = pgTable('editorial_clips', {
   renderStatus: varchar('render_status', { length: 20 }).default('pending'), // pending, rendering, rendered, failed
   renderError: text('render_error'),
   renderedAt: timestamp('rendered_at'),
+  // When the current render began. Lets a single stranded "rendering" row be
+  // told apart from one that is genuinely busy (the video-level heartbeat only
+  // covers the batch pipeline, not a lone re-render on a "ready" video).
+  renderStartedAt: timestamp('render_started_at'),
   // Post-render quality rubric score (0-1) — REAL column (a prior commit
   // wrote this key without the column existing; drizzle silently dropped it)
   qualityScore: real('quality_score'),

@@ -78,7 +78,10 @@ export interface EditorialAutoPipelineOptions {
 }
 
 /** Status is considered stuck if no DB update in this many ms while in-flight */
-const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
+const STALE_THRESHOLD_MS = 5 * 60 * 1000;
+// A single clip render past this is stranded, not busy (matches the
+// failStaleClipRenders sweep in storage.ts).
+const CLIP_RENDER_STALE_MS = 30 * 60 * 1000; // 5 minutes
 
 // ── Main Pipeline ──────────────────────────────────────────────────
 
@@ -191,8 +194,21 @@ export async function runEditorialAutoPipeline(
     // renderer is alive and its "rendering" clips are genuinely busy.
     const lastUpdate = video.updatedAt ? new Date(video.updatedAt).getTime() : 0;
     const rendererAlive = video.editorialStatus === "rendering" && Date.now() - lastUpdate < STALE_THRESHOLD_MS;
-    const unrendered = existing.filter((c) => c.renderStatus !== "rendered" && !(rendererAlive && c.renderStatus === "rendering"));
-    const skippedBusy = existing.filter((c) => c.renderStatus === "rendering" && rendererAlive).length;
+    // Per-clip start time (render_started_at) is the finer signal where it
+    // exists: a lone re-render on an otherwise "ready" video has no video-
+    // level heartbeat, but its clip does. Legacy rows without it fall back
+    // to the video signal.
+    // The per-clip window only speaks for a LONE re-render (video settled on
+    // ready/failed/none). During a batch the video heartbeat is the authority:
+    // if it says the renderer is dead, its "rendering" clips are stranded no
+    // matter how recent their start stamp.
+    const videoInBatch = ["pending", "transcribing", "analyzing", "rendering"].includes(video.editorialStatus ?? "");
+    const clipBusy = (c: any): boolean =>
+      c.renderStatus === "rendering" &&
+      (rendererAlive ||
+        (!videoInBatch && !!c.renderStartedAt && Date.now() - new Date(c.renderStartedAt).getTime() < CLIP_RENDER_STALE_MS));
+    const unrendered = existing.filter((c) => c.renderStatus !== "rendered" && !clipBusy(c));
+    const skippedBusy = existing.filter(clipBusy).length;
     if (skippedBusy > 0) console.log(`[EditorialAuto] Resume: leaving ${skippedBusy} clip(s) that are actively rendering alone`);
     if (existing.length === 0) {
       console.warn(`[EditorialAuto] Resume requested but no existing clips found — falling through to full run`);
@@ -390,6 +406,8 @@ export async function runEditorialAutoPipeline(
 
       try {
         await storage.updateEditorialClipRender(clip.id, { renderStatus: "rendering" });
+        // Per-clip heartbeat so the 5-minute staleness rule tracks a live batch.
+        await storage.touchVideoEditorialHeartbeat(videoId).catch(() => {});
 
         const outputFilename = `editorial_${clip.id}_v${videoId}_${Date.now()}.mp4`;
         const outputPath = path.join(renderOutputDir, outputFilename);
@@ -503,7 +521,8 @@ export async function runEditorialAutoPipeline(
       body: `${renderedCount} editorial clip${renderedCount === 1 ? "" : "s"} rendered for "${(video.title || "your video").slice(0, 80)}".`,
       // Land ON the clips, not on the Library grid where they are hover-gated.
       // Library reads ?video=&open=clips and opens Remix Studio on that video.
-      linkPath: `/library?video=${videoId}&open=clips`,
+      // Clips & Reels, filtered to this video — the clips' actual home.
+      linkPath: `/clips?video=${videoId}`,
       metadata: { videoId, clipCount: renderedCount },
     });
 
@@ -624,6 +643,8 @@ async function renderClipsOnly(
 
       try {
         await storage.updateEditorialClipRender(clip.id, { renderStatus: "rendering" });
+        // Per-clip heartbeat so the 5-minute staleness rule tracks a live batch.
+        await storage.touchVideoEditorialHeartbeat(videoId).catch(() => {});
 
         const outputFilename = `editorial_${clip.id}_v${videoId}_${Date.now()}.mp4`;
         const outputPath = path.join(renderOutputDir, outputFilename);

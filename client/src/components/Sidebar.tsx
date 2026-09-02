@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, FolderOpen, Zap, DollarSign, LogOut, Settings, ArrowLeftRight, Globe, Wand2, Inbox, Library as LibraryIcon, BarChart3, Database, Boxes, PackageOpen, UserCheck, ClipboardCheck, FlaskConical } from "lucide-react";
+import { LayoutDashboard, FolderOpen, Zap, DollarSign, LogOut, Settings, ArrowLeftRight, Globe, Wand2, Inbox, Library as LibraryIcon, BarChart3, Database, Boxes, PackageOpen, UserCheck, ClipboardCheck, FlaskConical, Clapperboard } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
@@ -75,6 +75,8 @@ export function Sidebar() {
   const links = [
     { href: "/", label: "Dashboard", icon: LayoutDashboard },
     { href: "/library", label: "My Library", icon: FolderOpen },
+    // The flagship output finally has a home: every clip and reel, across videos.
+    { href: "/clips", label: "Clips & Reels", icon: Clapperboard },
     { href: "/deliveries", label: "Deliveries", icon: PackageOpen, badge: deliveryCount },
     { href: "/inbox", label: "Inbox", icon: Inbox, badge: inboxCount },
     { href: "/analytics", label: "Analytics", icon: BarChart3 },

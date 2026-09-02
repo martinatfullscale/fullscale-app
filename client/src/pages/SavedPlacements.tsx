@@ -291,7 +291,10 @@ export default function SavedPlacements() {
             setExportProgress(exportData.progress);
           }
 
-          if (exportData.status === "completed" && exportData.outputUrl) {
+          // The server writes "complete" (video_exports vocab). This checked
+          // "completed", so a finished export was never detected — the poll
+          // only ever ended on failure or the 10-minute cap.
+          if ((exportData.status === "complete" || exportData.status === "completed") && exportData.outputUrl) {
             clearInterval(pollInterval);
             setExportStatus("Download ready!");
             setExportProgress(100);

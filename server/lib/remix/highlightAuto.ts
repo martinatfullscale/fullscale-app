@@ -219,9 +219,39 @@ export async function autoGenerateHighlightReel(videoId: number, userId: number)
         thumbUrl = await uploadFileToStorage(result.thumbnailPath, `public/exported-clips/stitch_${plan.id}/${path.basename(result.thumbnailPath)}`);
       }
 
+      // A reel is a publishable clip like any other — the manual stitch and
+      // reel routes mint a generated_clips twin so Publish/Download work;
+      // auto reels never did, so they showed "completed" and went nowhere.
+      let generatedClipId: number | undefined;
+      try {
+        const reelJob = await storage.createRemixJob({
+          videoId, userId, status: "completed",
+          config: { minClipDuration: 0, maxClipDuration: 600, maxClips: 1, platformTargets: [AUTO_REEL.platformKey], captionsEnabled: true },
+          platformTargets: [AUTO_REEL.platformKey],
+        });
+        const dbClip = await storage.createGeneratedClip({
+          remixJobId: reelJob.id,
+          videoId,
+          clipStart: 0,
+          clipEnd: result.duration,
+          duration: result.duration,
+          format: "mp4",
+          platformTarget: AUTO_REEL.platformKey,
+          captionsEnabled: true,
+          qualityScore: 0.8,
+          exportPath: storageUrl,
+          thumbnailPath: thumbUrl,
+          status: "ready",
+        });
+        generatedClipId = dbClip.id;
+      } catch (twinErr: any) {
+        console.warn(`[HighlightAuto] Could not create the reel's clip record (reel still saved): ${twinErr?.message || twinErr}`);
+      }
+
       await storage.updateStitchPlanStatus(plan.id, "completed", {
         outputPath: storageUrl,
         thumbnailPath: thumbUrl ?? undefined,
+        generatedClipId,
       });
 
       storage.createNotification({
@@ -229,8 +259,8 @@ export async function autoGenerateHighlightReel(videoId: number, userId: number)
         type: "highlight_ready",
         title: "Your highlight reel is ready",
         body: `We assembled a ~${AUTO_REEL.targetDuration}s narrative reel from "${(video.title || "your video").slice(0, 80)}".`,
-        // Land on the video's clips/reels, not the bare Library grid.
-        linkPath: `/library?video=${videoId}&open=clips`,
+        // Land ON the reel in Clips & Reels.
+        linkPath: `/clips?reel=${plan.id}`,
         metadata: { videoId, planId: plan.id },
       });
       console.log(`[HighlightAuto] ✓ Reel completed for video ${videoId} (plan ${plan.id})`);

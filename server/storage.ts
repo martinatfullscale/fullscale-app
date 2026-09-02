@@ -168,7 +168,7 @@ export interface IStorage {
   getAllowedUser(email: string): Promise<AllowedUser | undefined>;
   updateAllowedUserRole(email: string, userType: string): Promise<void>;
   /** Lean: excludes the three scene jsonb blobs. See VIDEO_LIST_COLUMNS. */
-  getVideoIndex(userId: string, authEmail?: string): Promise<VideoListRow[]>;
+  getVideoIndex(userId: string, authEmail?: string, opts?: { dedupe?: boolean }): Promise<VideoListRow[]>;
   getAllVideos(): Promise<VideoListRow[]>;
   upsertVideoIndex(video: InsertVideoIndex): Promise<VideoListRow>;
   scrubUserPassword(userId: string): Promise<void>;
@@ -310,6 +310,8 @@ export interface IStorage {
   getActiveRemixJobForVideo(videoId: number): Promise<RemixJob | undefined>;
   failInterruptedRemixJobs(): Promise<number>;
   failInterruptedStitchPlans(): Promise<number>;
+  failStalePublishingPosts(staleMinutes?: number): Promise<number>;
+  failStaleClipRenders(staleMinutes?: number): Promise<number>;
   createNotification(data: { userId: string; type: string; title: string; body?: string | null; linkPath?: string | null; metadata?: Record<string, any> | null }): Promise<void>;
   getNotificationsForUser(userId: string, limit?: number): Promise<any[]>;
   getUnreadNotificationCount(userId: string): Promise<number>;
@@ -331,6 +333,7 @@ export interface IStorage {
   createStitchPlan(data: InsertStitchPlan): Promise<StitchPlan>;
   getStitchPlan(planId: number): Promise<StitchPlan | undefined>;
   getStitchPlansByVideo(videoId: number): Promise<StitchPlan[]>;
+  getStitchPlansByVideoIds(videoIds: number[]): Promise<StitchPlan[]>;
   updateStitchPlanStatus(planId: number, status: string, updates?: { outputPath?: string; thumbnailPath?: string; qualityScore?: number; generatedClipId?: number; errorMessage?: string }): Promise<StitchPlan | undefined>;
   deleteStitchPlan(planId: number): Promise<void>;
   // Editorial clips methods
@@ -354,6 +357,7 @@ export interface IStorage {
     status: "pending" | "transcribing" | "analyzing" | "rendering" | "ready" | "failed",
     updates?: { error?: string | null; clipCount?: number; completedAt?: Date | null }
   ): Promise<void>;
+  touchVideoEditorialHeartbeat(videoId: number): Promise<void>;
   // Generated asset methods
   createGeneratedAsset(data: InsertGeneratedAsset): Promise<GeneratedAsset>;
   getAssetsByVideo(videoId: number): Promise<GeneratedAsset[]>;
@@ -377,8 +381,11 @@ export interface IStorage {
   getPublishedPostsByClip(clipId: number): Promise<PublishedPost[]>;
   findPublishedPostForClip(clipId: number, source: "remix" | "editorial", profileId: number): Promise<PublishedPost | undefined>;
   getPublishedPostsByVideo(videoId: number): Promise<PublishedPost[]>;
+  getPublishedPostsByVideoIds(videoIds: number[]): Promise<PublishedPost[]>;
   getPublishedPostsByUser(userId: number): Promise<PublishedPost[]>;
+  findInFlightPublishForClip(clipId: number, source: "remix" | "editorial", profileId: number, maxAgeMs: number): Promise<PublishedPost | undefined>;
   updatePublishedPostStatus(postId: number, status: string, platformPostId?: string, postUrl?: string, errorMessage?: string): Promise<PublishedPost | undefined>;
+  updatePublishedPostFields(postId: number, patch: { caption?: string | null; hashtags?: string[] }): Promise<void>;
 
   // Clip analytics methods
   upsertClipAnalytics(data: InsertClipAnalytics): Promise<ClipAnalytics>;
@@ -1364,7 +1371,7 @@ export class DatabaseStorage implements IStorage {
       .orderBy(savedPlacements.createdAt);
   }
 
-  async getVideoIndex(userId: string, authEmail?: string): Promise<VideoListRow[]> {
+  async getVideoIndex(userId: string, authEmail?: string, opts?: { dedupe?: boolean }): Promise<VideoListRow[]> {
     console.log(`[Storage.getVideoIndex] Looking up user by ID: ${userId}, authEmail: ${authEmail}`);
     // videoIndex.userId is a mixed-key column: newer rows store users.id, legacy
     // rows store the creator's email. Resolve the user from either form so the
@@ -1401,6 +1408,9 @@ export class DatabaseStorage implements IStorage {
       )
       .orderBy(desc(videoIndex.priorityScore));
     console.log(`[Storage.getVideoIndex] Found ${videos.length} videos`);
+    // Owner allowlists (Clips & Reels feed) need every owned video, including
+    // the same-title duplicates the grid folds away.
+    if (opts?.dedupe === false) return videos;
 
     // Deduplicate by normalized title — keeps the entry with the most surfaces (best scan)
     // This handles duplicate uploads, re-imports, and mixed youtubeId formats
@@ -3641,6 +3651,43 @@ export class DatabaseStorage implements IStorage {
     return result.length;
   }
 
+  /**
+   * Recurring sweep: a publish row still "publishing" past the platform
+   * upload deadline was orphaned by a dead process (the detached job that
+   * would have finalized it is gone). Flip it to failed so the job view
+   * settles and the duplicate guard stops refusing a retry.
+   */
+  async failStalePublishingPosts(staleMinutes: number = 25): Promise<number> {
+    const res: any = await db.execute(sql`
+      UPDATE published_posts
+      SET status = 'failed',
+          error_message = 'The upload did not finish — the server restarted mid-publish. Check the platform before publishing again.'
+      WHERE status = 'publishing'
+        AND created_at < NOW() - (${staleMinutes} * INTERVAL '1 minute')
+    `);
+    const count = Number(res?.rowCount ?? 0);
+    if (count > 0) console.log(`[Sweep] failStalePublishingPosts: failed ${count} orphaned publish row(s)`);
+    return count;
+  }
+
+  /**
+   * Recurring sweep: an editorial clip "rendering" far longer than any real
+   * render was stranded by a restart. Failing it (rather than leaving it
+   * spinning forever) is what lets Retry / Resume pick it up.
+   */
+  async failStaleClipRenders(staleMinutes: number = 30): Promise<number> {
+    const res: any = await db.execute(sql`
+      UPDATE editorial_clips
+      SET render_status = 'failed',
+          render_error = 'Render interrupted — the server restarted mid-render. Retry to render again.'
+      WHERE render_status = 'rendering'
+        AND COALESCE(render_started_at, created_at) < NOW() - (${staleMinutes} * INTERVAL '1 minute')
+    `);
+    const count = Number(res?.rowCount ?? 0);
+    if (count > 0) console.log(`[Sweep] failStaleClipRenders: failed ${count} stranded clip render(s)`);
+    return count;
+  }
+
   // ── Notifications ────────────────────────────────────────────────
 
   /** Expand a user key to its dual-ID aliases (users.id UUID + email). */
@@ -3823,6 +3870,16 @@ export class DatabaseStorage implements IStorage {
   async getStitchPlansByVideo(videoId: number): Promise<StitchPlan[]> {
     return db.select().from(stitchPlans)
       .where(eq(stitchPlans.videoId, videoId))
+      .orderBy(desc(stitchPlans.createdAt));
+  }
+
+  // Cross-video, one query. Filter by the caller's video allowlist, never by
+  // stitchPlans.userId — that column is a stableUserIntId hash that differs
+  // between the UUID and email forms of the same account.
+  async getStitchPlansByVideoIds(videoIds: number[]): Promise<StitchPlan[]> {
+    if (videoIds.length === 0) return [];
+    return db.select().from(stitchPlans)
+      .where(inArray(stitchPlans.videoId, videoIds))
       .orderBy(desc(stitchPlans.createdAt));
   }
 
@@ -4076,6 +4133,8 @@ export class DatabaseStorage implements IStorage {
     if (updates.renderStatus !== undefined) patch.renderStatus = updates.renderStatus;
     if (updates.renderError !== undefined) patch.renderError = updates.renderError;
     if (updates.renderStatus === "rendered") patch.renderedAt = new Date();
+    // Per-clip heartbeat for the stale-render sweep and the job view.
+    if (updates.renderStatus === "rendering") patch.renderStartedAt = new Date();
 
     const [result] = await db.update(editorialClips)
       .set(patch)
@@ -4099,6 +4158,15 @@ export class DatabaseStorage implements IStorage {
     else if (updates.completedAt !== undefined) patch.editorialCompletedAt = updates.completedAt;
 
     await db.update(videoIndex).set(patch).where(eq(videoIndex.id, videoId));
+  }
+
+  /**
+   * Batch-render heartbeat. The pipeline's staleness rule reads
+   * video_index.updated_at, but a batch only wrote it once at "rendering" —
+   * so a 10-clip render looked dead after 5 minutes. Touched per clip.
+   */
+  async touchVideoEditorialHeartbeat(videoId: number): Promise<void> {
+    await db.update(videoIndex).set({ updatedAt: new Date() }).where(eq(videoIndex.id, videoId));
   }
 
   // ── Generated Asset Methods ──
@@ -4285,6 +4353,42 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(publishedPosts.createdAt));
   }
 
+  // Profile-independent (unlike getPublishedPostsByUser, which only sees
+  // active profiles): posts stay attached to their video for the feed.
+  async getPublishedPostsByVideoIds(videoIds: number[]): Promise<PublishedPost[]> {
+    if (videoIds.length === 0) return [];
+    return db.select().from(publishedPosts)
+      .where(inArray(publishedPosts.videoId, videoIds))
+      .orderBy(desc(publishedPosts.createdAt));
+  }
+
+  /**
+   * The durable half of the duplicate-publish guard: a `publishing` row
+   * younger than the upload deadline means an upload is in progress — on
+   * this server, another server, or one that has since restarted.
+   */
+  async findInFlightPublishForClip(
+    clipId: number,
+    source: "remix" | "editorial",
+    profileId: number,
+    maxAgeMs: number,
+  ): Promise<PublishedPost | undefined> {
+    const clipMatch = source === "editorial"
+      ? eq(publishedPosts.editorialClipId, clipId)
+      : eq(publishedPosts.clipId, clipId);
+    const since = new Date(Date.now() - maxAgeMs);
+    const [result] = await db.select().from(publishedPosts)
+      .where(and(
+        clipMatch,
+        eq(publishedPosts.profileId, profileId),
+        eq(publishedPosts.status, "publishing"),
+        gte(publishedPosts.createdAt, since),
+      ))
+      .orderBy(desc(publishedPosts.createdAt))
+      .limit(1);
+    return result;
+  }
+
   async getPublishedPostsByUser(userId: number): Promise<PublishedPost[]> {
     const profiles = await this.getDistributionProfiles(userId);
     if (profiles.length === 0) return [];
@@ -4305,13 +4409,22 @@ export class DatabaseStorage implements IStorage {
     if (platformPostId) updateData.platformPostId = platformPostId;
     if (postUrl) updateData.postUrl = postUrl;
     if (errorMessage) updateData.errorMessage = errorMessage;
-    if (status === "published") updateData.publishedAt = new Date();
+    // dry_run is a completed publish too (the insert path always stamped it).
+    if (status === "published" || status === "dry_run") updateData.publishedAt = new Date();
 
     const [result] = await db.update(publishedPosts)
       .set(updateData)
       .where(eq(publishedPosts.id, postId))
       .returning();
     return result;
+  }
+
+  async updatePublishedPostFields(postId: number, patch: { caption?: string | null; hashtags?: string[] }): Promise<void> {
+    const updateData: Record<string, any> = {};
+    if (patch.caption !== undefined) updateData.caption = patch.caption;
+    if (patch.hashtags !== undefined) updateData.hashtags = patch.hashtags;
+    if (Object.keys(updateData).length === 0) return;
+    await db.update(publishedPosts).set(updateData).where(eq(publishedPosts.id, postId));
   }
 
   // ── Clip Analytics Methods ──

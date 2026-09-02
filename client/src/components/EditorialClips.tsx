@@ -16,6 +16,7 @@ import ClipStudio from "@/components/ClipStudio";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
+import { useJobPoll } from "@/hooks/use-job-poll";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -89,6 +90,8 @@ interface EditorialStatusResponse {
   renderedClips: number;
   failedClips: number;
   pendingClips: number;
+  /** Subset of pendingClips actively in flight (a lone re-render). */
+  renderingClips?: number;
   completedAt: string | null;
   updatedAt: string | null;
 }
@@ -196,15 +199,52 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
     }
   }, [toast]);
 
-  // While anything is scanning, poll the clip list so counts land as the
-  // scan writes them — and clear our optimistic flag when the server says done.
+  // While anything is scanning OR rendering, poll the clip list so rows land
+  // as the server writes them. Rendering is read off the rows themselves
+  // (renderStatus === "rendering"), so every path that starts a render — the
+  // aspect picker, the editor's Apply, the copilot, a remount — is tracked
+  // without anyone remembering to start a poll. The stale-render sweep
+  // guarantees a stranded row settles to "failed", so this cannot spin forever.
+  const renderingIds = clips
+    .filter((c) => c.renderStatus === "rendering" && (c as any).id)
+    .map((c) => (c as any).id as number);
+  const renderingKey = renderingIds.join(",");
   useEffect(() => {
-    if (scanningClips.size === 0) return;
-    const iv = setInterval(async () => {
-      await refetchClips();
-    }, 10000);
+    if (scanningClips.size === 0 && renderingIds.length === 0) return;
+    const iv = setInterval(() => { refetchClips(); }, renderingIds.length > 0 ? 5000 : 10000);
     return () => clearInterval(iv);
-  }, [scanningClips.size]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scanningClips.size, renderingKey]);
+
+  // The receipt: say so when a RE-render lands (or fails) instead of letting
+  // the card silently swap its thumbnail. Only re-renders: a clip that still
+  // carries an exportPath when it enters "rendering" had a finished cut (the
+  // old one survives until the new one lands); a pipeline first render does
+  // not, and the pipeline banner already announces those.
+  const renderingSinceRef = useRef<Map<number, boolean>>(new Map());
+  useEffect(() => {
+    const nowIds = new Set(renderingIds);
+    const known = renderingSinceRef.current;
+    for (const id of renderingIds) {
+      if (known.has(id)) continue;
+      const row = clips.find((c) => (c as any).id === id) as any;
+      known.set(id, !!row?.exportPath);
+    }
+    for (const id of Array.from(known.keys())) {
+      if (nowIds.has(id)) continue;
+      const hadCut = known.get(id);
+      known.delete(id);
+      if (!hadCut) continue;
+      const row = clips.find((c) => (c as any).id === id) as any;
+      if (!row) continue;
+      if (row.renderStatus === "rendered") {
+        toast({ title: "New cut ready", description: row.suggestedTitle ? `"${String(row.suggestedTitle).slice(0, 60)}" re-rendered.` : "Your clip re-rendered." });
+      } else if (row.renderStatus === "failed") {
+        toast({ title: "Re-render failed", description: row.renderError || "Try again", variant: "destructive" });
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [renderingKey]);
 
   useEffect(() => {
     if (scanningClips.size === 0) return;
@@ -248,6 +288,9 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
   const [isSearching, setIsSearching] = useState(false);
   const [searchResults, setSearchResults] = useState<RankedClip[] | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Last pipeline status this poll observed — a transition out of in-flight
+  // is the moment to announce the result.
+  const lastStatusRef = useRef<string | null>(null);
   // Bumped to restart the poll after Regenerate/Resume. The poll self-reschedules
   // only while a pipeline is in flight, so once it settles on "ready"/"failed" it
   // stops with no pending timer; starting new server work does not on its own wake
@@ -262,7 +305,9 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
         const data = await res.json();
         if (Array.isArray(data.clips)) {
           setClips(data.clips);
-          setAnalysisComplete(data.clips.length > 0);
+          // Monotonic: a refetch can confirm an analysis happened, never
+          // un-happen it (a zero-result run must still read as complete).
+          setAnalysisComplete((prev) => prev || data.clips.length > 0);
         }
       }
     } catch {
@@ -293,13 +338,36 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
       }
       setAutoStatus(status);
 
-      const inFlight = ["pending", "transcribing", "analyzing", "rendering"].includes(status.status);
+      const IN_FLIGHT = ["pending", "transcribing", "analyzing", "rendering"];
+      const inFlight = IN_FLIGHT.includes(status.status);
+      const wasInFlight = lastStatusRef.current !== null && IN_FLIGHT.includes(lastStatusRef.current);
+      lastStatusRef.current = status.status;
       if (inFlight) {
         // Refetch clips every poll so newly-rendered ones appear progressively
         await refetchClips();
         pollTimerRef.current = setTimeout(tick, 5_000);
       } else if (status.status === "ready" || status.status === "failed") {
         await refetchClips();
+        if (wasInFlight && !cancelled) {
+          // The receipt for a run this component watched settle — including a
+          // zero-result one, which used to vanish without a trace.
+          setAnalysisComplete(true);
+          if (status.status === "ready") {
+            const n = status.renderedClips > 0 ? status.renderedClips : status.totalClips;
+            toast(
+              status.totalClips > 0
+                ? {
+                    title: `${n} story clip${n === 1 ? "" : "s"} ${status.renderedClips > 0 ? "ready" : "found"}`,
+                    description: status.renderedClips > 0 ? "Rendered and ready to publish." : "Render them to make them playable.",
+                  }
+                : { title: "No story moments found", description: "Claude couldn't find a self-contained story in this transcript." },
+            );
+          } else if (status.error === "Cancelled by user") {
+            toast({ title: "Stopped", description: "Story-clips cancelled." });
+          } else {
+            toast({ title: "Story-clips failed", description: status.error || "Try again", variant: "destructive" });
+          }
+        }
       }
     }
 
@@ -346,56 +414,81 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
     setIsRegenerating(false);
   }, [videoId, toast]);
 
+  // Search runs off the request (202 + job); the poll below collects it.
+  const toSearchClip = (c: any): RankedClip => ({
+    ...c,
+    duration: Array.isArray(c.segments) && c.segments.length > 1
+      ? c.segments.reduce((sum: number, s: any) => sum + (s.end - s.start), 0)
+      : c.clipEnd - c.clipStart,
+    editorialScore: c.compositeScore ?? 0,
+    surfaceScore: 0,
+    brandMatchScore: 0,
+    finalScore: c.compositeScore ?? 0,
+    monetizationTier: "organic" as const,
+    surfaces: [],
+    brandMatches: [],
+    editPoints: { start: c.clipStart, end: c.clipEnd, adjustments: [] },
+    rawClipStart: c.clipStart,
+    rawClipEnd: c.clipEnd,
+  });
+  const [searchJob, setSearchJob] = useState<{ id: string; query: string } | null>(null);
+  useJobPoll<{ clips: any[]; count: number }>(searchJob ? { kind: "search", id: searchJob.id } : null, {
+    intervalMs: 2500,
+    maxMs: 6 * 60_000,
+    onTerminal: (view) => {
+      const query = searchJob?.query ?? "";
+      setSearchJob(null);
+      setIsSearching(false);
+      if (view.state === "succeeded") {
+        const found = view.result?.clips ?? [];
+        setSearchResults(found.map(toSearchClip));
+        toast({ title: `Found ${found.length} clips`, description: `Matching "${query}"` });
+      } else {
+        toast({ title: "Search failed", description: view.error || "Try again", variant: "destructive" });
+      }
+    },
+    onTimeout: () => {
+      setSearchJob(null);
+      setIsSearching(false);
+      toast({ title: "Search is taking too long", description: "Try again in a moment.", variant: "destructive" });
+    },
+  });
+
   const handleSearch = useCallback(async () => {
     if (!searchQuery.trim()) {
       setSearchResults(null);
       return;
     }
     setIsSearching(true);
+    let accepted = false;
     try {
-      // A synchronous Claude call over a long transcript can run past the 30s
-      // default; the server allows 90s. Abandoning it early showed a fake
-      // "failed" while the server kept working — and invited a second paid call.
       const res = await fetchWithTimeout(`/api/videos/${videoId}/editorial-search`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({ query: searchQuery.trim(), maxClips: 10 }),
-      }, 120_000);
+      }, 60_000);
+      const data = await res.json().catch(() => ({}));
       if (res.status === 409) {
         // Informational, not a failure — the other analysis will finish.
-        toast({ title: "Already analyzing", description: "Another analysis is running on this video — try the search again in a moment." });
+        toast({ title: "Already analyzing", description: data.error || "Another analysis is running on this video — try the search again in a moment." });
         return;
       }
-      if (!res.ok) throw new Error("Search failed");
-      const data = await res.json();
-      setSearchResults(
-        (data.clips || []).map((c: any) => ({
-          ...c,
-          duration: Array.isArray(c.segments) && c.segments.length > 1
-            ? c.segments.reduce((sum: number, s: any) => sum + (s.end - s.start), 0)
-            : c.clipEnd - c.clipStart,
-          editorialScore: c.compositeScore ?? 0,
-          surfaceScore: 0,
-          brandMatchScore: 0,
-          finalScore: c.compositeScore ?? 0,
-          monetizationTier: "organic" as const,
-          surfaces: [],
-          brandMatches: [],
-          editPoints: { start: c.clipStart, end: c.clipEnd, adjustments: [] },
-          rawClipStart: c.clipStart,
-          rawClipEnd: c.clipEnd,
-        }))
-      );
-      toast({
-        title: `Found ${data.clips?.length || 0} clips`,
-        description: `Matching "${searchQuery.trim()}"`,
-      });
+      if (!res.ok) throw new Error(data.error || "Search failed");
+      if (res.status === 202 && data.job?.id) {
+        accepted = true;
+        setSearchJob({ id: String(data.job.id), query: searchQuery.trim() });
+        return;
+      }
+      // Legacy synchronous shape.
+      setSearchResults((data.clips || []).map(toSearchClip));
+      toast({ title: `Found ${data.clips?.length || 0} clips`, description: `Matching "${searchQuery.trim()}"` });
     } catch (err: any) {
       toast({ title: "Search failed", description: err.message, variant: "destructive" });
     } finally {
-      setIsSearching(false); // finally: the 409 branch returns from inside the try
+      if (!accepted) setIsSearching(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [videoId, searchQuery, toast]);
 
   // ── Load saved clips + transcript status on mount ─────────────────
@@ -503,24 +596,45 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
   const handleAnalyze = async () => {
     setIsLoadingAnalysis(true);
     try {
-      // Synchronous model call; long transcripts run past the 30s default
-      // (server allows 90s). Abandoning early faked a failure and invited a
-      // second paid analysis while the first was still running.
+      // The analysis runs off the request now (202 + job). The auto-pipeline
+      // banner and its poll track it, and the clip list reloads with rows
+      // that have ids when it settles.
       const res = await fetchWithTimeout(`/api/scenes/${videoId}/editorial-analysis`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({ maxClips: 10 }),
-      }, 120_000);
-      const data = await res.json();
+      }, 60_000);
+      const data = await res.json().catch(() => ({}));
       if (res.status === 409) {
         toast({ title: "Already analyzing", description: data.error || "Give it a moment — results will appear when it finishes." });
+        setPollNonce((n) => n + 1); // track the run that IS going
         return;
       }
-      if (res.ok && data.rankedClips) {
+      if (!res.ok) throw new Error(data.error || "Analysis failed to start");
+      if (res.status === 202 || data.pending) {
+        toast({
+          title: "Finding viral clips",
+          description: "Claude is reading the transcript — this takes a minute or two. Clips appear here as soon as it finishes.",
+        });
+        setAutoStatus((prev) => ({
+          status: "analyzing",
+          error: null,
+          totalClips: prev?.totalClips ?? 0,
+          renderedClips: prev?.renderedClips ?? 0,
+          failedClips: prev?.failedClips ?? 0,
+          pendingClips: prev?.pendingClips ?? 0,
+          renderingClips: prev?.renderingClips ?? 0,
+          completedAt: null,
+          updatedAt: new Date().toISOString(),
+        }));
+        setPollNonce((n) => n + 1);
+        return;
+      }
+      // Legacy synchronous shape.
+      if (data.rankedClips) {
         setClips(data.rankedClips);
         setAnalysisComplete(true);
-        // Clips are now saved to the DB by the server — no sessionStorage needed
         toast({
           title: `Found ${data.rankedClips.length} viral clips`,
           description: `${data.moments?.length || 0} moments analyzed`,
@@ -531,9 +645,6 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
     } catch (err: any) {
       toast({ title: "Analysis failed", description: err.message, variant: "destructive" });
     } finally {
-      // finally, not after the try: the 409 branch returns from inside it, and
-      // a trailing call was skipped — leaving the button spinning and the
-      // creator's existing clips hidden until the modal was closed.
       setIsLoadingAnalysis(false);
     }
   };
@@ -567,10 +678,17 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
   const stuckMs = autoStatus?.updatedAt ? Date.now() - new Date(autoStatus.updatedAt).getTime() : 0;
   const isStuck = Boolean(inFlight && stuckMs > 5 * 60 * 1000 && (autoStatus?.pendingClips ?? 0) > 0);
   // Also offer resume if status is "ready" or "failed" but some clips never finished rendering
+  // Clips left unrendered on a settled video. Subtract the ones actively
+  // rendering (a lone re-render on a "ready" video) — offering Resume for
+  // those would start a second ffmpeg on the same clip. Failed clips count:
+  // Resume retries them.
+  const strandedClips = autoStatus
+    ? Math.max(0, autoStatus.pendingClips - (autoStatus.renderingClips ?? 0)) + (autoStatus.failedClips ?? 0)
+    : 0;
   const hasOrphanedClips = Boolean(
     autoStatus &&
       (autoStatus.status === "ready" || autoStatus.status === "failed") &&
-      autoStatus.pendingClips > 0
+      strandedClips > 0
   );
   const canResume = isStuck || hasOrphanedClips;
   const showAutoBanner = inFlight || autoFailed || hasUnrenderedClips || canResume || (autoStatus?.status === "ready" && clips.length > 0);
@@ -843,7 +961,7 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
               <Button
                 size="sm"
                 onClick={handleAnalyze}
-                disabled={isLoadingAnalysis}
+                disabled={isLoadingAnalysis || Boolean(inFlight) || isSearching}
                 className="bg-blue-600 hover:bg-blue-500 text-white text-xs"
               >
                 {isLoadingAnalysis ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <Brain className="w-3 h-3 mr-1" />}
@@ -855,7 +973,7 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
                 size="sm"
                 variant="ghost"
                 onClick={handleAnalyze}
-                disabled={isLoadingAnalysis}
+                disabled={isLoadingAnalysis || Boolean(inFlight) || isSearching}
                 className="text-gray-400 hover:text-white text-xs"
               >
                 <RefreshCw className={`w-3 h-3 mr-1 ${isLoadingAnalysis ? "animate-spin" : ""}`} />

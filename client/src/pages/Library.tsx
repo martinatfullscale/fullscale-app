@@ -1081,7 +1081,7 @@ export default function Library() {
                 title: "Scan Complete",
                 description: `Found ${video.adOpportunities} ad placement surfaces. Click the video to view details.`,
               });
-            } else if (video.status?.toLowerCase() === "scan failed") {
+            } else if (video.status?.toLowerCase().startsWith("scan failed")) {
               toast({
                 title: "Scan Failed",
                 description: "Could not analyze this video. Please try again.",
@@ -1291,7 +1291,7 @@ export default function Library() {
                 title: "Scan Complete",
                 description: `Found ${video.adOpportunities} placement surfaces. Click the video to view details.`,
               });
-            } else if (video.status?.toLowerCase() === "scan failed") {
+            } else if (video.status?.toLowerCase().startsWith("scan failed")) {
               toast({
                 title: "Scan Failed",
                 description: "Could not analyze this video. Please try again.",

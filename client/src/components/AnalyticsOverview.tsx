@@ -117,7 +117,7 @@ export function AnalyticsOverview() {
           />
         )}
         {/* Clickable: this stat announced clips existed and then went nowhere. */}
-        <a href="/library" className="block rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/50" title="Open your library">
+        <a href="/clips" className="block rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/50" title="Open your clips">
           <StatCard
             icon={Sparkles}
             label="Story Clips"
@@ -160,7 +160,7 @@ export function AnalyticsOverview() {
                 <div className="w-16 text-right flex-shrink-0">
                   {video.editorialClipCount > 0 ? (
                     <a
-                      href={`/library?video=${video.videoId}&open=clips`}
+                      href={`/clips?video=${video.videoId}`}
                       className="text-xs text-emerald-400 underline decoration-emerald-500/40 underline-offset-2 hover:text-emerald-300"
                       title="Open these clips"
                     >

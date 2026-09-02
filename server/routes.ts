@@ -438,6 +438,7 @@ async function isSameCreator(
 // integer from the user id so jobs stay attributable and don't all share id 1.
 // Legacy numeric ids pass through unchanged so existing rows still match.
 import { stableUserIntId } from "./lib/stableUserId";
+import { startEphemeralJob, getEphemeralJob } from "./lib/jobs/ephemeralJobs";
 
 /**
  * Turn a Postgres error into something an operator can act on.
@@ -544,6 +545,19 @@ export async function registerRoutes(
       .catch((err) => console.error("[Sweep] failStuckScans error:", err?.message || err));
   }, 10 * 60 * 1000);
   stuckScanSweep.unref();
+  // Stale background rows: a publish left "publishing" past the upload
+  // deadline, or an editorial clip left "rendering" long past any real
+  // render, was orphaned by a dead process. Flip them to failed so the job
+  // view settles and Retry/Resume can pick them up. Recurring only, no boot
+  // sweep — through the Replit deploy overlap an old process may still be
+  // mid-render right after boot.
+  const staleJobSweep = setInterval(() => {
+    storage.failStalePublishingPosts(25)
+      .catch((err) => console.error("[Sweep] failStalePublishingPosts error:", err?.message || err));
+    storage.failStaleClipRenders(30)
+      .catch((err) => console.error("[Sweep] failStaleClipRenders error:", err?.message || err));
+  }, 10 * 60 * 1000);
+  staleJobSweep.unref();
   
   // Import session setup separately - this MUST succeed for OAuth to work
   const { getSession } = await import("./replit_integrations/auth/replitAuth");
@@ -11067,7 +11081,8 @@ export async function registerRoutes(
               type: "placement_render_failed",
               title: "Placement render failed",
               body: "The clip re-render with the brand's product failed — re-render the clip from your library to continue the approval.",
-              linkPath: "/library",
+              // Land ON the failed clip (Clips & Reels highlights it), not the grid.
+              linkPath: `/clips?clip=editorial:${clipId}`,
               metadata: { placementId: id, clipId },
             });
           });
@@ -14654,142 +14669,180 @@ export async function registerRoutes(
   });
 
   // POST /api/scenes/:videoId/editorial-analysis — Run Claude Dense editorial clip analysis
-  // One Claude analysis per video at a time. Both this endpoint and
-  // editorial-search run a synchronous model call the client used to abandon
-  // at 30s; the natural retry then started a SECOND paid call on the same
-  // transcript while the first was still running. Cleared on response finish
-  // or client disconnect, so an abandoned request never wedges the guard.
-  // videoId -> startedAt. Released when the RESPONSE FINISHES (the work has
-  // settled), never on client disconnect — 'close' fires the moment a client
-  // aborts while the Claude call is still running, which would let a second
-  // paid call start on the same transcript. A max-age ceiling covers the one
-  // case 'finish' cannot: a socket already gone when the handler finally writes.
+  //
+  // Analysis and search are minutes-long Claude calls. They used to run inside
+  // the request; every client/proxy timeout then reported "failed" while the
+  // server kept working, and the natural retry started a SECOND paid call on
+  // the same transcript. Both now ack 202 and run off the request (see
+  // docs/ASYNC_JOBS.md). Two guards keep one analysis per video:
+  //   - the video's own editorialStatus row (durable; goes stale after 5 min
+  //     so a dead process cannot wedge the button), and
+  //   - this in-memory slot for the sub-second double-click window, held
+  //     until the background WORK settles — not until the response is written.
   const analysisInFlight = new Map<number, number>();
-  const ANALYSIS_SLOT_MAX_MS = 3 * 60_000;
-  const guardAnalysis = (videoId: number, res: any): boolean => {
+  const ANALYSIS_SLOT_MAX_MS = 5 * 60_000;
+  const acquireAnalysisSlot = (videoId: number): (() => void) | null => {
     const startedAt = analysisInFlight.get(videoId);
-    if (startedAt !== undefined && Date.now() - startedAt < ANALYSIS_SLOT_MAX_MS) {
-      res.status(409).json({ error: "Analysis is already running for this video — give it a moment.", inFlight: true });
-      return false;
-    }
+    if (startedAt !== undefined && Date.now() - startedAt < ANALYSIS_SLOT_MAX_MS) return null;
     analysisInFlight.set(videoId, Date.now());
-    res.on("finish", () => analysisInFlight.delete(videoId));
-    return true;
+    return () => { analysisInFlight.delete(videoId); };
   };
+  const EDITORIAL_IN_FLIGHT = ["pending", "transcribing", "analyzing", "rendering"];
+  const EDITORIAL_STALE_MS = 5 * 60_000;
+  const editorialBusy = (
+    video: { editorialStatus?: string | null; updatedAt?: Date | null },
+    phases: readonly string[] = EDITORIAL_IN_FLIGHT,
+  ): boolean =>
+    phases.includes(video.editorialStatus ?? "") &&
+    Date.now() - (video.updatedAt ? new Date(video.updatedAt).getTime() : 0) < EDITORIAL_STALE_MS;
 
   app.post("/api/scenes/:videoId/editorial-analysis", isFlexibleAuthenticated, async (req: any, res) => {
+    let release: (() => void) | null = null;
     try {
       const videoId = parseInt(req.params.videoId);
+      if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
       const { maxClips = 10 } = req.body || {};
-      if (!guardAnalysis(videoId, res)) return;
 
-      // Validate video exists
       const video = await storage.getVideoById(videoId);
       if (!video) return res.status(404).json({ error: "Video not found" });
+
+      const busy = { error: "Analysis is already running for this video — give it a moment.", inFlight: true, job: { kind: "editorial", id: videoId } };
+      if (editorialBusy(video)) return res.status(409).json(busy);
+      release = acquireAnalysisSlot(videoId);
+      if (!release) return res.status(409).json(busy);
 
       // Get transcript (required for editorial analysis)
       const transcript = await storage.getVideoTranscript(videoId);
       if (!transcript || transcript.status !== "completed" || !transcript.segments) {
+        release(); release = null;
         return res.status(400).json({
           error: "Completed transcript required. Run POST /api/video/:videoId/transcribe first.",
         });
       }
+      const segments = transcript.segments;
 
-      // Get detected surfaces for cross-reference
-      const surfaces = await storage.getDetectedSurfaces(videoId);
-
-      // Get brand products for matching
-      const brandProducts = await storage.getAllBrandProducts();
-
-      console.log(
-        `[API] Editorial analysis for video ${videoId}: ` +
-          `${transcript.segments.length} transcript segments, ` +
-          `${surfaces.length} surfaces, ${brandProducts.length} brand products`
-      );
-
-      // Run Claude Dense editorial analysis
-      const editorialMoments = await analyzeEditorial({
-        videoId,
-        transcript: transcript.segments,
-        surfaces: surfaces.map((s) => ({
-          id: s.id,
-          timestamp: parseFloat(String(s.timestamp)),
-          surfaceType: s.surfaceType,
-          confidence: parseFloat(String(s.confidence)),
-          boundingBox: {
-            x: parseFloat(String(s.boundingBoxX)),
-            y: parseFloat(String(s.boundingBoxY)),
-            width: parseFloat(String(s.boundingBoxWidth)),
-            height: parseFloat(String(s.boundingBoxHeight)),
-          },
-        })),
-        brandCatalog: brandProducts.map((b) => ({
-          id: b.id,
-          name: b.name,
-          category: b.category,
-          dominantColor: b.dominantColor,
-        })),
-        maxClips,
+      // Mark the video analyzing (the same status the auto-pipeline reports
+      // through, so GET /api/jobs/editorial/:videoId and the existing banner
+      // both track it), ack, and do the work off the request.
+      await storage.updateVideoEditorialStatus(videoId, "analyzing", { error: null });
+      res.status(202).json({
+        success: true,
+        pending: true,
+        job: { kind: "editorial", id: videoId },
+        message: "Analysis started",
       });
 
-      if (editorialMoments.length === 0) {
-        return res.json({
-          message: "No editorial clip moments found",
-          moments: [],
-          rankedClips: [],
-        });
-      }
+      const slot = release;
+      release = null;
+      let released = false;
+      void (async () => {
+        try {
+          const surfaces = await storage.getDetectedSurfaces(videoId);
+          const brandProducts = await storage.getAllBrandProducts();
+          console.log(
+            `[API] Editorial analysis for video ${videoId}: ` +
+              `${segments.length} transcript segments, ` +
+              `${surfaces.length} surfaces, ${brandProducts.length} brand products`
+          );
 
-      // Get brand matches for surface cross-reference
-      const brandMatches = await storage.getBrandMatchesByVideo(videoId);
+          const editorialMoments = await analyzeEditorial({
+            videoId,
+            transcript: segments,
+            surfaces: surfaces.map((s) => ({
+              id: s.id,
+              timestamp: parseFloat(String(s.timestamp)),
+              surfaceType: s.surfaceType,
+              confidence: parseFloat(String(s.confidence)),
+              boundingBox: {
+                x: parseFloat(String(s.boundingBoxX)),
+                y: parseFloat(String(s.boundingBoxY)),
+                width: parseFloat(String(s.boundingBoxWidth)),
+                height: parseFloat(String(s.boundingBoxHeight)),
+              },
+            })),
+            brandCatalog: brandProducts.map((b) => ({
+              id: b.id,
+              name: b.name,
+              category: b.category,
+              dominantColor: b.dominantColor,
+            })),
+            maxClips,
+          });
 
-      // Cross-reference with surfaces and rank clips
-      const rankedClips = deduplicateClips(
-        rankClips(
-          editorialMoments,
-          surfaces.map((s) => ({
-            id: s.id,
-            videoId: s.videoId,
-            timestamp: parseFloat(String(s.timestamp)),
-            surfaceType: s.surfaceType,
-            confidence: parseFloat(String(s.confidence)),
-          })),
-          brandMatches.map((bm) => ({
-            id: bm.id,
-            sceneAnalysisId: bm.sceneAnalysisId,
-            brandProductId: bm.brandProductId,
-            compatibilityScore: bm.compatibilityScore ?? 0,
-            reasoning: bm.reasoning ?? "",
-            suggestedPlacementStyle: bm.suggestedPlacementStyle ?? undefined,
-          })),
-          transcript.segments,
-          maxClips
-        )
-      );
+          let rankedClips: any[] = [];
+          if (editorialMoments.length > 0) {
+            const brandMatches = await storage.getBrandMatchesByVideo(videoId);
+            rankedClips = deduplicateClips(
+              rankClips(
+                editorialMoments,
+                surfaces.map((s) => ({
+                  id: s.id,
+                  videoId: s.videoId,
+                  timestamp: parseFloat(String(s.timestamp)),
+                  surfaceType: s.surfaceType,
+                  confidence: parseFloat(String(s.confidence)),
+                })),
+                brandMatches.map((bm) => ({
+                  id: bm.id,
+                  sceneAnalysisId: bm.sceneAnalysisId,
+                  brandProductId: bm.brandProductId,
+                  compatibilityScore: bm.compatibilityScore ?? 0,
+                  reasoning: bm.reasoning ?? "",
+                  suggestedPlacementStyle: bm.suggestedPlacementStyle ?? undefined,
+                })),
+                segments,
+                maxClips
+              )
+            );
+          }
+          console.log(
+            `[API] Editorial analysis complete for video ${videoId}: ` +
+              `${editorialMoments.length} moments → ${rankedClips.length} ranked clips`
+          );
 
-      console.log(
-        `[API] Editorial analysis complete for video ${videoId}: ` +
-          `${editorialMoments.length} moments → ${rankedClips.length} ranked clips`
-      );
+          // Cancelled while Claude was thinking? The Cancel button flips the
+          // video to failed/"Cancelled by user"; honour it — do not resurrect
+          // the run by saving over it.
+          const fresh = await storage.getVideoEditorialState(videoId);
+          if (fresh?.editorialStatus === "failed" && fresh?.editorialError === "Cancelled by user") {
+            console.log(`[API] Editorial analysis for video ${videoId} finished after cancel — discarding`);
+            return;
+          }
 
-      // Persist editorial clips to the database so they survive page reloads
-      const userId = req.user?.id || 1;
-      try {
-        await storage.saveEditorialClips(videoId, userId, rankedClips);
-        console.log(`[API] Saved ${rankedClips.length} editorial clips to DB for video ${videoId}`);
-      } catch (saveErr: any) {
-        // Non-fatal — still return the results even if DB save fails (table may not exist yet)
-        console.warn(`[API] Failed to persist editorial clips: ${saveErr.message}`);
-      }
+          // Persist so the clip list sees rows WITH ids. Filed under the same
+          // owner int the pipeline uses — the old `req.user?.id || 1` fallback
+          // put every manual analysis on user 1.
+          const pipelineUserId = stableUserIntId(video.userId);
+          const saved = await storage.saveEditorialClips(videoId, pipelineUserId, rankedClips);
+          if (saved.length === 0) {
+            // Nothing to render: "ready" with zero clips is honest.
+            await storage.updateVideoEditorialStatus(videoId, "ready", { clipCount: 0, error: null });
+            return;
+          }
 
-      res.json({
-        message: `Found ${rankedClips.length} editorial clip moments`,
-        moments: editorialMoments,
-        rankedClips,
-      });
+          // Finish the job. "ready" has to mean playable clips exist, so the
+          // pipeline's resume branch renders the pending rows and writes the
+          // terminal state (rendering → ready with the rendered count, or
+          // failed) — the same path the auto-pipeline and Resume use. The
+          // analysis slot is released first: rendering is not an analysis.
+          slot();
+          released = true;
+          runEditorialAutoPipeline(videoId, pipelineUserId, { resume: true })
+            .then((r) => console.log(`[API] Manual analysis → render for video ${videoId}: ${r.status} (${r.clipsRendered}/${r.clipsGenerated})`))
+            .catch((e: any) => console.error(`[API] Manual analysis → render failed for video ${videoId}:`, e?.message));
+        } catch (err: any) {
+          console.error(`[API] editorial-analysis background error for video ${videoId}:`, err?.message);
+          await storage
+            .updateVideoEditorialStatus(videoId, "failed", { error: err?.message || "Editorial analysis failed" })
+            .catch(() => {});
+        } finally {
+          if (!released) slot();
+        }
+      })();
     } catch (err: any) {
+      if (release) release();
       console.error("[API] /api/scenes/:videoId/editorial-analysis error:", err.message);
-      res.status(500).json({ error: err.message || "Editorial analysis failed" });
+      if (!res.headersSent) res.status(500).json({ error: err.message || "Editorial analysis failed" });
     }
   });
 
@@ -14863,6 +14916,7 @@ export async function registerRoutes(
       const renderedCount = clips.filter((c) => c.renderStatus === "rendered").length;
       const failedCount = clips.filter((c) => c.renderStatus === "failed").length;
       const pendingCount = clips.filter((c) => c.renderStatus === "pending" || c.renderStatus === "rendering").length;
+      const renderingCount = clips.filter((c) => c.renderStatus === "rendering").length;
 
       res.json({
         videoId,
@@ -14872,6 +14926,9 @@ export async function registerRoutes(
         renderedClips: renderedCount,
         failedClips: failedCount,
         pendingClips: pendingCount,
+        // Subset of pendingClips that is actively in flight (a single re-render
+        // on a "ready" video) — the banner must not offer Resume for those.
+        renderingClips: renderingCount,
         completedAt: video.editorialCompletedAt,
         // Last DB update — UI uses this to detect stuck pipelines (no progress in 5+ min while in-flight)
         updatedAt: video.updatedAt,
@@ -14884,6 +14941,7 @@ export async function registerRoutes(
 
   // POST /api/videos/:videoId/editorial-search — Search for clips matching a topic/keyword
   app.post("/api/videos/:videoId/editorial-search", isFlexibleAuthenticated, async (req: any, res) => {
+    let release: (() => void) | null = null;
     try {
       const videoId = parseInt(req.params.videoId);
       if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
@@ -14892,7 +14950,6 @@ export async function registerRoutes(
       if (!query || typeof query !== "string" || query.trim().length === 0) {
         return res.status(400).json({ error: "Query is required" });
       }
-      if (!guardAnalysis(videoId, res)) return;
 
       const video = await storage.getVideoById(videoId);
       if (!video) return res.status(404).json({ error: "Video not found" });
@@ -14905,45 +14962,61 @@ export async function registerRoutes(
         });
       }
 
+      const busy = { error: "Another analysis is running on this video — try the search again in a moment.", inFlight: true, job: { kind: "editorial", id: videoId } };
+      // Search only contends with a running Claude ANALYSIS — never with the
+      // transcribe or ffmpeg render phases, which hold no model call.
+      if (editorialBusy(video, ["analyzing"])) return res.status(409).json(busy);
+      release = acquireAnalysisSlot(videoId);
+      if (!release) return res.status(409).json(busy);
+
       const surfaces = await storage.getDetectedSurfaces(videoId);
       const brandProducts = await storage.getAllBrandProducts();
+      const trimmed = query.trim();
+      const segments = transcript.segments as any;
+      console.log(`[API] Editorial search for video ${videoId}: query="${trimmed}", maxClips=${maxClips}`);
 
-      console.log(`[API] Editorial search for video ${videoId}: query="${query}", maxClips=${maxClips}`);
-
-      // Run editorial analysis with search query
-      const editorialMoments = await analyzeEditorial({
-        videoId,
-        transcript: transcript.segments as any,
-        surfaces: surfaces.map((s) => ({
-          id: s.id,
-          timestamp: parseFloat(String(s.timestamp)),
-          surfaceType: s.surfaceType,
-          confidence: parseFloat(String(s.confidence)),
-          boundingBox: {
-            x: parseFloat(String(s.boundingBoxX)),
-            y: parseFloat(String(s.boundingBoxY)),
-            width: parseFloat(String(s.boundingBoxWidth)),
-            height: parseFloat(String(s.boundingBoxHeight)),
-          },
-        })),
-        brandCatalog: brandProducts.map((b) => ({
-          id: b.id,
-          name: b.name,
-          category: b.category,
-          dominantColor: b.dominantColor,
-        })),
-        maxClips,
-        query: query.trim(),
+      // Search results are not persisted (rendering one is a separate call),
+      // so the job lives in memory: ack now, poll GET /api/jobs/search/:id.
+      const slot = release;
+      release = null;
+      const ownerKey = String(req.authUserId ?? req.user?.id ?? "");
+      const job = startEphemeralJob("search", ownerKey, async () => {
+        try {
+          const editorialMoments = await analyzeEditorial({
+            videoId,
+            transcript: segments,
+            surfaces: surfaces.map((s) => ({
+              id: s.id,
+              timestamp: parseFloat(String(s.timestamp)),
+              surfaceType: s.surfaceType,
+              confidence: parseFloat(String(s.confidence)),
+              boundingBox: {
+                x: parseFloat(String(s.boundingBoxX)),
+                y: parseFloat(String(s.boundingBoxY)),
+                width: parseFloat(String(s.boundingBoxWidth)),
+                height: parseFloat(String(s.boundingBoxHeight)),
+              },
+            })),
+            brandCatalog: brandProducts.map((b) => ({
+              id: b.id,
+              name: b.name,
+              category: b.category,
+              dominantColor: b.dominantColor,
+            })),
+            maxClips,
+            query: trimmed,
+          });
+          return { query: trimmed, clips: editorialMoments, count: editorialMoments.length };
+        } finally {
+          slot();
+        }
       });
 
-      res.json({
-        query: query.trim(),
-        clips: editorialMoments,
-        count: editorialMoments.length,
-      });
+      res.status(202).json({ success: true, pending: true, job: { kind: "search", id: job.id }, query: trimmed });
     } catch (err: any) {
+      if (release) release();
       console.error("[API] /api/videos/:videoId/editorial-search error:", err.message);
-      res.status(500).json({ error: err.message || "Search failed" });
+      if (!res.headersSent) res.status(500).json({ error: err.message || "Search failed" });
     }
   });
 
@@ -15127,7 +15200,15 @@ export async function registerRoutes(
 
       await storage.updateEditorialClipEdit(clipId, edit);
       await storage.updateEditorialClipRender(clipId, { renderStatus: "rendering", renderError: null });
-      res.json({ message: "Re-render started", clipId, aspect, applied: edit });
+      res.status(202).json({
+        success: true,
+        pending: true,
+        job: { kind: "clip-render", id: clipId },
+        message: "Re-render started",
+        clipId,
+        aspect,
+        applied: edit,
+      });
 
       renderSingleEditorialClip(clip.videoId, clipId, { platformKey: platformKey as any })
         .then(async () => {
@@ -15272,6 +15353,7 @@ export async function registerRoutes(
         success: true,
         clip: newClip,
         message: "Clip saved. Render queued.",
+        job: { kind: "clip-render", id: newClip.id },
       });
 
       // Fire-and-forget render (reuses the pipeline's render logic via force re-run on this clip only)
@@ -15656,7 +15738,7 @@ export async function registerRoutes(
         storage.getEditorialClipsByVideo(videoId).catch(() => [] as any[]),
       ]);
       const clips = [
-        ...remix.map((c: any) => ({ ...c, clipSource: "remix" })),
+        ...remix.filter((c: any) => c.status !== "deleted").map((c: any) => ({ ...c, clipSource: "remix" })),
         // Only rendered editorial clips can be published; an unrendered one has
         // no file to upload, and listing it would offer an action that fails.
         ...(editorial as any[])
@@ -16172,6 +16254,7 @@ export async function registerRoutes(
       const CAP = 400;
       const out: any[] = [];
       const push = (c: any, source: "remix" | "editorial") => {
+        if (source === "remix" && (c.status === "deleted" || c.status === "rejected")) return; // hidden reel twin / rejected
         if (out.length >= CAP) return;
         const start = Number(c.clipStart), end = Number(c.clipEnd);
         if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
@@ -16583,7 +16666,19 @@ export async function registerRoutes(
 
       const plan = await storage.getStitchPlan(planId);
       if (!plan) return res.status(404).json({ error: "Stitch plan not found" });
-
+      // Ownership through the owning video — Clips & Reels exposes this action.
+      if (!req.isAdmin) {
+        const owner = await storage.getVideoById(plan.videoId);
+        if (!owner || !(await isSameCreator(String(owner.userId), String(req.authUserId ?? req.user?.id ?? "")))) {
+          return res.status(404).json({ error: "Stitch plan not found" });
+        }
+      }
+      // The reel's generated_clips twin carries FKs from published_posts /
+      // clip_analytics / schedules, so it is soft-hidden rather than deleted —
+      // otherwise it resurfaced in every clip list as an orphan "Remix clip".
+      if (plan.generatedClipId) {
+        await storage.updateClipStatus(plan.generatedClipId, "deleted").catch(() => {});
+      }
       await storage.deleteStitchPlan(planId);
       res.json({ success: true, message: "Highlight reel deleted" });
     } catch (err: any) {
@@ -17338,9 +17433,135 @@ export async function registerRoutes(
    */
   const publishInFlight = new Set<string>();
 
-  // POST /api/distribution/publish — Publish a clip to a platform
+  /**
+   * Publish is two halves: a short request that validates, records a
+   * `publishing` row and acks 202 with its id, and a detached task that does
+   * the upload and finalizes that row. The client polls
+   * GET /api/jobs/publish/:postId. Holding the request open for the upload
+   * (30–300s) meant every proxy/client timeout reported "failed" while the
+   * upload kept going — exactly what taught creators to click Publish again.
+   *
+   * The pending row is also the durable duplicate guard: a second click, a
+   * second tab, or a second server sees it and is refused (409
+   * alreadyPublishing) until it settles or goes stale. The in-memory Set is
+   * taken SYNCHRONOUSLY at the top of the handler (no await between has()
+   * and add()) and covers this process until the row exists.
+   */
+  const PUBLISH_STALE_MS = 25 * 60_000; // publishToPlaftorm's own deadline is 20m
+  type PublishJobInput = {
+    postId: number;
+    dupKey: string;
+    clip: any;
+    clipId: number;
+    source: "remix" | "editorial";
+    profile: any;
+    publishToken: string;
+    caption: string | undefined;
+    hashtags: string[] | undefined;
+    privacyStatus: string | undefined;
+  };
+  const runPublishJob = async (input: PublishJobInput): Promise<void> => {
+    const { postId, dupKey, clip, clipId, source, profile, publishToken, caption, hashtags, privacyStatus } = input;
+    let tempPublishDir: string | null = null;
+    // Finalizing the row is the only record that the upload happened. Try the
+    // UPDATE twice before giving up — and give up loudly, with the platform's
+    // own id in the line, so the row is recoverable by hand.
+    const finalize = async (status: string, platformPostId?: string | null, postUrl?: string | null, errorMessage?: string | null): Promise<boolean> => {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          await storage.updatePublishedPostStatus(postId, status, platformPostId ?? undefined, postUrl ?? undefined, errorMessage ?? undefined);
+          return true;
+        } catch (recErr: any) {
+          if (attempt === 1) {
+            console.error(
+              `[Publish] UPLOAD ${status === "failed" ? "FAILED" : "SUCCEEDED"} BUT ROW ${postId} WAS NOT UPDATED — ${profile.platform} ` +
+              `postId=${platformPostId} url=${postUrl} clip=${source}:${clipId} profile=${profile.id}: ${recErr?.message || recErr}`,
+            );
+          }
+        }
+      }
+      return false;
+    };
+    try {
+      // Mainline remix clips live in Object Storage (/storage/...) with the
+      // local file deleted after upload — materialize to temp before publish.
+      let clipPath: string;
+      if (clip.exportPath.startsWith("/storage/")) {
+        tempPublishDir = path.join("/tmp/remix-videos", `publish-now-${postId}`);
+        clipPath = await downloadToTempFile(objectKeyFromServeUrl(clip.exportPath), tempPublishDir);
+      } else {
+        clipPath = path.join(process.cwd(), "public", clip.exportPath.replace(/^\//, ""));
+      }
+
+      // Format caption if not provided
+      let finalCaption = caption || "";
+      let finalHashtags: string[] = hashtags || [];
+      if (!finalCaption) {
+        const { formatCaption } = await import("./lib/distribution/captionFormatter");
+        const analyses = await storage.getSceneAnalysisByVideo(clip.videoId);
+        const analysis = analyses[0];
+        const formatted = await formatCaption({
+          platform: profile.platform,
+          brandNames: [],
+          narrativeContext: analysis?.narrativeContext || "",
+          emotionalTone: analysis?.emotionalTone || "neutral",
+          culturalTags: (analysis?.culturalTags as string[]) || [],
+        });
+        finalCaption = formatted.captionText;
+        finalHashtags = formatted.hashtags;
+        // The row was created before the caption existed — record what goes out.
+        await storage.updatePublishedPostFields(postId, { caption: finalCaption, hashtags: finalHashtags }).catch(() => {});
+      }
+
+      const { publishToPlaftorm } = await import("./lib/distribution/platformPublisher");
+      const publishMetadata: Record<string, any> = { ...(profile.metadata as Record<string, any> || {}) };
+      // The creator's per-upload visibility choice wins over the profile
+      // default. Until now no such choice existed anywhere in the product —
+      // privacyStatus appeared only in server code, so every upload took a
+      // stored default the creator never saw and could not change. We told
+      // Google this was "a privacy status they control"; this is the control.
+      if (["public", "unlisted", "private"].includes(String(privacyStatus))) {
+        publishMetadata.privacyStatus = privacyStatus;
+      }
+      // Instagram's API pulls the video from a public URL instead of
+      // accepting an upload — point it at the clip's public export path.
+      if (profile.platform.startsWith("instagram") && !publishMetadata.publicVideoUrl && clip.exportPath) {
+        const base = (process.env.PUBLIC_BASE_URL || process.env.BASE_URL || "https://gofullscale.co").replace(/\/$/, "");
+        publishMetadata.publicVideoUrl = `${base}${clip.exportPath.startsWith("/") ? "" : "/"}${clip.exportPath}`;
+      }
+      const result = await publishToPlaftorm(profile.platform, {
+        clipPath,
+        caption: finalCaption,
+        hashtags: finalHashtags,
+        accessToken: publishToken,
+        accountId: profile.accountId || "",
+        metadata: publishMetadata,
+      });
+
+      if (result.success) {
+        // THE UPLOAD HAS HAPPENED. The video is live on the platform, and
+        // nothing below can undo that — so nothing below may report failure.
+        await finalize(result.dryRun ? "dry_run" : "published", result.platformPostId, result.postUrl, null);
+      } else {
+        await finalize("failed", null, null, result.error || "Publishing failed");
+      }
+    } catch (err: any) {
+      console.error(`[Publish] job ${postId} error:`, err?.message);
+      await finalize("failed", null, null, err?.message || "Publishing failed");
+    } finally {
+      publishInFlight.delete(dupKey);
+      if (tempPublishDir) {
+        try { fs.rmSync(tempPublishDir, { recursive: true, force: true }); } catch {}
+      }
+    }
+  };
+
+  // POST /api/distribution/publish — Publish a clip to a platform (202 + job)
   app.post("/api/distribution/publish", isFlexibleAuthenticated, async (req: any, res) => {
-    let inFlightKey: string | null = null;
+    // Held by this request until the job takes it over (or an early return
+    // releases it in the finally below).
+    let heldKey: string | null = null;
+    let handedOff = false;
     try {
       const { clipId, profileId, caption, hashtags, clipSource, force, privacyStatus } = req.body;
       const source = clipSource === "editorial" ? "editorial" : "remix";
@@ -17361,19 +17582,19 @@ export async function registerRoutes(
       }
 
       // Nothing below may upload the same clip to the same account twice.
-      //
-      // This endpoint had no duplicate protection of any kind, and the cost
-      // was real: a publish that uploaded successfully and then failed while
-      // RECORDING the result reported plain failure, the creator clicked
-      // Publish again, and a second copy went up. Two guards, because the two
-      // windows are different — one before the row exists, one after.
+      // In-process mutex first — synchronous check-and-set, nothing awaits
+      // between has() and add() — then the durable row for other servers.
       const dupKey = `${source}:${Number(clipId)}:${Number(profileId)}`;
-      if (publishInFlight.has(dupKey)) {
-        return res.status(409).json({
-          error: "This clip is already uploading to that account. Give it a moment — publishing a video can take a minute.",
-          alreadyPublishing: true,
-        });
-      }
+      const alreadyPublishing = (job?: { kind: string; id: number }) => res.status(409).json({
+        error: "This clip is already uploading to that account. Give it a moment — publishing a video can take a minute.",
+        alreadyPublishing: true,
+        job,
+      });
+      if (publishInFlight.has(dupKey)) return alreadyPublishing();
+      publishInFlight.add(dupKey);
+      heldKey = dupKey;
+      const inFlightRow = await storage.findInFlightPublishForClip(Number(clipId), source, Number(profileId), PUBLISH_STALE_MS);
+      if (inFlightRow) return alreadyPublishing({ kind: "publish", id: inFlightRow.id });
       if (!force) {
         const existing = await storage.findPublishedPostForClip(Number(clipId), source, Number(profileId));
         if (existing) {
@@ -17389,8 +17610,6 @@ export async function registerRoutes(
           });
         }
       }
-      publishInFlight.add(dupKey);
-      inFlightKey = dupKey;
 
       const { resolvePublishAccessToken } = await import("./lib/distribution/platformPublisher");
       const publishToken = await resolvePublishAccessToken(profile);
@@ -17413,155 +17632,61 @@ export async function registerRoutes(
       }
 
       // Find clip
-      const clip = await findClipById(clipId, source);
+      const clip = await findClipById(Number(clipId), source);
       if (!clip || !clip.exportPath) {
         return res.status(404).json({ error: "Clip not found or not exported" });
       }
-
-      // Mainline remix clips live in Object Storage (/storage/...) with the
-      // local file deleted after upload — materialize to temp before publish.
-      let clipPath: string;
-      let tempPublishDir: string | null = null;
-      if (clip.exportPath.startsWith("/storage/")) {
-        tempPublishDir = path.join("/tmp/remix-videos", `publish-now-${clipId}`);
-        clipPath = await downloadToTempFile(objectKeyFromServeUrl(clip.exportPath), tempPublishDir);
-      } else {
-        clipPath = path.join(process.cwd(), "public", clip.exportPath.replace(/^\//, ""));
-        if (!fs.existsSync(clipPath)) {
+      // The cheap local-disk check stays synchronous; the object-storage
+      // download is the slow part and belongs to the job.
+      if (!clip.exportPath.startsWith("/storage/")) {
+        const localPath = path.join(process.cwd(), "public", clip.exportPath.replace(/^\//, ""));
+        if (!fs.existsSync(localPath)) {
           return res.status(404).json({ error: "Clip file not found on disk" });
         }
       }
 
-      // Format caption if not provided
-      let finalCaption = caption || "";
-      let finalHashtags = hashtags || [];
-
-      if (!finalCaption) {
-        const { formatCaption } = await import("./lib/distribution/captionFormatter");
-        const analyses = await storage.getSceneAnalysisByVideo(clip.videoId);
-        const analysis = analyses[0];
-
-        const formatted = await formatCaption({
-          platform: profile.platform,
-          brandNames: [],
-          narrativeContext: analysis?.narrativeContext || "",
-          emotionalTone: analysis?.emotionalTone || "neutral",
-          culturalTags: (analysis?.culturalTags as string[]) || [],
-        });
-
-        finalCaption = formatted.captionText;
-        finalHashtags = formatted.hashtags;
-      }
-
-      // Publish
-      const { publishToPlaftorm } = await import("./lib/distribution/platformPublisher");
-      const publishMetadata: Record<string, any> = { ...(profile.metadata as Record<string, any> || {}) };
-      // The creator's per-upload visibility choice wins over the profile
-      // default. Until now no such choice existed anywhere in the product —
-      // privacyStatus appeared only in server code, so every upload took a
-      // stored default the creator never saw and could not change. We told
-      // Google this was "a privacy status they control"; this is the control.
-      if (["public", "unlisted", "private"].includes(privacyStatus)) {
-        publishMetadata.privacyStatus = privacyStatus;
-      }
-      // Instagram's API pulls the video from a public URL instead of
-      // accepting an upload — point it at the clip's public export path.
-      if (profile.platform.startsWith("instagram") && !publishMetadata.publicVideoUrl && clip.exportPath) {
-        const base = (process.env.PUBLIC_BASE_URL || process.env.BASE_URL || "https://gofullscale.co").replace(/\/$/, "");
-        publishMetadata.publicVideoUrl = `${base}${clip.exportPath.startsWith("/") ? "" : "/"}${clip.exportPath}`;
-      }
-      const result = await publishToPlaftorm(profile.platform, {
-        clipPath,
-        caption: finalCaption,
-        hashtags: finalHashtags,
-        accessToken: publishToken,
-        accountId: profile.accountId || "",
-        metadata: publishMetadata,
+      // The record exists BEFORE the upload starts — the receipt the creator
+      // watches is this row flipping from "publishing" to "published".
+      const post = await storage.createPublishedPost({
+        // The id goes in the column whose foreign key can hold it. Remix and
+        // editorial clips live in different tables with independent serial
+        // ids; clip_id's FK points at generated_clips only.
+        clipId: source === "editorial" ? null : Number(clipId),
+        editorialClipId: source === "editorial" ? Number(clipId) : null,
+        clipSource: source,
+        videoId: clip.videoId,
+        profileId: Number(profileId),
+        platform: profile.platform,
+        caption: caption || null,
+        hashtags: Array.isArray(hashtags) ? hashtags : [],
+        status: "publishing",
       });
-
-      if (tempPublishDir) {
-        try { fs.rmSync(tempPublishDir, { recursive: true, force: true }); } catch {}
-      }
-
-      if (result.success) {
-        // THE UPLOAD HAS HAPPENED. The video is live on the platform, and
-        // nothing below can undo that — so nothing below may report failure.
-        //
-        // The previous version awaited this insert bare. When it threw (an
-        // editorial clip's id written into clip_id, violating
-        // published_posts_clip_id_generated_clips_id_fk) the creator saw a
-        // raw constraint error, concluded the publish had failed, and clicked
-        // Publish again — putting a second copy of the same video on their
-        // channel. A bookkeeping failure was converted into a duplicate
-        // upload purely by how it was reported.
-        let post: any = null;
-        let recordingError: string | null = null;
-        try {
-          post = await storage.createPublishedPost({
-            // The id goes in the column whose foreign key can hold it. Remix
-            // and editorial clips live in different tables with independent
-            // serial ids; clip_id's FK points at generated_clips only.
-            clipId: source === "editorial" ? null : clipId,
-            editorialClipId: source === "editorial" ? clipId : null,
-            clipSource: source,
-            videoId: clip.videoId,
-            profileId,
-            platform: profile.platform,
-            platformPostId: result.platformPostId,
-            postUrl: result.postUrl,
-            caption: finalCaption,
-            hashtags: finalHashtags,
-            publishedAt: new Date(),
-            status: result.dryRun ? "dry_run" : "published",
-          });
-        } catch (recErr: any) {
-          recordingError = recErr?.message || String(recErr);
-          // Loud, and with the platform's own id in it: this line is the only
-          // remaining record that the upload happened, and it is what makes
-          // the row recoverable by hand.
-          console.error(
-            `[Publish] UPLOAD SUCCEEDED BUT WAS NOT RECORDED — ${profile.platform} ` +
-            `postId=${result.platformPostId} url=${result.postUrl} ` +
-            `clip=${source}:${clipId} profile=${profileId}: ${recordingError}`,
-          );
-        }
-        res.json({
-          success: true,
-          post,
-          postUrl: result.postUrl,
-          dryRun: !!result.dryRun,
-          // Surfaced rather than hidden — the creator should know the post
-          // will be missing from their history — but explicitly NOT an error,
-          // so the UI does not invite a retry that would upload again.
-          recordingFailed: recordingError ? true : undefined,
-          warning: recordingError
-            ? "Published successfully, but we couldn't save it to your post history. The video is live — don't publish again."
-            : undefined,
-        });
-      } else {
-        // Same split as the success path. This branch wrote clipId
-        // unconditionally, so a FAILED editorial publish hit the very same
-        // foreign-key violation and buried the real reason the publish failed
-        // underneath a constraint error.
-        const post = await storage.createPublishedPost({
-          clipId: source === "editorial" ? null : clipId,
-          editorialClipId: source === "editorial" ? clipId : null,
-          clipSource: source,
-          videoId: clip.videoId,
-          profileId,
-          platform: profile.platform,
-          caption: finalCaption,
-          hashtags: finalHashtags,
-          status: "failed",
-          errorMessage: result.error,
-        });
-        res.status(500).json({ success: false, error: result.error, post });
-      }
+      handedOff = true; // runPublishJob's finally now owns the Set entry
+      res.status(202).json({
+        success: true,
+        pending: true,
+        job: { kind: "publish", id: post.id },
+        postId: post.id,
+        status: "publishing",
+        platform: profile.platform,
+      });
+      void runPublishJob({
+        postId: post.id,
+        dupKey,
+        clip,
+        clipId: Number(clipId),
+        source,
+        profile,
+        publishToken,
+        caption,
+        hashtags: Array.isArray(hashtags) ? hashtags : undefined,
+        privacyStatus,
+      });
     } catch (err: any) {
       console.error("[Publish] Error:", err.message);
-      res.status(500).json({ error: err.message || "Publishing failed" });
+      if (!res.headersSent) res.status(500).json({ error: err.message || "Publishing failed" });
     } finally {
-      if (inFlightKey) publishInFlight.delete(inFlightKey);
+      if (heldKey && !handedOff) publishInFlight.delete(heldKey);
     }
   });
 
@@ -18701,6 +18826,361 @@ export async function registerRoutes(
   // Published Posts
 
   // GET /api/distribution/posts/video/:videoId — List published posts for a video
+  // ─── One job view for every background action ─────────────────
+  //
+  // GET /api/jobs/:kind/:id normalizes each entity's own status row into
+  // { state, stage, progress, error, updatedAt, stale, result } so the client
+  // has one poll hook (useJobPoll) instead of a bespoke loop per feature.
+  // Nothing new is stored: the rows that already hold the outputs are the
+  // source of truth. Ownership always resolves through the owning video.
+  // See docs/ASYNC_JOBS.md.
+  const CLIP_RENDER_STALE_MS = 30 * 60_000;
+  const ageMs = (d: Date | string | null | undefined): number =>
+    d ? Date.now() - new Date(d).getTime() : Number.POSITIVE_INFINITY;
+
+  app.get("/api/jobs/:kind/:id", isFlexibleAuthenticated, async (req: any, res) => {
+    const kind = String(req.params.kind);
+    const rawId = String(req.params.id);
+    const numId = parseInt(rawId);
+    const notFound = () => res.status(404).json({ error: "Job not found" });
+    const send = (id: number | string, view: Record<string, any>) => res.json({ kind, id, ...view });
+    try {
+      switch (kind) {
+        case "publish": {
+          if (isNaN(numId)) return notFound();
+          const post = await storage.getPublishedPost(numId);
+          if (!post || !(await ownsVideo(req, post.videoId))) return notFound();
+          const stale = post.status === "publishing" && ageMs(post.createdAt) > PUBLISH_STALE_MS;
+          const state = stale ? "failed"
+            : post.status === "publishing" ? "running"
+            : post.status === "published" || post.status === "dry_run" ? "succeeded"
+            : post.status === "failed" ? "failed"
+            : "queued";
+          return send(post.id, {
+            state,
+            stage: post.status,
+            error: stale
+              ? "The upload didn't finish — the server may have restarted. Check the platform before publishing again."
+              : post.errorMessage ?? null,
+            updatedAt: post.publishedAt ?? post.createdAt,
+            stale,
+            result: post,
+          });
+        }
+        case "clip-render": {
+          if (isNaN(numId)) return notFound();
+          const clip = await storage.getEditorialClipById(numId);
+          if (!clip || !(await ownsVideo(req, clip.videoId))) return notFound();
+          const startedAt = (clip as any).renderStartedAt ?? clip.createdAt;
+          const stale = clip.renderStatus === "rendering" && ageMs(startedAt) > CLIP_RENDER_STALE_MS;
+          const state = stale ? "failed"
+            : clip.renderStatus === "rendering" ? "running"
+            : clip.renderStatus === "rendered" && clip.exportPath ? "succeeded"
+            : clip.renderStatus === "failed" ? "failed"
+            : "queued";
+          return send(clip.id, {
+            state,
+            stage: clip.renderStatus,
+            error: stale ? "Render interrupted — retry to render again." : clip.renderError ?? null,
+            updatedAt: clip.renderedAt ?? startedAt ?? null,
+            stale,
+            result: clip,
+          });
+        }
+        case "editorial": {
+          if (isNaN(numId)) return notFound();
+          if (!(await ownsVideo(req, numId))) return notFound();
+          const video = await storage.getVideoById(numId);
+          if (!video) return notFound();
+          let clips: any[] = [];
+          try { clips = await storage.getEditorialClipsByVideo(numId); } catch { /* table may be absent */ }
+          const status = video.editorialStatus ?? "none";
+          const inFlight = EDITORIAL_IN_FLIGHT.includes(status);
+          const stale = inFlight && ageMs(video.updatedAt) > EDITORIAL_STALE_MS;
+          const state = status === "failed" ? "failed" : inFlight ? "running" : "succeeded";
+          const stageProgress: Record<string, number> = { pending: 5, transcribing: 25, analyzing: 55, rendering: 80, ready: 100, failed: 100 };
+          const rendered = clips.filter((c) => c.renderStatus === "rendered").length;
+          const progress = status === "rendering" && clips.length > 0
+            ? Math.round(60 + 40 * (rendered / clips.length))
+            : (stageProgress[status] ?? null);
+          return send(numId, {
+            state,
+            stage: status,
+            progress,
+            error: video.editorialError ?? null,
+            updatedAt: video.updatedAt,
+            stale,
+            result: {
+              totalClips: clips.length,
+              renderedClips: rendered,
+              failedClips: clips.filter((c) => c.renderStatus === "failed").length,
+              renderingClips: clips.filter((c) => c.renderStatus === "rendering").length,
+              pendingClips: clips.filter((c) => c.renderStatus === "pending" || c.renderStatus === "rendering").length,
+              completedAt: video.editorialCompletedAt,
+            },
+          });
+        }
+        case "stitch": {
+          if (isNaN(numId)) return notFound();
+          const plan = await storage.getStitchPlan(numId);
+          if (!plan || !(await ownsVideo(req, plan.videoId))) return notFound();
+          const state = plan.status === "completed" ? "succeeded"
+            : plan.status === "failed" ? "failed"
+            : plan.status === "generating" ? "running"
+            : "queued";
+          return send(plan.id, {
+            state,
+            stage: plan.status,
+            error: plan.errorMessage ?? null,
+            updatedAt: plan.completedAt ?? plan.createdAt,
+            result: plan,
+          });
+        }
+        case "remix": {
+          if (isNaN(numId)) return notFound();
+          const job = await storage.getRemixJob(numId);
+          if (!job || !(await ownsVideo(req, job.videoId))) return notFound();
+          const st = job.status ?? "queued";
+          const state = st === "completed" ? "succeeded"
+            : st === "failed" ? "failed"
+            : st === "cancelled" ? "cancelled"
+            : st === "queued" ? "queued"
+            : "running";
+          const clips = await storage.getClipsByJob(numId).catch(() => []);
+          return send(job.id, {
+            state,
+            stage: st,
+            error: job.errorMessage ?? null,
+            updatedAt: job.completedAt ?? job.createdAt,
+            result: { job, clips },
+          });
+        }
+        case "search": {
+          const job = getEphemeralJob(rawId);
+          const ownerKey = String(req.authUserId ?? req.user?.id ?? "");
+          if (!job || job.kind !== "search" || job.ownerKey !== ownerKey) return notFound();
+          return send(job.id, {
+            state: job.state,
+            error: job.error,
+            updatedAt: new Date(job.updatedAt).toISOString(),
+            result: job.result,
+          });
+        }
+        default:
+          return res.status(400).json({ error: `Unknown job kind: ${kind}` });
+      }
+    } catch (err: any) {
+      console.error(`[Jobs] ${kind}/${rawId} error:`, err?.message);
+      res.status(500).json({ error: err?.message || "Failed to read job" });
+    }
+  });
+
+  // ─── Clips & Reels feed ───────────────────────────────────────────
+  //
+  // Everything FullScale has cut for this creator, across every video:
+  // editorial (story) clips, remix clips, and reels (stitch plans), with
+  // publish state attached. Owner-scoped through the video allowlist and
+  // batched (four queries total) — never per-video round trips.
+  app.get("/api/clips", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const authUserId = req.authUserId ?? req.user?.id;
+      const authEmail = req.authEmail ?? req.user?.email;
+      // Undeduped on purpose: getVideoIndex folds same-title duplicates for the
+      // Library grid, but a clip filed under the folded-away duplicate is still
+      // this creator's clip — and the notification that links here names it.
+      const videos = await storage.getVideoIndex(String(authUserId ?? ""), authEmail, { dedupe: false });
+      const videoIds = videos.map((v) => v.id);
+      const videoById = new Map(videos.map((v) => [v.id, v]));
+      const emptyCounts = { total: 0, ready: 0, rendering: 0, failed: 0, published: 0 };
+      if (videoIds.length === 0) return res.json({ items: [], videos: [], counts: emptyCounts });
+
+      // No per-source swallowing: a failed query must surface as an error
+      // (the page has a "Couldn't load / Try again" state), never as a
+      // confident "Nothing cut yet".
+      const [remix, editorial, plans, posts] = await Promise.all([
+        storage.getClipsByVideoIds(videoIds),
+        storage.getEditorialClipsByVideoIds(videoIds),
+        storage.getStitchPlansByVideoIds(videoIds),
+        storage.getPublishedPostsByVideoIds(videoIds),
+      ]);
+
+      // Publish records keyed by the clip they belong to. Reels publish
+      // through their generated_clips twin, so a reel looks up remix:<gid>.
+      const postsByKey = new Map<string, any[]>();
+      for (const p of posts) {
+        const key = p.clipSource === "editorial" ? `editorial:${p.editorialClipId}` : `remix:${p.clipId}`;
+        const list = postsByKey.get(key) ?? [];
+        list.push({ postId: p.id, platform: p.platform, postUrl: p.postUrl, status: p.status, publishedAt: p.publishedAt, error: p.errorMessage ?? null });
+        postsByKey.set(key, list);
+      }
+      const epoch = (d: any): number => (d ? new Date(d).getTime() : 0);
+      const publishedFor = (key: string) => (postsByKey.get(key) ?? []).sort((a, b) => epoch(b.publishedAt) - epoch(a.publishedAt));
+
+      const iso = (d: any): string | null => (d ? new Date(d).toISOString() : null);
+      const num = (v: any): number => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+      const videoMeta = (videoId: number) => {
+        const v = videoById.get(videoId);
+        return { videoTitle: v?.title || `Video ${videoId}`, videoThumbnail: v?.thumbnailUrl ?? null };
+      };
+
+      const PLATFORM_TITLE: Record<string, string> = {
+        youtube_shorts: "YouTube Shorts", youtube: "YouTube", tiktok: "TikTok",
+        instagram_reels: "Instagram Reel", instagram: "Instagram", facebook: "Facebook", linkedin: "LinkedIn", twitter: "X",
+      };
+      const items: any[] = [];
+      for (const c of editorial) {
+        const status = c.renderStatus === "rendered" && c.exportPath ? "ready"
+          : c.renderStatus === "rendering" ? "rendering"
+          : c.renderStatus === "failed" ? "failed"
+          : "pending";
+        items.push({
+          key: `editorial:${c.id}`,
+          kind: "editorial",
+          id: c.id,
+          clipSource: "editorial",
+          publishId: c.id,
+          videoId: c.videoId,
+          ...videoMeta(c.videoId),
+          title: c.suggestedTitle || "Story clip",
+          thumbnailPath: c.thumbnailPath ?? null,
+          mediaUrl: c.exportPath ?? null,
+          downloadUrl: c.exportPath ? `/api/remix/clips/${c.id}/download?source=editorial` : null,
+          duration: num(c.duration) || Math.max(0, num(c.clipEnd) - num(c.clipStart)),
+          clipStart: num(c.clipStart),
+          clipEnd: num(c.clipEnd),
+          aspectRatio: c.aspectRatio ?? null,
+          platformTarget: null,
+          status,
+          error: c.renderError ?? null,
+          score: c.finalScore ?? c.editorialScore ?? null,
+          tier: c.monetizationTier ?? null,
+          segmentsCount: Array.isArray(c.segments) ? c.segments.length : 0,
+          createdAt: iso(c.createdAt),
+          completedAt: iso(c.renderedAt),
+          published: publishedFor(`editorial:${c.id}`),
+          // Exactly what ClipStudio reads (its ClipShape), not the whole row:
+          // the full row carries every analysis jsonb blob and this feed
+          // re-polls every 5s while anything renders.
+          row: {
+            id: c.id,
+            clipStart: c.clipStart,
+            clipEnd: c.clipEnd,
+            duration: c.duration,
+            suggestedTitle: c.suggestedTitle,
+            aspectRatio: c.aspectRatio,
+            exportPath: c.exportPath,
+            thumbnailPath: c.thumbnailPath,
+            renderStatus: c.renderStatus,
+            captionsEnabled: c.captionsEnabled,
+            captionStyle: c.captionStyle,
+            captionSettings: c.captionSettings,
+            segments: c.segments,
+            edits: c.edits,
+            silenceAnalysis: c.silenceAnalysis,
+            renderWarnings: c.renderWarnings,
+          },
+        });
+      }
+      const reelClipIds = new Set(plans.map((p) => p.generatedClipId).filter((id): id is number => typeof id === "number"));
+      const remixById = new Map(remix.map((c) => [c.id, c]));
+      for (const c of remix) {
+        if (reelClipIds.has(c.id)) continue; // folded onto its reel below
+        const st = String(c.status ?? "generated");
+        // generated_clips.status as actually written: generated | ready |
+        // pending_review | rejected | deleted (a soft-hidden reel twin).
+        if (st === "rejected" || st === "deleted") continue;
+        const status = st === "failed" ? "failed"
+          : st === "pending_review" ? "needs_review"
+          : c.exportPath ? "ready"
+          : "pending";
+        items.push({
+          key: `remix:${c.id}`,
+          kind: "remix",
+          id: c.id,
+          clipSource: "remix",
+          publishId: c.id,
+          videoId: c.videoId,
+          ...videoMeta(c.videoId),
+          title: c.platformTarget ? `${PLATFORM_TITLE[c.platformTarget] ?? c.platformTarget} clip` : "Remix clip",
+          thumbnailPath: c.thumbnailPath ?? null,
+          mediaUrl: c.exportPath ?? null,
+          downloadUrl: c.exportPath ? `/api/remix/clips/${c.id}/download` : null,
+          duration: num(c.duration) || Math.max(0, num(c.clipEnd) - num(c.clipStart)),
+          clipStart: num(c.clipStart),
+          clipEnd: num(c.clipEnd),
+          aspectRatio: null,
+          platformTarget: c.platformTarget ?? null,
+          status,
+          error: null,
+          score: c.qualityScore ?? null,
+          tier: null,
+          segmentsCount: 0,
+          createdAt: iso(c.createdAt),
+          completedAt: iso(c.createdAt),
+          published: publishedFor(`remix:${c.id}`),
+        });
+      }
+      for (const p of plans) {
+        const twin = p.generatedClipId ? remixById.get(p.generatedClipId) : undefined;
+        const status = p.status === "completed" ? "ready"
+          : p.status === "generating" ? "rendering"
+          : p.status === "failed" ? "failed"
+          : "pending";
+        const mediaUrl = p.outputPath ?? twin?.exportPath ?? null;
+        items.push({
+          key: `reel:${p.id}`,
+          kind: "reel",
+          id: p.id,
+          clipSource: p.generatedClipId ? "remix" : null,
+          publishId: p.generatedClipId ?? null,
+          videoId: p.videoId,
+          ...videoMeta(p.videoId),
+          title: p.suggestedTitle || "Untitled reel",
+          thumbnailPath: p.thumbnailPath ?? twin?.thumbnailPath ?? null,
+          mediaUrl,
+          downloadUrl: p.generatedClipId && twin?.exportPath ? `/api/remix/clips/${p.generatedClipId}/download` : mediaUrl,
+          duration: num(p.totalDuration) || num(twin?.duration),
+          clipStart: 0,
+          clipEnd: num(p.totalDuration) || num(twin?.duration),
+          aspectRatio: null,
+          platformTarget: p.platformTarget ?? null,
+          status,
+          error: p.errorMessage ?? null,
+          score: p.qualityScore ?? null,
+          tier: null,
+          segmentsCount: Array.isArray(p.segments) ? p.segments.length : 0,
+          createdAt: iso(p.createdAt),
+          completedAt: iso(p.completedAt),
+          published: p.generatedClipId ? publishedFor(`remix:${p.generatedClipId}`) : [],
+        });
+      }
+
+      items.sort((a, b) => String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? "")));
+      const counts = {
+        total: items.length,
+        ready: items.filter((i) => i.status === "ready").length,
+        rendering: items.filter((i) => i.status === "rendering").length,
+        failed: items.filter((i) => i.status === "failed").length,
+        published: items.filter((i) => i.published.some((p: any) => p.status === "published" || p.status === "dry_run")).length,
+      };
+      const CAP = 600;
+      res.json({
+        items: items.slice(0, CAP),
+        truncated: items.length > CAP,
+        videos: videos.map((v) => ({ id: v.id, title: v.title })),
+        counts,
+      });
+    } catch (err: any) {
+      console.error("[Clips] feed error:", err?.message);
+      // A schema that has not been pushed yet is a deploy step, not a bug the
+      // creator can act on — say so instead of a raw column error.
+      if (/column .* does not exist|relation .* does not exist/i.test(String(err?.message))) {
+        return res.status(503).json({ error: "Your clips can't be loaded until the database update finishes. Try again in a few minutes." });
+      }
+      res.status(500).json({ error: err?.message || "Failed to load clips" });
+    }
+  });
+
   app.get("/api/distribution/posts/video/:videoId", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const videoId = parseInt(req.params.videoId);

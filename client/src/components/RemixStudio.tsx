@@ -11,6 +11,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
+import { useJobPoll } from "@/hooks/use-job-poll";
 import EditorialClips from "@/components/EditorialClips";
 import RemixCopilot from "@/components/RemixCopilot";
 import DistributionDashboard from "@/components/DistributionDashboard";
@@ -172,6 +173,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
   const [copilotEditorialClip, setCopilotEditorialClip] = useState<any | null>(null);
   const [editorialRefreshKey, setEditorialRefreshKey] = useState(0);
   const [showDistribution, setShowDistribution] = useState(false);
+  const [publishTarget, setPublishTarget] = useState<{ id: number; clipSource: "remix" | "editorial" } | null>(null);
 
   // Load existing jobs, clips, and stitch plans
   const loadData = useCallback(async (): Promise<GeneratedClip[]> => {
@@ -485,24 +487,8 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
             const body = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(body?.error || "Stitch failed");
             toast({ title: "Building highlight reel", description: `Plan #${body.planId} — stitching ${valid.length} beats` });
-            // Same completion poll as the manual Highlight Reel path.
-            const pollStitch = setInterval(async () => {
-              try {
-                const planRes = await fetchWithTimeout(`/api/remix/stitch-plans/${body.planId}`, { credentials: "include" });
-                if (!planRes.ok) return;
-                const plan = await planRes.json();
-                if (plan.status === "completed" || plan.status === "failed") {
-                  clearInterval(pollStitch);
-                  setIsStitching(false);
-                  await loadData();
-                  toast(
-                    plan.status === "completed"
-                      ? { title: "Highlight Reel Ready", description: "Your stitched clip has been generated" }
-                      : { title: "Stitch Failed", description: plan.errorMessage || "Generation failed", variant: "destructive" },
-                  );
-                }
-              } catch { /* transient — next tick retries */ }
-            }, 3000);
+            // Tracked by the shared stitch job poll (cleans up on close).
+            setStitchJobId(body.planId);
           })
           .catch((err: any) => {
             setIsStitching(false);
@@ -532,6 +518,30 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
     const job = jobs.find((j) => j.id === activeJobId);
     if (job && isTerminalStatus(job.status)) setActiveJobId(null);
   }, [jobs, activeJobId]);
+
+  // Stitch (highlight reel) completion — one poll for both the copilot and
+  // manual paths. The two bare setInterval loops this replaces were never
+  // cleared, so closing the studio mid-stitch leaked them.
+  const [stitchJobId, setStitchJobId] = useState<number | null>(null);
+  useJobPoll<{ errorMessage?: string | null }>(stitchJobId ? { kind: "stitch", id: stitchJobId } : null, {
+    intervalMs: 3000,
+    maxMs: 30 * 60_000,
+    onTerminal: async (view) => {
+      setStitchJobId(null);
+      setIsStitching(false);
+      await loadData();
+      toast(
+        view.state === "succeeded"
+          ? { title: "Highlight Reel Ready", description: "Your stitched clip has been generated" }
+          : { title: "Stitch Failed", description: view.error || "Generation failed", variant: "destructive" },
+      );
+    },
+    onTimeout: () => {
+      setStitchJobId(null);
+      setIsStitching(false);
+      toast({ title: "Still stitching", description: "Check Clips & Reels in a few minutes." });
+    },
+  });
 
   // Poll active job
   useEffect(() => {
@@ -603,6 +613,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
         const data = await res.json();
         const err: any = new Error(data.error || "Failed to start remix");
         err.status = res.status;
+        err.body = data;
         throw err;
       }
       return res.json();
@@ -648,7 +659,14 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
       toast({ title: "Remix Started", description: `Job #${data.jobId} queued for processing` });
       await loadData();
     } catch (err: any) {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      if (err?.status === 409 && err?.body?.activeJobId) {
+        // A remix is already running (started elsewhere, or before a reload).
+        // Adopt it instead of reporting an error the creator cannot act on.
+        setActiveJobId(err.body.activeJobId);
+        toast({ title: "Remix already running", description: `Job #${err.body.activeJobId} is in progress — tracking it here.` });
+      } else {
+        toast({ title: "Error", description: err.message, variant: "destructive" });
+      }
     }
     setIsStarting(false);
   };
@@ -729,25 +747,8 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
       }
       const data = await res.json();
       toast({ title: "Stitching Started", description: `Plan #${data.planId} — generating highlight reel` });
-      // Poll for completion
-      const pollStitch = setInterval(async () => {
-        try {
-          const planRes = await fetchWithTimeout(`/api/remix/stitch-plans/${data.planId}`, { credentials: "include" });
-          if (planRes.ok) {
-            const plan = await planRes.json();
-            if (plan.status === "completed" || plan.status === "failed") {
-              clearInterval(pollStitch);
-              setIsStitching(false);
-              await loadData();
-              if (plan.status === "completed") {
-                toast({ title: "Highlight Reel Ready", description: "Your stitched clip has been generated" });
-              } else {
-                toast({ title: "Stitch Failed", description: plan.errorMessage || "Generation failed", variant: "destructive" });
-              }
-            }
-          }
-        } catch {}
-      }, 3000);
+      // Tracked by the shared stitch job poll (cleans up on close).
+      setStitchJobId(data.planId);
     } catch (err: any) {
       toast({ title: "Error", description: err.message, variant: "destructive" });
       setIsStitching(false);
@@ -882,7 +883,12 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
                 // A rendered clip had no route to publishing from here — the
                 // Distribution hub lived elsewhere and did not list editorial
                 // clips at all. This opens it directly on this video.
-                onPublishClip={() => setShowDistribution(true)}
+                onPublishClip={(clip) => {
+                  // Carry the clip through so the hub opens on Publish with
+                  // THIS clip selected, not on an unselected overview.
+                  setPublishTarget(clip.id ? { id: clip.id, clipSource: "editorial" } : null);
+                  setShowDistribution(true);
+                }}
                 onSelectForCopilot={(clip: any) => {
                   if (!clip?.id) {
                     toast({ title: "Clip not saved yet", description: "Only saved clips can be copilot targets." });
@@ -1410,7 +1416,8 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
         <DistributionDashboard
           videoId={videoId}
           open={showDistribution}
-          onClose={() => setShowDistribution(false)}
+          initialClip={publishTarget}
+          onClose={() => { setShowDistribution(false); setPublishTarget(null); }}
         />
       </motion.div>
     </AnimatePresence>
@@ -1790,10 +1797,13 @@ function ClipCard({
 
   // Resolve clip source URL: Object Storage paths served via /storage/* proxy,
   // otherwise use the download endpoint as a stream fallback
+  // Editorial rows in the union list share ids with remix rows; the download
+  // endpoint needs ?source=editorial to pick the right table.
+  const downloadHref = `/api/remix/clips/${clip.id}/download${(clip as any).clipSource === "editorial" ? "?source=editorial" : ""}`;
   const clipSrc = clip.exportPath
     ? clip.exportPath.startsWith("/storage/")
       ? clip.exportPath
-      : `/api/remix/clips/${clip.id}/download`
+      : downloadHref
     : null;
 
   const togglePlay = () => {
@@ -1947,7 +1957,7 @@ function ClipCard({
                 {showPlayer ? "Hide Player" : "Play Clip"}
               </Button>
               <a
-                href={`/api/remix/clips/${clip.id}/download`}
+                href={downloadHref}
                 download
                 className="flex-1"
               >

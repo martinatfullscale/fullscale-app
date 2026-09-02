@@ -10,6 +10,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
+import { useJobPoll } from "@/hooks/use-job-poll";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -76,6 +77,11 @@ interface DistributionDashboardProps {
   videoId: number;
   open: boolean;
   onClose: () => void;
+  /**
+   * Open straight onto the Publish tab with this clip selected. Carries the
+   * source because remix and editorial ids collide.
+   */
+  initialClip?: { id: number; clipSource: "remix" | "editorial" } | null;
 }
 
 // ─── Constants ──────────────────────────────────────────────────
@@ -93,7 +99,7 @@ const PLATFORM_CONFIG: Record<string, { label: string; icon: any; color: string;
 
 // ─── Component ──────────────────────────────────────────────────
 
-export default function DistributionDashboard({ videoId, open, onClose }: DistributionDashboardProps) {
+export default function DistributionDashboard({ videoId, open, onClose, initialClip }: DistributionDashboardProps) {
   const { toast } = useToast();
   const [tab, setTab] = useState<"overview" | "publish" | "schedule" | "analytics">("overview");
   const [profiles, setProfiles] = useState<DistributionProfile[]>([]);
@@ -233,6 +239,58 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
     if (open) loadData();
   }, [open, loadData]);
 
+  // Opened from a clip's Publish button: land on Publish with it selected.
+  useEffect(() => {
+    if (!open || !initialClip) return;
+    selectClip(initialClip.id, initialClip.clipSource);
+    setTab("publish");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, initialClip?.id, initialClip?.clipSource]);
+
+  /**
+   * A publish acks immediately (202 + a `publishing` row) and finishes in the
+   * background; this poll is the receipt. Holding the request open for the
+   * upload made every proxy/client timeout look like a failure — which is
+   * what taught creators to click Publish again.
+   */
+  const [pendingPublish, setPendingPublish] = useState<{ postId: number; platform?: string } | null>(null);
+  useJobPoll<{ platform?: string; postUrl?: string | null }>(
+    pendingPublish ? { kind: "publish", id: pendingPublish.postId } : null,
+    {
+      intervalMs: 4000,
+      maxMs: 25 * 60_000,
+      onTerminal: async (view) => {
+        setPendingPublish(null);
+        setIsPublishing(false);
+        if (view.state === "succeeded") {
+          const platform = view.result?.platform ?? pendingPublish?.platform;
+          toast({
+            title: "Published!",
+            description: `Clip posted to ${platform ? (PLATFORM_CONFIG[platform]?.label ?? platform) : "your account"}`,
+          });
+          setSelectedClipId(null);
+          setCustomCaption("");
+        } else {
+          toast({
+            title: "Publish failed",
+            description: view.error || "The platform rejected the upload. Nothing was posted.",
+            variant: "destructive",
+          });
+        }
+        await loadData();
+      },
+      onTimeout: async () => {
+        setPendingPublish(null);
+        setIsPublishing(false);
+        toast({
+          title: "Still publishing",
+          description: "The upload is taking unusually long. It'll show under Overview → Recent Posts when it lands — don't publish again.",
+        });
+        await loadData();
+      },
+    },
+  );
+
   /**
    * @param force Re-publish a clip the server already has a published record
    *   for. Only ever set from the confirmation below — never on a first click.
@@ -240,6 +298,7 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
   const publishClip = async (force = false) => {
     if (!selectedClipId || !selectedProfileId) return;
     setIsPublishing(true);
+    let stillWorking = false;
     try {
       const res = await fetchWithTimeout("/api/distribution/publish", {
         method: "POST",
@@ -255,24 +314,24 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
           privacyStatus,
           force: force || undefined,
         }),
-      // A platform upload is synchronous on the server and takes 30–90s for
-      // YouTube; the 30s default abandoned a WORKING publish as "Error" and the
-      // natural retry uploaded a second copy. Wait as long as the upload does.
-      }, 300_000);
+      // The request only validates and records the job now; the upload
+      // itself is tracked by the poll above.
+      }, 60_000);
 
       const data = await res.json();
-      if (data.success) {
-        // post can be null: the upload succeeded but recording it failed. The
-        // video is live either way, so this is a success with a caveat — never
-        // an error, because an error here is what makes people publish twice.
-        if (data.recordingFailed) {
-          toast({
-            title: "Published — but not saved to your history",
-            description: data.warning || "The video is live. Don't publish it again.",
-          });
-        } else {
-          toast({ title: "Published!", description: `Clip posted to ${data.post?.platform ?? "your account"}` });
-        }
+      if (res.status === 202 || data.pending) {
+        // Accepted: keep the button busy and let the job poll deliver the verdict.
+        stillWorking = true;
+        const platform: string | undefined = data.platform;
+        setPendingPublish({ postId: data.job?.id ?? data.postId, platform });
+        toast({
+          title: "Publishing…",
+          description: `Uploading to ${platform ? (PLATFORM_CONFIG[platform]?.label ?? platform) : "your account"}. This usually takes 30–90s — you can keep working; you'll get a notice here when it lands.`,
+        });
+        await loadData();
+      } else if (data.success) {
+        // Legacy synchronous success (kept so an older server still reads well).
+        toast({ title: "Published!", description: `Clip posted to ${data.post?.platform ?? "your account"}` });
         await loadData();
         setSelectedClipId(null);
         setCustomCaption("");
@@ -290,28 +349,19 @@ export default function DistributionDashboard({ videoId, open, onClose }: Distri
       } else if (data.alreadyPublishing) {
         // The first click's upload is still running. This is NOT a failure —
         // rendering it as a destructive "Failed" is what taught creators to
-        // click Publish again. Say so, and poll for the row to appear.
-        toast({ title: "Still publishing", description: "Your first click is still uploading — this usually takes 30–90s. It'll appear below when it lands." });
-        const started = Date.now();
-        const poll = setInterval(async () => {
-          try {
-            const pr = await fetchWithTimeout(`/api/distribution/posts/video/${videoId}`, { credentials: "include" });
-            if (pr.ok) {
-              const posts = await pr.json();
-              const landed = Array.isArray(posts) && posts.some((p: any) =>
-                (p.clipId === selectedClipId || p.editorialClipId === selectedClipId) && p.profileId === selectedProfileId && p.status !== "failed");
-              if (landed) { clearInterval(poll); await loadData(); toast({ title: "Published!", description: "Your clip is live." }); }
-            }
-          } catch { /* transient */ }
-          if (Date.now() - started > 5 * 60_000) clearInterval(poll);
-        }, 5000);
+        // click Publish again. Say so, and adopt the running job.
+        toast({ title: "Still publishing", description: "Your first click is still uploading — this usually takes 30–90s. You'll get a notice here when it lands." });
+        if (data.job?.id) {
+          stillWorking = true;
+          setPendingPublish({ postId: data.job.id });
+        }
       } else {
         toast({ title: "Failed", description: data.error, variant: "destructive" });
       }
     } catch (err: any) {
       toast({ title: "Error", description: err.message, variant: "destructive" });
     }
-    setIsPublishing(false);
+    if (!stillWorking) setIsPublishing(false);
   };
 
   const refreshAnalytics = async () => {
