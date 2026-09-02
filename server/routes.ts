@@ -5888,11 +5888,15 @@ export async function registerRoutes(
       // "your token expired" identically as "no videos found". Surface the
       // real reason with a status the client can branch on.
       if (result.error) {
+        // Classify on the indexer's actual return. Only the two token strings
+        // mean "reconnect"; a quota error, a channel with no uploads, or a DB
+        // failure must NOT be told to reconnect — they get the raw reason.
         const notConnected = /no youtube connection/i.test(result.error);
-        return res.status(notConnected ? 409 : 502).json({
+        const tokenFailed = /token expired|failed to refresh token/i.test(result.error);
+        return res.status(notConnected ? 409 : tokenFailed ? 502 : 500).json({
           success: false,
           error: result.error,
-          code: notConnected ? "not_connected" : "token_refresh_failed",
+          code: notConnected ? "not_connected" : tokenFailed ? "token_refresh_failed" : "index_failed",
         });
       }
       res.json({ success: true, ...result });
@@ -14655,16 +14659,21 @@ export async function registerRoutes(
   // at 30s; the natural retry then started a SECOND paid call on the same
   // transcript while the first was still running. Cleared on response finish
   // or client disconnect, so an abandoned request never wedges the guard.
-  const analysisInFlight = new Set<number>();
+  // videoId -> startedAt. Released when the RESPONSE FINISHES (the work has
+  // settled), never on client disconnect — 'close' fires the moment a client
+  // aborts while the Claude call is still running, which would let a second
+  // paid call start on the same transcript. A max-age ceiling covers the one
+  // case 'finish' cannot: a socket already gone when the handler finally writes.
+  const analysisInFlight = new Map<number, number>();
+  const ANALYSIS_SLOT_MAX_MS = 3 * 60_000;
   const guardAnalysis = (videoId: number, res: any): boolean => {
-    if (analysisInFlight.has(videoId)) {
+    const startedAt = analysisInFlight.get(videoId);
+    if (startedAt !== undefined && Date.now() - startedAt < ANALYSIS_SLOT_MAX_MS) {
       res.status(409).json({ error: "Analysis is already running for this video — give it a moment.", inFlight: true });
       return false;
     }
-    analysisInFlight.add(videoId);
-    const release = () => analysisInFlight.delete(videoId);
-    res.on("finish", release);
-    res.on("close", release);
+    analysisInFlight.set(videoId, Date.now());
+    res.on("finish", () => analysisInFlight.delete(videoId));
     return true;
   };
 
@@ -15367,10 +15376,12 @@ export async function registerRoutes(
         });
       }
 
-      // Exclude clips ALREADY rendering. Resume used to re-queue them, which
-      // spawned a second ffmpeg on the same clip and let the last writer win —
-      // a 16:9 re-render in flight was overwritten by the 9:16 default.
-      const unrendered = existingClips.filter((c) => c.renderStatus !== "rendered" && c.renderStatus !== "rendering");
+      // Everything not yet rendered. The PIPELINE (runEditorialAutoPipeline,
+      // resume branch) decides which "rendering" clips are genuinely in flight
+      // vs stranded by a restart, using the video's in-flight freshness — this
+      // route only acks; filtering here too made the ack disagree with what
+      // actually rendered.
+      const unrendered = existingClips.filter((c) => c.renderStatus !== "rendered");
       if (unrendered.length === 0) {
         return res.json({
           message: "All clips already rendered",
@@ -16522,7 +16533,7 @@ export async function registerRoutes(
             thumbnailPath: thumbStoragePath || undefined,
             generatedClipId: dbClip.id,
           });
-          console.log(`[Reel] Plan ${plan.id} complete — ${planSegments.length} segments from ${videoIds.length} video(s)`);
+          console.log(`[Reel] Plan ${plan.id} complete — ${planSegments.length} segments from ${srcKeys.length} source(s)`);
         } catch (err: any) {
           console.error(`[Reel] Plan ${plan.id} failed:`, err?.message);
           await storage.updateStitchPlanStatus(plan.id, "failed", { errorMessage: err?.message || "Reel render failed" }).catch(() => {});

@@ -180,7 +180,20 @@ export async function runEditorialAutoPipeline(
   // ── Resume mode: skip transcript+analysis, render unrendered clips only ──
   if (resume) {
     const existing = await storage.getEditorialClipsByVideo(videoId);
-    const unrendered = existing.filter((c) => c.renderStatus !== "rendered");
+    // Which "rendering" clips are REALLY in flight? A clip can carry that
+    // status for two opposite reasons: an ffmpeg is running right now, or the
+    // server restarted mid-render and left it stranded. Resume must skip the
+    // first (re-queuing spawns a second ffmpeg on the same clip and lets the
+    // last writer win — a 16:9 re-render overwritten by the 9:16 default) and
+    // must PICK UP the second (recovering stuck clips is resume's whole
+    // purpose). editorial_clips has no per-clip updatedAt, so the video's
+    // in-flight freshness is the signal: a fresh in-flight video means the
+    // renderer is alive and its "rendering" clips are genuinely busy.
+    const lastUpdate = video.updatedAt ? new Date(video.updatedAt).getTime() : 0;
+    const rendererAlive = video.editorialStatus === "rendering" && Date.now() - lastUpdate < STALE_THRESHOLD_MS;
+    const unrendered = existing.filter((c) => c.renderStatus !== "rendered" && !(rendererAlive && c.renderStatus === "rendering"));
+    const skippedBusy = existing.filter((c) => c.renderStatus === "rendering" && rendererAlive).length;
+    if (skippedBusy > 0) console.log(`[EditorialAuto] Resume: leaving ${skippedBusy} clip(s) that are actively rendering alone`);
     if (existing.length === 0) {
       console.warn(`[EditorialAuto] Resume requested but no existing clips found — falling through to full run`);
     } else if (unrendered.length === 0) {

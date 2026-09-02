@@ -362,7 +362,11 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
         credentials: "include",
         body: JSON.stringify({ query: searchQuery.trim(), maxClips: 10 }),
       }, 120_000);
-      if (res.status === 409) throw new Error("An analysis is already running for this video — give it a moment.");
+      if (res.status === 409) {
+        // Informational, not a failure — the other analysis will finish.
+        toast({ title: "Already analyzing", description: "Another analysis is running on this video — try the search again in a moment." });
+        return;
+      }
       if (!res.ok) throw new Error("Search failed");
       const data = await res.json();
       setSearchResults(
@@ -389,8 +393,9 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
       });
     } catch (err: any) {
       toast({ title: "Search failed", description: err.message, variant: "destructive" });
+    } finally {
+      setIsSearching(false); // finally: the 409 branch returns from inside the try
     }
-    setIsSearching(false);
   }, [videoId, searchQuery, toast]);
 
   // ── Load saved clips + transcript status on mount ─────────────────
@@ -525,8 +530,12 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
       }
     } catch (err: any) {
       toast({ title: "Analysis failed", description: err.message, variant: "destructive" });
+    } finally {
+      // finally, not after the try: the 409 branch returns from inside it, and
+      // a trailing call was skipped — leaving the button spinning and the
+      // creator's existing clips hidden until the modal was closed.
+      setIsLoadingAnalysis(false);
     }
-    setIsLoadingAnalysis(false);
   };
 
   // ── Sort & Filter ────────────────────────────────────────────────

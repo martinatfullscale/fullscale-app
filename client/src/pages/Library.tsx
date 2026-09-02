@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { TopBar } from "@/components/TopBar";
 import { Upload, Eye, CheckCircle, Loader2, AlertTriangle, X, Shield, Sun, Tag, Box, DollarSign, Sparkles, RefreshCw, Play, Globe, HardDrive, Scan, Video, Wand2, Trash2, Pencil, Brain, Scissors, Send } from "lucide-react";
-import { useLocation } from "wouter";
+import { useLocation, useSearch } from "wouter";
 import { SiInstagram, SiYoutube, SiTwitch, SiFacebook, SiTiktok, SiX } from "react-icons/si";
 import { motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "@/hooks/use-auth";
@@ -1139,29 +1139,48 @@ export default function Library() {
   //                              dropping the creator here to find the button.
   // Fires once per arrival, after the library has loaded, then strips the
   // params so a refresh doesn't re-trigger.
-  const deepLinkHandled = useRef(false);
+  // Driven by wouter's search string, not window.location read once: the bell
+  // navigates with setLocation, which changes the URL WITHOUT remounting this
+  // page — so an effect keyed only on videoData never re-ran when a creator
+  // sitting on /library clicked "Your clips are ready", and then fired later,
+  // unprompted, when the 15s refetch produced a new object. Keyed on the
+  // search string, each distinct deep link is handled exactly once.
+  const search = useSearch();
+  const handledSearch = useRef<string | null>(null);
   useEffect(() => {
-    if (deepLinkHandled.current || !videoData?.videos) return;
-    const params = new URLSearchParams(window.location.search);
+    if (!videoData?.videos || !search || handledSearch.current === search) return;
+    const params = new URLSearchParams(search);
     const openClips = params.get("open") === "clips";
     const videoParam = Number(params.get("video"));
     const scanFirst = params.get("scan") === "first";
     if (!openClips && !scanFirst) return;
-    deepLinkHandled.current = true;
+    handledSearch.current = search;
 
     if (openClips && Number.isFinite(videoParam) && videoParam > 0) {
       setRemixVideoId(videoParam);
       setRemixStudioOpen(true);
     } else if (scanFirst) {
-      const first = (videoData.videos as any[]).find((v) => v.status === "Pending Scan");
-      if (first?.id) scanVideoMutation.mutate(first.id);
+      // Same classifier the cards use, so "retry" (a failed scan) counts too —
+      // the exact case onboarding sends people here for.
+      const vids = videoData.videos as IndexedVideo[];
+      const scanning = vids.find((v) => getVideoStatusInfo(v).aiStatus === "scanning");
+      const first = vids.find((v) => ["pending", "retry"].includes(getVideoStatusInfo(v).aiStatus));
+      if (first?.id) {
+        scanVideoMutation.mutate(first.id);
+        toast({ title: "Scanning your video", description: `Started on "${(first as any).title || "your video"}" — this takes a minute or two.` });
+        setTimeout(() => document.querySelector(`[data-testid="button-scan-${first.id}"], [data-testid="button-tf-scan-${first.id}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" }), 250);
+      } else if (scanning) {
+        toast({ title: "Already scanning", description: "Your video is being scanned now — clips appear here when it finishes." });
+      } else {
+        toast({ title: "Nothing to scan yet", description: "Paste a video link or upload a file above to get started." });
+      }
     }
 
     const url = new URL(window.location.href);
     url.searchParams.delete("open"); url.searchParams.delete("video"); url.searchParams.delete("scan");
     window.history.replaceState({}, "", url.toString());
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [videoData]);
+  }, [search, videoData]);
 
   const batchScanMutation = useMutation({
     mutationFn: async (limit: number) => {
@@ -1844,7 +1863,12 @@ export default function Library() {
                           no button, and a failed (retry) scan showed nothing
                           at all. The cloud scan (/api/video-scan/:id) handles
                           these; only the local-file variant needs the file. */}
-                      {!video.hasLocalFile && (video.aiStatus === "pending" || video.aiStatus === "retry" || scanningVideoIds.has(video.id)) && (
+                      {/* Only for sources the cloud scan can FETCH (YouTube /
+                          pasted-URL). A local upload whose file is gone has no
+                          source to pull — a green Scan there could only fail
+                          with a misleading "No Surfaces Found", so it keeps an
+                          honest "re-upload" badge instead. */}
+                      {!video.hasLocalFile && !(video.platform === "fullscale" || String(video.youtubeId ?? "").startsWith("upload-")) && (video.aiStatus === "pending" || video.aiStatus === "retry" || scanningVideoIds.has(video.id)) && (
                         <div
                           className="absolute bottom-12 right-2 z-20"
                           onClick={(e) => {
@@ -1867,6 +1891,17 @@ export default function Library() {
                               <><Scan className="w-3 h-3" /> Scan</>
                             )}
                           </Button>
+                        </div>
+                      )}
+                      {/* An upload whose file is no longer on disk: nothing to
+                          scan from. Say so honestly rather than offering a
+                          Scan that can only fail. */}
+                      {!video.hasLocalFile && (video.platform === "fullscale" || String(video.youtubeId ?? "").startsWith("upload-")) && (video.aiStatus === "pending" || video.aiStatus === "retry") && (
+                        <div className="absolute bottom-12 right-2 z-20">
+                          <div className="px-2 py-1 rounded-md bg-zinc-700/90 text-zinc-300 text-xs font-medium flex items-center gap-1" title="The uploaded file isn't available anymore — upload it again to scan.">
+                            <Upload className="w-3 h-3" />
+                            File missing — re-upload
+                          </div>
                         </div>
                       )}
                       {video.aiStatus === "ready" && (

@@ -426,9 +426,22 @@ export default function SavedPlacements() {
                 {/* Placement cards */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                   <AnimatePresence mode="popLayout">
-                    {videoPlcs.map((placement, idx) => (
+                    {videoPlcs.map((placement, idx) => {
+                      // ?placement=<id> (from the review notification): land ON
+                      // that card — highlight it and scroll it into view once.
+                      const targetId = Number(new URLSearchParams(window.location.search).get("placement"));
+                      const isTarget = Number.isFinite(targetId) && targetId === placement.id;
+                      return (
                       <motion.div
                         key={placement.id}
+                        id={`placement-${placement.id}`}
+                        ref={(el) => {
+                          if (el && isTarget && !el.dataset.scrolled) {
+                            el.dataset.scrolled = "1";
+                            setTimeout(() => el.scrollIntoView({ block: "center", behavior: "smooth" }), 150);
+                          }
+                        }}
+                        className={isTarget ? "rounded-xl ring-2 ring-primary/70 ring-offset-2 ring-offset-background" : undefined}
                         initial={{ opacity: 0, y: 10 }}
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, scale: 0.95 }}
@@ -610,7 +623,8 @@ export default function SavedPlacements() {
                           </CardContent>
                         </Card>
                       </motion.div>
-                    ))}
+                      );
+                    })}
                   </AnimatePresence>
                 </div>
               </div>
