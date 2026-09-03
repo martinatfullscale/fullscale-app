@@ -81,6 +81,20 @@ export interface BrollCut {
   /** Resolved by the caller before the graph is built. */
   localPath?: string;
   kind?: "video" | "image";
+  /**
+   * WHICH PART of the source file to play, in source seconds.
+   *
+   * Without these the render always used the head of the file and there was
+   * no way to aim a 90-second upload at the three seconds that matter. Worse,
+   * the client preview seeked its <video> to `t - cut.start` while the render
+   * fed the overlay its own timeline unshifted, so preview and export played
+   * different frames — the editor lied about its own output.
+   *
+   * Both are optional; omitted means "from the head", which is the historical
+   * behaviour. Ignored for stills, which have no source timeline.
+   */
+  srcStart?: number;
+  srcEnd?: number;
   /** cover fills the frame and crops; contain letterboxes. */
   fit: "cover" | "contain";
   /** 0-1. 1 = full frame takeover; smaller = picture-in-picture. */
@@ -151,6 +165,27 @@ export interface EditStack {
   broll?: BrollCut[] | null;
   textOverlays?: TextOverlay[] | null;
   music?: MusicBed | null;
+  /**
+   * Gain on the clip's OWN audio, 0-2, where 1 is untouched.
+   *
+   * The music bed has had a volume since it was built; the speech under it
+   * never did, so the only way to bring a loud clip down was to push the bed
+   * up against it. Applied after the retime so it survives silence removal
+   * and speed ramps, and before the bed is mixed so ducking still keys off
+   * the level the viewer actually hears.
+   */
+  baseAudioLevel?: number | null;
+  /**
+   * Razor cuts on the base track, clip-relative seconds.
+   *
+   * THE RENDERER IGNORES THIS. A boundary with nothing on either side of it
+   * changes no frames — a split only becomes visible once the editor turns a
+   * resulting segment into a speedRamp or a wordCut, both of which are read
+   * below. It is carried here purely so a split survives a reload; dropping
+   * it from the stored stack would make the razor look like it did nothing
+   * the moment the modal was reopened.
+   */
+  splits?: number[] | null;
 }
 
 /** A source span played at a rate — the compiled form of silence + speed. */
@@ -452,6 +487,19 @@ export async function buildEditGraph(opts: {
     }
   }
 
+  // ── 2b. Gain on the clip's own audio ────────────────────────────────
+  // After the retime so it survives silence removal and speed ramps, and
+  // before the bed is mixed so ducking keys off the level the viewer hears.
+  // Only builds a node when the level actually differs from unity: a no-op
+  // volume filter would force an audio re-encode on every render.
+  const baseGain = Number(stack.baseAudioLevel);
+  if (hasAudio && Number.isFinite(baseGain) && Math.abs(baseGain - 1) > 0.01) {
+    const g = Math.min(2, Math.max(0, baseGain));
+    audio = audio ?? [];
+    audio.push(`${audioOutLabel ?? "[0:a]"}volume=${g.toFixed(3)}[again]`);
+    audioOutLabel = "[again]";
+  }
+
   // ── 3. B-roll (source space, timed, over the retimed base) ──────────
   for (const cut of stack.broll ?? []) {
     if (!cut.localPath) {
@@ -493,7 +541,43 @@ export async function buildEditGraph(opts: {
         `x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':` +
         `s=${w}x${h}:fps=${fps},setsar=1`;
     }
-    videoPre.push(`[${idx}:v]${brollChain}${prepped}`);
+    // ── Source range, then placement on the output timeline ──────────
+    // Two separate jobs that both live on this one input.
+    //
+    // (1) trim picks WHICH part of the file plays. Stills have no source
+    //     timeline, so it is video-only.
+    // (2) setpts parks the result at the cut's position. Without it the
+    //     overlay's frames carry their own clock, so at output time `start`
+    //     ffmpeg reaches for the frame `start` seconds into the b-roll —
+    //     which is why the render never matched the preview.
+    //
+    // Both use PTS-STARTPTS to zero-base first, so the shift is absolute
+    // rather than relative to wherever the trim happened to land.
+    const srcIn = Number(cut.srcStart);
+    const srcOut = Number(cut.srcEnd);
+    const aimed =
+      !isImage &&
+      Number.isFinite(srcIn) && Number.isFinite(srcOut) &&
+      srcIn >= 0 && srcOut - srcIn >= 0.099;   // matches the API validator
+    const pick = aimed ? `trim=start=${srcIn.toFixed(3)}:end=${srcOut.toFixed(3)},` : "";
+    const park = `,setpts=PTS-STARTPTS+${Math.max(0, cut.start).toFixed(3)}/TB`;
+
+    /**
+     * (3) HOLD THE LAST FRAME. `overlay` runs with eof_action=pass, so the
+     * instant the b-roll stream ends the MAIN video passes through — even
+     * though the enable window says the cutaway is still on screen. Any block
+     * longer than its source therefore reverts to the creator's own footage
+     * partway through, silently, while the editor still draws one continuous
+     * cutaway. That was already reachable with a short asset in a long block;
+     * adding a source range made it a first-class state the UI advertises.
+     *
+     * tpad clones the final frame out to the block's full length. A freeze is
+     * a visible, intentional-looking choice; a cut back to the base mid-shot
+     * is a bug the creator only finds in the export.
+     */
+    const holdFor = Math.max(0, cut.end - cut.start);
+    const pad = !isImage ? `,tpad=stop_mode=clone:stop_duration=${holdFor.toFixed(3)}` : "";
+    videoPre.push(`[${idx}:v]${pick}${brollChain}${pad}${park}${prepped}`);
     const px = scale >= 0.999 ? 0 : Math.round(Math.min(1, Math.max(0, cut.x)) * (outWidth - w));
     const py = scale >= 0.999 ? 0 : Math.round(Math.min(1, Math.max(0, cut.y)) * (outHeight - h));
     const out = nextLabel();
@@ -638,6 +722,11 @@ export function editStackIsActive(stack: EditStack | null | undefined): boolean 
     (stack.speedRamps ?? []).length > 0 ||
     (stack.broll ?? []).length > 0 ||
     (stack.textOverlays ?? []).length > 0 ||
-    stack.music
+    stack.music ||
+    // A gain-only edit is still an edit. Left out, a clip whose sole change
+    // was "bring my voice down" failed this gate, took the no-edit render
+    // path, and came back at the original level with the slider still moved —
+    // the same shape of bug the silenceCut note above describes.
+    (Number.isFinite(Number(stack.baseAudioLevel)) && Math.abs(Number(stack.baseAudioLevel) - 1) > 0.01)
   );
 }

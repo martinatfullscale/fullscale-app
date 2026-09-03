@@ -15293,9 +15293,25 @@ export async function registerRoutes(
             const cuts: any[] = [];
             for (const c of e.broll.slice(0, 8)) {
               if (!(await assetOwned(c.assetId))) continue; // silently dropping someone else's asset id is the correct outcome
+              // srcStart/srcEnd aim the cut at a range INSIDE the source
+              // file. Only stored as a pair, and only when the pair is
+              // coherent — a half-specified range would silently render the
+              // head of the file while the inspector showed an in-point.
+              const srcIn = Number(c.srcStart);
+              const srcOut = Number(c.srcEnd);
+              // 0.099, not 0.1. The source-range handles clamp to exactly
+              // from + 0.1, and floating point makes that 0.09999999999999998
+              // — so the tightest range the UI can produce was rejected and
+              // the cut silently rendered from the head of the file instead.
+              const aimed =
+                Number.isFinite(srcIn) && Number.isFinite(srcOut) &&
+                srcIn >= 0 && srcOut - srcIn >= 0.099;
               cuts.push({
                 assetId: Number(c.assetId),
                 start: num(c.start, 0, 36000, 0), end: num(c.end, 0, 36000, 0),
+                ...(aimed
+                  ? { srcStart: num(c.srcStart, 0, 36000, 0), srcEnd: num(c.srcEnd, 0, 36000, 0) }
+                  : {}),
                 fit: c.fit === "contain" ? "contain" : "cover",
                 motion: ["push", "pull", "none"].includes(c.motion) ? c.motion : "push",
                 scale: num(c.scale, 0.1, 1, 1),
@@ -15304,6 +15320,21 @@ export async function registerRoutes(
               });
             }
             clean.broll = cuts.filter((c) => c.end - c.start >= 0.3);
+          }
+          // Gain on the clip's own audio. Stored only when it differs from
+          // unity, so an untouched clip's payload is byte-identical to what
+          // it was before this field existed and the dirty check stays honest.
+          if (e.baseAudioLevel !== undefined && e.baseAudioLevel !== null) {
+            const g = num(e.baseAudioLevel, 0, 2, 1);
+            if (Math.abs(g - 1) > 0.01) clean.baseAudioLevel = g;
+          }
+          // Razor cuts. Persisted so a split survives a reload; the renderer
+          // never reads them (see the note on EditStack.splits).
+          if (Array.isArray(e.splits)) {
+            const pts = Array.from(new Set(
+              e.splits.slice(0, 16).map((v: any) => num(v, 0, 36000, 0)).filter((v: number) => v > 0),
+            )).sort((a: any, b: any) => a - b);
+            if (pts.length) clean.splits = pts;
           }
           if (e.music && (await assetOwned(e.music.assetId))) {
             clean.music = {
