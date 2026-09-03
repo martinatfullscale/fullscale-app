@@ -1,10 +1,12 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { BrandPlacementRequestModal } from "@/components/BrandPlacementRequestModal";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Search, Filter, DollarSign, Tag, Play,
   ShoppingCart, TrendingUp, Eye, Clock,
-  Briefcase, Palette, Monitor, Sparkles, X, Globe, ExternalLink, Mic
+  Briefcase, Palette, Monitor, Sparkles, X, Globe, ExternalLink, Mic,
+  Loader2,
 } from "lucide-react";
 import { SiYoutube, SiTwitch, SiFacebook } from "react-icons/si";
 import { Button } from "@/components/ui/button";
@@ -45,7 +47,10 @@ interface MarketplaceOpportunity {
   creatorSlug?: string | null;
   creatorAvatar?: string;
   viewCount: number;
-  sceneValue: number;
+  /** @deprecated Not sent by /api/brand/discovery any more, and never
+   *  rendered — it was priorityScore * 1.2, not a price. Still present on the
+   *  pitch-mode demo fixtures below. */
+  sceneValue?: number;
   context: string;
   genre: string;
   sceneType: string;
@@ -132,7 +137,6 @@ const STATIC_DEMO_OPPORTUNITIES: MarketplaceOpportunity[] = [
 const PLATFORMS = ["All", "Podcasts", "YouTube", "Twitch", "Facebook"];
 
 const GENRES = ["All", "Tech", "Gaming", "Lifestyle", "DIY", "Education", "Entertainment", "Fashion", "Beauty", "Fitness", "Food", "Travel", "Vlog", "Productivity", "Finance", "Automotive", "Podcast", "Sports", "Music", "Art", "Science", "Health"];
-const BUDGETS = ["All", "Under $50", "$50-$100", "$100-$200", "Over $200"];
 const SCENE_TYPES = ["All", "Desk", "Wall", "Interior", "Product"];
 
 interface BrandCategory {
@@ -140,31 +144,30 @@ interface BrandCategory {
   name: string;
   description: string;
   imageUrl: string;
-  brandCount: number;
 }
 
 const BRAND_CATEGORIES: BrandCategory[] = [
-  { id: "podcasts", name: "Podcasts", description: "Podcast & Audio Content Placements", imageUrl: "https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?w=400&h=250&fit=crop", brandCount: 42 },
-  { id: "tech", name: "Technology", description: "Electronics & Software", imageUrl: "https://images.unsplash.com/photo-1518770660439-4636190af475?w=400&h=250&fit=crop", brandCount: 156 },
-  { id: "gaming", name: "Gaming Hardware", description: "Consoles, PCs & Peripherals", imageUrl: "https://images.unsplash.com/photo-1612287230202-1ff1d85d1bdf?w=400&h=250&fit=crop", brandCount: 89 },
-  { id: "lifestyle", name: "Lifestyle", description: "Home & Living Products", imageUrl: "https://images.unsplash.com/photo-1556909114-f6e7ad7d3136?w=400&h=250&fit=crop", brandCount: 234 },
-  { id: "automotive", name: "Automotive", description: "Cars, Parts & Accessories", imageUrl: "https://images.unsplash.com/photo-1492144534655-ae79c964c9d7?w=400&h=250&fit=crop", brandCount: 67 },
-  { id: "pet", name: "Pet Care", description: "Pet Food, Toys & Supplies", imageUrl: "https://images.unsplash.com/photo-1587300003388-59208cc962cb?w=400&h=250&fit=crop", brandCount: 112 },
-  { id: "travel", name: "Travel & Leisure", description: "Hotels, Airlines & Experiences", imageUrl: "https://images.unsplash.com/photo-1488085061387-422e29b40080?w=400&h=250&fit=crop", brandCount: 78 },
-  { id: "finance", name: "Financial Services", description: "Banking, Investing & Insurance", imageUrl: "https://images.unsplash.com/photo-1554224155-6726b3ff858f?w=400&h=250&fit=crop", brandCount: 45 },
-  { id: "beauty", name: "Beauty & Skincare", description: "Cosmetics & Personal Care", imageUrl: "https://images.unsplash.com/photo-1596462502278-27bfdc403348?w=400&h=250&fit=crop", brandCount: 198 },
-  { id: "fitness", name: "Fitness & Sports", description: "Equipment & Apparel", imageUrl: "https://images.unsplash.com/photo-1517836357463-d25dfeac3438?w=400&h=250&fit=crop", brandCount: 145 },
-  { id: "food", name: "Food & Beverage", description: "CPG Food Products", imageUrl: "https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=400&h=250&fit=crop", brandCount: 267 },
-  { id: "beverage", name: "CPG (Beverage)", description: "Drinks & Energy Products", imageUrl: "https://images.unsplash.com/photo-1544145945-f90425340c7e?w=400&h=250&fit=crop", brandCount: 134 },
-  { id: "snack", name: "CPG (Snack)", description: "Snacks & Confectionery", imageUrl: "https://images.unsplash.com/photo-1621939514649-280e2ee25f60?w=400&h=250&fit=crop", brandCount: 156 },
-  { id: "home-improvement", name: "Home Improvement", description: "Tools, Paint & Materials", imageUrl: "https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=400&h=250&fit=crop", brandCount: 89 },
-  { id: "luxury", name: "Luxury Fashion", description: "High-End Apparel & Accessories", imageUrl: "https://images.unsplash.com/photo-1445205170230-053b83016050?w=400&h=250&fit=crop", brandCount: 56 },
-  { id: "streaming", name: "Streaming Services", description: "Entertainment & Media Platforms", imageUrl: "https://images.unsplash.com/photo-1522869635100-9f4c5e86aa37?w=400&h=250&fit=crop", brandCount: 23 },
-  { id: "health", name: "Health & Wellness", description: "Supplements & Medical", imageUrl: "https://images.unsplash.com/photo-1505576399279-565b52d4ac71?w=400&h=250&fit=crop", brandCount: 178 },
-  { id: "fashion", name: "Fashion & Apparel", description: "Clothing & Streetwear", imageUrl: "https://images.unsplash.com/photo-1558171813-4c088753af8f?w=400&h=250&fit=crop", brandCount: 312 },
-  { id: "education", name: "Education & Courses", description: "Learning Platforms & Tools", imageUrl: "https://images.unsplash.com/photo-1503676260728-1c00da094a0b?w=400&h=250&fit=crop", brandCount: 67 },
-  { id: "software", name: "SaaS & Apps", description: "Software & Subscriptions", imageUrl: "https://images.unsplash.com/photo-1555066931-4365d14bab8c?w=400&h=250&fit=crop", brandCount: 189 },
-  { id: "crypto", name: "Crypto & Web3", description: "Blockchain & NFT Projects", imageUrl: "https://images.unsplash.com/photo-1639762681485-074b7f938ba0?w=400&h=250&fit=crop", brandCount: 34 },
+  { id: "podcasts", name: "Podcasts", description: "Podcast & Audio Content Placements", imageUrl: "https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?w=400&h=250&fit=crop" },
+  { id: "tech", name: "Technology", description: "Electronics & Software", imageUrl: "https://images.unsplash.com/photo-1518770660439-4636190af475?w=400&h=250&fit=crop" },
+  { id: "gaming", name: "Gaming Hardware", description: "Consoles, PCs & Peripherals", imageUrl: "https://images.unsplash.com/photo-1612287230202-1ff1d85d1bdf?w=400&h=250&fit=crop" },
+  { id: "lifestyle", name: "Lifestyle", description: "Home & Living Products", imageUrl: "https://images.unsplash.com/photo-1556909114-f6e7ad7d3136?w=400&h=250&fit=crop" },
+  { id: "automotive", name: "Automotive", description: "Cars, Parts & Accessories", imageUrl: "https://images.unsplash.com/photo-1492144534655-ae79c964c9d7?w=400&h=250&fit=crop" },
+  { id: "pet", name: "Pet Care", description: "Pet Food, Toys & Supplies", imageUrl: "https://images.unsplash.com/photo-1587300003388-59208cc962cb?w=400&h=250&fit=crop" },
+  { id: "travel", name: "Travel & Leisure", description: "Hotels, Airlines & Experiences", imageUrl: "https://images.unsplash.com/photo-1488085061387-422e29b40080?w=400&h=250&fit=crop" },
+  { id: "finance", name: "Financial Services", description: "Banking, Investing & Insurance", imageUrl: "https://images.unsplash.com/photo-1554224155-6726b3ff858f?w=400&h=250&fit=crop" },
+  { id: "beauty", name: "Beauty & Skincare", description: "Cosmetics & Personal Care", imageUrl: "https://images.unsplash.com/photo-1596462502278-27bfdc403348?w=400&h=250&fit=crop" },
+  { id: "fitness", name: "Fitness & Sports", description: "Equipment & Apparel", imageUrl: "https://images.unsplash.com/photo-1517836357463-d25dfeac3438?w=400&h=250&fit=crop" },
+  { id: "food", name: "Food & Beverage", description: "CPG Food Products", imageUrl: "https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=400&h=250&fit=crop" },
+  { id: "beverage", name: "CPG (Beverage)", description: "Drinks & Energy Products", imageUrl: "https://images.unsplash.com/photo-1544145945-f90425340c7e?w=400&h=250&fit=crop" },
+  { id: "snack", name: "CPG (Snack)", description: "Snacks & Confectionery", imageUrl: "https://images.unsplash.com/photo-1621939514649-280e2ee25f60?w=400&h=250&fit=crop" },
+  { id: "home-improvement", name: "Home Improvement", description: "Tools, Paint & Materials", imageUrl: "https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=400&h=250&fit=crop" },
+  { id: "luxury", name: "Luxury Fashion", description: "High-End Apparel & Accessories", imageUrl: "https://images.unsplash.com/photo-1445205170230-053b83016050?w=400&h=250&fit=crop" },
+  { id: "streaming", name: "Streaming Services", description: "Entertainment & Media Platforms", imageUrl: "https://images.unsplash.com/photo-1522869635100-9f4c5e86aa37?w=400&h=250&fit=crop" },
+  { id: "health", name: "Health & Wellness", description: "Supplements & Medical", imageUrl: "https://images.unsplash.com/photo-1505576399279-565b52d4ac71?w=400&h=250&fit=crop" },
+  { id: "fashion", name: "Fashion & Apparel", description: "Clothing & Streetwear", imageUrl: "https://images.unsplash.com/photo-1558171813-4c088753af8f?w=400&h=250&fit=crop" },
+  { id: "education", name: "Education & Courses", description: "Learning Platforms & Tools", imageUrl: "https://images.unsplash.com/photo-1503676260728-1c00da094a0b?w=400&h=250&fit=crop" },
+  { id: "software", name: "SaaS & Apps", description: "Software & Subscriptions", imageUrl: "https://images.unsplash.com/photo-1555066931-4365d14bab8c?w=400&h=250&fit=crop" },
+  { id: "crypto", name: "Crypto & Web3", description: "Blockchain & NFT Projects", imageUrl: "https://images.unsplash.com/photo-1639762681485-074b7f938ba0?w=400&h=250&fit=crop" },
 ];
 
 interface DiscoveryResponse {
@@ -190,13 +193,14 @@ export default function BrandMarketplace() {
   
   const [searchQuery, setSearchQuery] = useState("");
   const [genreFilter, setGenreFilter] = useState("All");
-  const [budgetFilter, setBudgetFilter] = useState("All");
   const [sceneTypeFilter, setSceneTypeFilter] = useState("All");
   const [platformFilter, setPlatformFilter] = useState("All");
   const [subcategoryFilter, setSubcategoryFilter] = useState("All");
-  const [buyingId, setBuyingId] = useState<number | null>(null);
   const [showCategories, setShowCategories] = useState(true);
-  const [activeTab, setActiveTab] = useState<"categories" | "opportunities">("categories");
+  // Opportunities first. The category browser used to be the landing tab, so
+  // the first thing a brand saw was a wall of industry tiles carrying invented
+  // brand counts — not a single real placement they could actually buy.
+  const [activeTab, setActiveTab] = useState<"categories" | "opportunities">("opportunities");
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [selectedOpportunity, setSelectedOpportunity] = useState<MarketplaceOpportunity | null>(null);
 
@@ -395,43 +399,53 @@ export default function BrandMarketplace() {
     ...(isPitchMode ? DUMMY_FEATURED_CREATORS.filter(d => !apiFeaturedCreators.some(a => a.slug === d.slug)) : []),
   ].slice(0, 8);
 
-  const buyMutation = useMutation({
-    mutationFn: async (opportunity: MarketplaceOpportunity) => {
-      const res = await apiRequest("POST", "/api/marketplace/buy", {
-        videoId: opportunity.videoId,
-        title: opportunity.title,
-        thumbnailUrl: opportunity.thumbnailUrl,
-        bidAmount: opportunity.sceneValue,
-        sceneType: opportunity.sceneType,
-        genre: opportunity.genre,
-        brandEmail: googleUser?.email || "demo@brand.com",
-        brandName: googleUser?.name || "Demo Brand",
-      });
-      return res.json();
-    },
-    onSuccess: () => {
-      toast({
-        title: "Bid Placed Successfully",
-        description: "The creator will be notified of your interest.",
-      });
-      queryClient.invalidateQueries({ queryKey: ["/api/marketplace"] });
-      setBuyingId(null);
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Failed to Place Bid",
-        description: error.message,
-        variant: "destructive",
-      });
-      setBuyingId(null);
-    },
-  });
+  /**
+   * There used to be a second way to buy, and it was the worse one.
+   *
+   * "Buy $X" POSTed to /api/marketplace/buy and created a *bid* row priced at
+   * `sceneValue`, which the discovery endpoint derives as
+   * `priorityScore * 1.2` — an internal ranking number, not a price. It went
+   * through no creator approval gate, and the success toast promised "the
+   * creator will be notified" when createBid is a bare insert that notifies
+   * nobody. Meanwhile the real flow — the one with the CPM price book, the
+   * creator's inbox, the approval gates and the render — lived behind a
+   * different button on a different page.
+   *
+   * Every purchase surface on this page now opens that one flow. The modal
+   * quotes the real fee before the brand commits.
+   */
+  const [requestTarget, setRequestTarget] = useState<{
+    videoId: number;
+    editorialClipId?: number;
+    title: string;
+    thumbnailUrl?: string | null;
+    clipSuggestedTitle?: string | null;
+    clipDuration?: number;
+  } | null>(null);
 
   // Unified opportunity data - comes from either auth or demo endpoint based on mode
   const allOpportunities: MarketplaceOpportunity[] = discoveryData?.opportunities || [];
   
   // Debug logging
   console.log("[BrandMarketplace] isPitchMode:", isPitchMode, "opportunities.length:", allOpportunities.length, "isLoading:", isLoadingOpportunities);
+
+  /**
+   * Whether one opportunity belongs to one category.
+   *
+   * Named, because the tile COUNT and the click-through FILTER have to be the
+   * same rule. They were not: the count matched on the category's display
+   * name while the filter matched on its id and also searched `context`, so a
+   * tile could read "None yet" and be disabled while the filter behind it had
+   * matches — the page promising less than it actually had.
+   */
+  const opportunityInCategory = (opp: MarketplaceOpportunity, categoryId: string): boolean => {
+    if (categoryId === "podcasts") return opp.platform === "fullscale" && opp.genre === "Podcast";
+    return (
+      (categoryToGenreMap[categoryId]?.includes(opp.genre) ?? false) ||
+      opp.genre?.toLowerCase() === categoryId.toLowerCase() ||
+      opp.context.toLowerCase().includes(categoryId.toLowerCase())
+    );
+  };
 
   const categoryToGenreMap: Record<string, string[]> = {
     "podcasts": ["Podcast"],
@@ -465,13 +479,7 @@ export default function BrandMarketplace() {
     
     // Category matching: Podcasts requires BOTH fullscale platform AND Podcast genre
     // Other categories match by genre mapping or direct name match
-    const matchesCategory = !selectedCategory ||
-      (selectedCategory === "podcasts" && opp.platform === "fullscale" && opp.genre === "Podcast") ||
-      (selectedCategory !== "podcasts" && (
-        (categoryToGenreMap[selectedCategory]?.includes(opp.genre)) ||
-        opp.genre?.toLowerCase() === selectedCategory.toLowerCase() ||
-        opp.context.toLowerCase().includes(selectedCategory.toLowerCase())
-      ));
+    const matchesCategory = !selectedCategory || opportunityInCategory(opp, selectedCategory);
     
     // Platform filter - Podcasts requires fullscale platform + Podcast genre
     let matchesPlatform = true;
@@ -485,19 +493,28 @@ export default function BrandMarketplace() {
       }
     }
     
-    let matchesBudget = true;
-    if (budgetFilter === "Under $50") matchesBudget = opp.sceneValue < 50;
-    else if (budgetFilter === "$50-$100") matchesBudget = opp.sceneValue >= 50 && opp.sceneValue <= 100;
-    else if (budgetFilter === "$100-$200") matchesBudget = opp.sceneValue > 100 && opp.sceneValue <= 200;
-    else if (budgetFilter === "Over $200") matchesBudget = opp.sceneValue > 200;
-    
     const matchesSubcategory = subcategoryFilter === "All" || opp.subcategory === subcategoryFilter;
 
-    return matchesSearch && matchesGenre && matchesBudget && matchesSceneType && matchesCategory && matchesPlatform && matchesSubcategory;
+    return matchesSearch && matchesGenre && matchesSceneType && matchesCategory && matchesPlatform && matchesSubcategory;
   });
 
   // Derive available subcategories from the data
   const availableSubcategories = ["All", ...Array.from(new Set(allOpportunities.map(o => o.subcategory).filter(Boolean) as string[])).sort()];
+
+  /**
+   * How many real opportunities each category would show.
+   *
+   * The tiles used to carry a `brandCount` — 42 podcasts, 156 technology,
+   * 234 lifestyle — that was a literal in the source and matched nothing.
+   * A category is worth showing only if clicking it lands on something, so
+   * the count is now the number of opportunities the same filter would
+   * match, and empty categories are dimmed instead of promising inventory.
+   */
+  const categoryOpportunityCounts: Record<string, number> = {};
+  for (const cat of BRAND_CATEGORIES) {
+    categoryOpportunityCounts[cat.id] = allOpportunities.filter((opp) => opportunityInCategory(opp, cat.id)).length;
+  }
+  const categoriesWithInventory = BRAND_CATEGORIES.filter((c) => categoryOpportunityCounts[c.id] > 0).length;
 
   const formatViewCount = (count: number) => {
     if (count >= 1000000) return `${(count / 1000000).toFixed(1)}M`;
@@ -505,9 +522,38 @@ export default function BrandMarketplace() {
     return count.toString();
   };
 
-  const handleBuy = (opportunity: MarketplaceOpportunity) => {
-    setBuyingId(opportunity.id);
-    buyMutation.mutate(opportunity);
+  const openPlacementRequest = (
+    opportunity: MarketplaceOpportunity,
+    clip?: { id?: number; suggestedTitle?: string | null; duration?: number },
+  ) => {
+    // Pitch mode serves STATIC_DEMO_OPPORTUNITIES, whose videoIds are plain
+    // small integers (101-136). They are not sentinels — they collide with
+    // real rows in video_index. While the button only wrote an inert bid this
+    // was harmless; now that it opens the real request flow, a demo click
+    // would fetch a stranger's surfaces and could send them a genuine
+    // placement request. Demo data does not get to do that.
+    if (isPitchMode) {
+      toast({
+        title: "Demo data",
+        description: "These are sample opportunities. Turn off Pitch Mode to request a real placement.",
+      });
+      return;
+    }
+    if (!isAuthenticated) {
+      toast({
+        title: "Sign in to request a placement",
+        description: "You need a brand account to place products in creator videos.",
+      });
+      return;
+    }
+    setRequestTarget({
+      videoId: opportunity.videoId,
+      editorialClipId: clip?.id,
+      title: opportunity.title,
+      thumbnailUrl: opportunity.thumbnailUrl,
+      clipSuggestedTitle: clip?.suggestedTitle ?? null,
+      clipDuration: clip?.duration,
+    });
   };
 
   return (
@@ -540,12 +586,13 @@ export default function BrandMarketplace() {
                 <span className="text-xs text-muted-foreground">Pitch Mode</span>
               </div>
               )}
-              <Badge variant="outline" className="gap-1">
+              {/* One count. There were two badges here showing filtered and
+                  unfiltered totals side by side, plus a third on the tab. */}
+              <Badge variant="outline" className="gap-1" data-testid="badge-showing-count">
                 <Sparkles className="w-3 h-3" />
-                {filteredOpportunities.length} Opportunities
-              </Badge>
-              <Badge className="bg-blue-500/20 text-blue-400" data-testid="badge-showing-count">
-                Showing {allOpportunities.length} items
+                {filteredOpportunities.length === allOpportunities.length
+                  ? `${allOpportunities.length} ${allOpportunities.length === 1 ? "opportunity" : "opportunities"}`
+                  : `${filteredOpportunities.length} of ${allOpportunities.length}`}
               </Badge>
             </div>
           </div>
@@ -576,7 +623,7 @@ export default function BrandMarketplace() {
               }`}
               data-testid="tab-categories"
             >
-              Brand Categories ({BRAND_CATEGORIES.length})
+              Categories ({categoriesWithInventory})
             </button>
             <button
               onClick={() => setActiveTab("opportunities")}
@@ -629,18 +676,6 @@ export default function BrandMarketplace() {
               </SelectContent>
             </Select>
             
-            <Select value={budgetFilter} onValueChange={setBudgetFilter}>
-              <SelectTrigger className="w-[140px]" data-testid="select-budget">
-                <DollarSign className="w-4 h-4 mr-2" />
-                <SelectValue placeholder="Budget" />
-              </SelectTrigger>
-              <SelectContent>
-                {BUDGETS.map((budget) => (
-                  <SelectItem key={budget} value={budget}>{budget}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            
             <Select value={sceneTypeFilter} onValueChange={setSceneTypeFilter}>
               <SelectTrigger className="w-[140px]" data-testid="select-scene-type">
                 <Monitor className="w-4 h-4 mr-2" />
@@ -683,7 +718,235 @@ export default function BrandMarketplace() {
       </div>
 
       <div className="max-w-7xl mx-auto px-4 py-6">
-        {/* Featured Creators Section — always visible on both tabs */}
+
+        {activeTab === "categories" && (
+          <div className="mb-8">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-lg font-bold text-white">Browse by category</h2>
+                {/* The old copy said "find brands looking for placements",
+                    which is backwards — the viewer IS the brand. These tiles
+                    filter creator videos by genre. */}
+                <p className="text-sm text-muted-foreground">Filter creator videos by the kind of content they are</p>
+              </div>
+              <Badge className="bg-primary/20 text-primary">
+                {allOpportunities.length.toLocaleString()} {allOpportunities.length === 1 ? "opportunity" : "opportunities"}
+              </Badge>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+              {BRAND_CATEGORIES.map((category, idx) => (
+                <motion.div
+                  key={category.id}
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: idx * 0.03 }}
+                >
+                  <Card
+                    className={`group overflow-hidden hover-elevate ${
+                      categoryOpportunityCounts[category.id] > 0 ? "cursor-pointer" : "opacity-45 cursor-default"
+                    }`}
+                    onClick={() => {
+                      if (categoryOpportunityCounts[category.id] === 0) return;
+                      // Clear the filter bar. It lives on the Opportunities
+                      // tab and survives the tab switch, so a filter set
+                      // earlier (most often Platform=Podcasts, which the
+                      // podcasts tile itself sets) would still be applied and
+                      // the grid would show fewer rows than the tile promised.
+                      setSearchQuery("");
+                      setGenreFilter("All");
+                      setSceneTypeFilter("All");
+                      setSubcategoryFilter("All");
+                      setPlatformFilter(category.id === "podcasts" ? "Podcasts" : "All");
+                      setSelectedCategory(category.id);
+                      setActiveTab("opportunities");
+                    }}
+                    data-testid={`card-category-${category.id}`}
+                  >
+                    <div className="aspect-[16/10] relative overflow-hidden">
+                      <img
+                        src={category.imageUrl}
+                        alt={category.name}
+                        className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-110"
+                      />
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent" />
+                      <div className="absolute bottom-0 left-0 right-0 p-3">
+                        <h3 className="font-semibold text-white text-sm mb-0.5">{category.name}</h3>
+                        <p className="text-xs text-white/70 line-clamp-1">{category.description}</p>
+                        <div className="flex items-center gap-1 mt-1.5">
+                          <Badge variant="secondary" className="text-[10px] py-0 px-1.5">
+                            {categoryOpportunityCounts[category.id] > 0
+                              ? `${categoryOpportunityCounts[category.id]} ${categoryOpportunityCounts[category.id] === 1 ? "video" : "videos"}`
+                              : "None yet"}
+                          </Badge>
+                        </div>
+                      </div>
+                    </div>
+                  </Card>
+                </motion.div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {activeTab === "opportunities" && (
+        <>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+          <AnimatePresence mode="popLayout">
+            {filteredOpportunities.map((opportunity, idx) => (
+              <motion.div
+                key={opportunity.id}
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                transition={{ delay: idx * 0.05 }}
+              >
+                <Card className="group overflow-visible hover-elevate cursor-pointer" data-testid={`card-opportunity-${opportunity.id}`}>
+                  <div
+                    className="relative overflow-hidden rounded-t-md cursor-pointer bg-black flex items-center justify-center"
+                    style={{ minHeight: '160px' }}
+                    onClick={() => setSelectedOpportunity(opportunity)}
+                    data-testid={`thumbnail-opportunity-${opportunity.id}`}
+                  >
+                    {/* For fullscale/local videos: show video element to display actual content */}
+                    {opportunity.videoUrl ? (
+                      <video
+                        src={opportunity.videoUrl}
+                        className="w-full h-auto max-h-[240px] object-contain"
+                        muted
+                        playsInline
+                        preload="metadata"
+                        poster={(opportunity as any).thumbnailUrl || undefined}
+                        onLoadedMetadata={(e) => {
+                          // Seek to 1 second to show a meaningful frame
+                          const vid = e.currentTarget;
+                          vid.currentTime = 1;
+                        }}
+                      />
+                    ) : (
+                      <img
+                        src={(opportunity as any).thumbnailUrl || (opportunity as any).thumbnail_url || `https://picsum.photos/seed/${opportunity.id}/640/360`}
+                        alt={opportunity.title}
+                        className="w-full h-auto max-h-[240px] object-contain"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).src = `https://picsum.photos/seed/${opportunity.id}/640/360`;
+                        }}
+                      />
+                    )}
+                    {/* Overlay play icon on hover */}
+                    <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200 bg-black/30">
+                      <div className="w-12 h-12 rounded-full bg-white/90 flex items-center justify-center">
+                        <Play className="w-6 h-6 text-black fill-black ml-1" />
+                      </div>
+                    </div>
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent" />
+                    
+                    <div className="absolute top-2 right-2 flex items-center gap-1">
+                      {/* Platform icons with exact brand colors */}
+                      {(opportunity.platforms || [opportunity.platform]).filter(Boolean).map((p) => (
+                        <div
+                          key={p}
+                          className={`w-5 h-5 rounded-full flex items-center justify-center ${
+                            p === 'twitch' ? 'bg-[#9146FF]' :
+                            p === 'facebook' ? 'bg-[#1877F2]' :
+                            p === 'fullscale' ? 'bg-[#8B5CF6]' :
+                            'bg-[#FF0000]'
+                          }`}
+                        >
+                          {p === 'twitch' ? <SiTwitch className="w-2.5 h-2.5 text-white" /> :
+                           p === 'facebook' ? <SiFacebook className="w-2.5 h-2.5 text-white" /> :
+                           p === 'fullscale' ? <Mic className="w-2.5 h-2.5 text-white" /> :
+                           <SiYoutube className="w-2.5 h-2.5 text-white" />}
+                        </div>
+                      ))}
+                      <Badge variant="secondary" className="gap-1">
+                        <Eye className="w-3 h-3" />
+                        {formatViewCount((opportunity as any).viewCount || (opportunity as any).view_count || 0)}
+                      </Badge>
+                    </div>
+                    
+                    <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between gap-2">
+                      <Badge variant="outline" className="bg-black/50 backdrop-blur-sm border-white/20 text-white">
+                        {opportunity.context}
+                      </Badge>
+                      <span className="text-xs text-white/80 bg-black/50 px-1.5 py-0.5 rounded">
+                        {opportunity.duration}
+                      </span>
+                    </div>
+                  </div>
+                  
+                  <CardContent className="p-3">
+                    <h3 className="font-medium text-sm line-clamp-2 mb-2" data-testid={`text-title-${opportunity.id}`}>
+                      {opportunity.title}
+                    </h3>
+                    
+                    <div className="flex items-center justify-between gap-2 mb-3">
+                      <span className="text-xs text-muted-foreground">by {(opportunity as any).creatorName || (opportunity as any).creator_name || "Creator"}</span>
+                      <Badge variant="outline" className="text-xs">
+                        {opportunity.genre}
+                      </Badge>
+                    </div>
+                    
+                    <div className="flex flex-wrap gap-1 mb-3">
+                      {opportunity.surfaces.slice(0, 3).map((surface) => (
+                        <Badge key={surface} variant="secondary" className="text-xs">
+                          {surface}
+                        </Badge>
+                      ))}
+                    </div>
+                    
+                    <Button
+                      className="w-full gap-2"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openPlacementRequest(opportunity);
+                      }}
+                      data-testid={`button-buy-${opportunity.id}`}
+                    >
+                      <ShoppingCart className="w-4 h-4" />
+                      {/* No price on the button. The fee depends on which
+                          product goes on which surface, and the modal quotes
+                          the real one before anything is committed. */}
+                      Request placement
+                    </Button>
+                  </CardContent>
+                </Card>
+              </motion.div>
+            ))}
+          </AnimatePresence>
+        </div>
+        
+        {/* Three distinct states. "Try adjusting your filters" was shown for
+            all of them — including mid-fetch, and including the case where
+            no creator has approved a surface yet, which no filter can fix. */}
+        {isLoadingOpportunities ? (
+          <div className="flex flex-col items-center justify-center py-20 text-center">
+            <Loader2 className="w-8 h-8 text-muted-foreground mb-4 animate-spin" />
+            <p className="text-sm text-muted-foreground">Finding creator videos open to placements…</p>
+          </div>
+        ) : allOpportunities.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-20 text-center max-w-md mx-auto">
+            <Sparkles className="w-12 h-12 text-muted-foreground mb-4" />
+            <h3 className="text-lg font-medium mb-2">No inventory yet</h3>
+            <p className="text-sm text-muted-foreground">
+              A video appears here once its creator has scanned it and approved at least one
+              surface for placements. Nothing is being hidden by your filters.
+            </p>
+          </div>
+        ) : filteredOpportunities.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-20 text-center">
+            <Filter className="w-12 h-12 text-muted-foreground mb-4" />
+            <h3 className="text-lg font-medium mb-2">Nothing matches those filters</h3>
+            <p className="text-sm text-muted-foreground">
+              {allOpportunities.length} {allOpportunities.length === 1 ? "video is" : "videos are"} available with the filters cleared.
+            </p>
+          </div>
+        ) : null}
+        </> 
+        )}
+        {/* Featured Creators — BELOW the opportunities. This strip used to
+            sit above them on both tabs, so "opportunities first" was not
+            true for anyone who scrolled. */}
         {featuredCreators.length > 0 && (
           <div className="mb-8">
             <div className="flex items-center justify-between mb-4">
@@ -773,209 +1036,6 @@ export default function BrandMarketplace() {
             </div>
             <div className="border-b border-white/10 mt-6 mb-2" />
           </div>
-        )}
-
-        {activeTab === "categories" && (
-          <div className="mb-8">
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <h2 className="text-lg font-bold text-white">Browse by Industry</h2>
-                <p className="text-sm text-muted-foreground">Select a category to find brands looking for placements</p>
-              </div>
-              <Badge className="bg-primary/20 text-primary">
-                {BRAND_CATEGORIES.reduce((sum, c) => sum + c.brandCount, 0).toLocaleString()} Total Brands
-              </Badge>
-            </div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-              {BRAND_CATEGORIES.map((category, idx) => (
-                <motion.div
-                  key={category.id}
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: idx * 0.03 }}
-                >
-                  <Card
-                    className="group overflow-hidden cursor-pointer hover-elevate"
-                    onClick={() => {
-                      setSelectedCategory(category.id);
-                      if (category.id === "podcasts") {
-                        setPlatformFilter("Podcasts");
-                      }
-                      setActiveTab("opportunities");
-                    }}
-                    data-testid={`card-category-${category.id}`}
-                  >
-                    <div className="aspect-[16/10] relative overflow-hidden">
-                      <img
-                        src={category.imageUrl}
-                        alt={category.name}
-                        className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-110"
-                      />
-                      <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent" />
-                      <div className="absolute bottom-0 left-0 right-0 p-3">
-                        <h3 className="font-semibold text-white text-sm mb-0.5">{category.name}</h3>
-                        <p className="text-xs text-white/70 line-clamp-1">{category.description}</p>
-                        <div className="flex items-center gap-1 mt-1.5">
-                          <Badge variant="secondary" className="text-[10px] py-0 px-1.5">
-                            {category.brandCount} brands
-                          </Badge>
-                        </div>
-                      </div>
-                    </div>
-                  </Card>
-                </motion.div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {activeTab === "opportunities" && (
-        <>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          <AnimatePresence mode="popLayout">
-            {filteredOpportunities.map((opportunity, idx) => (
-              <motion.div
-                key={opportunity.id}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.95 }}
-                transition={{ delay: idx * 0.05 }}
-              >
-                <Card className="group overflow-visible hover-elevate cursor-pointer" data-testid={`card-opportunity-${opportunity.id}`}>
-                  <div
-                    className="relative overflow-hidden rounded-t-md cursor-pointer bg-black flex items-center justify-center"
-                    style={{ minHeight: '160px' }}
-                    onClick={() => setSelectedOpportunity(opportunity)}
-                    data-testid={`thumbnail-opportunity-${opportunity.id}`}
-                  >
-                    {/* For fullscale/local videos: show video element to display actual content */}
-                    {opportunity.videoUrl ? (
-                      <video
-                        src={opportunity.videoUrl}
-                        className="w-full h-auto max-h-[240px] object-contain"
-                        muted
-                        playsInline
-                        preload="metadata"
-                        poster={(opportunity as any).thumbnailUrl || undefined}
-                        onLoadedMetadata={(e) => {
-                          // Seek to 1 second to show a meaningful frame
-                          const vid = e.currentTarget;
-                          vid.currentTime = 1;
-                        }}
-                      />
-                    ) : (
-                      <img
-                        src={(opportunity as any).thumbnailUrl || (opportunity as any).thumbnail_url || `https://picsum.photos/seed/${opportunity.id}/640/360`}
-                        alt={opportunity.title}
-                        className="w-full h-auto max-h-[240px] object-contain"
-                        onError={(e) => {
-                          (e.target as HTMLImageElement).src = `https://picsum.photos/seed/${opportunity.id}/640/360`;
-                        }}
-                      />
-                    )}
-                    {/* Overlay play icon on hover */}
-                    <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200 bg-black/30">
-                      <div className="w-12 h-12 rounded-full bg-white/90 flex items-center justify-center">
-                        <Play className="w-6 h-6 text-black fill-black ml-1" />
-                      </div>
-                    </div>
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent" />
-                    
-                    <div className="absolute top-2 left-2 flex items-center gap-1.5">
-                      <Badge className="bg-emerald-500/90 text-white border-0 gap-1">
-                        <DollarSign className="w-3 h-3" />
-                        {opportunity.sceneValue}
-                      </Badge>
-                    </div>
-                    
-                    <div className="absolute top-2 right-2 flex items-center gap-1">
-                      {/* Platform icons with exact brand colors */}
-                      {(opportunity.platforms || [opportunity.platform]).filter(Boolean).map((p) => (
-                        <div
-                          key={p}
-                          className={`w-5 h-5 rounded-full flex items-center justify-center ${
-                            p === 'twitch' ? 'bg-[#9146FF]' :
-                            p === 'facebook' ? 'bg-[#1877F2]' :
-                            p === 'fullscale' ? 'bg-[#8B5CF6]' :
-                            'bg-[#FF0000]'
-                          }`}
-                        >
-                          {p === 'twitch' ? <SiTwitch className="w-2.5 h-2.5 text-white" /> :
-                           p === 'facebook' ? <SiFacebook className="w-2.5 h-2.5 text-white" /> :
-                           p === 'fullscale' ? <Mic className="w-2.5 h-2.5 text-white" /> :
-                           <SiYoutube className="w-2.5 h-2.5 text-white" />}
-                        </div>
-                      ))}
-                      <Badge variant="secondary" className="gap-1">
-                        <Eye className="w-3 h-3" />
-                        {formatViewCount((opportunity as any).viewCount || (opportunity as any).view_count || 0)}
-                      </Badge>
-                    </div>
-                    
-                    <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between gap-2">
-                      <Badge variant="outline" className="bg-black/50 backdrop-blur-sm border-white/20 text-white">
-                        {opportunity.context}
-                      </Badge>
-                      <span className="text-xs text-white/80 bg-black/50 px-1.5 py-0.5 rounded">
-                        {opportunity.duration}
-                      </span>
-                    </div>
-                  </div>
-                  
-                  <CardContent className="p-3">
-                    <h3 className="font-medium text-sm line-clamp-2 mb-2" data-testid={`text-title-${opportunity.id}`}>
-                      {opportunity.title}
-                    </h3>
-                    
-                    <div className="flex items-center justify-between gap-2 mb-3">
-                      <span className="text-xs text-muted-foreground">by {(opportunity as any).creatorName || (opportunity as any).creator_name || "Creator"}</span>
-                      <Badge variant="outline" className="text-xs">
-                        {opportunity.genre}
-                      </Badge>
-                    </div>
-                    
-                    <div className="flex flex-wrap gap-1 mb-3">
-                      {opportunity.surfaces.slice(0, 3).map((surface) => (
-                        <Badge key={surface} variant="secondary" className="text-xs">
-                          {surface}
-                        </Badge>
-                      ))}
-                    </div>
-                    
-                    <Button
-                      className="w-full gap-2"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleBuy(opportunity);
-                      }}
-                      disabled={buyingId === opportunity.id}
-                      data-testid={`button-buy-${opportunity.id}`}
-                    >
-                      {buyingId === opportunity.id ? (
-                        <>Processing...</>
-                      ) : (
-                        <>
-                          <ShoppingCart className="w-4 h-4" />
-                          Buy ${opportunity.sceneValue}
-                        </>
-                      )}
-                    </Button>
-                  </CardContent>
-                </Card>
-              </motion.div>
-            ))}
-          </AnimatePresence>
-        </div>
-        
-        {filteredOpportunities.length === 0 && (
-          <div className="flex flex-col items-center justify-center py-20 text-center">
-            <Filter className="w-12 h-12 text-muted-foreground mb-4" />
-            <h3 className="text-lg font-medium mb-2">No opportunities found</h3>
-            <p className="text-sm text-muted-foreground">Try adjusting your filters or search query</p>
-          </div>
-        )}
-        </> 
         )}
       </div>
 
@@ -1121,23 +1181,22 @@ export default function BrandMarketplace() {
                     Viral Clips
                   </h3>
                   <p className="text-xs text-muted-foreground mb-3">
-                    AI-ranked clips with viral potential — buy placements in premium moments.
+                    AI-ranked clips with viral potential — request placements in premium moments.
                   </p>
                   <EditorialClips
                     videoId={selectedOpportunity.videoId}
                     mode="brand"
                     onBuyPlacement={(clip) => {
-                      toast({
-                        title: "Placement Request",
-                        description: `Requesting placement in "${clip.suggestedTitle}" (${clip.monetizationTier} tier)`,
+                      // Clip-scoped, so the modal offers only the surfaces
+                      // this cut actually shows. The old path multiplied the
+                      // already-fictional sceneValue by 1.5 for a "premium"
+                      // clip — a third price derivation on top of a second one.
+                      openPlacementRequest(selectedOpportunity, {
+                        id: (clip as any).id,
+                        suggestedTitle: clip.suggestedTitle,
+                        duration: clip.duration,
                       });
-                      // Use the existing buy mutation with clip context
-                      buyMutation.mutate({
-                        ...selectedOpportunity,
-                        sceneValue: clip.monetizationTier === "premium"
-                          ? selectedOpportunity.sceneValue * 1.5
-                          : selectedOpportunity.sceneValue,
-                      });
+                      setSelectedOpportunity(null);
                     }}
                   />
                 </div>
@@ -1145,8 +1204,14 @@ export default function BrandMarketplace() {
                 {/* Price and Actions */}
                 <div className="flex items-center justify-between p-4 bg-primary/5 rounded-lg border border-primary/20">
                   <div>
-                    <p className="text-sm text-muted-foreground">Placement Value</p>
-                    <p className="text-3xl font-bold text-emerald-500">${selectedOpportunity.sceneValue}</p>
+                    {/* This used to headline "$X Placement Value" from
+                        priorityScore * 1.2. The real fee comes from the CPM
+                        rubric and depends on the product, the surface and the
+                        term — none of which are known until the request. */}
+                    <p className="text-sm text-muted-foreground">Priced when you choose a product</p>
+                    <p className="text-xs text-muted-foreground/80 max-w-xs mt-0.5">
+                      The fee is based on this video's reach, the surface you pick and how long you want the placement to run.
+                    </p>
                   </div>
                   <div className="flex items-center gap-2">
                     {selectedOpportunity.videoUrl && (
@@ -1160,21 +1225,26 @@ export default function BrandMarketplace() {
                         data-testid="button-place-product"
                       >
                         <Palette className="w-5 h-5" />
-                        Place Product
+                        {/* Deliberately not "Preview": a brand CAN save a
+                            placement from the Placement Engine (only Export
+                            Video is brand-gated, and POST /api/placements
+                            allows brand writes on marketplace videos). So the
+                            label names the tool rather than claiming the
+                            visit is read-only — which would have been false. */}
+                        Open Placement Engine
                       </Button>
                     )}
                     <Button
                       size="lg"
                       className="gap-2"
                       onClick={() => {
-                        handleBuy(selectedOpportunity);
+                        openPlacementRequest(selectedOpportunity);
                         setSelectedOpportunity(null);
                       }}
-                      disabled={buyingId === selectedOpportunity.id}
                       data-testid="button-buy-modal"
                     >
                       <ShoppingCart className="w-5 h-5" />
-                      {buyingId === selectedOpportunity.id ? "Processing..." : "Purchase Placement"}
+                      Request placement
                     </Button>
                   </div>
                 </div>
@@ -1183,6 +1253,21 @@ export default function BrandMarketplace() {
           )}
         </DialogContent>
       </Dialog>
+
+      {/* The one purchase flow: pick a product, see the real quote, send it
+          to the creator for approval. */}
+      {requestTarget && (
+        <BrandPlacementRequestModal
+          open={true}
+          videoId={requestTarget.videoId}
+          editorialClipId={requestTarget.editorialClipId}
+          videoTitle={requestTarget.title}
+          videoThumbnailUrl={requestTarget.thumbnailUrl ?? null}
+          clipSuggestedTitle={requestTarget.clipSuggestedTitle}
+          clipDuration={requestTarget.clipDuration}
+          onClose={() => setRequestTarget(null)}
+        />
+      )}
     </div>
   );
 }

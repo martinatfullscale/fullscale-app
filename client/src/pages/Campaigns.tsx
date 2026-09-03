@@ -66,6 +66,22 @@ export default function Campaigns() {
 
   return (
     <div className="min-h-screen bg-background text-foreground font-sans selection:bg-primary/20">
+      {/* The supported placement flow writes brand_placement_assignments,
+          which this page does not read — it unions the legacy bid table with
+          saved placements. Rather than leave a brand wondering why a request
+          they just made is missing, say where it actually lives. */}
+      <div className="mb-6 rounded-xl border border-sky-500/25 bg-sky-500/5 px-4 py-3 flex items-start justify-between gap-3">
+        <div className="text-sm">
+          <div className="font-medium text-sky-200">Looking for a placement you requested?</div>
+          <p className="text-sky-200/75">
+            Requests you send from Discovery or Browse Clips are tracked under Requests, with their status and results.
+          </p>
+        </div>
+        <a href="/brand/placements" className="text-xs text-sky-300 hover:text-sky-200 underline underline-offset-2 whitespace-nowrap mt-0.5">
+          Go to Requests
+        </a>
+      </div>
+
       <TopBar />
 
       <main className="p-8">

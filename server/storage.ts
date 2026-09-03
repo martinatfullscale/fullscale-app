@@ -272,6 +272,7 @@ export interface IStorage {
   getVideoStatSeries(videoId: number, sinceDays?: number): Promise<VideoStatSnapshot[]>;
   getVideoIdsUnderMeasurement(): Promise<number[]>;
   createPlacementExposure(row: InsertPlacementExposure): Promise<PlacementExposure>;
+  getActiveSurfaceLocksForVideo(videoId: number): Promise<Array<{ surfaceId: number; status: string; brandUserId: string }>>;
   getPlacementExposuresForUser(userId: string): Promise<PlacementExposure[]>;
   getPlacementExposuresForPlacements(placementIds: number[]): Promise<PlacementExposure[]>;
   getPlacementExposureForAssignment(assignmentId: number): Promise<PlacementExposure | undefined>;
@@ -2193,6 +2194,29 @@ export class DatabaseStorage implements IStorage {
    * brands from requesting the same surface.
    */
   private readonly ACTIVE_PLACEMENT_STATUSES = ["pending_creator_review", "creator_approved", "pending_brand_review", "brand_approved"] as const;
+
+  /**
+   * Which surfaces on this video currently hold a lock, for the brand-side
+   * picker. Uses ACTIVE_PLACEMENT_STATUSES — the SAME list createBrandPlacement
+   * blocks on — so the picker and the server can never disagree about what is
+   * available. getApprovedPlacementsForVideo is deliberately not reused: it
+   * omits pending_creator_review (which is the status every new request starts
+   * in) and it feeds the render pipeline, whose "approved onward" contract
+   * must not change.
+   */
+  async getActiveSurfaceLocksForVideo(videoId: number): Promise<Array<{ surfaceId: number; status: string; brandUserId: string }>> {
+    return await db
+      .select({
+        surfaceId: brandPlacementAssignments.surfaceId,
+        status: brandPlacementAssignments.status,
+        brandUserId: brandPlacementAssignments.brandUserId,
+      })
+      .from(brandPlacementAssignments)
+      .where(and(
+        eq(brandPlacementAssignments.videoId, videoId),
+        inArray(brandPlacementAssignments.status, [...this.ACTIVE_PLACEMENT_STATUSES]),
+      ));
+  }
 
   /**
    * Returns the active assignment for a surface, if any.

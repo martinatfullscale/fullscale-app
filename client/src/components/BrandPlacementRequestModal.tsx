@@ -234,15 +234,28 @@ export function BrandPlacementRequestModal({
   // Always video-scoped because surface IDs are global; even in clip-targeted mode
   // we want to know if a surface is taken on the parent video.
   const videoIdForApproval = videoId; // clip endpoint also returns video info, but we just need it for the query
-  const { data: approvedData } = useQuery<{ placements: { surfaceId: number; status: string; brandUserId: string }[] }>({
-    queryKey: [`/api/videos/${videoIdForApproval}/placements/approved`],
+  // The LOCK list, not the approved list. The approved list omits
+  // pending_creator_review — the status every request starts in — so a
+  // surface someone had just requested still looked free here and the submit
+  // came back 409 after the form was filled in.
+  const { data: lockData } = useQuery<{ locks: { surfaceId: number; mine: boolean; pending: boolean }[] }>({
+    queryKey: [`/api/videos/${videoIdForApproval}/placements/locks`],
     enabled: open && videoIdForApproval !== undefined,
   });
   const claimedSurfaceIds = useMemo(() => {
     const set = new Set<number>();
-    (approvedData?.placements ?? []).forEach((p) => set.add(p.surfaceId));
+    (lockData?.locks ?? []).forEach((l) => set.add(l.surfaceId));
     return set;
-  }, [approvedData]);
+  }, [lockData]);
+  const lockReason = useMemo(() => {
+    const m = new Map<number, string>();
+    (lockData?.locks ?? []).forEach((l) => {
+      m.set(l.surfaceId, l.mine
+        ? (l.pending ? "You've already requested this" : "Yours")
+        : (l.pending ? "Another brand has a request pending" : "Taken"));
+    });
+    return m;
+  }, [lockData]);
 
   // Live price quote — refetches when surfaces or duration change
   const { data: quoteData } = useQuery<{
@@ -308,16 +321,34 @@ export function BrandPlacementRequestModal({
       // Prefer clip-targeted mode when available
       if (editorialClipId) body.editorialClipId = editorialClipId;
       else body.videoId = videoId;
-      const res = await apiRequest("POST", "/api/brand/placements", body);
-      return res.json();
+      // NOT apiRequest: it throws `new Error(\`${status}: ${text}\`)`, which
+      // discards the parsed body — so the 409 conflict handler below could
+      // never see `conflicts` and the brand got a raw JSON string in a toast.
+      const res = await fetchWithTimeout("/api/brand/placements", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(body),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const err: any = new Error(json?.error || `Request failed (${res.status})`);
+        err.status = res.status;
+        err.data = json;
+        throw err;
+      }
+      return json;
     },
     onSuccess: (data: any) => {
       toast({
         title: "Placement request sent",
-        description: `${data.count} surface${data.count !== 1 ? "s" : ""} sent to creator for approval.`,
+        // Name the destination. The brand was left on the marketplace with no
+        // idea which page now holds the thing they just created.
+        description: `${data.count} surface${data.count !== 1 ? "s" : ""} sent to the creator for approval. Track it under Requests.`,
       });
       queryClient.invalidateQueries({ queryKey: ["/api/brand/placements"] });
       queryClient.invalidateQueries({ queryKey: [`/api/videos/${videoId}/placements/approved`] });
+      queryClient.invalidateQueries({ queryKey: [`/api/videos/${videoId}/placements/locks`] });
       // Reset form + close
       setSelectedProductId("");
       setSelectedSurfaceIds(new Set());
@@ -328,7 +359,7 @@ export function BrandPlacementRequestModal({
     onError: async (err: any) => {
       // Try to parse server response for 409 conflict details
       try {
-        const responseData = err?.response?.data ?? err?.data ?? {};
+        const responseData = err?.data ?? err?.response?.data ?? {};
         if (responseData.conflicts) {
           const conflictIds = new Set<number>(
             responseData.conflicts.map((c: any) => c.surfaceId),
@@ -404,7 +435,9 @@ export function BrandPlacementRequestModal({
           </span>
           {isClaimed && (
             <Badge variant="outline" className="text-xs border-amber-500/40 text-amber-400">
-              already taken
+              {/* Why, not just that. "already taken" gave a brand no way to
+                  know whether to wait or move on. */}
+              {lockReason.get(s.id) ?? "already taken"}
             </Badge>
           )}
           {isConflict && (
@@ -474,7 +507,14 @@ export function BrandPlacementRequestModal({
               </div>
             ) : products.length === 0 ? (
               <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-200">
-                You haven't uploaded any products yet. Add one in <strong>Brand Products</strong> first.
+                {/* Was plain text naming a page ("Brand Products") that the nav
+                    calls something else ("Product Catalog"), with no way to
+                    get there — a dead end at the moment of purchase. */}
+                You haven't added a product yet, so there's nothing to place.{" "}
+                <a href="/brand-products" className="underline underline-offset-2 font-medium hover:text-amber-100">
+                  Add one in your Product Catalog
+                </a>
+                .
               </div>
             ) : (
               <>
@@ -587,7 +627,7 @@ export function BrandPlacementRequestModal({
                         </Badge>
                         {isClaimed && (
                           <Badge variant="outline" className="text-xs border-amber-500/40 text-amber-400">
-                            already taken
+                            {lockReason.get(g.memberRowIds.find((id) => claimedSurfaceIds.has(id))!) ?? "already taken"}
                           </Badge>
                         )}
                         {isConflict && (
@@ -742,7 +782,10 @@ export function BrandPlacementRequestModal({
               )}
               {!quoteData.isTestPlacement && (
                 <p className="text-xs text-muted-foreground pt-2 border-t border-border/50">
-                  Charged when creator approves. Refunded if rejected.
+                  {/* charge_status is written once as "pending" and never
+                      advances; nothing in the system records a charge. Saying
+                      money moves on approval would be inventing an event. */}
+                  Priced now, agreed with the creator on approval. No payment is taken yet.
                 </p>
               )}
             </div>

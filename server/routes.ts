@@ -7941,8 +7941,26 @@ export async function registerRoutes(
     brandName: z.string().optional(),
   });
 
+  /**
+   * DEPRECATED — the second price book.
+   *
+   * This created a `bid` at a price the CLIENT supplied, which the
+   * marketplace derived as `priorityScore * 1.2` (see /api/brand/discovery):
+   * an internal ranking number wearing a dollar sign. It had no creator
+   * approval gate, no brand review gate, and createBid notifies nobody
+   * despite the UI having claimed otherwise.
+   *
+   * The real flow is POST /api/brand/placements: the CPM rubric in
+   * server/lib/placementPricing.ts prices it, the creator gets it in their
+   * inbox and must approve, and the result is trackable end to end. Every
+   * client surface now goes there.
+   *
+   * Left mounted, and still functional, only so existing bid rows and the
+   * creator's Opportunities page keep working. No client calls it.
+   */
   app.post("/api/marketplace/buy", isGoogleAuthenticated, async (req: any, res) => {
     try {
+      console.warn("[Marketplace] DEPRECATED /api/marketplace/buy called — the supported path is POST /api/brand/placements");
       const parsed = marketplaceBuySchema.safeParse(req.body);
       if (!parsed.success) {
         return res.status(400).json({ error: "Invalid request", details: parsed.error.issues });
@@ -8173,6 +8191,26 @@ export async function registerRoutes(
   }
 
   // BRAND MARKETPLACE: Get Ready videos for discovery (brand view)
+  // GET /api/videos/:videoId/placements/locks — what the surface picker needs.
+  // Deliberately redacted: it says a surface is spoken for and whether it is
+  // yours, never which other brand holds it.
+  app.get("/api/videos/:videoId/placements/locks", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
+      const me = String(req.authUserId ?? req.user?.id ?? "");
+      const locks = (await storage.getActiveSurfaceLocksForVideo(videoId)).map((l) => ({
+        surfaceId: l.surfaceId,
+        mine: String(l.brandUserId) === me,
+        pending: l.status === "pending_creator_review",
+      }));
+      res.json({ locks });
+    } catch (err: any) {
+      console.error("[Placements] locks error:", err?.message);
+      res.status(500).json({ error: err?.message || "Failed to fetch placement locks" });
+    }
+  });
+
   app.get("/api/brand/discovery", isGoogleAuthenticated, async (req: any, res) => {
     try {
       const videos = await storage.getReadyVideosForMarketplace();
@@ -8217,7 +8255,13 @@ export async function registerRoutes(
         creatorName: creatorUser?.name || CREATOR_NAMES[video.category || ""] || video.category || "Pro Creator",
         creatorSlug,
         viewCount: video.viewCount,
-        sceneValue: Math.round(video.priorityScore * 1.2), // Derive value from priority
+        // sceneValue REMOVED. It was Math.round(priorityScore * 1.2) — an
+        // internal ranking integer wearing a dollar sign, and priorityScore
+        // is a fixed ingest constant (80 upload / 50 sync / 100 seed), so
+        // every real card read $96 or $60. The marketplace rendered it as a
+        // price badge and as "Buy $X". The only real price is the CPM quote
+        // from server/lib/placementPricing.ts, which the placement-request
+        // flow computes per product and surface.
         context: video.contexts?.[0] || video.category || "General",
         genre: video.category || "Lifestyle",
         sceneType: video.surfaces?.[0]?.surfaceType || "Desk",

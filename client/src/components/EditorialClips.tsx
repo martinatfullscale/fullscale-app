@@ -1317,7 +1317,7 @@ function EditorialClipCard({
   const primaryAction: { label: string; icon: typeof Send; onClick: () => void; className: string } | null =
     mode === "brand"
       ? (onBuy && clip.monetizationTier !== "organic"
-          ? { label: "Buy placement", icon: DollarSign, onClick: onBuy, className: "bg-green-600 hover:bg-green-500 border-green-500" }
+          ? { label: "Request placement", icon: DollarSign, onClick: onBuy, className: "bg-green-600 hover:bg-green-500 border-green-500" }
           : null)
       : isRendering
         ? null
