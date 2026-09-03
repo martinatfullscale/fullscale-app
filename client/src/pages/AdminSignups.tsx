@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { TopBar } from "@/components/TopBar";
-import { Loader2, CheckCircle2, ShieldCheck, UserCheck, Clock, FileCheck2, Mail } from "lucide-react";
+import { Loader2, CheckCircle2, ShieldCheck, UserCheck, Clock, FileCheck2, Mail, Clapperboard, XCircle } from "lucide-react";
 
 interface SignupRow {
   email: string;
@@ -220,9 +220,142 @@ export default function AdminSignups() {
                 )}
               </CardContent>
             </Card>
+
+            {/* Studio early access. These requests had no screen at all:
+                "Request Early Access" wrote a studio_waitlist row and the
+                only way to find one was to query the table by hand. */}
+            <StudioWaitlistSection />
           </>
         )}
       </main>
     </div>
+  );
+}
+
+interface StudioWaitlistRow {
+  id: number;
+  name: string;
+  email: string;
+  useCase: string | null;
+  status: string;
+  submittedAt: string | null;
+  reviewedAt: string | null;
+  reviewedBy: string | null;
+}
+
+/**
+ * Studio early-access queue.
+ *
+ * Approving is the whole action — Studio access is gated on this row's
+ * status (hasApprovedStudioAccess), so there is no second step to forget.
+ */
+function StudioWaitlistSection() {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const { data, isLoading, isError } = useQuery<{ entries: StudioWaitlistRow[]; pending: number }>({
+    queryKey: ["/api/admin/studio-waitlist"],
+  });
+
+  const review = useMutation({
+    mutationFn: async ({ id, status }: { id: number; status: "approved" | "rejected" }) => {
+      const res = await fetchWithTimeout(`/api/admin/studio-waitlist/${id}/review`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ status }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || "Could not update the request");
+      return body;
+    },
+    onSuccess: (_d, vars) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/studio-waitlist"] });
+      toast({
+        title: vars.status === "approved" ? "Studio access granted" : "Request declined",
+        description: vars.status === "approved" ? "They can use Studio on their next page load." : undefined,
+      });
+    },
+    onError: (err: Error) => toast({ title: "Failed", description: err.message, variant: "destructive" }),
+  });
+
+  const entries = data?.entries ?? [];
+  const waiting = entries.filter((e) => e.status === "pending");
+  const decided = entries.filter((e) => e.status !== "pending");
+
+  const fmt = (iso: string | null) =>
+    iso ? new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "";
+
+  return (
+    <>
+      <div className="flex items-center gap-2 mb-3 mt-10">
+        <Clapperboard className="w-4 h-4 text-violet-400" />
+        <h2 className="font-semibold text-sm">Studio early access ({waiting.length} waiting)</h2>
+      </div>
+      <Card className="border-border/50">
+        <CardContent className="p-0">
+          {isLoading ? (
+            <p className="text-sm text-muted-foreground p-6 text-center flex items-center justify-center gap-2">
+              <Loader2 className="w-4 h-4 animate-spin" /> Loading requests…
+            </p>
+          ) : isError ? (
+            <p className="text-sm text-muted-foreground p-6 text-center">Couldn't load Studio requests.</p>
+          ) : entries.length === 0 ? (
+            <p className="text-sm text-muted-foreground p-6 text-center">No Studio requests yet.</p>
+          ) : (
+            <div className="divide-y divide-border/50">
+              {[...waiting, ...decided].map((row) => (
+                <div key={row.id} className="p-4 flex items-start gap-3 flex-wrap" data-testid={`studio-waitlist-${row.id}`}>
+                  <div className="flex-1 min-w-[200px]">
+                    <p className="text-sm font-medium">
+                      {row.name}
+                      <span className="text-muted-foreground font-normal"> · {row.email}</span>
+                    </p>
+                    {row.useCase && (
+                      <p className="text-xs text-muted-foreground mt-1 whitespace-pre-wrap">{row.useCase}</p>
+                    )}
+                    <p className="text-[11px] text-muted-foreground/70 mt-1">
+                      Requested {fmt(row.submittedAt)}
+                      {row.reviewedAt && ` · reviewed ${fmt(row.reviewedAt)}${row.reviewedBy ? ` by ${row.reviewedBy}` : ""}`}
+                    </p>
+                  </div>
+                  {row.status === "pending" ? (
+                    <div className="flex items-center gap-2">
+                      <Button
+                        size="sm"
+                        disabled={review.isPending}
+                        onClick={() => review.mutate({ id: row.id, status: "approved" })}
+                        data-testid={`studio-approve-${row.id}`}
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> Grant access
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={review.isPending}
+                        onClick={() => review.mutate({ id: row.id, status: "rejected" })}
+                        data-testid={`studio-reject-${row.id}`}
+                      >
+                        Decline
+                      </Button>
+                    </div>
+                  ) : (
+                    <Badge
+                      variant="outline"
+                      className={row.status === "approved"
+                        ? "border-emerald-500/40 text-emerald-400"
+                        : "border-red-500/40 text-red-400"}
+                    >
+                      {row.status === "approved"
+                        ? <><CheckCircle2 className="w-3 h-3 mr-1" /> Has access</>
+                        : <><XCircle className="w-3 h-3 mr-1" /> Declined</>}
+                    </Badge>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </>
   );
 }

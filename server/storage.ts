@@ -1,5 +1,6 @@
 import { db } from "./db";
 import { eq, desc, and, or, sql, inArray, notInArray, ne, isNull, isNotNull, lte, gt, gte, asc } from "drizzle-orm";
+import { ADMIN_EMAILS } from "./lib/adminEmails";
 import {
   monetizationItems,
   youtubeConnections,
@@ -470,6 +471,8 @@ export interface IStorage {
   // ── Studio Waitlist Methods ──
   createStudioWaitlistEntry(data: InsertStudioWaitlistEntry): Promise<StudioWaitlistEntry>;
   getStudioWaitlistByEmail(email: string): Promise<StudioWaitlistEntry | undefined>;
+  getStudioWaitlistEntries(): Promise<StudioWaitlistEntry[]>;
+  setStudioWaitlistStatus(id: number, status: "approved" | "rejected" | "pending", reviewedBy: string): Promise<StudioWaitlistEntry | undefined>;
   hasApprovedStudioAccess(email: string): Promise<boolean>;
 }
 
@@ -5270,7 +5273,11 @@ export class DatabaseStorage implements IStorage {
 
   async hasApprovedStudioAccess(email: string): Promise<boolean> {
     const normalized = email.toLowerCase().trim();
-    if (["martin@gofullscale.co"].includes(normalized)) return true;
+    // Admins always have Studio access. This was the single literal
+    // "martin@gofullscale.co", which meant every other admin had to add
+    // themselves to the waitlist, and a move to the .ai identity would have
+    // silently revoked access. ADMIN_EMAILS is the canonical list.
+    if (ADMIN_EMAILS.map((e) => e.toLowerCase()).includes(normalized)) return true;
     const [entry] = await db
       .select({ status: studioWaitlist.status })
       .from(studioWaitlist)
@@ -5282,6 +5289,29 @@ export class DatabaseStorage implements IStorage {
       )
       .limit(1);
     return !!entry;
+  }
+
+  /** Every early-access request, newest first — the admin queue. */
+  async getStudioWaitlistEntries(): Promise<StudioWaitlistEntry[]> {
+    return db.select().from(studioWaitlist).orderBy(desc(studioWaitlist.submittedAt));
+  }
+
+  /**
+   * Approve or decline a request. Writes reviewedAt/reviewedBy, which the
+   * schema declared and nothing ever set. Approving is what actually grants
+   * Studio access — hasApprovedStudioAccess reads this status.
+   */
+  async setStudioWaitlistStatus(
+    id: number,
+    status: "approved" | "rejected" | "pending",
+    reviewedBy: string,
+  ): Promise<StudioWaitlistEntry | undefined> {
+    const [row] = await db
+      .update(studioWaitlist)
+      .set({ status, reviewedAt: new Date(), reviewedBy })
+      .where(eq(studioWaitlist.id, id))
+      .returning();
+    return row;
   }
 
   // ── Brand Brief Methods ──────────────────────────────────────────────

@@ -9,7 +9,8 @@ import { storage } from "../storage";
 import { db } from "../db";
 import { users } from "@shared/models/auth";
 import { eq } from "drizzle-orm";
-import { sendStudioVideoReadyEmail } from "./resend";
+import { sendStudioVideoReadyEmail, sendStudioWaitlistNotification } from "./resend";
+import { ADMIN_EMAILS } from "./adminEmails";
 // Lazy-loaded pipeline module (loaded on first use, not at startup)
 let _pipelineMod: typeof import("../../studio-pipeline/src/pipeline/index.js") | null = null;
 async function loadPipelineModule() {
@@ -270,6 +271,13 @@ export function registerStudioRoutes(app: Express) {
         status: "pending",
       });
 
+      // Tell someone. The row used to land in the table silently, so a
+      // request was only ever found by querying the database by hand.
+      // Fire-and-forget: a mail failure must not fail the signup, since the
+      // row — the thing that matters — is already committed.
+      void sendStudioWaitlistNotification({ name, email: normalizedEmail, useCase: useCase || null })
+        .catch((e) => console.error("[Studio] waitlist notification failed:", e?.message || e));
+
       return res.json({ success: true, alreadySubmitted: false, status: "pending" });
     } catch (err: any) {
       console.error("[Studio] /api/studio/waitlist POST error:", err);
@@ -280,6 +288,46 @@ export function registerStudioRoutes(app: Express) {
   // ──────────────────────────────────────────────────────────────────
   // WAITLIST: Check current user's Studio access status
   // ──────────────────────────────────────────────────────────────────
+  /** Admin gate, matching the /api/admin/* pattern in routes.ts. */
+  const isStudioAdmin = (req: any): boolean => {
+    const email = req.session?.googleUser?.email || req.user?.claims?.email || getSessionEmail(req);
+    return !!email && ADMIN_EMAILS.map((e) => e.toLowerCase()).includes(String(email).toLowerCase());
+  };
+
+  // GET /api/admin/studio-waitlist — the queue, surfaced on /admin/signups.
+  app.get("/api/admin/studio-waitlist", async (req: any, res: Response) => {
+    try {
+      if (!isStudioAdmin(req)) return res.status(403).json({ error: "Admin access required" });
+      const entries = await storage.getStudioWaitlistEntries();
+      res.json({ entries, pending: entries.filter((e) => e.status === "pending").length });
+    } catch (err: any) {
+      console.error("[Studio] /api/admin/studio-waitlist error:", err);
+      res.status(500).json({ error: "Failed to load Studio waitlist" });
+    }
+  });
+
+  // POST /api/admin/studio-waitlist/:id/review — approve or decline.
+  // Approving grants Studio access immediately (hasApprovedStudioAccess
+  // reads this row), so there is no second step to forget.
+  app.post("/api/admin/studio-waitlist/:id/review", async (req: any, res: Response) => {
+    try {
+      if (!isStudioAdmin(req)) return res.status(403).json({ error: "Admin access required" });
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
+      const status = req.body?.status;
+      if (status !== "approved" && status !== "rejected" && status !== "pending") {
+        return res.status(400).json({ error: "status must be approved, rejected or pending" });
+      }
+      const reviewer = req.session?.googleUser?.email || req.user?.claims?.email || getSessionEmail(req) || "admin";
+      const row = await storage.setStudioWaitlistStatus(id, status, String(reviewer));
+      if (!row) return res.status(404).json({ error: "Request not found" });
+      res.json({ success: true, entry: row });
+    } catch (err: any) {
+      console.error("[Studio] /api/admin/studio-waitlist/:id/review error:", err);
+      res.status(500).json({ error: "Failed to update request" });
+    }
+  });
+
   app.get("/api/studio/waitlist/status", async (req: any, res: Response) => {
     try {
       const email = getSessionEmail(req);

@@ -545,6 +545,61 @@ export async function sendBrandBriefNotification(args: {
 }
 
 // Send notification to admin about new signup
+/**
+ * A Studio early-access request just landed.
+ *
+ * Until now the POST wrote a studio_waitlist row and told nobody: the only
+ * way to find a request was to query the table by hand. Sent to
+ * MAIL_MARTIN_ADDRESS, which follows MAIL_INBOX_DOMAIN — so the .co → .ai
+ * cutover moves this along with every other internal notification rather
+ * than needing its own hardcoded address.
+ */
+export async function sendStudioWaitlistNotification(entry: {
+  name: string;
+  email: string;
+  useCase?: string | null;
+}) {
+  try {
+    const { client } = await getResendClient();
+    const result = await client.emails.send({
+      from: MAIL_FROM.noreply,
+      to: MAIL_MARTIN_ADDRESS,
+      replyTo: entry.email,
+      subject: `Studio early access: ${entry.name} (${entry.email})`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #1a1a1a;">New Studio early-access request</h2>
+          <p style="margin: 16px 0;">
+            <a href="https://gofullscale.co/admin/signups" style="display: inline-block; background: #7c3aed; color: #fff; padding: 10px 18px; border-radius: 8px; text-decoration: none; font-weight: 600;">Approve or decline</a>
+          </p>
+          <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+            <tr>
+              <td style="padding: 8px; border-bottom: 1px solid #eee; font-weight: bold; width: 120px;">Name:</td>
+              <td style="padding: 8px; border-bottom: 1px solid #eee;">${entry.name}</td>
+            </tr>
+            <tr>
+              <td style="padding: 8px; border-bottom: 1px solid #eee; font-weight: bold;">Email:</td>
+              <td style="padding: 8px; border-bottom: 1px solid #eee;">${entry.email}</td>
+            </tr>
+            <tr>
+              <td style="padding: 8px; border-bottom: 1px solid #eee; font-weight: bold; vertical-align: top;">Use case:</td>
+              <td style="padding: 8px; border-bottom: 1px solid #eee;">${entry.useCase ? String(entry.useCase).replace(/</g, "&lt;") : "<em>not given</em>"}</td>
+            </tr>
+          </table>
+          <p style="color: #4a4a4a; font-size: 14px;">
+            Approving grants Studio access immediately — access is gated on this row's status.
+          </p>
+        </div>
+      `,
+    });
+    console.log("[Resend] Studio waitlist notification sent:", result);
+    return result;
+  } catch (error) {
+    console.error("[Resend] Failed to send Studio waitlist notification:", error);
+    return null;
+  }
+}
+
 export async function sendAdminNotification(userData: {
   email: string;
   firstName: string;
