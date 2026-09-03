@@ -140,7 +140,7 @@ export default function About() {
                   shape before the photo loads, so the hero doesn't reflow. */}
               <div
                 className="relative rounded-2xl overflow-hidden border border-white/10 shadow-2xl shadow-black/50 bg-[hsl(350_60%_8%)]"
-                style={{ aspectRatio: "1153 / 945" }}
+                style={{ aspectRatio: "1153 / 944" }}
               >
                 <img
                   src={FOUNDERS_PHOTO}
