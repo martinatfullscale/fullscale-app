@@ -94,6 +94,11 @@ interface RemixStudioProps {
   videoId: number;
   open: boolean;
   onClose: () => void;
+  /** Seeded transcript search, passed straight through to the clips panel. */
+  initialSearch?: { query: string; excludeRanges?: Array<{ start: number; end: number }> } | null;
+  /** Fired once the seeded search has actually been dispatched, so the
+   *  parent can drop it before the clips panel remounts. */
+  onSeedConsumed?: () => void;
 }
 
 const PLATFORM_ICONS: Record<string, any> = {
@@ -141,7 +146,7 @@ const SHOW_LEGACY_TABS = false;
 const isTerminalStatus = (status?: string | null) =>
   !!status && TERMINAL_STATUSES.includes(status);
 
-export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps) {
+export default function RemixStudio({ videoId, open, onClose, initialSearch, onSeedConsumed }: RemixStudioProps) {
   const { toast } = useToast();
   const [jobs, setJobs] = useState<RemixJob[]>([]);
   const [clips, setClips] = useState<GeneratedClip[]>([]);
@@ -880,6 +885,8 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
                 videoId={videoId}
                 key={editorialRefreshKey}
                 mode="remix"
+                initialSearch={initialSearch}
+                onSeedConsumed={onSeedConsumed}
                 // A rendered clip had no route to publishing from here — the
                 // Distribution hub lived elsewhere and did not list editorial
                 // clips at all. This opens it directly on this video.

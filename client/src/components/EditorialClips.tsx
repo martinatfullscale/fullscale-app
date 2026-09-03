@@ -99,6 +99,11 @@ interface EditorialStatusResponse {
 export interface EditorialClipsProps {
   videoId: number;
   mode: "creator" | "brand" | "remix";
+  /** Run this transcript search as soon as the component mounts — how
+   *  "Find more like this" arrives from Clips & Reels. */
+  initialSearch?: { query: string; excludeRanges?: Array<{ start: number; end: number }> } | null;
+  /** Called once the seeded search has been dispatched. */
+  onSeedConsumed?: () => void;
   onGenerateClip?: (clip: RankedClip) => void;
   onBuyPlacement?: (clip: RankedClip) => void;
   /** Remix-tab: make this clip the AI copilot's target */
@@ -160,7 +165,7 @@ function ScoreBar({ label, value, icon: Icon }: { label: string; value: number; 
 
 // ── Main Component ─────────────────────────────────────────────────
 
-export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPlacement, onSelectForCopilot, onPublishClip }: EditorialClipsProps) {
+export default function EditorialClips({ videoId, mode, initialSearch, onSeedConsumed, onGenerateClip, onBuyPlacement, onSelectForCopilot, onPublishClip }: EditorialClipsProps) {
   const { toast } = useToast();
 
   const [transcriptStatus, setTranscriptStatus] = useState<TranscriptStatus>({ status: "none" });
@@ -454,8 +459,12 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
     },
   });
 
-  const handleSearch = useCallback(async () => {
-    if (!searchQuery.trim()) {
+  const runSearch = useCallback(async (
+    rawQuery: string,
+    excludeRanges?: Array<{ start: number; end: number }>,
+  ) => {
+    const q = rawQuery.trim();
+    if (!q) {
       setSearchResults(null);
       return;
     }
@@ -466,7 +475,9 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ query: searchQuery.trim(), maxClips: 10 }),
+        // excludeRanges keeps "find more like this" from handing back the
+        // very clip the creator asked for more of.
+        body: JSON.stringify({ query: q, maxClips: 10, ...(excludeRanges?.length ? { excludeRanges } : {}) }),
       }, 60_000);
       const data = await res.json().catch(() => ({}));
       if (res.status === 409) {
@@ -477,19 +488,37 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
       if (!res.ok) throw new Error(data.error || "Search failed");
       if (res.status === 202 && data.job?.id) {
         accepted = true;
-        setSearchJob({ id: String(data.job.id), query: searchQuery.trim() });
+        setSearchJob({ id: String(data.job.id), query: q });
         return;
       }
       // Legacy synchronous shape.
       setSearchResults((data.clips || []).map(toSearchClip));
-      toast({ title: `Found ${data.clips?.length || 0} clips`, description: `Matching "${searchQuery.trim()}"` });
+      toast({ title: `Found ${data.clips?.length || 0} clips`, description: `Matching "${q}"` });
     } catch (err: any) {
       toast({ title: "Search failed", description: err.message, variant: "destructive" });
     } finally {
       if (!accepted) setIsSearching(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [videoId, searchQuery, toast]);
+  }, [videoId, toast]);
+
+  const handleSearch = useCallback(() => runSearch(searchQuery), [runSearch, searchQuery]);
+
+  // "Find more like this" from Clips & Reels: land with the box filled in and
+  // the search already running, so the creator sees the work start rather
+  // than a pre-typed query waiting for another click.
+  // NOTE: this component is mounted with a `key` that RemixStudio bumps on
+  // every copilot apply and re-render, so a ref-based "already ran" guard
+  // dies with the component and the search fires again. The parent owns
+  // consumption instead: we tell it the moment we dispatch, and it drops the
+  // seed so the next mount receives null.
+  useEffect(() => {
+    if (!initialSearch?.query) return;
+    setSearchQuery(initialSearch.query);
+    runSearch(initialSearch.query, initialSearch.excludeRanges);
+    onSeedConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialSearch?.query]);
 
   // ── Load saved clips + transcript status on mount ─────────────────
   useEffect(() => {

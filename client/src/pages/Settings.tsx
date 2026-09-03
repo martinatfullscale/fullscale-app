@@ -1431,6 +1431,11 @@ export default function Settings() {
                         <p className="text-xs text-muted-foreground mt-1">
                           Your 70% share of approved brand placements
                         </p>
+                        {/* The per-placement breakdown lives on one page now,
+                            so this figure and the Earnings page can't drift. */}
+                        <a href="/earnings" className="text-xs text-emerald-400 hover:text-emerald-300 underline underline-offset-2 mt-2 inline-block">
+                          See every placement in Earnings
+                        </a>
                       </div>
                       <Badge className="bg-amber-500/20 text-amber-400 border-amber-500/30">
                         Accruing

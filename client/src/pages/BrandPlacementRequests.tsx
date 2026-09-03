@@ -9,9 +9,12 @@
  */
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import { useSearch } from "wouter";
 import { fetchWithTimeout } from "@/lib/queryClient";
+import { PlacementResults, type PlacementResultView } from "@/components/PlacementResults";
 import { motion } from "framer-motion";
-import { Loader2, Send, Clock, CheckCircle2, XCircle, Ban, Hourglass, Package, ExternalLink, Link2, Download } from "lucide-react";
+import { Loader2, Send, Clock, CheckCircle2, XCircle, Ban, Hourglass, Package, ExternalLink, Link2, Download, Radio, ChevronDown, ChevronUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 
@@ -38,6 +41,8 @@ interface HydratedPlacement {
   product: { id: number; name: string; imageUrl: string | null; thumbnailUrl: string | null; category: string | null } | null;
   video: { id: number; title: string; thumbnailUrl: string | null } | null;
   clip: { id: number; exportPath: string | null; thumbnailPath: string | null; renderStatus: string | null; suggestedTitle: string | null } | null;
+  /** Derived from the go-live ledger, not the assignment status. */
+  live: { liveAt: string | null; postUrl: string | null; platform: string } | null;
 }
 
 const STATUS_META: Record<string, { label: string; className: string; icon: any }> = {
@@ -45,6 +50,9 @@ const STATUS_META: Record<string, { label: string; className: string; icon: any 
   creator_approved: { label: "Rendering", className: "bg-sky-500/15 text-sky-400 border-sky-500/30", icon: Loader2 },
   pending_brand_review: { label: "Review the render", className: "bg-violet-500/15 text-violet-400 border-violet-500/30", icon: Clock },
   brand_approved: { label: "Approved — final render in production", className: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30", icon: CheckCircle2 },
+  // Not an assignment status — synthesised from the exposure ledger, because
+  // the brand's view used to dead-end at "in production" forever.
+  live: { label: "Live", className: "bg-emerald-500/20 text-emerald-300 border-emerald-500/40", icon: Radio },
   creator_rejected: { label: "Declined", className: "bg-red-500/15 text-red-400 border-red-500/30", icon: XCircle },
   brand_withdrawn: { label: "Withdrawn", className: "bg-gray-500/15 text-gray-400 border-gray-500/30", icon: Ban },
   expired: { label: "Expired", className: "bg-gray-500/15 text-gray-400 border-gray-500/30", icon: Hourglass },
@@ -55,9 +63,46 @@ function formatFee(cents: number | null | undefined): string {
   return `$${(cents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+/** Results for one assignment, fetched when the brand opens it. Comment TEXT
+ *  is withheld server-side; the brand sees the shape of the response. */
+function BrandResultsPanel({ assignmentId }: { assignmentId: number }) {
+  const { data, isLoading } = useQuery<{ result: PlacementResultView | null; message?: string }>({
+    queryKey: ["/api/brand/placements", assignmentId, "results"],
+    queryFn: async () => {
+      const res = await fetchWithTimeout(`/api/brand/placements/${assignmentId}/results`, { credentials: "include" });
+      if (!res.ok) throw new Error("Couldn't load results");
+      return res.json();
+    },
+    staleTime: 60_000,
+  });
+  if (isLoading) {
+    return <div className="mt-2 text-xs text-muted-foreground flex items-center gap-2"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading results…</div>;
+  }
+  if (!data?.result) {
+    return <p className="mt-2 text-xs text-muted-foreground">{data?.message ?? "No results yet."}</p>;
+  }
+  return <div className="mt-2"><PlacementResults result={data.result} /></div>;
+}
+
 export default function BrandPlacementRequests() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const [openResults, setOpenResults] = useState<number | null>(null);
+
+  // The go-live notification links to /brand/placements?placement=<id>.
+  // Without this the parameter was inert and the brand landed at the top of
+  // an undifferentiated list.
+  const search = useSearch();
+  useEffect(() => {
+    const target = Number(new URLSearchParams(search).get("placement"));
+    if (!Number.isFinite(target) || target <= 0) return;
+    setOpenResults(target);
+    const t = setTimeout(() => {
+      document.querySelector(`[data-testid="placement-request-${target}"]`)
+        ?.scrollIntoView({ block: "center", behavior: "smooth" });
+    }, 250);
+    return () => clearTimeout(t);
+  }, [search]);
 
   const { data, isLoading } = useQuery<{ placements: HydratedPlacement[] }>({
     queryKey: ["/api/brand/placements"],
@@ -150,7 +195,11 @@ export default function BrandPlacementRequests() {
       ) : (
         <div className="space-y-3">
           {placements.map((p, idx) => {
-            const meta = STATUS_META[p.status] || { label: p.status, className: "bg-gray-500/15 text-gray-400 border-gray-500/30", icon: Clock };
+            // Live-ness comes from the exposure ledger, so an approved
+            // placement that actually reached an audience stops reading as
+            // "final render in production" forever.
+            const effectiveStatus = p.live ? "live" : p.status;
+            const meta = STATUS_META[effectiveStatus] || { label: p.status, className: "bg-gray-500/15 text-gray-400 border-gray-500/30", icon: Clock };
             const StatusIcon = meta.icon;
             const canWithdraw = p.status === "pending_creator_review" || p.status === "creator_approved" || p.status === "pending_brand_review";
             const productImg = p.product?.thumbnailUrl || p.product?.imageUrl;
@@ -160,9 +209,10 @@ export default function BrandPlacementRequests() {
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: Math.min(idx * 0.03, 0.3) }}
-                className="bg-white/5 border border-white/10 rounded-xl p-4 flex flex-wrap items-center gap-4"
+                className="bg-white/5 border border-white/10 rounded-xl p-4"
                 data-testid={`placement-request-${p.id}`}
               >
+                <div className="flex flex-wrap items-center gap-4">
                 {productImg ? (
                   <img src={productImg} alt={p.product?.name || "Product"} className="w-12 h-12 rounded-lg object-cover bg-black/40" />
                 ) : (
@@ -280,6 +330,23 @@ export default function BrandPlacementRequests() {
                   >
                     {withdrawMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "Withdraw"}
                   </Button>
+                )}
+                </div>
+
+                {/* What it did, once it is live. Loaded on demand so the list
+                    stays one request. */}
+                {p.live && (
+                  <div className="mt-3 pt-3 border-t border-white/10">
+                    <button
+                      className="text-xs text-emerald-300 hover:text-emerald-200 inline-flex items-center gap-1"
+                      onClick={() => setOpenResults(openResults === p.id ? null : p.id)}
+                      data-testid={`toggle-results-${p.id}`}
+                    >
+                      {openResults === p.id ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                      {openResults === p.id ? "Hide results" : "See how it performed"}
+                    </button>
+                    {openResults === p.id && <BrandResultsPanel assignmentId={p.id} />}
+                  </div>
                 )}
               </motion.div>
             );

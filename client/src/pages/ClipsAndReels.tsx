@@ -35,6 +35,18 @@ import RemixStudio from "@/components/RemixStudio";
 type Kind = "editorial" | "remix" | "reel";
 type Status = "ready" | "rendering" | "pending" | "failed" | "needs_review";
 
+interface PostMetrics {
+  views: number | null;
+  likes: number | null;
+  comments: number | null;
+  shares: number | null;
+  saves: number | null;
+  reach: number | null;
+  engagementRate: number | null;
+  watchTimeSeconds: number | null;
+  fetchedAt: string | null;
+}
+
 interface PublishedRef {
   postId: number;
   platform: string;
@@ -42,6 +54,10 @@ interface PublishedRef {
   status: string;
   publishedAt: string | null;
   error: string | null;
+  /** null until the capture job has polled the platform. Never rendered as 0. */
+  metrics: PostMetrics | null;
+  /** false when the platform has no metrics API we can use at all. */
+  metricsSupported: boolean;
 }
 
 interface ClipItem {
@@ -66,6 +82,7 @@ interface ClipItem {
   error: string | null;
   score: number | null;
   tier: string | null;
+  topicTags: string[];
   segmentsCount: number;
   createdAt: string | null;
   completedAt: string | null;
@@ -111,6 +128,43 @@ const fmtScore = (score: number | null): string | null => {
 };
 const isLive = (p: PublishedRef) => p.status === "published" || p.status === "dry_run";
 
+/** Human age of a capture, or null when we have no timestamp. */
+const metricsAge = (iso: string | null): string | null => {
+  if (!iso) return null;
+  const hrs = Math.floor((Date.now() - new Date(iso).getTime()) / 3_600_000);
+  if (!Number.isFinite(hrs) || hrs < 0) return null;
+  if (hrs < 1) return "just now";
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return days === 1 ? "yesterday" : `${days} days ago`;
+};
+
+/** A capture older than this is shown muted — it is history, not status. */
+const isStale = (iso: string | null): boolean =>
+  !!iso && Date.now() - new Date(iso).getTime() > 48 * 3_600_000;
+
+const compactNum = (n: number): string =>
+  n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${(n / 1_000).toFixed(1)}k` : String(n);
+
+/** Why a number is missing, said out loud. A blank chip that never explains
+ *  itself is how "0 views" gets read as "nobody watched". */
+const metricsTitle = (p: PublishedRef): string => {
+  if (!p.postUrl && !p.metrics) return "Published";
+  if (!p.metricsSupported) return `${PLATFORM_LABEL[p.platform] ?? p.platform} doesn't report per-post numbers to us — open the post to see them.`;
+  if (!p.metrics) return "Published. Numbers arrive after the next stats check (within a few hours).";
+  const bits: string[] = [];
+  if (p.metrics.views != null) bits.push(`${p.metrics.views.toLocaleString()} views`);
+  if (p.metrics.likes != null) bits.push(`${p.metrics.likes.toLocaleString()} likes`);
+  if (p.metrics.comments != null) bits.push(`${p.metrics.comments.toLocaleString()} comments`);
+  if (p.metrics.engagementRate != null) bits.push(`${(p.metrics.engagementRate * 100).toFixed(1)}% engagement`);
+  // When the number was captured. Collection is every 6 hours and stops
+  // silently if a token lapses, so a figure with no age reads as current
+  // when it may be weeks old.
+  const age = metricsAge(p.metrics.fetchedAt);
+  if (age) bits.push(`as of ${age}`);
+  return bits.length ? bits.join(" · ") : "Published";
+};
+
 export default function ClipsAndReels() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -134,6 +188,7 @@ export default function ClipsAndReels() {
   const [reelSeed, setReelSeed] = useState<ReelClip[] | null>(null);
   const [reelOpen, setReelOpen] = useState(false);
   const [remixVideoId, setRemixVideoId] = useState<number | null>(null);
+  const [seededSearch, setSeededSearch] = useState<{ query: string; excludeRanges?: Array<{ start: number; end: number }> } | null>(null);
 
   const { data, isLoading, error } = useQuery<ClipsFeed>({
     queryKey: ["/api/clips"],
@@ -232,6 +287,34 @@ export default function ClipsAndReels() {
     setReelSeed([rc]);
     setReelOpen(true);
   };
+  // "Find more like this": open the source video's studio with a transcript
+  // search already running on what this clip is ABOUT. Deliberately framed as
+  // similarity, not success — nothing here knows the clip performed well.
+  const findMoreLikeThis = (i: ClipItem) => {
+    // "Story clip" is the server's fallback title for a clip with no
+    // suggested title, so it is not a seed — searching for it would return
+    // whatever Claude free-associates from two generic words.
+    const usableTitle = i.title && i.title !== "Story clip" ? i.title : null;
+    const seed = (i.topicTags && i.topicTags.length > 0) ? i.topicTags.slice(0, 4).join(", ") : usableTitle;
+    if (!seed) {
+      toast({ title: "Nothing to search on", description: "This clip has no topic tags or title to work from." });
+      return;
+    }
+    // An assembled clip's clipStart/clipEnd is the ENVELOPE around its beats,
+    // not the material — excluding it would blacklist most of the transcript.
+    // The beats themselves are the right exclusion.
+    const segs: Array<{ start: number; end: number }> | undefined =
+      Array.isArray(i.row?.segments) && i.row.segments.length > 0
+        ? i.row.segments
+            .map((s: any) => ({ start: Number(s.start), end: Number(s.end) }))
+            .filter((s: any) => Number.isFinite(s.start) && Number.isFinite(s.end) && s.end > s.start)
+        : Number.isFinite(i.clipStart) && Number.isFinite(i.clipEnd) && i.clipEnd > i.clipStart
+          ? [{ start: i.clipStart, end: i.clipEnd }]
+          : undefined;
+    setSeededSearch({ query: seed, excludeRanges: segs });
+    setRemixVideoId(i.videoId);
+  };
+
   // Render (a pending story clip) or retry (a failed one) — same route.
   const renderClip = async (i: ClipItem) => {
     if (i.kind !== "editorial") return;
@@ -404,7 +487,8 @@ export default function ClipsAndReels() {
                 onEdit={item.kind === "editorial" && item.status === "ready" && item.row ? () => setStudioItem(item) : undefined}
                 onPublish={item.status === "ready" && item.publishId && item.clipSource ? () => setPublishTarget({ videoId: item.videoId, id: item.publishId!, clipSource: item.clipSource! }) : undefined}
                 onAddToReel={item.kind !== "reel" ? () => addToReel(item) : undefined}
-                onOpenStudio={() => setRemixVideoId(item.videoId)}
+                onOpenStudio={() => { setSeededSearch(null); setRemixVideoId(item.videoId); }}
+                onFindMore={item.kind === "editorial" ? () => findMoreLikeThis(item) : undefined}
                 onRender={item.kind === "editorial" && (item.status === "failed" || item.status === "pending") ? () => renderClip(item) : undefined}
                 onDelete={item.kind === "reel" ? () => deleteReel(item) : undefined}
               />
@@ -472,7 +556,17 @@ export default function ClipsAndReels() {
       <ReelBuilder open={reelOpen} initialClips={reelSeed} onClose={() => { setReelOpen(false); setReelSeed(null); refresh(); }} />
 
       {remixVideoId != null && (
-        <RemixStudio videoId={remixVideoId} open={true} onClose={() => { setRemixVideoId(null); refresh(); }} />
+        <RemixStudio
+          videoId={remixVideoId}
+          open={true}
+          initialSearch={seededSearch}
+          // Clear the seed the moment it is dispatched. The studio remounts
+          // its clips panel on every copilot apply and re-render, and a seed
+          // that outlived the first dispatch re-fired the whole (paid,
+          // 60-second) search each time.
+          onSeedConsumed={() => setSeededSearch(null)}
+          onClose={() => { setRemixVideoId(null); setSeededSearch(null); refresh(); }}
+        />
       )}
     </div>
   );
@@ -553,7 +647,7 @@ function StatusPill({ status, error }: { status: Status; error: string | null })
   );
 }
 
-function ClipCard({ item, highlighted, highlightNonce, onPlay, onEdit, onPublish, onAddToReel, onOpenStudio, onRender, onDelete }: {
+function ClipCard({ item, highlighted, highlightNonce, onPlay, onEdit, onPublish, onAddToReel, onOpenStudio, onFindMore, onRender, onDelete }: {
   item: ClipItem;
   highlighted: boolean;
   highlightNonce: number;
@@ -562,6 +656,7 @@ function ClipCard({ item, highlighted, highlightNonce, onPlay, onEdit, onPublish
   onPublish?: () => void;
   onAddToReel?: () => void;
   onOpenStudio: () => void;
+  onFindMore?: () => void;
   onRender?: () => void;
   onDelete?: () => void;
 }) {
@@ -670,9 +765,14 @@ function ClipCard({ item, highlighted, highlightNonce, onPlay, onEdit, onPublish
                 target={p.postUrl ? "_blank" : undefined}
                 rel="noopener noreferrer"
                 className={cn("inline-flex items-center gap-1 rounded-full bg-emerald-500/10 text-emerald-300 px-2 py-0.5 text-[11px]", p.postUrl && "hover:bg-emerald-500/20")}
-                title={p.postUrl ? "Open on the platform" : "Published"}
+                title={metricsTitle(p)}
               >
                 <CheckCircle2 className="w-3 h-3" /> {PLATFORM_LABEL[p.platform] ?? p.platform}{p.status === "dry_run" ? " (test)" : ""}
+                {p.metrics?.views != null && (
+                  <span className={cn("tabular-nums font-medium", isStale(p.metrics.fetchedAt) && "opacity-60")}>
+                    · {compactNum(p.metrics.views)} views{isStale(p.metrics.fetchedAt) ? "*" : ""}
+                  </span>
+                )}
                 {p.postUrl && <ExternalLink className="w-3 h-3 opacity-70" />}
               </a>
             ))}
@@ -710,6 +810,9 @@ function ClipCard({ item, highlighted, highlightNonce, onPlay, onEdit, onPublish
               )}
               {onAddToReel && (
                 <DropdownMenuItem onClick={onAddToReel}><Plus className="w-4 h-4 mr-2" /> Add to a reel</DropdownMenuItem>
+              )}
+              {onFindMore && (
+                <DropdownMenuItem onClick={onFindMore}><Sparkles className="w-4 h-4 mr-2" /> Find more like this</DropdownMenuItem>
               )}
               <DropdownMenuItem onClick={onOpenStudio}><Scissors className="w-4 h-4 mr-2" /> Open video in Remix Studio</DropdownMenuItem>
               {onDelete && (

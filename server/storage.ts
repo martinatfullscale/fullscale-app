@@ -273,6 +273,9 @@ export interface IStorage {
   getVideoIdsUnderMeasurement(): Promise<number[]>;
   createPlacementExposure(row: InsertPlacementExposure): Promise<PlacementExposure>;
   getPlacementExposuresForUser(userId: string): Promise<PlacementExposure[]>;
+  getPlacementExposuresForPlacements(placementIds: number[]): Promise<PlacementExposure[]>;
+  getPlacementExposureForAssignment(assignmentId: number): Promise<PlacementExposure | undefined>;
+  getPlacementExposuresForAssignments(assignmentIds: number[]): Promise<PlacementExposure[]>;
   getPlacementExposureForPlacement(placementId: number): Promise<PlacementExposure | undefined>;
   getPlacementsByCreator(email: string): Promise<SavedPlacement[]>;
   getPlacementsForVideo(videoId: number): Promise<SavedPlacement[]>;
@@ -390,7 +393,10 @@ export interface IStorage {
   // Clip analytics methods
   upsertClipAnalytics(data: InsertClipAnalytics): Promise<ClipAnalytics>;
   getAnalyticsByPost(postId: number): Promise<ClipAnalytics[]>;
-  getAnalyticsByClip(clipId: number): Promise<ClipAnalytics[]>;
+  getAnalyticsByPostIds(postIds: number[]): Promise<ClipAnalytics[]>;
+  getCollectablePublishedPosts(sinceDays?: number, limit?: number): Promise<PublishedPost[]>;
+  getLinkClickCountsForPlacements(placementIds: number[]): Promise<Map<number, number>>;
+  getAnalyticsByClip(clipId: number, source?: "remix" | "editorial"): Promise<ClipAnalytics[]>;
   getAnalyticsSummaryByVideo(videoId: number): Promise<ClipAnalytics[]>;
 
   // Publishing schedule methods
@@ -2982,6 +2988,38 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(placementExposures.liveAt));
   }
 
+  /** Exposures for many placements at once — the campaigns list needs to know
+   *  which rows are genuinely live without a query per row. */
+  async getPlacementExposuresForPlacements(placementIds: number[]): Promise<PlacementExposure[]> {
+    if (placementIds.length === 0) return [];
+    return await db
+      .select()
+      .from(placementExposures)
+      .where(inArray(placementExposures.placementId, placementIds))
+      .orderBy(desc(placementExposures.liveAt));
+  }
+
+  /** The brand's side of the join: their assignment → the go-live event. */
+  async getPlacementExposureForAssignment(assignmentId: number): Promise<PlacementExposure | undefined> {
+    const [row] = await db
+      .select()
+      .from(placementExposures)
+      .where(eq(placementExposures.assignmentId, assignmentId))
+      .orderBy(desc(placementExposures.liveAt))
+      .limit(1);
+    return row;
+  }
+
+  /** Same join for a whole list — one query, not one per placement. */
+  async getPlacementExposuresForAssignments(assignmentIds: number[]): Promise<PlacementExposure[]> {
+    if (assignmentIds.length === 0) return [];
+    return await db
+      .select()
+      .from(placementExposures)
+      .where(inArray(placementExposures.assignmentId, assignmentIds))
+      .orderBy(desc(placementExposures.liveAt));
+  }
+
   async getPlacementExposureForPlacement(placementId: number): Promise<PlacementExposure | undefined> {
     const [row] = await db
       .select()
@@ -4389,6 +4427,91 @@ export class DatabaseStorage implements IStorage {
     return result;
   }
 
+  /**
+   * Latest analytics row per post, batched. The feed asks about every
+   * published post at once; one query per post would be an N+1 on a list.
+   */
+  async getAnalyticsByPostIds(postIds: number[]): Promise<ClipAnalytics[]> {
+    if (postIds.length === 0) return [];
+    // DISTINCT ON in the database, not "fetch the whole history and throw
+    // most of it away in JS". clip_analytics is append-only and the capture
+    // job now adds a row per post every 6 hours, so the history it would
+    // have shipped grows without bound while the feed only ever wants the
+    // newest row per post. Uses idx_clip_analytics_post_time.
+    const res: any = await db.execute(sql`
+      SELECT DISTINCT ON (post_id) *
+      FROM clip_analytics
+      WHERE post_id IN (${sql.join(postIds.map((id) => sql`${id}`), sql`, `)})
+      ORDER BY post_id, fetched_at DESC
+    `);
+    const rows = (res?.rows ?? res ?? []) as any[];
+    // db.execute returns snake_case columns; map the ones callers read.
+    return rows.map((r) => ({
+      ...r,
+      postId: r.post_id ?? r.postId,
+      clipId: r.clip_id ?? r.clipId ?? null,
+      editorialClipId: r.editorial_clip_id ?? r.editorialClipId ?? null,
+      clipSource: r.clip_source ?? r.clipSource ?? null,
+      engagementRate: r.engagement_rate ?? r.engagementRate ?? null,
+      watchTimeSeconds: r.watch_time_seconds ?? r.watchTimeSeconds ?? null,
+      completionRate: r.completion_rate ?? r.completionRate ?? null,
+      clickThroughRate: r.click_through_rate ?? r.clickThroughRate ?? null,
+      fetchedAt: r.fetched_at ?? r.fetchedAt ?? null,
+    })) as ClipAnalytics[];
+  }
+
+  /**
+   * Posts the capture job can actually ask a platform about. Bounded to the
+   * last 90 days: an unbounded set means the job's cost grows forever, and a
+   * two-year-old post's counters have long stopped moving.
+   */
+  async getCollectablePublishedPosts(sinceDays: number = 90, limit: number = 500): Promise<PublishedPost[]> {
+    const since = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000);
+    return db.select().from(publishedPosts)
+      .where(and(
+        eq(publishedPosts.status, "published"),
+        isNotNull(publishedPosts.platformPostId),
+        isNotNull(publishedPosts.profileId),
+        gte(publishedPosts.publishedAt, since),
+      ))
+      .orderBy(desc(publishedPosts.publishedAt))
+      .limit(limit);
+  }
+
+  /** Click totals per placement, batched, for the results panels. */
+  async getLinkClickCountsForPlacements(placementIds: number[]): Promise<Map<number, number>> {
+    const out = new Map<number, number>();
+    if (placementIds.length === 0) return out;
+    const rows = await db
+      .select({ placementId: linkClicks.placementId, n: sql<number>`count(*)::int` })
+      .from(linkClicks)
+      .where(inArray(linkClicks.placementId, placementIds))
+      .groupBy(linkClicks.placementId);
+    for (const r of rows) out.set(r.placementId, Number(r.n) || 0);
+    return out;
+  }
+
+  /**
+   * NOT IMPLEMENTED, on purpose. An automatic "the term ran out" sweep was
+   * written here and removed, because `expires_at` is stamped when the BRAND
+   * submits the request — not when the creator approves and not when the
+   * video goes live — and writing `expired` has three consequences the rest
+   * of the system does not expect:
+   *
+   *   1. `expired` is not in ACTIVE_PLACEMENT_STATUSES, so the surface would
+   *      silently become available for another brand to buy while the
+   *      product is still on air.
+   *   2. `expired` is not in getApprovedPlacementsForVideo, so the next
+   *      re-render would drop a product the audience is currently seeing.
+   *   3. A creator who served the full term would watch the amount move to
+   *      "not proceeding" and get struck through.
+   *
+   * The consequence of NOT sweeping is that a lapsed term keeps counting as
+   * accrued. That overstates a number nobody is being paid on yet, which is
+   * the smaller error. Re-anchor expires_at to approval (or to go-live) and
+   * decide what a served term should do to inventory before reviving this.
+   */
+
   async getPublishedPostsByUser(userId: number): Promise<PublishedPost[]> {
     const profiles = await this.getDistributionProfiles(userId);
     if (profiles.length === 0) return [];
@@ -4440,13 +4563,36 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(clipAnalytics.fetchedAt));
   }
 
-  async getAnalyticsByClip(clipId: number): Promise<ClipAnalytics[]> {
+  /**
+   * Analytics for one clip. The source matters: remix and editorial ids are
+   * independent serial sequences, so filtering on clipId alone returned a
+   * different clip's numbers whenever the ids happened to collide — and
+   * returned nothing at all for editorial clips, which live in the other column.
+   */
+  async getAnalyticsByClip(clipId: number, source: "remix" | "editorial" = "remix"): Promise<ClipAnalytics[]> {
     return db.select().from(clipAnalytics)
-      .where(eq(clipAnalytics.clipId, clipId))
+      .where(source === "editorial"
+        ? eq(clipAnalytics.editorialClipId, clipId)
+        : eq(clipAnalytics.clipId, clipId))
       .orderBy(desc(clipAnalytics.fetchedAt));
   }
 
+  /**
+   * Every analytics row for a video, keyed through the POSTS rather than
+   * through generated_clips ids. The old version filtered on clipId IN
+   * (remix clip ids), so an editorial post — which writes clipId NULL and
+   * editorialClipId instead — could never appear in a video's aggregate no
+   * matter how many rows it had.
+   */
   async getAnalyticsSummaryByVideo(videoId: number): Promise<ClipAnalytics[]> {
+    const posts = await this.getPublishedPostsByVideo(videoId);
+    if (posts.length === 0) return [];
+    return db.select().from(clipAnalytics)
+      .where(inArray(clipAnalytics.postId, posts.map((p) => p.id)))
+      .orderBy(desc(clipAnalytics.fetchedAt));
+  }
+
+  private async _legacyAnalyticsSummaryByClip(videoId: number): Promise<ClipAnalytics[]> {
     const clips = await this.getClipsByVideo(videoId);
     if (clips.length === 0) return [];
     const clipIds = clips.map(c => c.id);

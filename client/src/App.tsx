@@ -21,6 +21,7 @@ import WaitlistPage from "@/pages/WaitlistPage";
 import Dashboard from "@/pages/Dashboard";
 import Library from "@/pages/Library";
 import ClipsAndReels from "@/pages/ClipsAndReels";
+import Earnings from "@/pages/Earnings";
 import Opportunities from "@/pages/Opportunities";
 import BrandMarketplace from "@/pages/BrandMarketplace";
 import Campaigns from "@/pages/Campaigns";
@@ -146,7 +147,7 @@ function Router() {
   });
 
   // Protected routes that require approval
-  const protectedRoutes = ["/dashboard", "/library", "/clips", "/opportunities", "/marketplace", "/campaigns", "/settings", "/upload"];
+  const protectedRoutes = ["/dashboard", "/library", "/clips", "/earnings", "/opportunities", "/marketplace", "/campaigns", "/settings", "/upload"];
   const isProtectedRoute = protectedRoutes.some(route => location === route || location === "/");
 
   // Redirect based on approval status (skip for admin bypass)
@@ -314,9 +315,7 @@ function Router() {
               <Route path="/brand/clips" component={BrandClipsBrowser} />
               <Route path="/brand/placements" component={BrandPlacementRequests} />
               <Route path="/settings" component={Settings} />
-              {/* Earnings was a second copy of the Dashboard. Old links still
-                  land somewhere real; the nav entry is gone until the page is. */}
-              <Route path="/earnings">{() => <Redirect to="/" replace />}</Route>
+              <Route path="/earnings" component={Earnings} />
               <Route path="/studio/upload">{() => <StudioAccessGuard><StudioUpload /></StudioAccessGuard>}</Route>
               <Route path="/studio/library">{() => <StudioAccessGuard><StudioLibrary /></StudioAccessGuard>}</Route>
               <Route component={NotFound} />

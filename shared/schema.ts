@@ -1406,7 +1406,12 @@ export const clipAnalytics = pgTable('clip_analytics', {
   demographicsData: jsonb('demographics_data').$type<Record<string, any>>(),
   fetchedAt: timestamp('fetched_at').defaultNow(),
   createdAt: timestamp('created_at').defaultNow(),
-});
+}, (table) => [
+  // The capture job appends a row per post per cycle, and the clips feed
+  // wants only the newest per post — without this the DISTINCT ON in
+  // getAnalyticsByPostIds is a sequential scan over the whole history.
+  index('idx_clip_analytics_post_time').on(table.postId, table.fetchedAt),
+]);
 
 export const insertClipAnalyticsSchema = createInsertSchema(clipAnalytics).omit({
   id: true,

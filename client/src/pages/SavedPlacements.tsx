@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { fetchWithTimeout } from "@/lib/queryClient";
+import { PlacementResults, type PlacementResultView } from "@/components/PlacementResults";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -241,6 +242,17 @@ export default function SavedPlacements() {
     },
   });
   const isCreator = userTypeData?.userType === "creator";
+
+  // What each live placement actually did. One request for the page; the
+  // panel under a live card is the payoff for having marked it live.
+  const { data: resultsData } = useQuery<{ results: PlacementResultView[] }>({
+    queryKey: ["/api/creator/placements/results"],
+    staleTime: 60_000,
+  });
+  const resultByPlacement = new Map<number, PlacementResultView>();
+  for (const r of resultsData?.results ?? []) {
+    if (r.placementId != null) resultByPlacement.set(r.placementId, r);
+  }
 
   // Export state
   const [exportingId, setExportingId] = useState<number | null>(null);
@@ -544,6 +556,16 @@ export default function SavedPlacements() {
                                 </div>
                               );
                             })()}
+                            {placement.reviewStatus === "live" && resultByPlacement.has(placement.id) && (
+                              <div className="mt-2">
+                                <PlacementResults result={resultByPlacement.get(placement.id)!} />
+                              </div>
+                            )}
+                            {placement.reviewStatus === "live" && !resultByPlacement.has(placement.id) && (
+                              <p className="text-[11px] text-muted-foreground mt-1">
+                                Marked live. Results appear here once we've collected a day of numbers.
+                              </p>
+                            )}
                             {placement.reviewStatus === "render_ready" && (
                               <Button
                                 size="sm"

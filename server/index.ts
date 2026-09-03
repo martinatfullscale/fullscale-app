@@ -687,6 +687,20 @@ async function sweepStaleTempArtifacts(): Promise<void> {
         }
       }
 
+      // Per-post performance for clips the creator published through
+      // FullScale. Without this job clip_analytics only ever received rows
+      // when someone pressed Refresh inside the Distribution modal, so every
+      // "views" figure in the product read 0 — the work was done and the
+      // receipt was hidden. Kill: ANALYTICS_CAPTURE_ENABLED=false.
+      if (process.env.ANALYTICS_CAPTURE_ENABLED !== "false") {
+        try {
+          const { startAnalyticsCaptureJob } = await import("./lib/distribution/analyticsCollector");
+          startAnalyticsCaptureJob();
+        } catch (acErr) {
+          log(`Analytics capture job failed to start: ${acErr}`);
+        }
+      }
+
       // Audience response: per-day engagement (retroactive, so before/after
       // around a placement works immediately) + comment text with sentiment
       // and brand-mention classification. Kill: AUDIENCE_RESPONSE_ENABLED=false.

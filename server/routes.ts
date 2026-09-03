@@ -4900,6 +4900,35 @@ export async function registerRoutes(
       // review timestamps (the anchor the candidate search depends on) are
       // not clobbered by a status the review team didn't set.
       await storage.setPlacementLive(placementId).catch(() => {});
+      // Close the loop for the BRAND. Their request previously dead-ended at
+      // "Approved — final render in production" and never learned the
+      // placement actually reached an audience.
+      try {
+        const assignmentId = (exposure as any)?.assignmentId;
+        if (assignmentId) {
+          const assignment = await storage.getBrandPlacementById(assignmentId);
+          // Deliberately NOT a new assignment status. "live" is not in the
+          // status union, and writing it would drop the row out of
+          // ACTIVE_PLACEMENT_STATUSES (freeing the surface for another brand
+          // to buy) and out of getApprovedPlacementsForVideo (so a re-render
+          // would silently omit the product that is already on air). Live-ness
+          // is derived from the exposure ledger instead, which is the record
+          // that actually knows.
+          if (assignment?.brandUserId) {
+            await storage.createNotification({
+              userId: assignment.brandUserId,
+              type: "placement_live",
+              title: "Your placement is live",
+              body: "The creator published the video carrying your product. Results start accumulating now.",
+              linkPath: `/brand/placements?placement=${assignmentId}`,
+              metadata: { assignmentId, placementId, videoId: placement.videoId },
+            });
+          }
+        }
+      } catch (bridgeErr: any) {
+        // The exposure is recorded either way — this is notification, not truth.
+        console.warn("[GoLive] brand bridge failed:", bridgeErr?.message);
+      }
       recordCreatorEvent({
         creatorUserId: ownerUserId,
         actorUserId: String(req.authUserId),
@@ -8886,6 +8915,20 @@ export async function registerRoutes(
         }
       }
       const uniquePlacements = Array.from(seen.values());
+      // Which of these have actually been published? One batched lookup, so
+      // the status below is derived from the go-live ledger instead of being
+      // asserted.
+      const liveByPlacementId = new Map<number, { liveAt: Date | string | null; postUrl: string | null }>();
+      try {
+        const exps = await storage.getPlacementExposuresForPlacements(uniquePlacements.map((p) => p.id));
+        for (const e of exps) {
+          if (e.placementId != null && !liveByPlacementId.has(e.placementId)) {
+            liveByPlacementId.set(e.placementId, { liveAt: e.liveAt ?? null, postUrl: e.postUrl ?? null });
+          }
+        }
+      } catch (expErr: any) {
+        console.warn("[Brand Campaigns] exposure lookup failed:", expErr?.message);
+      }
       console.log(`[Brand Campaigns] ${placements.length} total placements → ${uniquePlacements.length} unique videos`);
 
       // Track which videoIds have live placements (to avoid showing duplicate bids)
@@ -8937,8 +8980,16 @@ export async function registerRoutes(
           videoId: placement.videoId,
           creatorUserId: video?.userId || null,
           bidAmount,
+          // Lifetime views of the WHOLE source video, not of the placement
+          // and not of any post. Named for what it is so the UI cannot go on
+          // labelling it "Est. Reach".
+          sourceVideoLifetimeViews: video?.viewCount || 0,
           viewCount: video?.viewCount || 0,
-          status: "live",
+          // Derived, not asserted. Every campaign row rendered the literal
+          // string "live" whether or not anything had ever been published.
+          status: liveByPlacementId.has(placement.id) ? "live" : (placement.reviewStatus === "render_ready" ? "ready" : "in_production"),
+          wentLiveAt: liveByPlacementId.get(placement.id)?.liveAt ?? null,
+          postUrl: liveByPlacementId.get(placement.id)?.postUrl ?? null,
           createdAt: placement.createdAt,
         });
       }
@@ -10622,9 +10673,23 @@ export async function registerRoutes(
       // scene_inventory jsonb concurrently for every row — N pool connections
       // and N synchronous JSON.parses, which stalls the whole process.
       const videoSummaries = await storage.getVideoSummaries(placements.map((p) => p.videoId));
+      // Which of these actually reached an audience. Derived from the go-live
+      // ledger rather than the assignment status, so the brand's list stops
+      // dead-ending at "final render in production". One batched query.
+      const liveByAssignment = new Map<number, { liveAt: Date | string | null; postUrl: string | null; platform: string }>();
+      try {
+        const exps = await storage.getPlacementExposuresForAssignments(placements.map((p) => p.id));
+        for (const e of exps) {
+          // Ordered newest-first, so the first row per assignment wins.
+          if (e.assignmentId != null && !liveByAssignment.has(e.assignmentId)) {
+            liveByAssignment.set(e.assignmentId, { liveAt: e.liveAt ?? null, postUrl: e.postUrl ?? null, platform: e.platform });
+          }
+        }
+      } catch { /* the list is still worth serving without live-ness */ }
       const hydrated = await Promise.all(
         placements.map(async (p) => {
           const video = videoSummaries.get(p.videoId) ?? null;
+          const live = liveByAssignment.get(p.id) ?? null;
           const [product, clip] = await Promise.all([
             p.brandProductId != null ? storage.getBrandProduct(p.brandProductId) : Promise.resolve(undefined),
             p.editorialClipId ? storage.getEditorialClipById(p.editorialClipId) : Promise.resolve(null),
@@ -10639,6 +10704,9 @@ export async function registerRoutes(
             clip: clip
               ? { id: clip.id, exportPath: clip.exportPath, thumbnailPath: (clip as any).thumbnailPath ?? null, renderStatus: clip.renderStatus, suggestedTitle: clip.suggestedTitle }
               : null,
+            // Did it reach an audience? Read from the go-live ledger, not the
+            // assignment status (see the note in the go-live handler).
+            live: live ? { liveAt: live.liveAt, postUrl: live.postUrl, platform: live.platform } : null,
           };
         })
       );
@@ -14946,6 +15014,14 @@ export async function registerRoutes(
       const videoId = parseInt(req.params.videoId);
       if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video ID" });
       const { query, maxClips = 10 } = req.body || {};
+      // "Find more like this" passes the source clip's own range so the
+      // search cannot hand back the clip the creator clicked on.
+      const excludeRanges = Array.isArray(req.body?.excludeRanges)
+        ? req.body.excludeRanges
+            .map((r: any) => ({ start: Number(r?.start), end: Number(r?.end) }))
+            .filter((r: any) => Number.isFinite(r.start) && Number.isFinite(r.end) && r.end > r.start)
+            .slice(0, 40)
+        : undefined;
 
       if (!query || typeof query !== "string" || query.trim().length === 0) {
         return res.status(400).json({ error: "Query is required" });
@@ -15005,6 +15081,7 @@ export async function registerRoutes(
             })),
             maxClips,
             query: trimmed,
+            excludeRanges,
           });
           return { query: trimmed, clips: editorialMoments, count: editorialMoments.length };
         } finally {
@@ -18812,10 +18889,16 @@ export async function registerRoutes(
   app.get("/api/distribution/analytics/clip/:clipId", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const clipId = parseInt(req.params.clipId);
-      const analytics = await storage.getAnalyticsByClip(clipId);
-      // Authorize via the analytics rows' own videoId — no rows, nothing to leak.
-      if (analytics.length > 0 && !(await ownsVideo(req, (analytics[0] as any).videoId))) {
-        return res.status(404).json({ error: "Not found" });
+      const source = req.query.source === "editorial" ? "editorial" : "remix";
+      const analytics = await storage.getAnalyticsByClip(clipId, source);
+      // Authorize through the POST that produced the row. clip_analytics has
+      // no videoId column, so the previous check read undefined and every
+      // authorized request 404'd the moment rows existed.
+      if (analytics.length > 0) {
+        const post = await storage.getPublishedPost((analytics[0] as any).postId);
+        if (!post || !(await ownsVideo(req, post.videoId))) {
+          return res.status(404).json({ error: "Not found" });
+        }
       }
       res.json(analytics);
     } catch (err: any) {
@@ -18826,6 +18909,270 @@ export async function registerRoutes(
   // Published Posts
 
   // GET /api/distribution/posts/video/:videoId — List published posts for a video
+  // ─── Results: what a placement actually did ───────────────────
+  //
+  // One computation, two audiences. The creator and the brand read the same
+  // numbers from the same function so they can never disagree in a shared
+  // conversation — the only difference is that comment TEXT stays with the
+  // creator (the brand gets the counts, not the words).
+  //
+  // Honesty rules baked in here, because every one of them is a way this
+  // panel could quietly lie:
+  //  - Views are WHOLE-VIDEO daily views from YouTube Analytics, not views
+  //    of the placement. Labelled that way in the payload.
+  //  - Absent numbers are null with a stated reason, never 0.
+  //  - Conversions are omitted entirely: nothing writes the secret that
+  //    would let a brand report them, so any figure would be permanently 0
+  //    and read as "nothing converted" rather than "nobody is reporting".
+  /** Shared inputs, fetched once for a whole list rather than per exposure. */
+  type ResultBatch = {
+    videos: Map<number, any>;
+    clicks: Map<number, number>;
+    dailyByVideo: Map<number, Array<{ day: string; views: number | null }>>;
+    audienceByVideo: Map<number, any>;
+  };
+  const loadResultBatch = async (exposures: any[]): Promise<ResultBatch> => {
+    const videoIds = Array.from(new Set(exposures.map((e) => e.sourceVideoId).filter(Boolean)));
+    const placementIds = exposures.map((e) => e.placementId).filter((v: any): v is number => typeof v === "number");
+    const [videos, clicks] = await Promise.all([
+      storage.getVideoSummaries(videoIds).catch(() => new Map()),
+      storage.getLinkClickCountsForPlacements(placementIds).catch(() => new Map<number, number>()),
+    ]);
+    const dailyByVideo = new Map<number, Array<{ day: string; views: number | null }>>();
+    const audienceByVideo = new Map<number, any>();
+    await Promise.all(videoIds.map(async (vid) => {
+      const [daily, audience] = await Promise.all([
+        storage.getVideoDailyMetrics(vid).catch(() => [] as Array<{ day: string; views: number | null }>),
+        storage.getAudienceResponseSummary(vid).catch(() => null),
+      ]);
+      dailyByVideo.set(vid, daily);
+      if (audience) audienceByVideo.set(vid, audience);
+    }));
+    return { videos, clicks, dailyByVideo, audienceByVideo };
+  };
+
+  // Daily metrics only exist for YouTube source videos (audienceResponse.ts
+  // skips every other platform), so a view count next to "Live on TikTok"
+  // would be a different platform's number under this one's heading.
+  const YT_PLATFORMS = new Set(["youtube", "youtube_shorts"]);
+
+  const buildPlacementResult = async (exposure: any, opts: { includeCommentText: boolean }, batch: ResultBatch) => {
+    const placementId = exposure.placementId as number | null;
+    const videoId = exposure.sourceVideoId as number;
+    const liveAt = exposure.liveAt ? new Date(exposure.liveAt) : null;
+    const blocking: string[] = [];
+    const permanent: string[] = [];
+
+    const video = batch.videos.get(videoId) ?? null;
+    const link = placementId ? await storage.getPlacementLinkForPlacement(placementId).catch(() => undefined) : undefined;
+    const daily = batch.dailyByVideo.get(videoId) ?? [];
+
+    // Before/after on GENUINELY equal windows. An unequal comparison
+    // presented as equal is worse than no comparison: a video with two days
+    // of history before go-live and thirty after would read as +1400%.
+    let viewsAfter: number | null = null;
+    let viewsBefore: number | null = null;
+    let windowDays = 0;
+    const isYouTubeSource = YT_PLATFORMS.has(String(exposure.platform));
+    if (!liveAt) {
+      blocking.push("No go-live date recorded.");
+    } else if (!isYouTubeSource) {
+      permanent.push(`We can't read day-by-day view counts for ${exposure.platform} — open the post to see its numbers.`);
+    } else if (daily.length === 0) {
+      blocking.push("No day-by-day view data yet — this needs a connected YouTube channel and a day or two of history.");
+    } else {
+      const liveDay = liveAt.toISOString().slice(0, 10);
+      const after = daily.filter((d) => d.day >= liveDay);
+      const beforeAll = daily.filter((d) => d.day < liveDay);
+      windowDays = after.length;
+      const sum = (rows: typeof daily) => rows.reduce((a, d) => a + (Number(d.views) || 0), 0);
+      viewsAfter = after.length > 0 ? sum(after) : null;
+      // Only compare like with like. Fewer prior days than live days means
+      // there is no matching window, so there is no comparison to show.
+      if (beforeAll.length >= windowDays && windowDays > 0) {
+        viewsBefore = sum(beforeAll.slice(-windowDays));
+      } else if (windowDays > 0) {
+        permanent.push("Not enough history before it went live to compare against.");
+      }
+    }
+
+    const summary = batch.audienceByVideo.get(videoId);
+    const audience = summary && summary.total > 0 ? {
+      total: summary.total,
+      classified: summary.classified,
+      sentiment: summary.sentiment,
+      brandMentions: summary.brandMentions,
+      afterPlacement: summary.afterPlacement,
+      // Comment text belongs to the creator's relationship with their
+      // audience; the brand sees the shape of the response, not the words.
+      samples: opts.includeCommentText ? summary.samples : undefined,
+    } : null;
+
+    const clicks = placementId ? (batch.clicks.get(placementId) ?? 0) : 0;
+    // A settled fact, not something that resolves with time — so it is
+    // reported as permanent and never rendered under a spinner.
+    if (!link) permanent.push("No tracking link was posted with this video, so clicks can't be counted.");
+
+    return {
+      placementId,
+      assignmentId: exposure.assignmentId ?? null,
+      videoId,
+      videoTitle: video?.title ?? `Video ${videoId}`,
+      videoThumbnail: video?.thumbnailUrl ?? null,
+      platform: exposure.platform,
+      postUrl: exposure.postUrl ?? null,
+      liveAt: exposure.liveAt ?? null,
+      linkSource: exposure.linkSource ?? null,
+      views: {
+        // Named so no UI can shorten it to "views of your placement".
+        basis: "whole_video_daily",
+        // Which platform these numbers came from, which is not always the
+        // platform the clip was posted to.
+        sourcePlatform: isYouTubeSource ? "youtube" : null,
+        sinceLive: viewsAfter,
+        priorWindow: viewsBefore,
+        windowDays,
+      },
+      clicks: link ? clicks : null,
+      trackingLinkUrl: link ? `/go/${(link as any).slug}` : null,
+      audience,
+      state: blocking.length === 0 ? "ready" : (viewsAfter != null || clicks > 0 ? "partial" : "accumulating"),
+      // Split so the UI can spin on the first and simply state the second.
+      blocking,
+      permanent,
+    };
+  };
+
+  // GET /api/creator/placements/results — every placement of theirs that went live
+  app.get("/api/creator/placements/results", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const exposures = await storage.getPlacementExposuresForUser(String(req.authUserId ?? req.user?.id ?? ""));
+      const batch = await loadResultBatch(exposures);
+      const results = await Promise.all(exposures.map((e) => buildPlacementResult(e, { includeCommentText: true }, batch)));
+      res.json({ results, count: results.length });
+    } catch (err: any) {
+      console.error("[Results] creator error:", err?.message);
+      res.status(500).json({ error: err?.message || "Failed to load placement results" });
+    }
+  });
+
+  // GET /api/brand/placements/:id/results — one assignment, brand-authorized
+  app.get("/api/brand/placements/:id/results", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const assignmentId = parseInt(req.params.id);
+      if (isNaN(assignmentId)) return res.status(400).json({ error: "Invalid placement id" });
+      const assignment = await storage.getBrandPlacementById(assignmentId);
+      if (!assignment) return res.status(404).json({ error: "Placement not found" });
+      if (!req.isAdmin && String(assignment.brandUserId) !== String(req.authUserId ?? req.user?.id ?? "")) {
+        return res.status(404).json({ error: "Placement not found" });
+      }
+      const exposure = await storage.getPlacementExposureForAssignment(assignmentId).catch(() => undefined);
+      if (!exposure) {
+        return res.json({
+          result: null,
+          status: assignment.status,
+          // Not an error state — most placements simply have not been
+          // published yet, and saying so beats an empty panel.
+          message: assignment.status === "brand_approved"
+            ? "Approved. Results appear here once the creator publishes the video."
+            : "This placement hasn't been published yet.",
+        });
+      }
+      const batch = await loadResultBatch([exposure]);
+      const result = await buildPlacementResult(exposure, { includeCommentText: false }, batch);
+      res.json({ result, status: assignment.status });
+    } catch (err: any) {
+      console.error("[Results] brand error:", err?.message);
+      res.status(500).json({ error: err?.message || "Failed to load placement results" });
+    }
+  });
+
+  // ─── Earnings ─────────────────────────────────────────────────
+  //
+  // What this page can honestly say, and what it must not.
+  //
+  // REAL: placement_fee_cents / platform_take_cents / creator_payout_cents
+  // are computed by a genuine CPM rubric (server/lib/placementPricing.ts)
+  // and stored when the brand makes the request.
+  //
+  // NOT REAL: payment. charge_status is written once as "pending" and never
+  // advances; charged_at and stripe_charge_id have no writers anywhere.
+  // Nothing in the database records that a creator was ever paid. So this
+  // endpoint reports ACCRUED VALUE and says outright that no payout rail
+  // exists — a "balance" or a "paid" column here would be invented.
+  app.get("/api/creator/earnings", isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const creatorUserId = String(req.authUserId ?? req.user?.id ?? "");
+      const ALL = "pending_creator_review,creator_approved,pending_brand_review,brand_approved,live,creator_rejected,brand_withdrawn,expired";
+      const placements = await storage.getCreatorPlacements(creatorUserId, ALL);
+      const videoIds = Array.from(new Set(placements.map((p) => p.videoId).filter(Boolean)));
+      const videos = await storage.getVideoSummaries(videoIds as number[]).catch(() => new Map());
+      const productIds = Array.from(new Set(placements.map((p) => p.brandProductId).filter((v): v is number => typeof v === "number")));
+      const products = new Map<number, any>();
+      await Promise.all(productIds.map(async (id) => {
+        const p = await storage.getBrandProduct(id).catch(() => undefined);
+        if (p) products.set(id, p);
+      }));
+
+      const OFFERED = ["pending_creator_review"];
+      const ACCRUED = ["creator_approved", "pending_brand_review", "brand_approved", "live"];
+      const CLOSED = ["creator_rejected", "brand_withdrawn", "expired"];
+      const bucketOf = (st: string) => OFFERED.includes(st) ? "offered" : ACCRUED.includes(st) ? "accrued" : "closed";
+
+      const rows = placements.map((p) => {
+        const video = videos.get(p.videoId) ?? null;
+        const product = p.brandProductId != null ? products.get(p.brandProductId) ?? null : null;
+        const breakdown: any = (p as any).pricingBreakdown ?? null;
+        return {
+          id: p.id,
+          bucket: bucketOf(p.status),
+          status: p.status,
+          videoId: p.videoId,
+          videoTitle: video?.title ?? `Video ${p.videoId}`,
+          videoThumbnail: video?.thumbnailUrl ?? null,
+          productName: product?.name ?? null,
+          productImageUrl: product?.thumbnailUrl ?? product?.imageUrl ?? null,
+          creatorPayoutCents: p.creatorPayoutCents ?? 0,
+          placementFeeCents: p.placementFeeCents ?? 0,
+          platformTakeCents: p.platformTakeCents ?? 0,
+          isTestPlacement: !!(p as any).isTestPlacement,
+          durationTerm: (p as any).durationTerm ?? "single",
+          durationDays: (p as any).durationDays ?? 0,
+          expiresAt: (p as any).expiresAt ?? null,
+          negotiatedNote: (p as any).negotiatedNote ?? null,
+          // A custom or test fee did NOT come from the rubric, so showing the
+          // multiplier chain next to it would explain a number it did not produce.
+          pricing: breakdown && !breakdown.isCustomOverride && !breakdown.isTestPlacement ? breakdown : null,
+          pricingOverride: breakdown?.isCustomOverride ? "custom" : breakdown?.isTestPlacement ? "test" : null,
+          offeredAt: p.createdAt ?? null,
+          decidedAt: (p as any).reviewedAt ?? null,
+        };
+      });
+
+      const sumBucket = (b: string) => rows.filter((r) => r.bucket === b && !r.isTestPlacement)
+        .reduce((a, r) => a + (r.creatorPayoutCents || 0), 0);
+
+      res.json({
+        rows,
+        totals: {
+          offeredCents: sumBucket("offered"),
+          accruedCents: sumBucket("accrued"),
+          closedCents: sumBucket("closed"),
+          testPlacements: rows.filter((r) => r.isTestPlacement).length,
+        },
+        // The client renders this verbatim rather than inventing its own
+        // reassurance about when money arrives.
+        payout: {
+          available: false,
+          note: "Payout onboarding isn't live yet — accrued amounts transfer once it is. Nothing has been paid out.",
+        },
+      });
+    } catch (err: any) {
+      console.error("[Earnings] error:", err?.message);
+      res.status(500).json({ error: err?.message || "Failed to load earnings" });
+    }
+  });
+
   // ─── One job view for every background action ─────────────────
   //
   // GET /api/jobs/:kind/:id normalizes each entity's own status row into
@@ -19006,11 +19353,37 @@ export async function registerRoutes(
 
       // Publish records keyed by the clip they belong to. Reels publish
       // through their generated_clips twin, so a reel looks up remix:<gid>.
+      // Real performance per post, batched. Absent metrics stay absent —
+      // a platform that cannot report (or has not been polled yet) must not
+      // render as a zero, which reads as "nobody watched".
+      const metricsByPost = new Map<number, any>();
+      try {
+        const rows = await storage.getAnalyticsByPostIds(posts.map((p) => p.id));
+        for (const m of rows) metricsByPost.set(m.postId, m);
+      } catch (e: any) {
+        console.warn("[Clips] metrics lookup failed (feed still served):", e?.message);
+      }
+      // Derived from the fetcher registry, not hand-copied — a platform
+      // added or removed there must not silently disagree here.
+      const { PLATFORM_METRICS_SUPPORTED: METRICS_SUPPORTED } = await import("./lib/distribution/analyticsCollector");
       const postsByKey = new Map<string, any[]>();
       for (const p of posts) {
         const key = p.clipSource === "editorial" ? `editorial:${p.editorialClipId}` : `remix:${p.clipId}`;
         const list = postsByKey.get(key) ?? [];
-        list.push({ postId: p.id, platform: p.platform, postUrl: p.postUrl, status: p.status, publishedAt: p.publishedAt, error: p.errorMessage ?? null });
+        const m = metricsByPost.get(p.id);
+        list.push({
+          postId: p.id, platform: p.platform, postUrl: p.postUrl, status: p.status,
+          publishedAt: p.publishedAt, error: p.errorMessage ?? null,
+          // null = we have no number, for a reason the client can explain.
+          metrics: m ? {
+            views: m.views ?? null, likes: m.likes ?? null, comments: m.comments ?? null,
+            shares: m.shares ?? null, saves: m.saves ?? null, reach: m.reach ?? null,
+            engagementRate: m.engagementRate ?? null,
+            watchTimeSeconds: m.watchTimeSeconds ?? null,
+            fetchedAt: m.fetchedAt ?? null,
+          } : null,
+          metricsSupported: METRICS_SUPPORTED.has(p.platform),
+        });
         postsByKey.set(key, list);
       }
       const epoch = (d: any): number => (d ? new Date(d).getTime() : 0);
@@ -19054,6 +19427,8 @@ export async function registerRoutes(
           error: c.renderError ?? null,
           score: c.finalScore ?? c.editorialScore ?? null,
           tier: c.monetizationTier ?? null,
+          // What the clip is ABOUT — the seed for "Find more like this".
+          topicTags: Array.isArray(c.topicTags) ? c.topicTags : [],
           segmentsCount: Array.isArray(c.segments) ? c.segments.length : 0,
           createdAt: iso(c.createdAt),
           completedAt: iso(c.renderedAt),

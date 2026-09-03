@@ -177,6 +177,10 @@ function RealBrandCampaigns() {
 }
 
 
+/** Shared with the Earnings page so the same cents never print two ways. */
+const usdFromCents = (cents: number): string =>
+  (cents / 100).toLocaleString(undefined, { style: "currency", currency: "USD", minimumFractionDigits: 2 });
+
 const chartData = [
   { month: "Aug", height: "45%", revenue: "$8.2k" },
   { month: "Sep", height: "72%", revenue: "$12.4k" },
@@ -494,6 +498,13 @@ export default function Dashboard() {
     staleTime: 0,
   });
 
+  // Same source as the Earnings page — see the note on realModeStats below.
+  const { data: earningsData, isError: earningsError } = useQuery<{ totals: { accruedCents: number } }>({
+    queryKey: ["/api/creator/earnings"],
+    enabled: isRealMode,
+    staleTime: 60_000,
+  });
+
   const { data: marketplaceStats } = useQuery<MarketplaceStats>({
     queryKey: ["/api/marketplace/stats", isPitchMode],
     queryFn: async () => {
@@ -552,9 +563,21 @@ export default function Dashboard() {
     return "--";
   };
   
+  // The revenue tile was the string "$0" in every real session, which is a
+  // claim ("you have earned nothing") dressed as a placeholder. It now shows
+  // the same accrued figure the Earnings page computes, from the same query,
+  // so the two pages cannot disagree about a creator's money.
+  const accruedCents = (earningsData?.totals?.accruedCents ?? 0);
   const realModeStats = {
-    revenue: "$0",
-    revenueGrowth: "Connect to track",
+    // Same formatter as the Earnings page (cents included). Rounding to
+    // whole dollars here made the two pages print different numbers for the
+    // same figure, which is exactly the drift this tile exists to avoid.
+    revenue: earningsData ? usdFromCents(accruedCents) : "—",
+    revenueGrowth: earningsError
+      ? "Couldn't load earnings"
+      : earningsData
+        ? (accruedCents > 0 ? "Accrued — not yet paid out" : "No approved placements yet")
+        : "Loading…",
     activeBids: String(marketplaceStats?.activeBids || 0),
     avgCpm: "--",
     globalReach: calculateTotalReach(),
@@ -812,10 +835,21 @@ export default function Dashboard() {
           transition={{ delay: 0.1 }}
           className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8"
         >
-          <div className="bg-white/5 rounded-xl p-5 border border-white/5">
+          <div
+            role={showSimulationData ? undefined : "link"}
+            tabIndex={showSimulationData ? undefined : 0}
+            // wouter only intercepts its own <Link>; a plain href here would
+            // hard-reload the SPA.
+            onClick={showSimulationData ? undefined : () => setLocation("/earnings")}
+            onKeyDown={showSimulationData ? undefined : (e) => { if (e.key === "Enter") setLocation("/earnings"); }}
+            className={`bg-white/5 rounded-xl p-5 border border-white/5 block transition-colors ${showSimulationData ? "" : "cursor-pointer hover:border-emerald-500/30"}`}
+            title={showSimulationData ? undefined : "See every placement and what it's worth"}
+          >
             <div className="flex items-center gap-2 mb-2">
               <TrendingUp className="w-4 h-4 text-emerald-400" />
-              <p className="text-xs text-muted-foreground uppercase tracking-wider">Total Revenue</p>
+              <p className="text-xs text-muted-foreground uppercase tracking-wider">
+                {showSimulationData ? "Total Revenue" : "Accrued"}
+              </p>
             </div>
             <p className="text-3xl font-bold text-emerald-400" data-testid="text-revenue">{displayStats.revenue}</p>
             <p className="text-xs text-emerald-400/80 mt-1">{displayStats.revenueGrowth}</p>

@@ -25,6 +25,10 @@ interface Campaign {
 const statusColors: Record<string, string> = {
   live: "bg-emerald-500/20 text-emerald-400",
   active: "bg-emerald-500/20 text-emerald-400",
+  // The server used to send the literal "live" for every placement. It now
+  // derives the state, so these two are real and must not be painted green.
+  ready: "bg-sky-500/20 text-sky-400",
+  in_production: "bg-amber-500/20 text-amber-400",
   archived: "bg-gray-500/20 text-gray-400",
   pending: "bg-amber-500/20 text-amber-400",
 };
@@ -32,6 +36,8 @@ const statusColors: Record<string, string> = {
 const statusLabels: Record<string, string> = {
   live: "Live",
   active: "Live",
+  ready: "Ready to publish",
+  in_production: "In production",
   archived: "Archived",
   pending: "Pending",
 };
@@ -53,6 +59,7 @@ export default function Campaigns() {
     total: campaigns.length,
     pending: campaigns.filter(c => c.status === "pending").length,
     live: campaigns.filter(c => c.status === "live" || c.status === "active").length,
+    inProduction: campaigns.filter(c => c.status === "ready" || c.status === "in_production").length,
     totalSpend: campaigns.reduce((sum, c) => sum + parseFloat(c.bidAmount || "0"), 0),
     estimatedReach: campaigns.reduce((sum, c) => sum + (c.viewCount || 0), 0),
   };
@@ -124,7 +131,12 @@ export default function Campaigns() {
             <Card className="p-5">
               <div className="flex items-center gap-2 mb-2">
                 <Eye className="w-4 h-4 text-blue-400" />
-                <p className="text-xs text-muted-foreground uppercase tracking-wider">Est. Reach</p>
+                {/* This is the creators' whole videos, lifetime — not reach of
+                    any placement, and not of any post. It was labelled
+                    "Est. Reach", which reads as a number about the campaign. */}
+                <p className="text-xs text-muted-foreground uppercase tracking-wider" title="Total lifetime views of the creators' source videos. Not placement reach.">
+                  Creator video views
+                </p>
               </div>
               <p className="text-3xl font-bold text-foreground" data-testid="text-estimated-reach">
                 {stats.estimatedReach >= 1000000
@@ -231,7 +243,7 @@ export default function Campaigns() {
                         ${parseFloat(campaign.bidAmount).toLocaleString()}
                       </p>
                     )}
-                    <Badge className={statusColors[campaign.status] || statusColors.live} data-testid={`badge-status-${campaign.id}`}>
+                    <Badge className={statusColors[campaign.status] || statusColors.archived} data-testid={`badge-status-${campaign.id}`}>
                       {statusLabels[campaign.status] || campaign.status}
                     </Badge>
                   </div>
