@@ -579,11 +579,11 @@ export default function SavedPlacements() {
                                 className="flex-1 gap-1 text-[10px] h-7"
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  window.location.href = `/remix/${placement.videoId}`;
+                                  window.location.href = `/remix/${placement.videoId}?from=saved`;
                                 }}
                               >
                                 <Video className="w-3 h-3" />
-                                Full Editor
+                                Placement Engine
                               </Button>
                               {isCreator && (
                                 <Button
@@ -714,11 +714,11 @@ export default function SavedPlacements() {
                   size="sm"
                   className="gap-1"
                   onClick={() => {
-                    window.location.href = `/remix/${previewPlacement.videoId}`;
+                    window.location.href = `/remix/${previewPlacement.videoId}?from=saved`;
                   }}
                 >
                   <Video className="w-3.5 h-3.5" />
-                  Full Editor
+                  Placement Engine
                 </Button>
                 {isCreator && (
                   <Button
@@ -726,7 +726,7 @@ export default function SavedPlacements() {
                     size="sm"
                     className="gap-1"
                     onClick={() => {
-                      window.location.href = `/remix/${previewPlacement.videoId}`;
+                      window.location.href = `/remix/${previewPlacement.videoId}?from=saved`;
                     }}
                   >
                     <Download className="w-3.5 h-3.5" />

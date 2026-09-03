@@ -518,7 +518,7 @@ export async function runEditorialAutoPipeline(
       userId: String(video.userId),
       type: "editorial_ready",
       title: "Your clips are ready",
-      body: `${renderedCount} editorial clip${renderedCount === 1 ? "" : "s"} rendered for "${(video.title || "your video").slice(0, 80)}".`,
+      body: `${renderedCount} story clip${renderedCount === 1 ? "" : "s"} rendered for "${(video.title || "your video").slice(0, 80)}".`,
       // Land ON the clips, not on the Library grid where they are hover-gated.
       // Library reads ?video=&open=clips and opens Remix Studio on that video.
       // Clips & Reels, filtered to this video — the clips' actual home.

@@ -1,7 +1,7 @@
 /**
  * Brand Clips Browser — the brand-side discovery surface.
  *
- * Shows rendered editorial clips across all creators on the platform. Brands
+ * Shows rendered story clips across all creators on the platform. Brands
  * browse, click into a clip to preview it, and request placement on surfaces
  * inside that specific clip. Clip-scoped placement (not source-video-scoped)
  * because clips are the platform-ready narrative units that brands actually
@@ -119,7 +119,7 @@ export default function BrandClipsBrowser() {
               Browse Creator Clips
             </h1>
             <p className="text-sm md:text-base text-muted-foreground">
-              Auto-generated editorial clips ready for product placement. Pick one, choose a surface, request placement.
+              Auto-generated story clips ready for product placement. Pick one, choose a surface, request placement.
             </p>
           </div>
         </div>
@@ -219,7 +219,7 @@ export default function BrandClipsBrowser() {
             <h2 className="text-lg font-semibold mb-2">No clips match your filters</h2>
             <p className="text-sm text-muted-foreground max-w-md mx-auto">
               {totalClips === 0
-                ? "No editorial clips have been rendered yet. Once creators upload videos, their auto-generated clips will appear here."
+                ? "No story clips have been rendered yet. Once creators upload videos, their auto-generated clips will appear here."
                 : "Try a different search term or clear the tier filter."}
             </p>
           </CardContent>

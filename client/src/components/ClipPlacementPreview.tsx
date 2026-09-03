@@ -277,6 +277,11 @@ export default function ClipPlacementPreview({ clipId, videoId, clipTitle, onClo
                       </div>
                       <Link
                         href={`/remix/${videoId}?${new URLSearchParams({
+                          // This preview is hosted inside whichever page opened
+                          // the studio; tell the engine so its Back returns there.
+                          from: typeof window !== "undefined" && window.location.pathname.startsWith("/clips") ? "clips"
+                            : typeof window !== "undefined" && window.location.pathname.startsWith("/marketplace") ? "marketplace"
+                            : "library",
                           clip: String(clipId),
                           ...(anchorRowId ? { surface: String(anchorRowId) } : {}),
                         }).toString()}`}

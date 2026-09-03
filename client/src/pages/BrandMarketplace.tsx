@@ -1155,7 +1155,7 @@ export default function BrandMarketplace() {
                         variant="outline"
                         className="gap-2"
                         onClick={() => {
-                          window.location.href = `/remix/${selectedOpportunity.videoId}`;
+                          window.location.href = `/remix/${selectedOpportunity.videoId}?from=marketplace`;
                         }}
                         data-testid="button-place-product"
                       >

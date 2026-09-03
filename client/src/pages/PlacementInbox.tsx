@@ -148,7 +148,7 @@ export default function PlacementInbox() {
             Placement Inbox
           </h1>
           <p className="text-sm md:text-base text-muted-foreground">
-            Brands have requested placements on your videos. Approve to include them in your next remix.
+            Brands have requested placements on your videos. Approve to render them into the clip.
           </p>
         </div>
       </div>
@@ -314,6 +314,7 @@ export default function PlacementInbox() {
                     {p.brandProductId != null && (
                       <Link
                         href={`/remix/${p.videoId}?${new URLSearchParams({
+                          from: "inbox",
                           ...(p.editorialClipId ? { clip: String(p.editorialClipId) } : {}),
                           surface: String(p.surfaceId),
                           product: String(p.brandProductId),
@@ -360,7 +361,7 @@ export default function PlacementInbox() {
                       Reject
                     </Button>
                     {p.video && (
-                      <Link href={`/remix/${p.video.id}`}>
+                      <Link href={`/remix/${p.video.id}?from=inbox`}>
                         <Button variant="ghost" size="sm" className="text-xs w-full" data-testid={`button-preview-${p.id}`}>
                           <ExternalLink className="w-3 h-3 mr-1" />
                           Preview

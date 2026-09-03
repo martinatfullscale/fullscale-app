@@ -911,7 +911,7 @@ export async function registerRoutes(
             <strong>Switch between creator and brand views</strong> using the role switcher at the bottom of the sidebar. Use whichever matches what you're testing.
           </li>
           <li style="margin-bottom: 10px;">
-            <strong>To view Martin's library</strong> (for testing the remix engine and distribution): in either sidebar, scroll past the main nav to the <em>"Other Libraries"</em> section and click <strong>"Martin"</strong>. You'll see his actual library with an amber banner confirming you're viewing as him. Remix + distribution actions you run from there operate on his videos.
+            <strong>To view Martin's library</strong> (for testing the Placement Engine, Remix Studio and distribution): in either sidebar, scroll past the main nav to the <em>"Other Libraries"</em> section and click <strong>"Martin"</strong>. You'll see his actual library with an amber banner confirming you're viewing as him. Remix + distribution actions you run from there operate on his videos.
           </li>
           <li style="margin-bottom: 10px;">
             <strong>Connect your own YouTube</strong> (optional) — your own library starts empty; you can connect a YouTube account from the Library page to import videos and run scans.
@@ -13637,7 +13637,7 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Export not yet complete" });
       }
 
-      const filename = `fullscale-remix-${exportJob.videoId}-${exportJob.id}.mp4`;
+      const filename = `fullscale-placement-${exportJob.videoId}-${exportJob.id}.mp4`;
       res.setHeader("Content-Type", "video/mp4");
       res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
 

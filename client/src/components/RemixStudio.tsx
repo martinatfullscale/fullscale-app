@@ -134,7 +134,7 @@ const STATUS_CONFIG: Record<string, { color: string; icon: any; label: string }>
 const TERMINAL_STATUSES = ["completed", "failed", "cancelled"];
 
 // Auto-Remix and Highlight Reel are HIDDEN, not removed — product call
-// (2026-08-05): editorial clips are the one path until they're perfect.
+// (2026-08-05): story clips are the one path until they're perfect.
 // All state, polling and render code stays live behind this flag so
 // re-enabling is a one-line change and in-flight jobs still resolve.
 const SHOW_LEGACY_TABS = false;
@@ -233,13 +233,13 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
     const { type, data } = suggestion;
 
     // Editorial-tab targets: Apply maps to editorial equivalents. Trim and
-    // hook create a NEW rendered editorial clip at the suggested bounds;
+    // hook create a NEW rendered story clip at the suggested bounds;
     // platform_switch re-renders in the mapped aspect. Video-scoped actions
     // (add_placement, generate_asset) fall through to the shared cases.
     if (copilotClipType === "editorial" && ["trim", "hook_improvement", "caption_edit", "platform_switch"].includes(type)) {
       const eClip = copilotEditorialClip;
       if (!eClip) {
-        toast({ title: "No editorial clip selected", description: "Select an editorial clip first.", variant: "destructive" });
+        toast({ title: "No story clip selected", description: "Select an story clip first.", variant: "destructive" });
         return;
       }
       if (type === "trim" || type === "hook_improvement") {
@@ -283,7 +283,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
               setCopilotClipId(json.clip.id);
               setCopilotEditorialClip(json.clip);
             }
-            toast({ title: "New cut rendering", description: "A new editorial clip with the suggested bounds is rendering — the copilot now targets it." });
+            toast({ title: "New cut rendering", description: "A new story clip with the suggested bounds is rendering — the copilot now targets it." });
             setEditorialRefreshKey((k) => k + 1);
           } else {
             toast({ title: "Apply failed", description: "Could not create the new cut", variant: "destructive" });
@@ -316,7 +316,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
         return;
       }
       // caption_edit: editorial renders always burn the karaoke style
-      toast({ title: "Captions on editorial clips", description: "Editorial clips use the word-highlight caption style automatically; style variants apply to Auto-Remix clips." });
+      toast({ title: "Captions on story clips", description: "Editorial clips use the word-highlight caption style automatically; style variants apply to Auto-Remix clips." });
       return;
     }
 
@@ -829,7 +829,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
           {/* Main Content */}
           <div className="flex-1 overflow-y-auto p-6 space-y-6 border-r border-gray-800">
 
-            {/* Tab Switcher — Editorial Clips vs Auto-Remix */}
+            {/* Tab Switcher — Story clips vs Auto-Remix */}
             <div className="flex items-center gap-2 bg-gray-800/50 rounded-lg p-1">
               <button
                 onClick={() => setActiveTab("editorial")}
@@ -840,7 +840,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
                 }`}
               >
                 <Brain className="w-4 h-4" />
-                Editorial Clips
+                Story clips
               </button>
               {SHOW_LEGACY_TABS && (
                 <button
@@ -870,7 +870,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
               )}
             </div>
 
-            {/* Editorial Clips Tab — transcript-first viral clip identification */}
+            {/* Story clips Tab — transcript-first viral clip identification */}
             {/* Always rendered, hidden via CSS to preserve state across tab switches */}
             <div className={activeTab === "editorial" ? "block" : "hidden"}>
               <p className="text-xs text-gray-500 mb-3">
@@ -901,7 +901,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
                 }}
                 onGenerateClip={(clip) => {
                   // Renders go through the EDITORIAL pipeline and land on the
-                  // editorial clip row itself. This used to start an Auto-Remix
+                  // story clip row itself. This used to start an Auto-Remix
                   // job whose output lived in a different table shown in a
                   // different (now hidden) tab — which is how "generate" could
                   // succeed while the creator saw nothing appear here.
@@ -1203,7 +1203,7 @@ export default function RemixStudio({ videoId, open, onClose }: RemixStudioProps
                     </p>
                   )}
                   <p className="text-[11px] text-gray-500 mt-3">
-                    Clips from the transcript pipeline live in the <strong>Editorial Clips</strong> tab,
+                    Clips from the transcript pipeline live in the <strong>Story clips</strong> tab,
                     not here — check there if you were expecting those.
                   </p>
                 </div>

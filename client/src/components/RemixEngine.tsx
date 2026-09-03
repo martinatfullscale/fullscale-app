@@ -476,6 +476,28 @@ export default function RemixEngine() {
   // afterwards — so this changes WHICH surfaces are offered and what the
   // saved row is tagged with, not the coordinate system.
   const clipId = urlParams?.get("clip") ? parseInt(urlParams.get("clip")!) : undefined;
+
+  // Where "back" goes. This page lives outside the app shell, so this control
+  // is the only way out — and it said "Library" for everyone: brands (whom
+  // /library bounces to the marketplace) and creators who arrived from an
+  // Inbox request, a saved placement, or an Opportunity and lost their place.
+  // Every entry point now says where it came from (?from=), and the label and
+  // the destination are computed from that ONE value, so the button never
+  // promises a page it does not go to. (history.back() was tried and
+  // rejected: its destination is uncorrelated with any label we could show.)
+  const BACK_TARGETS: Record<string, { label: string; path: string }> = {
+    inbox: { label: "Inbox", path: "/inbox" },
+    saved: { label: "Saved Placements", path: "/saved-placements" },
+    clips: { label: "Clips & Reels", path: "/clips" },
+    library: { label: "Library", path: "/library" },
+    opportunities: { label: "Opportunities", path: "/opportunities" },
+    marketplace: { label: "Marketplace", path: "/marketplace" },
+  };
+  const fromParam = urlParams?.get("from") ?? "";
+  const backTarget = BACK_TARGETS[fromParam]
+    ?? (isBrand ? BACK_TARGETS.marketplace : bidId ? BACK_TARGETS.opportunities : BACK_TARGETS.library);
+  const backLabel = backTarget.label;
+  const goBack = useCallback(() => { setLocation(backTarget.path); }, [backTarget.path, setLocation]);
   const requestedSurfaceId = urlParams?.get("surface") ? parseInt(urlParams.get("surface")!) : undefined;
   const requestedProductId = urlParams?.get("product") ? parseInt(urlParams.get("product")!) : undefined;
 
@@ -1175,7 +1197,7 @@ export default function RemixEngine() {
     }
 
     const link = document.createElement("a");
-    link.download = `remix-${video?.title || "export"}-${formatTime(videoEl.currentTime).replace(":", "m")}s.jpg`;
+    link.download = `placement-${video?.title || "export"}-${formatTime(videoEl.currentTime).replace(":", "m")}s.jpg`;
     link.href = exportCanvas.toDataURL("image/jpeg", 0.92);
     link.click();
     toast({ title: "Screenshot exported" });
@@ -1262,7 +1284,7 @@ export default function RemixEngine() {
 
         if (data.status === "complete") {
           setExportOutputUrl(data.outputUrl);
-          toast({ title: "Video export complete!", description: "Your remixed video is ready to download." });
+          toast({ title: "Video export complete!", description: "Your placement video is ready to download." });
           clearInterval(interval);
         } else if (data.status === "failed") {
           toast({ title: "Export failed", description: data.error || "Unknown error", variant: "destructive" });
@@ -1327,7 +1349,7 @@ export default function RemixEngine() {
           title: `Saved ${saved} placement${saved > 1 ? 's' : ''}`,
           description: totalPropagated > 0
             ? `Auto-applied to ${totalPropagated} matching scene(s) for scene persistence.`
-            : "Placements persisted. They'll auto-load next time you open Remix Engine.",
+            : "Placements persisted. They'll auto-load next time you open the Placement Engine.",
         });
       } else {
         toast({ title: "No placements saved", description: "Could not match any assignments to surfaces.", variant: "destructive" });
@@ -1354,7 +1376,7 @@ export default function RemixEngine() {
   if (videoLoading) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
-        <div className="animate-pulse text-muted-foreground">Loading Remix Engine...</div>
+        <div className="animate-pulse text-muted-foreground">Loading Placement Engine...</div>
       </div>
     );
   }
@@ -1363,8 +1385,8 @@ export default function RemixEngine() {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center flex-col gap-4">
         <p className="text-muted-foreground">Video not found</p>
-        <button onClick={() => setLocation("/library")} className="text-primary hover:underline">
-          ← Back to Library
+        <button onClick={goBack} className="text-primary hover:underline">
+          ← Back to {backLabel}
         </button>
       </div>
     );
@@ -1405,17 +1427,21 @@ export default function RemixEngine() {
       <div className="sticky top-0 z-30 bg-card/95 backdrop-blur-sm border-b border-border px-6 py-3 flex items-center justify-between">
         <div className="flex items-center gap-4">
           <button
-            onClick={() => setLocation("/library")}
+            onClick={goBack}
             className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
+            data-testid="button-placement-back"
           >
             <ArrowLeft className="w-4 h-4" />
-            Library
+            {backLabel}
           </button>
           <div className="h-5 w-px bg-border" />
           <div>
             <h1 className="text-sm font-semibold">{video.title}</h1>
             <p className="text-xs text-muted-foreground">
-              Remix Engine · {surfaces.length} surfaces · {assignments.size} placement{assignments.size !== 1 ? "s" : ""}
+              {/* "Placement Engine", not "Remix": the story-clips studio is the
+                  Remix product; this page places products on surfaces. Two
+                  different tools were both called Remix. */}
+              Placement Engine · {surfaces.length} surfaces · {assignments.size} placement{assignments.size !== 1 ? "s" : ""}
               {clipId && clipContext?.clip && (
                 <> · framing for clip #{clipId}</>
               )}
@@ -2082,7 +2108,7 @@ export default function RemixEngine() {
               <div className="space-y-3">
                 <p className="text-sm text-green-500 font-medium">
                   <CheckCircle className="w-4 h-4 inline mr-1.5" />
-                  Your remixed video is ready!
+                  Your placement video is ready!
                 </p>
                 <div className="flex gap-2">
                   <a
@@ -2102,7 +2128,7 @@ export default function RemixEngine() {
                           body: JSON.stringify({
                             exportId: exportJobId,
                             videoId: video?.id,
-                            title: video?.title || "Remixed Video",
+                            title: video?.title || "Placement Video",
                           }),
                         });
                         if (!res.ok) throw new Error("Failed to create share link");

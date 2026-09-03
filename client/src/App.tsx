@@ -1,4 +1,4 @@
-import { Switch, Route, useLocation } from "wouter";
+import { Switch, Route, Redirect, useLocation } from "wouter";
 import { useEffect } from "react";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
@@ -146,7 +146,7 @@ function Router() {
   });
 
   // Protected routes that require approval
-  const protectedRoutes = ["/dashboard", "/library", "/clips", "/opportunities", "/marketplace", "/campaigns", "/settings", "/earnings", "/upload"];
+  const protectedRoutes = ["/dashboard", "/library", "/clips", "/opportunities", "/marketplace", "/campaigns", "/settings", "/upload"];
   const isProtectedRoute = protectedRoutes.some(route => location === route || location === "/");
 
   // Redirect based on approval status (skip for admin bypass)
@@ -314,7 +314,9 @@ function Router() {
               <Route path="/brand/clips" component={BrandClipsBrowser} />
               <Route path="/brand/placements" component={BrandPlacementRequests} />
               <Route path="/settings" component={Settings} />
-              <Route path="/earnings" component={Dashboard} />
+              {/* Earnings was a second copy of the Dashboard. Old links still
+                  land somewhere real; the nav entry is gone until the page is. */}
+              <Route path="/earnings">{() => <Redirect to="/" replace />}</Route>
               <Route path="/studio/upload">{() => <StudioAccessGuard><StudioUpload /></StudioAccessGuard>}</Route>
               <Route path="/studio/library">{() => <StudioAccessGuard><StudioLibrary /></StudioAccessGuard>}</Route>
               <Route component={NotFound} />

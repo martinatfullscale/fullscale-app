@@ -1987,7 +1987,7 @@ export default function Library() {
                         }}
                       >
                         <Scissors className="w-3 h-3" />
-                        Remix
+                        Story clips
                       </button>
                       <button
                         className="flex items-center gap-1 px-2 py-1 rounded-md bg-green-500/15 text-green-400 hover:bg-green-500/25 text-xs font-medium transition-colors"

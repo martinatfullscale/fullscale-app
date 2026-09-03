@@ -425,7 +425,7 @@ export function BrandPlacementRequestModal({
           <DialogTitle data-testid="text-placement-modal-title">Request placement on this video</DialogTitle>
           <DialogDescription>
             Pick a product and the surfaces you want it on. The creator will review and approve before
-            it's baked into their next remix.
+            it's rendered into the clip.
           </DialogDescription>
         </DialogHeader>
 

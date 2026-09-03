@@ -752,7 +752,7 @@ function PublishTab({
                         ? "bg-purple-500/20 text-purple-300"
                         : "bg-gray-700 text-gray-400"
                     }`}>
-                      {clip.clipSource === "editorial" ? "Editorial" : (clip.aspectRatio || clip.platformTarget || "Remix")}
+                      {clip.clipSource === "editorial" ? "Story clip" : (clip.aspectRatio || clip.platformTarget || "Remix")}
                     </span>
                   </div>
                 </div>

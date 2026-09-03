@@ -1008,7 +1008,7 @@ export default function EditorialClips({ videoId, mode, onGenerateClip, onBuyPla
         <div className="bg-gray-800/60 rounded-xl p-6 border border-gray-700/50 text-center">
           <Sparkles className="w-8 h-8 text-gray-600 mx-auto mb-3" />
           <p className="text-sm text-gray-400 font-medium">No viral clips available yet</p>
-          <p className="text-xs text-gray-500 mt-1">The creator hasn't generated editorial clips for this video yet.</p>
+          <p className="text-xs text-gray-500 mt-1">The creator hasn't generated story clips for this video yet.</p>
         </div>
       )}
 

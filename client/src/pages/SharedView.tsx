@@ -563,7 +563,7 @@ export default function SharedView() {
                   >
                     {hasExport ? (
                       <>
-                        <Film className="w-3 h-3 mr-1" /> Remixed Video
+                        <Film className="w-3 h-3 mr-1" /> Placement Video
                       </>
                     ) : data.placement ? (
                       <>
