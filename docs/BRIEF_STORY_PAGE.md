@@ -124,7 +124,7 @@ Whether the videos punctuate the argument or gather into a band after it is your
   | | |
   |---|---|
   | Instagram (company) | `https://www.instagram.com/gofullscale` |
-  | LinkedIn — Martin Ekechukwu | `https://linkedin.com/in/martinekechukwu` *(handle unconfirmed — see §8)* |
+  | LinkedIn — Martin Ekechukwu | `https://linkedin.com/in/martinekechukwu` |
   | LinkedIn — Tamara Spinner | `https://www.linkedin.com/in/tamara-spinner-zachery-aa4b26141/` |
   | Email | `fullscale_info@gofullscale.co` |
   | YouTube channel | not supplied — see §8 |
@@ -152,6 +152,5 @@ Whether the videos punctuate the argument or gather into a band after it is your
 
 ## 8. What we still owe you
 
-- **Confirmation of Martin's LinkedIn handle.** Two spellings reached us in the same message, one character apart — `martinekechukwu` and `martinekechukwui`. We have used the first and guessed at nothing. Tamara's is confirmed.
 - **The YouTube channel URL**, if the page should link to it as well as embed the four Shorts.
 - Confirmation on the "$43Billion" title — it is missing a space, and we have left it exactly as given.
