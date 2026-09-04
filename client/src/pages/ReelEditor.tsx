@@ -21,13 +21,18 @@ import {
  * autosave, no deep link, no browser back. For anyone assembling more than
  * three or four blocks that was a bigger felt gap than the missing razor.
  *
- * WHAT RENDERS TODAY vs WHAT NEEDS THE ENGINE is drawn on the page rather than
- * left for someone to discover. V0 is a real sequence the reel route already
- * renders one plan segment at a time; V1/V2/A1 are hatched placeholders,
- * because clipStitcher is a sequential concat/xfade with one input per segment
- * and no overlay node anywhere. Designing them now costs nothing and lets the
- * engine work be costed against an agreed shape; pretending they work would
- * cost a creator their afternoon.
+ * HOW IT RENDERS, in two stages. V0 is stitched first — one plan segment per
+ * block, in order, with the junction transition. V1, V2 and A1 are then
+ * composited by a second ffmpeg pass over that finished file
+ * (server/lib/remix/reelOverlay.ts), which is why an overlay is anchored to
+ * the reel rather than to any one segment.
+ *
+ * The overlay tracks were hatched placeholders for one commit, because
+ * clipStitcher is a sequential concat/xfade with no overlay node. They render
+ * now. What is still not true: a branded wipe comes out as a plain fade, and
+ * this editor's clock is the sum of the blocks while the finished file is
+ * shorter by each crossfade's overlap — the server remaps overlay times on
+ * the way in, but the program monitor here still shows the longer clock.
  */
 
 const DRAFT_VER = 1;
