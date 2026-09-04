@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
 import { motion } from "framer-motion";
 import { ArrowLeft, ArrowRight, Mail, Play, X } from "lucide-react";
-import { SiInstagram, SiLinkedin } from "react-icons/si";
+import { SiInstagram, SiLinkedin, SiYoutube } from "react-icons/si";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 import { Footer } from "@/components/Footer";
 import {
@@ -88,6 +88,7 @@ const FOUNDERS_PHOTO = "/founders.jpg";
 const LINKEDIN_MARTIN = "https://linkedin.com/in/martinekechukwu";
 const LINKEDIN_TAMARA = "https://www.linkedin.com/in/tamara-spinner-zachery-aa4b26141/";
 const INSTAGRAM = "https://www.instagram.com/gofullscale";
+const YOUTUBE = "https://www.youtube.com/@FullScale-Journey";
 const CONTACT_EMAIL = "fullscale_info@gofullscale.co";
 
 interface Section {
@@ -756,6 +757,18 @@ export default function Story() {
                     <SiInstagram className="w-4 h-4 shrink-0" />
                     <span>
                       Instagram <span className="text-muted-foreground">@gofullscale</span>
+                    </span>
+                  </a>
+                  <a
+                    href={YOUTUBE}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-3 py-4 border-b border-white/10 text-[15px] text-foreground hover:text-white transition-colors"
+                    data-testid="link-youtube"
+                  >
+                    <SiYoutube className="w-4 h-4 shrink-0" />
+                    <span>
+                      YouTube <span className="text-muted-foreground">@FullScale-Journey</span>
                     </span>
                   </a>
                   <a
