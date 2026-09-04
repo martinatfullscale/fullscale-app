@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
 import { motion } from "framer-motion";
-import { ArrowLeft, ArrowRight, Mail, Play, X } from "lucide-react";
+import { ArrowLeft, Mail, Play, X } from "lucide-react";
 import { SiInstagram, SiLinkedin, SiYoutube } from "react-icons/si";
 import logoUrl from "@assets/fullscale-logo_1767679525676.png";
 import { Footer } from "@/components/Footer";
@@ -53,7 +53,6 @@ import {
  * tied to the code that has to keep it. Checked 2026-09-04:
  *
  *   HOLDS  70% creator share — PLATFORM_TAKE_RATE = 0.30, server/lib/placementPricing.ts
- *   HOLDS  payouts are not live — charge_status has never advanced past "pending"
  *   HOLDS  a pulled video is discarded — the scan writes to /tmp under a TTL
  *          (server/lib/sourceCache.ts). NOTE this is true of a video we pull;
  *          an UPLOADED video is written to public/videos/ (routes.ts:6883) and
@@ -692,77 +691,49 @@ export default function Story() {
           </section>
         )}
 
-        {/* ── Where we actually are / Find FullScale ──────────────────────── */}
-        <section aria-labelledby="status-heading" className="container mx-auto px-6">
+        {/* ── Find FullScale ──────────────────────────────────────────────── */}
+        <section aria-labelledby="find-heading" className="container mx-auto px-6">
           <div className="py-14 md:py-24">
-            <div className="rounded-2xl border border-white/10 bg-card/40 p-7 md:p-12 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,280px)] gap-10 lg:gap-16">
-              <div className="max-w-[680px] flex flex-col gap-5">
-                <p className="font-display text-[13px] font-semibold uppercase tracking-[0.16em] text-primary">
-                  Where we actually are
-                </p>
-                <h2
-                  id="status-heading"
-                  className="font-display font-bold text-[clamp(1.625rem,2.6vw,2.5rem)] leading-[1.1] tracking-[-0.025em]"
+            <div className="rounded-2xl border border-white/10 bg-card/40 p-7 md:p-12">
+              <h2
+                id="find-heading"
+                className="font-display font-bold text-[clamp(1.625rem,2.6vw,2.5rem)] leading-[1.1] tracking-[-0.025em] mb-8"
+              >
+                Find FullScale
+              </h2>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-10 border-t border-white/10">
+                <a
+                  href={INSTAGRAM}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-3 py-4 border-b border-white/10 text-[15px] text-foreground hover:text-white transition-colors min-w-0"
+                  data-testid="link-instagram"
                 >
-                  Creator payouts are not live yet.
-                </h2>
-                <p className="text-[17px] leading-[1.7] text-muted-foreground">
-                  FullScale is early and invite-only. Scanning, story clips, placements, publishing and
-                  results are live. Payouts are not: approved placements accrue against a real price, and
-                  we say so on your earnings page rather than showing you a balance we cannot pay yet.
-                </p>
-                <p className="text-[17px] leading-[1.7] text-muted-foreground">
-                  We would rather tell you what is missing than let you find out. If something on this
-                  platform ever shows you a number it cannot stand behind, we want to hear about it.
-                </p>
+                  <SiInstagram className="w-4 h-4 shrink-0" />
+                  <span className="truncate">
+                    Instagram <span className="text-muted-foreground">@gofullscale</span>
+                  </span>
+                </a>
+                <a
+                  href={YOUTUBE}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-3 py-4 border-b border-white/10 text-[15px] text-foreground hover:text-white transition-colors min-w-0"
+                  data-testid="link-youtube"
+                >
+                  <SiYoutube className="w-4 h-4 shrink-0" />
+                  <span className="truncate">
+                    YouTube <span className="text-muted-foreground">@FullScale-Journey</span>
+                  </span>
+                </a>
                 <a
                   href={`mailto:${CONTACT_EMAIL}`}
-                  className="mt-1 inline-flex items-center gap-2 text-sm font-medium text-primary hover:text-white transition-colors self-start"
+                  className="flex items-center gap-3 py-4 border-b border-white/10 text-[15px] text-foreground hover:text-white transition-colors min-w-0"
                   data-testid="link-about-contact"
                 >
-                  Tell us what's broken
-                  <ArrowRight className="w-4 h-4" />
+                  <Mail className="w-4 h-4 shrink-0" />
+                  <span className="truncate">{CONTACT_EMAIL}</span>
                 </a>
-              </div>
-
-              <div className="lg:ml-auto w-full">
-                <p className="font-display text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground mb-4">
-                  Find FullScale
-                </p>
-                <div className="flex flex-col border-t border-white/10">
-                  <a
-                    href={INSTAGRAM}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center gap-3 py-4 border-b border-white/10 text-[15px] text-foreground hover:text-white transition-colors"
-                    data-testid="link-instagram"
-                  >
-                    <SiInstagram className="w-4 h-4 shrink-0" />
-                    <span>
-                      Instagram <span className="text-muted-foreground">@gofullscale</span>
-                    </span>
-                  </a>
-                  <a
-                    href={YOUTUBE}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center gap-3 py-4 border-b border-white/10 text-[15px] text-foreground hover:text-white transition-colors"
-                    data-testid="link-youtube"
-                  >
-                    <SiYoutube className="w-4 h-4 shrink-0" />
-                    <span>
-                      YouTube <span className="text-muted-foreground">@FullScale-Journey</span>
-                    </span>
-                  </a>
-                  <a
-                    href={`mailto:${CONTACT_EMAIL}`}
-                    className="flex items-center gap-3 py-4 border-b border-white/10 text-[15px] text-foreground hover:text-white transition-colors break-all"
-                    data-testid="link-email"
-                  >
-                    <Mail className="w-4 h-4 shrink-0" />
-                    <span>{CONTACT_EMAIL}</span>
-                  </a>
-                </div>
               </div>
             </div>
           </div>
