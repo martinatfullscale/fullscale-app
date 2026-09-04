@@ -21,8 +21,7 @@ import WaitlistPage from "@/pages/WaitlistPage";
 import Dashboard from "@/pages/Dashboard";
 import Library from "@/pages/Library";
 import ClipsAndReels from "@/pages/ClipsAndReels";
-import About from "@/pages/About";
-import Stories from "@/pages/Stories";
+import Story from "@/pages/Story";
 import ReelEditor from "@/pages/ReelEditor";
 import Earnings from "@/pages/Earnings";
 import Opportunities from "@/pages/Opportunities";
@@ -223,8 +222,8 @@ function Router() {
         <Route path="/brands" component={Brands} />
         <Route path="/brands/onboarding" component={BrandOnboarding} />
         <Route path="/brand-signup" component={BrandSignUp} />
-        <Route path="/about" component={About} />
-        <Route path="/stories" component={Stories} />
+        <Route path="/about" component={Story} />
+        <Route path="/stories" component={Story} />
         <Route path="/waitlist" component={WaitlistPage} />
         <Route path="/c/:slug" component={CreatorProfile} />
         <Route path="/s/:slug" component={SharedView} />
@@ -255,8 +254,8 @@ function Router() {
         <Route path="/creates" component={FullScaleCreates} />
         <Route path="/brands" component={Brands} />
         <Route path="/brand-signup" component={BrandSignUp} />
-        <Route path="/about" component={About} />
-        <Route path="/stories" component={Stories} />
+        <Route path="/about" component={Story} />
+        <Route path="/stories" component={Story} />
         <Route path="/c/:slug" component={CreatorProfile} />
         <Route path="/s/:slug" component={SharedView} />
         <Route path="/privacy" component={Privacy} />
@@ -288,8 +287,8 @@ function Router() {
       <Route path="/brands" component={Brands} />
       <Route path="/brands/onboarding" component={BrandOnboarding} />
       <Route path="/brand-signup" component={BrandSignUp} />
-      <Route path="/about" component={About} />
-      <Route path="/stories" component={Stories} />
+      <Route path="/about" component={Story} />
+      <Route path="/stories" component={Story} />
       <Route path="/c/:slug" component={CreatorProfile} />
       <Route path="/s/:slug" component={SharedView} />
       <Route path="/remix/:videoId" component={RemixEngine} />

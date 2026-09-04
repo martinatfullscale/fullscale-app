@@ -1,5 +1,5 @@
 /**
- * Stories — the content behind /stories.
+ * Stories — the content behind the FullScale story page (/about, /stories).
  *
  * This is the whole content model. To publish a story, add an entry to
  * STORIES below. No CMS, no build step, no database: edit this file, commit,
@@ -10,17 +10,19 @@
  *
  *     youtube: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
  *     youtube: "https://youtu.be/dQw4w9WgXcQ"
+ *     youtube: "https://youtube.com/shorts/dQw4w9WgXcQ"
  *     youtube: "dQw4w9WgXcQ"
  *
  * The poster frame comes from YouTube automatically, so there is no image to
  * upload and nothing to keep in sync.
- * ─────────────────────────────────────────────────────────────────────────
  *
- * The shape borrows Agentio's blog structure — a featured band over a
- * filterable grid, each card an eyebrow / headline / deck — and departs from
- * it in the one way that matters here: their cards are all still images (57
- * of them, zero video). Ours lead with the video, because the video IS the
- * story. A 16:9 card is already exactly a YouTube frame.
+ * WHERE IT LANDS ON THE PAGE is decided here, not in the component:
+ *   pairsWith: n  → docks beside prose section n of the founders' argument
+ *   band: true    → sits in the "How we got here" band under the argument
+ *   neither       → falls into the story grid at the bottom
+ * A story needs no placement to be published. The grid is the default and the
+ * page tells the truth when it is empty.
+ * ─────────────────────────────────────────────────────────────────────────
  */
 
 export type StoryCategory =
@@ -31,15 +33,15 @@ export type StoryCategory =
   | "Company";
 
 export interface Story {
-  /** URL-safe id. Also the deep-link hash: /stories#<slug>. */
+  /** URL-safe id. Also the deep-link hash: /about#<slug> and /stories#<slug>. */
   slug: string;
   category: StoryCategory;
   title: string;
-  /** One or two sentences. This is the card's deck and the player's subhead. */
+  /** One or two sentences. The card's deck and the player's subhead. */
   deck: string;
   /**
-   * A YouTube watch URL, youtu.be link, or bare 11-character id.
-   * When present the card plays inline and the poster frame is automatic.
+   * A YouTube watch URL, youtu.be link, /shorts/ link, or bare 11-character id.
+   * When present the card plays and the poster frame is automatic.
    */
   youtube?: string;
   /**
@@ -49,16 +51,20 @@ export interface Story {
   href?: string;
   /** Poster for a non-video card. Optional — cards render fine without one. */
   image?: string;
-  /** Shown under the title on the card. Names only, matching /about. */
+  /** Shown under the title on the card. Names only, matching the byline. */
   byline?: string;
-  /** Pin to the featured band at the top. Keep this to 1–3 entries. */
-  featured?: boolean;
   /**
    * Shape of the video. Shorts are 9:16 and letterbox badly in a 16:9 well —
    * a vertical clip in a horizontal frame is mostly black bars — so a
    * portrait story gets a portrait card and a portrait player.
    */
   orientation?: "portrait" | "landscape";
+  /** A two-or-three word role, shown as an eyebrow over the card. */
+  tag?: string;
+  /** Dock this story beside prose section n (0-based) of the argument. */
+  pairsWith?: number;
+  /** Put this story in the band under the argument. */
+  band?: boolean;
 }
 
 /**
@@ -95,68 +101,79 @@ export function youTubePoster(id: string, orientation?: "portrait" | "landscape"
     ? `https://i.ytimg.com/vi/${id}/oardefault.jpg`
     : `https://i.ytimg.com/vi/${id}/maxresdefault.jpg`;
 }
+
+/**
+ * The one variant YouTube guarantees for every video — but only at 480x360,
+ * which is LANDSCAPE. There is no universal portrait fallback, so when a
+ * portrait card falls back it has to letterbox rather than crop: cropping a
+ * 4:3 frame into a 9:16 well throws away half the picture. The component
+ * reads `youTubePosterIsFallback` to decide between cover and contain.
+ */
 export function youTubePosterFallback(id: string): string {
   return `https://i.ytimg.com/vi/${id}/hqdefault.jpg`;
+}
+export function youTubePosterIsFallback(src: string): boolean {
+  return src.endsWith("/hqdefault.jpg");
 }
 
 /** Privacy-preserving embed host, autoplay on click-to-play. */
 export function youTubeEmbed(id: string): string {
-  return `https://www.youtube-nocookie.com/embed/${id}?autoplay=1&rel=0&modestbranding=1`;
+  return `https://www.youtube-nocookie.com/embed/${id}?autoplay=1&rel=0&modestbranding=1&playsinline=1`;
 }
 
+/**
+ * ORDER IS DISPLAY ORDER within each placement.
+ *
+ * The four founder Shorts read as one arc — the market, the thesis, the
+ * difficulty, the outcome — but the arc of the PROSE is a different one, and
+ * they only line up for the first two. Sections 3 and 4 of the argument are
+ * about creator consent and about not keeping a creator's footage; a video
+ * about raising money does not belong beside either, so the last two Shorts
+ * sit in their own band instead of being forced into a column that happens
+ * to be free.
+ */
 export const STORIES: Story[] = [
-  {
-    slug: "why-we-are-building-this",
-    category: "Company",
-    title: "Product placement has existed for a century. Almost no creator was ever offered it.",
-    deck:
-      "Every sponsorship asks a creator to stop their video and read a script. We are building the other option — and we wrote down why, including the parts that aren't finished yet.",
-    href: "/about",
-    image: "/founders.jpg",
-    byline: "Martin Ekechukwu · Tamara Spinner",
-    featured: true,
-  },
-
-  // ───────────────────────────────────────────────────────────────────────
-  // ORDER IS DISPLAY ORDER, and these four read as one arc rather than four
-  // unrelated clips: the market, then the thesis, then the difficulty, then
-  // the outcome. They were in reverse upload order, which is not an order at
-  // all — this is. Move an entry to change where it sits.
-  //
-  // The FIRST entry carrying `featured: true` becomes the large player at the
-  // top; the next two sit beside it. Everything else falls into the grid.
-  // ───────────────────────────────────────────────────────────────────────
   {
     slug: "43-billion-on-creators",
     category: "Company",
     title: "$43Billion On Creators",
-    deck: "",
+    deck:
+      "Martin on the size of the creator economy, and why almost none of that money reaches the frames people are actually watching.",
     youtube: "https://youtube.com/shorts/nVXd4-Hwe_o",
     orientation: "portrait",
+    tag: "The market",
+    pairsWith: 0,
   },
   {
     slug: "ai-product-placement-is-real",
     category: "Company",
     title: "AI Product Placement is Real",
-    deck: "",
+    deck:
+      "The thesis said plainly: a product placed into footage after the shot, in video that already exists.",
     youtube: "https://youtube.com/shorts/U4myeHPl9Cc",
     orientation: "portrait",
+    tag: "The thesis",
+    pairsWith: 1,
   },
   {
     slug: "its-hard-to-raise",
     category: "Company",
     title: "It's Hard to Raise",
-    deck: "",
+    deck: "Fundraising without the tidy version, from the two people who sat through it.",
     youtube: "https://youtube.com/shorts/RVTC2oTQMdE",
     orientation: "portrait",
+    tag: "The difficulty",
+    band: true,
   },
   {
     slug: "how-we-got-funded",
     category: "Company",
     title: "How We Got Funded",
-    deck: "",
+    deck: "How the round came together in the end, and what it bought us time to build.",
     youtube: "https://youtube.com/shorts/1zOTyIiMrKo",
     orientation: "portrait",
+    tag: "The outcome",
+    band: true,
   },
 ];
 
@@ -168,3 +185,14 @@ export const STORY_CATEGORIES: StoryCategory[] = [
   "Product updates",
   "Company",
 ];
+
+/** The stories that fall through to the grid: no section, no band. */
+export function gridStories(): Story[] {
+  return STORIES.filter((s) => s.pairsWith === undefined && !s.band);
+}
+export function sectionStory(index: number): Story | undefined {
+  return STORIES.find((s) => s.pairsWith === index);
+}
+export function bandStories(): Story[] {
+  return STORIES.filter((s) => s.band);
+}
