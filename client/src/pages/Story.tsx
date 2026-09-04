@@ -663,51 +663,34 @@ export default function Story() {
           </section>
         )}
 
-        {/* ── The grid: everything else on the record ─────────────────────── */}
-        <section aria-labelledby="record-heading" className="container mx-auto px-6 border-b border-white/10">
-          <div className="py-14 md:py-20">
-            <p className="font-display text-[13px] font-semibold uppercase tracking-[0.16em] text-primary mb-5">
-              Stories
-            </p>
-            <h2
-              id="record-heading"
-              className="font-display font-bold text-[clamp(1.875rem,3.2vw,3.25rem)] leading-[1.05] tracking-[-0.03em]"
-            >
-              Everything else on the record
-            </h2>
-
-            {grid.length > 0 ? (
+        {/* ── The grid ──────────────────────────────────────────────────────
+            Only when there is something in it. This page IS the story, so a
+            subsection headed "Stories" holding a paragraph about how there
+            are no stories yet was the page saying its own name back to itself
+            — and the masthead already makes the promise ("case studies will
+            live here too, once there are placements worth showing"). Add a
+            case study to stories.ts with no `pairsWith` and no `band` and this
+            section appears with it. */}
+        {grid.length > 0 && (
+          <section aria-labelledby="record-heading" className="container mx-auto px-6 border-b border-white/10">
+            <div className="py-14 md:py-20">
+              <p className="font-display text-[13px] font-semibold uppercase tracking-[0.16em] text-primary mb-5">
+                Case studies
+              </p>
+              <h2
+                id="record-heading"
+                className="font-display font-bold text-[clamp(1.875rem,3.2vw,3.25rem)] leading-[1.05] tracking-[-0.03em]"
+              >
+                Placements that ran
+              </h2>
               <div className="mt-11 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-x-7 gap-y-11">
-                {grid.map((s) => (
-                  <StoryCard key={s.slug} story={s} onPlay={() => setPlaying(s)} />
+                {grid.map((st) => (
+                  <StoryCard key={st.slug} story={st} onPlay={() => setPlaying(st)} />
                 ))}
               </div>
-            ) : (
-              /* The honest empty state. The design filled this with hatched
-                 "open slot" cards captioned with case studies that do not
-                 exist — on a page whose closing card exists to say what is
-                 missing. Say it here too. */
-              <div className="mt-8 max-w-[56ch]">
-                <p
-                  className="text-lg leading-[1.6] text-muted-foreground"
-                  style={{ textWrap: "pretty" } as React.CSSProperties}
-                >
-                  Nothing yet. Creator and brand case studies land here when there are placements worth
-                  showing — real ones, with the numbers next to them. We would rather leave this empty
-                  than fill it with examples we made up.
-                </p>
-                <a
-                  href={`mailto:${CONTACT_EMAIL}`}
-                  className="mt-5 inline-flex items-center gap-2 text-sm font-medium text-primary hover:text-white transition-colors"
-                  data-testid="link-stories-contact"
-                >
-                  Want to be the first one
-                  <ArrowRight className="w-4 h-4" />
-                </a>
-              </div>
-            )}
-          </div>
-        </section>
+            </div>
+          </section>
+        )}
 
         {/* ── Where we actually are / Find FullScale ──────────────────────── */}
         <section aria-labelledby="status-heading" className="container mx-auto px-6">
