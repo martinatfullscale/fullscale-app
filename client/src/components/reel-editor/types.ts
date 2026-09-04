@@ -19,7 +19,12 @@
 
 export type Track = "V0" | "V1" | "V2" | "A1";
 export type Transition = "cut" | "crossfade" | "branded_wipe";
-export type SourceKind = "library" | "moment" | "upload" | "webcam" | "stock" | "ai" | "music";
+export type SourceKind =
+  | "story"    // cut in the Story Clip editor (editorial_clips)
+  | "reel"     // a reel that was already built — a stitch plan's rendered twin
+  | "library"  // plain remix output, and the fallback kind for drafts saved
+               // before the split, which persisted `kind` into localStorage
+  | "moment" | "upload" | "webcam" | "stock" | "ai" | "music";
 
 /** A thing that can go on the timeline, from any of the six sources. */
 export interface BinSource {
@@ -307,7 +312,9 @@ export function seedReelDraft(
 }
 
 export const KIND_LABEL: Record<SourceKind, string> = {
-  library: "Library clip",
+  story: "Story clip",
+  reel: "Built reel",
+  library: "Remix clip",
   moment: "AI moment",
   upload: "Upload",
   webcam: "Webcam",
@@ -322,6 +329,8 @@ export const KIND_LABEL: Record<SourceKind, string> = {
  * prototype's light ground to the app's dark one.
  */
 export const KIND_COLOR: Record<SourceKind, string> = {
+  story: "#38bdf8",
+  reel: "#fbbf24",
   library: "#94a3b8",
   moment: "hsl(350 96% 43%)",
   upload: "#818cf8",

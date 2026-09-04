@@ -53,7 +53,9 @@ function PanelHead({ kicker, children }: { kicker: string; children?: React.Reac
 
 const FILTERS: Array<{ id: "all" | SourceKind; label: string }> = [
   { id: "all", label: "All" },
-  { id: "library", label: "Library" },
+  { id: "story", label: "Story clips" },
+  { id: "library", label: "Remix clips" },
+  { id: "reel", label: "Built reels" },
   { id: "moment", label: "Moments" },
   { id: "upload", label: "Uploads" },
   { id: "webcam", label: "Webcam" },
@@ -187,9 +189,17 @@ function BinGrid(props: {
               // Said plainly rather than shown as an empty grid: the AI
               // cross-video moment finder is not wired into this bin yet.
               ? "Cross-video AI moments aren't wired into this bin yet — they still live in the old builder."
-              : props.sources.length === 0
-                ? "Nothing in your library yet. Use Add, or try the Stock, AI stills or Webcam tabs."
-                : "Nothing here matches that."}
+              : filter === "story"
+                // An empty family tab has a specific reason, and saying which
+                // one beats a blank grid that reads as "your work is gone".
+                ? "No story clips yet. Cut one in the Story Clip editor and it lands here."
+                : filter === "reel"
+                  ? "No reels built yet. Anything you build here shows up in this tab afterwards."
+                  : filter === "library"
+                    ? "No remix clips yet — these are the single-range clips the remix engine generates."
+                    : props.sources.length === 0
+                      ? "Nothing in your library yet. Use Add, or try the Stock, AI stills or Webcam tabs."
+                      : "Nothing here matches that."}
           </p>
         ) : (
           shown.map((s) => <BinCard key={s.sk} source={s} selected={props.selectedKey === s.sk} onPick={() => props.onPick(s)} />)

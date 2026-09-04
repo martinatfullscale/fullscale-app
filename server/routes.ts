@@ -16504,10 +16504,37 @@ export async function registerRoutes(
       // your library yet", which is the worst possible answer: the creator
       // concludes their work is gone. A throw here becomes a 500 the bin
       // shows as an error.
-      const [remixAll, editorialAll] = await Promise.all([
+      const [remixAll, editorialAll, plans] = await Promise.all([
         storage.getClipsByVideoIds(videoIds),
         storage.getEditorialClipsByVideoIds(videoIds),
+        storage.getStitchPlansByVideoIds(videoIds),
       ]);
+
+      // THE THREE FAMILIES, and why the bin has to tell them apart.
+      //
+      // Everything below used to arrive as one undifferentiated pile the
+      // editor labelled "Library clip", so a creator building a reel could not
+      // see which cards were the story clips they cut, which were raw remix
+      // output, and which were reels they had ALREADY BUILT — and a finished
+      // reel dropped into a new reel is a very different thing from a beat.
+      //
+      //   story  editorial_clips — cut in the Story Clip editor
+      //   reel   a generated_clip that is the twin of a stitch plan, i.e. the
+      //          render of a reel that was built before. updateStitchPlanStatus
+      //          writes generatedClipId when the build lands, so the plan set
+      //          is the only place this is recorded.
+      //   clip   every other generated_clip — single-range remix output
+      //
+      // A Map, not a Set, because the cut count has to come from the PLAN.
+      // generated_clips has no `segments` column (shared/schema.ts) — only
+      // stitch_plans and editorial_clips do — so reading it off the clip row
+      // returns undefined for every reel and the count silently reads zero.
+      const reelCuts = new Map<number, number>();
+      for (const p of plans as any[]) {
+        if (typeof p.generatedClipId !== "number") continue;
+        const segs = Array.isArray(p.segments) ? p.segments : [];
+        reelCuts.set(p.generatedClipId, segs.filter((sg: any) => sg?.enabled !== false).length);
+      }
 
       // The cap is applied AFTER both sources are collected and sorted, not
       // while pushing. Capping mid-push ran every remix clip before any
@@ -16519,9 +16546,13 @@ export async function registerRoutes(
         if (source === "remix" && (c.status === "deleted" || c.status === "rejected")) return; // hidden reel twin / rejected
         const start = Number(c.clipStart), end = Number(c.clipEnd);
         if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
+        const isReel = source === "remix" && reelCuts.has(c.id);
+        const ownSegs = Array.isArray(c.segments) ? c.segments : [];
         out.push({
           clipId: c.id,
           clipSource: source,
+          family: source === "editorial" ? "story" : isReel ? "reel" : "clip",
+          segmentCount: isReel ? reelCuts.get(c.id)! : ownSegs.length,
           videoId: c.videoId,
           videoTitle: titleById.get(c.videoId) || `Video ${c.videoId}`,
           title: c.suggestedTitle || c.title || null,

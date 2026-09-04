@@ -42,6 +42,7 @@ const draftKey = (id: string) => `fullscale.reel-draft.v${DRAFT_VER}.${id}`;
 
 interface ApiClip {
   clipId: number; clipSource: "remix" | "editorial"; videoId: number; videoTitle: string;
+  family?: "story" | "reel" | "clip"; segmentCount?: number;
   title: string | null; clipStart: number; clipEnd: number; duration: number;
   thumbnailPath: string | null; exportPath?: string | null; hasSegments: boolean;
 }
@@ -86,9 +87,21 @@ export default function ReelEditor() {
             // video are two bin cards. The srcKey the server dedupes by is
             // still v:<videoId>, which is what the build payload sends.
             sk: `c:${c.clipSource}:${c.clipId}`,
-            kind: "library",
+            // The bin used to file all three families under "library", which
+            // is how a story clip, a raw remix clip and a reel you already
+            // built ended up looking like the same thing. `family` falls back
+            // to clipSource so an older server still sorts story clips out.
+            kind:
+              c.family === "story" || (!c.family && c.clipSource === "editorial")
+                ? "story"
+                : c.family === "reel"
+                  ? "reel"
+                  : "library",
             label: c.title || `${c.videoTitle} · ${fmtT(c.clipStart)}`,
-            meta: `${c.videoTitle}${c.hasSegments ? " · assembled" : ""}`,
+            meta:
+              c.family === "reel" && (c.segmentCount ?? 0) > 1
+                ? `${c.segmentCount} cuts · ${c.videoTitle}`
+                : `${c.videoTitle}${c.hasSegments ? " · assembled" : ""}`,
             url: c.exportPath || null,
             // A rendered clip's file starts at 0, not at the clip's position
             // in the source video — the range has to be expressed in the
