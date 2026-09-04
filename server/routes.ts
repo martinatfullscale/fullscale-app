@@ -2,6 +2,7 @@ import type { Express } from "express";
 import type { Server } from "http";
 import { storage } from "./storage";
 import { api } from "@shared/routes";
+import { MAX_REEL_SEC, MAX_REEL_LABEL, reelTotalSeconds } from "@shared/reel";
 import { z } from "zod";
 import { setupAuth, registerAuthRoutes, isAuthenticated } from "./replit_integrations/auth";
 import { runIndexerForUser } from "./lib/indexer";
@@ -16148,6 +16149,18 @@ export async function registerRoutes(
         }
       }
 
+      // The same length cap as the reel editor. This route renders a reel
+      // too — a narrative arc off a long video is exactly the case that would
+      // otherwise produce a twenty-minute "reel".
+      const stitchTotal = reelTotalSeconds(segments);
+      if (stitchTotal > MAX_REEL_SEC + 0.5) {
+        return res.status(400).json({
+          error: `A reel caps at ${MAX_REEL_LABEL}. This arc is ${Math.round(stitchTotal)}s — drop or shorten a segment.`,
+          totalDuration: stitchTotal,
+          maxDuration: MAX_REEL_SEC,
+        });
+      }
+
       // Create stitch plan record
       const plan = await storage.createStitchPlan({
         videoId,
@@ -16623,6 +16636,21 @@ export async function registerRoutes(
       }
 
       const totalDuration = planSegments.reduce((sum, s) => sum + (s.end - s.start), 0);
+
+      // The length cap, enforced where it cannot be bypassed.
+      //
+      // The editor already refuses to author past this, but a cap that lives
+      // only in the client is a suggestion: the old builder, a stale tab, a
+      // direct POST or a future AI proposal would all have sailed straight
+      // past it. Refused rather than trimmed — silently cutting the end off
+      // someone's reel is a worse answer than telling them it is too long.
+      if (totalDuration > MAX_REEL_SEC + 0.5) {
+        return res.status(400).json({
+          error: `A reel caps at ${MAX_REEL_LABEL}. This one is ${Math.round(totalDuration)}s — remove or trim a block.`,
+          totalDuration,
+          maxDuration: MAX_REEL_SEC,
+        });
+      }
 
       // ── Overlay tracks: V1 picture-in-picture, V2 text, A1 music bed ──
       // Same shape of validation as the story-clip edit stack: clamped

@@ -13,6 +13,7 @@
  */
 
 import * as fs from "fs";
+import { MAX_REEL_SEC, reelTotalSeconds } from "@shared/reel";
 import * as path from "path";
 import { storage } from "../../storage";
 import { stitchSegments } from "./clipStitcher";
@@ -98,7 +99,33 @@ export async function autoGenerateHighlightReel(videoId: number, userId: number)
       console.log(`[HighlightAuto] No usable narrative thread for video ${videoId}`);
       return;
     }
-    const segments: any[] = (thread as any).segments;
+    let segments: any[] = (thread as any).segments;
+
+    // Hold the auto reel to the same length cap as a hand-built one.
+    // TRIMMED rather than refused, unlike the interactive routes: nobody is
+    // waiting on this and a shorter reel is a better outcome than none. Whole
+    // beats are dropped from the end rather than cutting one mid-sentence.
+    {
+      const kept: any[] = [];
+      let running = 0;
+      for (const seg of segments) {
+        const len = Math.max(0, Number(seg.end) - Number(seg.start));
+        if (running + len > MAX_REEL_SEC) break;
+        kept.push(seg);
+        running += len;
+      }
+      if (kept.length !== segments.length) {
+        console.log(
+          `[HighlightAuto] Arc for video ${videoId} was ${Math.round(reelTotalSeconds(segments))}s — ` +
+          `trimmed to ${kept.length}/${segments.length} beats to fit the ${MAX_REEL_SEC}s cap`,
+        );
+      }
+      if (kept.length < 2) {
+        console.log(`[HighlightAuto] Arc for video ${videoId} does not fit the cap in 2+ beats, skipping`);
+        return;
+      }
+      segments = kept;
+    }
 
     // Re-check after the slow analysis: a concurrent completion (force
     // re-run, resume) may have created a plan while Claude was thinking.

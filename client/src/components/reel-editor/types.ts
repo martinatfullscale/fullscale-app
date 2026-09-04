@@ -80,16 +80,12 @@ export const MIN_ITEM_SEC = 0.5;
 export const MIN_SPLIT_OFFSET = 0.4;
 
 /**
- * A reel is a SHORT-FORM format, and the cap is the product decision that
- * keeps it one.
- *
- * Without a ceiling this becomes a general-purpose long-video editor, which
- * is not what it is for and not what the render path is tuned for. Three
- * minutes is above every short-form platform's own limit, so the cap never
- * bites a legitimate reel. Enforced in the reducer, so no path can author
- * past it, and again on the server.
+ * The reel length cap. Re-exported from shared/ so the editor and the API
+ * cannot drift: enforcing it only here made it a suggestion, since anything
+ * posting straight to /api/remix/reel ignored it entirely.
  */
-export const MAX_REEL_SEC = 180;
+export { MAX_REEL_SEC } from "@shared/reel";
+import { MAX_REEL_SEC } from "@shared/reel";
 
 /** The output frame everything is fitted into. Portrait short-form. */
 export const REEL_ASPECT = 9 / 16;
