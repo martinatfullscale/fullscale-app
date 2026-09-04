@@ -20,6 +20,8 @@
 export type Track = "V0" | "V1" | "V2" | "A1";
 export type Transition = "cut" | "crossfade" | "branded_wipe";
 export type SourceKind =
+  | "video"    // a source video of the creator's: uploaded, or connected
+               // through OAuth. The thing clips are cut FROM.
   | "story"    // cut in the Story Clip editor (editorial_clips)
   | "reel"     // a reel that was already built — a stitch plan's rendered twin
   | "library"  // plain remix output, and the fallback kind for drafts saved
@@ -32,6 +34,15 @@ export interface BinSource {
   sk: string;
   kind: SourceKind;
   label: string;
+  /** Source length in seconds, where it is known. Only a `video` row carries
+   *  this — a clip's length is boundEnd - boundStart. */
+  durationSec?: number | null;
+  /** youtube | instagram | upload … shown on a source row so a creator can
+   *  tell a connected channel's video from one they uploaded. */
+  platform?: string | null;
+  /** True when nothing local is playable yet — an imported video that has not
+   *  been pulled. It still groups its clips; it just cannot be dragged. */
+  unavailable?: boolean;
   /** Second line on the card — "cross-video · 0.91 confidence", "118 MB". */
   meta: string;
   /** Something playable, for hover-scrub and the source monitor. */
@@ -98,16 +109,34 @@ export const REEL_ASPECT = 9 / 16;
 export const dur = (it: ReelItem) => Math.max(0, it.out - it.in);
 export const end = (it: ReelItem) => it.at + dur(it);
 
+/**
+ * A duration or a timeline position, written the way a clock is read.
+ *
+ * The old form was `m:ss.t` — so a 35-second clip printed "0:35.0", which
+ * scans as 0 hours 35 minutes and made every short clip in the bin look like
+ * most of an hour. The tenths were the whole problem: they occupy the slot the
+ * eye expects seconds in. They are gone from the general formatter and live in
+ * fmtPrecise, for the two places that genuinely need frame-ish accuracy.
+ *
+ * There is now an hours field. Sources run to 65 minutes, and without it a
+ * one-hour video printed "65:00".
+ */
+const parts = (s: number) => {
+  const t = Math.max(0, s);
+  return { h: Math.floor(t / 3600), m: Math.floor((t % 3600) / 60), sec: t % 60 };
+};
 export const fmtT = (s: number) => {
-  const m = Math.floor(Math.max(0, s) / 60);
-  const sec = Math.max(0, s) % 60;
-  return `${m}:${sec.toFixed(1).padStart(4, "0")}`;
+  const { h, m, sec } = parts(s);
+  const ss = String(Math.floor(sec)).padStart(2, "0");
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
 };
-export const fmtClock = (s: number) => {
-  const m = Math.floor(Math.max(0, s) / 60);
-  const sec = Math.floor(Math.max(0, s) % 60);
-  return `${m}:${String(sec).padStart(2, "0")}`;
+/** Same shape, one decimal — for in/out readouts where a tenth matters. */
+export const fmtPrecise = (s: number) => {
+  const { h, m, sec } = parts(s);
+  const ss = sec.toFixed(1).padStart(4, "0");
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
 };
+export const fmtClock = fmtT;
 
 let seq = 0;
 export const newItemId = () => `ri${++seq}_${Math.floor(performance.now())}`;
@@ -134,7 +163,10 @@ export function normalise(items: ReelItem[], sources: Map<string, BinSource>): R
     let it: ReelItem = { ...raw, at: Math.max(0, Number(raw.at) || 0) };
     if (src) {
       const lo = Math.max(0, src.boundStart);
-      const hi = Math.max(lo, src.boundEnd);
+      // A still has no natural end. The bin gives it 4 seconds so it has a
+      // width; clamping to that made it the one thing on the timeline you
+      // could not stretch.
+      const hi = src.isImage ? MAX_REEL_SEC : Math.max(lo, src.boundEnd);
       it.in = Math.min(Math.max(Number(it.in) || 0, lo), Math.max(lo, hi - MIN_ITEM_SEC));
       it.out = Math.min(Math.max(Number(it.out) || 0, it.in + MIN_ITEM_SEC), hi);
     } else {
@@ -312,6 +344,7 @@ export function seedReelDraft(
 }
 
 export const KIND_LABEL: Record<SourceKind, string> = {
+  video: "Source video",
   story: "Story clip",
   reel: "Built reel",
   library: "Remix clip",
@@ -329,6 +362,7 @@ export const KIND_LABEL: Record<SourceKind, string> = {
  * prototype's light ground to the app's dark one.
  */
 export const KIND_COLOR: Record<SourceKind, string> = {
+  video: "#a78bfa",
   story: "#38bdf8",
   reel: "#fbbf24",
   library: "#94a3b8",

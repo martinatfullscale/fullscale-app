@@ -3,6 +3,7 @@ import type { Server } from "http";
 import { storage } from "./storage";
 import { api } from "@shared/routes";
 import { MAX_REEL_SEC, MAX_REEL_LABEL, reelTotalSeconds } from "@shared/reel";
+import { parseDurationSec } from "@shared/duration";
 import { z } from "zod";
 import { setupAuth, registerAuthRoutes, isAuthenticated } from "./replit_integrations/auth";
 import { runIndexerForUser } from "./lib/indexer";
@@ -11383,7 +11384,10 @@ export async function registerRoutes(
       if (!["broll_video", "broll_image", "music"].includes(kindParam)) {
         return res.status(400).json({ error: "kind must be broll_video, broll_image or music (query param)" });
       }
-      const MAX_BYTES = 300 * 1024 * 1024;
+      // 2 GB. This was 300 MB — about 25 minutes of 1080p — while the library
+      // route next door accepts 4 GB, so the same file was accepted on one
+      // page and refused on the other. Long form arrives through both.
+      const MAX_BYTES = 2 * 1024 * 1024 * 1024;
       const bb = Busboy({ headers: req.headers, limits: { fileSize: MAX_BYTES, files: 1 } });
       let handled = false;
 
@@ -16171,12 +16175,14 @@ export async function registerRoutes(
         MAX_REEL_SEC - 10,
         Math.max(20, Number(req.body?.targetDuration) || 110),
       );
+      const query = typeof req.body?.query === "string" ? req.body.query.slice(0, 300) : undefined;
       const options = await analyzeReelOptions({
         videoId,
         transcript: transcript.segments as any[],
         optionCount: Math.min(5, Math.max(2, Number(req.body?.optionCount) || 5)),
         segmentCount: Math.min(8, Math.max(2, Number(req.body?.segmentCount) || 4)),
         targetDuration,
+        query,
       });
 
       if (!options || options.length === 0) {
@@ -16530,11 +16536,26 @@ export async function registerRoutes(
       // stitch_plans and editorial_clips do — so reading it off the clip row
       // returns undefined for every reel and the count silently reads zero.
       const reelCuts = new Map<number, number>();
+      // ...and the NAME. generated_clips has no title column at all, so
+      // `c.suggestedTitle || c.title` was always null for the entire remix
+      // family and the bin fell back to "<anchor video> · 0:00.0" — which is
+      // what every reel a creator had named appeared as. The name lives on the
+      // plan, which is also where Clips & Reels reads it from.
+      const reelTitle = new Map<number, string>();
       for (const p of plans as any[]) {
         if (typeof p.generatedClipId !== "number") continue;
         const segs = Array.isArray(p.segments) ? p.segments : [];
         reelCuts.set(p.generatedClipId, segs.filter((sg: any) => sg?.enabled !== false).length);
+        if (p.suggestedTitle) reelTitle.set(p.generatedClipId, String(p.suggestedTitle));
       }
+
+      // A remix clip has no name either. Its platform target is the only thing
+      // distinguishing two clips cut from the same video, and it is what the
+      // other feed labels them with.
+      const BIN_PLATFORM_TITLE: Record<string, string> = {
+        youtube_shorts: "YouTube Shorts", tiktok: "TikTok", instagram_reels: "Instagram",
+        youtube: "YouTube", twitter: "X", linkedin: "LinkedIn", facebook: "Facebook",
+      };
 
       // The cap is applied AFTER both sources are collected and sorted, not
       // while pushing. Capping mid-push ran every remix clip before any
@@ -16553,9 +16574,16 @@ export async function registerRoutes(
           clipSource: source,
           family: source === "editorial" ? "story" : isReel ? "reel" : "clip",
           segmentCount: isReel ? reelCuts.get(c.id)! : ownSegs.length,
+          createdAt: c.createdAt ?? null,
           videoId: c.videoId,
           videoTitle: titleById.get(c.videoId) || `Video ${c.videoId}`,
-          title: c.suggestedTitle || c.title || null,
+          title:
+            c.suggestedTitle
+            || (isReel ? reelTitle.get(c.id) : null)
+            || (source === "remix" && c.platformTarget
+                  ? `${BIN_PLATFORM_TITLE[c.platformTarget] ?? c.platformTarget} clip`
+                  : null)
+            || null,
           clipStart: start,
           clipEnd: end,
           duration: Number(c.duration) || (end - start),
@@ -16571,11 +16599,37 @@ export async function registerRoutes(
       };
       for (const c of remixAll) push(c, "remix");
       for (const c of editorialAll) push(c, "editorial");
-      // Newest first, then cap — and say when the cap fired, so a short list
-      // is distinguishable from a truncated one.
-      out.sort((a, b) => Number(b.clipId) - Number(a.clipId));
+      // Newest first BY DATE. Sorting on clipId looked like recency and was
+      // not: generated_clips.id and editorial_clips.id are two independent
+      // serial sequences, so whichever table happened to have the higher range
+      // took the whole top of the list and the two families sat in blocks. A
+      // clip made five minutes ago could be hundreds of cards down, and the
+      // 600 cap then truncated the lower-id family wholesale.
+      const when = (r: any) => String(r.createdAt ?? "");
+      out.sort((a, b) => when(b).localeCompare(when(a)) || Number(b.clipId) - Number(a.clipId));
       const truncated = out.length > CAP;
-      res.json({ clips: out.slice(0, CAP), total: out.length, truncated });
+
+      // THE SOURCES THEMSELVES, not just what was cut from them.
+      //
+      // The bin previously queried videos only to collect ids and titles, so a
+      // creator's long-form footage — uploaded, or connected through OAuth —
+      // existed nowhere in the reel builder. It could not be dragged in and
+      // there was nothing for its clips to be grouped under. Both are what the
+      // bin needs to stop being a flat pile you hunt through.
+      const sourceVideos = videos.map((v: any) => ({
+        videoId: v.id,
+        title: v.title || `Video ${v.id}`,
+        durationSec: parseDurationSec(v.duration),
+        platform: v.platform || null,
+        thumbnailPath: v.thumbnailUrl || null,
+        // Only an uploaded video has a file we can scrub in the browser. An
+        // imported one is a row with no local media until it is pulled, so the
+        // bin shows it as a grouping header rather than a draggable source.
+        exportPath: v.filePath || null,
+        createdAt: v.createdAt ?? null,
+      }));
+
+      res.json({ clips: out.slice(0, CAP), videos: sourceVideos, total: out.length, truncated });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "Failed to list clips" });
     }
@@ -16881,8 +16935,22 @@ export async function registerRoutes(
               sourceMap.set(r.srcKey, await downloadToTempFile(asset.storagePath, path.join(tempRoot, scope)));
               continue;
             }
-            const fp = (await storage.getVideoById(r.videoId!))?.filePath ?? null;
-            if (!fp) throw new Error(`Video ${r.videoId} has no file`);
+            const srcVideo = await storage.getVideoById(r.videoId!);
+            if (!srcVideo) throw new Error(`Video ${r.videoId} not found`);
+            let fp = srcVideo.filePath ?? null;
+            if (!fp) {
+              // An IMPORTED video — YouTube, Instagram, Twitch, a pasted URL —
+              // has no filePath until something pulls it. Every other render
+              // pipeline resolves that through the source cache; this one
+              // alone read filePath directly and threw "has no file". Long
+              // form arrives overwhelmingly as imports rather than as
+              // multi-gigabyte uploads, so without this a reel cut from a
+              // connected channel's video could be proposed, placed on the
+              // timeline and never built.
+              const { getPinnedSourcePath } = await import("./lib/sourceCache");
+              sourceMap.set(r.srcKey, await getPinnedSourcePath(srcVideo as any, path.join(tempRoot, scope)));
+              continue;
+            }
             if (fp.startsWith("/storage/")) {
               sourceMap.set(r.srcKey, await downloadToTempFile(objectKeyFromServeUrl(fp), path.join(tempRoot, scope)));
             } else {

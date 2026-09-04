@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Loader2, Sparkles, Wand2, X } from "lucide-react";
 import { fetchWithTimeout } from "@/lib/queryClient";
 import { fmtT, MAX_REEL_SEC, type BinSource, type ReelItem, newItemId } from "./types";
+import { parseDurationSec, isLongForm } from "@shared/duration";
 
 /**
  * Pick a long-form video, get several reels back.
@@ -23,6 +24,10 @@ interface VideoRow { id: number; title: string; duration?: string | null; thumbn
 export interface AiSegment {
   start: number;
   end: number;
+  /** Set only on a cross-video thread — a single-video option inherits the
+   *  video the creator picked. */
+  videoId?: number;
+  videoTitle?: string;
   role: "hook" | "development" | "climax" | "payoff" | "bridge";
   narrativePurpose: string;
   suggestedTransition: "cut" | "crossfade" | "branded_wipe";
@@ -52,6 +57,12 @@ export function AiReelPanel(props: {
   const [videos, setVideos] = useState<VideoRow[]>([]);
   const [loadingVideos, setLoadingVideos] = useState(true);
   const [videoId, setVideoId] = useState<number | null>(null);
+  /** What the creator asked for, in their words. Optional — with nothing typed
+   *  the model picks the strongest arcs on its own, which is the old behaviour. */
+  const [query, setQuery] = useState("");
+  /** "one" reads a single long-form video. "across" hunts one story through
+   *  several of them. Two different questions, one panel. */
+  const [scope, setScope] = useState<"one" | "across">("one");
   const [busy, setBusy] = useState(false);
   const [options, setOptions] = useState<AiOption[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -75,18 +86,60 @@ export function AiReelPanel(props: {
   const video = useMemo(() => videos.find((v) => v.id === videoId) ?? null, [videos, videoId]);
 
   const propose = async () => {
-    if (videoId == null) return;
+    if (scope === "one" && videoId == null) return;
     setBusy(true);
     setErr(null);
     setOptions(null);
     try {
+      if (scope === "across") {
+        // The cross-video route returns ONE thread, not a set of options, and
+        // its beats each carry their own videoId. Normalised into the same
+        // shape so the review UI and `apply` below do not have to fork.
+        const r = await fetchWithTimeout(
+          "/api/remix/library-thread",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({ segmentCount: 5, targetDuration: 110, query: query.trim() || undefined }),
+          },
+          180_000,
+        );
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || "Couldn't find a story across your videos");
+        const segs = (d.segments ?? []).map((sg: any) => ({
+          start: Number(sg.start),
+          end: Number(sg.end),
+          role: (sg.role || "development") as AiSegment["role"],
+          narrativePurpose: sg.reason || sg.videoTitle || "",
+          suggestedTransition: sg.suggestedTransition || "crossfade",
+          videoId: Number(sg.videoId),
+          videoTitle: sg.videoTitle,
+        }));
+        setOptions([{
+          angle: d.suggestedTitle || "Across your videos",
+          rationale: d.narrativeArc || "",
+          narrativeArc: d.narrativeArc || "",
+          suggestedTitle: d.suggestedTitle || "Across your videos",
+          segments: segs,
+          totalDuration: Number(d.totalDuration) || segs.reduce((n: number, x: any) => n + (x.end - x.start), 0),
+        }]);
+        setOpenIdx(0);
+        return;
+      }
+
       const res = await fetchWithTimeout(
         `/api/remix/${videoId}/reel-options`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
-          body: JSON.stringify({ optionCount: 5, segmentCount: 4, targetDuration: 110 }),
+          body: JSON.stringify({
+            optionCount: 5,
+            segmentCount: 4,
+            targetDuration: 110,
+            query: query.trim() || undefined,
+          }),
         },
         180_000,
       );
@@ -110,28 +163,31 @@ export function AiReelPanel(props: {
    * editable rather than a single opaque extract.
    */
   const apply = (opt: AiOption) => {
-    if (!video) return;
     const sources: BinSource[] = [];
     const items: ReelItem[] = [];
     let at = 0;
     opt.segments.forEach((seg, i) => {
+      // A cross-video beat names its own source; a single-video option
+      // inherits the one that was picked.
+      const from = seg.videoId != null ? videos.find((v) => v.id === seg.videoId) ?? null : video;
+      if (!from) return;
       const len = Math.max(0.5, seg.end - seg.start);
       if (at + len > MAX_REEL_SEC) return;             // the cap owns the ceiling
-      const sk = `m:${video.id}:${seg.start.toFixed(2)}`;
+      const sk = `m:${from.id}:${seg.start.toFixed(2)}`;
       sources.push({
         sk,
         kind: "moment",
         label: seg.narrativePurpose?.slice(0, 60) || `${seg.role} · ${fmtT(seg.start)}`,
-        meta: `${video.title} · ${seg.role}`,
+        meta: `${seg.videoTitle ?? from.title} · ${seg.role}`,
         // The source video's own file, so the block previews in the program
         // monitor instead of showing a gap.
-        url: video.filePath || null,
+        url: from.filePath || null,
         boundStart: seg.start,
         boundEnd: seg.end,
         // These times ARE source-video times already, unlike a rendered clip
         // whose file is zero-based — so no offset.
         srcOffset: 0,
-        videoId: video.id,
+        videoId: from.id,
       });
       items.push({
         id: newItemId(),
@@ -163,27 +219,68 @@ export function AiReelPanel(props: {
 
       <div className="flex-1 min-h-0 overflow-y-auto p-3 flex flex-col gap-3">
         <p className="text-[11px] leading-relaxed text-muted-foreground">
-          Pick a long-form video. You'll get several different reels cut from it — each one a set of separate
-          moments you can re-order, trim or swap, not a single long extract.
+          {scope === "one"
+            ? "Pick a long-form video. You'll get several different reels cut from it — each one a set of separate moments you can re-order, trim or swap, not a single long extract."
+            : "Finds one story running through several of your videos and cuts it into a single reel. Say what you're after and it looks for that; leave it blank and it finds the strongest thread on its own."}
         </p>
 
-        <select
-          value={videoId ?? ""}
-          onChange={(e) => { setVideoId(Number(e.target.value) || null); setOptions(null); setErr(null); }}
-          className="w-full h-8 px-2 border border-border bg-background text-xs text-foreground outline-none focus:border-primary/60"
-          data-testid="reel-ai-video"
-        >
-          <option value="">{loadingVideos ? "Loading your videos…" : "Choose a video…"}</option>
-          {videos.map((v) => (
-            <option key={v.id} value={v.id}>
-              {v.title}{v.duration ? ` · ${v.duration}` : ""}
-            </option>
+        <div className="flex border border-border">
+          {(["one", "across"] as const).map((m) => (
+            <button
+              key={m}
+              onClick={() => { setScope(m); setOptions(null); setErr(null); }}
+              className={`flex-1 px-2 py-1.5 text-[11px] font-semibold ${
+                scope === m ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground"
+              }`}
+              data-testid={`reel-ai-scope-${m}`}
+            >
+              {m === "one" ? "From one video" : "Across my videos"}
+            </button>
           ))}
-        </select>
+        </div>
+
+        <label className="flex flex-col gap-1">
+          <span className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+            What kind of reel? <span className="normal-case tracking-normal font-normal">(optional)</span>
+          </span>
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="best advice · funniest moments · anything about pricing"
+            maxLength={300}
+            className="w-full h-8 px-2 border border-border bg-background text-xs text-foreground outline-none focus:border-primary/60 placeholder:text-muted-foreground/60"
+            data-testid="reel-ai-query"
+          />
+        </label>
+
+        {scope === "one" && (
+          <select
+            value={videoId ?? ""}
+            onChange={(e) => { setVideoId(Number(e.target.value) || null); setOptions(null); setErr(null); }}
+            className="w-full h-8 px-2 border border-border bg-background text-xs text-foreground outline-none focus:border-primary/60"
+            data-testid="reel-ai-video"
+          >
+            <option value="">{loadingVideos ? "Loading your videos…" : "Choose a video…"}</option>
+            {/* Longest first, and the duration parsed rather than printed raw:
+                video_index.duration is a varchar holding YouTube's ISO-8601, so
+                the picker whose own instruction says "pick a long-form video"
+                used to offer "My Podcast Ep 12 · PT1H5M12S". */}
+            {[...videos]
+              .map((v) => ({ v, secs: parseDurationSec(v.duration ?? null) }))
+              .sort((a, b) => (b.secs ?? 0) - (a.secs ?? 0))
+              .map(({ v, secs }) => (
+                <option key={v.id} value={v.id}>
+                  {v.title}
+                  {secs ? ` · ${fmtT(secs)}` : ""}
+                  {isLongForm(secs) ? " · long form" : ""}
+                </option>
+              ))}
+          </select>
+        )}
 
         <button
           onClick={propose}
-          disabled={videoId == null || busy}
+          disabled={(scope === "one" && videoId == null) || busy}
           className="w-full px-3 py-2 bg-primary text-white text-xs font-semibold disabled:opacity-40 inline-flex items-center justify-center gap-2"
           data-testid="reel-ai-propose"
         >

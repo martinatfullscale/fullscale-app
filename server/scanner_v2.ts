@@ -17,6 +17,7 @@
  */
 
 import { spawn } from "child_process";
+import { parseDurationSec } from "@shared/duration";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
@@ -901,26 +902,10 @@ export function addToLocalAssetMap(videoId: string, filePath: string): void {
  *  Graph importer stores durations this way, and rejecting them silently
  *  degraded every FB scan to the unknown-duration grid). Supports hours,
  *  minutes, seconds; ignores days/weeks since none of our sources use them. */
+/** Delegates to shared/duration.ts — the reel bin and the AI video picker
+ *  need the same parse, and two copies of it drifted once already. */
 function parseIsoDuration(input: string | null | undefined): number | null {
-  if (!input || typeof input !== "string") return null;
-  // Plain seconds (already-numeric) — accept e.g. "2760"
-  const numeric = Number(input);
-  if (Number.isFinite(numeric) && numeric > 0) return numeric;
-  // Colon clock format: "M:SS" or "H:MM:SS"
-  const clock = input.match(/^(\d+):(\d{1,2})(?::(\d{1,2}))?$/);
-  if (clock) {
-    const total = clock[3] !== undefined
-      ? parseInt(clock[1], 10) * 3600 + parseInt(clock[2], 10) * 60 + parseInt(clock[3], 10)
-      : parseInt(clock[1], 10) * 60 + parseInt(clock[2], 10);
-    return total > 0 ? total : null;
-  }
-  const m = input.match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?$/);
-  if (!m) return null;
-  const hours = parseInt(m[1] || "0", 10);
-  const minutes = parseInt(m[2] || "0", 10);
-  const seconds = parseFloat(m[3] || "0");
-  const total = hours * 3600 + minutes * 60 + seconds;
-  return total > 0 ? total : null;
+  return parseDurationSec(input);
 }
 
 async function getAvailableDiskSpaceMB(): Promise<number> {
@@ -4147,7 +4132,12 @@ async function processVideoScanInner(
     // Hard cap at 1 hour — anything longer scans only the first hour of
     // content (creator-confirmed: nothing >1hr in scope). Shared by the
     // stream grid sizing, the download plan, and the local-file plan.
-    const MAX_DURATION_SEC = 60 * 60;
+    // 65 minutes, matching the platform ceiling in shared/reel.ts. This was
+    // 60 * 60 with the note "creator-confirmed: nothing >1hr in scope" — that
+    // confirmation was withdrawn when long form was allowed in, and at 65
+    // minutes the old cap silently dropped the last five minutes of a source:
+    // no frames, no surfaces, no scene index, and nothing said so.
+    const MAX_DURATION_SEC = 65 * 60;
 
     // Plan adaptive sampling — duration-banded, NOT a fixed frame target.
     // Fixed-target was wrong: 75 frames on a 30-min video = every 24s,
@@ -4397,7 +4387,7 @@ async function processVideoScanInner(
         scanPlanIsDefault = false;
         const coveredMin = (scanPlan.intervalSeconds * scanPlan.maxFrames / 60).toFixed(1);
         const fullMin = (probedDuration / 60).toFixed(1);
-        const cappedNote = probedDuration > MAX_DURATION_SEC ? ` (CAPPED at 1hr — full video is ${fullMin}min)` : "";
+        const cappedNote = probedDuration > MAX_DURATION_SEC ? ` (CAPPED at ${MAX_DURATION_SEC / 60}min — full video is ${fullMin}min)` : "";
         console.log(`[Scanner V2] Plan: every ${scanPlan.intervalSeconds}s × ${scanPlan.maxFrames} frames = ${coveredMin}min coverage${cappedNote}`);
       } else {
         // Duration unknown — default to "5 min, every 2s" plan = 150 frames.

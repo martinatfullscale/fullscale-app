@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, Play, Pause, Plus, Scissors, Search, SkipBack } from "lucide-react";
+import { ChevronDown, ChevronRight, Loader2, Play, Pause, Plus, Scissors, Search, SkipBack } from "lucide-react";
 import { AiStillPanel, StockPanel, WebcamPanel } from "./BinPanels";
 import {
-  dur, fmtT, KIND_COLOR, KIND_LABEL, REEL_ASPECT,
+  dur, fmtT, fmtPrecise, KIND_COLOR, KIND_LABEL, REEL_ASPECT,
   type BinSource, type ReelItem, type SourceKind,
 } from "./types";
 
@@ -51,17 +51,34 @@ function PanelHead({ kicker, children }: { kicker: string; children?: React.Reac
 
 // ── Bin ──────────────────────────────────────────────────────────────────
 
-const FILTERS: Array<{ id: "all" | SourceKind; label: string }> = [
-  { id: "all", label: "All" },
-  { id: "story", label: "Story clips" },
-  { id: "library", label: "Remix clips" },
-  { id: "reel", label: "Built reels" },
-  { id: "moment", label: "Moments" },
-  { id: "upload", label: "Uploads" },
-  { id: "webcam", label: "Webcam" },
-  { id: "stock", label: "Stock" },
-  { id: "ai", label: "AI stills" },
+/**
+ * THE BIN, organised by where a thing came from.
+ *
+ * It used to be a flat list behind nine kind chips, and the owner's complaint
+ * was the right one: "there has to be a way to organize them so that a lay
+ * person can find their clip and drop it in and don't have to hunt very far."
+ * A flat list of 73 cards named after the video they were cut from is a hunt.
+ *
+ * Three sections now, which is how a creator actually thinks about their own
+ * material:
+ *   Your videos  the long-form sources — uploaded, or connected through OAuth
+ *                — each one expanding to the clips FullScale cut from it.
+ *   Uploads      files they brought in themselves, plus stills and music.
+ *   Create       the tools that make a new source: stock, AI stills, webcam.
+ *
+ * Which pipeline made a clip is a badge on the card, not a tab. It is a useful
+ * thing to notice and a useless thing to navigate by.
+ */
+type BinTab = "videos" | "uploads" | "create";
+
+const TABS: Array<{ id: BinTab; label: string }> = [
+  { id: "videos", label: "Your videos" },
+  { id: "uploads", label: "Uploads" },
+  { id: "create", label: "Create" },
 ];
+
+/** Everything a creator brought in or generated, as opposed to cut. */
+const UPLOAD_KINDS: SourceKind[] = ["upload", "webcam", "stock", "ai", "music"];
 
 export function Bin(props: {
   sources: BinSource[];
@@ -75,16 +92,54 @@ export function Bin(props: {
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [q, setQ] = useState("");
-  const [filter, setFilter] = useState<"all" | SourceKind>("all");
+  const [tab, setTab] = useState<BinTab>("videos");
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
-  const shown = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    return props.sources.filter(
-      (s) =>
-        (filter === "all" || s.kind === filter) &&
-        (!needle || s.label.toLowerCase().includes(needle) || s.meta.toLowerCase().includes(needle)),
+  const needle = q.trim().toLowerCase();
+  const hit = (s: BinSource) =>
+    !needle || s.label.toLowerCase().includes(needle) || s.meta.toLowerCase().includes(needle);
+
+  /** Source videos, each with the clips cut from it. A clip whose parent is
+   *  missing — a folded-away duplicate, or a video since removed — is not
+   *  dropped on the floor; it lands in a trailing group of its own. */
+  const groups = useMemo(() => {
+    const videos = props.sources.filter((s) => s.kind === "video");
+    const clips = props.sources.filter(
+      (s) => s.kind === "story" || s.kind === "library" || s.kind === "reel" || s.kind === "moment",
     );
-  }, [props.sources, q, filter]);
+    const byVideo = new Map<number, BinSource[]>();
+    const orphans: BinSource[] = [];
+    for (const c of clips) {
+      if (typeof c.videoId === "number" && videos.some((v) => v.videoId === c.videoId)) {
+        const arr = byVideo.get(c.videoId) ?? [];
+        arr.push(c);
+        byVideo.set(c.videoId, arr);
+      } else orphans.push(c);
+    }
+    const out = videos
+      .map((v) => ({ key: `v:${v.videoId}`, video: v, clips: byVideo.get(v.videoId!) ?? [] }))
+      // Longest first: the long-form sources are what this section is for, and
+      // a 40-second import should not sit above an hour-long episode.
+      .sort((a, b) => (b.video.durationSec ?? 0) - (a.video.durationSec ?? 0));
+    if (orphans.length) out.push({ key: "orphans", video: null as any, clips: orphans });
+    return out;
+  }, [props.sources]);
+
+  const uploads = useMemo(
+    () => props.sources.filter((s) => UPLOAD_KINDS.includes(s.kind) && hit(s)),
+    [props.sources, needle],
+  );
+
+  /** Search reaches across sections, so say when the answer is in another one. */
+  const matchesElsewhere = useMemo(() => {
+    if (!needle) return 0;
+    const here = tab === "videos"
+      ? new Set(groups.flatMap((g) => [g.video?.sk, ...g.clips.map((c) => c.sk)]).filter(Boolean))
+      : new Set(uploads.map((u) => u.sk));
+    return props.sources.filter((s) => hit(s) && !here.has(s.sk)).length;
+  }, [props.sources, needle, tab, groups, uploads]);
+
+  const totalClips = props.sources.filter((s) => s.kind !== "video").length;
 
   return (
     <div className="flex flex-col h-full min-h-0 overflow-hidden border-r-2 border-border">
@@ -92,7 +147,11 @@ export function Bin(props: {
         <div className="flex items-baseline gap-2">
           <Kicker>Bin</Kicker>
           <span className="text-[11px] text-muted-foreground">
-            {shown.length} of {props.sources.length} source{props.sources.length === 1 ? "" : "s"}
+            {totalClips} clip{totalClips === 1 ? "" : "s"}
+            {props.sources.some((s) => s.kind === "video") &&
+              ` · ${props.sources.filter((s) => s.kind === "video").length} video${
+                props.sources.filter((s) => s.kind === "video").length === 1 ? "" : "s"
+              }`}
           </span>
           <button
             onClick={() => fileRef.current?.click()}
@@ -104,8 +163,7 @@ export function Bin(props: {
             Add
           </button>
         </div>
-        {/* video AND image: the render path has always handled stills (held
-            1-30s with a slow zoom) but the old picker was video-only. */}
+
         <input
           ref={fileRef}
           type="file"
@@ -117,101 +175,164 @@ export function Bin(props: {
             if (f) props.onUpload(f);
           }}
         />
+
         <label className="flex items-center gap-2 px-2 h-8 border border-border focus-within:border-primary/60">
           <Search className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Search all sources"
+            placeholder="Search your clips and videos"
             className="flex-1 min-w-0 bg-transparent text-xs outline-none placeholder:text-muted-foreground/60"
             data-testid="reel-bin-search"
           />
         </label>
-        <div className="flex flex-wrap gap-1">
-          {FILTERS.map((f) => {
-            const on = filter === f.id;
-            return (
-              <button
-                key={f.id}
-                onClick={() => setFilter(f.id)}
-                className={`px-1.5 py-1 text-[10.5px] font-semibold uppercase tracking-[0.06em] border transition-colors ${
-                  on ? "bg-foreground text-background border-foreground" : "border-border text-muted-foreground hover:text-foreground"
-                }`}
-                data-testid={`reel-bin-filter-${f.id}`}
-              >
-                {f.label}
-              </button>
-            );
-          })}
+
+        <div className="grid grid-cols-3 gap-1">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={`px-1.5 py-1.5 text-[10.5px] font-semibold uppercase tracking-[0.06em] border transition-colors ${
+                tab === t.id
+                  ? "bg-foreground text-background border-foreground"
+                  : "border-border text-muted-foreground hover:text-foreground"
+              }`}
+              data-testid={`reel-bin-tab-${t.id}`}
+            >
+              {t.label}
+            </button>
+          ))}
         </div>
+
+        {needle && matchesElsewhere > 0 && (
+          <p className="text-[10px] text-muted-foreground">
+            {matchesElsewhere} more match{matchesElsewhere === 1 ? "" : "es"} in another tab.
+          </p>
+        )}
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto">
-        {/* Three of the chips are SOURCES you act on rather than files you
-            already own, so they get a panel instead of the grid. Everything
-            they produce becomes a media_assets row, which is what the grid
-            lists — so a stock import or a generated still simply appears
-            under Yours once the bin refetches. */}
-        {filter === "stock" ? (
-          <StockPanel onImported={props.onSourcesChanged} />
-        ) : filter === "ai" ? (
-          <AiStillPanel onGenerated={props.onSourcesChanged} />
-        ) : filter === "webcam" && props.sources.every((s) => s.kind !== "webcam") ? (
-          <WebcamPanel busy={props.uploading} onCapture={props.onUpload} />
+        {props.loading ? (
+          <p className="px-3 py-6 text-center text-[11px] text-muted-foreground">Loading your sources…</p>
+        ) : tab === "create" ? (
+          <div className="p-2 flex flex-col gap-3">
+            <StockPanel onImported={props.onSourcesChanged} />
+            <AiStillPanel onGenerated={props.onSourcesChanged} />
+            <WebcamPanel busy={props.uploading} onCapture={props.onUpload} />
+          </div>
+        ) : tab === "uploads" ? (
+          <div className="p-2 flex flex-col gap-1.5">
+            {uploads.length === 0 ? (
+              <p className="px-2 py-6 text-center text-[11px] leading-relaxed text-muted-foreground">
+                {needle
+                  ? "Nothing here matches that."
+                  : "Nothing uploaded yet. Use Add for a file on your machine, or the Create tab for stock, stills and webcam."}
+              </p>
+            ) : (
+              uploads.map((s) => (
+                <BinCard key={s.sk} source={s} selected={props.selectedKey === s.sk} onPick={() => props.onPick(s)} />
+              ))
+            )}
+          </div>
         ) : (
-          <BinGrid {...props} shown={shown} filter={filter} q={q} />
+          <div className="p-2 flex flex-col gap-2">
+            {groups.length === 0 ? (
+              <p className="px-2 py-6 text-center text-[11px] leading-relaxed text-muted-foreground">
+                No videos yet. Upload one, or connect a channel and it appears here with anything you cut from it.
+              </p>
+            ) : (
+              groups.map((g) => {
+                const shownClips = g.clips.filter(hit);
+                const videoHit = g.video ? hit(g.video) : false;
+                // A search hides a group only when nothing in it matches.
+                if (needle && !videoHit && shownClips.length === 0) return null;
+                const open = needle ? true : !collapsed[g.key];
+                return (
+                  <VideoGroup
+                    key={g.key}
+                    open={open}
+                    onToggle={() => setCollapsed((c) => ({ ...c, [g.key]: !!open }))}
+                    video={g.video}
+                    clips={shownClips}
+                    selectedKey={props.selectedKey}
+                    onPick={props.onPick}
+                  />
+                );
+              })
+            )}
+          </div>
         )}
+
+        <p className="px-3 py-2 text-[10.5px] leading-relaxed text-muted-foreground">
+          Hover a thumbnail to scrub it. Drag to V0 for a beat or V1 for an overlay, or open it in the source
+          monitor to set in/out first.
+        </p>
       </div>
     </div>
   );
 }
 
-/** The grid of things the creator already owns. */
-function BinGrid(props: {
-  sources: BinSource[];
-  loading: boolean;
+/** One source video and the clips cut from it. */
+function VideoGroup(props: {
+  open: boolean;
+  onToggle: () => void;
+  video: BinSource | null;
+  clips: BinSource[];
   selectedKey: string | null;
   onPick: (s: BinSource) => void;
-  uploading: boolean;
-  onUpload: (file: File) => void;
-  shown: BinSource[];
-  filter: "all" | SourceKind;
-  q: string;
 }) {
-  const { shown, filter } = props;
+  const { video, clips, open } = props;
+  const long = (video?.durationSec ?? 0) >= 300;
   return (
-      <div className="p-2 flex flex-col gap-1.5">
-        {props.loading ? (
-          <p className="px-1 py-6 text-center text-[11px] text-muted-foreground">Loading your sources…</p>
-        ) : shown.length === 0 ? (
-          <p className="px-2 py-6 text-center text-[11px] leading-relaxed text-muted-foreground">
-            {filter === "moment"
-              // Said plainly rather than shown as an empty grid: the AI
-              // cross-video moment finder is not wired into this bin yet.
-              ? "Cross-video AI moments aren't wired into this bin yet — they still live in the old builder."
-              : filter === "story"
-                // An empty family tab has a specific reason, and saying which
-                // one beats a blank grid that reads as "your work is gone".
-                ? "No story clips yet. Cut one in the Story Clip editor and it lands here."
-                : filter === "reel"
-                  ? "No reels built yet. Anything you build here shows up in this tab afterwards."
-                  : filter === "library"
-                    ? "No remix clips yet — these are the single-range clips the remix engine generates."
-                    : props.sources.length === 0
-                      ? "Nothing in your library yet. Use Add, or try the Stock, AI stills or Webcam tabs."
-                      : "Nothing here matches that."}
-          </p>
-        ) : (
-          shown.map((s) => <BinCard key={s.sk} source={s} selected={props.selectedKey === s.sk} onPick={() => props.onPick(s)} />)
-        )}
-        {filter === "webcam" && (
-          <WebcamPanel busy={props.uploading} onCapture={props.onUpload} />
-        )}
-        <p className="px-0.5 py-1.5 text-[10.5px] leading-relaxed text-muted-foreground">
-          Hover a thumbnail to scrub it. Drag to V0 for a beat or V1 for an overlay, or open it in the source
-          monitor to set in/out first.
-        </p>
-      </div>
+    <div className="border border-border/70">
+      <button
+        onClick={props.onToggle}
+        className="w-full flex items-center gap-2 px-2 py-1.5 bg-card/60 hover:bg-card text-left"
+        data-testid={`reel-bin-group-${video ? video.videoId : "other"}`}
+      >
+        {open ? <ChevronDown className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
+              : <ChevronRight className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />}
+        <span className="min-w-0 flex-1">
+          <span className="block text-[11.5px] font-semibold truncate text-foreground">
+            {video ? video.label : "Clips from videos no longer in your library"}
+          </span>
+          {video && (
+            <span className="block text-[10px] text-muted-foreground truncate">
+              {long && <span className="text-[#a78bfa]">Long form · </span>}
+              {video.meta}
+              {video.unavailable && " · not pulled yet"}
+            </span>
+          )}
+        </span>
+        <span className="shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground">
+          {clips.length}
+        </span>
+      </button>
+
+      {open && (
+        <div className="p-1.5 flex flex-col gap-1.5">
+          {/* The whole video as a source. Only when there is something local to
+              scrub and cut — an imported row is a grouping header until it is
+              pulled, and saying so beats a build error later. */}
+          {video && !video.unavailable && (
+            <BinCard
+              source={video}
+              selected={props.selectedKey === video.sk}
+              onPick={() => props.onPick(video)}
+            />
+          )}
+          {clips.length === 0 ? (
+            <p className="px-1.5 py-2 text-[10.5px] leading-relaxed text-muted-foreground">
+              Nothing cut from this one yet. Use the AI reel builder, or drag the video in and cut it here.
+            </p>
+          ) : (
+            clips.map((c) => (
+              <BinCard key={c.sk} source={c} selected={props.selectedKey === c.sk} onPick={() => props.onPick(c)} />
+            ))
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -426,7 +547,7 @@ export function SourceMonitor(props: {
             Set out · O
           </button>
           <span className="ml-auto font-mono text-[10.5px] tabular-nums text-muted-foreground">
-            in {fmtT(srcIn)} · out {fmtT(srcOut)} · {fmtT(srcOut - srcIn)}
+            in {fmtPrecise(srcIn)} · out {fmtPrecise(srcOut)} · {fmtT(srcOut - srcIn)}
           </span>
         </div>
 
@@ -578,7 +699,7 @@ export function Inspector(props: {
 
         <div className="flex flex-col">
           <Row label="Track" value={item.track} />
-          <Row label="Source in / out" value={`${fmtT(item.in)} – ${fmtT(item.out)}`} />
+          <Row label="Source in / out" value={`${fmtPrecise(item.in)} – ${fmtPrecise(item.out)}`} />
           <Row label="Timeline at" value={fmtT(item.at)} />
           <Row label="Duration" value={fmtT(dur(item))} />
           <Row label="Transition in" value={(item.tin ?? "cut").replace("_", " ")} />

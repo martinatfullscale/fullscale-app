@@ -42,9 +42,14 @@ const draftKey = (id: string) => `fullscale.reel-draft.v${DRAFT_VER}.${id}`;
 
 interface ApiClip {
   clipId: number; clipSource: "remix" | "editorial"; videoId: number; videoTitle: string;
-  family?: "story" | "reel" | "clip"; segmentCount?: number;
+  family?: "story" | "reel" | "clip"; segmentCount?: number; createdAt?: string | null;
   title: string | null; clipStart: number; clipEnd: number; duration: number;
   thumbnailPath: string | null; exportPath?: string | null; hasSegments: boolean;
+}
+
+interface ApiVideo {
+  videoId: number; title: string; durationSec: number | null;
+  platform: string | null; thumbnailPath: string | null; exportPath: string | null;
 }
 interface ApiAsset { id: number; kind: string; name: string; url: string; durationSec: string | null; fileSizeBytes?: number | null }
 
@@ -117,6 +122,28 @@ export default function ReelEditor() {
             clipSource: c.clipSource,
             hasSegments: c.hasSegments,
             thumbnailPath: c.thumbnailPath,
+          });
+        }
+        // The creator's own videos, as the thing their clips hang under. An
+        // imported video has no local file until it is pulled, so it groups
+        // its clips but is not itself draggable — said on the row rather than
+        // discovered by dragging it and getting a build error.
+        for (const v of (data.videos ?? []) as ApiVideo[]) {
+          const secs = typeof v.durationSec === "number" && v.durationSec > 0 ? v.durationSec : null;
+          out.push({
+            sk: `v:${v.videoId}`,
+            kind: "video",
+            label: v.title,
+            meta: [v.platform, secs ? fmtT(secs) : null].filter(Boolean).join(" · ") || "source video",
+            url: v.exportPath || null,
+            boundStart: 0,
+            boundEnd: secs ?? MAX_REEL_SEC,
+            srcOffset: 0,
+            videoId: v.videoId,
+            durationSec: secs,
+            platform: v.platform,
+            unavailable: !v.exportPath,
+            thumbnailPath: v.thumbnailPath,
           });
         }
       } catch { /* an empty bin is a valid state */ }
@@ -352,6 +379,20 @@ export default function ReelEditor() {
             else { setPh(total); setPlaying(false); }
           } else {
             setPh(cur.at + (v.currentTime - cur.in));
+          }
+        } else if (playing && !src?.url) {
+          // A block with nothing playable behind it — a still, or a clip that
+          // has not been rendered. Neither branch above advances the playhead
+          // for one of these, so playback used to stop dead on the first still
+          // and never recover. Run it off the wall clock instead.
+          const next = ph + dt;
+          if (next >= end(cur) - 1e-3) {
+            const idx = blocks.findIndex((b) => b.id === cur.id);
+            const nxt = blocks[idx + 1];
+            if (nxt) setPh(nxt.at);
+            else { setPh(total); setPlaying(false); }
+          } else {
+            setPh(next);
           }
         } else if (!playing && !v.paused) {
           v.pause();
@@ -672,7 +713,31 @@ export default function ReelEditor() {
           onHome={() => seek(0)}
           onEdge={jumpEdge}
         />
-        {aiOpen ? (
+        <Inspector
+          item={selected}
+          source={selected ? sourceMap.get(selected.sk) ?? null : null}
+          pieceCount={pieceCount}
+          onSplit={() => selected && doSplit(selected.id, ph)}
+          onRippleDelete={() => doDelete(true)}
+          onLift={() => doDelete(false)}
+        />
+      </div>
+
+      {/* The AI builder is an OVERLAY, not the fourth column it used to be.
+          Those columns are 300 + 320 + 360 + 290 inside a minWidth:1360 shell
+          behind a fixed 256px sidebar — so on any laptop under about 1620px
+          the panel sat off the right edge and the only way to reach it was to
+          scroll the whole editor sideways. Nobody found it. */}
+      {aiOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/70 backdrop-blur-sm p-4 md:p-10"
+          role="dialog"
+          aria-modal="true"
+          aria-label="AI reel builder"
+          onClick={() => setAiOpen(false)}
+          data-testid="reel-ai-overlay"
+        >
+          <div className="w-full max-w-lg my-auto border border-border bg-background shadow-2xl" onClick={(e) => e.stopPropagation()}>
           <AiReelPanel
             onClose={() => setAiOpen(false)}
             onApply={(newSources, newItems, title) => {
@@ -689,17 +754,9 @@ export default function ReelEditor() {
               toast({ title: "On the timeline", description: `${newItems.length} cuts — move, trim or swap any of them before you build.` });
             }}
           />
-        ) : (
-        <Inspector
-          item={selected}
-          source={selected ? sourceMap.get(selected.sk) ?? null : null}
-          pieceCount={pieceCount}
-          onSplit={() => selected && doSplit(selected.id, ph)}
-          onRippleDelete={() => doDelete(true)}
-          onLift={() => doDelete(false)}
-        />
-        )}
-      </div>
+          </div>
+        </div>
+      )}
 
       </ResizablePanel>
 
@@ -739,7 +796,7 @@ export default function ReelEditor() {
         <button
           onClick={() => setAiOpen(true)}
           className={`px-2.5 py-1.5 text-[11px] font-semibold border inline-flex items-center gap-1.5 ${
-            aiOpen ? "border-primary/45 bg-primary/15 text-primary" : "border-border text-muted-foreground hover:text-foreground"
+            aiOpen ? "border-primary bg-primary text-white" : "border-primary/50 bg-primary/10 text-primary hover:bg-primary/20"
           }`}
           data-testid="reel-ai-open"
         >
@@ -772,7 +829,7 @@ export default function ReelEditor() {
           <button onClick={toPlayhead} className="px-2 py-1.5 text-[11px] border border-border hover:bg-white/5">To playhead</button>
           <span
             className={`text-[11.5px] font-semibold tabular-nums ${total > MAX_REEL_SEC * 0.9 ? "text-amber-400" : ""}`}
-            title={`Reels cap at ${MAX_REEL_SEC / 60} minutes — this is a short-form tool`}
+            title={`Reels cap at ${Math.round(MAX_REEL_SEC / 60)} minutes`}
           >
             Total {fmtT(total)} <span className="text-muted-foreground/70">/ {MAX_REEL_SEC / 60}:00</span>
           </span>

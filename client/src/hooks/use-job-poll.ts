@@ -55,7 +55,10 @@ export interface UseJobPollOptions<R> {
 }
 
 export function useJobPoll<R = any>(job: JobRef | null | undefined, opts: UseJobPollOptions<R> = {}) {
-  const { intervalMs = 3000, maxMs = 20 * 60_000 } = opts;
+  // 20 minutes was comfortably above every render when a reel capped at three
+  // minutes. At a 65-minute ceiling it is not: the poll would give up and
+  // report a timeout on a job that is still running and will succeed.
+  const { intervalMs = 3000, maxMs = 90 * 60_000 } = opts;
   const key = job ? `${job.kind}:${job.id}` : null;
 
   // Callbacks live in refs so a caller passing inline closures does not

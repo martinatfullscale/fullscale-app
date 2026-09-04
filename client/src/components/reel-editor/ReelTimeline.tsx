@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   dur, end, fmtClock, fmtT, isJunction, KIND_COLOR, snapTime,
-  TRACK_PHASE, TRACK_ROLE,
+  MAX_REEL_SEC, MIN_ITEM_SEC, TRACK_PHASE, TRACK_ROLE,
   type BinSource, type ReelItem, type Track, type Transition,
 } from "./types";
 
@@ -153,6 +153,64 @@ export default function ReelTimeline(props: ReelTimelineProps) {
     window.addEventListener("pointercancel", up);
   };
 
+  /**
+   * Shorten or lengthen a block that is ALREADY on the timeline, by dragging
+   * its edge.
+   *
+   * This existed in the old modal (ReelBuilder's beginTrim) and was dropped in
+   * the migration to this route, which left razor-then-ripple-delete as the
+   * only way to shorten anything — it cannot shave less than a razor's width
+   * off an end and can never give length back. With long-form sources that is
+   * not a rough edge: a 65-minute video drops as a block spanning the whole
+   * reel, and without this there is no gesture that can make it smaller.
+   */
+  const beginTrim = (it: ReelItem, edge: "in" | "out") => (e: React.PointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onSelect(it.id);
+    if (tool === "razor") return;
+    const token = `trim:${it.id}:${edge}:${++dragSeq}`;
+    const src = sources.get(it.sk);
+    const lo = src ? Math.max(0, src.boundStart) : 0;
+    // A still has no real out-point — it is held for as long as you want it —
+    // so it may be stretched past the 4s the bin gave it.
+    const hi = src ? (src.isImage ? MAX_REEL_SEC : Math.max(lo, src.boundEnd)) : MAX_REEL_SEC;
+    const t0 = timeAt(e.clientX);
+    const in0 = it.in, out0 = it.out, at0 = it.at;
+    let moved = false;
+
+    const move = (ev: PointerEvent) => {
+      const raw = (edge === "in" ? in0 : out0) + (timeAt(ev.clientX) - t0);
+      const snapped = snap ? snapTime(raw, items, playhead, pps, it.id) : { t: raw, snapped: false };
+      const want = snapped.t;
+      if (!moved && Math.abs(want - (edge === "in" ? in0 : out0)) < 1e-3) return;
+      moved = true;
+      setGuide(snapped.snapped ? snapped.t : null);
+      onItems((prev) => prev.map((x) => {
+        if (x.id !== it.id) return x;
+        if (edge === "in") {
+          const nIn = Math.min(Math.max(want, lo), out0 - MIN_ITEM_SEC);
+          // Off V0 a block holds its position, so pulling the head in has to
+          // walk `at` forward by the same amount or the content slides. On V0
+          // the sequence recomputes `at` anyway.
+          const nAt = it.track === "V0" ? at0 : Math.max(0, at0 + (nIn - in0));
+          return { ...x, in: nIn, at: nAt };
+        }
+        return { ...x, out: Math.max(Math.min(want, hi), in0 + MIN_ITEM_SEC) };
+      }), `Trim ${label(it)}`, token);
+    };
+    const up = () => {
+      setGuide(null);
+      if (moved) onItems((prev) => prev, `Trim ${label(it)}`, token);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  };
+
   const label = (it: ReelItem) => sources.get(it.sk)?.label ?? it.sk;
 
   /** Cycle the transition into a block. Only shown at a real butt joint. */
@@ -285,6 +343,7 @@ export default function ReelTimeline(props: ReelTimelineProps) {
                     selected={selectedId === it.id}
                     razorArmed={tool === "razor" && tr === "V0"}
                     onPointerDown={beginMove(it)}
+                    onTrim={(edge) => beginTrim(it, edge)}
                     onRazor={(x) => onSplit(it.id, x)}
                     timeAt={timeAt}
                   />
@@ -378,6 +437,7 @@ function Block(props: {
   selected: boolean;
   razorArmed: boolean;
   onPointerDown: (e: React.PointerEvent) => void;
+  onTrim: (edge: "in" | "out") => (e: React.PointerEvent) => void;
   onRazor: (t: number) => void;
   timeAt: (clientX: number) => number;
 }) {
@@ -410,21 +470,30 @@ function Block(props: {
       }}
       data-testid={`reel-block-${item.id}`}
     >
-      {/* A frame from the block's own in-point, as the backdrop. This is the
-          fix for today's grey rectangles: uploaded footage never had a
-          thumbnailPath, and the media_assets table has no width/height either,
-          so the only honest source of a preview frame is the file itself. */}
-      {!engine && source?.url && (
-        <video
-          src={`${source.url}#t=${Math.max(0, item.in).toFixed(2)}`}
-          preload="metadata"
-          muted
-          playsInline
-          className="absolute inset-0 w-full h-full object-cover opacity-50 pointer-events-none"
-        />
-      )}
-
+      {/* No preview frame behind the block, deliberately. It was one live
+          HTMLVideoElement per block, unvirtualised and re-rendered during
+          playback, and it made a busy timeline unreadable — the name is what
+          you scan for. The stripe carries which family it came from. */}
       <span className="absolute left-0 inset-y-0 w-1 pointer-events-none" style={{ background: stripe }} />
+
+      {/* Trim handles. Hidden on a block too narrow to hold them without
+          covering the whole thing — use the razor there instead. */}
+      {!engine && width >= 28 && (
+        <>
+          <span
+            onPointerDown={props.onTrim("in")}
+            title="Drag to trim the start"
+            className="absolute left-0 inset-y-0 w-2 z-20 cursor-col-resize hover:bg-primary/40"
+            data-testid={`reel-trim-in-${item.id}`}
+          />
+          <span
+            onPointerDown={props.onTrim("out")}
+            title="Drag to trim the end"
+            className="absolute right-0 inset-y-0 w-2 z-20 cursor-col-resize hover:bg-primary/40"
+            data-testid={`reel-trim-out-${item.id}`}
+          />
+        </>
+      )}
 
       <div className="absolute inset-x-0 top-0 flex items-center gap-1.5 px-1.5 py-0.5 bg-background/85 pointer-events-none">
         <span className="text-[10.5px] font-semibold truncate text-foreground">

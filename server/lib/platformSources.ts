@@ -39,7 +39,7 @@ const DEFS: Record<"twitch" | "tiktok" | "twitter", PlatformDef> = {
         : `https://www.twitch.tv/${id}`,
     // Twitch VODs are HLS-only and often multi-hour; the light-cloud model
     // can't absorb a 4h pull on shared /tmp. Clips + ≤1hr VODs for v1.
-    maxDurationSec: 3600,
+    maxDurationSec: 65 * 60,   // the platform ceiling, shared/reel.ts
   },
   tiktok: {
     patterns: [

@@ -947,6 +947,10 @@ export interface ReelOptionsInput {
   segmentCount?: number;
   /** Total seconds per reel. Hard-capped by the caller. */
   targetDuration?: number;
+  /** What the creator asked for, in their words — "best advice", "funniest
+   *  moments", "anything about pricing". Steers the angles rather than
+   *  replacing them: the model still has to return genuinely different cuts. */
+  query?: string;
 }
 
 /**
@@ -966,7 +970,10 @@ export interface ReelOptionsInput {
 export async function analyzeReelOptions(input: ReelOptionsInput): Promise<ReelOption[] | null> {
   const optionCount = Math.min(5, Math.max(2, input.optionCount ?? 5));
   const segmentCount = Math.min(8, Math.max(2, input.segmentCount ?? 4));
-  const targetDuration = Math.min(170, Math.max(20, input.targetDuration ?? 110));
+  // Was hard-clamped at 170 when a reel capped at three minutes. The caller
+  // already bounds this against MAX_REEL_SEC, and silently overriding it here
+  // meant a longer reel could be asked for and never produced.
+  const targetDuration = Math.max(20, input.targetDuration ?? 110);
 
   const compact = input.transcript.map((seg) => ({
     start: Math.round(seg.start * 10) / 10,
@@ -996,7 +1003,11 @@ export async function analyzeReelOptions(input: ReelOptionsInput): Promise<ReelO
     : "";
   const videoEnd = compact.length ? compact[compact.length - 1].end : 0;
 
-  const prompt = `You are a short-form editor. From ONE long-form video you will propose ${optionCount} DIFFERENT reels.
+  const steer = input.query?.trim()
+    ? `\n\nWHAT THE CREATOR ASKED FOR: "${input.query.trim()}"\nEvery option must be a genuine answer to that. If the material does not support it, return fewer options rather than pretending — do not drift to a different subject to fill the count.`
+    : "";
+
+  const prompt = `You are an editor. From ONE long-form video you will propose ${optionCount} DIFFERENT reels.${steer}
 
 Transcript with timestamps${sampledNote}. The video runs to ${videoEnd.toFixed(0)}s:
 ${transcriptStr}

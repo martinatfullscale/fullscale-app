@@ -10,16 +10,31 @@
 /**
  * The longest a reel may be, in seconds.
  *
- * This is a PRODUCT boundary, not a technical one. The tool exists to make
- * short-form video; without a ceiling it drifts into being a general-purpose
- * long-video editor, which is neither what it is for nor what the render path
- * is tuned for. Three minutes sits above every short-form platform's own
- * limit, so it never bites a legitimate reel.
+ * This is a PRODUCT boundary, not a technical one, and it has moved once.
+ *
+ * It was 180 — "the tool exists to make short-form video; without a ceiling it
+ * drifts into being a general-purpose long-video editor". That call was
+ * reversed on 2026-09-04: long form is allowed on FullScale, in and out, and
+ * 65 minutes is the platform ceiling. It is deliberately one minute over the
+ * hour so an hour-long recording is never refused for overrunning.
+ *
+ * THE RENDER PATH IS NOT YET TUNED FOR THIS. Raising the number is what makes
+ * a long reel expressible; it is not what makes one render well. Known gaps,
+ * none of which this constant fixes:
+ *   · server/lib/sourceCache.ts holds pulled sources in /tmp under a 500 MB
+ *     cap — one 65-minute 1080p source can be most of that on its own.
+ *   · a single ffmpeg filtergraph over 65 minutes of material is untested here
+ *     for memory and wall time.
+ *   · storage per render grows by roughly the same factor.
+ * Treat a long reel as working-but-unproven until those are addressed.
  */
-export const MAX_REEL_SEC = 180;
+export const MAX_REEL_SEC = 65 * 60;
 
-/** Human phrasing, so the client and the API refuse in the same words. */
-export const MAX_REEL_LABEL = `${MAX_REEL_SEC / 60} minutes`;
+/**
+ * Human phrasing, so the client and the API refuse in the same words.
+ * Rounded because a non-integral cap would otherwise read "65.5 minutes".
+ */
+export const MAX_REEL_LABEL = `${Math.round(MAX_REEL_SEC / 60)} minutes`;
 
 /**
  * Total output seconds for a set of segments.
