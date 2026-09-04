@@ -53,6 +53,12 @@ export interface Story {
   byline?: string;
   /** Pin to the featured band at the top. Keep this to 1–3 entries. */
   featured?: boolean;
+  /**
+   * Shape of the video. Shorts are 9:16 and letterbox badly in a 16:9 well —
+   * a vertical clip in a horizontal frame is mostly black bars — so a
+   * portrait story gets a portrait card and a portrait player.
+   */
+  orientation?: "portrait" | "landscape";
 }
 
 /**
@@ -76,9 +82,18 @@ export function youTubeId(input?: string): string | null {
   return null;
 }
 
-/** YouTube's own poster frame. maxres isn't guaranteed to exist; hq always is. */
-export function youTubePoster(id: string): string {
-  return `https://i.ytimg.com/vi/${id}/maxresdefault.jpg`;
+/**
+ * YouTube's own poster frame.
+ *
+ * maxresdefault is 16:9 — for a Short that means the vertical frame
+ * letterboxed inside black bars, which then gets letterboxed again by the
+ * card. `oardefault` is the ORIGINAL aspect (1080x1920 for a Short), so a
+ * portrait story asks for that instead and fills its well properly.
+ */
+export function youTubePoster(id: string, orientation?: "portrait" | "landscape"): string {
+  return orientation === "portrait"
+    ? `https://i.ytimg.com/vi/${id}/oardefault.jpg`
+    : `https://i.ytimg.com/vi/${id}/maxresdefault.jpg`;
 }
 export function youTubePosterFallback(id: string): string {
   return `https://i.ytimg.com/vi/${id}/hqdefault.jpg`;
@@ -103,39 +118,53 @@ export const STORIES: Story[] = [
   },
 
   // ───────────────────────────────────────────────────────────────────────
-  // Martin — paste your YouTube URLs here.
+  // TITLES ARE THE ONES ON YOUTUBE, VERBATIM — and they are working titles.
   //
-  // Uncomment an entry, drop the URL in, edit the title and deck, and it is
-  // live on the next deploy. Delete any you don't use.
+  // "FullScale Reel v1 / v2 / v3 2 / v4" is what these are called on the
+  // channel, and this page is linked from the footer, so that is what a
+  // visitor reads. They are not invented here because nobody has watched
+  // them to write something truer; rename them below and the page follows.
   //
-  // ORDER MATTERS: the FIRST entry in this array carrying `featured: true`
-  // becomes the large player at the top of the page; the next two sit beside
-  // it. Everything else falls into the filterable grid below. Right now the
-  // founders' note holds the top slot — move a video above it to take over.
+  // They also look like four cuts of ONE reel rather than four stories. If
+  // that is right, keep the best one and delete the rest — four versions of
+  // the same thing reads as a work-in-progress folder, not a stories page.
   //
-  // {
-  //   slug: "how-a-placement-gets-made",
-  //   category: "How it works",
-  //   title: "How a placement actually gets made",
-  //   deck: "From a scan finding a surface to a finished cut the creator signed off on — the whole path, in one take.",
-  //   youtube: "https://www.youtube.com/watch?v=REPLACE_ME",
-  //   featured: true,
-  // },
-  // {
-  //   slug: "creator-story-1",
-  //   category: "Creator stories",
-  //   title: "",
-  //   deck: "",
-  //   youtube: "https://www.youtube.com/watch?v=REPLACE_ME",
-  // },
-  // {
-  //   slug: "brand-playbook-1",
-  //   category: "Brand playbooks",
-  //   title: "",
-  //   deck: "",
-  //   youtube: "https://www.youtube.com/watch?v=REPLACE_ME",
-  // },
+  // ORDER MATTERS: the FIRST entry carrying `featured: true` becomes the
+  // large player at the top; the next two sit beside it. Everything else
+  // falls into the filterable grid.
   // ───────────────────────────────────────────────────────────────────────
+  {
+    slug: "fullscale-reel-v4",
+    category: "Company",
+    title: "FullScale Reel v4",
+    deck: "",
+    youtube: "https://youtube.com/shorts/U4myeHPl9Cc",
+    orientation: "portrait",
+  },
+  {
+    slug: "fullscale-reel-v3",
+    category: "Company",
+    title: "FullScale Reel v3 2",
+    deck: "",
+    youtube: "https://youtube.com/shorts/RVTC2oTQMdE",
+    orientation: "portrait",
+  },
+  {
+    slug: "fullscale-reel-v2",
+    category: "Company",
+    title: "FullScale Reel v2",
+    deck: "",
+    youtube: "https://youtube.com/shorts/1zOTyIiMrKo",
+    orientation: "portrait",
+  },
+  {
+    slug: "fullscale-reel-v1",
+    category: "Company",
+    title: "FullScale Reel v1",
+    deck: "",
+    youtube: "https://youtube.com/shorts/nVXd4-Hwe_o",
+    orientation: "portrait",
+  },
 ];
 
 /** Filter chips, in display order. "All" is prepended by the page. */

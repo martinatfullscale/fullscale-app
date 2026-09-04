@@ -41,8 +41,8 @@ import {
    YouTube serves a 120x90 grey placeholder rather than a 404 when maxres is
    missing, so onError never fires — the naturalWidth check is what actually
    catches it. */
-function Poster({ id, alt, className }: { id: string; alt: string; className?: string }) {
-  const [src, setSrc] = useState(youTubePoster(id));
+function Poster({ id, alt, className, orientation }: { id: string; alt: string; className?: string; orientation?: "portrait" | "landscape" }) {
+  const [src, setSrc] = useState(youTubePoster(id, orientation));
   const fallback = youTubePosterFallback(id);
   return (
     <img
@@ -62,13 +62,23 @@ function Poster({ id, alt, className }: { id: string; alt: string; className?: s
  *  typographic panel when a story has neither. Always 16:9. */
 function CardMedia({ story, large = false }: { story: Story; large?: boolean }) {
   const vid = youTubeId(story.youtube);
+  const portrait = story.orientation === "portrait";
   return (
-    <div className="relative w-full overflow-hidden rounded-xl bg-secondary/60 border border-white/10" style={{ aspectRatio: "16 / 9" }}>
+    <div
+      className="relative w-full overflow-hidden rounded-xl bg-secondary/60 border border-white/10 mx-auto"
+      style={{
+        aspectRatio: portrait ? "9 / 16" : "16 / 9",
+        // A portrait card is otherwise nearly twice the height of its
+        // neighbours and drags the whole grid out of rhythm.
+        maxWidth: portrait ? (large ? 340 : 250) : undefined,
+      }}
+    >
       {vid ? (
         <>
           <Poster
             id={vid}
             alt={story.title}
+            orientation={story.orientation}
             className="absolute inset-0 w-full h-full object-cover transition-transform duration-500 group-hover:scale-[1.03]"
           />
           <div className="absolute inset-0 bg-gradient-to-t from-black/55 via-black/5 to-transparent" />
@@ -233,7 +243,13 @@ function PlayerDialog({ story, onClose }: { story: Story; onClose: () => void })
             <X className="w-5 h-5" />
           </button>
         </div>
-        <div className="relative w-full overflow-hidden rounded-xl border border-white/10 bg-black" style={{ aspectRatio: "16 / 9" }}>
+        <div
+          className="relative w-full overflow-hidden rounded-xl border border-white/10 bg-black mx-auto"
+          style={{
+            aspectRatio: story.orientation === "portrait" ? "9 / 16" : "16 / 9",
+            maxWidth: story.orientation === "portrait" ? "min(420px, 46vh)" : undefined,
+          }}
+        >
           <iframe
             src={youTubeEmbed(vid)}
             title={story.title}
@@ -331,7 +347,13 @@ export default function Stories() {
                 transition={{ duration: 0.5 }}
               >
                 {heroVid && heroPlaying ? (
-                  <div className="relative w-full overflow-hidden rounded-xl border border-white/10 bg-black" style={{ aspectRatio: "16 / 9" }}>
+                  <div
+                    className="relative w-full overflow-hidden rounded-xl border border-white/10 bg-black mx-auto"
+                    style={{
+                      aspectRatio: hero.orientation === "portrait" ? "9 / 16" : "16 / 9",
+                      maxWidth: hero.orientation === "portrait" ? 340 : undefined,
+                    }}
+                  >
                     <iframe
                       src={youTubeEmbed(heroVid)}
                       title={hero.title}
