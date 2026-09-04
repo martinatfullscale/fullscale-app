@@ -78,7 +78,7 @@ Rendered from the real markup at three viewport widths:
 ### Socials
 
 - **Instagram** exists, once, in the footer: `https://www.instagram.com/gofullscale` (`Footer.tsx:84`).
-- **LinkedIn does not exist anywhere in the codebase.** The only hits are LinkedIn as a *publishing destination* inside the product (`RemixStudio.tsx:110`, `DistributionDashboard.tsx:97`) — not FullScale's own company page. **We need the URL.**
+- **LinkedIn does not exist anywhere in the codebase.** The only hits are LinkedIn as a *publishing destination* inside the product (`RemixStudio.tsx:110`, `DistributionDashboard.tsx:97`). The profiles in §5 were supplied for this brief and are wired nowhere yet — and note they are the **founders' personal profiles, not a company page**. That suits a founders' note, but it means they belong beside the byline as *these two people*, not in a row of corporate icons in the footer.
 - **No YouTube channel link** either — the four Shorts are embedded individually, but nothing points at the channel.
 
 ---
@@ -104,9 +104,9 @@ Whether the videos punctuate the argument or gather into a band after it is your
 - **Fix both spacing defects.** Specifically: the photo should not leave 216px of empty page beside it on a wide screen, and the body must stop being a 35%-wide strip. Full-bleed the hero, widen the measure, use the second column, break the single-column body — your call, but the numbers in the table above are the test.
 - **Keep the reading measure honest.** The body currently sits at 672px, which is close to right for a 65-character line. Filling the right side must not turn the argument into a 1,400px paragraph.
 - **The four videos are 9:16 Shorts.** A vertical clip in a horizontal well is mostly black bars. Portrait cards are already in place, capped at 250px wide (340 featured) with `oardefault.jpg` as the poster (`stories.ts:93-97`, `Stories.tsx:73`) — but four narrow portraits in a three-column landscape grid is not a designed answer. Design the portrait treatment properly.
-- **Socials get a real home,** not just a footer line: Instagram, LinkedIn, the YouTube channel, and `fullscale_info@gofullscale.co`.
+- **Socials get a real home,** not just a footer line. Instagram is the company (`@gofullscale`); LinkedIn is Martin and Tamara individually. Those are two different kinds of link and probably want two different places on the page — the personal profiles read naturally off the byline, the company accounts off the closing card. Plus the YouTube channel and `fullscale_info@gofullscale.co`.
 - **Room to grow.** Four videos today. Design for twelve. When creator and brand case studies do exist, they need somewhere to go — that is when the category filter (`STORY_CATEGORIES`) starts earning its place. Either make it work with more than one category, or cut it and tell us what replaces it.
-- **Every card needs a deck.** All four are empty. If you want a sentence under each title, say so and we will write them — or write them yourself from the titles and we will correct them.
+- **Write the decks.** All four video cards have `deck: ""` — every one is a bare title with nothing under it. Draft a sentence for each from the title and the arc it sits in, and one for the founders' note if the merged page needs it. We will correct anything that misstates a fact about the product; the writing is yours.
 
 ---
 
@@ -119,6 +119,15 @@ Whether the videos punctuate the argument or gather into a band after it is your
 - **`/founders.jpg` is 1153 × 944.** It is the only photograph we have. If your layout wants a different crop, say which crop.
 - **No animation may gate the copy.** See §3.
 - **The four YouTube ids** — `nVXd4-Hwe_o`, `U4myeHPl9Cc`, `RVTC2oTQMdE`, `1zOTyIiMrKo`.
+- **The links the page has to carry:**
+
+  | | |
+  |---|---|
+  | Instagram (company) | `https://www.instagram.com/gofullscale` |
+  | LinkedIn — Martin Ekechukwu | `https://linkedin.com/in/martinekechukwu` *(handle unconfirmed — see §8)* |
+  | LinkedIn — Tamara Spinner | `https://www.linkedin.com/in/tamara-spinner-zachery-aa4b26141/` |
+  | Email | `fullscale_info@gofullscale.co` |
+  | YouTube channel | not supplied — see §8 |
 
 ---
 
@@ -127,7 +136,8 @@ Whether the videos punctuate the argument or gather into a band after it is your
 1. A single self-contained HTML mock of the merged page at desktop width, with the real copy and the real videos.
 2. The mobile behaviour — specifically what happens to the founders photo and to four portrait video cards on a phone.
 3. A note on what the page looks like with **twelve** stories instead of five, and how a future creator case study slots in beside a founder Short.
-4. Your call on the category filter: make it work, or replace it.
+4. Draft decks for the four videos — a sentence under each title.
+5. Your call on the category filter: make it work, or replace it.
 
 ---
 
@@ -142,7 +152,6 @@ Whether the videos punctuate the argument or gather into a band after it is your
 
 ## 8. What we still owe you
 
-- **The LinkedIn URL.** It does not exist anywhere in the codebase.
+- **Confirmation of Martin's LinkedIn handle.** Two spellings reached us in the same message, one character apart — `martinekechukwu` and `martinekechukwui`. We have used the first and guessed at nothing. Tamara's is confirmed.
 - **The YouTube channel URL**, if the page should link to it as well as embed the four Shorts.
-- **Decks** for the four videos, unless you draft them.
 - Confirmation on the "$43Billion" title — it is missing a space, and we have left it exactly as given.
