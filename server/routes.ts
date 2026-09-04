@@ -16392,22 +16392,39 @@ export async function registerRoutes(
     try {
       const authUserId = req.authUserId ?? req.user?.id;
       const authEmail = req.authEmail ?? req.user?.email;
-      const videos = await storage.getVideoIndex(String(authUserId ?? ""), authEmail);
+      // `dedupe: false`, exactly as the Clips & Reels feed does.
+      //
+      // getVideoIndex folds same-title videos down to one row for the Library
+      // grid. Without opting out, every clip filed under a folded-away
+      // duplicate is never even queried here — its videoId is not in the
+      // batch — so a creator with a re-imported or twice-uploaded video sees
+      // whole sets of their own clips missing from the reel bin while Clips &
+      // Reels shows them. That asymmetry was the bug.
+      const videos = await storage.getVideoIndex(String(authUserId ?? ""), authEmail, { dedupe: false });
       const videoIds = videos.map((v) => v.id);
       const titleById = new Map(videos.map((v) => [v.id, (v as any).title || `Video ${v.id}`]));
 
       // Two batched queries for ALL videos, not two per video. This endpoint
       // was an N+1 — 82 videos meant 166 round trips and a 3.4s response.
+      //
+      // Deliberately NOT swallowed per-source any more. `.catch(() => [])`
+      // turned a pool timeout or a missing column into a confident "Nothing in
+      // your library yet", which is the worst possible answer: the creator
+      // concludes their work is gone. A throw here becomes a 500 the bin
+      // shows as an error.
       const [remixAll, editorialAll] = await Promise.all([
-        storage.getClipsByVideoIds(videoIds).catch(() => [] as any[]),
-        storage.getEditorialClipsByVideoIds(videoIds).catch(() => [] as any[]),
+        storage.getClipsByVideoIds(videoIds),
+        storage.getEditorialClipsByVideoIds(videoIds),
       ]);
 
-      const CAP = 400;
+      // The cap is applied AFTER both sources are collected and sorted, not
+      // while pushing. Capping mid-push ran every remix clip before any
+      // editorial one, so a creator with 400+ remix clips got zero story
+      // clips — a whole family of their work absent with no explanation.
+      const CAP = 600;
       const out: any[] = [];
       const push = (c: any, source: "remix" | "editorial") => {
         if (source === "remix" && (c.status === "deleted" || c.status === "rejected")) return; // hidden reel twin / rejected
-        if (out.length >= CAP) return;
         const start = Number(c.clipStart), end = Number(c.clipEnd);
         if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
         out.push({
@@ -16431,7 +16448,11 @@ export async function registerRoutes(
       };
       for (const c of remixAll) push(c, "remix");
       for (const c of editorialAll) push(c, "editorial");
-      res.json({ clips: out });
+      // Newest first, then cap — and say when the cap fired, so a short list
+      // is distinguishable from a truncated one.
+      out.sort((a, b) => Number(b.clipId) - Number(a.clipId));
+      const truncated = out.length > CAP;
+      res.json({ clips: out.slice(0, CAP), total: out.length, truncated });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "Failed to list clips" });
     }

@@ -7,8 +7,9 @@ import { useJobPoll } from "@/hooks/use-job-poll";
 import { useHistory } from "@/components/clip-studio/useHistory";
 import ReelTimeline from "@/components/reel-editor/ReelTimeline";
 import { Bin, Inspector, ProgramMonitor, SourceMonitor } from "@/components/reel-editor/Panels";
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import {
-  dur, end, fmtT, lift, MIN_ITEM_SEC, newItemId, normalise, overwriteInsert,
+  dur, end, fmtT, lift, MAX_REEL_SEC, MIN_ITEM_SEC, newItemId, normalise, overwriteInsert,
   rippleDelete, rippleInsert, splitAt, totalOf, tracksFor, v0Of,
   type BinSource, type ReelItem, type Track,
 } from "@/components/reel-editor/types";
@@ -429,7 +430,11 @@ export default function ReelEditor() {
    * the server also refuses.
    */
   const ownsAnyVideo = sources.some((s) => s.videoId != null);
-  const buildBlocked = v0.length < 2 ? "needs 2+ blocks" : !ownsAnyVideo ? "needs a scanned video" : null;
+  const buildBlocked =
+    v0.length < 2 ? "needs 2+ blocks"
+      : !ownsAnyVideo ? "needs a scanned video"
+        : total > MAX_REEL_SEC + 0.5 ? `over the ${MAX_REEL_SEC / 60}-minute cap`
+          : null;
 
   const [stitchJob, setStitchJob] = useState<{ id: number } | null>(null);
   useJobPoll<{ thumbnailPath?: string | null; errorMessage?: string | null }>(
@@ -593,19 +598,39 @@ export default function ReelEditor() {
         </div>
       </div>
 
+      {/*
+        The seam between the monitors and the timeline is draggable.
+        It was a fixed 392px, which meant the bin could only ever show about
+        three cards however tall the window was. Persisted per browser so the
+        split you set is the split you get next time.
+      */}
+      <ResizablePanelGroup
+        direction="vertical"
+        autoSaveId="fullscale.reel-editor.split"
+        className="flex-1 min-h-0"
+      >
+      <ResizablePanel defaultSize={45} minSize={22} className="min-h-0">
       {/* ── Upper row ── */}
       <div
-        className="shrink-0 grid border-b-2 border-border"
-        style={{ gridTemplateColumns: "300px minmax(320px,1fr) minmax(360px,1.15fr) 290px", height: 392 }}
+        className="h-full grid border-b-2 border-border"
+        style={{ gridTemplateColumns: "300px minmax(320px,1fr) minmax(360px,1.15fr) 290px" }}
       >
-        <Bin sources={sources} loading={loadingBin} selectedKey={binSel} onPick={pickBin} uploading={uploading} onUpload={upload} />
+        <Bin sources={sources} loading={loadingBin} selectedKey={binSel} onPick={pickBin} uploading={uploading} onUpload={upload} onSourcesChanged={() => setReloadAssets((n) => n + 1)} />
         <SourceMonitor
           source={binSource}
           srcIn={srcIn}
           srcOut={srcOut}
           onRange={(a, b) => { setSrcIn(a); setSrcOut(b); }}
           canInsert={!!binSource && srcOut - srcIn >= MIN_ITEM_SEC}
-          onInsert={() => binSource && insert(binSource, ph, srcIn, srcOut)}
+          onInsert={() => {
+            if (!binSource) return;
+            const room = MAX_REEL_SEC - total;
+            if (room < MIN_ITEM_SEC) {
+              toast({ title: "This reel is full", description: `A reel caps at ${MAX_REEL_SEC / 60} minutes. Trim a block to make room.` });
+              return;
+            }
+            insert(binSource, ph, srcIn, Math.min(srcOut, srcIn + room));
+          }}
         />
         <ProgramMonitor
           videoRef={programRef}
@@ -628,6 +653,11 @@ export default function ReelEditor() {
         />
       </div>
 
+      </ResizablePanel>
+
+      <ResizableHandle withHandle className="h-1.5 bg-border data-[resize-handle-state=drag]:bg-primary" />
+
+      <ResizablePanel defaultSize={55} minSize={25} className="min-h-0 flex flex-col">
       {/* ── Toolbar ── */}
       <div className="shrink-0 flex items-center gap-3 px-4 py-2 border-b border-border/40 bg-card/20">
         <div className="flex border border-border">
@@ -683,12 +713,17 @@ export default function ReelEditor() {
           />
           <button onClick={fitZoom} className="px-2 py-1.5 text-[11px] border border-border hover:bg-white/5">Fit</button>
           <button onClick={toPlayhead} className="px-2 py-1.5 text-[11px] border border-border hover:bg-white/5">To playhead</button>
-          <span className="text-[11.5px] font-semibold tabular-nums">Total {fmtT(total)}</span>
+          <span
+            className={`text-[11.5px] font-semibold tabular-nums ${total > MAX_REEL_SEC * 0.9 ? "text-amber-400" : ""}`}
+            title={`Reels cap at ${MAX_REEL_SEC / 60} minutes — this is a short-form tool`}
+          >
+            Total {fmtT(total)} <span className="text-muted-foreground/70">/ {MAX_REEL_SEC / 60}:00</span>
+          </span>
         </div>
       </div>
 
       {/* ── Timeline ── */}
-      <div className="flex-1 min-h-[300px] flex">
+      <div className="flex-1 min-h-0 flex">
         <ReelTimeline
           items={items}
           sources={sourceMap}
@@ -705,14 +740,21 @@ export default function ReelEditor() {
           onDropSource={(sk, at, track) => {
             const s = sourceMap.get(sk);
             if (!s) return;
-            // A bed runs the length of the reel by default; an overlay is a
-            // short beat over it.
-            const len = track === "A1" ? Math.max(1, total || 6) : Math.min(s.boundEnd - s.boundStart, 6);
+            // A dragged clip comes in at its OWN length. This used to be
+            // Math.min(length, 6), which silently truncated every source to
+            // six seconds — so the block on the timeline never matched the
+            // clip you dragged. Trim it down afterwards if you want less.
+            const whole = Math.max(MIN_ITEM_SEC, s.boundEnd - s.boundStart);
+            const room = Math.max(MIN_ITEM_SEC, MAX_REEL_SEC - (track === "V0" ? total : 0));
+            const len = track === "A1" ? Math.max(1, total || whole) : Math.min(whole, room);
             insert(s, track === "A1" ? 0 : at, s.boundStart, s.boundStart + len, track);
           }}
           onScrollerReady={(el) => { scrollerRef.current = el; }}
         />
       </div>
+
+      </ResizablePanel>
+      </ResizablePanelGroup>
 
       {/* ── Phase line ── */}
       <div className="shrink-0 grid grid-cols-2 border-t-2 border-border">

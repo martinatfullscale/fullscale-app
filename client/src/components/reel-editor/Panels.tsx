@@ -1,9 +1,29 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, Play, Pause, Plus, Scissors, Search, SkipBack } from "lucide-react";
+import { AiStillPanel, StockPanel, WebcamPanel } from "./BinPanels";
 import {
-  dur, end, fmtT, KIND_COLOR, KIND_LABEL, TRACK_PHASE,
+  dur, fmtT, KIND_COLOR, KIND_LABEL, REEL_ASPECT,
   type BinSource, type ReelItem, type SourceKind,
 } from "./types";
+
+/**
+ * Every monitor shows the same box.
+ *
+ * Both monitors used to be a flex-filled black panel with `object-contain`
+ * inside, so a 16:9 source and a 9:16 program letterboxed to different
+ * shapes in differently-sized panels — the source never looked like what the
+ * reel would look like. This is the reel's actual output frame; footage of
+ * any shape is fitted into it, which is exactly what the render does.
+ */
+function OutputFrame({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex-1 min-h-0 grid place-items-center bg-[#07070a] p-2">
+      <div className="relative h-full bg-black border border-border/60" style={{ aspectRatio: String(REEL_ASPECT) }}>
+        {children}
+      </div>
+    </div>
+  );
+}
 
 /**
  * The upper row: bin · source monitor · program monitor · inspector.
@@ -48,6 +68,8 @@ export function Bin(props: {
   onPick: (s: BinSource) => void;
   uploading: boolean;
   onUpload: (file: File) => void;
+  /** Refetch after stock import / AI generation writes a media_assets row. */
+  onSourcesChanged: () => void;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [q, setQ] = useState("");
@@ -122,30 +144,64 @@ export function Bin(props: {
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto p-2 flex flex-col gap-1.5">
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        {/* Three of the chips are SOURCES you act on rather than files you
+            already own, so they get a panel instead of the grid. Everything
+            they produce becomes a media_assets row, which is what the grid
+            lists — so a stock import or a generated still simply appears
+            under Yours once the bin refetches. */}
+        {filter === "stock" ? (
+          <StockPanel onImported={props.onSourcesChanged} />
+        ) : filter === "ai" ? (
+          <AiStillPanel onGenerated={props.onSourcesChanged} />
+        ) : filter === "webcam" && props.sources.every((s) => s.kind !== "webcam") ? (
+          <WebcamPanel busy={props.uploading} onCapture={props.onUpload} />
+        ) : (
+          <BinGrid {...props} shown={shown} filter={filter} q={q} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** The grid of things the creator already owns. */
+function BinGrid(props: {
+  sources: BinSource[];
+  loading: boolean;
+  selectedKey: string | null;
+  onPick: (s: BinSource) => void;
+  uploading: boolean;
+  onUpload: (file: File) => void;
+  shown: BinSource[];
+  filter: "all" | SourceKind;
+  q: string;
+}) {
+  const { shown, filter } = props;
+  return (
+      <div className="p-2 flex flex-col gap-1.5">
         {props.loading ? (
           <p className="px-1 py-6 text-center text-[11px] text-muted-foreground">Loading your sources…</p>
         ) : shown.length === 0 ? (
           <p className="px-2 py-6 text-center text-[11px] leading-relaxed text-muted-foreground">
             {filter === "moment"
               // Said plainly rather than shown as an empty grid: the AI
-              // cross-video moment finder has not been ported to this route
-              // yet, so the filter has no source of data at all.
+              // cross-video moment finder is not wired into this bin yet.
               ? "Cross-video AI moments aren't wired into this bin yet — they still live in the old builder."
-              : filter === "webcam"
-                ? "No webcam takes yet. Recording from here isn't ported yet; upload a file with Add."
-                : props.sources.length === 0
-                  ? "Nothing in your library yet. Use Add to bring in a file."
-                  : "Nothing here matches that."}
+              : props.sources.length === 0
+                ? "Nothing in your library yet. Use Add, or try the Stock, AI stills or Webcam tabs."
+                : "Nothing here matches that."}
           </p>
         ) : (
           shown.map((s) => <BinCard key={s.sk} source={s} selected={props.selectedKey === s.sk} onPick={() => props.onPick(s)} />)
         )}
+        {filter === "webcam" && (
+          <WebcamPanel busy={props.uploading} onCapture={props.onUpload} />
+        )}
         <p className="px-0.5 py-1.5 text-[10.5px] leading-relaxed text-muted-foreground">
-          Hover a thumbnail to scrub it. Drag to V0, or open it in the source monitor to set in/out first.
+          Hover a thumbnail to scrub it. Drag to V0 for a beat or V1 for an overlay, or open it in the source
+          monitor to set in/out first.
         </p>
       </div>
-    </div>
   );
 }
 
@@ -294,22 +350,31 @@ export function SourceMonitor(props: {
         </span>
       </PanelHead>
 
-      <div className="flex-1 min-h-0 bg-black relative grid place-items-center">
+      <OutputFrame>
         {source?.url ? (
           <>
-            <video ref={vid} src={source.url} muted playsInline className="w-full h-full object-contain" />
+            <video ref={vid} src={source.url} muted playsInline className="absolute inset-0 w-full h-full object-contain" />
             <span className="absolute left-2 top-2 px-1.5 py-0.5 bg-black/65 text-[10px] uppercase tracking-[0.08em] text-white tabular-nums">
               {fmtT(t)} / {fmtT(hi)}
             </span>
           </>
         ) : (
-          <p className="px-4 text-center text-[11px] text-muted-foreground">
+          <p className="absolute inset-0 grid place-items-center px-4 text-center text-[11px] text-muted-foreground">
             {source ? "This clip hasn't been rendered yet, so there's nothing to scrub." : "Pick something from the bin."}
           </p>
         )}
-      </div>
+      </OutputFrame>
 
       <div className="shrink-0 px-3 pt-2 pb-2.5 flex flex-col gap-2 bg-card/40 border-t border-border/40">
+        {/* The bar had no label at all, which is why it read as "a red thing
+            over the video". It is the in/out selection: the tinted band is
+            what gets inserted. */}
+        <div className="flex items-baseline justify-between">
+          <span className="text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
+            In / out — the part that gets inserted
+          </span>
+          <span className="font-mono text-[10px] text-muted-foreground/70">drag the handles</span>
+        </div>
         <div
           ref={bar}
           onPointerDown={(e) => seek(atBar(e.clientX))}
@@ -338,9 +403,10 @@ export function SourceMonitor(props: {
               else { v.pause(); setPlaying(false); }
             }}
             disabled={!source?.url}
-            className="px-2.5 py-1.5 border border-border text-[11px] font-semibold hover:bg-white/5 disabled:opacity-40"
+            className="px-2.5 py-1.5 border border-border text-[11px] font-semibold hover:bg-white/5 disabled:opacity-40 inline-flex items-center gap-1.5"
             data-testid="reel-source-play"
           >
+            {playing ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
             {playing ? "Pause" : "Play in→out"}
           </button>
           <button onClick={() => setIn(t)} disabled={!source} className="px-2.5 py-1.5 border border-border text-[11px] hover:bg-white/5 disabled:opacity-40">
@@ -390,11 +456,20 @@ export function ProgramMonitor(props: {
         </span>
       </PanelHead>
 
-      <div className="flex-1 min-h-0 bg-black relative grid place-items-center">
-        <video ref={props.videoRef} muted playsInline className="w-full h-full object-contain" data-testid="reel-program-video" />
+      <OutputFrame>
+        <video ref={props.videoRef} muted playsInline className="absolute inset-0 w-full h-full object-contain" data-testid="reel-program-video" />
         {!props.activeLabel && (
-          <span className="absolute text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+          <span className="absolute inset-0 grid place-items-center text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
             Gap — no source at playhead
+          </span>
+        )}
+        {/* What is on screen right now, and whether it is running. Without
+            this the monitor was a black rectangle with no way to tell a
+            paused reel from an empty one. */}
+        {props.activeLabel && (
+          <span className="absolute left-2 top-2 px-1.5 py-0.5 bg-black/65 text-[10px] text-white flex items-center gap-1.5 max-w-[85%]">
+            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${props.playing ? "bg-emerald-400" : "bg-white/40"}`} />
+            <span className="truncate">{props.playing ? "Playing" : "Paused"} · {props.activeLabel}</span>
           </span>
         )}
         {props.overlayText && (
@@ -409,7 +484,7 @@ export function ProgramMonitor(props: {
             </span>
           </>
         )}
-      </div>
+      </OutputFrame>
 
       <div className="shrink-0 flex items-center gap-1.5 px-3 py-2 bg-card/40 border-t border-border/40">
         <button onClick={props.onHome} className="p-1.5 border border-border hover:bg-white/5" title="Back to start">
@@ -417,10 +492,11 @@ export function ProgramMonitor(props: {
         </button>
         <button
           onClick={props.onPlayPause}
-          className="px-3 py-1.5 bg-foreground text-background text-[11px] font-extrabold"
+          className="px-3 py-1.5 bg-primary text-white text-[11px] font-extrabold inline-flex items-center gap-1.5"
           data-testid="reel-play"
         >
           {props.playing ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+          {props.playing ? "Pause" : "Play"}
         </button>
         <button onClick={() => props.onEdge(-1)} className="px-2 py-1.5 border border-border text-[11px] hover:bg-white/5">◂ edge</button>
         <button onClick={() => props.onEdge(1)} className="px-2 py-1.5 border border-border text-[11px] hover:bg-white/5">edge ▸</button>

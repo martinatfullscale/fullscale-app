@@ -79,6 +79,21 @@ export interface ReelItem {
 export const MIN_ITEM_SEC = 0.5;
 export const MIN_SPLIT_OFFSET = 0.4;
 
+/**
+ * A reel is a SHORT-FORM format, and the cap is the product decision that
+ * keeps it one.
+ *
+ * Without a ceiling this becomes a general-purpose long-video editor, which
+ * is not what it is for and not what the render path is tuned for. Three
+ * minutes is above every short-form platform's own limit, so the cap never
+ * bites a legitimate reel. Enforced in the reducer, so no path can author
+ * past it, and again on the server.
+ */
+export const MAX_REEL_SEC = 180;
+
+/** The output frame everything is fitted into. Portrait short-form. */
+export const REEL_ASPECT = 9 / 16;
+
 export const dur = (it: ReelItem) => Math.max(0, it.out - it.in);
 export const end = (it: ReelItem) => it.at + dur(it);
 
@@ -133,13 +148,24 @@ export function normalise(items: ReelItem[], sources: Map<string, BinSource>): R
   // begins before the previous one ends.
   const v0 = kept.filter((i) => i.track === "V0").sort((a, b) => a.at - b.at);
   let cursor = 0;
+  const withinCap: ReelItem[] = [];
   for (const it of v0) {
     if (it.at < cursor - 1e-6) it.at = cursor;
+    // The cap is enforced here so no path — drop, paste, draft restore, AI
+    // proposal — can author a reel past it. A block that would straddle the
+    // ceiling is trimmed to it; one that starts beyond it is dropped.
+    if (it.at >= MAX_REEL_SEC - MIN_ITEM_SEC) continue;
+    if (end(it) > MAX_REEL_SEC) it.out = it.in + (MAX_REEL_SEC - it.at);
+    if (dur(it) < MIN_ITEM_SEC - 1e-6) continue;
+    withinCap.push(it);
     cursor = end(it);
   }
-  // Layer tracks are placeholders until the engine can composite; leave them.
-  const rest = kept.filter((i) => i.track !== "V0");
-  return [...v0, ...rest];
+  // Overlay tracks are clamped to the cap too, but not sequenced — they layer.
+  const rest = kept
+    .filter((i) => i.track !== "V0")
+    .map((i) => (end(i) > MAX_REEL_SEC ? { ...i, out: i.in + Math.max(0, MAX_REEL_SEC - i.at) } : i))
+    .filter((i) => i.at < MAX_REEL_SEC && dur(i) >= MIN_ITEM_SEC - 1e-6);
+  return [...withinCap, ...rest];
 }
 
 /** Times worth snapping to, in seconds. Tolerance is constant in PIXELS. */
@@ -163,11 +189,19 @@ export function snapTime(
   return best === null ? { t, snapped: false } : { t: best, snapped: true };
 }
 
-/** Insert onto V0, pushing everything at or after the point to the right. */
+/**
+ * Insert onto V0, pushing everything from the insert point rightwards.
+ *
+ * The test is `end(i) > at`, not `i.at >= at`. With the old test, dropping at
+ * 0.65s onto a block occupying 0–6 shifted nothing (that block starts at 0,
+ * which is not >= 0.65), and then the sequence rule in normalise pushed the
+ * NEW block past it to 6s. Dropping at the start of the reel put your clip at
+ * the end of it — the "snaps into a random space" report.
+ */
 export function rippleInsert(items: ReelItem[], block: ReelItem): ReelItem[] {
   const len = dur(block);
   return [
-    ...items.map((i) => (i.track === "V0" && i.at >= block.at - 1e-6 ? { ...i, at: i.at + len } : i)),
+    ...items.map((i) => (i.track === "V0" && end(i) > block.at + 1e-6 ? { ...i, at: i.at + len } : i)),
     block,
   ];
 }
