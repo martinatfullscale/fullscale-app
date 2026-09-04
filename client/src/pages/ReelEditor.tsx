@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useParams } from "wouter";
-import { ArrowLeft, Loader2, MousePointer2, Scissors, Type as TypeIcon } from "lucide-react";
+import { ArrowLeft, Loader2, MousePointer2, Scissors, Sparkles, Type as TypeIcon } from "lucide-react";
 import { fetchWithTimeout } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useJobPoll } from "@/hooks/use-job-poll";
 import { useHistory } from "@/components/clip-studio/useHistory";
 import ReelTimeline from "@/components/reel-editor/ReelTimeline";
 import { Bin, Inspector, ProgramMonitor, SourceMonitor } from "@/components/reel-editor/Panels";
+import { AiReelPanel } from "@/components/reel-editor/AiReelPanel";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import {
   dur, end, fmtT, lift, MAX_REEL_SEC, MIN_ITEM_SEC, newItemId, normalise, overwriteInsert,
@@ -61,7 +62,15 @@ export default function ReelEditor() {
   const [uploading, setUploading] = useState(false);
   /** Bumped after an upload so the bin refetches. */
   const [reloadAssets, setReloadAssets] = useState(0);
-  const sourceMap = useMemo(() => new Map(sources.map((s) => [s.sk, s])), [sources]);
+  /** Sources an AI proposal brought with it — real sources with no bin card. */
+  const [aiSources, setAiSources] = useState<BinSource[]>([]);
+  const sourceMap = useMemo(
+    // AI moments are real sources for everything downstream — the timeline
+    // label, the program monitor, the build payload — they just never came
+    // from the bin, so they live alongside it rather than in it.
+    () => new Map([...sources, ...aiSources].map((s) => [s.sk, s])),
+    [sources, aiSources],
+  );
 
   useEffect(() => {
     let dead = false;
@@ -143,6 +152,7 @@ export default function ReelEditor() {
   const [saved, setSaved] = useState<string | null>(null);
   const [building, setBuilding] = useState(false);
   const [restored, setRestored] = useState(false);
+  const [aiOpen, setAiOpen] = useState(false);
 
   const total = useMemo(() => totalOf(items), [items]);
   const selected = useMemo(() => items.find((i) => i.id === sel) ?? null, [items, sel]);
@@ -429,7 +439,13 @@ export default function ReelEditor() {
    * only when the creator's library is genuinely empty, which is the one case
    * the server also refuses.
    */
-  const ownsAnyVideo = sources.some((s) => s.videoId != null);
+  // What is ON THE TIMELINE counts, not just what is in the bin. An AI
+  // proposal brings its own sources — real videos the creator owns — but they
+  // never appear as bin cards, so a gate that only read `sources` refused to
+  // build the very reel the AI had just produced.
+  const ownsAnyVideo =
+    v0.some((i) => sourceMap.get(i.sk)?.videoId != null) ||
+    sources.some((s) => s.videoId != null);
   const buildBlocked =
     v0.length < 2 ? "needs 2+ blocks"
       : !ownsAnyVideo ? "needs a scanned video"
@@ -643,6 +659,24 @@ export default function ReelEditor() {
           onHome={() => seek(0)}
           onEdge={jumpEdge}
         />
+        {aiOpen ? (
+          <AiReelPanel
+            onClose={() => setAiOpen(false)}
+            onApply={(newSources, newItems, title) => {
+              setAiSources((prev) => {
+                const seen = new Set(prev.map((s) => s.sk));
+                return [...prev, ...newSources.filter((s) => !seen.has(s.sk))];
+              });
+              // Replace V0, keep any overlays the creator already placed.
+              mutate((prev) => [...prev.filter((i) => i.track !== "V0"), ...newItems], `AI reel · ${title}`);
+              if (!name || name === "Untitled reel") setName(title);
+              setSel(newItems[0]?.id ?? null);
+              setPh(0);
+              setAiOpen(false);
+              toast({ title: "On the timeline", description: `${newItems.length} cuts — move, trim or swap any of them before you build.` });
+            }}
+          />
+        ) : (
         <Inspector
           item={selected}
           source={selected ? sourceMap.get(selected.sk) ?? null : null}
@@ -651,6 +685,7 @@ export default function ReelEditor() {
           onRippleDelete={() => doDelete(true)}
           onLift={() => doDelete(false)}
         />
+        )}
       </div>
 
       </ResizablePanel>
@@ -688,6 +723,15 @@ export default function ReelEditor() {
             </button>
           ))}
         </div>
+        <button
+          onClick={() => setAiOpen(true)}
+          className={`px-2.5 py-1.5 text-[11px] font-semibold border inline-flex items-center gap-1.5 ${
+            aiOpen ? "border-primary/45 bg-primary/15 text-primary" : "border-border text-muted-foreground hover:text-foreground"
+          }`}
+          data-testid="reel-ai-open"
+        >
+          <Sparkles className="w-3.5 h-3.5" /> AI reel
+        </button>
         <button
           onClick={addText}
           className="px-2.5 py-1.5 text-[11px] font-semibold border border-border text-muted-foreground hover:text-foreground inline-flex items-center gap-1.5"

@@ -925,4 +925,179 @@ Return ONLY a JSON object, no prose, no code fence:
   }
 }
 
+// ── Reel options: several distinct arcs from ONE long-form video ─────────
+
+export interface ReelOption {
+  /** Short label for the option card — "The contrarian take". */
+  angle: string;
+  /** Why this cut of the material works, in one sentence. */
+  rationale: string;
+  narrativeArc: string;
+  suggestedTitle: string;
+  segments: NarrativeSegment[];
+  totalDuration: number;
+}
+
+export interface ReelOptionsInput {
+  videoId: number;
+  transcript: TranscriptSegment[];
+  /** How many alternative reels to propose. */
+  optionCount?: number;
+  /** Cuts per reel. */
+  segmentCount?: number;
+  /** Total seconds per reel. Hard-capped by the caller. */
+  targetDuration?: number;
+}
+
+/**
+ * Propose several DIFFERENT reels from one video, in a single model call.
+ *
+ * Why one call and not N: analyzeNarrativeThread passes no temperature and
+ * takes no steering parameter, so calling it three times returns three
+ * near-identical arcs — the same "best" moments every time. Asking for all
+ * the options at once is the thing that makes them distinct, because the
+ * model can see what it has already used and is told to differentiate. It is
+ * also one paid call instead of N.
+ *
+ * Each option is a set of NON-CONTIGUOUS CUTS, never one long extract. That
+ * is the whole point: the creator gets a reel they can take apart, swap a
+ * beat out of, and re-order — not a single block they can only trim.
+ */
+export async function analyzeReelOptions(input: ReelOptionsInput): Promise<ReelOption[] | null> {
+  const optionCount = Math.min(5, Math.max(2, input.optionCount ?? 5));
+  const segmentCount = Math.min(8, Math.max(2, input.segmentCount ?? 4));
+  const targetDuration = Math.min(170, Math.max(20, input.targetDuration ?? 110));
+
+  const compact = input.transcript.map((seg) => ({
+    start: Math.round(seg.start * 10) / 10,
+    end: Math.round(seg.end * 10) / 10,
+    text: seg.text,
+  }));
+  if (compact.length < segmentCount) return null;
+
+  // DOWNSAMPLE, don't head-truncate. analyzeNarrativeThread slices the JSON
+  // string at 50k chars, so on a genuinely long video the model never sees
+  // the back half and structurally cannot pick a payoff from the end — which
+  // is precisely what ruins an arc. Dropping evenly-spaced lines keeps the
+  // whole timeline represented, coarser but end to end. (Same approach as
+  // analyzeLibraryThread.)
+  let kept = compact;
+  let transcriptStr = JSON.stringify(kept);
+  while (transcriptStr.length > EDITORIAL_CONFIG.maxTranscriptChars && kept.length > 12) {
+    const stride = Math.ceil(kept.length / Math.max(12, Math.floor(kept.length * 0.75)));
+    kept = kept.filter((_, idx) => idx % stride !== stride - 1);
+    transcriptStr = JSON.stringify(kept);
+  }
+  if (transcriptStr.length > EDITORIAL_CONFIG.maxTranscriptChars) {
+    transcriptStr = transcriptStr.substring(0, EDITORIAL_CONFIG.maxTranscriptChars) + "...]";
+  }
+  const sampledNote = kept.length < compact.length
+    ? ` (sampled ${kept.length} of ${compact.length} lines, evenly across the whole video)`
+    : "";
+  const videoEnd = compact.length ? compact[compact.length - 1].end : 0;
+
+  const prompt = `You are a short-form editor. From ONE long-form video you will propose ${optionCount} DIFFERENT reels.
+
+Transcript with timestamps${sampledNote}. The video runs to ${videoEnd.toFixed(0)}s:
+${transcriptStr}
+
+WHAT A REEL IS HERE
+Each reel is ${segmentCount} NON-CONTIGUOUS cuts from the transcript above, stitched in the order you give them. Total roughly ${targetDuration}s, so each cut is about ${Math.round(targetDuration / segmentCount)}s. Never propose one long extract — the creator needs separate cuts they can re-order or swap out.
+
+THE OPTIONS MUST BE GENUINELY DIFFERENT
+This is the whole task. ${optionCount} versions of the same reel is a failure. Each option takes a different ANGLE on the material: a different argument, a different emotional register, a different audience, a different through-line. Two options may reuse at most ONE moment between them; everything else must be different footage.
+
+Give each option a short angle label (3-5 words) and one sentence on why that cut works.
+
+EACH CUT NEEDS A ROLE
+- "hook" — opens with the most arresting thing. Always the FIRST cut.
+- "development" — builds the argument. Usually 1-2 cuts.
+- "climax" — the sharpest or most charged moment.
+- "payoff" — lands it. Always the LAST cut.
+Use "bridge" only if a cut exists purely to connect two others.
+
+RULES
+- start/end must be real timestamps from the transcript, start < end, and inside 0-${videoEnd.toFixed(0)}s.
+- Cuts within one option must not overlap, and must be given in playing order.
+- Cut on sentence boundaries. Never start or end mid-sentence.
+- Do not pad to reach ${optionCount}. If the material only supports 2 genuinely distinct reels, return 2.
+
+Return ONLY a JSON array, no prose:
+[
+  {
+    "angle": "short label",
+    "rationale": "one sentence on why this cut works",
+    "narrativeArc": "one sentence describing the arc",
+    "suggestedTitle": "a title for the reel",
+    "segments": [
+      { "start": 0, "end": 0, "role": "hook", "narrativePurpose": "what this cut does", "suggestedTransition": "cut" }
+    ]
+  }
+]`;
+
+  const client = getClient();
+  try {
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("Reel options analysis timed out")), 120_000),
+    );
+    const call = client.messages.create({
+      model: EDITORIAL_CONFIG.model,
+      // Scaled, unlike analyzeNarrativeThread's fixed 4096 — asking for five
+      // annotated arcs and giving it a single arc's budget is how you get a
+      // truncated response and a null return.
+      max_tokens: Math.min(16000, 1500 + optionCount * segmentCount * 260),
+      messages: [{ role: "user", content: prompt }],
+    });
+    const response = await Promise.race([call, timeoutPromise]);
+    const text = (response as any).content?.[0]?.type === "text" ? (response as any).content[0].text : "";
+    const match = text.match(/\[[\s\S]*\]/);
+    const raw = match ? match[0] : text;
+
+    let parsed: any[];
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      // Truncated mid-array: keep the options that did come through whole
+      // rather than throwing all of them away.
+      parsed = salvageObjects(raw);
+    }
+    if (!Array.isArray(parsed)) return null;
+
+    const options: ReelOption[] = [];
+    for (const o of parsed) {
+      const segs: NarrativeSegment[] = (Array.isArray(o?.segments) ? o.segments : [])
+        .map((sg: any) => ({
+          start: Number(sg?.start),
+          end: Number(sg?.end),
+          role: ["hook", "development", "climax", "payoff", "bridge"].includes(sg?.role) ? sg.role : "development",
+          narrativePurpose: String(sg?.narrativePurpose ?? "").slice(0, 300),
+          suggestedTransition: ["cut", "crossfade", "branded_wipe"].includes(sg?.suggestedTransition)
+            ? sg.suggestedTransition
+            : "crossfade",
+          scores: sg?.scores ?? undefined,
+        }) as NarrativeSegment)
+        .filter((sg: NarrativeSegment) =>
+          Number.isFinite(sg.start) && Number.isFinite(sg.end) && sg.end > sg.start && sg.start >= 0,
+        )
+        .sort((a: NarrativeSegment, b: NarrativeSegment) => a.start - b.start);
+
+      // A one-cut "reel" is an extract, which is the thing this is meant to
+      // replace — drop it rather than offer it.
+      if (segs.length < 2) continue;
+      options.push({
+        angle: String(o?.angle ?? "Untitled angle").slice(0, 80),
+        rationale: String(o?.rationale ?? "").slice(0, 300),
+        narrativeArc: String(o?.narrativeArc ?? "").slice(0, 400),
+        suggestedTitle: String(o?.suggestedTitle ?? "Reel").slice(0, 120),
+        segments: segs,
+        totalDuration: segs.reduce((n, sg) => n + (sg.end - sg.start), 0),
+      });
+    }
+    return options.length ? options : null;
+  } catch (err: any) {
+    console.error(`[ReelOptions] video ${input.videoId}: ${err?.message || err}`);
+    return null;
+  }
+}
+
 export { EDITORIAL_CONFIG };

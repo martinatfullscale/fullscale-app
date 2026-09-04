@@ -70,6 +70,12 @@ import {
   fetchFacebookPageAudience,
 } from "./lib/audienceFetcher";
 import { authLimiter, scanLimiter, uploadLimiter, rateLimit } from "./middleware/rateLimit";
+/**
+ * The AI reel routes each spend a paid Sonnet call on a whole transcript, and
+ * no /api/remix/* route had any limiter at all — a held-down button was an
+ * unbounded spend. Tighter than scanLimiter because one call here is dearer.
+ */
+const aiReelLimiter = rateLimit({ bucket: "ai-reel", windowMs: 60_000, max: 6 });
 import { rankClips, deduplicateClips } from "./lib/remix/clipRanker";
 
 // Configure multer for video uploads (temp dir, then uploaded to Object Storage)
@@ -16058,13 +16064,22 @@ export async function registerRoutes(
   // ─── Phase 2B: Multi-Segment Stitching ───────────────────────
 
   // POST /api/remix/:videoId/narrative-thread — Run Claude narrative threading analysis
-  app.post("/api/remix/:videoId/narrative-thread", isFlexibleAuthenticated, async (req: any, res) => {
+  app.post("/api/remix/:videoId/narrative-thread", aiReelLimiter, isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const videoId = parseInt(req.params.videoId);
 
       // Validate video exists
       const video = await storage.getVideoById(videoId);
       if (!video) return res.status(404).json({ error: "Video not found" });
+      // ...AND that it is the caller's. Video ids are sequential and this
+      // route runs a paid Claude pass over the transcript, returning
+      // narrativePurpose strings that quote it back — so without this, any
+      // signed-in user could both read another creator's transcript and spend
+      // our model budget doing it. The reel route already closes exactly this
+      // hole for its own path.
+      if (!(await isSameCreator(String(video.userId), req.authUserId))) {
+        return res.status(404).json({ error: "Video not found" });
+      }
 
       // Load transcript
       const transcript = await storage.getVideoTranscript(videoId);
@@ -16114,6 +16129,70 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("[Narrative Thread Route] Error:", err.message, err.stack);
       res.status(500).json({ error: err.message || "Narrative thread analysis failed" });
+    }
+  });
+
+  /**
+   * POST /api/remix/:videoId/reel-options
+   *
+   * One long-form video in, several DIFFERENT reels out — each a set of
+   * non-contiguous cuts, never one long extract, so the creator can swap a
+   * beat or re-order rather than only trim.
+   *
+   * Proposal only. Nothing is written: no stitch plan, no clip, no render.
+   * The creator picks an option and it seeds the reel editor's timeline,
+   * where it is theirs to change before anything is built. That also means
+   * this route costs one model call and nothing else.
+   */
+  app.post("/api/remix/:videoId/reel-options", aiReelLimiter, isFlexibleAuthenticated, async (req: any, res) => {
+    try {
+      const videoId = parseInt(req.params.videoId);
+      if (isNaN(videoId)) return res.status(400).json({ error: "Invalid video id" });
+
+      const video = await storage.getVideoById(videoId);
+      if (!video) return res.status(404).json({ error: "Video not found" });
+      if (!(await isSameCreator(String(video.userId), req.authUserId))) {
+        // 404 rather than 403: a 403 confirms the id exists and belongs to
+        // someone, which is itself worth not saying.
+        return res.status(404).json({ error: "Video not found" });
+      }
+
+      const transcript = await storage.getVideoTranscript(videoId);
+      if (!transcript || transcript.status !== "completed" || !transcript.segments) {
+        return res.status(400).json({
+          error: "This video hasn't been transcribed yet — the reel is built from what's said, so there's nothing to work with.",
+        });
+      }
+
+      const { analyzeReelOptions } = await import("./lib/ai/claude-dense/editorialAnalyzer");
+      // Bounded by the reel cap: proposing an arc the editor would then have
+      // to trim is a worse experience than proposing one that fits.
+      const targetDuration = Math.min(
+        MAX_REEL_SEC - 10,
+        Math.max(20, Number(req.body?.targetDuration) || 110),
+      );
+      const options = await analyzeReelOptions({
+        videoId,
+        transcript: transcript.segments as any[],
+        optionCount: Math.min(5, Math.max(2, Number(req.body?.optionCount) || 5)),
+        segmentCount: Math.min(8, Math.max(2, Number(req.body?.segmentCount) || 4)),
+        targetDuration,
+      });
+
+      if (!options || options.length === 0) {
+        return res.status(502).json({
+          error: "The analysis didn't come back with a usable reel. Try again, or pick a video with more spoken content.",
+        });
+      }
+
+      res.json({
+        videoId,
+        videoTitle: (video as any).title || `Video ${videoId}`,
+        options,
+      });
+    } catch (err: any) {
+      console.error("[ReelOptions Route] Error:", err?.message);
+      res.status(500).json({ error: err?.message || "Couldn't propose reels for this video" });
     }
   });
 
