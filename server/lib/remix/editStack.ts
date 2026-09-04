@@ -660,8 +660,13 @@ export async function buildEditGraph(opts: {
             "Ducking unavailable on this server — the bed plays at a fixed level instead of dipping under speech.",
           );
         }
-        audio.push(`${speech}[sp_mix]`);
-        audio.push(`[sp_mix][bed]amix=inputs=2:duration=first:dropout_transition=0[aout]`);
+        // Straight into amix. This used to hop through an intermediate label
+        // first — `${speech}[sp_mix]` — which is a label pair with no filter
+        // between them, and ffmpeg rejects the whole graph with
+        // "No such filter: ''". Every un-ducked music bed failed its render,
+        // as did every ducked one on a server without sidechaincompress,
+        // since the warning above falls through to exactly this branch.
+        audio.push(`${speech}[bed]amix=inputs=2:duration=first:dropout_transition=0[aout]`);
       }
       audioOutLabel = "[aout]";
     }

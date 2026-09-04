@@ -79,11 +79,36 @@ export async function getFfmpegCapabilities(): Promise<FfmpegCapabilities> {
       cached = FALLBACK;
       return cached;
     }
-    // Filter names sit in the second column of `ffmpeg -filters` output.
+    /**
+     * Filter names sit in the second column of `ffmpeg -filters`.
+     *
+     * The flags column is NOT a fixed width across builds. ffmpeg 6 (the
+     * bundled ffmpeg-static) prints three characters — " ..C amix" — while
+     * ffmpeg 8 prints two — " .. amix". The original `[A-Z.]{3}` matched only
+     * the former, so on a newer build every single filter failed to parse,
+     * `names` came back empty, and every capability resolved to false. That is
+     * worse than the FALLBACK, which at least assumes trim/concat/overlay:
+     * silence removal, speed ramps, the music bed and ducking would all switch
+     * themselves off silently, with a plausible-looking warning each, and the
+     * renders would just quietly stop doing what the editor said they would.
+     *
+     * 2-4 flag characters, and an explicit name charset so a legend line like
+     * "  T.. = Timeline support" cannot be mistaken for a filter.
+     */
     const names = new Set<string>();
     for (const line of list.split("\n")) {
-      const m = /^\s*[A-Z.]{3}\s+(\S+)\s/.exec(line);
+      const m = /^\s*[A-Z.]{2,4}\s+([A-Za-z0-9_]+)\s/.exec(line);
       if (m) names.add(m[1]);
+    }
+    // A build with no recognisable filters means the format changed again.
+    // Say so loudly and take the fallback rather than reporting "no features".
+    if (names.size < 10) {
+      console.warn(
+        `[FfmpegCaps] Parsed only ${names.size} filter name(s) from \`ffmpeg -filters\` — the output format is not one this parser knows. ` +
+        `Assuming a minimal build rather than reporting every feature as missing.`,
+      );
+      cached = FALLBACK;
+      return cached;
     }
     const has = (n: string) => names.has(n);
     cached = {

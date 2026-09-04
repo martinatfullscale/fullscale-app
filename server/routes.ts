@@ -16494,7 +16494,7 @@ export async function registerRoutes(
   app.post("/api/remix/reel", isFlexibleAuthenticated, async (req: any, res) => {
     try {
       const userId = stableUserIntId(req.authUserId ?? req.user?.id);
-      const { clips, segments, items, platformTarget = "tiktok", captionsEnabled = true, title } = req.body || {};
+      const { clips, segments, items, platformTarget = "tiktok", captionsEnabled = true, title, overlays } = req.body || {};
 
       // Ordered building blocks, mixed. Each item is EITHER a picked clip
       // ({clipId, clipSource}) — hand-picking, job #1 — OR a raw source range
@@ -16602,12 +16602,91 @@ export async function registerRoutes(
       }
 
       const totalDuration = planSegments.reduce((sum, s) => sum + (s.end - s.start), 0);
+
+      // ── Overlay tracks: V1 picture-in-picture, V2 text, A1 music bed ──
+      // Same shape of validation as the story-clip edit stack: clamped
+      // numerics, per-track caps, and every media_assets id re-checked against
+      // the caller. A foreign assetId is dropped silently, which is the
+      // correct outcome — it is not an error the caller should learn from.
+      const cleanOverlays = await (async () => {
+        const o = overlays;
+        if (!o || typeof o !== "object") return null;
+        const num = (v: any, lo: number, hi: number, dflt: number) => {
+          const n2 = Number(v);
+          return Number.isFinite(n2) ? Math.min(hi, Math.max(lo, n2)) : dflt;
+        };
+        const ownsAsset = async (id: any) => {
+          const aid = Number(id);
+          if (!Number.isFinite(aid)) return false;
+          const a = await storage.getMediaAsset(aid);
+          return !!a && !a.deletedAt && (String(a.userId) === String(req.authUserId) || String(a.userId) === String(req.authEmail));
+        };
+        const out: Record<string, any> = {};
+
+        if (Array.isArray(o.broll)) {
+          const cuts: any[] = [];
+          for (const c of o.broll.slice(0, 8)) {
+            if (!(await ownsAsset(c?.assetId))) continue;
+            const srcIn = Number(c.srcStart);
+            const srcOut = Number(c.srcEnd);
+            const aimed = Number.isFinite(srcIn) && Number.isFinite(srcOut) && srcIn >= 0 && srcOut - srcIn >= 0.099;
+            cuts.push({
+              assetId: Number(c.assetId),
+              start: num(c.start, 0, 36000, 0), end: num(c.end, 0, 36000, 0),
+              ...(aimed ? { srcStart: num(c.srcStart, 0, 36000, 0), srcEnd: num(c.srcEnd, 0, 36000, 0) } : {}),
+              fit: c.fit === "contain" ? "contain" : "cover",
+              motion: ["push", "pull", "none"].includes(c.motion) ? c.motion : "push",
+              scale: num(c.scale, 0.1, 1, 0.4),
+              x: num(c.x, 0, 1, 0.06), y: num(c.y, 0, 1, 0.06),
+              muted: c.muted !== false,
+            });
+          }
+          const kept = cuts.filter((c) => c.end - c.start >= 0.3);
+          if (kept.length) out.broll = kept;
+        }
+
+        if (Array.isArray(o.textOverlays)) {
+          const texts = o.textOverlays.slice(0, 12)
+            .map((t: any) => ({
+              start: num(t.start, 0, 36000, 0), end: num(t.end, 0, 36000, 0),
+              text: String(t.text ?? "").slice(0, 200),
+              x: num(t.x, 0, 1, 0.5), y: num(t.y, 0, 1, 0.82),
+              size: num(t.size, 0.02, 0.25, 0.06),
+              color: /^#?[0-9a-f]{6}$/i.test(String(t.color ?? "")) ? String(t.color) : "#ffffff",
+              background: /^#?[0-9a-f]{6}$/i.test(String(t.background ?? "")) ? String(t.background) : null,
+              weight: t.weight === "regular" ? "regular" : "bold",
+              align: ["left", "center", "right"].includes(t.align) ? t.align : "center",
+            }))
+            .filter((t: any) => t.text.trim() && t.end - t.start >= 0.3);
+          if (texts.length) out.textOverlays = texts;
+        }
+
+        if (o.music && (await ownsAsset(o.music.assetId))) {
+          out.music = {
+            assetId: Number(o.music.assetId),
+            volume: num(o.music.volume, 0, 1, 0.2),
+            ducking: o.music.ducking !== false,
+            duckAmountDb: num(o.music.duckAmountDb, 6, 24, 12),
+            fadeInSec: num(o.music.fadeInSec, 0, 10, 1),
+            fadeOutSec: num(o.music.fadeOutSec, 0, 10, 2),
+          };
+        }
+
+        if (o.baseAudioLevel !== undefined && o.baseAudioLevel !== null) {
+          const g = num(o.baseAudioLevel, 0, 2, 1);
+          if (Math.abs(g - 1) > 0.01) out.baseAudioLevel = g;
+        }
+
+        return Object.keys(out).length ? out : null;
+      })();
+
       const plan = await storage.createStitchPlan({
         videoId: anchorVideoId,
         userId,
         status: "generating",
         suggestedTitle: (title ? String(title).slice(0, 200) : null) || `Reel from ${srcKeys.length} source${srcKeys.length === 1 ? "" : "s"}`,
         segments: planSegments as any,
+        overlays: cleanOverlays as any,
         totalDuration,
         transitionStyle: "crossfade",
         platformTarget,
@@ -16722,6 +16801,40 @@ export async function registerRoutes(
           if (!result.success) {
             await storage.updateStitchPlanStatus(plan.id, "failed", { errorMessage: result.error || "Reel stitching failed" });
             return;
+          }
+
+          // ── V1 / V2 / A1: one more pass over the finished reel ──────────
+          // After the caption burn, so titles and picture-in-picture sit above
+          // burned captions rather than under them. Fail-open by construction:
+          // applyReelOverlays leaves the base reel untouched on any error, so
+          // the worst case is a reel without its overlays, never a broken file.
+          if (cleanOverlays && result.outputPath && fs.existsSync(result.outputPath)) {
+            try {
+              const { applyReelOverlays, remapReelOverlays, reelFinishedDuration, reelOverlayWorkDir } =
+                await import("./lib/remix/reelOverlay");
+              // The editor lays overlays out against the naive sum of segment
+              // durations; the stitched file is shorter by every crossfade's
+              // overlap. Remap before compositing or everything lands early.
+              const onFinishedClock = remapReelOverlays(cleanOverlays as any, stitchSegs);
+              const finished = reelFinishedDuration(stitchSegs);
+              const workDir = reelOverlayWorkDir(outputDir);
+              fs.mkdirSync(workDir, { recursive: true });
+              const overlayResult = await applyReelOverlays({
+                inputPath: result.outputPath,
+                stack: onFinishedClock,
+                durationSec: finished,
+                outWidth: platformConfig.targetWidth,
+                outHeight: platformConfig.targetHeight,
+                workDir,
+              });
+              if (overlayResult.warnings.length) {
+                console.warn(`[Reel ${plan.id}] overlay warnings: ${overlayResult.warnings.join(" | ")}`);
+              }
+              console.log(`[Reel ${plan.id}] overlay pass ${overlayResult.applied ? "applied" : "skipped"}`);
+            } catch (overlayErr: any) {
+              // Never fail the reel for an overlay. The base render is done.
+              console.error(`[Reel ${plan.id}] overlay pass threw: ${overlayErr?.message || overlayErr}`);
+            }
           }
 
           // Upload output + thumbnail (mirrors the single-video stitch path).

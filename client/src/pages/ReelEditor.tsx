@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useParams } from "wouter";
-import { AlertTriangle, ArrowLeft, Loader2, MousePointer2, Scissors } from "lucide-react";
+import { ArrowLeft, Loader2, MousePointer2, Scissors, Type as TypeIcon } from "lucide-react";
 import { fetchWithTimeout } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useJobPoll } from "@/hooks/use-job-poll";
@@ -9,8 +9,8 @@ import ReelTimeline from "@/components/reel-editor/ReelTimeline";
 import { Bin, Inspector, ProgramMonitor, SourceMonitor } from "@/components/reel-editor/Panels";
 import {
   dur, end, fmtT, lift, MIN_ITEM_SEC, newItemId, normalise, overwriteInsert,
-  rippleDelete, rippleInsert, splitAt, totalOf, v0Of,
-  type BinSource, type ReelItem,
+  rippleDelete, rippleInsert, splitAt, totalOf, tracksFor, v0Of,
+  type BinSource, type ReelItem, type Track,
 } from "@/components/reel-editor/types";
 
 /**
@@ -96,17 +96,17 @@ export default function ReelEditor() {
         const res = await fetchWithTimeout("/api/media-assets", { credentials: "include" });
         const data = await res.json().catch(() => ({}));
         for (const a of (data.assets ?? []) as ApiAsset[]) {
-          if (a.kind === "music") continue;                    // no audio track that renders yet
+          const isMusic = a.kind === "music";
           const isImage = a.kind === "broll_image";
           const d = Number(a.durationSec);
           const webcam = /webcam|recording/i.test(a.name || "");
           const mb = a.fileSizeBytes ? ` · ${(a.fileSizeBytes / 1048576).toFixed(0)} MB` : "";
           out.push({
             sk: `a:${a.id}`,
-            kind: isImage ? "ai" : webcam ? "webcam" : "upload",
+            kind: isMusic ? "music" : isImage ? "ai" : webcam ? "webcam" : "upload",
             label: a.name,
-            meta: `${isImage ? "still" : "clip"}${mb}`,
-            url: isImage ? null : a.url,
+            meta: `${isMusic ? "audio" : isImage ? "still" : "clip"}${mb}`,
+            url: isImage || isMusic ? null : a.url,
             boundStart: 0,
             boundEnd: isImage ? 4 : Number.isFinite(d) && d > 0 ? d : 6,
             srcOffset: 0,                                   // an asset is its own file
@@ -189,24 +189,56 @@ export default function ReelEditor() {
 
   // ── Insert ──────────────────────────────────────────────────────────
   const insert = useCallback(
-    (src: BinSource, at: number, from: number, to: number) => {
+    (src: BinSource, at: number, from: number, to: number, track: Track = "V0") => {
+      // A source can only land where it makes sense: audio on A1, footage on
+      // V0 or V1. Refusing with a reason beats silently dropping the gesture.
+      const allowed = tracksFor(src.kind);
+      if (!allowed.includes(track)) {
+        toast({
+          title: `${src.label} can't go on ${track}`,
+          description: `Drop it on ${allowed.join(" or ")} instead.`,
+        });
+        return;
+      }
       const block: ReelItem = {
         id: newItemId(),
         sk: src.sk,
-        track: "V0",
+        track,
         at: Math.max(0, at),
         in: from,
         out: to,
         tin: "cut",
       };
       mutate(
-        (prev) => (mode === "ripple" ? rippleInsert(prev, block) : overwriteInsert(prev, block)),
-        `Insert ${src.label}`,
+        // Ripple and overwrite are sequence semantics — they belong to V0.
+        // An overlay is placed where it is dropped and layers over whatever
+        // is underneath, which is the whole point of a layer.
+        (prev) =>
+          track === "V0"
+            ? mode === "ripple" ? rippleInsert(prev, block) : overwriteInsert(prev, block)
+            : [...prev, block],
+        `Insert ${src.label} on ${track}`,
       );
       setSel(block.id);
     },
-    [mutate, mode],
+    [mutate, mode, toast],
   );
+
+  /** V2 text. There is no source for it, so it is created rather than dropped. */
+  const addText = useCallback(() => {
+    const at = Math.max(0, Math.min(ph, Math.max(0, total - 1)));
+    const block: ReelItem = {
+      id: newItemId(),
+      sk: "text",
+      track: "V2",
+      at,
+      in: 0,
+      out: 3,
+      text: "New text",
+    };
+    mutate((prev) => [...prev, block], "Add text");
+    setSel(block.id);
+  }, [mutate, ph, total]);
 
   /**
    * Bring a file in from here. The old modal could upload and record; this
@@ -380,13 +412,19 @@ export default function ReelEditor() {
   // ── Build ───────────────────────────────────────────────────────────
   const v0 = v0Of(items);
   /**
-   * `stitch_plans.videoId` is NOT NULL with an FK to video_index, so a reel
-   * assembled entirely from uploads and webcam takes cannot be stored. Rather
-   * than let the build fail server-side with a generic message, the button
-   * says which condition is unmet.
+   * The only real gate is 2+ blocks on V0.
+   *
+   * An earlier version also demanded a library clip, on the theory that
+   * `stitch_plans.videoId` being NOT NULL made an all-uploads reel
+   * impossible. It does not: the server falls back to ANY video the creator
+   * owns (routes.ts, anchorVideoId) because the column is bookkeeping — the
+   * comment there says so, and the rendered file never reads it. So the
+   * button was refusing builds the server would have accepted. It now blocks
+   * only when the creator's library is genuinely empty, which is the one case
+   * the server also refuses.
    */
-  const hasAnchor = v0.some((i) => sourceMap.get(i.sk)?.videoId != null);
-  const buildBlocked = v0.length < 2 ? "needs 2+ blocks" : !hasAnchor ? "needs one library clip" : null;
+  const ownsAnyVideo = sources.some((s) => s.videoId != null);
+  const buildBlocked = v0.length < 2 ? "needs 2+ blocks" : !ownsAnyVideo ? "needs a scanned video" : null;
 
   const [stitchJob, setStitchJob] = useState<{ id: number } | null>(null);
   useJobPoll<{ thumbnailPath?: string | null; errorMessage?: string | null }>(
@@ -431,11 +469,53 @@ export default function ReelEditor() {
         };
       }).filter(Boolean);
 
+      /**
+       * The overlay tracks, in the shape the server's compositor reads.
+       *
+       * Times go up on the AUTHORED clock (the naive sum of V0 durations,
+       * which is what this timeline draws). The server remaps them onto the
+       * finished file, which is shorter by every crossfade's overlap — doing
+       * that here would mean duplicating the stitcher's transition maths in
+       * the browser and keeping the two in step forever.
+       */
+      const overlayItems = items.filter((i) => i.track !== "V0");
+      const pip = overlayItems.filter((i) => i.track === "V1");
+      const texts = overlayItems.filter((i) => i.track === "V2");
+      const bed = overlayItems.find((i) => i.track === "A1");
+      const overlays = {
+        broll: pip
+          .map((i) => {
+            const s = sourceMap.get(i.sk);
+            if (!s?.assetId) return null;      // only media assets can be composited
+            return {
+              assetId: s.assetId, start: i.at, end: i.at + dur(i),
+              srcStart: i.in, srcEnd: i.out,
+              fit: "cover", scale: 0.4, x: 0.06, y: 0.06, muted: true, motion: "none",
+            };
+          })
+          .filter(Boolean),
+        textOverlays: texts.map((i) => ({
+          start: i.at, end: i.at + dur(i), text: i.text ?? "",
+          x: 0.5, y: 0.82, size: 0.06, color: "#ffffff", background: null,
+          weight: "bold", align: "center",
+        })),
+        music: bed && sourceMap.get(bed.sk)?.assetId
+          ? { assetId: sourceMap.get(bed.sk)!.assetId, volume: 0.2, ducking: true, duckAmountDb: 12, fadeInSec: 1, fadeOutSec: 2 }
+          : undefined,
+      };
+      const hasOverlays = overlays.broll.length > 0 || overlays.textOverlays.length > 0 || !!overlays.music;
+
       const res = await fetchWithTimeout("/api/remix/reel", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ items: payload, platformTarget: "tiktok", captionsEnabled: true, title: name || undefined }),
+        body: JSON.stringify({
+          items: payload,
+          platformTarget: "tiktok",
+          captionsEnabled: true,
+          title: name || undefined,
+          ...(hasOverlays ? { overlays } : {}),
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.planId) throw new Error(data.error || "Could not start the reel");
@@ -574,6 +654,13 @@ export default function ReelEditor() {
           ))}
         </div>
         <button
+          onClick={addText}
+          className="px-2.5 py-1.5 text-[11px] font-semibold border border-border text-muted-foreground hover:text-foreground inline-flex items-center gap-1.5"
+          data-testid="reel-add-text"
+        >
+          <TypeIcon className="w-3.5 h-3.5" /> Add text
+        </button>
+        <button
           onClick={() => setSnap((s) => !s)}
           className={`px-2.5 py-1.5 text-[11px] font-semibold border ${snap ? "border-primary/45 bg-primary/15 text-primary" : "border-border text-muted-foreground"}`}
           data-testid="reel-snap"
@@ -610,9 +697,13 @@ export default function ReelEditor() {
           onSelect={setSel}
           onItems={mutate}
           onSplit={doSplit}
-          onDropSource={(sk, at) => {
+          onDropSource={(sk, at, track) => {
             const s = sourceMap.get(sk);
-            if (s) insert(s, at, s.boundStart, Math.min(s.boundEnd, s.boundStart + 6));
+            if (!s) return;
+            // A bed runs the length of the reel by default; an overlay is a
+            // short beat over it.
+            const len = track === "A1" ? Math.max(1, total || 6) : Math.min(s.boundEnd - s.boundStart, 6);
+            insert(s, track === "A1" ? 0 : at, s.boundStart, s.boundStart + len, track);
           }}
           onScrollerReady={(el) => { scrollerRef.current = el; }}
         />
@@ -621,19 +712,19 @@ export default function ReelEditor() {
       {/* ── Phase line ── */}
       <div className="shrink-0 grid grid-cols-2 border-t-2 border-border">
         <div className="p-3 border-r-2 border-border">
-          <p className="text-[10px] uppercase tracking-[0.1em] text-primary font-semibold mb-1">Phase 1 — ships against today's renderer</p>
+          <p className="text-[10px] uppercase tracking-[0.1em] text-primary font-semibold mb-1">How this renders</p>
           <p className="text-[11px] leading-relaxed text-muted-foreground">
-            V0 sequence with real start times · razor (two items, one source — the reel route already renders it) ·
-            playhead and program preview · draft autosave as a route · cross-source bin · per-junction cut vs crossfade.
+            V0 is stitched first — one plan segment per block, in order, with the junction transition above. V1, V2
+            and A1 are then composited in a second pass over that finished file, so an overlay is anchored to the
+            reel rather than to any one segment.
           </p>
         </div>
         <div className="p-3">
-          <p className="text-[10px] uppercase tracking-[0.1em] text-muted-foreground font-semibold mb-1 inline-flex items-center gap-1.5">
-            <AlertTriangle className="w-3 h-3" /> Phase 2 — needs engine work
-          </p>
+          <p className="text-[10px] uppercase tracking-[0.1em] text-muted-foreground font-semibold mb-1">Still honest about</p>
           <p className="text-[11px] leading-relaxed text-muted-foreground">
-            V1 overlay/PiP · V2 rasterized text · A1 ducked music bed · branded wipe. clipStitcher is a sequential
-            concat/xfade with one input per segment: route reels through editStack, or add a second overlay pass.
+            A branded wipe renders as a plain fade — the stitcher maps both to xfade. Overlays are laid out against
+            the sum of the blocks and remapped onto the finished reel, which is shorter by each crossfade's overlap;
+            the program monitor shows the longer, un-crossfaded clock.
           </p>
         </div>
       </div>

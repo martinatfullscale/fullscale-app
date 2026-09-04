@@ -45,7 +45,7 @@ export interface ReelTimelineProps {
   /** A committed change. `token` groups a drag into one undo entry. */
   onItems: (next: (prev: ReelItem[]) => ReelItem[], label: string, token?: string) => void;
   onSplit: (id: string, at: number) => void;
-  onDropSource: (sk: string, at: number) => void;
+  onDropSource: (sk: string, at: number, track: Track) => void;
   onScrollerReady: (el: HTMLDivElement | null) => void;
 }
 
@@ -61,6 +61,7 @@ export default function ReelTimeline(props: ReelTimelineProps) {
   const [guide, setGuide] = useState<number | null>(null);
   const [razorX, setRazorX] = useState<number | null>(null);
   const [dropAt, setDropAt] = useState<number | null>(null);
+  const [dropTrack, setDropTrack] = useState<Track | null>(null);
 
   const canvasW = Math.max(900, (total + 12) * pps);
   const toPx = (t: number) => t * pps;
@@ -190,7 +191,13 @@ export default function ReelTimeline(props: ReelTimelineProps) {
                   ? "border border-primary/45 bg-primary/15 text-primary"
                   : "border border-border text-muted-foreground/70"
               }`}
-              title={TRACK_PHASE[tr] === "today" ? "Renders on today's engine" : "Needs engine work — clipStitcher has no overlay node"}
+              title={
+                TRACK_PHASE[tr] === "today"
+                  ? tr === "V0"
+                    ? "Rendered by the stitcher, one plan segment per block"
+                    : "Composited by the overlay pass over the finished reel"
+                  : "Needs engine work"
+              }
             >
               {TRACK_PHASE[tr] === "today" ? "renders today" : "needs engine"}
             </span>
@@ -238,25 +245,31 @@ export default function ReelTimeline(props: ReelTimelineProps) {
                 onPointerMove={(e) => { if (tool === "razor" && tr === "V0") setRazorX(timeAt(e.clientX)); }}
                 onPointerLeave={() => tr === "V0" && setRazorX(null)}
                 onDragOver={(e) => {
-                  if (tr !== "V0") return;
                   e.preventDefault();
                   e.dataTransfer.dropEffect = "copy";
+                  setDropTrack(tr);
                   setDropAt(snap ? snapTime(timeAt(e.clientX), items, playhead, pps).t : timeAt(e.clientX));
                 }}
-                onDragLeave={() => tr === "V0" && setDropAt(null)}
+                onDragLeave={() => { setDropAt(null); setDropTrack(null); }}
                 onDrop={(e) => {
-                  if (tr !== "V0") return;
                   e.preventDefault();
                   setDropAt(null);
+                  setDropTrack(null);
                   const sk = e.dataTransfer.getData("application/x-fullscale-source");
-                  if (sk) onDropSource(sk, snap ? snapTime(timeAt(e.clientX), items, playhead, pps).t : timeAt(e.clientX));
+                  if (sk) onDropSource(sk, snap ? snapTime(timeAt(e.clientX), items, playhead, pps).t : timeAt(e.clientX), tr);
                 }}
                 data-testid={`reel-lane-${tr}`}
               >
-                {tr === "V0" && laneItems.length === 0 && (
-                  <div className="absolute inset-2 border-2 border-dashed border-border flex items-center justify-center pointer-events-none">
-                    <span className="text-[11px] text-muted-foreground px-3 text-center">
-                      V0 is empty — drag a bin item here, or set in/out in the source monitor and press Insert.
+                {laneItems.length === 0 && (
+                  <div className="absolute inset-2 border-2 border-dashed border-border/60 flex items-center justify-center pointer-events-none">
+                    <span className="text-[11px] text-muted-foreground/80 px-3 text-center truncate">
+                      {tr === "V0"
+                        ? "V0 is empty — drag a bin item here, or set in/out in the source monitor and press Insert."
+                        : tr === "V1"
+                          ? "Drag a clip or still here for a picture-in-picture over the reel."
+                          : tr === "V2"
+                            ? "Add text from the toolbar."
+                            : "Drag a music track here for a bed under the whole reel."}
                     </span>
                   </div>
                 )}
@@ -277,7 +290,7 @@ export default function ReelTimeline(props: ReelTimelineProps) {
                   />
                 ))}
 
-                {tr === "V0" && dropAt !== null && (
+                {dropTrack === tr && dropAt !== null && (
                   <div className="absolute inset-y-0 w-0.5 bg-emerald-400 pointer-events-none" style={{ left: toPx(dropAt) }} />
                 )}
 

@@ -19,7 +19,7 @@
 
 export type Track = "V0" | "V1" | "V2" | "A1";
 export type Transition = "cut" | "crossfade" | "branded_wipe";
-export type SourceKind = "library" | "moment" | "upload" | "webcam" | "stock" | "ai";
+export type SourceKind = "library" | "moment" | "upload" | "webcam" | "stock" | "ai" | "music";
 
 /** A thing that can go on the timeline, from any of the six sources. */
 export interface BinSource {
@@ -283,6 +283,7 @@ export const KIND_LABEL: Record<SourceKind, string> = {
   webcam: "Webcam",
   stock: "Stock",
   ai: "AI still",
+  music: "Music",
 };
 
 /**
@@ -297,14 +298,27 @@ export const KIND_COLOR: Record<SourceKind, string> = {
   webcam: "#34d399",
   stock: "#64748b",
   ai: "#f0596e",
+  music: "#34d399",
 };
 
-/** Phase 1 renders today; Phase 2 needs an engine change. */
+/**
+ * Every track renders now.
+ *
+ * V1/V2/A1 used to be drawn but dead: clipStitcher is a sequential
+ * concat/xfade with no overlay node, so nothing on them could reach the
+ * export. They are composited by a second ffmpeg pass over the finished reel
+ * (server/lib/remix/reelOverlay.ts) which reuses the same graph builder the
+ * story-clip editor has always used.
+ *
+ * Kept as a map rather than deleted: `branded_wipe` still renders as a plain
+ * fade, so there is at least one thing left to promote, and the next track
+ * added should have to declare which side it is on.
+ */
 export const TRACK_PHASE: Record<Track, "today" | "engine"> = {
   V0: "today",
-  V1: "engine",
-  V2: "engine",
-  A1: "engine",
+  V1: "today",
+  V2: "today",
+  A1: "today",
 };
 
 export const TRACK_ROLE: Record<Track, string> = {
@@ -313,3 +327,10 @@ export const TRACK_ROLE: Record<Track, string> = {
   V0: "sequence",
   A1: "music bed",
 };
+
+/** Which tracks a given source may be dropped on. */
+export function tracksFor(kind: SourceKind): Track[] {
+  if (kind === "music") return ["A1"];
+  if (kind === "ai") return ["V0", "V1"];       // a still works as a beat or a card
+  return ["V0", "V1"];
+}

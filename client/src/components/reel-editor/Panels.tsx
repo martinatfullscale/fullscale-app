@@ -463,7 +463,6 @@ export function Inspector(props: {
     );
   }
 
-  const engine = TRACK_PHASE[item.track] === "engine";
   /** The server only builds caption groups for video-backed segments:
    *  `if (captionsEnabled && ps.sourceVideoId != null)`. An uploaded or webcam
    *  block is silently caption-less, so the inspector says so rather than
@@ -522,12 +521,14 @@ export function Inspector(props: {
 
         <p
           className={`text-[10.5px] leading-relaxed px-2.5 py-2 ${
-            engine ? "border border-border text-muted-foreground" : "border-l-4 border-primary bg-primary/10 text-foreground/85"
+            item.track === "V0"
+              ? "border-l-4 border-primary bg-primary/10 text-foreground/85"
+              : "border-l-4 border-indigo-400 bg-indigo-400/10 text-foreground/85"
           }`}
         >
-          {engine
-            ? "Needs engine work. clipStitcher has no overlay node — this block requires either routing reels through editStack or a second overlay pass."
-            : "Renders today. One plan segment per item, sequential, with the junction transition above."}
+          {item.track === "V0"
+            ? "Stitched first — one plan segment for this block, in order, with the junction transition above."
+            : "Composited in a second pass over the finished reel, so it is anchored to the reel and not to any one segment."}
         </p>
       </div>
     </div>

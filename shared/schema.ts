@@ -1146,6 +1146,22 @@ export const stitchPlans = pgTable('stitch_plans', {
     enabled: boolean;
   }>>(),
   totalDuration: real('total_duration'),
+  /**
+   * The reel's overlay tracks — V1 picture-in-picture, V2 text, A1 music bed.
+   *
+   * One jsonb rather than a column per track, following editorial_clips.edits:
+   * these compose into a single ffmpeg filtergraph and are always read and
+   * written together. Shape is server/lib/remix/reelOverlay.ts
+   * `ReelOverlayStack`, a compositing-only subset of EditStack — the retime
+   * family is deliberately absent, because a reel's captions are burned in
+   * before this runs and a retime would slide every anchor.
+   *
+   * Times are stored on the AUTHORED timeline (the naive sum of segment
+   * durations, which is what the editor draws). The render remaps them onto
+   * the finished file's shorter clock, since every crossfade eats its overlap.
+   * Null = no overlays, which is every reel built before this column existed.
+   */
+  overlays: jsonb('overlays'),
   transitionStyle: varchar('transition_style', { length: 30 }).default('crossfade'),
   platformTarget: varchar('platform_target', { length: 30 }).default('tiktok'),
   outputPath: varchar('output_path', { length: 500 }),
