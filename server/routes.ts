@@ -16420,6 +16420,12 @@ export async function registerRoutes(
           clipEnd: end,
           duration: Number(c.duration) || (end - start),
           thumbnailPath: c.thumbnailPath || null,
+          // The rendered file. The reel editor's bin scrubs a source on hover
+          // and loads it into a source monitor to set in/out before the block
+          // reaches the timeline — both need something playable, and a
+          // thumbnail is not it. Null until the clip has been rendered, which
+          // the bin shows as a still card rather than a broken player.
+          exportPath: c.exportPath || null,
           hasSegments: Array.isArray(c.segments) && c.segments.length >= 2,
         });
       };

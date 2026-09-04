@@ -10,6 +10,16 @@ import { useToast } from "@/hooks/use-toast";
 import { useJobPoll } from "@/hooks/use-job-poll";
 
 /**
+ * NO LONGER MOUNTED. Superseded by the route editor at
+ * client/src/pages/ReelEditor.tsx (/library/reels/:reelId/edit), which has a
+ * real time axis, a razor, a program monitor and an autosaved draft. Both
+ * former mount points now navigate there instead.
+ *
+ * Kept for two reasons: `ReelClip` is still the shared shape for "add to
+ * reel", and the webcam recorder and the AI cross-video moment finder below
+ * have not been ported to the new bin yet. Delete once both have moved.
+ *
+ * ─────────────────────────────────────────────────────────────────────────
  * Reel Builder — assemble one reel from clips across the creator's videos on a
  * horizontal TIMELINE: blocks are dragged to reorder and their edges dragged to
  * trim. The backend (POST /api/remix/reel) cuts each block from its own source

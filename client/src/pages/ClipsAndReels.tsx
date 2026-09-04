@@ -19,7 +19,8 @@ import { fetchWithTimeout } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
 import ClipStudio from "@/components/ClipStudio";
 import DistributionDashboard from "@/components/DistributionDashboard";
-import ReelBuilder, { type ReelClip } from "@/components/ReelBuilder";
+import { type ReelClip } from "@/components/ReelBuilder";
+import { seedReelDraft } from "@/components/reel-editor/types";
 import RemixStudio from "@/components/RemixStudio";
 
 /**
@@ -185,8 +186,15 @@ export default function ClipsAndReels() {
   const [playing, setPlaying] = useState<ClipItem | null>(null);
   const [studioItem, setStudioItem] = useState<ClipItem | null>(null);
   const [publishTarget, setPublishTarget] = useState<{ videoId: number; id: number; clipSource: "remix" | "editorial" } | null>(null);
-  const [reelSeed, setReelSeed] = useState<ReelClip[] | null>(null);
-  const [reelOpen, setReelOpen] = useState(false);
+  /**
+   * The reel builder is a route now, not a modal, so it can autosave a draft
+   * and survive a browser back. A picked clip travels there the same way a
+   * draft does rather than through a second code path.
+   */
+  const openReel = (seed: ReelClip[] | null) => {
+    if (seed?.length) seedReelDraft("new", seed);
+    setLocation("/library/reels/new/edit");
+  };
   const [remixVideoId, setRemixVideoId] = useState<number | null>(null);
   const [seededSearch, setSeededSearch] = useState<{ query: string; excludeRanges?: Array<{ start: number; end: number }> } | null>(null);
 
@@ -284,8 +292,7 @@ export default function ClipsAndReels() {
   const addToReel = (i: ClipItem) => {
     const rc = toReelClip(i);
     if (!rc) return;
-    setReelSeed([rc]);
-    setReelOpen(true);
+    openReel([rc]);
   };
   // "Find more like this": open the source video's studio with a transcript
   // search already running on what this clip is ABOUT. Deliberately framed as
@@ -365,7 +372,7 @@ export default function ClipsAndReels() {
             <Button variant="outline" size="sm" onClick={() => setLocation("/library")} data-testid="button-clips-library">
               <Scissors className="w-4 h-4 mr-1.5" /> Find more in a video
             </Button>
-            <Button size="sm" onClick={() => { setReelSeed(null); setReelOpen(true); }} data-testid="button-clips-build-reel">
+            <Button size="sm" onClick={() => openReel(null)} data-testid="button-clips-build-reel">
               <Layers className="w-4 h-4 mr-1.5" /> Build a reel
             </Button>
           </div>
@@ -469,7 +476,7 @@ export default function ClipsAndReels() {
             <Button size="sm" variant="outline" onClick={refresh}><RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Try again</Button>
           </div>
         ) : items.length === 0 ? (
-          <EmptyFeed onBuildReel={() => { setReelSeed(null); setReelOpen(true); }} onScan={() => setLocation("/library?scan=first")} />
+          <EmptyFeed onBuildReel={() => openReel(null)} onScan={() => setLocation("/library?scan=first")} />
         ) : filtered.length === 0 ? (
           <div className="rounded-xl border border-border bg-card p-10 text-center">
             <p className="text-sm text-muted-foreground mb-3">Nothing matches those filters.</p>
@@ -553,7 +560,6 @@ export default function ClipsAndReels() {
         onClose={() => { setPublishTarget(null); refresh(); }}
       />
 
-      <ReelBuilder open={reelOpen} initialClips={reelSeed} onClose={() => { setReelOpen(false); setReelSeed(null); refresh(); }} />
 
       {remixVideoId != null && (
         <RemixStudio

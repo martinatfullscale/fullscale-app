@@ -20,7 +20,7 @@ import { SceneAnalysisModal, VideoWithScenes } from "@/components/SceneAnalysisM
 import NarrativeInsights from "@/components/NarrativeInsights";
 import EditorialClips from "@/components/EditorialClips";
 import RemixStudio from "@/components/RemixStudio";
-import ReelBuilder from "@/components/ReelBuilder";
+
 import DistributionDashboard from "@/components/DistributionDashboard";
 import { VideoPreviewModal } from "@/components/VideoPreviewModal";
 
@@ -638,7 +638,7 @@ export default function Library() {
   const [narrativeInsightsOpen, setNarrativeInsightsOpen] = useState(false);
   const [narrativeVideoId, setNarrativeVideoId] = useState<number | null>(null);
   const [remixStudioOpen, setRemixStudioOpen] = useState(false);
-  const [reelBuilderOpen, setReelBuilderOpen] = useState(false);
+
   const [remixVideoId, setRemixVideoId] = useState<number | null>(null);
   const [distributionOpen, setDistributionOpen] = useState(false);
   const [distributionVideoId, setDistributionVideoId] = useState<number | null>(null);
@@ -1488,7 +1488,7 @@ export default function Library() {
               <Button
                 variant="outline"
                 className="gap-2"
-                onClick={() => setReelBuilderOpen(true)}
+                onClick={() => setLocation("/library/reels/new/edit")}
                 data-testid="button-build-reel"
               >
                 <Video className="w-4 h-4" />
@@ -2137,11 +2137,6 @@ export default function Library() {
           setRemixStudioOpen(false);
           setRemixVideoId(null);
         }}
-      />
-
-      <ReelBuilder
-        open={reelBuilderOpen}
-        onClose={() => setReelBuilderOpen(false)}
       />
 
       <DistributionDashboard

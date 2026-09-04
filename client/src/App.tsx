@@ -23,6 +23,7 @@ import Library from "@/pages/Library";
 import ClipsAndReels from "@/pages/ClipsAndReels";
 import About from "@/pages/About";
 import Stories from "@/pages/Stories";
+import ReelEditor from "@/pages/ReelEditor";
 import Earnings from "@/pages/Earnings";
 import Opportunities from "@/pages/Opportunities";
 import BrandMarketplace from "@/pages/BrandMarketplace";
@@ -303,6 +304,7 @@ function Router() {
               <Route path="/terms" component={Terms} />
               <Route path="/library" component={Library} />
               <Route path="/clips" component={ClipsAndReels} />
+              <Route path="/library/reels/:reelId/edit" component={ReelEditor} />
               <Route path="/opportunities" component={Opportunities} />
               <Route path="/marketplace" component={BrandMarketplace} />
               <Route path="/campaigns" component={Campaigns} />
