@@ -118,51 +118,44 @@ export const STORIES: Story[] = [
   },
 
   // ───────────────────────────────────────────────────────────────────────
-  // TITLES ARE THE ONES ON YOUTUBE, VERBATIM — and they are working titles.
+  // ORDER IS DISPLAY ORDER, and these four read as one arc rather than four
+  // unrelated clips: the market, then the thesis, then the difficulty, then
+  // the outcome. They were in reverse upload order, which is not an order at
+  // all — this is. Move an entry to change where it sits.
   //
-  // "FullScale Reel v1 / v2 / v3 2 / v4" is what these are called on the
-  // channel, and this page is linked from the footer, so that is what a
-  // visitor reads. They are not invented here because nobody has watched
-  // them to write something truer; rename them below and the page follows.
-  //
-  // They also look like four cuts of ONE reel rather than four stories. If
-  // that is right, keep the best one and delete the rest — four versions of
-  // the same thing reads as a work-in-progress folder, not a stories page.
-  //
-  // ORDER MATTERS: the FIRST entry carrying `featured: true` becomes the
-  // large player at the top; the next two sit beside it. Everything else
-  // falls into the filterable grid.
+  // The FIRST entry carrying `featured: true` becomes the large player at the
+  // top; the next two sit beside it. Everything else falls into the grid.
   // ───────────────────────────────────────────────────────────────────────
   {
-    slug: "fullscale-reel-v4",
+    slug: "43-billion-on-creators",
     category: "Company",
-    title: "FullScale Reel v4",
+    title: "$43Billion On Creators",
+    deck: "",
+    youtube: "https://youtube.com/shorts/nVXd4-Hwe_o",
+    orientation: "portrait",
+  },
+  {
+    slug: "ai-product-placement-is-real",
+    category: "Company",
+    title: "AI Product Placement is Real",
     deck: "",
     youtube: "https://youtube.com/shorts/U4myeHPl9Cc",
     orientation: "portrait",
   },
   {
-    slug: "fullscale-reel-v3",
+    slug: "its-hard-to-raise",
     category: "Company",
-    title: "FullScale Reel v3 2",
+    title: "It's Hard to Raise",
     deck: "",
     youtube: "https://youtube.com/shorts/RVTC2oTQMdE",
     orientation: "portrait",
   },
   {
-    slug: "fullscale-reel-v2",
+    slug: "how-we-got-funded",
     category: "Company",
-    title: "FullScale Reel v2",
+    title: "How We Got Funded",
     deck: "",
     youtube: "https://youtube.com/shorts/1zOTyIiMrKo",
-    orientation: "portrait",
-  },
-  {
-    slug: "fullscale-reel-v1",
-    category: "Company",
-    title: "FullScale Reel v1",
-    deck: "",
-    youtube: "https://youtube.com/shorts/nVXd4-Hwe_o",
     orientation: "portrait",
   },
 ];
